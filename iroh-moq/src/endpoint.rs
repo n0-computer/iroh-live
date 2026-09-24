@@ -109,7 +109,8 @@ impl EndpointOptions {
     /// Async because starting mDNS is. Not fallible: mDNS wants a multicast
     /// socket, and a sandbox or a phone without a multicast lock will not give
     /// it one. That costs local-network lookup and nothing else, so a failure is
-    /// logged and the builder goes without it.
+    /// logged and the builder goes without it. Cancellation safe: dropping the
+    /// future drops the lookup it started.
     pub async fn builder(self) -> Builder {
         let mut builder = Endpoint::builder(MediaPreset);
         if let Some(key) = self.secret_key {
@@ -140,6 +141,8 @@ impl EndpointOptions {
     }
 
     /// Binds an endpoint with [`MediaPreset`] and these options.
+    ///
+    /// Cancellation safe: dropping the future binds nothing.
     ///
     /// # Errors
     ///

@@ -28,6 +28,7 @@ use tracing::{debug, trace, warn};
 pub(crate) const CHAT_BROADCAST: &str = ".chat";
 
 /// The track the release before this one reads chat from: bare UTF-8 text.
+// TODO(old-layout): remove with the older room layout.
 pub(crate) const LEGACY_CHAT_TRACK: &str = "chat";
 
 /// The track this release reads chat from: one postcard [`ChatFrame`] per group.

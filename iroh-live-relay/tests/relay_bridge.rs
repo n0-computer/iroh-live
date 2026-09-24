@@ -835,7 +835,7 @@ async fn pull_survives_a_reader_holding_no_guard() {
 #[tokio::test]
 #[serial]
 async fn a_relay_link_publishes_and_consumes() {
-    use iroh_moq::{LinkKind, LinkStatus, Moq, Reach, RelayConfig};
+    use iroh_moq::{LinkKind, Moq, Reach, RelayConfig, RelayStatus};
     use n0_watcher::Watcher;
 
     let _ = tracing_subscriber::fmt::try_init();
@@ -855,7 +855,7 @@ async fn a_relay_link_publishes_and_consumes() {
     let link = moq.attach_relay(RelayConfig::new(url)).expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
-        while status.get() != LinkStatus::Connected {
+        while status.get() != RelayStatus::Connected {
             status.updated().await.expect("link gone");
         }
     })
@@ -911,7 +911,7 @@ async fn a_relay_link_publishes_and_consumes() {
 
     // Detaching withdraws what the relay taught the route table.
     link.detach().await;
-    assert_eq!(link.status().get(), LinkStatus::Detached);
+    assert_eq!(link.status().get(), RelayStatus::Detached);
     let mut routes = moq.routes("browser-stream");
     tokio::time::timeout(TIMEOUT, async {
         while !routes.get().is_empty() {
@@ -955,7 +955,7 @@ async fn attached(
         .expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
-        while status.get() != iroh_moq::LinkStatus::Connected {
+        while status.get() != iroh_moq::RelayStatus::Connected {
             status.updated().await.expect("link gone");
         }
     })
@@ -994,6 +994,79 @@ async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
         .ok()
         .flatten()
         .is_some()
+}
+
+/// A subscription a relay serves carries the relay link's readings, and a
+/// player adapts on them.
+///
+/// Every relay link runs a connection monitor like a direct session's, and the
+/// facade reads whichever link serves the subscription, so a player behind a
+/// relay sees a round trip rather than holding its first rendition on no
+/// information at all.
+#[tokio::test]
+#[serial]
+async fn a_relay_served_subscription_carries_link_samples() {
+    use iroh_live_media::PlayerConfig;
+    use iroh_moq::{LinkKind, Reach, RelayOffer};
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (_publisher_endpoint, publisher) = relay_node(false).await;
+    let _publisher_link = attached(&publisher, &relay, RelayOffer::Public).await;
+    let _broadcast = publish_video(&publisher, "studio");
+
+    let (_viewer_endpoint, viewer) = relay_node(false).await;
+    let link = attached(&viewer, &relay, RelayOffer::Nothing).await;
+    let ticket = publisher.moq().ticket("studio");
+    let subscription = tokio::time::timeout(
+        TIMEOUT,
+        viewer.moq().subscribe(ticket.path(), Reach::Relays),
+    )
+    .await
+    .expect("subscribe timeout")
+    .expect("subscribe through the relay");
+
+    // The transport: the relay link serves the path, and its monitor has
+    // measured the link.
+    let serving = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(serving) = subscription.link()
+                && serving.sample.rtt.is_some()
+            {
+                return serving;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the relay link never reported a round trip");
+    assert_eq!(serving.kind, LinkKind::Relay);
+    assert_eq!(serving.id, link.id());
+    assert!(serving.sample.min_rtt.is_some(), "{serving:?}");
+    assert!(link.link().rtt.is_some(), "{:?}", link.link());
+
+    // The facade: the player's network signals carry the same readings.
+    let player = viewer
+        .remote_broadcast(&subscription)
+        .play(PlayerConfig::default())
+        .expect("play");
+    let network = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(network) = player.stats().network
+                && network.rtt.is_some()
+            {
+                return network;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the player never saw the relay link's round trip");
+    assert!(network.min_rtt.is_some(), "{network:?}");
+
+    drop(player);
+    viewer.shutdown().await;
+    publisher.shutdown().await;
 }
 
 /// Only public publications go to a relay, and only while the link offers
@@ -1061,7 +1134,7 @@ async fn a_relay_gets_public_publications_only() {
 #[tokio::test]
 #[serial]
 async fn shutdown_detaches_relay_links() {
-    use iroh_moq::{Error, LinkStatus, Reach, RelayOffer};
+    use iroh_moq::{Error, Reach, RelayOffer, RelayStatus};
     use n0_watcher::Watcher;
 
     let _ = tracing_subscriber::fmt::try_init();
@@ -1087,7 +1160,7 @@ async fn shutdown_detaches_relay_links() {
         .await
         .expect("shutdown hung");
     tokio::time::timeout(TIMEOUT, async {
-        while status.get() != LinkStatus::Detached {
+        while status.get() != RelayStatus::Detached {
             status.updated().await.expect("link gone");
         }
     })
@@ -1537,7 +1610,7 @@ fn chat_frame(text: &str, writer: u64) -> Vec<u8> {
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_forge_a_room_members_chat() {
-    use iroh_moq::{LinkKind, LinkStatus, RelayConfig, RelayOffer};
+    use iroh_moq::{LinkKind, RelayConfig, RelayOffer, RelayStatus};
     use n0_watcher::Watcher;
 
     let _ = tracing_subscriber::fmt::try_init();
@@ -1590,7 +1663,7 @@ async fn a_relay_cannot_forge_a_room_members_chat() {
         .expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
-        while status.get() != LinkStatus::Connected {
+        while status.get() != RelayStatus::Connected {
             status.updated().await.expect("link gone");
         }
     })

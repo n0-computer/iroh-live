@@ -370,15 +370,15 @@ pub struct RemoteView {
     link: Option<Link>,
 }
 
-/// What the overlay says about the transport, read off the serving session.
+/// What the overlay says about the transport, read off the serving link.
 #[derive(Debug)]
 struct Link {
     subscription: iroh_live::Subscription,
-    /// When the lines were last read off the session.
+    /// When the lines were last read off the link.
     refreshed: Option<Instant>,
 }
 
-/// How often the overlay's link lines are read off the session: they change
+/// How often the overlay's link lines are read off the link: they change
 /// with the path, not with every frame drawn.
 const LINK_REFRESH: Duration = Duration::from_millis(500);
 
@@ -398,21 +398,24 @@ impl Link {
     /// The selected path's kind and address, the number of paths, and the
     /// bytes arriving, as the overlay's NET lines.
     ///
-    /// Follows the route: a relay serving the path has no session of ours to
-    /// read, and says so.
+    /// Follows the route: a relay link has no iroh path to describe, so it
+    /// says which link serves and what arrives over it.
     fn lines(&self) -> Vec<String> {
-        let Some(session) = self.subscription.session() else {
-            return vec!["via a relay link".to_string()];
+        let Some(serving) = self.subscription.link() else {
+            return vec!["no link serves the broadcast".to_string()];
         };
-        let link = session.link();
-        let mut lines = vec![match link.relayed {
-            true => "relayed".to_string(),
-            false => "direct".to_string(),
+        let link = serving.sample;
+        let mut lines = vec![match (serving.kind, link.relayed) {
+            (iroh_live::moq::LinkKind::Relay, _) => "via a relay link".to_string(),
+            (_, true) => "relayed".to_string(),
+            (_, false) => "direct".to_string(),
         }];
         if let Some(addr) = &link.remote_addr {
             lines.push(format!("address: {addr}"));
         }
-        lines.push(format!("paths: {}", link.paths));
+        if link.paths > 0 {
+            lines.push(format!("paths: {}", link.paths));
+        }
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",

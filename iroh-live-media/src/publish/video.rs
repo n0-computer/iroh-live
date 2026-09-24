@@ -162,7 +162,7 @@ pub(super) async fn run_raw(
         ) {
             Ok(track) => track,
             Err(err) => {
-                let err = Arc::new(Error::transport(err));
+                let err = Arc::new(Error::broadcast(err));
                 reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
                 last_failure = Some(err);
                 continue;
@@ -373,7 +373,7 @@ impl Encoder {
                     }
                 }
                 () = self.frames.closed() => {
-                    self.producer.finish().map_err(Error::transport)?;
+                    self.producer.finish().map_err(Error::broadcast)?;
                     return Ok(());
                 }
                 () = self.stop.cancelled() => break,
@@ -404,7 +404,7 @@ impl Encoder {
                     // The last viewer left: mark the gap so the next timestamp
                     // does not stretch this frame across it.
                     _ = demand.unused() => {
-                        self.producer.discontinuity().map_err(Error::transport)?;
+                        self.producer.discontinuity().map_err(Error::broadcast)?;
                         self.reporter.rendition(&self.name, RenditionState::Idle);
                         break;
                     }
@@ -417,8 +417,8 @@ impl Encoder {
                 let Some(frame) = frame else {
                     let mut tail = encoder.finish().await.map_err(Error::encoder)?;
                     self.restamp(&mut tail);
-                    self.producer.publish(&tail).map_err(Error::transport)?;
-                    self.producer.finish().map_err(Error::transport)?;
+                    self.producer.publish(&tail).map_err(Error::broadcast)?;
+                    self.producer.finish().map_err(Error::broadcast)?;
                     return Ok(());
                 };
                 let clock = self.clock;
@@ -484,11 +484,11 @@ impl Encoder {
                             Some(crate::Bitrate::from_bps((bytes_per_second * 8.0) as u64));
                     }
                 });
-                self.producer.publish(&encoded).map_err(Error::transport)?;
+                self.producer.publish(&encoded).map_err(Error::broadcast)?;
             }
         }
 
-        self.producer.finish().map_err(Error::transport)?;
+        self.producer.finish().map_err(Error::broadcast)?;
         Ok(())
     }
 
@@ -543,7 +543,7 @@ pub(super) async fn run_encoded(job: Job, source: EncodedVideoSource, stop: Canc
                 ENCODED_RENDITION,
                 Some(catalog.track_info(hang::catalog::PRIORITY.video)),
             )
-            .map_err(Error::transport)?;
+            .map_err(Error::broadcast)?;
         let mut import =
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
                 .map_err(Error::catalog)?;

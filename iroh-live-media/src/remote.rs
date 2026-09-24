@@ -27,7 +27,8 @@ use crate::{
 ///
 /// A change of route ends a broadcast only for the next request to find it
 /// through the new route at once, so a second is plenty; anything longer is a
-/// publisher that left.
+/// publisher that left. [`RemoteBroadcast::closed`] documents the cost: a
+/// deliberate hang-up closes this late too.
 const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// The broadcast consumer a player reads, and how many times it has changed.
@@ -113,11 +114,35 @@ impl RemoteBroadcast {
     ///
     /// When a change of route ends the broadcast, it is requested again through
     /// the next route, and players see a switch rather than an end. The
-    /// broadcast counts as closed only once no route serves the path.
+    /// broadcast counts as closed only once no route serves the path; see
+    /// [`closed`](Self::closed) for how long that takes to tell.
+    ///
+    /// The first request waits for as long as it takes, since the publisher
+    /// may not have announced the path yet. A caller that already resolved the
+    /// path uses [`from_resolved`](Self::from_resolved) instead.
     pub fn from_origin(origin: moq_net::origin::Consumer, path: impl moq_net::AsPath) -> Self {
         let path = path.as_path().to_owned();
         let span = tracing::info_span!("remote", path = %path);
         Self::spawn(Origin::Routed { origin, path }, None, span)
+    }
+
+    /// Follows `path` in a route table, starting from `broadcast`, which the
+    /// caller already resolved there.
+    ///
+    /// As [`from_origin`](Self::from_origin), except that nothing waits for a
+    /// first route: every later request is a failover and gets the same
+    /// bounded patience, so a publisher that is gone by the time this runs
+    /// closes the broadcast rather than leaving it waiting forever. A
+    /// transport's subscription resolves the path before it hands it out, and
+    /// this is how it passes that on; `iroh-live` does it on subscribe.
+    pub fn from_resolved(
+        origin: moq_net::origin::Consumer,
+        path: impl moq_net::AsPath,
+        broadcast: moq_net::broadcast::Consumer,
+    ) -> Self {
+        let path = path.as_path().to_owned();
+        let span = tracing::info_span!("remote", path = %path);
+        Self::spawn(Origin::Routed { origin, path }, Some(broadcast), span)
     }
 
     /// Reads a local broadcast in-process, without a transport.
@@ -167,7 +192,18 @@ impl RemoteBroadcast {
         Recording::start(self, Box::new(out), config)
     }
 
-    /// Waits until the broadcast has closed. Cancellation safe.
+    /// Waits until the broadcast has closed.
+    ///
+    /// A broadcast read with [`from_moq`](Self::from_moq) or
+    /// [`local`](Self::local) closes when its consumer does. One that follows a
+    /// route table, from [`from_origin`](Self::from_origin) or
+    /// [`from_resolved`](Self::from_resolved), cannot tell a publisher that
+    /// ended its broadcast from a change of route, which also ends it: it asks
+    /// the table again, and closes only once no route has answered for three
+    /// seconds. So a hang-up shows here about three seconds after the
+    /// publisher closed.
+    ///
+    /// Cancellation safe.
     pub async fn closed(&self) {
         let mut closed = self.shared.closed.watch();
         loop {
@@ -181,6 +217,8 @@ impl RemoteBroadcast {
     }
 
     /// Reports whether the broadcast has closed.
+    ///
+    /// Subject to the same re-resolve window as [`closed`](Self::closed).
     pub fn is_closed(&self) -> bool {
         self.shared.closed.get()
     }
@@ -379,6 +417,28 @@ mod tests {
             .await
             .expect("the remote saw the close");
         assert!(remote.is_closed());
+    }
+
+    /// A broadcast seeded with the consumer its caller resolved closes once
+    /// the publisher goes, rather than waiting forever for a first route.
+    #[tokio::test]
+    async fn a_resolved_broadcast_closes_once_its_route_is_gone() {
+        let (origin, driver) = moq_net::origin::Producer::new(Default::default());
+        let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
+        let published = origin
+            .publish("live/cam", moq_net::origin::Route::default())
+            .expect("published");
+        let consumer = origin
+            .consume()
+            .routed_broadcast("live/cam")
+            .await
+            .expect("resolved");
+        // Gone before the remote broadcast even starts.
+        drop(published);
+        let remote = RemoteBroadcast::from_resolved(origin.consume(), "live/cam", consumer);
+        tokio::time::timeout(REROUTE_PATIENCE + Duration::from_secs(5), remote.closed())
+            .await
+            .expect("the remote closed within its re-resolve window");
     }
 
     /// A route change ends the broadcast it served; the remote asks again and

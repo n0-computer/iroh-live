@@ -232,16 +232,6 @@ impl DecodeFailures {
     }
 }
 
-/// How long a replacement decoder has to take over, from the request to the
-/// picture it takes over with.
-///
-/// It has to cover a real handover: the replacement subscribes to another
-/// rendition, waits for that track's next keyframe, which on a two second GOP
-/// over an impaired link is already seconds, and then decodes until it has
-/// caught up with the picture on screen. Beyond that it is not slow, it is not
-/// coming, and the incumbent keeps playing either way.
-const SWITCH_DEADLINE: Duration = Duration::from_secs(15);
-
 /// The task opening a replacement decoder.
 type OpenTask = AbortOnDropHandle<Result<Reader, Error>>;
 
@@ -262,6 +252,9 @@ pub(crate) struct Inputs {
     pub playing: watch::Sender<Option<Target>>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
+    /// How long a replacement decoder has to take over; see
+    /// [`Tuning::switch_deadline`](super::bound::Tuning::switch_deadline).
+    pub switch_deadline: Duration,
     pub shutdown: CancellationToken,
 }
 
@@ -301,9 +294,10 @@ pub(crate) async fn run(inputs: Inputs) {
         playing,
         clock,
         stats,
+        switch_deadline,
         shutdown,
     } = inputs;
-    let mut switcher = VideoSwitcher::new(SWITCH_DEADLINE);
+    let mut switcher = VideoSwitcher::new(switch_deadline);
     let mut delivery: Option<Delivery> = None;
     let mut pacing = Pacing::default();
 
@@ -357,7 +351,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     None => {
                         // Video turned off, or nothing left to play: drop both
                         // decoders and keep the last picture where it is.
-                        switcher = VideoSwitcher::new(SWITCH_DEADLINE);
+                        switcher = VideoSwitcher::new(switch_deadline);
                         delivery = None;
                         stats.video.update(|video| *video = None);
                         status.update(|status| {
@@ -516,14 +510,14 @@ pub(crate) async fn run(inputs: Inputs) {
                         Abandon::Failed(failure)
                     }
                     Abandoned::TimedOut => {
-                        warn!(%rendition, after = ?SWITCH_DEADLINE, "replacement did not take over in time");
+                        warn!(%rendition, after = ?switch_deadline, "replacement did not take over in time");
                         // With nothing on screen there is nothing better to
                         // play meanwhile, and a slow link is not a broken
                         // rendition: it is asked for again at once.
                         exclude = playing.is_some();
                         Abandon::Failed(Arc::new(Error::decoder(std::io::Error::other(format!(
                             "the decoder for {rendition} did not produce a picture within {}s",
-                            SWITCH_DEADLINE.as_secs()
+                            switch_deadline.as_secs()
                         )))))
                     }
                 };
@@ -872,7 +866,7 @@ fn decode_error(err: moq_video::Error) -> Error {
             codec: format!("{codec:?}")
         }),
         moq_video::Error::UnsupportedCodec(codec) => n0_error::e!(Error::NoDecoder { codec }),
-        moq_video::Error::Net(err) => Error::transport(err),
+        moq_video::Error::Net(err) => Error::broadcast(err),
         other => Error::decoder(other),
     }
 }

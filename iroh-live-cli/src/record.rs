@@ -169,26 +169,14 @@ pub async fn start(
 ///
 /// Fails on an export or a write error.
 pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) -> Result<u64> {
-    /// What ended one wait.
-    enum Next {
-        Ended(Result<u64, media::Error>),
-        Stop,
-        Report,
-    }
-
     let started = tokio::time::Instant::now();
     let mut report = tokio::time::interval_at(started + REPORT_INTERVAL, REPORT_INTERVAL);
     let mut stop = std::pin::pin!(stop);
     let written = loop {
-        let next = tokio::select! {
-            result = recording.wait() => Next::Ended(result),
-            () = &mut stop => Next::Stop,
-            _ = report.tick() => Next::Report,
-        };
-        match next {
-            Next::Ended(result) => break result?,
-            Next::Stop => break recording.stop().await?,
-            Next::Report => println!(
+        tokio::select! {
+            result = recording.wait() => break result?,
+            () = &mut stop => break recording.stop().await?,
+            _ = report.tick() => println!(
                 "[{:.0}s] {}",
                 started.elapsed().as_secs_f64(),
                 format_bytes(recording.written())

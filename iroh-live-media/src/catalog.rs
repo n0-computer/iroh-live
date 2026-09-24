@@ -1,6 +1,6 @@
 //! What a broadcast carries, in our types.
 //!
-//! On the wire the catalog is hang's JSON document, extended with the sections
+//! On the wire the catalog is hang's JSON document, extended with the section
 //! iroh-live adds ([`IrohLiveExt`]). Applications read [`Catalog`] instead:
 //! renditions as [`VideoRenditionInfo`] and [`AudioRenditionInfo`], and the
 //! publisher's [`Metadata`]. hang's own shape stays behind
@@ -165,7 +165,7 @@ impl VideoRenditionInfo {
         self.size.map_or(0, |size| size.pixels())
     }
 
-    /// The coded height, if the size is declared.
+    /// Returns the coded height, if the size is declared.
     pub fn height(&self) -> Option<u32> {
         self.size.map(|size| size.height)
     }
@@ -212,13 +212,6 @@ impl AudioRenditionInfo {
 pub struct Metadata {
     /// The name a viewer shows next to the picture.
     pub display_name: Option<String>,
-    /// The track carrying chat messages, if the publisher opened one on the
-    /// broadcast.
-    ///
-    /// The track itself is the application's, created on
-    /// [`LocalBroadcast::as_moq`](crate::LocalBroadcast::as_moq); this only
-    /// says where it is.
-    pub chat: Option<TrackRef>,
 }
 
 impl Metadata {
@@ -229,99 +222,54 @@ impl Metadata {
         self
     }
 
-    /// Returns the metadata pointing at a chat track.
-    #[must_use]
-    pub fn with_chat(mut self, track: TrackRef) -> Self {
-        self.chat = Some(track);
-        self
-    }
-
     fn from_ext(ext: &IrohLiveExt) -> Self {
         Self {
             display_name: ext.user.as_ref().and_then(|user| user.name.clone()),
-            chat: ext.chat.as_ref().and_then(|chat| chat.message.clone()),
         }
     }
 
-    /// Writes this metadata into the catalog's iroh-live sections.
+    /// Writes this metadata into the catalog's iroh-live section.
     pub(crate) fn apply(&self, ext: &mut IrohLiveExt) {
         ext.user = self.display_name.as_ref().map(|name| User {
             name: Some(name.clone()),
             ..User::default()
         });
-        ext.chat = self.chat.as_ref().map(|track| Chat {
-            message: Some(track.clone()),
-            typing: None,
-        });
     }
 }
 
-/// The sections iroh-live adds to hang's catalog, flattened beside `video` and
+/// The section iroh-live adds to hang's catalog, flattened beside `video` and
 /// `audio`.
 ///
-/// A consumer that knows only hang's schema ignores them. Public because
-/// [`Catalog::as_hang`] names it; applications read [`Metadata`] instead.
+/// A consumer that knows only hang's schema ignores it. Public only because
+/// [`Catalog::as_hang`] names it: its contents are read through
+/// [`Catalog::metadata`], and its wire shape is not part of this crate's API.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct IrohLiveExt {
-    /// The tracks carrying chat, if the publisher opened any.
-    pub chat: Option<Chat>,
     /// Who is publishing, if they said.
-    pub user: Option<User>,
+    pub(crate) user: Option<User>,
 }
 
 impl CatalogExt for IrohLiveExt {}
 
-/// A reference to a track on the broadcast, as the catalog carries it.
-#[serde_with::skip_serializing_none]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
-#[serde(default, rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct TrackRef {
-    /// The track name on the broadcast.
-    pub name: String,
-    /// The publisher's priority for the track.
-    pub priority: u8,
-}
-
-impl TrackRef {
-    /// Creates a reference to the track `name`, at `priority`.
-    pub fn new(name: impl Into<String>, priority: u8) -> Self {
-        Self {
-            name: name.into(),
-            priority,
-        }
-    }
-}
-
-/// The chat section: which tracks carry messages and typing indicators.
-#[serde_with::skip_serializing_none]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct Chat {
-    /// The track carrying chat messages.
-    pub message: Option<TrackRef>,
-    /// The track carrying typing indicators, if the publisher sends any.
-    pub typing: Option<TrackRef>,
-}
-
 /// The publisher's description of itself, on the wire.
+///
+/// Carries every field the section has always had, so a catalog read from
+/// another publisher and written again keeps them.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct User {
+pub(crate) struct User {
     /// An application-defined identifier, stable across sessions.
-    pub id: Option<String>,
+    pub(crate) id: Option<String>,
     /// The display name.
-    pub name: Option<String>,
+    pub(crate) name: Option<String>,
     /// A URL for an avatar image.
-    pub avatar: Option<String>,
+    pub(crate) avatar: Option<String>,
     /// An accent color, as a CSS color string.
-    pub color: Option<String>,
+    pub(crate) color: Option<String>,
 }
 
 #[cfg(test)]

@@ -67,6 +67,29 @@
 //! previous release's paths, and writes chat in both formats; it reads both
 //! announcement layouts and both chat formats. The previous formats go in the
 //! next release.
+//! Everything that goes then is marked `TODO(old-layout)` in the source.
+//!
+//! # Tiles that come back
+//!
+//! A member can end a broadcast and publish it again under the same name
+//! faster than its announcement changes, and a member that briefly stops
+//! counting this node as a member cuts off what this node reads. Neither
+//! changes [`RoomState`], so a grid that reconciles only on state updates keeps
+//! a player on a broadcast that ended. Drop the tiles whose broadcast closed,
+//! on a timer as well as on state updates, and open the ones the state still
+//! lists again. With `iroh-live`'s `RemoteBroadcast` that is
+//! `is_closed()`, which turns true about three seconds after the publisher
+//! went: the broadcast follows its path, and looks for another route first.
+//! `irl room` does this in `drop_closed`.
+//!
+//! # Cancellation safety
+//!
+//! [`Rooms::join`], [`Room::subscribe`] and [`ChatReceiver::recv`] are
+//! cancellation safe: dropping `join` leaves the topic and publishes nothing,
+//! dropping `subscribe` abandons the wait while a dial it started continues,
+//! and dropping `recv` loses no message. [`Room::send_chat`] is not: a dropped
+//! call may or may not have sent its message. [`Room::leave`] is not either,
+//! and is idempotent: call it again to finish.
 
 mod chat;
 mod room;

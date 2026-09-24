@@ -19,7 +19,8 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
 use crate::{
-    Error, Grant, LinkKind, Moq, OfferGuard, Publication,
+    Error, Grant, LinkId, LinkKind, LinkSample, Moq, OfferGuard, Publication,
+    link::{self, LinkState},
     node::{Shared, Tasks},
     route,
     session::Origins,
@@ -47,6 +48,12 @@ pub struct RelayConfig {
     /// What the node publishes into the relay.
     pub offer: RelayOffer,
     /// Whether the node subscribes through the relay.
+    ///
+    /// On by default, which copies every route the relay announces into this
+    /// node's route table: every broadcast the relay knows becomes resolvable
+    /// here, priced at [`cost`](Self::cost). A node that only publishes
+    /// through the relay should turn it off, so it neither mirrors routes it
+    /// will never read nor answers requests for them.
     pub consume: bool,
 }
 
@@ -83,6 +90,8 @@ impl RelayConfig {
     }
 
     /// Sets whether the node subscribes through the relay.
+    ///
+    /// See [`consume`](Self::consume) for what the default costs.
     pub fn with_consume(mut self, consume: bool) -> Self {
         self.consume = consume;
         self
@@ -114,7 +123,7 @@ pub enum RelayOffer {
 /// The state of a relay link.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum LinkStatus {
+pub enum RelayStatus {
     /// Dialing for the first time.
     #[default]
     Connecting,
@@ -139,7 +148,8 @@ pub struct RelayLink {
 struct RelayInner {
     link: u64,
     url: Url,
-    status: Watchable<LinkStatus>,
+    link_state: LinkState,
+    status: Watchable<RelayStatus>,
     #[debug(skip)]
     connection: moq_tokio::Connection,
     #[debug(skip)]
@@ -150,13 +160,29 @@ struct RelayInner {
 
 impl RelayLink {
     /// Returns the relay's status, as it changes.
-    pub fn status(&self) -> n0_watcher::Direct<LinkStatus> {
+    pub fn status(&self) -> n0_watcher::Direct<RelayStatus> {
         self.inner.status.watch()
     }
 
     /// Returns the URL the link dials, without its token.
     pub fn url(&self) -> &Url {
         &self.inner.url
+    }
+
+    /// Returns the id of this link.
+    ///
+    /// The [`RouteInfo::via`](crate::RouteInfo::via) of every route the relay
+    /// forwards.
+    pub fn id(&self) -> LinkId {
+        LinkId(self.inner.link)
+    }
+
+    /// Returns the link as its connection monitor last read it.
+    ///
+    /// Read from the relay link's current MoQ session. Empty while the link is
+    /// between sessions, and each new session is a new path generation.
+    pub fn link(&self) -> LinkSample {
+        self.inner.link_state.get()
     }
 
     /// Offers `publication` to the relay, whatever its audience.
@@ -180,7 +206,9 @@ impl RelayLink {
     /// Closes the session, stops redialing, and withdraws every route learned
     /// through it.
     ///
-    /// Returns once the session has closed. Idempotent.
+    /// Returns once the session has closed. Idempotent. Cancellation safe: the
+    /// session is told to close before the first wait, and dropping the future
+    /// leaves the rest to the link's task, which ends with the session.
     pub async fn detach(&self) {
         info!(url = %self.inner.url, "detaching relay");
         self.inner.connection.abort(moq_net::Error::Cancel);
@@ -197,14 +225,14 @@ impl RelayLink {
                 .expect("poisoned")
                 .remove_link(self.inner.link);
         }
-        self.inner.status.set(LinkStatus::Detached).ok();
+        self.inner.status.set(RelayStatus::Detached).ok();
     }
 }
 
 /// A relay link's task, and the status it reports.
 pub(crate) struct RelayTask {
     task: AbortOnDropHandle<()>,
-    status: Watchable<LinkStatus>,
+    status: Watchable<RelayStatus>,
 }
 
 impl Tasks {
@@ -229,7 +257,7 @@ impl Tasks {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
         for (_, relay) in relays {
             drop(relay.task);
-            relay.status.set(LinkStatus::Detached).ok();
+            relay.status.set(RelayStatus::Detached).ok();
         }
     }
 }
@@ -276,6 +304,7 @@ impl Moq {
             client = client.with_subscriber(origins.ingest.clone());
         }
 
+        let link_state = LinkState::default();
         let link = {
             let mut state = shared.state.lock().expect("poisoned");
             if state.closed {
@@ -299,6 +328,7 @@ impl Moq {
                     offers: HashMap::new(),
                     announced: Default::default(),
                     session: None,
+                    link_state: link_state.clone(),
                 },
             );
             link
@@ -314,9 +344,15 @@ impl Moq {
         let url = config.url.clone();
         info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
         let connection = client.connect(config.dial_url());
-        let status = Watchable::new(LinkStatus::Connecting);
+        let status = Watchable::new(RelayStatus::Connecting);
         let task = {
             let shared = shared.clone();
+            let monitor = link::monitor_relay(
+                connection.monitor(),
+                connection.recv_bandwidth(),
+                link_state.clone(),
+                shared.shutdown.child_token(),
+            );
             let mut watch = connection.clone();
             // Aborts the connection for every clone when the task ends, so a
             // `RelayLink` handle held past shutdown does not keep redialing.
@@ -338,6 +374,7 @@ impl Moq {
                     let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
                         moq_net::time::run(ingest_driver).await;
                     }));
+                    let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
                     let _bridge = config.consume.then(|| {
                         AbortOnDropHandle::new(tokio::spawn(
                             route::bridge(shared.clone(), link, ingest, None).in_current_span(),
@@ -347,11 +384,11 @@ impl Moq {
                         match watch.status().await {
                             Ok(moq_tokio::Status::Connected | moq_tokio::Status::Migrating) => {
                                 info!("relay connected");
-                                status.set(LinkStatus::Connected).ok();
+                                status.set(RelayStatus::Connected).ok();
                             }
                             Ok(moq_tokio::Status::Disconnected) => {
                                 warn!("relay session dropped, redialing");
-                                status.set(LinkStatus::Reconnecting).ok();
+                                status.set(RelayStatus::Reconnecting).ok();
                             }
                             Ok(other) => debug!(?other, "relay status"),
                             Err(err) => {
@@ -360,7 +397,7 @@ impl Moq {
                             }
                         }
                     }
-                    status.set(LinkStatus::Detached).ok();
+                    status.set(RelayStatus::Detached).ok();
                     shared.state.lock().expect("poisoned").remove_link(link);
                 }
                 .instrument(info_span!("relay", %url, link)),
@@ -383,6 +420,7 @@ impl Moq {
             inner: Arc::new(RelayInner {
                 link,
                 url,
+                link_state,
                 status,
                 connection,
                 shared: Arc::downgrade(shared),

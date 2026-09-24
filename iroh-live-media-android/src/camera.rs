@@ -78,7 +78,7 @@ impl CameraSink {
         self.frames.demand()
     }
 
-    /// The size every pushed frame must have.
+    /// Returns the size every pushed frame must have.
     pub fn size(&self) -> Size {
         self.size
     }

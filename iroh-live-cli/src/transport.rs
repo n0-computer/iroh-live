@@ -278,7 +278,7 @@ pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscrib
 ///
 /// Fails if the relay link cannot be set up.
 pub fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
-    let ticket = ticket(live, &args.name);
+    let ticket = live.ticket(&args.name).to_string();
     match (args.no_serve, args.relay) {
         // Nobody can dial this node, so the ticket names an endpoint that
         // refuses every session and the relay is the only way out.
@@ -325,9 +325,4 @@ pub fn print_qr(ticket: &str, no_qr: bool) {
     if !no_qr && let Err(err) = qr2term::print_qr(ticket) {
         warn!(error = %err, "could not print the QR code");
     }
-}
-
-/// The ticket for a broadcast this node publishes.
-pub fn ticket(live: &Live, name: &str) -> String {
-    BroadcastTicket::new(live.endpoint().id(), name).to_string()
 }

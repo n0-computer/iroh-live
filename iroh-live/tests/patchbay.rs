@@ -7,8 +7,10 @@
 //! put a publisher and a subscriber in separate network namespaces with a router
 //! between them, apply netem latency, jitter and loss to the links,
 //! and let the real chain run: the impairment reaches QUIC, QUIC reports it
-//! through path stats, the signal producer samples those, and the adaptation
-//! loop decides. That loop is the thing under test here.
+//! through path stats, the session's connection monitor
+//! (`iroh-moq/src/link.rs`) samples those into a `LinkSample`, the facade turns
+//! each into a `NetworkSample`, and the adaptation loop decides. That loop is
+//! the thing under test here.
 //!
 //! Linux only: the lab is built out of unprivileged user namespaces, which is
 //! also why the namespace setup runs from an ELF initialiser below rather than
@@ -23,6 +25,7 @@ use iroh_live::{BroadcastTicket, Live, Reach, RemoteBroadcast, Subscription, moq
 use iroh_live_media::{
     Bitrate, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding, VideoFormat,
     VideoFrames, VideoRendition, VideoSource,
+    test_util::Tuning,
     video::{Frame, Rate, Size, Surface},
 };
 use n0_tracing_test::traced_test;
@@ -53,9 +56,23 @@ const FRAMERATE: u32 = 15;
 /// The frame interval implied by [`FRAMERATE`], as the gap thresholds' unit.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / FRAMERATE as u64);
 
-/// How long the adaptation holds a downgrade before acting on it, as the
-/// player's defaults have it.
+/// How long the adaptation holds a downgrade before acting on it, at the
+/// player's production timers.
 const DOWNGRADE_HOLD: Duration = Duration::from_millis(500);
+
+/// Timers short enough for a switch each way inside a test's own budget.
+///
+/// Only the timers are shortened. The thresholds are left at their defaults,
+/// because those are the part being tested: a test that also moved the loss and
+/// bandwidth limits would be checking arithmetic it had just written.
+fn quick() -> Tuning {
+    let mut tuning = Tuning::default();
+    tuning.downgrade_hold = Duration::from_millis(300);
+    tuning.upgrade_hold = Duration::from_millis(500);
+    tuning.post_downgrade_cooldown = Duration::from_secs(1);
+    tuning.tick = Duration::from_millis(100);
+    tuning
+}
 
 /// The loss fraction at which the adaptation steps down, as the player's
 /// defaults have it.
@@ -203,18 +220,36 @@ impl Fixture {
     ///
     /// Held rather than adapting, for a test that switches by hand.
     async fn play(&self, renditions: usize, rendition: &str) -> Viewer {
-        self.play_with(renditions, RenditionMode::pinned(rendition))
-            .await
+        self.play_with(
+            renditions,
+            RenditionMode::pinned(rendition),
+            Tuning::default(),
+        )
+        .await
     }
 
     /// Plays the broadcast adapting from the start, waiting for the catalog to
     /// carry `renditions` video renditions first, so where it starts is the
     /// adaptation's own choice.
+    ///
+    /// At the production timers, for the tests that watch the ladder hold
+    /// steady: a stable ladder under shortened timers says nothing about the
+    /// one a user gets.
     async fn play_auto(&self, renditions: usize) -> Viewer {
-        self.play_with(renditions, RenditionMode::auto()).await
+        self.play_with(renditions, RenditionMode::auto(), Tuning::default())
+            .await
     }
 
-    async fn play_with(&self, renditions: usize, mode: RenditionMode) -> Viewer {
+    /// Plays the broadcast adapting from the start, at [`quick`] timers.
+    ///
+    /// For the tests that wait for a switch each way, which at the production
+    /// timers spend most of their time in holds and cooldowns.
+    async fn play_auto_quick(&self, renditions: usize) -> Viewer {
+        self.play_with(renditions, RenditionMode::auto(), quick())
+            .await
+    }
+
+    async fn play_with(&self, renditions: usize, mode: RenditionMode, tuning: Tuning) -> Viewer {
         let broadcast = &self.broadcast;
         let mut catalog = broadcast.catalog();
         tokio::time::timeout(TIMEOUT, async {
@@ -229,7 +264,11 @@ impl Fixture {
         .expect("timed out waiting for the video catalog");
 
         let player = broadcast
-            .play(PlayerConfig::default().with_rendition(mode))
+            .play(
+                PlayerConfig::default()
+                    .with_rendition(mode)
+                    .with_tuning(tuning),
+            )
             .expect("failed to play");
         let frames = player.video();
         Viewer { player, frames }
@@ -277,14 +316,25 @@ fn gradient(size: Size) -> VideoSource {
 struct Link(Subscription);
 
 impl Link {
-    /// Returns the latest reading of the serving session's link, or an empty
-    /// one while no session serves the subscription.
+    /// Returns the latest reading of the serving link, or an empty one while
+    /// no link serves the subscription.
     fn read(&self) -> LinkSample {
         self.0
-            .session()
-            .map(|session| session.link())
+            .link()
+            .map(|serving| serving.sample)
             .unwrap_or_default()
     }
+}
+
+/// Reports whether `sample`'s round trip stands ten times over its minimum,
+/// which is a queue rather than a longer path.
+fn queued(sample: &LinkSample) -> bool {
+    matches!((sample.rtt, sample.min_rtt), (Some(rtt), Some(min)) if rtt > min * 10)
+}
+
+/// Returns a measured duration in milliseconds, zero while unmeasured.
+fn millis(duration: Option<Duration>) -> u64 {
+    duration.map_or(0, |duration| duration.as_millis() as u64)
 }
 
 /// A player and the frames a test reads from it.
@@ -609,9 +659,10 @@ async fn frames_survive_a_loss_spike() {
 }
 
 /// The whole adaptive loop, end to end, with nothing about it simulated:
-/// netem drops packets, QUIC's loss detection declares them lost, the signal
-/// producer reads that out of the path stats, and the adaptation loop steps down
-/// the ladder. Clearing the impairment steps it back up.
+/// netem drops packets, QUIC's loss detection declares them lost, the session's
+/// connection monitor reads that out of the path stats, and the adaptation loop
+/// steps down the ladder. Clearing the impairment steps it back up. At [`quick`]
+/// timers, since the point is the chain and not the holds.
 ///
 /// This is the one thing here that no other test in any of the repos covers.
 /// `e2e::adaptive_rendition_switching` reaches the same decision by writing the
@@ -623,7 +674,7 @@ async fn adaptation_follows_a_real_link() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
     // Adapting from the start: a clear link has to settle on the top rung by
     // itself before the impairment goes on.
-    let mut viewer = fixture.play_auto(2).await;
+    let mut viewer = fixture.play_auto_quick(2).await;
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
@@ -696,7 +747,7 @@ async fn adaptation_follows_a_real_link() {
 #[traced_test]
 async fn adaptation_follows_a_rate_limit() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let mut viewer = fixture.play_auto(2).await;
+    let mut viewer = fixture.play_auto_quick(2).await;
     let signals = fixture.link();
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
@@ -775,10 +826,9 @@ async fn adaptation_follows_a_rate_limit() {
         let mut last_sample = None;
         loop {
             let signals = signals.read();
-            worst_loss = worst_loss.max(signals.loss_rate);
+            worst_loss = worst_loss.max(signals.loss_rate.unwrap_or(0.0));
             let pinned = signals.goodput_bps.is_some_and(|bps| bps < 250_000);
-            let queued = signals.rtt > signals.min_rtt * 10;
-            if pinned && queued {
+            if pinned && queued(&signals) {
                 let start = *since.get_or_insert_with(Instant::now);
                 if last_sample != Some(signals.rtt_samples) {
                     last_sample = Some(signals.rtt_samples);
@@ -811,8 +861,8 @@ async fn adaptation_follows_a_rate_limit() {
     info!(
         after_ms = impaired.elapsed().as_millis() as u64,
         goodput_kbps = saw_the_cap.goodput_bps.unwrap_or(0) / 1000,
-        rtt_ms = saw_the_cap.rtt.as_millis() as u64,
-        min_rtt_ms = saw_the_cap.min_rtt.as_millis() as u64,
+        rtt_ms = millis(saw_the_cap.rtt),
+        min_rtt_ms = millis(saw_the_cap.min_rtt),
         rtt_readings = readings,
         worst_loss,
         "the rate limit reached the signals",
@@ -1027,9 +1077,7 @@ async fn a_switch_lands_while_the_link_stays_capped() {
     tokio::time::timeout(SIGNAL_LAG, async {
         loop {
             let signals = signals.read();
-            if signals.goodput_bps.is_some_and(|bps| bps < 250_000)
-                && signals.rtt > signals.min_rtt * 10
-            {
+            if signals.goodput_bps.is_some_and(|bps| bps < 250_000) && queued(&signals) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1178,8 +1226,8 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     let before = signals.read();
     info!(
-        rtt_ms = before.rtt.as_millis() as u64,
-        min_rtt_ms = before.min_rtt.as_millis() as u64,
+        rtt_ms = millis(before.rtt),
+        min_rtt_ms = millis(before.min_rtt),
         goodput_kbps = ?before.goodput_bps.map(|bps| bps / 1000),
         "clear link",
     );
@@ -1205,8 +1253,8 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     let after = signals.read();
     info!(
-        rtt_ms = after.rtt.as_millis() as u64,
-        min_rtt_ms = after.min_rtt.as_millis() as u64,
+        rtt_ms = millis(after.rtt),
+        min_rtt_ms = millis(after.min_rtt),
         goodput_kbps = ?after.goodput_bps.map(|bps| bps / 1000),
         switches,
         "risen baseline watched",
@@ -1223,11 +1271,13 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
     // question: the clear link above measures one to three milliseconds, and the
     // impaired one settles at 37 to 40 across the runs behind this figure.
     assert!(
-        after.min_rtt >= Duration::from_millis(25),
+        after
+            .min_rtt
+            .is_some_and(|min| min >= Duration::from_millis(25)),
         "the round trip minimum went from {}ms to {}ms across {watched:?} of an impairment that \
          added 60ms of round trip, so it never re-baselined onto the longer path",
-        before.min_rtt.as_millis(),
-        after.min_rtt.as_millis(),
+        millis(before.min_rtt),
+        millis(after.min_rtt),
     );
 
     fixture.shutdown().await;

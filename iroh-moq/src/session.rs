@@ -6,20 +6,16 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
-use iroh::{
-    Endpoint, EndpointAddr, EndpointId,
-    endpoint::{ConnectOptions as IrohConnectOptions, Connection},
-};
+use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
 use moq_net::{AsPath, Path, Pattern, Patterns, origin, server::Handshake};
-use n0_error::{AnyError, e};
-use tracing::{debug, info, warn};
+use n0_error::e;
+use tracing::{info, warn};
 
 use crate::{
-    ALPN, ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication,
-    Reject, SessionRequest, Subscription, alpns, link::LinkState, node::Shared, path::hop_for,
+    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication, Reject,
+    SessionRequest, Subscription, link::LinkState, node::Shared, path::hop_for, transport,
 };
 
 /// The transport a MoQ session runs over.
@@ -203,23 +199,6 @@ impl Session {
         std::iter::from_fn(|| cursor.try_next()).any(|update| update.kind.is_active())
     }
 
-    /// Returns the session's statistics now.
-    pub fn stats(&self) -> SessionStats {
-        let stats = self.inner.moq.stats();
-        SessionStats {
-            rtt: stats.rtt,
-            send_rate_bps: stats
-                .estimated_send_rate
-                .map(moq_net::bandwidth::Rate::as_bps),
-            recv_rate_bps: stats
-                .estimated_recv_rate
-                .map(moq_net::bandwidth::Rate::as_bps),
-            bytes_sent: stats.bytes_sent,
-            bytes_received: stats.bytes_received,
-            packets_lost: stats.packets_lost,
-        }
-    }
-
     /// Returns the link as this session's connection monitor last read it.
     pub fn link(&self) -> LinkSample {
         self.inner.link_state.get()
@@ -254,26 +233,6 @@ impl Session {
         let source = self.inner.moq.closed().await;
         e!(Error::SessionClosed { source })
     }
-}
-
-/// A session's traffic figures, as the transport reports them.
-///
-/// `None` means the transport did not report the figure, not zero.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct SessionStats {
-    /// The smoothed round trip time.
-    pub rtt: Option<Duration>,
-    /// The congestion controller's estimate of the send rate, in bits per second.
-    pub send_rate_bps: Option<u64>,
-    /// The peer's estimate of the receive rate, in bits per second.
-    pub recv_rate_bps: Option<u64>,
-    /// Bytes sent, including retransmissions.
-    pub bytes_sent: Option<u64>,
-    /// Bytes received, including duplicates.
-    pub bytes_received: Option<u64>,
-    /// Packets detected as lost.
-    pub packets_lost: Option<u64>,
 }
 
 /// An incoming session waiting for admission.
@@ -313,9 +272,9 @@ impl Incoming {
 
     /// Admits the session with `grant`.
     ///
-    /// Dropping the future before the handshake completes rejects the
-    /// session; dropped after that, the session is admitted all the same and
-    /// shows up in [`Moq::sessions`](crate::Moq::sessions).
+    /// Cancellation safe: dropping the future before the handshake completes
+    /// rejects the session; dropped after that, the session is admitted all
+    /// the same and shows up in [`Moq::sessions`](crate::Moq::sessions).
     ///
     /// # Errors
     ///
@@ -425,7 +384,7 @@ pub(crate) async fn dial_session(
     options: ConnectOptions,
 ) -> Result<SessionParts, Error> {
     let remote_id = remote.id;
-    let transport = dial_with(&shared.endpoint, remote, &options).await?;
+    let transport = transport::dial_with(&shared.endpoint, remote, &options).await?;
     let connection = transport.conn().clone();
     let origins = Origins::new(&shared);
     let mut client = moq_net::Client::new()
@@ -461,169 +420,4 @@ pub(crate) async fn dial_session(
         driver,
         origins,
     })
-}
-
-/// A dialed transport, and whether it went through HTTP/3.
-struct Dialed {
-    session: web_transport_iroh::Session,
-    h3: bool,
-}
-
-impl Dialed {
-    fn conn(&self) -> &Connection {
-        self.session.conn()
-    }
-
-    fn is_h3(&self) -> bool {
-        self.h3
-    }
-}
-
-/// Dials `remote` and completes the WebTransport handshake.
-///
-/// Offers every version this build speaks rather than only the newest, so a
-/// peer built against an older moq release still finds one in common, and
-/// branches on what was actually negotiated. Public because an application that
-/// drives `moq_net` itself, such as a relay pulling from a publisher, needs the
-/// same negotiation and should not hand-roll a second copy of it.
-///
-/// # Errors
-///
-/// Fails if the dial fails, or if the peer negotiates an ALPN this build does
-/// not speak.
-pub async fn dial(
-    endpoint: &Endpoint,
-    remote: impl Into<EndpointAddr>,
-) -> Result<web_transport_iroh::Session, Error> {
-    Ok(
-        dial_with(endpoint, remote.into(), &ConnectOptions::default())
-            .await?
-            .session,
-    )
-}
-
-async fn dial_with(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    options: &ConnectOptions,
-) -> Result<Dialed, Error> {
-    let connect_error = |err: AnyError| {
-        e!(Error::Connect {
-            source: Arc::new(err)
-        })
-    };
-    let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
-    let iroh_options = IrohConnectOptions::new().with_additional_alpns(others);
-    let mut connecting = endpoint
-        .connect_with_opts(remote, ALPN, iroh_options)
-        .await
-        .map_err(|err| connect_error(AnyError::from_std(err)))?;
-    let alpn = connecting
-        .alpn()
-        .await
-        .map_err(|err| connect_error(AnyError::from_std(err)))?;
-    let alpn = String::from_utf8_lossy(&alpn).into_owned();
-    let connection = connecting
-        .await
-        .map_err(|err| connect_error(AnyError::from_std(err)))?;
-    debug!(%alpn, remote = %connection.remote_id().fmt_short(), "negotiated");
-    if alpn == web_transport_iroh::ALPN_H3 {
-        // The CONNECT target only has to identify the endpoint; iroh already
-        // dialed a specific peer. A token rides the query, where an H3 server
-        // looks for it.
-        let mut url: url::Url = format!("https://{}/", connection.remote_id())
-            .parse()
-            .expect("an endpoint id is a valid host");
-        if let Some(token) = &options.token {
-            url.query_pairs_mut().append_pair("jwt", token);
-        }
-        let mut request = web_transport_proto::ConnectRequest::new(url);
-        for alpn in moq_net::ALPNS {
-            request = request.with_protocol(alpn.to_string());
-        }
-        let session = web_transport_iroh::Session::connect_h3(connection, request)
-            .await
-            .map_err(|err| connect_error(AnyError::from_std(err)))?;
-        return Ok(Dialed { session, h3: true });
-    }
-    if !moq_net::ALPNS.contains(&alpn.as_str()) {
-        return Err(e!(Error::UnsupportedAlpn { alpn }));
-    }
-    Ok(Dialed {
-        session: web_transport_iroh::Session::raw(connection),
-        h3: false,
-    })
-}
-
-/// Completes the server half of the WebTransport handshake on `connection`.
-///
-/// The counterpart of [`dial`], for an application that runs moq-net's server
-/// itself, such as a relay that decides what each iroh peer may publish from
-/// its authenticated endpoint id. Returns the session and, for HTTP/3, the
-/// CONNECT target (path and query); a raw session carries its path in the MoQ
-/// setup instead.
-///
-/// # Errors
-///
-/// Fails if the HTTP/3 exchange fails, or the connection negotiated an ALPN
-/// this build does not speak.
-pub async fn accept(
-    connection: Connection,
-) -> Result<(web_transport_iroh::Session, Option<String>), Error> {
-    let (session, h3) = accept_transport(connection).await?;
-    Ok((session, h3.map(|(target, _headers)| target)))
-}
-
-/// Completes the server half of the WebTransport handshake.
-///
-/// Returns the session and, for HTTP/3, the request target and headers. Raw
-/// QUIC carries the MoQ stream directly and the target arrives in the MoQ
-/// setup; H3 answers a CONNECT first, whose URL and headers are the request.
-pub(crate) async fn accept_transport(
-    connection: Connection,
-) -> Result<
-    (
-        web_transport_iroh::Session,
-        Option<(String, Vec<(String, String)>)>,
-    ),
-    Error,
-> {
-    let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
-    let accept_error = |err: AnyError| {
-        e!(Error::Connect {
-            source: Arc::new(err)
-        })
-    };
-    if alpn == web_transport_iroh::ALPN_H3 {
-        let request = web_transport_iroh::H3Request::accept(connection)
-            .await
-            .map_err(|err| accept_error(AnyError::from_std(err)))?;
-        let mut target = request.url.path().to_owned();
-        if let Some(query) = request.url.query() {
-            target.push('?');
-            target.push_str(query);
-        }
-        let headers = request
-            .headers
-            .iter()
-            .filter_map(|(name, value)| {
-                Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
-            })
-            .collect();
-        let mut response = web_transport_proto::ConnectResponse::OK;
-        if let Some(protocol) = request.protocols.first() {
-            response = response.with_protocol(protocol);
-        }
-        let session = request
-            .respond(response)
-            .await
-            .map_err(|err| accept_error(AnyError::from_std(err)))?;
-        return Ok((session, Some((target, headers))));
-    }
-    // The handler is mountable on any ALPN, so an unknown one is a named error
-    // rather than a raw session that fails to parse a setup.
-    if !moq_net::ALPNS.contains(&alpn.as_str()) {
-        return Err(e!(Error::UnsupportedAlpn { alpn }));
-    }
-    Ok((web_transport_iroh::Session::raw(connection), None))
 }

@@ -92,8 +92,10 @@ pub enum Error {
     #[error(transparent)]
     Gossip(iroh_gossip::api::ApiError),
     /// The transport refused: a publication, a subscription, or a dial.
+    ///
+    /// The same `iroh_moq::Error` the facade's `Error::Transport` carries.
     #[error(transparent)]
-    Moq(iroh_moq::Error),
+    Transport(iroh_moq::Error),
     /// The room's chat broadcast failed: it could not be created, or a
     /// message could not be written to it.
     #[error("the chat broadcast failed")]
@@ -289,6 +291,7 @@ struct Inner {
     local_changed: Watchable<u64>,
     display_name: Watchable<Option<String>>,
     /// Members that announce the layout before paths named their publisher.
+    // TODO(old-layout): remove with the older room layout.
     legacy_peers: Mutex<BTreeSet<EndpointId>>,
     /// Chat sent before this is history from before joining.
     chat_since: SystemTime,
@@ -335,7 +338,7 @@ impl Room {
     /// # Errors
     ///
     /// Fails with [`Error::InvalidName`] for an empty name, one starting with a
-    /// dot, or one holding a slash, [`Error::Moq`] if the name is already
+    /// dot, or one holding a slash, [`Error::Transport`] if the name is already
     /// published, and [`Error::Left`] once the room was left.
     pub fn publish(
         &self,
@@ -400,7 +403,7 @@ impl Room {
     /// # Errors
     ///
     /// Fails with [`Error::Left`] once the room was left, and with
-    /// [`Error::Moq`] if the member cannot be dialed or its session ends before
+    /// [`Error::Transport`] if the member cannot be dialed or its session ends before
     /// it announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
         if self.inner.done.get() {
@@ -1066,6 +1069,7 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
 
 /// Returns the path the release before publisher-named paths used for a room
 /// broadcast: `rooms/<topic>/<name>`.
+// TODO(old-layout): remove with the older room layout.
 fn legacy_room_path(topic: TopicId, name: &str) -> String {
     format!("rooms/{topic}/{name}")
 }

@@ -814,7 +814,7 @@ async fn a_recording_writes_a_container() {
     let file = tokio::fs::File::create(&path)
         .await
         .expect("the file opens");
-    let recording = remote
+    let mut recording = remote
         .record(
             file,
             RecordConfig::default()

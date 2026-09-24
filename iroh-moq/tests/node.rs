@@ -765,9 +765,12 @@ async fn a_subscriber_on_the_older_layout_finds_the_bare_name() {
 
     let old = common::endpoint().await;
     let (ingest, _ingest_task) = legacy_origin();
-    let transport = step("dial", iroh_moq::dial(&old, alice.endpoint.addr()))
-        .await
-        .expect("dial");
+    let transport = step(
+        "dial",
+        iroh_moq::transport::dial(&old, alice.endpoint.addr()),
+    )
+    .await
+    .expect("dial");
     let (session, driver) = step(
         "handshake",
         moq_net::Client::new()

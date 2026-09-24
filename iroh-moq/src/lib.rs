@@ -20,8 +20,8 @@
 //!
 //! // Publish a broadcast this process writes.
 //! let broadcast = moq_net::broadcast::Info::new().produce();
-//! let publication = moq.publish("studio", &broadcast, Audience::Everyone)?;
-//! println!("share {}", publication.ticket().expect("a live path"));
+//! let _publication = moq.publish("studio", &broadcast, Audience::Everyone)?;
+//! println!("share {}", moq.ticket("studio"));
 //!
 //! // Resolve someone else's, dialing its publisher if no route exists yet.
 //! let subscription = moq.subscribe(ticket.path(), Reach::default()).await?;
@@ -31,13 +31,43 @@
 //! # }
 //! ```
 //!
+//! # Links
+//!
+//! A link is a direct [`Session`] with a peer or a relay link (`RelayLink`,
+//! behind the `relay-links` feature). Every link runs a connection monitor, and
+//! [`Session::link`], `RelayLink::link` and [`Subscription::link`] return its
+//! latest [`LinkSample`]: round trip, loss, arriving goodput and the peer's
+//! delivery estimate, with `None` for whatever is not measured yet. It traces
+//! each reading at `trace` level as `link sample` or `relay link sample`.
+//!
+//! A relay attached with `RelayConfig::new` also consumes: every route the
+//! relay announces enters this node's route table, priced at the relay's cost.
+//! A node that only publishes through a relay turns that off with
+//! `RelayConfig::with_consume(false)`.
+//!
 //! # Cancellation safety
 //!
-//! [`Moq::connect`], [`Moq::subscribe`], [`Moq::accept`], [`Incoming::admit`],
-//! [`Session::subscribe`] and every `closed()` are cancellation safe: dropping
-//! the future abandons the wait, and a dial it started continues for other
-//! callers. [`Moq::shutdown`] is not, and is idempotent: call it again to
-//! finish.
+//! [`Moq::connect`], [`Moq::connect_with`], [`Moq::subscribe`] and
+//! [`Session::subscribe`] are cancellation safe: dropping the future abandons
+//! the wait, and a dial it started continues for other callers.
+//! [`Moq::accept`] loses nothing when dropped, and [`Incoming::admit`] rejects
+//! the session if dropped before the handshake completes and admits it all the
+//! same after. [`EndpointOptions::bind`] and [`EndpointOptions::builder`] bind
+//! nothing when dropped, and [`transport::dial`] and [`transport::accept`] drop
+//! the connection they were setting up. `RelayLink::detach` signals the close
+//! before its first wait, so dropping it leaves the rest to the link's task.
+//! [`Publication::withdrawn`], [`Subscription::closed`] and [`Session::closed`]
+//! lose nothing. [`Moq::shutdown`] is not cancellation safe, and is
+//! idempotent: call it again to finish.
+//!
+//! # Compatibility with the older path layout
+//!
+//! Publisher-named paths are this release's layout. For one release a node
+//! also answers the bare names the older layout used on direct sessions, and
+//! [`Moq::subscribe`] falls back to a publisher's bare name when it announces
+//! nothing under `live/<id>/`. That, the hidden `Moq::publish_at_with_legacy`
+//! the rooms crate uses for the older room layout, and every other piece marked
+//! `TODO(old-layout)` in the source go in the next release.
 
 mod endpoint;
 mod error;
@@ -52,6 +82,7 @@ mod route;
 mod session;
 mod state;
 mod ticket;
+pub mod transport;
 
 /// The moq-net this crate builds against.
 ///
@@ -60,17 +91,17 @@ mod ticket;
 pub use moq_net as net;
 
 #[cfg(feature = "relay-links")]
-pub use self::relay::{DEFAULT_RELAY_COST, LinkStatus, RelayConfig, RelayLink, RelayOffer};
+pub use self::relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus};
 pub use self::{
     endpoint::{EndpointOptions, Mdns, MediaPreset},
     error::Error,
     grant::{Admission, ConnectOptions, Grant, Reject, Role, SessionRequest},
-    link::LinkSample,
+    link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},
     path::{live_path, publisher_of},
     publish::{Audience, OfferGuard, Publication},
     route::{LinkId, LinkKind, RouteInfo, Subscription},
-    session::{Incoming, Session, SessionStats, accept, dial},
+    session::{Incoming, Session},
     ticket::BroadcastTicket,
 };
 

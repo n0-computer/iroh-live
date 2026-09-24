@@ -70,9 +70,20 @@ pub(crate) struct Reading {
     pub path_generation: u64,
 }
 
-/// The thresholds and timers. Internal, so they can be retuned in a patch.
+/// The player's adaptation thresholds and timers.
+///
+/// Internal, so they can be retuned in a patch release. Tests that cannot wait
+/// out the production timers reach them behind the `test-util` feature, as
+/// `iroh_live_media::test_util::Tuning`, and pass them to a player with
+/// `PlayerConfig::with_tuning`. Nothing in an application should: the values
+/// are tuned together, and the fields change without notice.
 #[derive(Debug, Clone)]
-pub(crate) struct Tuning {
+#[non_exhaustive]
+#[cfg_attr(
+    not(feature = "test-util"),
+    allow(unreachable_pub, reason = "public only under the test-util feature")
+)]
+pub struct Tuning {
     /// The share of a rung's advertised bitrate the estimate has to cover for
     /// the rung to fit.
     ///
@@ -123,6 +134,17 @@ pub(crate) struct Tuning {
     pub trial: Duration,
     /// The longest hold before a step up.
     pub upgrade_hold_max: Duration,
+    /// How often the network is read while it can change the choice.
+    pub tick: Duration,
+    /// How long a replacement decoder has to take over, from the request to
+    /// the picture it takes over with, before the switch is given up.
+    ///
+    /// It has to cover a real handover: the replacement subscribes to another
+    /// rendition, waits for that track's next keyframe, which on a two second
+    /// GOP over an impaired link is already seconds, and then decodes until it
+    /// has caught up with the picture on screen. Beyond that it is not slow, it
+    /// is not coming, and the incumbent keeps playing either way.
+    pub switch_deadline: Duration,
 }
 
 impl Default for Tuning {
@@ -137,6 +159,8 @@ impl Default for Tuning {
             post_downgrade_cooldown: Duration::from_secs(4),
             trial: Duration::from_secs(20),
             upgrade_hold_max: Duration::from_secs(120),
+            tick: Duration::from_millis(200),
+            switch_deadline: Duration::from_secs(15),
         }
     }
 }

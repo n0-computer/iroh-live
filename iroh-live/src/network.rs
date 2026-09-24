@@ -1,9 +1,10 @@
 //! A subscription's link, in the media crate's terms.
 //!
-//! The transport keeps one connection monitor per session and reports it as a
-//! [`LinkSample`]. A player adapts on [`NetworkSignals`], which it samples on its
-//! own schedule. [`signals`] turns the one into the other, following whichever
-//! session serves a [`Subscription`] as its route changes.
+//! The transport keeps one connection monitor per link, direct session or
+//! relay, and reports it as a [`LinkSample`]. A player adapts on
+//! [`NetworkSignals`], which it samples on its own schedule. [`signals`] turns
+//! the one into the other, following whichever link serves a [`Subscription`]
+//! as its route changes.
 
 use std::{fmt, sync::Mutex};
 
@@ -13,40 +14,38 @@ use tracing::debug;
 
 /// Returns the network signals of the link serving `subscription`.
 ///
-/// Each sample reads the session serving the subscription at that moment, so
-/// the signals follow the route as it changes. A change of serving session
-/// counts as a new path: the sample's path generation moves past every value it
-/// took before, so adaptation never compares one session's history with
-/// another's. While a relay serves the path, or nothing does yet, the sample
-/// carries no measurements.
+/// Each sample reads the link serving the subscription at that moment, so the
+/// signals follow the route as it changes. A change of serving link counts as
+/// a new path: the sample's path generation moves past every value it took
+/// before, so adaptation never compares one link's history with another's.
+/// While nothing serves the path yet, the sample carries no measurements.
 pub(crate) fn signals(subscription: Subscription) -> impl NetworkSignals {
     let serving = Mutex::new(Serving::<LinkId>::default());
     move || {
-        let session = subscription.session();
-        let link = session.as_ref().map(|session| session.link());
+        let link = subscription.link();
         let mut serving = serving.lock().expect("poisoned");
         let generation = serving.generation(
-            session.as_ref().map(|session| session.link_id()),
-            link.as_ref().map_or(0, |link| link.path_generation),
+            link.as_ref().map(|link| link.id),
+            link.as_ref().map_or(0, |link| link.sample.path_generation),
         );
         match link {
-            Some(link) => to_sample(&link, generation),
+            Some(link) => to_sample(&link.sample, generation),
             None => NetworkSample::default().with_path_generation(generation),
         }
     }
 }
 
-/// Which session served the subscription at the last sample, and the path
-/// generation numbering across sessions.
+/// Which link served the subscription at the last sample, and the path
+/// generation numbering across links.
 ///
 /// Generic over the link's key only so a test can name links.
 #[derive(Debug)]
 struct Serving<K> {
-    /// The serving session's link, `None` for a relay or no route.
+    /// The serving link, `None` while nothing serves the path.
     link: Option<K>,
-    /// What the serving session's own path generations are offset by.
+    /// What the serving link's own path generations are offset by.
     base: u64,
-    /// The serving session's own path generation at the last sample.
+    /// The serving link's own path generation at the last sample.
     last: u64,
 }
 
@@ -65,7 +64,7 @@ impl<K: PartialEq + fmt::Debug> Serving<K> {
     /// `generation`, moving past every earlier value when the link changed.
     fn generation(&mut self, link: Option<K>, generation: u64) -> u64 {
         if link != self.link {
-            debug!(from = ?self.link, to = ?link, "the serving session changed");
+            debug!(from = ?self.link, to = ?link, "the serving link changed");
             self.base += self.last + 1;
             self.link = link;
         }
@@ -76,17 +75,17 @@ impl<K: PartialEq + fmt::Debug> Serving<K> {
 
 /// Converts a link sample into what a player adapts on.
 ///
-/// A round trip of zero is one not measured yet, so it is left out rather than
-/// read as an instant path.
+/// What the link has not measured stays unmeasured.
 fn to_sample(link: &LinkSample, path_generation: u64) -> NetworkSample {
-    let mut sample = NetworkSample::default()
-        .with_loss(link.loss_rate as f32)
-        .with_path_generation(path_generation);
-    if !link.rtt.is_zero() {
-        sample = sample.with_rtt(link.rtt);
+    let mut sample = NetworkSample::default().with_path_generation(path_generation);
+    if let Some(loss) = link.loss_rate {
+        sample = sample.with_loss(loss as f32);
     }
-    if !link.min_rtt.is_zero() {
-        sample = sample.with_min_rtt(link.min_rtt);
+    if let Some(rtt) = link.rtt {
+        sample = sample.with_rtt(rtt);
+    }
+    if let Some(min_rtt) = link.min_rtt {
+        sample = sample.with_min_rtt(min_rtt);
     }
     if let Some(delivery) = link.delivery_bps {
         sample = sample.with_delivery(Bitrate::from_bps(delivery));
@@ -120,10 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unmeasured_round_trip_is_left_out() {
+    fn an_unmeasured_link_is_left_out() {
         let sample = to_sample(&LinkSample::default(), 4);
         assert_eq!(sample.rtt, None);
         assert_eq!(sample.min_rtt, None);
+        assert_eq!(sample.loss, None);
         assert_eq!(sample.delivery, None);
         assert_eq!(sample.path_generation, 4);
     }

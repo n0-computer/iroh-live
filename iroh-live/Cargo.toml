@@ -8,9 +8,7 @@ repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-anyhow = "1.0.104"
-derive_more = { version = "2.1.1", features = ["display", "debug", "eq"] }
-hang = { workspace = true }
+derive_more = { version = "2.1.1", features = ["debug"] }
 iroh = { workspace = true }
 iroh-moq = { workspace = true }
 # Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
@@ -19,21 +17,16 @@ iroh-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 iroh-live-media = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
-n0-future = "0.3.2"
 n0-watcher = "1"
-tokio = { version = "1.53.1", features = ["sync", "time", "macros", "rt"] }
-tokio-util = "0.7.19"
 tracing = "0.1.44"
-bytes = "1.12.1"
-throttled-tracing = "0.1.0"
-
 
 [dev-dependencies]
 # The `subscribe_test` example, which the browser end-to-end suite drives, and
 # the `publish` example.
 anyhow = "1.0.104"
 clap = { version = "4.6", features = ["derive"] }
-iroh-live-media = { workspace = true }
+# `test-util` shortens the player's adaptation timers in the patchbay suite.
+iroh-live-media = { workspace = true, features = ["test-util"] }
 n0-tracing-test = "0.3.0"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing-subscriber = "0.3.23"
@@ -52,6 +45,9 @@ workspace = true
 default = ["capture", "render", "sound-server"]
 # Re-exports `iroh-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-rooms"]
+# Test knobs for the player's adaptation timers, re-exported as
+# `iroh_live::media::test_util`. Never for an application.
+test-util = ["iroh-live-media/test-util"]
 # Relay links: `Moq::attach_relay`.
 relay-links = ["iroh-moq/relay-links"]
 # `Grant::from_claims` over moq-auth tokens.

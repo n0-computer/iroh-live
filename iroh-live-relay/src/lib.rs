@@ -5,6 +5,35 @@
 //! name its authenticated endpoint id (see [`iroh_sessions`]), and a browser
 //! only at names of one segment, so nobody can publish a broadcast under
 //! another publisher's path. Token auth for the rest is still to come.
+//!
+//! The binary is a thin wrapper around [`run`]; another CLI can embed the
+//! relay by flattening [`RelayConfig`] into its own arguments.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use clap::Parser;
+//!
+//! #[derive(Parser)]
+//! struct Cli {
+//!     #[command(flatten)]
+//!     relay: iroh_live_relay::RelayConfig,
+//! }
+//!
+//! # async fn main_() -> anyhow::Result<()> {
+//! rustls::crypto::aws_lc_rs::default_provider()
+//!     .install_default()
+//!     .expect("no crypto provider installed yet");
+//! iroh_live_relay::run(Cli::parse().relay).await
+//! # }
+//! ```
+//!
+//! # Cancellation safety
+//!
+//! [`run`] returns on ctrl-c, after closing its listeners. Dropping its future
+//! instead stops accepting, the cluster and the HTTP server, which the future
+//! owns, while connections already accepted run on their own tasks until they
+//! close.
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;

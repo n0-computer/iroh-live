@@ -163,7 +163,9 @@ async fn dial(
     subscriber: origin::Producer,
     publisher: Option<origin::Consumer>,
 ) -> Session {
-    let transport = iroh_moq::dial(endpoint, remote).await.expect("dial failed");
+    let transport = iroh_moq::transport::dial(endpoint, remote)
+        .await
+        .expect("dial failed");
     let mut client = moq_net::Client::new().with_subscriber(subscriber);
     if let Some(publisher) = publisher {
         client = client.with_publisher(publisher);
@@ -597,7 +599,9 @@ async fn a_route_table_fails_over_between_links() {
     let (_relay_link, _relay_side) = step("relay handshake", async {
         tokio::join!(
             async {
-                let transport = iroh_moq::dial(&node, relay_addr).await.expect("dial relay");
+                let transport = iroh_moq::transport::dial(&node, relay_addr)
+                    .await
+                    .expect("dial relay");
                 let (session, driver) = moq_net::Client::new()
                     .with_subscriber(relay_ingest.clone())
                     .with_cost(RELAY_COST)

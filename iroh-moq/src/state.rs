@@ -23,6 +23,7 @@ use tracing::{debug, warn};
 
 use crate::{
     Grant, LinkId, LinkKind, RouteInfo, Session,
+    link::LinkState,
     publish::{Audience, AudienceKind},
 };
 
@@ -48,6 +49,7 @@ pub(crate) struct State {
 pub(crate) struct PubEntry {
     pub(crate) path: PathOwned,
     /// The path nodes on the layout before publisher-named paths ask for.
+    // TODO(old-layout): remove with the older path layout.
     pub(crate) legacy: Option<PathOwned>,
     #[debug(skip)]
     pub(crate) broadcast: broadcast::Consumer,
@@ -85,6 +87,7 @@ pub(crate) struct LinkEntry {
     #[debug(skip)]
     pub(crate) publish: origin::Producer,
     /// Whether publications are also offered at their pre-layout paths.
+    // TODO(old-layout): remove with the older path layout.
     pub(crate) legacy: bool,
     /// For a relay, whether `Everyone` publications go to it.
     pub(crate) public: bool,
@@ -97,6 +100,9 @@ pub(crate) struct LinkEntry {
     pub(crate) announced: BTreeMap<PathOwned, (u64, usize)>,
     /// The session, for a direct link.
     pub(crate) session: Option<Session>,
+    /// The latest reading of the link's connection monitor.
+    #[debug(skip)]
+    pub(crate) link_state: LinkState,
 }
 
 impl State {

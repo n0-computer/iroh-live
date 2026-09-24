@@ -24,14 +24,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, ConnectOptions, Error, Grant, Incoming, LinkKind, Publication, RouteInfo,
-    Session, SessionRequest, Subscription,
+    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, Incoming, LinkKind,
+    Publication, RouteInfo, Session, SessionRequest, Subscription,
     link::{self, LinkState},
     path::{LIVE, hop_for, legacy_name, live_path, publisher_of},
     publish::peers_task,
     route,
-    session::{SessionInner, SessionParts, Transport, accept_transport, dial_session, driver_now},
+    session::{SessionInner, SessionParts, Transport, dial_session, driver_now},
     state::{self, LinkEntry, PubEntry, State},
+    transport::accept_transport,
 };
 
 /// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
@@ -48,6 +49,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 /// A current peer announces both, straight after the session opens, so the
 /// named path wins well inside this. An older peer announces only the bare
 /// name, and waiting first keeps it from winning a race against a current one.
+// TODO(old-layout): remove with the older path layout.
 const LEGACY_GRACE: Duration = Duration::from_secs(2);
 
 /// How many incoming sessions may wait for [`Moq::accept`] at once.
@@ -171,8 +173,8 @@ impl MoqConfig {
 ///
 /// let broadcast = moq_net::broadcast::Info::new().produce();
 /// // write tracks into `broadcast`, then:
-/// let publication = moq.publish("camera", &broadcast, Audience::Everyone)?;
-/// println!("{}", publication.ticket().expect("a live path"));
+/// let _publication = moq.publish("camera", &broadcast, Audience::Everyone)?;
+/// println!("{}", moq.ticket("camera"));
 /// # Ok(())
 /// # }
 /// ```
@@ -289,6 +291,15 @@ impl Moq {
         &self.shared.endpoint
     }
 
+    /// Returns the ticket for this node's broadcast `name`.
+    ///
+    /// Names `live/<this node's id>/<name>`, where [`publish`](Self::publish)
+    /// puts a broadcast. The ticket is only a name: it does not check that
+    /// anything is published there.
+    pub fn ticket(&self, name: &str) -> BroadcastTicket {
+        BroadcastTicket::new(self.shared.id, name)
+    }
+
     /// Returns the reach [`MoqConfig::reach`] set.
     ///
     /// For callers that do not choose their own.
@@ -313,6 +324,7 @@ impl Moq {
         broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
+        // TODO(old-layout): the bare-name alias goes with the older layout.
         let legacy = Path::new(name).to_owned();
         if legacy.is_empty() {
             return Err(e!(Error::InvalidPath {
@@ -350,6 +362,10 @@ impl Moq {
     ///
     /// For the rooms crate's one release of the older room layout; everything
     /// else uses [`publish`](Self::publish) or [`publish_at`](Self::publish_at).
+    /// Removed together with that layout, in the release after the one that
+    /// introduced publisher-named paths.
+    // TODO(old-layout): remove with the older path layout, as the crate docs'
+    // "Compatibility" section lists.
     #[doc(hidden)]
     pub fn publish_at_with_legacy(
         &self,
@@ -504,6 +520,7 @@ impl Moq {
         // The session ending is the end of the wait unless a relay can still
         // bring the path, and for a `live/` path the older layout's bare name
         // is worth a try once the named path has had its chance.
+        // TODO(old-layout): remove the bare-name fallback with the older layout.
         let legacy = legacy_name(&path);
         let fallback = async {
             let Some(name) = legacy else {
@@ -597,7 +614,8 @@ impl Moq {
     /// For a peer that admits manually. An existing session with the peer is
     /// returned as it is, whatever the options, and so is a dial already in
     /// flight to it: a call made while another dials joins that dial, and its
-    /// own token, cost and grant go unused.
+    /// own token, cost and grant go unused. Cancellation safe, as
+    /// [`connect`](Self::connect).
     ///
     /// # Errors
     ///
@@ -1114,6 +1132,7 @@ impl Actor {
                 offers: HashMap::new(),
                 announced: Default::default(),
                 session: Some(session.clone()),
+                link_state: link_state.clone(),
             },
         );
         drop(state);

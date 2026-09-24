@@ -46,7 +46,7 @@ impl LiveBuilder {
         self
     }
 
-    /// Also mounts `handler` under `alpn` on the router.
+    /// Mounts `handler` under `alpn` on the router as well.
     ///
     /// Implies [`with_router`](Self::with_router), since a handler needs a
     /// router to accept anything; rooms mount their gossip this way.
@@ -135,7 +135,8 @@ impl Live {
 
     /// Publishes a broadcast as `live/<this node's id>/<name>` to everyone.
     ///
-    /// Attached relays included. `publication.ticket()` is what to share. Pass
+    /// Attached relays included. [`ticket`](Self::ticket) returns what to
+    /// share. Pass
     /// a [`LocalBroadcast`](iroh_live_media::LocalBroadcast) by reference: the
     /// publication reads it for as long as it exists, and the application keeps
     /// changing its sources.
@@ -154,12 +155,22 @@ impl Live {
         Ok(self.moq.publish(name, broadcast, Audience::Everyone)?)
     }
 
+    /// Returns the ticket for this node's broadcast `name`.
+    ///
+    /// Names `live/<this node's id>/<name>`, where [`publish`](Self::publish)
+    /// puts it, so it is what to share after publishing. The ticket is only a
+    /// name: it does not check that anything is published there.
+    pub fn ticket(&self, name: &str) -> BroadcastTicket {
+        self.moq.ticket(name)
+    }
+
     /// Resolves the ticket's broadcast over whichever link serves it.
     ///
     /// Returns once a route is found, without waiting for the catalog: watch
     /// [`RemoteBroadcast::catalog`] for it. The broadcast follows the path in
     /// the route table, so a change of route shows as a switch rather than an
-    /// end, and its players adapt on the serving session's link.
+    /// end, and its players adapt on the serving link, a direct session or a
+    /// relay.
     ///
     /// Cancellation safe.
     ///
@@ -175,13 +186,19 @@ impl Live {
     /// Wraps a subscription the way [`subscribe`](Self::subscribe) does.
     ///
     /// For a subscription from a room or from [`Moq::subscribe`]: the
-    /// broadcast follows the subscription's path through the route table the
-    /// subscription resolved it in, and attaches the serving session's link so
-    /// its players adapt. A subscription pinned to one session, such as a room
-    /// member's, re-resolves through that session only.
+    /// broadcast starts from the one the subscription resolved, follows the
+    /// subscription's path through the route table it was resolved in, and
+    /// attaches the serving link so its players adapt. A subscription pinned
+    /// to one session, such as a room member's, re-resolves through that
+    /// session only. Synchronous and infallible: nothing here waits for the
+    /// catalog.
     pub fn remote_broadcast(&self, subscription: &Subscription) -> RemoteBroadcast {
-        RemoteBroadcast::from_origin(subscription.as_origin(), subscription.path())
-            .with_network(network::signals(subscription.clone()))
+        RemoteBroadcast::from_resolved(
+            subscription.as_origin(),
+            subscription.path(),
+            subscription.as_moq(),
+        )
+        .with_network(network::signals(subscription.clone()))
     }
 
     /// Returns every route to the ticket's broadcast, as the routes change.

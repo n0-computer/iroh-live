@@ -68,11 +68,16 @@ pub enum Error {
         #[error(source)]
         source: AnyError,
     },
-    /// The transport refused a track or broadcast operation, or reset a track
-    /// being read.
-    #[error("transport failed")]
-    Transport {
-        /// What the transport reported.
+    /// The broadcast layer underneath, moq-net, refused a track or broadcast
+    /// operation, or reset a track being read.
+    ///
+    /// Whatever carries the broadcast: a closed or reset track shows here the
+    /// same whether the transport is iroh, another one, or none. Failures of
+    /// the transport itself (a peer unreachable, a path unresolved) belong to
+    /// the transport's own error, `iroh_moq::Error` for iroh.
+    #[error("broadcast failed")]
+    Broadcast {
+        /// What moq-net reported.
         #[error(source)]
         source: AnyError,
     },
@@ -131,9 +136,9 @@ impl Error {
         })
     }
 
-    /// Creates an [`Error::Transport`] from an upstream error.
-    pub(crate) fn transport(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        n0_error::e!(Self::Transport {
+    /// Creates an [`Error::Broadcast`] from an upstream error.
+    pub(crate) fn broadcast(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Broadcast {
             source: AnyError::from_std(source)
         })
     }

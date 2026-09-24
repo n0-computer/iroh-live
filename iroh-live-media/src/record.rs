@@ -166,9 +166,10 @@ impl Recording {
     /// Waits until the broadcast ends and the file is finished, and returns the
     /// bytes written.
     ///
-    /// Cancellation safe in the sense that nothing is lost by dropping it:
-    /// the recording runs until the [`Recording`] itself is dropped. Calling
-    /// it again after it returned gives the same byte count.
+    /// Cancellation safe: the recording runs on its own task until the
+    /// [`Recording`] itself is dropped, so dropping this future loses nothing,
+    /// and a later call picks the wait up again. Calling it again after it
+    /// returned gives the same byte count.
     ///
     /// # Errors
     ///
@@ -193,13 +194,35 @@ impl Recording {
     /// has no way to close one early. Fragmented containers are complete at
     /// every fragment boundary, so the file plays up to that point.
     ///
-    /// Not cancellation safe: dropping the future before it resolves stops the
-    /// recording without flushing the writer.
+    /// Takes `&mut self` rather than `self`, so it can run in one arm of a
+    /// `select!` whose other arm waits on [`wait`](Self::wait):
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     broadcast: iroh_live_media::RemoteBroadcast,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// use iroh_live_media::RecordConfig;
+    ///
+    /// let file = tokio::fs::File::create("out.mp4").await?;
+    /// let mut recording = broadcast.record(file, RecordConfig::default())?;
+    /// let written = tokio::select! {
+    ///     written = recording.wait() => written?,
+    ///     _ = tokio::signal::ctrl_c() => recording.stop().await?,
+    /// };
+    /// println!("{written} bytes");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Cancellation safe as long as the [`Recording`] is kept: the stop is
+    /// signalled before the first wait, the file is finished on the
+    /// recording's own task, and [`wait`](Self::wait) returns the result.
+    /// Dropping the [`Recording`] before that stops it without flushing.
     ///
     /// # Errors
     ///
     /// Fails on an export or a write error.
-    pub async fn stop(mut self) -> Result<u64, Error> {
+    pub async fn stop(&mut self) -> Result<u64, Error> {
         self.stop.cancel();
         self.wait().await
     }
@@ -250,7 +273,7 @@ impl LocalOrigin {
         let (origin, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::default());
         let dynamic = origin
             .dynamic(LOCAL_PATH, moq_net::origin::Route::default())
-            .map_err(Error::transport)?;
+            .map_err(Error::broadcast)?;
         let driver = n0_future::task::spawn(async move {
             let err = moq_net::time::run(driver).await;
             debug!(error = %err, "the recording's route table stopped");

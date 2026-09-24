@@ -31,7 +31,7 @@ use crate::{
 };
 
 mod audio;
-mod bound;
+pub(crate) mod bound;
 mod clock;
 mod select;
 pub(crate) mod switch;
@@ -103,7 +103,7 @@ pub struct Latency {
 }
 
 impl Latency {
-    /// A fixed latency: held for `latency`, skipped past it.
+    /// Returns a fixed latency: held for `latency`, skipped past it.
     pub const fn fixed(latency: Duration) -> Self {
         Self {
             min: latency,
@@ -111,7 +111,7 @@ impl Latency {
         }
     }
 
-    /// A latency the playout may run anywhere between `min` and `max`.
+    /// Returns a latency the playout may run anywhere between `min` and `max`.
     pub const fn range(min: Duration, max: Duration) -> Self {
         Self { min, max }
     }
@@ -150,6 +150,9 @@ pub struct PlayerConfig {
     pub audio: Option<AudioOutput>,
     /// Which decoder backend to open; upstream's `Kind`, `Auto` by default.
     pub decoder: video::decode::Kind,
+    /// The adaptation thresholds and timers, the production ones unless a
+    /// test set others through `with_tuning`.
+    pub(crate) tuning: bound::Tuning,
 }
 
 impl PlayerConfig {
@@ -178,6 +181,18 @@ impl PlayerConfig {
     #[must_use]
     pub fn with_decoder(mut self, decoder: video::decode::Kind) -> Self {
         self.decoder = decoder;
+        self
+    }
+
+    /// Returns the config with the adaptation thresholds and timers `tuning`.
+    ///
+    /// For tests that cannot wait out the production timers; see
+    /// [`test_util`](crate::test_util). Behind the `test-util` feature, which
+    /// no application should enable.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn with_tuning(mut self, tuning: crate::test_util::Tuning) -> Self {
+        self.tuning = tuning;
         self
     }
 
@@ -379,6 +394,7 @@ impl Player {
                 playing: playing_rx,
                 desired: desired_tx,
                 clock: clock.clone(),
+                tuning: config.tuning.clone(),
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::debug_span!(parent: &span, "select")),
@@ -394,6 +410,7 @@ impl Player {
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
+                switch_deadline: config.tuning.switch_deadline,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::info_span!(parent: &span, "video")),

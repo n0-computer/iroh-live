@@ -51,6 +51,35 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Behaviour worth knowing
+//!
+//! - Opening a source is where its failure shows: [`VideoSource::capture`]
+//!   returns once the device produced a frame. The microphone is the
+//!   exception. `AudioSource::microphone` checks that a matching device exists
+//!   and that echo cancellation, if asked for, is compiled in; the device
+//!   itself opens when a broadcast first has a listener for it, and a failure
+//!   then shows in [`LocalBroadcast::status`]. Upstream opens a microphone only
+//!   inside the publication that encodes it.
+//! - A [`RemoteBroadcast`] that follows a route table
+//!   ([`RemoteBroadcast::from_origin`], [`RemoteBroadcast::from_resolved`])
+//!   treats the end of its broadcast as a possible change of route and asks the
+//!   table again, so it closes about three seconds after the publisher went.
+//! - Players adapt only on [`NetworkSignals`] a transport attached; without
+//!   them a player in [`RenditionMode::Auto`] holds the best rendition its
+//!   constraints allow.
+//!
+//! # Cancellation safety
+//!
+//! | Future | Safe | Dropping it |
+//! |---|---|---|
+//! | [`VideoSource::capture`], `VideoSource::rpicam`, `EncodedVideoSource::rpicam`, [`AudioSource::file`] | yes | stops the thread or subprocess and releases the device |
+//! | `AudioSource::microphone` | yes | nothing is open yet |
+//! | `AudioOutput::open`, `AudioOutput::devices` | yes | closes the device, or abandons the query |
+//! | `AudioOutput::switch` | yes | the switch was queued before the first wait and completes; only its result is lost |
+//! | [`VideoFrames::next`], [`FrameSender::closed`], [`LocalBroadcast::closed`], [`RemoteBroadcast::closed`] | yes | loses nothing |
+//! | [`Player::wait_for_rendition`] | yes | the switch continues |
+//! | [`Recording::wait`], [`Recording::stop`] | yes, while the [`Recording`] is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
 
 mod bitrate;
 mod catalog;
@@ -65,6 +94,8 @@ mod record;
 mod remote;
 mod source;
 mod stats;
+#[cfg(feature = "test-util")]
+pub mod test_util;
 
 /// The upstream audio stack: capture, encode, decode, playback, and echo
 /// cancellation.
@@ -77,10 +108,7 @@ pub use moq_video as video;
 pub use self::source::RpicamConfig;
 pub use self::{
     bitrate::Bitrate,
-    catalog::{
-        AudioRenditionInfo, Catalog, Chat, IrohLiveExt, Metadata, TrackRef, User,
-        VideoRenditionInfo,
-    },
+    catalog::{AudioRenditionInfo, Catalog, IrohLiveExt, Metadata, VideoRenditionInfo},
     error::{Closed, Error, SwitchError},
     frames::VideoFrames,
     network::{NetworkSample, NetworkSignals},

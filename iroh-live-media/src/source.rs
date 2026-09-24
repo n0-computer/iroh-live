@@ -292,6 +292,8 @@ impl VideoSource {
     /// For the camera's own hardware H.264, see
     /// [`EncodedVideoSource::rpicam`].
     ///
+    /// Cancellation safe: dropping the future kills the subprocess.
+    ///
     /// # Errors
     ///
     /// Fails if `rpicam-vid` is not installed or cannot open the camera.
@@ -375,6 +377,9 @@ impl EncodedVideoSource {
     ///
     /// The cheapest thing a Pi Zero can publish: no raw pipe and no second
     /// encode. The subprocess is killed when the source is dropped.
+    ///
+    /// Cancellation safe: the subprocess starts without waiting, so the future
+    /// resolves at its first poll.
     ///
     /// # Errors
     ///
@@ -559,6 +564,9 @@ impl AudioSource {
     /// moq-audio opens a microphone only inside the publication that encodes
     /// it. The same source set on two broadcasts is therefore two captures of
     /// the device.
+    ///
+    /// Cancellation safe: nothing is open until a broadcast wants it, so
+    /// dropping the future only abandons the device query.
     ///
     /// # Errors
     ///

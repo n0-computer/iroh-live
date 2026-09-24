@@ -15,7 +15,7 @@ mod logcat;
 use std::{
     ffi::c_void,
     sync::{Arc, Mutex, OnceLock, Weak},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use iroh::EndpointId;
@@ -116,6 +116,14 @@ async fn bind_live() -> Result<Live> {
     Ok(Live::builder(options.bind().await?).with_router().spawn())
 }
 
+/// How long an incoming session has to show its side of a call before it
+/// counts as not a caller.
+///
+/// A caller publishes its side before it dials, so it announces it right after
+/// the session opens. A plain subscriber never does, and without a bound it
+/// would hold up answering until its session closed.
+const CALLER_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Returns the path a peer publishes its side of a call at:
 /// `calls/<endpoint id>`, the convention `irl call` shares.
 fn call_path(publisher: EndpointId) -> String {
@@ -175,8 +183,8 @@ impl Call {
 struct SessionHandle {
     /// The endpoint and transport. `None` for the offline pipelines.
     live: Option<Live>,
-    /// A subscribe-only session, from `connect`. Held so the transport and the
-    /// signal producer behind it stay alive.
+    /// A subscribe-only session, from `connect`. Held so the route it
+    /// resolved stays readable for the overlay's round trip.
     subscription: Option<Subscription>,
     /// A two-way call, from `dial`. Owns its session and the peer's broadcast.
     call: Option<Call>,
@@ -260,15 +268,12 @@ impl SessionHandle {
         Arc::new(Mutex::new(self))
     }
 
-    /// The round-trip time on the selected path, if this session has a
-    /// connection at all.
-    fn rtt(&self) -> Option<std::time::Duration> {
-        let session = self
-            .subscription
-            .as_ref()
-            .and_then(Subscription::session)
-            .or_else(|| self.call.as_ref().map(|call| call.session().clone()))?;
-        Some(session.link().rtt)
+    /// The round-trip time on the serving link, once it measured one.
+    fn rtt(&self) -> Option<Duration> {
+        if let Some(serving) = self.subscription.as_ref().and_then(Subscription::link) {
+            return serving.sample.rtt;
+        }
+        self.call.as_ref()?.session().link().rtt
     }
 
     /// The timestamp to stamp the next camera frame with.
@@ -583,10 +588,14 @@ async fn accept_one(
         // A plain subscriber arrives here too and never publishes the call path
         // this waits for, so a failure is an ordinary outcome rather than an
         // error: keep listening for somebody who does.
-        let call = match Call::accept(&live, moq).await {
-            Ok(call) => call,
-            Err(err) => {
+        let call = match tokio::time::timeout(CALLER_TIMEOUT, Call::accept(&live, moq)).await {
+            Ok(Ok(call)) => call,
+            Ok(Err(err)) => {
                 info!(remote = %remote_id.fmt_short(), error = %err, "not a caller");
+                continue;
+            }
+            Err(_) => {
+                info!(remote = %remote_id.fmt_short(), "not a caller: announced no call in time");
                 continue;
             }
         };

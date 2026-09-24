@@ -25,9 +25,6 @@ use super::{
 };
 use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
 
-/// How often the network is read while it can change the choice.
-const TICK: Duration = Duration::from_millis(200);
-
 /// How long a rendition whose decoder failed is left alone, the first time.
 const BACKOFF_FIRST: Duration = Duration::from_secs(5);
 
@@ -141,6 +138,8 @@ pub(crate) struct Inputs {
     pub desired: watch::Sender<Option<Desired>>,
     /// The player's playout clock, started over on a new route.
     pub clock: super::PlayoutClock,
+    /// The thresholds and timers the choice follows.
+    pub tuning: Tuning,
     pub shutdown: CancellationToken,
 }
 
@@ -226,6 +225,7 @@ pub(crate) async fn run(inputs: Inputs) {
         mut playing,
         desired,
         clock,
+        tuning,
         shutdown,
     } = inputs;
     let mut mode = controls.mode.subscribe();
@@ -236,7 +236,8 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut player = status.watch.watch();
     let network = broadcast.network();
 
-    let mut bound = Bound::new(Tuning::default());
+    let mut ticker = tokio::time::interval(tuning.tick);
+    let mut bound = Bound::new(tuning);
     let mut backoffs = Backoffs::default();
     let mut generation = 0u64;
     let mut generations = 0u64;
@@ -270,7 +271,6 @@ pub(crate) async fn run(inputs: Inputs) {
     // is what asks the supervisor for it once more: without it, a first decoder
     // that failed to open was never tried again.
     let mut failed: Option<Failure> = None;
-    let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // The first pass decides at once: a broadcast whose catalog arrived before
@@ -747,6 +747,7 @@ mod tests {
             playing,
             desired,
             clock: super::super::PlayoutClock::new(),
+            tuning: Tuning::default(),
             shutdown: CancellationToken::new(),
         };
         let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));

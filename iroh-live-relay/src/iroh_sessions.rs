@@ -82,7 +82,7 @@ impl IrohSessions {
     /// Runs one session until it closes or the relay shuts down.
     async fn serve(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote = connection.remote_id();
-        let (transport, target) = iroh_moq::accept(connection)
+        let (transport, target) = iroh_moq::transport::accept(connection)
             .await
             .map_err(AcceptError::from_err)?;
         let handshake = moq_net::Server::new()

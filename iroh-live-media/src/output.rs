@@ -87,6 +87,10 @@ impl AudioOutput {
     ///
     /// Players survive the move and are resampled to the new device's rate.
     ///
+    /// Cancellation safe: the switch is queued before the first wait and
+    /// completes on the output's own thread, so dropping the future only loses
+    /// its result.
+    ///
     /// # Errors
     ///
     /// Fails if the device cannot be opened, in which case the output plays to
@@ -107,6 +111,8 @@ impl AudioOutput {
     }
 
     /// Lists the output devices the host offers.
+    ///
+    /// Cancellation safe: dropping the future abandons the query.
     ///
     /// # Errors
     ///

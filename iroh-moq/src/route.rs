@@ -23,7 +23,7 @@ use moq_net::{
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, trace, warn};
 
-use crate::{Session, node::Shared, path::publisher_of};
+use crate::{ServingLink, Session, node::Shared, path::publisher_of};
 
 /// A broadcast that lived shorter than this before it ended counts as ending
 /// at once, for [`Subscription::closed`]'s pause.
@@ -160,6 +160,27 @@ impl Subscription {
             None => state.served(&self.inner.path)?,
         };
         state.links.get(&link)?.session.clone()
+    }
+
+    /// Returns the link serving the broadcast now, and its latest reading.
+    ///
+    /// A direct session's or a relay link's, whichever served the last request
+    /// for the path; a subscription resolved through one session is served by
+    /// that session only. `None` while no request has been served and once the
+    /// serving link is gone. What the media crate adapts a player on.
+    pub fn link(&self) -> Option<ServingLink> {
+        let shared = self.inner.shared.upgrade()?;
+        let state = shared.state.lock().expect("poisoned");
+        let link = match self.inner.link {
+            Some(link) => link,
+            None => state.served(&self.inner.path)?,
+        };
+        let entry = state.links.get(&link)?;
+        Some(ServingLink {
+            id: LinkId(link),
+            kind: entry.kind,
+            sample: entry.link_state.get(),
+        })
     }
 
     /// Waits until the path has no route left.

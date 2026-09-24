@@ -56,10 +56,12 @@ fn print_stats(session: &Session, player: &Player, frame_count: &mut u64, fps_la
     *frame_count = 0;
     *fps_last = Instant::now();
 
-    let rtt = session.link().rtt;
+    let rtt = session
+        .link()
+        .rtt
+        .map_or_else(|| "-".to_string(), |rtt| rtt.as_millis().to_string());
     println!(
-        "fps: {fps:.0}  rtt: {}ms  rendition: {}",
-        rtt.as_millis(),
+        "fps: {fps:.0}  rtt: {rtt}ms  rendition: {}",
         player.status().get().rendition.unwrap_or_default(),
     );
 }

@@ -47,6 +47,7 @@ pub fn publisher_of(path: &Path<'_>) -> Option<EndpointId> {
 /// Nodes on the old layout publish and ask for `<name>` alone. Answering and
 /// resolving that name is what lets the two layouts interoperate for one
 /// release.
+// TODO(old-layout): remove with the older path layout.
 pub(crate) fn legacy_name(path: &Path<'_>) -> Option<PathOwned> {
     let (namespace, rest) = path.next_part()?;
     if namespace != LIVE {

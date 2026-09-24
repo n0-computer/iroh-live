@@ -111,7 +111,7 @@ async fn setup(args: &CallArgs) -> Result<Local> {
     let live = transport::setup_live(true).await?;
     let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
         let (broadcast, sources) = publish_local(live, &args.capture, &output).await?;
-        let ticket = transport::ticket(live, &call_path(live.endpoint().id()));
+        let ticket = live.ticket(&call_path(live.endpoint().id())).to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
