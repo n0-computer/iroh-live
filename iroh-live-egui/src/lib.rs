@@ -1,24 +1,11 @@
-//! Egui integration for `moq-video` rendering.
+//! Video views for egui, on top of [`iroh_live_media`].
 //!
-//! Provides `VideoView`, which draws a `VideoFrames` stream (a player's
-//! pictures, a source's preview, anything else that hands one out) and wakes
-//! the window when a picture arrives, and the lower-level `FrameView` it is
-//! built on, for callers that hand it frames themselves. Both live behind the
-//! `wgpu-render` feature (on by default) and need it to actually draw a
-//! picture: upstream `moq_video` draws decoded frames through a `wgpu`
-//! pipeline (`iroh_live_media::video::render::Renderer`) and offers no other
-//! way to read a frame's pixels, so a view built without a real `wgpu` device
-//! only ever shows a placeholder.
+//! The views draw decoded frames through the `wgpu` renderer in
+//! `iroh_live_media`. They need the `wgpu-render` feature, which is on by
+//! default, and an `egui_wgpu::RenderState`. A view without a render state
+//! shows a black placeholder.
 //!
-//! Also provides `create_egui_wgpu_config` (also behind `wgpu-render`), which
-//! builds an `egui_wgpu::WgpuConfiguration` that requests zero-copy DMA-BUF
-//! import on Linux where the adapter supports it.
-//!
-//! These names are not doc-linked above: they only exist under
-//! `wgpu-render`, and a plain `cargo doc --no-default-features` build fails
-//! on a link to an item that feature compiles out.
-//!
-//! # Example
+//! This draws a player's video:
 //!
 //! ```no_run
 //! use iroh_live_egui::VideoView;
@@ -34,6 +21,18 @@
 //! ui.add(view.render());
 //! # }
 //! ```
+//!
+//! The main items are:
+//!
+//! - `VideoView` draws a `VideoFrames` stream and wakes the window when a
+//!   frame arrives.
+//! - `FrameView` draws frames you hand it.
+//! - `create_egui_wgpu_config` builds the `wgpu` setup for eframe, with
+//!   DMA-BUF import on Linux.
+//! - [`overlay::DebugOverlay`] paints playback or publish stats over a video.
+
+// The `wgpu-render` items above are in plain backticks: an intra-doc link to
+// them breaks `cargo doc --no-default-features`.
 
 pub mod overlay;
 
@@ -57,24 +56,17 @@ pub fn format_bitrate(rate: iroh_live_media::Bitrate) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EguiVideoRenderer: draws a moq_video::Frame into an egui-registered texture
-// ---------------------------------------------------------------------------
-
-/// The `wgpu` this crate draws through, re-exported from
-/// [`iroh_live_media::video::render`] so a caller never has to name a `wgpu`
-/// version independently and risk it drifting from the one the renderer
-/// actually links.
+/// The `wgpu` crate the renderer links, re-exported from
+/// [`iroh_live_media::video::render`].
+///
+/// Use it to name `wgpu` types, so they always match the renderer's version.
 #[cfg(feature = "wgpu-render")]
 pub use iroh_live_media::video::render::wgpu;
 
-/// Draws decoded [`iroh_live_media::video::Frame`]s into a texture registered with
-/// egui, on top of [`iroh_live_media::video::render::Renderer`].
+/// Renderer that draws decoded [`iroh_live_media::video::Frame`]s into an egui texture.
 ///
-/// Bound to one `wgpu` device and queue for its lifetime; keep it alive
-/// across frames rather than rebuilding it. [`FrameView`] and
-/// [`VideoView`] are the usual entry points: reach for this directly
-/// only when neither fits (drawing into a texture id you manage yourself).
+/// It is bound to one `wgpu` device and queue. Keep it alive across frames.
+/// Most callers want [`FrameView`] or [`VideoView`] instead.
 #[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 pub struct EguiVideoRenderer {
@@ -88,12 +80,9 @@ pub struct EguiVideoRenderer {
 
 #[cfg(feature = "wgpu-render")]
 impl EguiVideoRenderer {
-    /// Builds a renderer bound to `render_state`'s device and queue.
+    /// Creates a renderer bound to `render_state`'s device and queue.
     ///
-    /// # Errors
-    ///
-    /// Fails if the underlying `wgpu` pipeline cannot be built (a shader
-    /// compile failure, or a resource creation error on the device).
+    /// Fails if the `wgpu` pipeline cannot be built on the device.
     pub fn new(
         render_state: &egui_wgpu::RenderState,
     ) -> Result<Self, iroh_live_media::video::Error> {
@@ -109,17 +98,10 @@ impl EguiVideoRenderer {
         })
     }
 
-    /// Draws `frame` and registers (or updates) its egui texture.
+    /// Draws `frame` and registers or updates its egui texture.
     ///
-    /// Takes a plain reference so a caller holding an owned
-    /// [`iroh_live_media::video::Frame`] or an `Arc<iroh_live_media::video::Frame>` (as
-    /// the publisher's preview does) can pass either: `&Arc<Frame>` derefs to
-    /// `&Frame` at the call site.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the frame's surface cannot be drawn (an unsupported GPU
-    /// format, or a device error).
+    /// Returns the texture id and its size in pixels. Fails if the frame
+    /// cannot be drawn, for example on an unsupported GPU format.
     pub fn render(
         &mut self,
         frame: &iroh_live_media::video::Frame,
@@ -146,8 +128,9 @@ impl EguiVideoRenderer {
         Ok((id, dims))
     }
 
-    /// Returns the last rendered texture id and its pixel size, if a frame
-    /// has been drawn yet.
+    /// Returns the last drawn texture id and its size in pixels.
+    ///
+    /// Returns `None` before the first frame.
     pub fn last_texture(&self) -> Option<(epaint::TextureId, (u32, u32))> {
         self.texture
     }
@@ -155,14 +138,10 @@ impl EguiVideoRenderer {
 
 #[cfg(feature = "wgpu-render")]
 impl Drop for EguiVideoRenderer {
-    /// Gives the registration back, which nothing else will.
+    /// Frees the texture registered with egui.
     ///
-    /// `register_native_texture` puts an entry in the egui renderer's own map,
-    /// keyed by an id this owns and holding a bind group built from the
-    /// texture view. Dropping this renderer drops the texture, so the entry
-    /// then describes a resource that is gone, and it stays there for the life
-    /// of the render state: a room whose tiles come and go accumulates one per
-    /// tile it ever drew.
+    /// egui keeps a native texture registration until it is freed. Without
+    /// this, every dropped view would leave a stale entry in the render state.
     fn drop(&mut self) {
         if let Some((id, _)) = self.texture.take() {
             self.render_state.renderer.write().free_texture(&id);
@@ -170,16 +149,10 @@ impl Drop for EguiVideoRenderer {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FrameView: a placeholder-or-drawn texture for one raw frame stream
-// ---------------------------------------------------------------------------
-
-/// Shows one video stream as an egui texture: either the most recently drawn
-/// frame, or a black placeholder before the first one arrives.
+/// View that draws the frames you hand it.
 ///
-/// The low-level building block: it knows nothing about where frames come
-/// from, only how to draw the ones it is handed. [`VideoView`] adds the
-/// waking and the reading over a [`VideoFrames`] stream.
+/// It shows the last drawn frame, or a black placeholder before the first.
+/// [`VideoView`] builds on it and reads frames from a [`VideoFrames`] stream.
 #[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 pub struct FrameView {
@@ -190,7 +163,10 @@ pub struct FrameView {
 
 #[cfg(feature = "wgpu-render")]
 impl FrameView {
-    /// Creates a view that draws through `render_state`, if given.
+    /// Creates a view that draws through `render_state`.
+    ///
+    /// `name` names the placeholder texture. If `render_state` is `None` or the
+    /// renderer fails to build, the view only shows the placeholder.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
@@ -212,9 +188,10 @@ impl FrameView {
         }
     }
 
-    /// Draws `frame`, replacing whatever this view previously showed.
+    /// Draws `frame`, replacing what the view showed before.
     ///
-    /// A no-op (besides a warning) if this view has no renderer.
+    /// Logs a warning and keeps the old picture if drawing fails or the view
+    /// has no renderer.
     pub fn render_frame(&mut self, frame: &iroh_live_media::video::Frame) {
         let Some(renderer) = &mut self.renderer else {
             tracing::warn!("frame dropped: view has no wgpu renderer to draw it with");
@@ -225,7 +202,9 @@ impl FrameView {
         }
     }
 
-    /// Returns the current texture id and its pixel size.
+    /// Returns the current texture id and its size in pixels.
+    ///
+    /// Returns `None` until a frame is drawn.
     pub fn texture_info(&self) -> Option<(egui::TextureId, egui::Vec2)> {
         self.renderer
             .as_ref()
@@ -233,7 +212,7 @@ impl FrameView {
             .map(|(id, (w, h))| (id, egui::vec2(w as f32, h as f32)))
     }
 
-    /// Returns an [`egui::Image`] for the current texture, suitable for `ui.add()`.
+    /// Returns an [`egui::Image`] of the current frame, or of the placeholder.
     pub fn image(&self) -> egui::Image<'_> {
         match self.texture_info() {
             Some((id, size)) => {
@@ -244,39 +223,29 @@ impl FrameView {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VideoView: FrameView + a VideoFrames stream
-// ---------------------------------------------------------------------------
-
-/// Draws a [`VideoFrames`] stream into an egui UI.
+/// View that draws a [`VideoFrames`] stream.
 ///
-/// Wakes the window when a picture arrives and draws the newest one on the
-/// next pass, whether the frames come from a player, a local preview, or a
-/// scanner.
+/// It wakes the window when a frame arrives and draws the newest frame on the
+/// next pass.
 #[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 pub struct VideoView {
     frames: VideoFrames,
     frame_view: FrameView,
-    /// The window to wake, kept so [`set_frames`](Self::set_frames) can build
-    /// a waker for the replacement.
+    /// Kept so [`set_frames`](Self::set_frames) can wake the window for the new
+    /// stream.
     #[debug(skip)]
     ctx: egui::Context,
-    /// Wakes the window when a picture lands. Dropping it stops the waking.
+    /// Wakes the window on each frame. Dropping it stops the task.
     _wake: n0_future::task::AbortOnDropHandle<()>,
 }
 
-/// Asks the window to draw whenever a picture arrives.
+/// Spawns a task that requests a repaint whenever a frame arrives.
 ///
-/// The player does not hand a picture over until its playout clock says it is
-/// due, so by the time one arrives it should be on screen. A window that
-/// repaints on a timer presents each picture at the next tick of its own clock
-/// rather than when it was due, which on a 30fps stream sampled every 16ms is
-/// up to half a frame of added latency and a spacing that wobbles between one
-/// tick and two: judder on an otherwise well paced stream.
-///
-/// The waker reads through a handle of its own, so it never takes a picture
-/// from the drawing pass.
+/// The player hands a frame over when it is due. Repainting on a timer would
+/// show it up to one tick late, and the uneven delay makes a steady stream
+/// judder. The task reads its own clone of `frames`, so it does not take
+/// frames from the drawing pass.
 #[cfg(feature = "wgpu-render")]
 fn wake_on_frame(
     ctx: &egui::Context,
@@ -293,10 +262,10 @@ fn wake_on_frame(
 
 #[cfg(feature = "wgpu-render")]
 impl VideoView {
-    /// Creates a view of `frames` that draws through `render_state`, if given.
+    /// Creates a view of `frames` that draws through `render_state`.
     ///
-    /// `name` names the placeholder texture. Must be called within a Tokio
-    /// runtime, which the waker runs on.
+    /// `name` names the placeholder texture. Must be called inside a Tokio
+    /// runtime, which runs the task that wakes the window.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
@@ -311,15 +280,16 @@ impl VideoView {
         }
     }
 
-    /// Replaces the frames this view draws, keeping the last picture up until
-    /// the new stream has one.
+    /// Replaces the stream this view draws.
+    ///
+    /// The last frame stays on screen until the new stream delivers one. Like
+    /// [`new`](Self::new), this must be called inside a Tokio runtime.
     pub fn set_frames(&mut self, frames: VideoFrames) {
         self._wake = wake_on_frame(&self.ctx, &frames);
         self.frames = frames;
     }
 
-    /// Draws the newest frame if one arrived since the last call, and returns
-    /// the image to show.
+    /// Draws the newest frame, if a new one arrived, and returns the image.
     pub fn render(&mut self) -> egui::Image<'_> {
         if let Some(frame) = self.frames.try_next() {
             self.frame_view.render_frame(&frame);
@@ -327,25 +297,23 @@ impl VideoView {
         self.frame_view.image()
     }
 
-    /// Returns the image for whatever frame was drawn last.
+    /// Returns the image of the last drawn frame.
     pub fn image(&self) -> egui::Image<'_> {
         self.frame_view.image()
     }
 }
 
-// ---------------------------------------------------------------------------
-// create_egui_wgpu_config: a wgpu device tuned for video rendering
-// ---------------------------------------------------------------------------
-
-/// Creates an [`egui_wgpu::WgpuConfiguration`] tuned for video rendering.
+/// Creates an [`egui_wgpu::WgpuConfiguration`] for video rendering.
 ///
-/// On Linux, builds a Vulkan device and requests
-/// [`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`] when the adapter
-/// supports it, which lets [`iroh_live_media::video::render::Renderer`] import
-/// PipeWire DMA-BUFs without a CPU round trip. Every other platform, and any
-/// Linux adapter that lacks the feature, gets a device with the adapter's own
-/// limits: the renderer still draws every frame correctly through its
-/// CPU-upload fallback, just without the zero-copy path.
+/// On Linux, this builds a Vulkan device and enables
+/// [`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`] if the adapter supports
+/// it. The renderer can then import DMA-BUF frames, such as PipeWire screen
+/// capture, without a copy through the CPU. It blocks while it requests the
+/// adapter and device.
+///
+/// Elsewhere, or if Vulkan is not available or excluded by `WGPU_BACKEND`,
+/// egui builds the device and the renderer uploads frames from the CPU. The
+/// device always requests the adapter's own limits.
 #[cfg(feature = "wgpu-render")]
 pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     #[cfg(target_os = "linux")]
@@ -358,15 +326,12 @@ pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     }
 }
 
-/// Returns a device descriptor that asks for exactly what `adapter` reports.
+/// Returns a device descriptor that requests the adapter's own limits.
 ///
-/// egui asks for [`wgpu::Limits::default()`] on anything that is not the GL
-/// backend, and those are desktop limits: eight colour attachments, for one.
-/// A Raspberry Pi 4 has a conformant Vulkan driver that allows four, so the
-/// device request fails and eframe exits before a window ever opens. An
-/// adapter's own limits are the ones it is guaranteed to grant, and video
-/// playback wants nothing beyond them: [`iroh_live_media::video::render::Renderer`]
-/// draws one triangle with three sampled textures.
+/// egui requests [`wgpu::Limits::default()`] on non-GL backends. Those are
+/// desktop limits, for example eight color attachments. The Raspberry Pi 4
+/// Vulkan driver allows four, so the request fails and eframe exits before a
+/// window opens. Video rendering needs nothing beyond the adapter's limits.
 #[cfg(feature = "wgpu-render")]
 fn device_descriptor(
     adapter: &wgpu::Adapter,
@@ -382,9 +347,7 @@ fn device_descriptor(
 
 /// Returns egui's configuration with the device limits taken from the adapter.
 ///
-/// This is the fallback for every path that does not build a device itself,
-/// and it exists for the same reason [`device_descriptor`] does: egui's
-/// default limits are not a subset of what every conformant driver grants.
+/// See [`device_descriptor`] for why.
 #[cfg(feature = "wgpu-render")]
 fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
     egui_wgpu::WgpuConfiguration {
@@ -398,14 +361,11 @@ fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
     }
 }
 
+/// Builds a Vulkan device, with DMA-BUF import if the adapter supports it.
 #[cfg(all(target_os = "linux", feature = "wgpu-render"))]
 fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
-    // `WGPU_BACKEND` is how one machine gets compared against itself, and a
-    // board with both a Vulkan and a GL adapter is exactly where that
-    // comparison is worth making. This path asks for Vulkan by name, because
-    // DMA-BUF import is a Vulkan extension, so it has to stand aside when
-    // somebody has asked for anything else: egui's own setup reads the same
-    // variable, and `adapter_limits_config` keeps it.
+    // DMA-BUF import needs Vulkan. If `WGPU_BACKEND` asks for another
+    // backend, fall back to egui's setup, which reads the same variable.
     if let Some(requested) = wgpu::Backends::from_env()
         && !requested.contains(wgpu::Backends::VULKAN)
     {
