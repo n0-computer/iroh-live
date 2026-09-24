@@ -19,7 +19,10 @@
 //! long enough that no keyframe is coming, and says so.
 
 use std::{
+    future::Future,
+    pin::Pin,
     sync::Arc,
+    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -31,6 +34,7 @@ use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
     DecodeContext, RemoteBroadcast, SubscribeError, VideoControl, VideoTrack, is_synced,
+    switch::{Abandoned, Outcome, Switcher, Target, Verdict},
     video_decode_config,
 };
 use crate::frame_channel::{FrameSender, frame_channel};
@@ -51,14 +55,6 @@ const FAILURE_WINDOW: Duration = Duration::from_secs(10);
 /// and an ordinary stream recovering from one skipped group is far above this
 /// within a window.
 const MIN_DECODED_SHARE: f64 = 0.5;
-
-/// How long a replacement decoder may take over its first picture.
-///
-/// It has to cover a real handover: the replacement subscribes to another
-/// rendition and waits for that track's next keyframe, which on a two second
-/// GOP over an impaired link is already seconds. Beyond that it is not slow,
-/// it is not coming, and the incumbent keeps playing either way.
-const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(15);
 
 /// How many access units in a row may fail to decode before the reader stops.
 ///
@@ -227,6 +223,16 @@ impl DecodeFailures {
     }
 }
 
+/// How long a replacement decoder has to take over, from the request to the
+/// picture it takes over with.
+///
+/// It has to cover a real handover: the replacement subscribes to another
+/// rendition, waits for that track's next keyframe, which on a two second GOP
+/// over an impaired link is already seconds, and then decodes until it has
+/// caught up with the picture on screen. Beyond that it is not slow, it is not
+/// coming, and the incumbent keeps playing either way.
+const SWITCH_DEADLINE: Duration = Duration::from_secs(15);
+
 /// Opens `rendition` and starts decoding it.
 pub(super) async fn open(
     broadcast: &RemoteBroadcast,
@@ -244,17 +250,28 @@ pub(super) async fn open(
     let (requested_tx, requested_rx) = watch::channel(None);
     let (reopen_tx, reopen_rx) = watch::channel(0);
 
+    let mut switcher = Switcher::new(SWITCH_DEADLINE);
+    // The first decoder is already open, so it is installed as a replacement
+    // that opened at once: with nothing playing it takes over immediately.
+    let first = Target::new(rendition, 0);
+    let _: Outcome<SubscribeError> =
+        switcher.request(first, tokio::time::Instant::now(), |_, _| None);
+    let _: Outcome<SubscribeError> = switcher.opened(
+        switcher.replacement_generation().expect("just requested"),
+        Ok(reader),
+    );
+
     let task = spawn(
-        supervise(
-            broadcast.clone(),
-            reader,
-            frames_tx,
-            current.clone(),
-            decoder.clone(),
-            requested_tx.clone(),
-            requested_rx,
-            reopen_rx,
-        )
+        supervise(Supervised {
+            broadcast: broadcast.clone(),
+            switcher,
+            frames: frames_tx,
+            current: current.clone(),
+            decoder: decoder.clone(),
+            withdraw: requested_tx.clone(),
+            requested: requested_rx,
+            reopen: reopen_rx,
+        })
         .instrument(error_span!("video", broadcast = %broadcast.name())),
     );
 
@@ -272,54 +289,12 @@ pub(super) async fn open(
     })
 }
 
-/// An open in flight: the rendition it is for, and the task doing it.
-struct Opening {
-    name: String,
-    task: AbortOnDropHandle<Result<Reader, SubscribeError>>,
-    /// Whether this open is a decoder rebuild rather than a rendition switch.
-    ///
-    /// The two share one slot and are cancelled by different things. Asking for
-    /// the rendition already playing cancels a switch, because that is what
-    /// un-pinning means, and it must not cancel a rebuild: the rebuild is for
-    /// that same rendition, so the name it carries is the one being asked for.
-    ///
-    /// Set through [`Opening::switch`] and [`Opening::rebuild`] rather than a
-    /// literal, so the arm that spawns a rebuild cannot tag it as a switch. It
-    /// did once, and the guard below never fired.
-    rebuild: bool,
-}
+/// The task opening a replacement decoder, or `None` for one that was already
+/// open when it was handed over.
+type OpenTask = Option<AbortOnDropHandle<Result<Reader, SubscribeError>>>;
 
-impl Opening {
-    /// A rendition switch: an open for a rendition other than the one playing.
-    fn switch(name: String, task: AbortOnDropHandle<Result<Reader, SubscribeError>>) -> Self {
-        Self {
-            name,
-            task,
-            rebuild: false,
-        }
-    }
-
-    /// A decoder rebuild: an open for the rendition already playing, under a
-    /// changed policy.
-    fn rebuild(name: String, task: AbortOnDropHandle<Result<Reader, SubscribeError>>) -> Self {
-        Self {
-            name,
-            task,
-            rebuild: true,
-        }
-    }
-
-    /// Whether a request for the rendition already playing leaves this open
-    /// alone.
-    ///
-    /// A switch is what such a request cancels, since un-pinning a rendition
-    /// means "stop the swap". A rebuild is for that same rendition and is the
-    /// only record left of a decoder change, so cancelling it would drop the
-    /// change with nothing to retry it.
-    fn survives_repin(&self) -> bool {
-        self.rebuild
-    }
-}
+/// The supervisor's state machine, over real decoders.
+type VideoSwitcher = Switcher<Reader, OpenTask>;
 
 /// One decoder plus the task reading it.
 struct Reader {
@@ -431,49 +406,64 @@ async fn spawn_reader(
     })
 }
 
-/// Forwards frames to the renderer and swaps decoders when a switch is asked for.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one handle per thing the supervisor drives, all owned by the track"
-)]
-async fn supervise(
+/// Everything the supervisor drives, moved into its task whole.
+struct Supervised {
     broadcast: RemoteBroadcast,
-    reader: Reader,
+    switcher: VideoSwitcher,
     frames: FrameSender<moq_video::Frame>,
     current: Watchable<String>,
     decoder: Watchable<String>,
+    /// Where a request that did not land is withdrawn.
     withdraw: watch::Sender<Option<String>>,
-    mut requested: watch::Receiver<Option<String>>,
-    mut reopen: watch::Receiver<u64>,
-) {
+    requested: watch::Receiver<Option<String>>,
+    reopen: watch::Receiver<u64>,
+}
+
+/// Something one of the decoders did.
+enum Event {
+    /// The replacement's open task finished.
+    Opened(Result<Result<Reader, SubscribeError>, n0_future::task::JoinError>),
+    /// The replacement decoded a picture, or its track ended.
+    Replacement(Option<moq_video::Frame>),
+    /// The incumbent decoded a picture, or its track ended.
+    Incumbent(Option<moq_video::Frame>),
+}
+
+/// A picture waiting for the playout clock to say it is due.
+struct Delivery {
+    frame: moq_video::Frame,
+    due: Pin<Box<dyn Future<Output = bool> + Send>>,
+}
+
+/// Forwards frames to the renderer and swaps decoders when a switch is asked
+/// for.
+///
+/// Every await sits in the `select!` itself and none in an arm body: pacing a
+/// picture is a future the loop keeps across iterations rather than one it
+/// waits on, so a request that arrives while a picture is held for the clock
+/// is acted on at once, not when the picture is due.
+async fn supervise(supervised: Supervised) {
+    let Supervised {
+        broadcast,
+        mut switcher,
+        frames,
+        current,
+        decoder,
+        withdraw,
+        mut requested,
+        mut reopen,
+    } = supervised;
     let context = broadcast.decode_context();
     let synced = is_synced(&context.policy);
-    // The replacement, from the moment its decoder opens until its first frame
-    // arrives. Holding both is what keeps the picture up across the swap.
-    // `None` while the incumbent has ended and a replacement is still opening.
-    // Nothing is playing in that window, so every exit below has to check
-    // whether anything is left before parking on it.
-    let mut reader: Option<Reader> = Some(reader);
-    // The replacement, and the moment it stops being worth waiting for. A
-    // decoder that opens and never produces a picture would otherwise be waited
-    // on for the rest of the session: its reader stays blocked on the track, so
-    // the channel never closes and the arm below never fires.
-    let mut pending: Option<(String, Reader, tokio::time::Instant)> = None;
-    // The open in flight. It runs as its own task rather than inside a `select!`
-    // arm, because opening a decoder means a network round trip and a codec
-    // open, and awaiting that in an arm body stops the incumbent from being
-    // forwarded for exactly the window the overlap exists to hide.
-    let mut opening: Option<Opening> = None;
-    // The last frame's arrival, for the frame rate the overlay draws.
-    // One rate for the whole reader: frames arriving per second, counted
-    // rather than derived from the gap between two of them.
+    let mut delivery: Option<Delivery> = None;
+    // Frames arriving per second, counted rather than derived from the gap
+    // between two of them.
     let rate = crate::stats::Rate::default();
 
     loop {
-        // Read out before the select, because another arm borrows `pending`
-        // mutably and the two cannot overlap.
-        let stalled = pending.as_ref().map(|(_, _, deadline)| *deadline);
-        tokio::select! {
+        let deadline = switcher.deadline();
+        let delivering = delivery.is_some();
+        let outcome: Outcome<SubscribeError> = tokio::select! {
             biased;
 
             _ = context.shutdown.cancelled() => {
@@ -485,177 +475,184 @@ async fn supervise(
                 if changed.is_err() {
                     return;
                 }
-                let Some(name) = requested.borrow_and_update().clone() else { continue };
-                // Re-requesting what is already playing cancels a swap that has
-                // not landed, which is what un-pinning a rendition means.
-                if name == current.get() {
-                    pending = None;
-                    // A rebuild survives: it is an open for this same rendition
-                    // with a new decoder, so cancelling it here would throw away
-                    // a decoder change because the user afterwards pinned the
-                    // rendition it was already playing, with nothing left to
-                    // retry it.
-                    if opening.as_ref().is_some_and(|open| !open.survives_repin()) {
-                        opening = None;
-                    }
-                    if reader.is_none() && opening.is_none() {
-                        debug!("the only replacement was cancelled with nothing playing");
-                        return;
-                    }
-                    continue;
-                }
-                let already = pending.as_ref().is_some_and(|(open, _, _)| *open == name)
-                    || opening.as_ref().is_some_and(|open| open.name == name);
-                if already {
-                    continue;
-                }
-                debug!(rendition = %name, "opening replacement decoder");
-                let task = spawn({
-                    let broadcast = broadcast.clone();
-                    let name = name.clone();
-                    async move { spawn_reader(&broadcast, &name).await }
-                });
-                // Abort-on-drop, not a bare handle: dropping a `JoinHandle`
-                // detaches, so a superseded open would run to completion and
-                // keep a track subscription and a broadcast clone alive for as
-                // long as the peer took to answer.
-                opening = Some(Opening::switch(name, AbortOnDropHandle::new(task)));
+                let target = desired(&switcher, &requested, &reopen);
+                switcher.request(target, tokio::time::Instant::now(), |_, target| {
+                    Some(open_replacement(&broadcast, target))
+                })
             }
 
-            // The policy changed under a track already playing: open the
-            // rendition again so the decoder is built from it.
             changed = reopen.changed() => {
                 if changed.is_err() {
                     return;
                 }
-                // A switch already in flight names the rendition to open, so a
-                // decoder change during one does not undo it. Whatever that
-                // switch had opened is dropped either way: it was built from the
-                // policy this rebuild supersedes.
-                let name = match (opening.take(), pending.take()) {
-                    (Some(superseded), _) => superseded.name,
-                    (None, Some((superseded, _, _))) => superseded,
-                    (None, None) => current.get(),
-                };
-                debug!(rendition = %name, "rebuilding the decoder");
-                let task = spawn({
-                    let broadcast = broadcast.clone();
-                    let name = name.clone();
-                    async move { spawn_reader(&broadcast, &name).await }
-                });
-                opening = Some(Opening::rebuild(name, AbortOnDropHandle::new(task)));
+                let target = desired(&switcher, &requested, &reopen);
+                debug!(rendition = %target.rendition, "rebuilding the decoder");
+                switcher.request(target, tokio::time::Instant::now(), |_, target| {
+                    Some(open_replacement(&broadcast, target))
+                })
             }
 
-            // The replacement's decoder is open. Hold it until it produces a
-            // frame, so the swap never shows an empty picture.
-            opened = async { (&mut opening.as_mut().expect("guarded").task).await },
-                if opening.is_some() =>
+            () = async { tokio::time::sleep_until(deadline.expect("guarded")).await },
+                if deadline.is_some() =>
             {
-                let Opening { name, .. } = opening.take().expect("guarded");
-                match opened {
-                    Ok(Ok(replacement)) => {
-                        let deadline = tokio::time::Instant::now() + FIRST_FRAME_DEADLINE;
-                        pending = Some((name, replacement, deadline));
-                    }
-                    Ok(Err(err)) => {
-                        warn!(error = %err, rendition = %name, "replacement failed to open");
-                        clear_request(&withdraw, &name);
-                    }
-                    Err(err) => {
-                        warn!(error = %err, rendition = %name, "replacement open task failed");
-                        clear_request(&withdraw, &name);
-                    }
-                }
-                if reader.is_none() && pending.is_none() {
-                    debug!("nothing left to decode after the replacement failed");
-                    return;
-                }
+                switcher.expire(tokio::time::Instant::now())
             }
 
-            // The replacement's first frame: hand over.
-            frame = async { pending.as_mut().expect("guarded").1.frames.recv().await },
-                if pending.is_some() =>
+            due = async { delivery.as_mut().expect("guarded").due.as_mut().await },
+                if delivering =>
             {
-                let (name, replacement, _) = pending.take().expect("guarded");
-                match frame {
-                    Some(frame) => {
-                        info!(rendition = %name, decoder = %replacement.decoder, "switched rendition");
-                        context.stats.render.decoder.set(&replacement.decoder);
-                        context.stats.render.rendition.set(&name);
-                        decoder.set(replacement.decoder.clone()).ok();
-                        reader = Some(replacement);
-                        current.set(name).ok();
-                        deliver(&frames, frame, &context, synced, &rate).await;
-                    }
-                    None => {
-                        debug!(rendition = %name, "replacement ended before its first frame");
-                        clear_request(&withdraw, &name);
-                        if reader.is_none() && opening.is_none() {
-                            debug!("nothing left to decode after the replacement ended");
-                            return;
-                        }
-                    }
+                let Delivery { frame, .. } = delivery.take().expect("guarded");
+                if due {
+                    frames.send(frame);
                 }
+                Outcome::Idle
             }
 
-            // The replacement took too long over its first picture. Waiting on
-            // it forever is the worse failure: a rendition request that never
-            // lands leaves the adaptation loop with nothing to do for the rest
-            // of the session, and both tracks subscribed, so a downgrade under
-            // loss ends up carrying more than before it.
-            // Inside an `async` block like its neighbours: `select!` evaluates
-            // every branch's expression before it polls anything, so a bare
-            // `expect` here would fire on the passes where the branch is
-            // disabled.
-            () = async { tokio::time::sleep_until(stalled.expect("guarded")).await },
-                if stalled.is_some() =>
-            {
-                let (name, _, _) = pending.take().expect("guarded");
-                warn!(
-                    rendition = %name,
-                    after = ?FIRST_FRAME_DEADLINE,
-                    "the replacement decoder opened but produced no picture, giving it up",
-                );
-                clear_request(&withdraw, &name);
-                if reader.is_none() && opening.is_none() {
-                    debug!("nothing left to decode after the replacement stalled");
-                    return;
+            event = next_event(&mut switcher, delivering) => match event {
+                Event::Opened(result) => {
+                    let generation = switcher.replacement_generation().unwrap_or_default();
+                    let result = result.unwrap_or_else(|err| {
+                        Err(moq_video::Error::Unsupported(format!(
+                            "the decoder open task failed: {err}"
+                        ))
+                        .into())
+                    });
+                    switcher.opened(generation, result)
                 }
-            }
-
-            frame = async { reader.as_mut().expect("guarded").frames.recv().await },
-                if reader.is_some() =>
-            match frame {
-                Some(frame) => deliver(&frames, frame, &context, synced, &rate).await,
-                None => {
-                    // A replacement already open takes over rather than being
-                    // discarded: the incumbent ending is exactly when a
-                    // downgrade is most likely to be in flight.
-                    match pending.take() {
-                        Some((name, replacement, _)) => {
-                            info!(rendition = %name, "incumbent ended, promoting the replacement");
-                            context.stats.render.decoder.set(&replacement.decoder);
-                            context.stats.render.rendition.set(&name);
-                            decoder.set(replacement.decoder.clone()).ok();
-                            reader = Some(replacement);
-                            current.set(name).ok();
+                Event::Replacement(Some(frame)) => {
+                    let pts = frame_pts(&frame);
+                    match switcher.replacement_frame(pts) {
+                        (Verdict::Promote, outcome) => {
+                            // Whatever the incumbent was about to show is older
+                            // than what takes over, so it goes.
+                            delivery = Some(pace(frame, &context, synced, &rate));
+                            outcome
                         }
-                        None if opening.is_some() => {
-                            debug!("incumbent ended while a replacement is opening");
-                            // Nothing is playing until it lands. Its arm is
-                            // disabled meanwhile, and every path that gives up
-                            // on the open returns rather than parking here.
-                            reader = None;
-                        }
-                        None => {
-                            debug!("video decode ended");
-                            return;
-                        }
+                        (Verdict::Discard, outcome) => outcome,
                     }
                 }
+                Event::Replacement(None) => switcher.replacement_ended(),
+                Event::Incumbent(Some(frame)) => {
+                    switcher.incumbent_frame(frame_pts(&frame));
+                    delivery = Some(pace(frame, &context, synced, &rate));
+                    Outcome::Idle
+                }
+                Event::Incumbent(None) => switcher.incumbent_ended(),
             },
+        };
+
+        match outcome {
+            Outcome::Idle => {}
+            Outcome::Promoted(target) => {
+                let name = switcher
+                    .incumbent_mut()
+                    .map(|reader| reader.decoder.clone())
+                    .unwrap_or_default();
+                info!(rendition = %target.rendition, decoder = %name, "switched rendition");
+                context.stats.render.decoder.set(&name);
+                context.stats.render.rendition.set(&target.rendition);
+                decoder.set(name).ok();
+                current.set(target.rendition).ok();
+            }
+            Outcome::Abandoned(target, reason) => {
+                let withdrawn = matches!(reason, Abandoned::Superseded | Abandoned::Withdrawn);
+                match reason {
+                    Abandoned::Superseded => {
+                        debug!(rendition = %target.rendition, "replacement superseded");
+                    }
+                    Abandoned::Withdrawn => {
+                        debug!(rendition = %target.rendition, "replacement withdrawn");
+                    }
+                    Abandoned::OpenFailed(err) => {
+                        warn!(error = %err, rendition = %target.rendition, "replacement failed to open");
+                    }
+                    Abandoned::Ended => {
+                        debug!(rendition = %target.rendition, "replacement ended before it took over");
+                    }
+                    Abandoned::TimedOut => {
+                        warn!(
+                            rendition = %target.rendition,
+                            after = ?SWITCH_DEADLINE,
+                            "the replacement decoder did not take over in time, giving it up",
+                        );
+                    }
+                }
+                if !withdrawn {
+                    clear_request(&withdraw, &target.rendition);
+                }
+            }
+            Outcome::Ended => {
+                debug!("video decode ended");
+                return;
+            }
         }
     }
+}
+
+/// The target the track's controls currently ask for.
+///
+/// The rendition asked for, or the one playing when nothing is, under the
+/// decoder configuration last asked for.
+fn desired(
+    switcher: &VideoSwitcher,
+    requested: &watch::Receiver<Option<String>>,
+    reopen: &watch::Receiver<u64>,
+) -> Target {
+    let rendition = requested.borrow().clone().or_else(|| {
+        switcher
+            .current()
+            .or_else(|| switcher.switching_to())
+            .map(|target| target.rendition.clone())
+    });
+    Target::new(rendition.unwrap_or_default(), *reopen.borrow())
+}
+
+/// Starts opening a decoder for `target`.
+fn open_replacement(
+    broadcast: &RemoteBroadcast,
+    target: &Target,
+) -> AbortOnDropHandle<Result<Reader, SubscribeError>> {
+    debug!(rendition = %target.rendition, "opening replacement decoder");
+    let broadcast = broadcast.clone();
+    let name = target.rendition.clone();
+    // Abort-on-drop, not a bare handle: a superseded open is dropped with its
+    // replacement, and a detached one would keep a track subscription alive for
+    // as long as the peer took to answer.
+    AbortOnDropHandle::new(spawn(async move { spawn_reader(&broadcast, &name).await }))
+}
+
+/// Waits for whichever decoder has something to say first.
+///
+/// One future over every part of the switcher, so the `select!` above holds a
+/// single borrow of it. The incumbent is not read while a picture is waiting
+/// for the clock: its channel is bounded, which is what keeps the decoder
+/// from running ahead of playout.
+async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
+    std::future::poll_fn(|cx| {
+        if let Some(Some(task)) = switcher.opening_mut()
+            && let Poll::Ready(result) = Pin::new(task).poll(cx)
+        {
+            return Poll::Ready(Event::Opened(result));
+        }
+        if let Some(reader) = switcher.warming_mut()
+            && let Poll::Ready(frame) = reader.frames.poll_recv(cx)
+        {
+            return Poll::Ready(Event::Replacement(frame));
+        }
+        if !delivering
+            && let Some(reader) = switcher.incumbent_mut()
+            && let Poll::Ready(frame) = reader.frames.poll_recv(cx)
+        {
+            return Poll::Ready(Event::Incumbent(frame));
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// The presentation time of `frame`.
+fn frame_pts(frame: &moq_video::Frame) -> Duration {
+    Duration::from_micros(frame.timestamp.as_micros() as u64)
 }
 
 /// Withdraws a switch request that did not land.
@@ -677,28 +674,29 @@ fn clear_request(requested: &watch::Sender<Option<String>>, tried: &str) {
     });
 }
 
-/// Paces one frame against the playout clock and hands it to the renderer.
-async fn deliver(
-    frames: &FrameSender<moq_video::Frame>,
+/// Starts pacing one frame against the playout clock.
+fn pace(
     frame: moq_video::Frame,
     context: &DecodeContext,
     synced: bool,
     rate: &crate::stats::Rate,
-) {
-    let pts = Duration::from_micros(frame.timestamp.as_micros() as u64);
+) -> Delivery {
+    let pts = frame_pts(&frame);
     // The metric smooths whatever value it is handed, so it wants the
     // instantaneous rate, not a tick. Timed at arrival rather than from the
     // presentation timestamps, because a stall shows up here and not there.
     if let Some(rate) = rate.tick() {
         context.stats.render.fps.record(rate);
     }
-    if synced {
-        context.sync.received(pts);
-        if !context.sync.wait_async(pts).await {
-            return;
+    let due: Pin<Box<dyn Future<Output = bool> + Send>> = match synced {
+        true => {
+            context.sync.received(pts);
+            let sync = context.sync.clone();
+            Box::pin(async move { sync.wait_async(pts).await })
         }
-    }
-    frames.send(frame);
+        false => Box::pin(std::future::ready(true)),
+    };
+    Delivery { frame, due }
 }
 
 #[cfg(test)]
@@ -922,31 +920,6 @@ mod tests {
                 _remote: remote,
             },
         ))
-    }
-
-    /// A task standing in for a decoder open that never finishes, which is the
-    /// state an open is in when a repin can race it.
-    fn open_in_flight() -> AbortOnDropHandle<Result<Reader, SubscribeError>> {
-        AbortOnDropHandle::new(spawn(std::future::pending()))
-    }
-
-    /// Regression: the reopen arm built its `Opening` with `rebuild: false`,
-    /// so the guard written to keep a decoder change alive across a repin
-    /// never fired. Pick Decoder = vaapi, then pin the rendition already
-    /// playing while the new decoder was coming up, and the vaapi rebuild was
-    /// gone with nothing left to retry it.
-    #[tokio::test]
-    async fn a_rebuild_survives_repinning_the_current_rendition() {
-        let rebuild = Opening::rebuild("video".into(), open_in_flight());
-        assert!(rebuild.survives_repin());
-    }
-
-    /// The other half: un-pinning is what a repin means for a switch, so a
-    /// switch does not survive it.
-    #[tokio::test]
-    async fn a_switch_is_cancelled_by_repinning_the_current_rendition() {
-        let switch = Opening::switch("video-360p".into(), open_in_flight());
-        assert!(!switch.survives_repin());
     }
 
     /// The presentation time of every picture the reader decodes, in order.

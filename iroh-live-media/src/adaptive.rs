@@ -38,6 +38,8 @@ use hang::catalog::VideoConfig;
 
 use crate::net::NetworkSignals;
 
+pub(crate) mod bound;
+
 // --- Configuration ---------------------------------------------------
 
 /// Thresholds and timers for the adaptation algorithm.
@@ -722,6 +724,7 @@ mod tests {
             // the cases that say otherwise carry a shortfall.
             goodput_bps: Some(3_000_000),
             delivery_bps: None,
+            path_generation: 0,
             congestion_events: 0,
         }
     }

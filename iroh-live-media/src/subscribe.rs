@@ -41,6 +41,7 @@ use crate::{
 mod adapt;
 #[cfg(feature = "playback")]
 mod audio;
+mod switch;
 mod video;
 
 /// Errors raised while subscribing.

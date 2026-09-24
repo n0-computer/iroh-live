@@ -41,6 +41,9 @@ pub(super) async fn open(
         "audio playing",
     );
 
+    // Registered here and moved into the task, so every way out of the loop
+    // below, including an abort, clears what it reported.
+    let latency = context.sync.register_audio();
     let task = spawn(
         async move {
             // `consumer.read()` sits in a `select!`, which the video side goes
@@ -60,7 +63,7 @@ pub(super) async fn open(
                             // The video clock steers off how much audio is
                             // still buffered ahead of the speaker, which is the
                             // only latency either side can actually measure.
-                            context.sync.set_audio_buffered(Some(sink.buffered()));
+                            latency.set(sink.buffered());
                             if let Err(err) = sink.write(&frame.data) {
                                 warn!(error = %err, "audio sink write failed");
                                 return;

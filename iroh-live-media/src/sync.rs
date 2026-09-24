@@ -232,14 +232,25 @@ impl Sync {
 
     /// Sets how much audio is queued ahead of the speaker.
     ///
-    /// Called by the audio decode path on every frame it writes to its sink.
-    /// This is the only latency either side can actually measure, and video is
-    /// held back by it so the two land together.
-    pub fn set_audio_buffered(&self, latency: Option<Duration>) {
+    /// Written through an [`AudioLatency`] guard, so the value cannot outlive
+    /// the audio path that reported it.
+    fn set_audio_buffered(&self, latency: Option<Duration>) {
         let mut state = self.inner.state.lock().expect("poisoned");
         state.audio_ms = latency.map(|d| d.as_millis() as i64);
         Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
+    }
+
+    /// Registers an audio path's contribution to the latency.
+    ///
+    /// The audio path reports how much it has buffered through the returned
+    /// guard, and dropping the guard clears the contribution. That is the one
+    /// way the audio term can be set, so an audio track that stops, whether it
+    /// ended, failed or was dropped, stops holding video back with it.
+    pub fn register_audio(&self) -> AudioLatency {
+        AudioLatency {
+            clock: self.clone(),
+        }
     }
 
     /// Sets the video path's own decode latency.
@@ -285,6 +296,31 @@ impl Sync {
 impl Default for Sync {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// An audio path's registration with a playout clock.
+///
+/// From [`Sync::register_audio`]. Reports how much audio is queued ahead of the
+/// speaker, which is the only latency either side can actually measure, and
+/// video is held back by it so the two land together. Dropping it clears the
+/// report on every exit of the audio path, so a stopped track stops holding
+/// video back.
+#[derive(Debug)]
+pub struct AudioLatency {
+    clock: Sync,
+}
+
+impl AudioLatency {
+    /// Reports how much audio is queued ahead of the speaker now.
+    pub fn set(&self, buffered: Duration) {
+        self.clock.set_audio_buffered(Some(buffered));
+    }
+}
+
+impl Drop for AudioLatency {
+    fn drop(&mut self) {
+        self.clock.set_audio_buffered(None);
     }
 }
 
@@ -342,11 +378,28 @@ mod tests {
         sync.set_video_latency(Some(Duration::from_millis(30)));
         assert_eq!(sync.latency(), Duration::from_millis(80));
 
-        sync.set_audio_buffered(Some(Duration::from_millis(60)));
+        let audio = sync.register_audio();
+        audio.set(Duration::from_millis(60));
         assert_eq!(sync.latency(), Duration::from_millis(110));
 
-        sync.set_audio_buffered(None);
+        drop(audio);
         assert_eq!(sync.latency(), Duration::from_millis(80));
+    }
+
+    /// Regression (R12): the audio path set its buffer depth on every frame and
+    /// never cleared it, so a stopped audio track held video back by its last
+    /// reading for the rest of the playback.
+    #[test]
+    fn a_dropped_audio_registration_stops_holding_video_back() {
+        let sync = Sync::with_jitter(Duration::from_millis(50));
+        {
+            let audio = sync.register_audio();
+            audio.set(Duration::from_millis(400));
+            assert_eq!(sync.latency(), Duration::from_millis(450));
+            // Leaves the scope the way an audio task leaves its loop: on an
+            // error, an end of track, or an abort, all of which drop it.
+        }
+        assert_eq!(sync.latency(), Duration::from_millis(50));
     }
 
     #[tokio::test]

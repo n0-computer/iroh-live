@@ -261,6 +261,8 @@ struct Sampler {
     /// fresh samples.
     prev_rtt: Option<Duration>,
     rtt_samples: u64,
+    /// How many times the selected path has changed.
+    path_generation: u64,
     /// Timestamped counter readings, oldest first, spanning the longer of
     /// [`GOODPUT_WINDOW`] and [`LOSS_WINDOW`]. Each rate is the difference
     /// across its whole span rather than between the last two readings, so one
@@ -306,7 +308,10 @@ impl Sampler {
         // queue in front of the one it had.
         let min_rtt = match &mut self.baseline {
             Some(known) if known.path == path => known.min_rtt.record(rtt, now),
-            _ => {
+            known => {
+                if known.is_some() {
+                    self.path_generation += 1;
+                }
                 self.baseline = Some(PathBaseline {
                     path,
                     min_rtt: WindowedMin::new(MIN_RTT_WINDOW, rtt, now),
@@ -340,6 +345,7 @@ impl Sampler {
             loss_rate: self.loss_rate(&latest),
             goodput_bps: self.goodput(&latest),
             delivery_bps,
+            path_generation: self.path_generation,
             congestion_events: stats.congestion_events,
         }
     }

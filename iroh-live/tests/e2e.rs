@@ -218,6 +218,7 @@ async fn adaptive_rendition_switching() {
         loss_rate: 0.0,
         goodput_bps: Some(10_000_000),
         delivery_bps: None,
+        path_generation: 0,
         congestion_events: 0,
     });
     track.enable_adaptation_with(receiver, config);
@@ -235,6 +236,7 @@ async fn adaptive_rendition_switching() {
         loss_rate: 0.25,
         goodput_bps: Some(100_000),
         delivery_bps: None,
+        path_generation: 0,
         congestion_events: 1,
     });
 

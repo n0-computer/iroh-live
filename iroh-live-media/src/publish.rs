@@ -231,17 +231,24 @@ pub struct LocalBroadcast {
     broadcast: moq_net::broadcast::Producer,
     #[debug(skip)]
     catalog: Mutex<CatalogProducer>,
-    /// Held for a publish task's whole life, so a replacement waits for its
-    /// predecessor's track producers to drop before creating its own. Without
-    /// it, swapping a source races the old track name and `create_track`
-    /// returns `Error::Duplicate` on a name that is about to be free.
+    /// Held for a video publish task's whole life, so a replacement waits for
+    /// its predecessor's track producers to drop before creating its own.
+    /// Without it, swapping a source races the old track name and
+    /// `create_track` returns `Error::Duplicate` on a name that is about to be
+    /// free.
     #[debug(skip)]
     video_slot: Arc<tokio::sync::Mutex<()>>,
+    /// The same for audio, whose track name is the same across two `set`
+    /// calls in a row.
+    #[debug(skip)]
+    audio_slot: Arc<tokio::sync::Mutex<()>>,
     clock: moq_mux::Clock,
     stats: PublishStats,
+    /// The running video publish, replaced whole under one lock so a
+    /// concurrent `clear` can never leave a task that nothing owns.
     video: Mutex<Option<VideoPublish>>,
+    /// The running audio publish, likewise.
     audio: Mutex<Option<AudioPublish>>,
-    preview: Mutex<Option<Arc<FrameReceiver<Arc<moq_video::Frame>>>>>,
 }
 
 /// A running video publish: the tasks driving it, plus the preview tap.
@@ -249,6 +256,7 @@ pub struct LocalBroadcast {
 struct VideoPublish {
     renditions: Vec<String>,
     task: video::PublishTask,
+    preview: Option<Arc<FrameReceiver<Arc<moq_video::Frame>>>>,
 }
 
 /// A running audio publish.
@@ -281,9 +289,9 @@ impl LocalBroadcast {
             clock,
             stats: PublishStats::default(),
             video_slot: Arc::new(tokio::sync::Mutex::new(())),
+            audio_slot: Arc::new(tokio::sync::Mutex::new(())),
             video: Mutex::new(None),
             audio: Mutex::new(None),
-            preview: Mutex::new(None),
         })
     }
 
@@ -379,7 +387,11 @@ impl LocalBroadcast {
     /// are the ones already on their way to the encoders. Returns `None` when
     /// no video source is publishing, or when the source is already encoded.
     pub fn preview(&self) -> Option<Arc<FrameReceiver<Arc<moq_video::Frame>>>> {
-        self.preview.lock().expect("poisoned").clone()
+        self.video
+            .lock()
+            .expect("poisoned")
+            .as_ref()
+            .and_then(|video| video.preview.clone())
     }
 
     /// Returns the broadcast producer, for callers that publish their own
@@ -397,7 +409,6 @@ impl LocalBroadcast {
     pub async fn shutdown(&mut self) {
         let video = self.video.lock().expect("poisoned").take();
         let audio = self.audio.lock().expect("poisoned").take();
-        self.preview.lock().expect("poisoned").take();
 
         if let Some(video) = video {
             video.task.shutdown().await;
@@ -455,33 +466,38 @@ impl VideoPublisher<'_> {
         // that never fills.
         let previewable = !matches!(source, VideoSource::AnnexB(_));
         let (preview_tx, preview_rx) = frame_channel::<Arc<moq_video::Frame>>();
-        // Drop the previous publish before spawning the replacement, so its
-        // abort is already in flight while the new task waits on the slot.
-        self.0.video.lock().expect("poisoned").take();
 
-        let task = video::spawn_publish(video::Publish {
-            broadcast: self.0.broadcast.clone(),
-            catalog: self.0.catalog.lock().expect("poisoned").clone(),
-            clock: self.0.clock,
-            stats: self.0.stats.clone(),
-            slot: self.0.video_slot.clone(),
-            source,
-            renditions,
-            preview: preview_tx,
-        });
-
-        *self.0.preview.lock().expect("poisoned") = previewable.then(|| Arc::new(preview_rx));
-        *self.0.video.lock().expect("poisoned") = Some(VideoPublish {
-            renditions: names,
-            task,
-        });
+        // One critical section from the old publish to the new one, so no
+        // concurrent `set_renditions` or `clear` can slip between spawning the
+        // replacement and installing it. The old publish is dropped outside
+        // the lock: its abort is then in flight while the new task waits on
+        // the slot for the track names it still owns.
+        let previous = {
+            let mut video = self.0.video.lock().expect("poisoned");
+            let task = video::spawn_publish(video::Publish {
+                broadcast: self.0.broadcast.clone(),
+                catalog: self.0.catalog.lock().expect("poisoned").clone(),
+                clock: self.0.clock,
+                stats: self.0.stats.clone(),
+                slot: self.0.video_slot.clone(),
+                source,
+                renditions,
+                preview: preview_tx,
+            });
+            video.replace(VideoPublish {
+                renditions: names,
+                task,
+                preview: previewable.then(|| Arc::new(preview_rx)),
+            })
+        };
+        drop(previous);
         Ok(())
     }
 
     /// Stops publishing video.
     pub fn clear(&self) {
-        self.0.video.lock().expect("poisoned").take();
-        self.0.preview.lock().expect("poisoned").take();
+        let previous = self.0.video.lock().expect("poisoned").take();
+        drop(previous);
     }
 
     /// Returns the names of the renditions currently publishing.
@@ -537,19 +553,28 @@ impl AudioPublisher<'_> {
             .track
             .clone()
             .unwrap_or_else(|| options.settings.codec.to_string());
-        let task = spawn_audio(
-            self.0.broadcast.clone(),
-            self.0.catalog.lock().expect("poisoned").clone(),
-            self.0.clock,
-            source,
-            options,
-        );
-        *self.0.audio.lock().expect("poisoned") = Some(AudioPublish { rendition, task });
+        // Spawned and installed in one critical section, like video, and the
+        // slot makes the replacement wait for its predecessor's track: two
+        // `set` calls in a row name the same track.
+        let previous = {
+            let mut audio = self.0.audio.lock().expect("poisoned");
+            let task = spawn_audio(
+                self.0.broadcast.clone(),
+                self.0.catalog.lock().expect("poisoned").clone(),
+                self.0.clock,
+                self.0.audio_slot.clone(),
+                source,
+                options,
+            );
+            audio.replace(AudioPublish { rendition, task })
+        };
+        drop(previous);
     }
 
     /// Stops publishing audio.
     pub fn clear(&self) {
-        self.0.audio.lock().expect("poisoned").take();
+        let previous = self.0.audio.lock().expect("poisoned").take();
+        drop(previous);
     }
 
     /// Returns the name of the rendition currently publishing.
@@ -575,6 +600,7 @@ fn spawn_audio(
         )
     )]
     clock: moq_mux::Clock,
+    slot: Arc<tokio::sync::Mutex<()>>,
     source: AudioSource,
     options: moq_audio::encode::Options,
 ) -> AudioTask {
@@ -586,6 +612,12 @@ fn spawn_audio(
         AudioSource::Device(config) => AudioTask::Local(crate::local_task::spawn(
             "audio-publish",
             move |shutdown| async move {
+                // Held until the publication is gone, which is when its track
+                // name is free for a replacement.
+                let _slot = tokio::select! {
+                    slot = slot.lock_owned() => slot,
+                    () = shutdown.cancelled() => return,
+                };
                 let mut publication_options = moq_audio::encode::PublicationOptions::default();
                 publication_options.capture = config;
                 publication_options.encode = options;
@@ -620,6 +652,10 @@ fn spawn_audio(
             let token = shutdown.clone();
             let task = AbortOnDropHandle::new(n0_future::task::spawn(
                 async move {
+                    let _slot = tokio::select! {
+                        slot = slot.lock_owned() => slot,
+                        () = token.cancelled() => return,
+                    };
                     if let Err(err) =
                         publish_audio_frames(broadcast, catalog, input, frames, options, token)
                             .await
@@ -697,4 +733,86 @@ fn check_unique<'a>(names: impl Iterator<Item = &'a str>) -> Result<(), PublishE
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use n0_watcher::Watcher as _;
+
+    use super::*;
+    use crate::{subscribe::RemoteBroadcast, test_source};
+
+    /// Reads one decoded audio frame from `consumer`, waiting for the catalog
+    /// to describe the track first.
+    async fn first_audio_frame(consumer: moq_net::broadcast::Consumer) -> moq_audio::Frame {
+        let remote = RemoteBroadcast::new("test", consumer.clone())
+            .await
+            .expect("the catalog arrives");
+        let mut updates = remote.catalog_watcher();
+        let (name, config) = loop {
+            if let Some((name, config)) = remote.catalog().audio().first_key_value() {
+                break (name.clone(), config.clone());
+            }
+            updates.updated().await.expect("the catalog keeps coming");
+        };
+        let mut audio =
+            moq_audio::decode::Consumer::new(&consumer, &config, &name, Default::default())
+                .await
+                .expect("the audio track opens");
+        audio
+            .read()
+            .await
+            .expect("the audio track reads")
+            .expect("the audio track carries a frame")
+    }
+
+    /// Two audio `set` calls in a row name the same track, and the second
+    /// publish must not create it while the first still owns it (R07).
+    ///
+    /// An end-to-end check rather than a reproduction: a frame source's task is
+    /// aborted and dropped before its replacement first runs, so this passes
+    /// without the slot too. The slot is what covers a microphone, whose
+    /// thread takes a moment to let its track go.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_audio_sets_in_a_row_keep_publishing() {
+        let broadcast = LocalBroadcast::new(moq_net::broadcast::Info::new().produce())
+            .expect("the catalog track is created");
+        let tone = || test_source::audio(440.0, 48_000, moq_audio::Layout::Mono);
+        broadcast.audio().set(tone());
+        // Let the first publish create its track: the collision needs a name
+        // that is taken when the replacement asks for it.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            first_audio_frame(broadcast.consume()),
+        )
+        .await
+        .expect("the first audio publish never produced a frame");
+        broadcast.audio().set(tone());
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            first_audio_frame(broadcast.consume()),
+        )
+        .await
+        .expect("the replacement audio publish never produced a frame");
+    }
+
+    /// The same for video, which had the slot already but spawned the
+    /// replacement and installed it in separate lock acquisitions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_video_sets_in_a_row_keep_publishing() {
+        let broadcast = LocalBroadcast::new(moq_net::broadcast::Info::new().produce())
+            .expect("the catalog track is created");
+        let pattern = || test_source::video(moq_video::Size::new(64, 48), 30);
+        broadcast.video().set(pattern()).expect("valid");
+        broadcast.video().set(pattern()).expect("valid");
+        assert!(broadcast.preview().is_some());
+        broadcast.video().clear();
+        assert!(
+            broadcast.preview().is_none(),
+            "the preview goes with the publish"
+        );
+    }
 }

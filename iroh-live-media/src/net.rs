@@ -100,6 +100,13 @@ pub struct NetworkSignals {
     /// reports the window, not the path. And an older publisher sends none, so
     /// a rule built on it needs another for when it is absent.
     pub delivery_bps: Option<u64>,
+    /// Bumped whenever the connection moves to a different network path.
+    ///
+    /// Everything a consumer learns from these figures is about one path, so a
+    /// change of path is the point to forget it: a round trip minimum or a
+    /// bandwidth reading carried from a direct path onto a relay describes a
+    /// link that is no longer there.
+    pub path_generation: u64,
     /// Monotonically increasing congestion event counter.
     ///
     /// Congestion this endpoint's own sending ran into, so it carries the same
