@@ -32,6 +32,8 @@ fn shared_lookup() -> MemoryLookup {
 /// for the rest of the run.
 struct TestRelay {
     _server_task: AbortOnDropHandle<()>,
+    /// Accepts iroh clients, for a relay wired as the shipped one is.
+    _iroh_router: Option<iroh::protocol::Router>,
     _cluster_task: AbortOnDropHandle<()>,
     cluster: Cluster,
     noq_addr: std::net::SocketAddr,
@@ -39,13 +41,29 @@ struct TestRelay {
 }
 
 impl TestRelay {
-    /// Starts a relay wired the way `iroh_live_relay::run` wires one.
+    /// Starts a relay that lets anyone publish anywhere, as a relay with loose
+    /// admission would.
+    ///
+    /// Most tests here are about bridging, which does not care who may
+    /// publish where; the ones about forging paths use it as the relay a node
+    /// must not trust.
     ///
     /// A cluster unannounces a broadcast the moment it loses its last source,
     /// which is what the pull-lifecycle tests below observe. It used to linger
     /// for five seconds unless told otherwise; moq removed the knob along with
     /// the delay.
     async fn start() -> Self {
+        Self::start_with(false).await
+    }
+
+    /// Starts a relay wired the way `iroh_live_relay::run` wires one: iroh
+    /// clients publish only under their own id, browsers only at names of one
+    /// segment.
+    async fn start_shipped() -> Self {
+        Self::start_with(true).await
+    }
+
+    async fn start_with(shipped: bool) -> Self {
         let mut quic = moq_tokio::quic::Config::default();
         quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
         let connect = moq_tokio::connect::Config::default();
@@ -76,16 +94,23 @@ impl TestRelay {
         ));
         server_config.listen.tls.generate = vec!["localhost".into()];
         server_config.quic = quic.clone();
-        server_config.iroh = Some(iroh.clone());
+        if !shipped {
+            server_config.iroh = Some(iroh.clone());
+        }
         let server = server_config.init().expect("init server");
         let client = connect
             .clone()
             .init(quic)
             .expect("init client")
-            .with_iroh(iroh);
+            .with_iroh(iroh.clone());
 
-        let mut auth_config = moq_relay::auth::Config::default();
-        auth_config.public = vec![moq_net::Pattern::all()];
+        let auth_config = if shipped {
+            iroh_live_relay::browser_auth()
+        } else {
+            let mut auth_config = moq_relay::auth::Config::default();
+            auth_config.public = vec![moq_net::Pattern::all()];
+            auth_config
+        };
         let auth = auth_config
             .init("relay-bridge-test", &connect.tls)
             .expect("init auth");
@@ -97,6 +122,8 @@ impl TestRelay {
         let cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
             started.run().await.expect("cluster failed");
         }));
+        let iroh_router =
+            shipped.then(|| iroh_live_relay::IrohSessions::new(cluster.clone(), None).router(iroh));
 
         let mut listener = server.listen().await.expect("listen");
         let noq_addr = listener.local_addr().expect("get noq addr");
@@ -117,6 +144,7 @@ impl TestRelay {
 
         Self {
             _server_task: server_task,
+            _iroh_router: iroh_router,
             _cluster_task: cluster_task,
             cluster,
             noq_addr,
@@ -1251,4 +1279,98 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
 
     bob.shutdown().await;
     alice.shutdown().await;
+}
+
+/// The shipped relay keeps every publisher to the paths that name it: an iroh
+/// client cannot publish under another client's id, and a browser cannot
+/// publish into `live/` or `rooms/` at all, while each still publishes what is
+/// its own.
+#[tokio::test]
+#[serial]
+async fn the_shipped_relay_refuses_forged_paths() {
+    use iroh_moq::{Audience, RelayOffer};
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_shipped().await;
+    let (sub_origin, _sub_driver) = test_origin();
+    let _viewer = established(
+        noq_client()
+            .with_subscriber(sub_origin.clone())
+            .connect(relay.url()),
+    )
+    .await;
+
+    let alice = iroh::SecretKey::generate().public();
+    let (mallory_endpoint, mallory) = relay_node(false).await;
+    let (own, _own) = counter("data");
+    let (forged, _forged) = counter("data");
+    let (room_forged, _room_forged) = counter("data");
+    let own = mallory
+        .moq()
+        .publish("cam", &own, Audience::Everyone)
+        .expect("publish");
+    let forged_path = format!("live/{alice}/cam");
+    let room_path = format!("rooms/topic/{alice}/cam");
+    let _forged = mallory
+        .moq()
+        .publish_at(forged_path.as_str(), &forged, Audience::Everyone)
+        .expect("publish at alice's path");
+    let _room_forged = mallory
+        .moq()
+        .publish_at(room_path.as_str(), &room_forged, Audience::Everyone)
+        .expect("publish at alice's room path");
+    let _link = attached(&mallory, &relay, RelayOffer::Public).await;
+
+    // A browser tries the same, and publishes a name of its own.
+    let (browser, _browser_driver) = test_origin();
+    let browser_forged = browser
+        .publish(
+            format!("live/{alice}/screen").as_str(),
+            origin::Route::default(),
+        )
+        .expect("broadcast");
+    let browser_own = browser
+        .publish("browser-stream", origin::Route::default())
+        .expect("broadcast");
+    let _browser_session = established(
+        noq_client()
+            .with_publisher(browser.consume())
+            .connect(relay.url()),
+    )
+    .await;
+
+    announced_at(&sub_origin, own.path().as_str()).await;
+    announced_at(&sub_origin, "browser-stream").await;
+    for path in [forged_path, room_path, format!("live/{alice}/screen")] {
+        assert!(
+            !routed_soon(&sub_origin, &path).await,
+            "the relay took a broadcast at {path} from someone it does not name"
+        );
+    }
+
+    // And an iroh node reads through it, over the relay's own acceptor.
+    let (_viewer_endpoint, viewer) = relay_node(false).await;
+    let _viewer_link = attached(&viewer, &relay, RelayOffer::Nothing).await;
+    let track = browser_own.create_track("data", None).expect("track");
+    let mut group = track.append_group().expect("group");
+    group
+        .write_frame(Timestamp::ZERO, b"from-the-browser".as_ref())
+        .expect("write");
+    group.finish().expect("finish");
+    let subscription = tokio::time::timeout(
+        TIMEOUT,
+        viewer
+            .moq()
+            .subscribe("browser-stream", iroh_moq::Reach::Relays),
+    )
+    .await
+    .expect("subscribe timeout")
+    .expect("subscribe through the relay");
+    let frame = first_frame(&subscription.as_moq(), "data").await;
+    assert_eq!(&frame.payload[..], b"from-the-browser");
+
+    drop((browser_forged, browser_own));
+    viewer.shutdown().await;
+    mallory.shutdown().await;
+    drop(mallory_endpoint);
 }

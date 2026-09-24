@@ -70,7 +70,7 @@ pub use self::{
     path::{live_path, publisher_of},
     publish::{Audience, OfferGuard, Publication},
     route::{LinkId, LinkKind, RouteInfo, Subscription},
-    session::{Incoming, Session, SessionStats, dial},
+    session::{Incoming, Session, SessionStats, accept, dial},
     ticket::BroadcastTicket,
 };
 

@@ -534,6 +534,25 @@ async fn dial_with(
     })
 }
 
+/// Completes the server half of the WebTransport handshake on `connection`.
+///
+/// The counterpart of [`dial`], for an application that runs moq-net's server
+/// itself, such as a relay that decides what each iroh peer may publish from
+/// its authenticated endpoint id. Returns the session and, for HTTP/3, the
+/// CONNECT target (path and query); a raw session carries its path in the MoQ
+/// setup instead.
+///
+/// # Errors
+///
+/// Fails if the HTTP/3 exchange fails, or the connection negotiated an ALPN
+/// this build does not speak.
+pub async fn accept(
+    connection: Connection,
+) -> Result<(web_transport_iroh::Session, Option<String>), Error> {
+    let (session, h3) = accept_transport(connection).await?;
+    Ok((session, h3.map(|(target, _headers)| target)))
+}
+
 /// Completes the server half of the WebTransport handshake.
 ///
 /// Returns the session and, for HTTP/3, the request target and headers. Raw

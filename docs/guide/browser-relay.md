@@ -80,6 +80,15 @@ The relay also serves a publish page, which captures the browser's camera and
 microphone and publishes into the relay. Native clients subscribe to that
 broadcast like any other.
 
+Anyone may connect and watch anything, but nobody may publish under someone
+else's name. An iroh client publishes only at the paths that name its endpoint
+id, `live/<its id>/...` and `rooms/<topic>/<its id>/...`, which iroh has
+authenticated; the relay accepts iroh sessions itself to know that id. A browser
+has no such identity, so it publishes only at names of one segment, which is
+what the publish page's `?name=` gives, and never into `live/` or `rooms/`.
+`irl publish --relay` only publishes into the relay, and does not read the
+relay's other broadcasts.
+
 ## The web client
 
 `iroh-live-relay/web/` is a solid-js and TypeScript application built with Vite,

@@ -1,8 +1,10 @@
 //! iroh-live relay server: bridges iroh P2P and browser WebTransport clients.
 //!
-//! Authentication is not yet implemented. The relay currently accepts all
-//! connections. Adding auth is straightforward since MoQ supports token-based
-//! authentication.
+//! Admission is open: anyone may connect and subscribe to anything. What a
+//! session may publish is not. An iroh client publishes only at the paths that
+//! name its authenticated endpoint id (see [`iroh_sessions`]), and a browser
+//! only at names of one segment, so nobody can publish a broadcast under
+//! another publisher's path. Token auth for the rest is still to come.
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -23,7 +25,10 @@ use tokio_util::task::AbortOnDropHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
 
+pub mod iroh_sessions;
 pub mod pull;
+
+pub use self::iroh_sessions::{IrohSessions, browser_auth, publish_scope};
 
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
@@ -62,16 +67,10 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let connect = moq_tokio::connect::Config::default();
 
     let iroh_secret = relay.iroh_secret_key()?;
-    // Register the MoQ ALPNs so the endpoint accepts iroh-native MoQ clients
-    // (e.g. the `irl` CLI and `subscribe_test`). Mirrors the ALPN set that
-    // `moq_tokio::iroh::EndpointConfig::bind` registers: every MoQ-lite/IETF
-    // version plus the WebTransport-over-HTTP/3 ALPN. Without this the endpoint
-    // rejects MoQ connections with "peer doesn't support any known protocol".
-    let mut alpns: Vec<Vec<u8>> = moq_net::ALPNS
-        .iter()
-        .map(|alpn| alpn.as_bytes().to_vec())
-        .collect();
-    alpns.push(web_transport_iroh::ALPN_H3.as_bytes().to_vec());
+    // Every MoQ-lite/IETF version plus WebTransport over HTTP/3, which is what
+    // iroh-native MoQ clients (`irl`, `subscribe_test`) dial with.
+    // `IrohSessions`' router accepts under the same set.
+    let alpns = IrohSessions::alpns();
     // mDNS, for the same reason `irl` takes it: a ticket names an endpoint id and
     // no addresses, and pull mode's whole job is turning one of those into a
     // connection. Pkarr and DNS cover a publisher with internet, and they take a
@@ -100,7 +99,8 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     // but not yet implemented.
     server_config.listen.tls.generate = vec!["localhost".to_string()];
     server_config.quic = quic.clone();
-    server_config.iroh = Some(iroh_endpoint.clone());
+    // Not `server_config.iroh`: iroh clients are accepted by `IrohSessions`
+    // below, which knows who they are.
     let server = server_config.init()?;
     let client = connect.clone().init(quic)?.with_iroh(iroh_endpoint.clone());
 
@@ -109,11 +109,9 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     let certificates = server.certificates();
 
-    // TODO: Implement auth (free for all atm). `**` is every path, published
-    // and subscribed alike, with no expiry and no auth server behind it.
-    let mut auth_config = moq_relay::auth::Config::default();
-    auth_config.public = vec![moq_net::Pattern::all()];
-    let auth = auth_config.init(RELAY_NODE, &connect.tls)?;
+    // Browsers and other non-iroh clients: subscribe to anything, publish at
+    // names of one segment. No expiry and no auth server behind it yet.
+    let auth = browser_auth().init(RELAY_NODE, &connect.tls)?;
 
     let cluster =
         Cluster::new(moq_relay::cluster::Options::new(Default::default()))?.with_client(client);
@@ -134,6 +132,8 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     // connection and holepunching state to keep alive, for nothing: dialling
     // out is unaffected by the ALPNs this one accepts on.
     let pull_state = Arc::new(pull::PullState::new(iroh_endpoint.clone(), cluster.clone()));
+    let iroh_router =
+        IrohSessions::new(cluster.clone(), Some(pull_state.clone())).router(iroh_endpoint.clone());
 
     let http_state = Arc::new(HttpState { certificates });
 
@@ -212,38 +212,15 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         // A name that happens to parse as a ticket is a pull request; anything
         // else is an ordinary broadcast name that the cluster already knows or
         // does not.
-        let ticket = extract_name_from_url(&request).and_then(|name| {
-            // The requested spelling travels with the ticket: it is the path the
-            // subscriber will be announced under, and the two have to agree.
-            let ticket = name.parse::<BroadcastTicket>().ok()?;
-            Some((name, ticket))
-        });
-        debug!(conn_id, %transport, pull = ticket.is_some(), "accepted connection");
+        let name = extract_name_from_url(&request);
+        debug!(conn_id, %transport, ?name, "accepted connection");
 
         let pull_state = pull_state.clone();
         let conn = Connection::new(request, cluster.clone(), auth.clone()).with_id(conn_id);
         conn_id += 1;
         tokio::spawn(async move {
-            // Alongside the session rather than before it. The dial can take as
-            // long as the publisher takes to answer, and a browser that named an
-            // unreachable ticket should get a session that reports an empty
-            // broadcast rather than one that never starts.
-            //
-            // The task holds the guard, so it lives exactly as long as this
-            // connection: dropping the handle drops the guard whether the pull
-            // finished or not, which is what tells the pull that this session
-            // has stopped wanting the broadcast.
-            let _pull = ticket.map(|(name, ticket)| {
-                AbortOnDropHandle::new(tokio::spawn(async move {
-                    match pull_state.pull(&name, &ticket).await {
-                        Ok(guard) => Some(guard),
-                        Err(err) => {
-                            warn!(%err, "pull failed for the ticket in the url");
-                            None
-                        }
-                    }
-                }))
-            });
+            // Held by the task, so it lives exactly as long as this connection.
+            let _pull = name.and_then(|name| pull_for(pull_state, name));
             if let Err(err) = conn.run().await {
                 warn!(conn_id, %err, "connection closed");
             }
@@ -253,7 +230,36 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     // Consumes the listener, so its sockets are released before `run` returns
     // rather than whenever the last clone of anything holding them drops.
     listener.close().await;
+    if let Err(err) = iroh_router.shutdown().await {
+        warn!(%err, "the iroh router did not shut down cleanly");
+    }
     Ok(())
+}
+
+/// Pulls the broadcast a session named, if the name is a ticket, for as long
+/// as the returned handle lives.
+///
+/// Alongside the session rather than before it: the dial can take as long as
+/// the publisher takes to answer, and a client that named an unreachable ticket
+/// should get a session that reports an empty broadcast rather than one that
+/// never starts. The handle holds the guard, so dropping it with the session
+/// tells the pull that this session stopped wanting the broadcast.
+pub(crate) fn pull_for(
+    pull_state: Arc<pull::PullState>,
+    name: String,
+) -> Option<AbortOnDropHandle<Option<pull::PullGuard>>> {
+    // The requested spelling travels with the ticket: it is the path the
+    // subscriber will be announced under, and the two have to agree.
+    let ticket = name.parse::<BroadcastTicket>().ok()?;
+    Some(AbortOnDropHandle::new(tokio::spawn(async move {
+        match pull_state.pull(&name, &ticket).await {
+            Ok(guard) => Some(guard),
+            Err(err) => {
+                warn!(%err, "pull failed for the ticket in the url");
+                None
+            }
+        }
+    })))
 }
 
 // -- Internal helpers --------------------------------------------------------

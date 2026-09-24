@@ -326,12 +326,16 @@ pub fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
 
 /// Attaches to the relay `relay`, redialing it if the session drops.
 ///
-/// The relay then receives every public broadcast this node publishes.
+/// The relay then receives every public broadcast this node publishes. The
+/// link only publishes: `irl publish` subscribes to nothing, and a consuming
+/// link would mirror the relay's whole namespace into the route table.
 fn attach_relay(live: &Live, relay: EndpointId, name: &str) -> Result<RelayLink> {
     let url = format!("iroh://{relay}/")
         .parse()
         .std_context("an endpoint id is a valid URL host")?;
-    let link = live.moq().attach_relay(RelayConfig::new(url))?;
+    let link = live
+        .moq()
+        .attach_relay(RelayConfig::new(url).with_consume(false))?;
     let path = iroh_live::moq::live_path(live.endpoint().id(), name);
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");
     println!("pushing to relay {relay}: viewers find the broadcast there at {path}");
