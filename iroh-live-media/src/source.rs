@@ -142,10 +142,9 @@ impl VideoSource {
     /// once it produced a frame.
     ///
     /// The config is upstream's, which already names every backend and device.
-    /// A device that is busy is tried again for a moment, which covers another
-    /// part of the application handing it over; one that opens and then
-    /// produces nothing within half a minute fails, since a screen capture may
-    /// wait that long on a permission dialog but a camera never does.
+    /// A device that opens and then produces nothing within half a minute
+    /// fails, since a screen capture may wait that long on a permission dialog
+    /// but a camera never does.
     ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
@@ -670,10 +669,6 @@ impl AudioSource {
         self.inner.kind_name
     }
 }
-
-/// How long a busy capture device is tried again before its open fails.
-#[cfg(feature = "capture")]
-pub(crate) const OPEN_PATIENCE: Duration = Duration::from_secs(2);
 
 /// How long an opened capture device may take over its first frame.
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]

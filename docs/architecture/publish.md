@@ -29,9 +29,8 @@ broadcasts and previews read it at once.
 `VideoSource` has these constructors:
 
 - `capture(moq_video::capture::Config)` opens a camera, a display, or a window
-  and returns once it produced a frame. It needs the `capture` feature. A busy
-  device is tried again for two seconds, and one that opens and produces nothing
-  within thirty fails.
+  and returns once it produced a frame. It needs the `capture` feature. A device
+  that opens and produces nothing within thirty seconds fails.
 - `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock, and
   a marker that flashes in step with `AudioSource::test_pattern`'s beep.
 - `push(format)` returns a `FrameSender` for frames the application makes. The

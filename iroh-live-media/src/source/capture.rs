@@ -6,17 +6,14 @@
 //! dedicated thread with a current-thread runtime and never leaves it; only
 //! its geometry and its frames cross.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::{FIRST_FRAME_PATIENCE, OPEN_PATIENCE, VideoFormat};
+use super::{FIRST_FRAME_PATIENCE, VideoFormat};
 use crate::{error::Error, frames::FrameSlot, local_task::LocalTask, video};
-
-/// The first wait before trying a busy device again.
-const RETRY_FIRST: Duration = Duration::from_millis(100);
 
 /// The rate assumed for a device that reports none.
 fn default_rate() -> video::Rate {
@@ -34,10 +31,14 @@ pub(super) async fn open(
 ) -> Result<(VideoFormat, LocalTask), Error> {
     let (opened_tx, opened) = oneshot::channel::<Result<VideoFormat, Error>>();
     let task = crate::local_task::spawn("video-capture", stop.clone(), move |stop| async move {
-        let mut stream = match open_with_retry(&config, &stop).await {
+        let opened = tokio::select! {
+            opened = video::capture::open(&config) => opened,
+            () = stop.cancelled() => return,
+        };
+        let mut stream = match opened {
             Ok(stream) => stream,
             Err(err) => {
-                let _ = opened_tx.send(Err(err));
+                let _ = opened_tx.send(Err(capture_error(err)));
                 return;
             }
         };
@@ -107,39 +108,6 @@ pub(super) async fn open(
         Err(_) => Err(Error::device_msg(
             "the capture thread stopped before the device opened",
         )),
-    }
-}
-
-/// Opens the device, trying a busy one again for a moment.
-///
-/// A device is busy far more often than it is broken, and the two look the
-/// same from here: `EBUSY` from a camera another part of this program is just
-/// handing over looks like one that will never open. A short patience covers
-/// the handover without hiding a device that is gone.
-async fn open_with_retry(
-    config: &video::capture::Config,
-    stop: &CancellationToken,
-) -> Result<video::capture::Stream, Error> {
-    let started = tokio::time::Instant::now();
-    let mut backoff = RETRY_FIRST;
-    loop {
-        let result = tokio::select! {
-            opened = video::capture::open(config) => opened,
-            () = stop.cancelled() => return Err(n0_error::e!(Error::Closed)),
-        };
-        let err = match result {
-            Ok(stream) => return Ok(stream),
-            Err(err) => err,
-        };
-        if started.elapsed() + backoff > OPEN_PATIENCE {
-            return Err(capture_error(err));
-        }
-        debug!(error = %err, retry_in = ?backoff, "the capture device would not open, trying again");
-        tokio::select! {
-            () = tokio::time::sleep(backoff) => {}
-            () = stop.cancelled() => return Err(n0_error::e!(Error::Closed)),
-        }
-        backoff *= 2;
     }
 }
 
