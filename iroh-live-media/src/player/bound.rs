@@ -59,6 +59,19 @@ pub(crate) struct Constraints {
     pub excluded: BTreeSet<String>,
 }
 
+impl Constraints {
+    /// Reports whether `rung` may play: not stalled, not excluded, and not
+    /// above the height limit.
+    pub(crate) fn allows(&self, rung: &Rung) -> bool {
+        !rung.stalled
+            && !self.excluded.contains(&rung.name)
+            && match (self.max_height, rung.height) {
+                (Some(max), Some(height)) => height <= max,
+                _ => true,
+            }
+    }
+}
+
 /// One reading of the network, as the bound needs it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Reading {
@@ -329,14 +342,7 @@ impl Bound {
         let eligible: Vec<usize> = ranked
             .iter()
             .enumerate()
-            .filter(|(_, rung)| {
-                !rung.stalled
-                    && !constraints.excluded.contains(&rung.name)
-                    && match (constraints.max_height, rung.height) {
-                        (Some(max), Some(height)) => height <= max,
-                        _ => true,
-                    }
-            })
+            .filter(|(_, rung)| constraints.allows(rung))
             .map(|(index, _)| index)
             .collect();
         // The guaranteed fallback: with every rung ruled out, the smallest

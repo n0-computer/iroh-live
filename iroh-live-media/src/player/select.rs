@@ -514,14 +514,7 @@ fn choose(
 fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
     rungs
         .iter()
-        .find(|rung| {
-            !rung.stalled
-                && !constraints.excluded.contains(&rung.name)
-                && match (constraints.max_height, rung.height) {
-                    (Some(max), Some(height)) => height <= max,
-                    _ => true,
-                }
-        })
+        .find(|rung| constraints.allows(rung))
         .or_else(|| rungs.last())
         .map(|rung| rung.name.clone())
 }

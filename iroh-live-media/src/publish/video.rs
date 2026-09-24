@@ -230,11 +230,7 @@ fn frame_interval(rendition: &VideoRendition, source: video::Rate) -> Option<std
 async fn probe(config: &mut encode::Config) -> Result<hang::catalog::VideoConfig, Error> {
     match config.probe().await {
         Ok(published) => Ok(published),
-        Err(err) if falls_back(&config.kind) => {
-            warn!(error = %err, "the hardware encoder would not open, falling back to software");
-            config.kind = encode::Kind::Software;
-            config.probe().await.map_err(encode_error)
-        }
+        Err(err) if fall_back(config, &err) => config.probe().await.map_err(encode_error),
         Err(err) => Err(encode_error(err)),
     }
 }
@@ -242,6 +238,17 @@ async fn probe(config: &mut encode::Config) -> Result<hang::catalog::VideoConfig
 /// Whether a failure of `kind` falls back to software.
 fn falls_back(kind: &encode::Kind) -> bool {
     matches!(kind, encode::Kind::Auto | encode::Kind::Hardware)
+}
+
+/// Switches `config` to the software encoder after `err`, if its backend was
+/// left open, and says whether it did.
+fn fall_back(config: &mut encode::Config, err: &video::Error) -> bool {
+    if !falls_back(&config.kind) {
+        return false;
+    }
+    warn!(error = %err, "the hardware encoder failed, falling back to software");
+    config.kind = encode::Kind::Software;
+    true
 }
 
 /// An encoder failure, as the crate reports it.
@@ -296,7 +303,6 @@ impl Encoder {
         let demand = self.producer.demand();
         let target = self.config.size();
         self.stats.update(|stats| stats.size = Some(target));
-        let mut fell_back = false;
 
         loop {
             // Idle until someone subscribes, the source ends, or the slot
@@ -320,14 +326,9 @@ impl Encoder {
             let _wanted = self.source.want();
             let mut encoder = match encode::Sink::open(&self.config).await {
                 Ok(encoder) => encoder,
-                Err(err) if !fell_back && falls_back(&self.config.kind) => {
-                    warn!(error = %err, "the hardware encoder would not open, falling back to software");
-                    fell_back = true;
-                    self.config.kind = encode::Kind::Software;
-                    encode::Sink::open(&self.config)
-                        .await
-                        .map_err(encode_error)?
-                }
+                Err(err) if fall_back(&mut self.config, &err) => encode::Sink::open(&self.config)
+                    .await
+                    .map_err(encode_error)?,
                 Err(err) => return Err(encode_error(err)),
             };
             self.encoding(encoder.name());
@@ -381,10 +382,7 @@ impl Encoder {
                 let started = Instant::now();
                 let encoded = match encoder.encode(frame).await {
                     Ok(encoded) => encoded,
-                    Err(err) if !fell_back && falls_back(&self.config.kind) => {
-                        warn!(error = %err, "the hardware encoder failed, falling back to software");
-                        fell_back = true;
-                        self.config.kind = encode::Kind::Software;
+                    Err(err) if fall_back(&mut self.config, &err) => {
                         encoder = encode::Sink::open(&self.config)
                             .await
                             .map_err(encode_error)?;

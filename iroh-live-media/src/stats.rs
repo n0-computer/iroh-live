@@ -252,11 +252,12 @@ impl PublishRecorder {
 /// stream which stops is seen to stop.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
-/// Counts events and reports how many happened per second.
+/// Counts events and reports how many happened per second, once per window.
 ///
 /// Owned by the one task that sees the events, so it needs no lock.
 #[derive(Debug)]
 pub(crate) struct RateMeter {
+    window: Duration,
     started: Instant,
     events: u32,
     amount: u64,
@@ -264,14 +265,20 @@ pub(crate) struct RateMeter {
 
 impl Default for RateMeter {
     fn default() -> Self {
-        Self::starting(Instant::now())
+        Self::over(RATE_WINDOW)
     }
 }
 
 impl RateMeter {
+    /// Creates a meter that reports once per `window`.
+    pub(crate) fn over(window: Duration) -> Self {
+        Self::starting(window, Instant::now())
+    }
+
     /// A meter whose window opened at `started`.
-    fn starting(started: Instant) -> Self {
+    fn starting(window: Duration, started: Instant) -> Self {
         Self {
+            window,
             started,
             events: 0,
             amount: 0,
@@ -288,7 +295,7 @@ impl RateMeter {
         self.events += 1;
         self.amount += amount;
         let elapsed = now.duration_since(self.started);
-        if elapsed < RATE_WINDOW {
+        if elapsed < self.window {
             return None;
         }
         let seconds = elapsed.as_secs_f64();
@@ -298,7 +305,7 @@ impl RateMeter {
         );
         // The window restarts at the reading, so the time spent computing does
         // not accumulate across windows.
-        *self = Self::starting(now);
+        *self = Self::starting(self.window, now);
         Some(rates)
     }
 }
@@ -330,7 +337,7 @@ mod tests {
     /// Runs forty events at offsets from `offset` and returns the first rate.
     fn drive(offset: impl Fn(u32) -> Duration) -> f64 {
         let start = Instant::now();
-        let mut meter = RateMeter::starting(start);
+        let mut meter = RateMeter::starting(RATE_WINDOW, start);
         (0..40)
             .find_map(|event| meter.tick_at(0, start + offset(event)))
             .expect("the offsets span the window")
@@ -351,7 +358,7 @@ mod tests {
     #[test]
     fn the_amount_is_a_rate_too() {
         let start = Instant::now();
-        let mut meter = RateMeter::starting(start);
+        let mut meter = RateMeter::starting(RATE_WINDOW, start);
         for tick in 0..30u32 {
             if let Some((_, bytes)) = meter.tick_at(2_500, start + Duration::from_millis(33) * tick)
             {
