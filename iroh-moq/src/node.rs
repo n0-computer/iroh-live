@@ -27,7 +27,7 @@ use crate::{
     Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, Incoming, LinkKind,
     Publication, RouteInfo, Session, SessionRequest, Subscription,
     link::{self, LinkState},
-    path::{LIVE, hop_for, legacy_name, live_path, publisher_of},
+    path::{hop_for, live_path, publisher_of},
     publish::peers_task,
     route,
     session::{SessionInner, SessionParts, Transport, dial_session, driver_now},
@@ -40,17 +40,6 @@ use crate::{
 /// A close is one packet and needs no answer, so this is a round trip's grace
 /// and not a negotiation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-
-/// How long a direct subscribe waits before it tries the older layout's name.
-///
-/// The publisher-named path goes first; the bare name a node on the older path
-/// layout publishes is tried once this has passed.
-///
-/// A current peer announces both, straight after the session opens, so the
-/// named path wins well inside this. An older peer announces only the bare
-/// name, and waiting first keeps it from winning a race against a current one.
-// TODO(old-layout): remove with the older path layout.
-const LEGACY_GRACE: Duration = Duration::from_secs(2);
 
 /// How many incoming sessions may wait for [`Moq::accept`] at once.
 ///
@@ -413,9 +402,7 @@ impl Moq {
     ///
     /// If no route exists yet, it reaches out as `reach` says. A direct reach
     /// dials the publisher the path names (`live/<id>/...` or
-    /// `rooms/<topic>/<id>/...`) and waits for it to announce the path. For a
-    /// `live/` path it also tries the bare name a node on the older path layout
-    /// publishes, if the publisher announces nothing under `live/<id>/`.
+    /// `rooms/<topic>/<id>/...`) and waits for it to announce the path.
     /// Cancellation safe: a dial it started continues for other callers.
     ///
     /// The route table holds routes a direct peer announces to its own
@@ -483,45 +470,16 @@ impl Moq {
         };
 
         // The session ending is the end of the wait unless a relay can still
-        // bring the path, and for a `live/` path the older layout's bare name
-        // is worth a try once the named path has had its chance.
-        // TODO(old-layout): remove the bare-name fallback with the older layout.
-        let legacy = legacy_name(&path);
-        let fallback = async {
-            let Some(name) = legacy else {
-                return Err(session.closed().await);
-            };
-            tokio::time::sleep(LEGACY_GRACE).await;
-            let bare = session.subscribe(name).await?;
-            // A peer on the current layout announces its named paths before
-            // their bare aliases, so if it announces any, the bare name is
-            // the alias of a named path the table is about to route, and the
-            // table's route is the one that can fail over to a relay.
-            let named = Path::new(&format!("{LIVE}/{peer}")).to_owned();
-            if session.announces_under(&named) {
-                debug!(%path, "the publisher uses the current layout, ignoring its bare name");
-                return Err(session.closed().await);
-            }
-            Ok(bare)
-        };
+        // bring the path.
         tokio::select! {
-            resolved = &mut routed => self.resolved(path, table, resolved),
-            fallback = fallback => match fallback {
-                Ok(subscription) => {
-                    info!(
-                        %path,
-                        legacy = %subscription.path(),
-                        "the publisher uses the older path layout",
-                    );
-                    Ok(subscription)
-                }
-                Err(_) if relays => {
-                    let resolved = routed.await;
-                    self.resolved(path, table, resolved)
-                }
-                Err(_) => Err(e!(Error::NotAnnounced { path })),
-            },
+            resolved = &mut routed => return self.resolved(path, table, resolved),
+            _ = session.closed() => {}
         }
+        if !relays {
+            return Err(e!(Error::NotAnnounced { path }));
+        }
+        let resolved = routed.await;
+        self.resolved(path, table, resolved)
     }
 
     fn resolved(

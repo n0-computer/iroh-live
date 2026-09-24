@@ -9,7 +9,7 @@ use std::{
 };
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
-use moq_net::{AsPath, Path, Pattern, Patterns, origin, server::Handshake};
+use moq_net::{AsPath, origin, server::Handshake};
 use n0_error::e;
 use tracing::{info, warn};
 
@@ -152,9 +152,8 @@ impl Session {
 
     /// Resolves `path` through this session only, whatever the route table holds.
     ///
-    /// For a path that means something on this session alone, such as a name a
-    /// peer on the older path layout publishes. Waits for the peer to announce
-    /// the path; cancellation safe.
+    /// For a path that means something on this session alone. Waits for the
+    /// peer to announce the path; cancellation safe.
     ///
     /// # Errors
     ///
@@ -178,25 +177,6 @@ impl Session {
             Some(self.inner.link),
             self.inner.shared.clone(),
         ))
-    }
-
-    /// Reports whether the peer announces anything under `prefix` on this session now.
-    pub(crate) fn announces_under(&self, prefix: &Path<'_>) -> bool {
-        let Ok(subtree) = Pattern::subtree(prefix.as_str()) else {
-            return false;
-        };
-        let Ok(scoped) = self
-            .inner
-            .ingest
-            .consume()
-            .scope("", &Patterns::from(subtree))
-        else {
-            return false;
-        };
-        // A new cursor replays what is announced now, so draining it without
-        // waiting sees exactly the current routes.
-        let mut cursor = scoped.announced();
-        std::iter::from_fn(|| cursor.try_next()).any(|update| update.kind.is_active())
     }
 
     /// Returns the link as this session's connection monitor last read it.

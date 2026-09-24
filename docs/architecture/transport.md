@@ -18,11 +18,6 @@ lets a route table see several routes to it, and what lets a relay's token grant
 `live/<id>/**` to exactly one publisher. A `BroadcastTicket` still names a
 publisher and a name; `ticket.path()` is the path.
 
-For one release a direct subscribe falls back to the bare name when the
-publisher-named path has not appeared within two seconds and the publisher
-announces nothing under `live/<its id>/`, the mark of a node on the older
-layout.
-
 ## One route table, fed by every link
 
 Every link writes what its peer announces into an ingest origin of its own, and a
@@ -35,16 +30,15 @@ hops) and fails over when it dies.
 Keeping the links' routes apart as well as merged is what lets the node say
 which link serves a path (`Moq::routes`, `Subscription::session`,
 `Subscription::link`), and lets a
-direct session answer a path that only means something on that session, such as
-an old node's bare name.
+direct session answer a path that only means something on that session.
 
 The bridge of a direct session mirrors only the routes to that peer's own
 broadcasts: paths that name the peer, `live/<peer>/...` and
 `rooms/<topic>/<peer>/...`. The table is shared by everything on the node and
 answers a ticket without dialing, so a peer must not be able to put a route to
 another publisher's path into it; hop chains cannot vouch for anything, since a
-peer declares its own hop. Whatever else a peer announces, a bare name or an
-application path such as `calls/<id>`, stays reachable over its session with
+peer declares its own hop. Whatever else a peer announces, such as an
+application path like `calls/<id>`, stays reachable over its session with
 `Session::subscribe`. A relay link mirrors everything, because forwarding other
 publishers' broadcasts is its job: attaching a relay trusts it, and its
 admission, with every path it forwards.

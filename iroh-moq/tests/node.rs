@@ -1,13 +1,11 @@
 //! Publishing and subscribing on a node, over real QUIC connections: paths
-//! that name their publisher, audiences, admission, routes, and the one release
-//! of interoperability with nodes on the older path layout.
+//! that name their publisher, audiences, admission, and routes.
 
 mod common;
 
 use std::{collections::BTreeSet, time::Duration};
 
 use common::{Node, TIMEOUT, TestBroadcast, ends, read_counter, reading, stays_pending, step};
-use iroh::protocol::Router;
 use iroh_moq::{
     Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach,
     Reject,
@@ -16,8 +14,6 @@ use moq_net::{Hop, Pattern, Patterns, origin};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher};
-
-type Transport = moq_tokio::transport::Session<web_transport_iroh::Session>;
 
 /// A subscriber reaches a broadcast by its ticket alone: the path names the
 /// publisher, so the node knows whom to dial.
@@ -117,9 +113,8 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     alice.shutdown().await;
 }
 
-/// Longer than a direct subscribe waits before it tries the older layout's
-/// bare name, so a negative check also covers the alias.
-const PAST_THE_GRACE: Duration = Duration::from_secs(3);
+/// How long a negative check waits for something that must not happen.
+const QUIET: Duration = Duration::from_secs(2);
 
 /// A publication for a set of peers reaches those peers only, follows the set
 /// as it changes, and ends for a peer taken out of it.
@@ -150,12 +145,12 @@ async fn a_peers_audience_follows_its_set() {
     tokio::join!(
         stays_pending(
             "carol resolved the path",
-            PAST_THE_GRACE,
+            QUIET,
             session.subscribe(publication.path()),
         ),
         stays_pending(
             "carol resolved the bare alias",
-            PAST_THE_GRACE,
+            QUIET,
             session.subscribe("cam"),
         ),
     );
@@ -204,7 +199,7 @@ async fn a_manual_audience_needs_an_offer() {
     let session = step("alice sees bob", session_with(&alice, bob.id())).await;
     stays_pending(
         "bob resolved it before the offer",
-        PAST_THE_GRACE,
+        QUIET,
         bob_session.subscribe(publication.path()),
     )
     .await;
@@ -463,10 +458,8 @@ async fn a_peer_cannot_route_another_publishers_path() {
     mallory.shutdown().await;
 }
 
-/// A subscriber that starts before its publisher resolves the named path.
-///
-/// Waiting past the grace for the older layout must not pin it to the bare
-/// alias a current publisher announces next to the named path.
+/// A subscriber that starts before its publisher resolves the path once it
+/// is published.
 #[tokio::test]
 #[traced_test]
 async fn a_subscriber_started_first_gets_the_named_path() {
@@ -479,8 +472,7 @@ async fn a_subscriber_started_first_gets_the_named_path() {
         let path = ticket.path();
         async move { moq.subscribe(path, Reach::Direct).await }
     });
-    // Past the grace, so the bare name is being looked for when both arrive.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let broadcast = TestBroadcast::start();
     let _publication = alice
         .moq
@@ -656,7 +648,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     read_counter(&subscription.as_moq()).await;
     stays_pending(
         "alice took a broadcast outside bob's grant",
-        PAST_THE_GRACE,
+        QUIET,
         alice.moq.subscribe(other.path(), Reach::Direct),
     )
     .await;
@@ -718,128 +710,5 @@ async fn session_with(node: &Node, remote: iroh::EndpointId) -> iroh_moq::Sessio
             return session;
         }
         sessions.updated().await.expect("node gone");
-    }
-}
-
-/// A node on the older layout publishes bare names, and a current node reaches
-/// them through the ticket: the direct subscribe tries the bare name once the
-/// publisher-named path has had its chance.
-#[tokio::test]
-#[traced_test]
-async fn a_publisher_on_the_older_layout_is_reached_by_its_bare_name() {
-    let old = LegacyServer::spawn().await;
-    let broadcast = TestBroadcast::start();
-    let (origin, _origin_task) = legacy_origin();
-    let _route = serve(&origin, "cam", &broadcast);
-    let _accept = old.serve(origin.consume());
-
-    let bob = Node::spawn().await;
-    let ticket = BroadcastTicket::new(old.endpoint.id(), "cam");
-    let subscription = step("subscribe", bob.moq.subscribe(ticket.path(), Reach::Direct))
-        .await
-        .expect("subscribe through the bare name");
-    assert_eq!(subscription.path().as_str(), "cam");
-    read_counter(&subscription.as_moq()).await;
-    bob.shutdown().await;
-}
-
-fn now() -> std::time::Instant {
-    tokio::time::Instant::now().into_std()
-}
-
-/// An origin as a node on the older layout ran it: a random hop, no paths
-/// naming anyone.
-fn legacy_origin() -> (origin::Producer, AbortOnDropHandle<()>) {
-    let (producer, driver) = origin::Producer::new(origin::Config::new(Hop::random()));
-    let task = tokio::spawn(async move {
-        moq_net::time::run(driver).await;
-    });
-    (producer, AbortOnDropHandle::new(task))
-}
-
-/// Publishes `broadcast` at `path` on `origin` as the older layout did.
-fn serve(
-    origin: &origin::Producer,
-    path: &str,
-    broadcast: &TestBroadcast,
-) -> AbortOnDropHandle<()> {
-    let dynamic = origin
-        .dynamic(path, origin::Route::default())
-        .expect("route");
-    let consumer = broadcast.producer.consume();
-    AbortOnDropHandle::new(tokio::spawn(async move {
-        while let Ok(request) = dynamic.requested_broadcast().await {
-            request.accept(&consumer);
-        }
-    }))
-}
-
-/// A node on the older layout: it accepts MoQ and publishes one origin to
-/// every session, the way `Moq` did before paths named their publisher.
-struct LegacyServer {
-    endpoint: iroh::Endpoint,
-    incoming:
-        std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<iroh::endpoint::Connection>>>,
-    _router: Router,
-}
-
-#[derive(Debug, Clone)]
-struct Forward(tokio::sync::mpsc::Sender<iroh::endpoint::Connection>);
-
-impl iroh::protocol::ProtocolHandler for Forward {
-    async fn accept(
-        &self,
-        connection: iroh::endpoint::Connection,
-    ) -> Result<(), iroh::protocol::AcceptError> {
-        self.0.send(connection).await.ok();
-        Ok(())
-    }
-}
-
-impl LegacyServer {
-    async fn spawn() -> Self {
-        let endpoint = common::endpoint().await;
-        let (tx, incoming) = tokio::sync::mpsc::channel(4);
-        let mut router = Router::builder(endpoint.clone());
-        for alpn in iroh_moq::alpns() {
-            router = router.accept(alpn, Forward(tx.clone()));
-        }
-        Self {
-            endpoint,
-            incoming: std::sync::Arc::new(tokio::sync::Mutex::new(incoming)),
-            _router: router.spawn(),
-        }
-    }
-
-    /// Serves `publisher` to the next session, in the background.
-    fn serve(&self, publisher: origin::Consumer) -> AbortOnDropHandle<()> {
-        let incoming = self.incoming.clone();
-        AbortOnDropHandle::new(tokio::spawn(async move {
-            let connection = {
-                let mut incoming = incoming.lock().await;
-                match tokio::time::timeout(TIMEOUT, incoming.recv()).await {
-                    Ok(Some(connection)) => connection,
-                    _ => return,
-                }
-            };
-            let transport = if connection.alpn() == web_transport_iroh::ALPN_H3.as_bytes() {
-                let request = web_transport_iroh::H3Request::accept(connection)
-                    .await
-                    .expect("H3 CONNECT");
-                let mut response = web_transport_proto::ConnectResponse::OK;
-                if let Some(protocol) = request.protocols.first() {
-                    response = response.with_protocol(protocol);
-                }
-                request.respond(response).await.expect("H3 response")
-            } else {
-                web_transport_iroh::Session::raw(connection)
-            };
-            let (_session, driver) = moq_net::Server::new()
-                .with_publisher(publisher)
-                .accept(now(), Transport::new(transport))
-                .await
-                .expect("handshake");
-            moq_net::time::run(driver).await;
-        }))
     }
 }

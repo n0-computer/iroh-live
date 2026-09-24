@@ -42,21 +42,6 @@ pub fn publisher_of(path: &Path<'_>) -> Option<EndpointId> {
     id.parse().ok()
 }
 
-/// Returns the bare name the older path layout used for `live/<publisher>/<name>`.
-///
-/// Nodes on the old layout publish and ask for `<name>` alone. Answering and
-/// resolving that name is what lets the two layouts interoperate for one
-/// release.
-// TODO(old-layout): remove with the older path layout.
-pub(crate) fn legacy_name(path: &Path<'_>) -> Option<PathOwned> {
-    let (namespace, rest) = path.next_part()?;
-    if namespace != LIVE {
-        return None;
-    }
-    let (_publisher, name) = rest.next_part()?;
-    (!name.is_empty()).then(|| name.to_owned())
-}
-
 /// Returns the moq hop id of the node with endpoint id `id`.
 ///
 /// Derived rather than drawn at random per start, so a relay that saw this node
@@ -89,7 +74,6 @@ mod tests {
         let path = live_path(publisher, "cam");
         assert_eq!(path.as_str(), format!("live/{publisher}/cam"));
         assert_eq!(publisher_of(&path), Some(publisher));
-        assert_eq!(legacy_name(&path).expect("a name").as_str(), "cam");
     }
 
     #[test]
@@ -97,7 +81,6 @@ mod tests {
         let publisher = id();
         let path = Path::new(&format!("rooms/topic/{publisher}/cam")).to_owned();
         assert_eq!(publisher_of(&path), Some(publisher));
-        assert_eq!(legacy_name(&path), None);
     }
 
     #[test]
@@ -111,12 +94,6 @@ mod tests {
         ] {
             assert_eq!(publisher_of(&Path::new(&path)), None, "{path}");
         }
-    }
-
-    #[test]
-    fn a_name_with_slashes_keeps_them() {
-        let path = live_path(id(), "studio/main");
-        assert_eq!(legacy_name(&path).expect("a name").as_str(), "studio/main");
     }
 
     #[test]

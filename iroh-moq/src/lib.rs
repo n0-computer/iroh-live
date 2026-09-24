@@ -59,13 +59,6 @@
 //! [`Publication::withdrawn`], [`Subscription::closed`] and [`Session::closed`]
 //! lose nothing. [`Moq::shutdown`] is not cancellation safe, and is
 //! idempotent: call it again to finish.
-//!
-//! # Compatibility with the older path layout
-//!
-//! Publisher-named paths are this release's layout. For one release
-//! [`Moq::subscribe`] falls back to a publisher's bare name when it announces
-//! nothing under `live/<id>/`. That, and every other piece marked
-//! `TODO(old-layout)` in the source, go in the next release.
 
 mod endpoint;
 mod error;
