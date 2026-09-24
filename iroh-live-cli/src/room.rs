@@ -131,6 +131,9 @@ mod window {
     /// Height of the chat input line, in points.
     const CHAT_INPUT_HEIGHT: f32 = 22.0;
 
+    /// How often the window looks at its tiles when nothing else wakes it.
+    const TILE_CHECK: Duration = Duration::from_secs(1);
+
     /// How long the grid waits before it opens a member's broadcast again
     /// after the tile's session closed or opening it failed.
     ///
@@ -418,20 +421,33 @@ mod window {
             }
         }
 
-        /// Drops the tiles whose sessions have gone, and opens them again
-        /// after a pause if the member still lists them.
+        /// Drops the tiles whose broadcast or session has gone, and opens
+        /// them again after a pause if the member still lists them.
         ///
         /// The room's state drops a member that went away once its lease runs
         /// out, which takes minutes; a session that failed says so at once,
-        /// and may come back well within the lease.
+        /// and may come back well within the lease. A broadcast can also end
+        /// while its session stays: the member ended and republished it
+        /// faster than its announcement changed, or briefly stopped counting
+        /// this node as a member, which cuts off what this node reads. Either
+        /// way the membership does not change, so without this the tile would
+        /// freeze.
         fn drop_closed(&mut self, ctx: &egui::Context) {
-            let dropped = self.close_tiles("the session closed", |peer| {
-                peer.sub
-                    .session()
-                    .is_some_and(|session| session.connection().close_reason().is_some())
+            let dropped = self.close_tiles("the broadcast or its session ended", |peer| {
+                let subscription = peer.sub.subscription();
+                subscription.as_moq().is_closed()
+                    || subscription
+                        .session()
+                        .is_some_and(|session| session.connection().close_reason().is_some())
             });
             if dropped > 0 {
                 self.reconcile_later(ctx);
+            }
+            if !self.peers.is_empty() {
+                // A tile that stopped receiving frames stops asking for
+                // repaints, so check again on a timer rather than on the next
+                // frame that will not come.
+                ctx.request_repaint_after(TILE_CHECK);
             }
         }
 
