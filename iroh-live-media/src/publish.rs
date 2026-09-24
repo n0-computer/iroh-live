@@ -91,12 +91,10 @@ impl Drop for SlotTask {
 /// How long a replaced or closed publish task gets to finish its tracks.
 const FINISH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// One slot's state bundle: replaced whole, in one critical section.
-/// What one slot is running: its task, and the track names it holds.
+/// What one slot is running, replaced whole in one critical section.
 #[derive(Debug)]
 struct Slot {
     generation: u64,
-    names: Vec<String>,
     task: SlotTask,
 }
 
@@ -106,9 +104,6 @@ struct Shared {
     clock: moq_mux::Clock,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
-    /// Held from the check of one slot's names against the other's until the
-    /// slot is replaced, so two `set_*` calls racing cannot both take a name.
-    naming: Mutex<()>,
     /// Held by a video task while it owns track names, so a replacement waits
     /// for its predecessor's tracks to go before creating its own.
     video_tracks: Arc<tokio::sync::Mutex<()>>,
@@ -200,7 +195,6 @@ impl LocalBroadcast {
                 clock,
                 video: Mutex::new(None),
                 audio: Mutex::new(None),
-                naming: Mutex::new(()),
                 video_tracks: Default::default(),
                 audio_tracks: Default::default(),
                 generations: AtomicU64::new(0),
@@ -225,14 +219,12 @@ impl LocalBroadcast {
     /// # Errors
     ///
     /// Fails only for invalid configuration: an empty ladder, duplicate
-    /// rendition names, a name another track already has, a rate above the
-    /// source's, or a codec no compiled-in encoder supports. Fails with
-    /// [`Error::Closed`] after [`close`](Self::close).
+    /// rendition names, a rate above the source's, or a codec no compiled-in
+    /// encoder supports. Fails with [`Error::Closed`] after
+    /// [`close`](Self::close).
     pub fn set_video(&self, source: VideoSource, encoding: VideoEncoding) -> Result<(), Error> {
         self.check_open()?;
-        let _naming = self.shared.naming.lock().expect("poisoned");
-        let taken = self.audio_names();
-        encoding.validate(source.format().rate, &taken)?;
+        encoding.validate(source.format().rate)?;
         let names: Vec<String> = encoding
             .renditions
             .iter()
@@ -265,21 +257,13 @@ impl LocalBroadcast {
     ///
     /// # Errors
     ///
-    /// Fails if the audio already uses the track name `video`, or with
-    /// [`Error::Closed`] after [`close`](Self::close).
+    /// Fails with [`Error::Closed`] after [`close`](Self::close).
     pub fn set_encoded_video(&self, source: EncodedVideoSource) -> Result<(), Error> {
         self.check_open()?;
-        let _naming = self.shared.naming.lock().expect("poisoned");
-        let name = video::ENCODED_RENDITION.to_string();
-        if self.audio_names().contains(&name) {
-            return Err(Error::invalid(format!(
-                "the rendition name {name} is already a track on this broadcast"
-            )));
-        }
         info!(parent: &self.shared.span, "pre-encoded video set");
         self.replace(
             Medium::Video,
-            vec![name],
+            vec![video::ENCODED_RENDITION.to_string()],
             |shared, reporter, predecessor| {
                 let job = video::Job {
                     producer: shared.producer.clone(),
@@ -303,18 +287,12 @@ impl LocalBroadcast {
     ///
     /// # Errors
     ///
-    /// Fails for an invalid encoding, a track name a video rendition already
-    /// has, or with [`Error::Closed`] after [`close`](Self::close).
+    /// Fails for an invalid encoding, or with [`Error::Closed`] after
+    /// [`close`](Self::close).
     pub fn set_audio(&self, source: AudioSource, encoding: AudioEncoding) -> Result<(), Error> {
         self.check_open()?;
         encoding.validate()?;
-        let _naming = self.shared.naming.lock().expect("poisoned");
         let name = encoding.track_name();
-        if self.video_names().contains(&name) {
-            return Err(Error::invalid(format!(
-                "the audio track name {name} is already a video rendition"
-            )));
-        }
         info!(parent: &self.shared.span, source = source.kind_name(), track = %name, "audio set");
         self.replace(
             Medium::Audio,
@@ -422,28 +400,6 @@ impl LocalBroadcast {
         }
     }
 
-    /// The track names the audio slot holds.
-    fn audio_names(&self) -> Vec<String> {
-        self.shared
-            .audio
-            .lock()
-            .expect("poisoned")
-            .as_ref()
-            .map(|slot| slot.names.clone())
-            .unwrap_or_default()
-    }
-
-    /// The track names the video slot holds.
-    fn video_names(&self) -> Vec<String> {
-        self.shared
-            .video
-            .lock()
-            .expect("poisoned")
-            .as_ref()
-            .map(|slot| slot.names.clone())
-            .unwrap_or_default()
-    }
-
     /// Replaces a slot's bundle in one critical section.
     ///
     /// The new task receives the old one as its predecessor, finishes it
@@ -465,11 +421,7 @@ impl LocalBroadcast {
         let reporter = self.shared.status.begin(medium, generation, &names);
         let predecessor = slot.take().map(|previous| previous.task);
         let task = spawn(&self.shared, reporter, predecessor);
-        *slot = Some(Slot {
-            generation,
-            names,
-            task,
-        });
+        *slot = Some(Slot { generation, task });
     }
 
     fn clear(&self, medium: Medium) {

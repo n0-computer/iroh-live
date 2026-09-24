@@ -152,21 +152,3 @@ async fn closing_finishes_the_broadcast() {
         Err(Error::Closed { .. })
     ));
 }
-
-/// An audio track name a video rendition already has is refused at once.
-#[tokio::test]
-async fn an_audio_name_that_collides_with_video_is_refused() {
-    let broadcast = LocalBroadcast::new();
-    let source = VideoSource::test_pattern(
-        crate::video::Size::new(64, 48),
-        crate::video::Rate::new(30, 1).expect("valid"),
-    );
-    broadcast
-        .set_video(source, VideoEncoding::single(VideoRendition::new("opus")))
-        .expect("valid");
-    let result = broadcast.set_audio(
-        AudioSource::tone(440.0, audio::Layout::Mono),
-        AudioEncoding::voice(),
-    );
-    assert!(matches!(result, Err(Error::InvalidConfig { .. })));
-}

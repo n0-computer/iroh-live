@@ -30,7 +30,7 @@ impl VideoEncoding {
     }
 
     /// Checks everything that can be checked without opening an encoder.
-    pub(crate) fn validate(&self, source: video::Rate, taken: &[String]) -> Result<(), Error> {
+    pub(crate) fn validate(&self, source: video::Rate) -> Result<(), Error> {
         if self.renditions.is_empty() {
             return Err(Error::invalid(
                 "a video encoding needs at least one rendition",
@@ -44,12 +44,6 @@ impl VideoEncoding {
             if !seen.insert(rendition.name.as_str()) {
                 return Err(Error::invalid(format!(
                     "two renditions are named {}",
-                    rendition.name
-                )));
-            }
-            if taken.contains(&rendition.name) {
-                return Err(Error::invalid(format!(
-                    "the rendition name {} is already a track on this broadcast",
                     rendition.name
                 )));
             }
@@ -295,7 +289,7 @@ mod tests {
     fn an_empty_ladder_is_refused() {
         let encoding = VideoEncoding::ladder([]);
         assert!(matches!(
-            encoding.validate(fps(30), &[]),
+            encoding.validate(fps(30)),
             Err(Error::InvalidConfig { .. })
         ));
     }
@@ -304,15 +298,9 @@ mod tests {
     fn duplicate_names_are_refused() {
         let encoding = VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p360()]);
         assert!(matches!(
-            encoding.validate(fps(30), &[]),
+            encoding.validate(fps(30)),
             Err(Error::InvalidConfig { .. })
         ));
-    }
-
-    #[test]
-    fn a_name_the_audio_already_uses_is_refused() {
-        let encoding = VideoEncoding::single(VideoRendition::new("opus"));
-        assert!(encoding.validate(fps(30), &["opus".into()]).is_err());
     }
 
     #[test]
@@ -321,8 +309,8 @@ mod tests {
             rate: Some(fps(60)),
             ..VideoRendition::p360()
         });
-        assert!(encoding.validate(fps(30), &[]).is_err());
-        assert!(encoding.validate(fps(60), &[]).is_ok());
+        assert!(encoding.validate(fps(30)).is_err());
+        assert!(encoding.validate(fps(60)).is_ok());
     }
 
     #[test]
@@ -335,7 +323,7 @@ mod tests {
             })
         };
         assert!(matches!(
-            encoding.validate(fps(30), &[]),
+            encoding.validate(fps(30)),
             Err(Error::NoEncoder { .. })
         ));
     }
