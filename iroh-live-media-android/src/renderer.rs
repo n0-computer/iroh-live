@@ -91,9 +91,11 @@ void main() {
 /// Manages the EGL display, context, and surface internally. The caller
 /// provides a native window (from `ANativeWindow_fromSurface`) at
 /// construction time. All GL and EGL calls happen through this struct.
+#[derive(derive_more::Debug)]
 pub struct AndroidRenderer {
     gl: glow::Context,
     // EGL state.
+    #[debug(skip)]
     egl: egl_api::DynamicInstance<egl_api::EGL1_4>,
     egl_display: egl_api::Display,
     egl_context: egl_api::Context,
@@ -116,12 +118,6 @@ pub struct AndroidRenderer {
 // SAFETY: EGL/GL resources are only used from the GL thread, guaranteed by
 // the caller contract. The EGL instance (libloading::Library) is Send.
 unsafe impl Send for AndroidRenderer {}
-
-impl std::fmt::Debug for AndroidRenderer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AndroidRenderer").finish()
-    }
-}
 
 impl AndroidRenderer {
     /// Creates a renderer with a full EGL context bound to the given native window.
@@ -325,35 +321,17 @@ impl AndroidRenderer {
             egl::image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
         }
 
-        // Swap video dimensions for 90°/270° rotation (frame is sideways).
-        let (disp_w, disp_h) = if rotation_degrees == 90 || rotation_degrees == 270 {
-            (video_h, video_w)
-        } else {
-            (video_w, video_h)
-        };
-
-        // Clear full surface, then draw letterboxed.
         unsafe {
-            self.gl.viewport(0, 0, surface_w, surface_h);
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
+            self.draw(
+                self.oes_program,
+                self.oes_a_pos_loc,
+                self.oes_rotation_loc.as_ref(),
+                (surface_w, surface_h),
+                (video_w, video_h),
+                rotation_degrees,
+            );
+            egl::destroy_image(self.egl_display.as_ptr(), egl_image);
         }
-        let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
-        unsafe {
-            self.gl.viewport(vp_x, vp_y, vp_w, vp_h);
-            self.gl.use_program(Some(self.oes_program));
-            if let Some(ref loc) = self.oes_rotation_loc {
-                self.gl.uniform_1_i32(Some(loc), rotation_degrees as i32);
-            }
-            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            self.gl
-                .vertex_attrib_pointer_f32(self.oes_a_pos_loc, 2, glow::FLOAT, false, 0, 0);
-            self.gl.enable_vertex_attrib_array(self.oes_a_pos_loc);
-            self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            self.gl.disable_vertex_attrib_array(self.oes_a_pos_loc);
-        }
-
-        // Cleanup.
-        unsafe { egl::destroy_image(self.egl_display.as_ptr(), egl_image) };
     }
 
     /// Renders NV12 planes directly to the viewport via GPU shader conversion.
@@ -443,31 +421,52 @@ impl AndroidRenderer {
             );
         }
 
-        // Swap dimensions for 90°/270° rotation.
-        let (disp_w, disp_h) = if rotation_degrees == 90 || rotation_degrees == 270 {
-            (height, width)
-        } else {
-            (width, height)
-        };
+        unsafe {
+            self.draw(
+                self.nv12_program,
+                self.nv12_a_pos_loc,
+                self.nv12_rotation_loc.as_ref(),
+                (surface_w, surface_h),
+                (width, height),
+                rotation_degrees,
+            );
+        }
+    }
 
-        // Clear + letterbox + draw.
+    /// Clears the surface and draws the bound textures with `program`,
+    /// letterboxed and rotated.
+    ///
+    /// # Safety
+    /// The EGL context must be current on the calling thread.
+    unsafe fn draw(
+        &self,
+        program: glow::Program,
+        a_pos_loc: u32,
+        rotation_loc: Option<&glow::UniformLocation>,
+        (surface_w, surface_h): (i32, i32),
+        (video_w, video_h): (u32, u32),
+        rotation_degrees: u32,
+    ) {
+        // A frame turned by 90 or 270 degrees is displayed sideways.
+        let (disp_w, disp_h) = match rotation_degrees {
+            90 | 270 => (video_h, video_w),
+            _ => (video_w, video_h),
+        };
+        let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
         unsafe {
             self.gl.viewport(0, 0, surface_w, surface_h);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
-        }
-        let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
-        unsafe {
             self.gl.viewport(vp_x, vp_y, vp_w, vp_h);
-            self.gl.use_program(Some(self.nv12_program));
-            if let Some(ref loc) = self.nv12_rotation_loc {
+            self.gl.use_program(Some(program));
+            if let Some(loc) = rotation_loc {
                 self.gl.uniform_1_i32(Some(loc), rotation_degrees as i32);
             }
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             self.gl
-                .vertex_attrib_pointer_f32(self.nv12_a_pos_loc, 2, glow::FLOAT, false, 0, 0);
-            self.gl.enable_vertex_attrib_array(self.nv12_a_pos_loc);
+                .vertex_attrib_pointer_f32(a_pos_loc, 2, glow::FLOAT, false, 0, 0);
+            self.gl.enable_vertex_attrib_array(a_pos_loc);
             self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            self.gl.disable_vertex_attrib_array(self.nv12_a_pos_loc);
+            self.gl.disable_vertex_attrib_array(a_pos_loc);
         }
     }
 

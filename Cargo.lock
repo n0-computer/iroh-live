@@ -4515,6 +4515,7 @@ name = "iroh-live-media-android"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "derive_more",
  "glow 0.18.0",
  "iroh-live-media",
  "khronos-egl",
