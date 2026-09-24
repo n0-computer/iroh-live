@@ -80,6 +80,12 @@ pub(super) async fn run_raw(
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
+    let mut fail = |rendition: &str, err: Error| {
+        let err = Arc::new(err);
+        warn!(%rendition, error = %err, "rendition cannot encode");
+        reporter.rendition(rendition, RenditionState::Failed(err.clone()));
+        last_failure = Some(err);
+    };
     // Every rendition is probed before any is advertised, so the ladder
     // reaches the catalog in one go, with no await between its entries: a
     // viewer that sees the catalog between two probes would take a rendition
@@ -89,33 +95,22 @@ pub(super) async fn run_raw(
         let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
         match probe(&mut config).await {
             Ok(published) => probed.push((rendition, config, published)),
-            Err(err) => {
-                let err = Arc::new(err);
-                warn!(rendition = %rendition.name, error = %err, "no encoder for this rendition");
-                reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
-                last_failure = Some(err);
-            }
+            Err(err) => fail(&rendition.name, err),
         }
     }
     for (rendition, config, published) in probed {
-        let track = match producer.create_track(
-            rendition.name.as_str(),
-            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
-        ) {
-            Ok(track) => track,
-            Err(err) => {
-                let err = Arc::new(Error::broadcast(err));
-                reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
-                last_failure = Some(err);
-                continue;
-            }
-        };
-        let producer = match encode::Producer::with_track(track, catalog.clone(), published) {
+        let track_info = catalog.track_info(hang::catalog::PRIORITY.video);
+        let publisher = producer
+            .create_track(rendition.name.as_str(), Some(track_info))
+            .map_err(Error::broadcast)
+            .and_then(|track| {
+                encode::Producer::with_track(track, catalog.clone(), published)
+                    .map_err(Error::catalog)
+            });
+        let producer = match publisher {
             Ok(producer) => producer,
             Err(err) => {
-                let err = Arc::new(Error::catalog(err));
-                reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
-                last_failure = Some(err);
+                fail(&rendition.name, err);
                 continue;
             }
         };
@@ -398,14 +393,8 @@ impl Encoder {
                 let rates = meter.tick(bytes as u64);
                 let smoothed = timing.record(took);
                 self.stats.update(|stats| {
-                    stats.frames += 1;
-                    stats.bytes += bytes as u64;
+                    stats.record(bytes as u64, rates);
                     stats.encode_time = Some(smoothed);
-                    if let Some((fps, bytes_per_second)) = rates {
-                        stats.fps = Some(fps as f32);
-                        stats.bitrate =
-                            Some(crate::Bitrate::from_bps((bytes_per_second * 8.0) as u64));
-                    }
                 });
                 self.producer.publish(&encoded).map_err(Error::broadcast)?;
             }
@@ -492,15 +481,9 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
                 );
             }
             for frame in &frames {
-                let rates = meter.tick(frame.payload.len() as u64);
-                entry.update(|stats| {
-                    stats.frames += 1;
-                    stats.bytes += frame.payload.len() as u64;
-                    if let Some((fps, bytes)) = rates {
-                        stats.fps = Some(fps as f32);
-                        stats.bitrate = Some(crate::Bitrate::from_bps((bytes * 8.0) as u64));
-                    }
-                });
+                let bytes = frame.payload.len() as u64;
+                let rates = meter.tick(bytes);
+                entry.update(|stats| stats.record(bytes, rates));
             }
             units += frames.len() as u64;
             import.decode(frames).map_err(Error::decoder)?;

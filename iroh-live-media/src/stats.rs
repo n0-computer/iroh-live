@@ -51,6 +51,19 @@ pub struct EncodeStats {
     pub bytes: u64,
 }
 
+impl EncodeStats {
+    /// Counts one encoded frame of `bytes`, and the rates a [`RateMeter`]
+    /// reported with it, in frames and bytes per second.
+    pub(crate) fn record(&mut self, bytes: u64, rates: Option<(f64, f64)>) {
+        self.frames += 1;
+        self.bytes += bytes;
+        if let Some((fps, bytes_per_second)) = rates {
+            self.fps = Some(fps as f32);
+            self.bitrate = Some(Bitrate::from_bps((bytes_per_second * 8.0) as u64));
+        }
+    }
+}
+
 /// The audio publication.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AudioEncodeStats {
