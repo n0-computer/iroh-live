@@ -27,7 +27,6 @@ pub use self::{
 };
 use crate::{
     AudioSource, EncodedVideoSource, VideoSource,
-    catalog::CatalogProducer,
     error::Error,
     stats::{PublishRecorder, PublishStats},
 };
@@ -91,7 +90,7 @@ const FINISH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 /// Everything a slot task needs, moved into it whole.
 struct Job {
     producer: moq_net::broadcast::Producer,
-    catalog: CatalogProducer,
+    catalog: moq_mux::catalog::Producer,
     clock: moq_mux::Clock,
     /// Held while the task owns its track names.
     tracks: Arc<tokio::sync::Mutex<()>>,
@@ -156,7 +155,7 @@ struct Slot {
 #[debug("Shared {{ status: {status:?} }}")]
 struct Shared {
     producer: moq_net::broadcast::Producer,
-    catalog: Mutex<CatalogProducer>,
+    catalog: Mutex<moq_mux::catalog::Producer>,
     clock: moq_mux::Clock,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
@@ -222,7 +221,7 @@ impl LocalBroadcast {
         let config = moq_mux::catalog::Config::default()
             .with_catalog(hang::catalog::Catalog::default())
             .with_clock(clock);
-        let catalog = CatalogProducer::new(&mut producer, config)
+        let catalog = moq_mux::catalog::Producer::new(&mut producer, config)
             .expect("a new broadcast has no catalog track yet");
         let span = tracing::info_span!("broadcast");
         Self {

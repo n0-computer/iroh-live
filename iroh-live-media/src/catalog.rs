@@ -4,9 +4,6 @@ use std::sync::Arc;
 
 use hang::catalog::VideoConfig;
 
-/// The catalog producer for a broadcast.
-pub(crate) type CatalogProducer = moq_mux::catalog::Producer;
-
 /// A broadcast's catalog, as hang describes it.
 ///
 /// Cheap to clone, and derefs to [`hang::catalog::Catalog`]. Two catalogs are

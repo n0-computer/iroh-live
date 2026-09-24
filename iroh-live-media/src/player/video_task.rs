@@ -31,7 +31,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use n0_future::task::{AbortOnDropHandle, spawn};
+use n0_future::{
+    FutureExt,
+    boxed::BoxFuture,
+    task::{AbortOnDropHandle, spawn},
+};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, error_span, info, warn};
@@ -120,7 +124,7 @@ struct Delivery {
     frame: moq_video::Frame,
     /// When the frame came out of its decoder, for the timeline.
     decoded: Instant,
-    due: Pin<Box<dyn Future<Output = bool> + Send>>,
+    due: BoxFuture<bool>,
 }
 
 /// Forwards frames to the player's output and swaps decoders when the
@@ -146,7 +150,8 @@ pub(crate) async fn run(inputs: Inputs) {
     } = inputs;
     let mut switcher = VideoSwitcher::new(switch_deadline);
     let mut delivery: Option<Delivery> = None;
-    let mut pacing = Pacing::default();
+    // The shown-frame rate.
+    let mut shown = RateMeter::default();
 
     loop {
         let deadline = switcher.deadline();
@@ -251,7 +256,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         (Verdict::Promote, outcome) => {
                             // Whatever the incumbent was about to show is older
                             // than what takes over, so it goes.
-                            delivery = Some(pacing.pace(frame, &clock, &controls, &stats));
+                            delivery = Some(pace(frame, &mut shown, &clock, &controls, &stats));
                             outcome
                         }
                         (Verdict::Discard, outcome) => outcome,
@@ -265,7 +270,7 @@ pub(crate) async fn run(inputs: Inputs) {
                 }
                 Event::Incumbent(Some(frame)) => {
                     switcher.incumbent_frame(frame.timestamp.into());
-                    delivery = Some(pacing.pace(frame, &clock, &controls, &stats));
+                    delivery = Some(pace(frame, &mut shown, &clock, &controls, &stats));
                     Outcome::Idle
                 }
                 Event::Incumbent(None) => {
@@ -471,49 +476,42 @@ async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
     .await
 }
 
-/// The shown-frame rate, counted over a window.
-#[derive(Debug, Default)]
-struct Pacing {
-    meter: RateMeter,
-}
-
-impl Pacing {
-    /// Starts pacing one frame against the playout clock.
-    ///
-    /// Reads the latency on every frame, so a change of the pacing mode
-    /// reaches the picture at once.
-    fn pace(
-        &mut self,
-        frame: moq_video::Frame,
-        clock: &PlayoutClock,
-        controls: &Controls,
-        stats: &PlaybackRecorder,
-    ) -> Delivery {
-        let pts = frame.timestamp.into();
-        let size = frame.size();
-        let rate = self.meter.tick(0);
-        stats.video.update(|video| {
-            let video = video.get_or_insert_with(VideoPlaybackStats::default);
-            video.frames += 1;
-            video.size = Some(size);
-            if let Some((fps, _)) = rate {
-                video.fps = Some(fps.round() as u32);
-            }
-        });
-        let paced = controls.latency.borrow().paced();
-        let due: Pin<Box<dyn Future<Output = bool> + Send>> = match paced {
-            true => {
-                clock.received(pts);
-                let clock = clock.clone();
-                Box::pin(async move { clock.wait_async(pts).await })
-            }
-            false => Box::pin(std::future::ready(true)),
-        };
-        Delivery {
-            frame,
-            decoded: Instant::now(),
-            due,
+/// Starts pacing one frame against the playout clock, and counts it in
+/// `shown`.
+///
+/// Reads the latency on every frame, so a change of the pacing mode
+/// reaches the picture at once.
+fn pace(
+    frame: moq_video::Frame,
+    shown: &mut RateMeter,
+    clock: &PlayoutClock,
+    controls: &Controls,
+    stats: &PlaybackRecorder,
+) -> Delivery {
+    let pts = frame.timestamp.into();
+    let size = frame.size();
+    let rate = shown.tick(0);
+    stats.video.update(|video| {
+        let video = video.get_or_insert_with(VideoPlaybackStats::default);
+        video.frames += 1;
+        video.size = Some(size);
+        if let Some((fps, _)) = rate {
+            video.fps = Some(fps.round() as u32);
         }
+    });
+    let paced = controls.latency.borrow().paced();
+    let due = match paced {
+        true => {
+            clock.received(pts);
+            let clock = clock.clone();
+            async move { clock.wait_async(pts).await }.boxed()
+        }
+        false => std::future::ready(true).boxed(),
+    };
+    Delivery {
+        frame,
+        decoded: Instant::now(),
+        due,
     }
 }
 
