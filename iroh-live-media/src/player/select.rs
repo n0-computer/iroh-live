@@ -99,6 +99,60 @@ struct Excluded {
     backoff: Duration,
 }
 
+/// The renditions whose decoders failed, and how long each is left alone.
+///
+/// An entry outlives its exclusion: the rendition can only be tried again once
+/// its exclusion is over, so an entry dropped at that point would make every
+/// retry a first failure, and a rendition that never decodes would be retried
+/// at the first backoff forever. Entries go only when the rendition lands, or
+/// when the decoder configuration changes and every rendition deserves a fresh
+/// try.
+#[derive(Debug, Default)]
+struct Backoffs(BTreeMap<String, Excluded>);
+
+impl Backoffs {
+    /// Records a failure of `rendition` at `now`, doubling its backoff, and
+    /// returns the backoff.
+    fn fail(&mut self, rendition: &str, now: Instant) -> Duration {
+        let entry = self.0.entry(rendition.to_string()).or_insert(Excluded {
+            until: now,
+            backoff: BACKOFF_FIRST / 2,
+        });
+        entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
+        entry.until = now + entry.backoff;
+        entry.backoff
+    }
+
+    /// Returns the renditions left alone at `now`.
+    fn excluded(&self, now: Instant) -> BTreeSet<String> {
+        self.0
+            .iter()
+            .filter(|(_, entry)| entry.until > now)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Reports whether `rendition` is left alone at `now`.
+    fn is_excluded(&self, rendition: &str, now: Instant) -> bool {
+        self.0.get(rendition).is_some_and(|entry| entry.until > now)
+    }
+
+    /// Reports whether any rendition is left alone at `now`.
+    fn any_excluded(&self, now: Instant) -> bool {
+        self.0.values().any(|entry| entry.until > now)
+    }
+
+    /// Forgets `rendition`'s failures, as it plays.
+    fn landed(&mut self, rendition: &str) {
+        self.0.remove(rendition);
+    }
+
+    /// Forgets every failure, as the decoder configuration changed.
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// The decoder configuration a target was last built under.
 #[derive(Debug, PartialEq)]
 struct Config {
@@ -129,7 +183,7 @@ pub(crate) async fn run(inputs: Inputs) {
     let network = broadcast.network();
 
     let mut bound = Bound::new(Tuning::default());
-    let mut excluded: BTreeMap<String, Excluded> = BTreeMap::new();
+    let mut backoffs = Backoffs::default();
     let mut generation = 0u64;
     let mut last_config: Option<Config> = None;
     let mut restart = 0u64;
@@ -153,7 +207,7 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut first = true;
     loop {
         let auto = matches!(*mode.borrow(), RenditionMode::Auto { .. });
-        let ticking = (auto && network.is_some()) || !excluded.is_empty();
+        let ticking = (auto && network.is_some()) || backoffs.any_excluded(Instant::now());
         if !std::mem::take(&mut first) {
             tokio::select! {
                 () = shutdown.cancelled() => return,
@@ -183,8 +237,14 @@ pub(crate) async fn run(inputs: Inputs) {
                     if updated.is_err() {
                         return;
                     }
-                    if matches!(player.peek().video, SlotState::Ended) {
+                    let now_playing = player.peek();
+                    if matches!(now_playing.video, SlotState::Ended) {
                         ended_seen = true;
+                    }
+                    // A rendition that plays has recovered: its next failure
+                    // starts again from the first backoff.
+                    if let Some(playing) = &now_playing.rendition {
+                        backoffs.landed(playing);
                     }
                 }
                 failed_report = failures.recv() => {
@@ -196,14 +256,8 @@ pub(crate) async fn run(inputs: Inputs) {
                             "the new decoder configuration failed; the rendition keeps playing under the old one"
                         );
                     } else {
-                        let now = Instant::now();
-                        let entry = excluded.entry(rendition.clone()).or_insert(Excluded {
-                            until: now,
-                            backoff: BACKOFF_FIRST / 2,
-                        });
-                        entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
-                        entry.until = now + entry.backoff;
-                        info!(%rendition, backoff = ?entry.backoff, "leaving a failing rendition alone");
+                        let backoff = backoffs.fail(rendition, Instant::now());
+                        info!(%rendition, ?backoff, "leaving a failing rendition alone");
                     }
                     failed = Some(reported);
                 }
@@ -212,7 +266,6 @@ pub(crate) async fn run(inputs: Inputs) {
         }
 
         let now = Instant::now();
-        excluded.retain(|_, entry| entry.until > now);
 
         let mode = mode.borrow().clone();
         let Some(catalog) = catalog.peek().clone() else {
@@ -235,7 +288,7 @@ pub(crate) async fn run(inputs: Inputs) {
             last_config = Some(config);
             // A rendition that failed under the old configuration deserves a
             // try under the new one.
-            excluded.clear();
+            backoffs.clear();
         }
         let settings = DecodeSettings {
             consumer,
@@ -261,7 +314,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let (choice, why) = choose(
             &mode,
             &catalog,
-            &excluded.keys().cloned().collect(),
+            &backoffs.excluded(now),
             current.as_deref(),
             sample.as_ref(),
             &mut bound,
@@ -295,7 +348,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let retry = match (&failed, &next) {
             (Some(failed), Some(next)) => {
                 failed.target == next.target
-                    && !excluded.contains_key(&failed.target.rendition)
+                    && !backoffs.is_excluded(&failed.target.rendition, now)
                     && (!failed.config_only || nothing_playing)
             }
             _ => false,
@@ -488,6 +541,36 @@ mod tests {
     #[test]
     fn off_plays_nothing() {
         assert_eq!(pick(&RenditionMode::Off, &[]).0, None);
+    }
+
+    /// N1: an entry used to be dropped the moment its exclusion ran out, and
+    /// a rendition can only be retried after that, so every retry that failed
+    /// was a first failure and the backoff never grew past its first step.
+    #[test]
+    fn the_backoff_grows_across_retries() {
+        let mut backoffs = Backoffs::default();
+        let mut now = Instant::now();
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let backoff = backoffs.fail("high", now);
+            seen.push(backoff);
+            assert!(backoffs.is_excluded("high", now));
+            // The retry comes once the exclusion is over, and fails again.
+            now += backoff;
+            assert!(
+                !backoffs.is_excluded("high", now),
+                "still excluded at retry"
+            );
+            assert!(backoffs.excluded(now).is_empty());
+        }
+        assert_eq!(
+            seen,
+            [5, 10, 20, 40, 60].map(Duration::from_secs),
+            "the backoff did not grow"
+        );
+        // Playing resets it.
+        backoffs.landed("high");
+        assert_eq!(backoffs.fail("high", now), BACKOFF_FIRST);
     }
 
     #[test]
