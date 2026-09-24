@@ -534,6 +534,85 @@ mod tests {
         assert!(again.is_ok(), "a new request no longer joins the front");
     }
 
+    /// Measures what the gate in [`serve`] costs: setting offers up, and the
+    /// time a stream of small groups takes through an offer with and without
+    /// it. A measurement rather than a check, so it runs only when asked:
+    /// `cargo nextest run -p iroh-moq --run-ignored only gate_cost`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "a measurement, run by hand"]
+    async fn gate_cost() {
+        const OFFERS: usize = 1_000;
+        const GROUPS: u64 = 20_000;
+        let payload = Bytes::from(vec![7u8; 1_000]);
+
+        let (table, _table) = origin();
+        let broadcast = broadcast::Info::new().produce();
+        let started = std::time::Instant::now();
+        let offers: Vec<Serve> = (0..OFFERS)
+            .map(|n| {
+                let path = format!("live/publisher/cam{n}");
+                serve(&table, &Path::new(&path), &broadcast.consume()).expect("offer")
+            })
+            .collect();
+        let per_offer = started.elapsed() / OFFERS as u32;
+        drop(offers);
+        println!("setting up an offer: {per_offer:?}");
+
+        for gated in [false, true] {
+            let (origin, _origin) = origin();
+            let broadcast = broadcast::Info::new().produce();
+            let mut track = broadcast
+                .create_track("video", track::Info::default().with_max_age(MAX_AGE))
+                .expect("create track");
+            let path = Path::new("live/publisher/cam");
+            let _offer = if gated {
+                serve(&origin, &path, &broadcast.consume()).expect("offer")
+            } else {
+                let route = origin
+                    .dynamic(&path, origin::Route::default())
+                    .expect("route");
+                let consumer = broadcast.consume();
+                AbortOnDropHandle::new(tokio::spawn(async move {
+                    while let Ok(request) = route.requested_broadcast().await {
+                        request.accept(&consumer);
+                    }
+                }))
+            };
+            // One group first, so the subscription is in place before the
+            // clock starts.
+            track
+                .write_frame(Timestamp::now(), payload.clone())
+                .expect("write");
+            let (_served, mut subscriber) = read(&origin, &path).await;
+            let started = std::time::Instant::now();
+            for _ in 0..GROUPS {
+                track
+                    .write_frame(Timestamp::now(), payload.clone())
+                    .expect("write");
+            }
+            let mut received = 0;
+            while received < GROUPS {
+                let mut group = tokio::time::timeout(TIMEOUT, subscriber.recv_group())
+                    .await
+                    .expect("stalled")
+                    .expect("track failed")
+                    .expect("track ended");
+                while group.read_frame().await.expect("frame").is_some() {}
+                received += 1;
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "{GROUPS} groups of 1 KB {}: {elapsed:?}, {:?} per group",
+                if gated {
+                    "through the gate"
+                } else {
+                    "spliced directly"
+                },
+                elapsed / GROUPS as u32,
+            );
+        }
+    }
+
     /// Withdrawing an offer ends what a peer already reads through it, and a
     /// new request for the path finds nothing.
     ///
