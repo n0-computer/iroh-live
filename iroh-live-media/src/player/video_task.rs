@@ -24,7 +24,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     task::Poll,
@@ -38,7 +38,7 @@ use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
     Abandon, Controls, PlaybackRecorder, PlayoutClock, StatusCell, SwitchEvent,
-    select::{DecodeSettings, Desired, Failure},
+    select::{DecodeSettings, Desired, Failure, Report},
     switch::{Abandoned, Outcome, Switcher, Target, Verdict},
 };
 use crate::{
@@ -255,8 +255,9 @@ pub(crate) struct Inputs {
     pub controls: Arc<Controls>,
     pub status: StatusCell,
     pub events: broadcast::Sender<SwitchEvent>,
-    /// Where replacement decoders that failed are reported, for backoff.
-    pub failures: mpsc::Sender<Failure>,
+    /// Where decoders that failed or ended are reported, for the selector's
+    /// backoff and revival.
+    pub reports: mpsc::Sender<Report>,
     /// The target on screen, for the selector.
     pub playing: watch::Sender<Option<Target>>,
     pub clock: PlayoutClock,
@@ -296,7 +297,7 @@ pub(crate) async fn run(inputs: Inputs) {
         controls,
         status,
         events,
-        failures,
+        reports,
         playing,
         clock,
         stats,
@@ -309,6 +310,11 @@ pub(crate) async fn run(inputs: Inputs) {
     loop {
         let deadline = switcher.deadline();
         let delivering = delivery.is_some();
+        // Why a decoder's track stopped, read off the reader before the
+        // switcher drops it: a clean end and a failure call for different
+        // things.
+        let mut replacement_failure: Option<Arc<Error>> = None;
+        let mut incumbent_end: Option<(Target, Option<Arc<Error>>)> = None;
         let outcome: Outcome<Error> = tokio::select! {
             biased;
 
@@ -346,6 +352,11 @@ pub(crate) async fn run(inputs: Inputs) {
                         delivery = None;
                         stats.video.update(|video| *video = None);
                         status.update(|status| {
+                            // Off was set by the selector; anything else means
+                            // the catalog has no video left to play.
+                            if status.video != SlotState::Off {
+                                status.video = SlotState::Ended;
+                            }
                             status.rendition = None;
                             status.switching_to = None;
                             status.decoder = None;
@@ -398,13 +409,24 @@ pub(crate) async fn run(inputs: Inputs) {
                         (Verdict::Discard, outcome) => outcome,
                     }
                 }
-                Event::Replacement(None) => switcher.replacement_ended(),
+                Event::Replacement(None) => {
+                    replacement_failure = switcher
+                        .warming_mut()
+                        .and_then(|reader| reader.failure.get().cloned());
+                    switcher.replacement_ended()
+                }
                 Event::Incumbent(Some(frame)) => {
                     switcher.incumbent_frame(frame_pts(&frame));
                     delivery = Some(pacing.pace(frame, &clock, &controls, &stats));
                     Outcome::Idle
                 }
-                Event::Incumbent(None) => switcher.incumbent_ended(),
+                Event::Incumbent(None) => {
+                    let failure = switcher
+                        .incumbent_mut()
+                        .and_then(|reader| reader.failure.get().cloned());
+                    incumbent_end = switcher.current().cloned().map(|target| (target, failure));
+                    switcher.incumbent_ended()
+                }
             },
         };
 
@@ -444,13 +466,26 @@ pub(crate) async fn run(inputs: Inputs) {
                 });
                 status.update(|status| {
                     status.video = SlotState::Running;
+                    status.failed_rendition = None;
                     status.rendition = Some(target.rendition.clone());
                     status.decoder = Some(decoder.clone());
                 });
                 let _ = events.send(SwitchEvent::Landed(target.rendition));
             }
+            // A replacement whose track ended cleanly before it took over is
+            // not a broken decoder: the publisher replaced the track or the
+            // route changed. The selector asks for it again.
+            Outcome::Abandoned(target, Abandoned::Ended) if replacement_failure.is_none() => {
+                debug!(rendition = %target.rendition, "replacement's track ended before it took over");
+                if switcher.current().is_none() {
+                    status.update(|status| status.video = SlotState::Starting);
+                }
+                let _ = reports.try_send(Report::Ended(target));
+            }
             Outcome::Abandoned(target, reason) => {
                 let rendition = target.rendition.clone();
+                let playing = switcher.current().cloned();
+                let mut exclude = true;
                 let abandon = match reason {
                     Abandoned::Superseded => {
                         debug!(%rendition, "replacement superseded");
@@ -465,11 +500,18 @@ pub(crate) async fn run(inputs: Inputs) {
                         Abandon::Failed(Arc::new(err))
                     }
                     Abandoned::Ended => {
-                        debug!(%rendition, "replacement ended before it took over");
-                        Abandon::Failed(Arc::new(n0_error::e!(Error::Closed)))
+                        let failure = replacement_failure
+                            .take()
+                            .unwrap_or_else(|| Arc::new(n0_error::e!(Error::Closed)));
+                        warn!(error = %failure, %rendition, "replacement decoder gave up before it took over");
+                        Abandon::Failed(failure)
                     }
                     Abandoned::TimedOut => {
                         warn!(%rendition, after = ?SWITCH_DEADLINE, "replacement did not take over in time");
+                        // With nothing on screen there is nothing better to
+                        // play meanwhile, and a slow link is not a broken
+                        // rendition: it is asked for again at once.
+                        exclude = playing.is_some();
                         Abandon::Failed(Arc::new(Error::decoder(std::io::Error::other(format!(
                             "the decoder for {rendition} did not produce a picture within {}s",
                             SWITCH_DEADLINE.as_secs()
@@ -477,7 +519,6 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                 };
                 if let Abandon::Failed(err) = &abandon {
-                    let playing = switcher.current().cloned();
                     let config_only = playing
                         .as_ref()
                         .is_some_and(|playing| playing.rendition == target.rendition);
@@ -487,28 +528,65 @@ pub(crate) async fn run(inputs: Inputs) {
                         // failed, until the selector finds something to try.
                         if playing.is_none() && status.switching_to.is_none() {
                             status.video = SlotState::Failed(err.clone());
+                            status.failed_rendition = Some(rendition.clone());
                             status.rendition = None;
                             status.decoder = None;
                         }
                     });
                     // Full means a failure is already being reported; one more
                     // for the same backoff is not worth waiting for.
-                    let _ = failures.try_send(Failure {
+                    let _ = reports.try_send(Report::Failed(Failure {
                         target: target.clone(),
                         config_only,
-                    });
+                        exclude,
+                    }));
                 }
                 let _ = events.send(SwitchEvent::Abandoned(rendition, abandon));
             }
             Outcome::Ended => {
-                info!("video ended");
                 delivery = None;
                 stats.video.update(|video| *video = None);
-                status.update(|status| {
-                    status.video = SlotState::Ended;
-                    status.rendition = None;
-                    status.decoder = None;
-                });
+                match incumbent_end {
+                    // The reader gave up on its track: a decoder or transport
+                    // failure, reported like a failed switch so the selector
+                    // backs off from the rendition and tries another.
+                    Some((target, Some(err))) => {
+                        warn!(error = %err, rendition = %target.rendition, "video failed");
+                        status.update(|status| {
+                            status.video = SlotState::Failed(err.clone());
+                            status.failed_rendition = Some(target.rendition.clone());
+                            status.switch_error = Some(err.clone());
+                            status.rendition = None;
+                            status.decoder = None;
+                        });
+                        let _ = reports.try_send(Report::Failed(Failure {
+                            target,
+                            config_only: false,
+                            exclude: true,
+                        }));
+                    }
+                    // A clean end: the publisher replaced or withdrew the
+                    // video, or the route changed. The player waits for what
+                    // comes next rather than calling the video over; only the
+                    // broadcast closing, or a catalog with no video left, is
+                    // the end.
+                    Some((target, None)) => {
+                        info!(rendition = %target.rendition, "video track ended, waiting for what follows");
+                        status.update(|status| {
+                            status.video = SlotState::Starting;
+                            status.rendition = None;
+                            status.decoder = None;
+                        });
+                        let _ = reports.try_send(Report::Ended(target));
+                    }
+                    None => {
+                        status.update(|status| {
+                            status.video = SlotState::Starting;
+                            status.rendition = None;
+                            status.decoder = None;
+                        });
+                    }
+                }
             }
         }
     }
@@ -620,6 +698,9 @@ struct Reader {
     /// the first thing anyone asks when playback looks wrong on a device.
     decoder: String,
     frames: mpsc::Receiver<moq_video::Frame>,
+    /// Why the reader gave up on its track, if it did rather than reaching a
+    /// clean end.
+    failure: Arc<OnceLock<Arc<Error>>>,
     /// Set once this reader's pictures are the ones on screen.
     ///
     /// Only that reader writes the playback stats: a replacement warming up
@@ -669,6 +750,8 @@ async fn spawn_reader(
     let name = rendition.to_string();
     let on_screen = Arc::new(AtomicBool::new(false));
     let writes = on_screen.clone();
+    let failure = Arc::new(OnceLock::new());
+    let gave_up = failure.clone();
     let task = spawn(
         async move {
             let mut failures = DecodeFailures::default();
@@ -718,6 +801,7 @@ async fn spawn_reader(
                     }
                     Err(err) if ReadFailure::from(&err) == ReadFailure::Track => {
                         warn!(error = %err, "video track failed");
+                        let _ = gave_up.set(Arc::new(decode_error(err)));
                         return;
                     }
                     Err(err) => {
@@ -746,6 +830,12 @@ async fn spawn_reader(
                                 failures = failures.len(),
                                 "giving up on this rendition: no access unit has decoded for a long time",
                             );
+                            let _ = gave_up.set(Arc::new(Error::decoder(std::io::Error::other(
+                                format!(
+                                    "the decoder refused {} access units in a row: {err}",
+                                    failures.len()
+                                ),
+                            ))));
                             return;
                         }
                         }
@@ -759,6 +849,7 @@ async fn spawn_reader(
     Ok(Reader {
         decoder,
         frames,
+        failure,
         on_screen,
         _task: AbortOnDropHandle::new(task),
     })

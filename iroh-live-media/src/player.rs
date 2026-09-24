@@ -214,6 +214,9 @@ pub struct PlayerStatus {
     pub switch_error: Option<Arc<Error>>,
     /// The decoder backend running, such as `vaapi`.
     pub decoder: Option<String>,
+    /// The rendition whose failure `video` reports, when it is `Failed`, so a
+    /// wait for another rendition is not handed an error that is not its own.
+    pub(crate) failed_rendition: Option<String>,
 }
 
 impl PartialEq for PlayerStatus {
@@ -224,6 +227,7 @@ impl PartialEq for PlayerStatus {
             && self.rendition == other.rendition
             && self.switching_to == other.switching_to
             && self.decoder == other.decoder
+            && self.failed_rendition == other.failed_rendition
             && match (&self.switch_error, &other.switch_error) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
                 (None, None) => true,
@@ -358,7 +362,7 @@ impl Player {
         // The supervisor tells the selector which renditions failed, so they
         // are left alone for a while. Bounded: a report that does not fit is a
         // report of a failure already being backed off.
-        let (failures_tx, failures_rx) = mpsc::channel(8);
+        let (reports_tx, reports_rx) = mpsc::channel(8);
         let (desired_tx, desired_rx) = watch::channel(None);
         // The target on screen, exactly: the selector falls back to its
         // decoder configuration when a change of decoder fails.
@@ -371,7 +375,7 @@ impl Player {
                 controls: controls.clone(),
                 status: status.clone(),
                 stats: stats.clone(),
-                failures: failures_rx,
+                reports: reports_rx,
                 playing: playing_rx,
                 desired: desired_tx,
                 shutdown: shutdown.clone(),
@@ -385,7 +389,7 @@ impl Player {
                 controls: controls.clone(),
                 status: status.clone(),
                 events: events.clone(),
-                failures: failures_tx,
+                reports: reports_tx,
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
@@ -539,7 +543,10 @@ impl Player {
                 // Nothing on screen and nothing on its way: the last switch
                 // failed, which the waiter hears as such rather than as an end,
                 // whichever of the status and the event it sees first.
-                SlotState::Failed(source) if current.switching_to.is_none() => {
+                SlotState::Failed(source)
+                    if current.switching_to.is_none()
+                        && current.failed_rendition.as_deref() == Some(name) =>
+                {
                     return Err(n0_error::e!(SwitchError::Failed {
                         rendition: name.to_string(),
                         source: source.clone(),

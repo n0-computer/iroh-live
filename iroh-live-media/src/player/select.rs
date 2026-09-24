@@ -34,6 +34,22 @@ const BACKOFF_FIRST: Duration = Duration::from_secs(5);
 /// The longest a failing rendition is left alone.
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+/// How long after a track ended with nothing to follow it the target is asked
+/// for again, doubling up to [`REVIVE_MAX`].
+const REVIVE_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait before a target whose track ended is asked for again.
+const REVIVE_MAX: Duration = Duration::from_secs(30);
+
+/// How long a catalog that lost its video is given before the video counts as
+/// over.
+///
+/// A publisher replacing its video removes the old renditions before it adds
+/// the new ones, and one that closes empties its catalog before it ends, which
+/// a player following a route table sees just before the next route serves the
+/// path. Either is a moment, not the end of the video.
+const VANISH_GRACE: Duration = Duration::from_secs(3);
+
 /// What the decoder of a target is built with.
 #[derive(Clone)]
 pub(crate) struct DecodeSettings {
@@ -65,7 +81,7 @@ pub(crate) struct Desired {
     pub config: hang::catalog::VideoConfig,
 }
 
-/// A replacement decoder that failed, as the supervisor reports it.
+/// A decoder that failed, as the supervisor reports it.
 #[derive(Debug, Clone)]
 pub(crate) struct Failure {
     /// The rendition and configuration it was for.
@@ -78,6 +94,29 @@ pub(crate) struct Failure {
     /// rendition is not excluded, which would only walk the ladder down under
     /// the same broken configuration.
     pub config_only: bool,
+    /// Whether the rendition is left alone for a backoff before it is tried
+    /// again.
+    ///
+    /// Not for a first decoder that timed out: with nothing on screen there is
+    /// nothing better to play meanwhile, and a slow link is not a broken
+    /// rendition, so it is asked for again at once.
+    pub exclude: bool,
+}
+
+/// What the supervisor tells the selector about the decoders it ran.
+#[derive(Debug, Clone)]
+pub(crate) enum Report {
+    /// A decoder failed: it did not open, did not produce a picture in time,
+    /// or gave up on its track.
+    Failed(Failure),
+    /// A track ended cleanly with nothing to take over from it.
+    ///
+    /// The publisher replaced or withdrew its video, or the route to it
+    /// changed. The catalog or the route usually says what comes next, but
+    /// not always in an order that shows it: a replacement's catalog can land
+    /// before the old track's end. So the selector asks for the target again
+    /// after a backoff as well.
+    Ended(Target),
 }
 
 /// The selector's inputs.
@@ -86,8 +125,8 @@ pub(crate) struct Inputs {
     pub controls: Arc<Controls>,
     pub status: StatusCell,
     pub stats: PlaybackRecorder,
-    /// Replacement decoders that failed, reported by the supervisor.
-    pub failures: mpsc::Receiver<Failure>,
+    /// What happened to the decoders, reported by the supervisor.
+    pub reports: mpsc::Receiver<Report>,
     /// The target on screen, as the supervisor reports it.
     pub playing: watch::Receiver<Option<Target>>,
     pub desired: watch::Sender<Option<Desired>>,
@@ -172,7 +211,7 @@ pub(crate) async fn run(inputs: Inputs) {
         controls,
         status,
         stats,
-        mut failures,
+        mut reports,
         mut playing,
         desired,
         shutdown,
@@ -199,7 +238,17 @@ pub(crate) async fn run(inputs: Inputs) {
     // failed beside a working one; cleared when another is asked for.
     let mut fallback: Option<video::decode::Kind> = None;
     let mut restart = 0u64;
-    let mut ended_seen = false;
+    // The target whose track ended with nothing to follow it, and when it is
+    // asked for again if neither the catalog nor the route moves first.
+    let mut ended: Option<Target> = None;
+    let mut revive_at: Option<Instant> = None;
+    let mut revive_backoff = REVIVE_FIRST;
+    // Since when the target on screen has played, so a track that plays for
+    // a while earns a quick revival and one that ends at once backs off.
+    let mut playing_since: Option<Instant> = None;
+    // Since when the catalog has had nothing to play while something was
+    // asked for.
+    let mut vanished_since: Option<Instant> = None;
     // The reason for a pin this selector could not honour, as last written, so
     // it replaces only its own reports and leaves a failed switch's alone.
     let mut last_why: Option<Arc<Error>> = None;
@@ -219,7 +268,9 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut first = true;
     loop {
         let auto = matches!(*mode.borrow(), RenditionMode::Auto { .. });
-        let ticking = (auto && network.is_some()) || backoffs.any_excluded(Instant::now());
+        let ticking = (auto && network.is_some())
+            || backoffs.any_excluded(Instant::now())
+            || vanished_since.is_some();
         if !std::mem::take(&mut first) {
             tokio::select! {
                 () = shutdown.cancelled() => return,
@@ -248,6 +299,9 @@ pub(crate) async fn run(inputs: Inputs) {
                         backoffs.landed(&target.rendition);
                         working = Some(target.config);
                         configs.retain(|&known, _| known >= target.config);
+                        playing_since = Some(Instant::now());
+                        ended = None;
+                        revive_at = None;
                     }
                 }
                 updated = catalog.updated() => {
@@ -256,22 +310,41 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                     // A video that ended gets another go when the publisher
                     // republishes, which is what a new catalog says.
-                    if ended_seen {
+                    if ended.take().is_some() {
                         restart += 1;
-                        ended_seen = false;
+                        revive_at = None;
                     }
                 }
                 updated = epoch.updated() => if updated.is_err() { return },
-                updated = player.updated() => {
-                    if updated.is_err() {
-                        return;
-                    }
-                    if matches!(player.peek().video, SlotState::Ended) {
-                        ended_seen = true;
+                updated = player.updated() => if updated.is_err() { return },
+                () = async { tokio::time::sleep_until(revive_at.expect("guarded")).await },
+                    if revive_at.is_some() =>
+                {
+                    revive_at = None;
+                    // Asked for again only if nothing moved meanwhile: a new
+                    // route or catalog has asked for something already.
+                    let still = desired
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|desired| Some(&desired.target) == ended.as_ref());
+                    if ended.take().is_some() && still && playing.borrow().is_none() {
+                        debug!(backoff = ?revive_backoff, "asking again for video that ended");
+                        restart += 1;
+                        revive_backoff = (revive_backoff * 2).min(REVIVE_MAX);
                     }
                 }
-                failed_report = failures.recv() => {
-                    let Some(reported) = failed_report else { return };
+                report = reports.recv() => match report {
+                    None => return,
+                    Some(Report::Ended(target)) => {
+                        if playing_since.is_some_and(|since| since.elapsed() >= REVIVE_MAX) {
+                            revive_backoff = REVIVE_FIRST;
+                        }
+                        playing_since = None;
+                        debug!(rendition = %target.rendition, backoff = ?revive_backoff, "video ended, asking again after a backoff");
+                        revive_at = Some(Instant::now() + revive_backoff);
+                        ended = Some(target);
+                    }
+                    Some(Report::Failed(reported)) => {
                     let rendition = &reported.target.rendition;
                     if reported.config_only {
                         // Go back to the decoder that works, so the next switch
@@ -288,12 +361,13 @@ pub(crate) async fn run(inputs: Inputs) {
                         if restored.is_some() {
                             fallback = restored;
                         }
-                    } else {
+                    } else if reported.exclude {
                         let backoff = backoffs.fail(rendition, Instant::now());
                         info!(%rendition, ?backoff, "leaving a failing rendition alone");
                     }
                     failed = Some(reported);
-                }
+                    }
+                },
                 _ = ticker.tick(), if ticking => {}
             }
         }
@@ -375,6 +449,8 @@ pub(crate) async fn run(inputs: Inputs) {
             match (&mode, &status.video) {
                 (RenditionMode::Off, _) => status.video = SlotState::Off,
                 (_, SlotState::Off) => status.video = SlotState::Starting,
+                // Video came back to a catalog that had none.
+                (_, SlotState::Ended) if choice.is_some() => status.video = SlotState::Starting,
                 _ => {}
             }
         });
@@ -389,6 +465,16 @@ pub(crate) async fn run(inputs: Inputs) {
                 config,
             })
         });
+        let vanished =
+            next.is_none() && !matches!(mode, RenditionMode::Off) && desired.borrow().is_some();
+        if vanished {
+            let since = *vanished_since.get_or_insert(now);
+            if now.duration_since(since) < VANISH_GRACE {
+                continue;
+            }
+            debug!("the catalog has had no video for a while; the video is over");
+        }
+        vanished_since = None;
         // The target given up on is asked for again once it is chosen with its
         // backoff over, or, for a configuration that failed beside a working
         // one, once nothing plays any more.
@@ -597,7 +683,104 @@ mod tests {
         assert_eq!(pick(&RenditionMode::Off, &[]).0, None);
     }
 
-    /// N1: an entry used to be dropped the moment its exclusion ran out, and
+    /// A running selector and what drives it.
+    struct Running {
+        _broadcast: crate::LocalBroadcast,
+        reports: mpsc::Sender<Report>,
+        desired: watch::Receiver<Option<Desired>>,
+        _playing: watch::Sender<Option<Target>>,
+        _task: n0_future::task::AbortOnDropHandle<()>,
+    }
+
+    /// Starts a selector over a one-rendition broadcast.
+    fn selector() -> Running {
+        let broadcast = crate::LocalBroadcast::new();
+        broadcast
+            .set_video(
+                crate::VideoSource::test_pattern(
+                    video::Size::new(320, 180),
+                    video::Rate::new(30, 1).expect("a valid rate"),
+                ),
+                crate::VideoEncoding::single(crate::VideoRendition::new("video"))
+                    .with_prefer_hardware(false),
+            )
+            .expect("a valid encoding");
+        let (reports_tx, reports) = mpsc::channel(8);
+        // Nothing is ever on screen, which is the state the revival acts in.
+        let (playing_tx, playing) = watch::channel(None);
+        let (desired, desired_rx) = watch::channel(None);
+        let inputs = Inputs {
+            broadcast: RemoteBroadcast::local(&broadcast),
+            controls: Arc::new(Controls {
+                mode: watch::Sender::new(RenditionMode::auto()),
+                latency: watch::Sender::new(Latency::default()),
+                decoder: watch::Sender::new(video::decode::Kind::Software),
+                volume: watch::Sender::new(1.0),
+            }),
+            status: StatusCell::new(super::super::PlayerStatus::default()),
+            stats: PlaybackRecorder::default(),
+            reports,
+            playing,
+            desired,
+            shutdown: CancellationToken::new(),
+        };
+        let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));
+        Running {
+            _broadcast: broadcast,
+            reports: reports_tx,
+            desired: desired_rx,
+            _playing: playing_tx,
+            _task: task,
+        }
+    }
+
+    /// Waits until the selector asks for a target other than `not`.
+    async fn next_target(
+        desired: &mut watch::Receiver<Option<Desired>>,
+        not: Option<&Target>,
+    ) -> Target {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(target) = desired
+                    .borrow_and_update()
+                    .as_ref()
+                    .map(|d| d.target.clone())
+                    && Some(&target) != not
+                {
+                    return target;
+                }
+                desired.changed().await.expect("the selector runs");
+            }
+        })
+        .await
+        .expect("the selector asked for nothing new")
+    }
+
+    /// N2: a track that ended with nothing to follow it was asked for again
+    /// only when a catalog update came after the end. The replacement's
+    /// catalog can land first, and then nothing more ever comes: the video
+    /// stayed over for good. The target is asked for again after a backoff,
+    /// with the catalog unchanged.
+    #[tokio::test]
+    async fn a_track_that_ended_is_asked_for_again() {
+        // Bound whole: a field left out of a pattern would drop at once, and
+        // with it the channel that keeps the selector running.
+        let running = selector();
+        let Running {
+            reports, desired, ..
+        } = &running;
+        let mut desired = desired.clone();
+        let first = next_target(&mut desired, None).await;
+        reports
+            .send(Report::Ended(first.clone()))
+            .await
+            .expect("the selector runs");
+        let again = next_target(&mut desired, Some(&first)).await;
+        assert_eq!(again.rendition, first.rendition);
+        assert!(again.config > first.config, "{again:?} after {first:?}");
+    }
+
+    /// N1: an entry used to be dropped    /// N1: an entry used to be dropped the moment its exclusion ran out, and
     /// a rendition can only be retried after that, so every retry that failed
     /// was a first failure and the backoff never grew past its first step.
     #[test]

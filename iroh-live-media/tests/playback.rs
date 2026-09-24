@@ -378,6 +378,134 @@ async fn a_failed_decoder_change_falls_back_to_the_one_that_works() {
     assert_eq!(player.status().get().decoder, working);
 }
 
+/// One rendition of the test pattern at `size`, called `video`.
+fn single(size: video::Size) -> LocalBroadcast {
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            VideoSource::test_pattern(size, fps(30)),
+            VideoEncoding::single(VideoRendition::new("video").with_size(size))
+                .with_prefer_hardware(false),
+        )
+        .expect("a valid encoding");
+    broadcast
+}
+
+/// Records every video state the player reports until dropped.
+fn record_states(
+    player: &iroh_live_media::Player,
+) -> (Arc<Mutex<Vec<SlotState>>>, tokio::task::JoinHandle<()>) {
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let mut status = player.status();
+    let written = states.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            written.lock().expect("poisoned").push(status.get().video);
+            if status.updated().await.is_err() {
+                return;
+            }
+        }
+    });
+    (states, task)
+}
+
+/// Asserts no state in `states` said the video was over.
+fn never_over(states: &Mutex<Vec<SlotState>>) {
+    let states = states.lock().expect("poisoned");
+    assert!(
+        !states
+            .iter()
+            .any(|state| matches!(state, SlotState::Ended | SlotState::Failed(_))),
+        "the player called the video over on the way: {states:?}"
+    );
+}
+
+/// A player following a path through a route table keeps playing when the
+/// route it plays through goes and another serves the path.
+///
+/// The transport ends a broadcast when the session carrying it closes, rather
+/// than failing over inside it, so `from_origin` asks for the path again, and
+/// the player takes the new broadcast as a switch: the picture goes on and the
+/// video is never reported ended.
+#[tokio::test]
+async fn a_player_keeps_playing_when_its_route_goes() {
+    let (origin, driver) = moq_net::origin::Producer::new(Default::default());
+    let driver = tokio::spawn(moq_net::time::run(driver));
+    // The same broadcast twice, as a direct peer and a relay would carry it:
+    // the direct route is the cheaper one and serves first.
+    let direct = single(video::Size::new(320, 180));
+    let relayed = single(video::Size::new(640, 360));
+    let serve = |cost: u64, broadcast: &LocalBroadcast| {
+        let route = origin
+            .dynamic(
+                "live/cam",
+                moq_net::origin::Route::default().with_cost(cost),
+            )
+            .expect("a route");
+        let consumer = moq_net::Consume::consume(broadcast);
+        tokio::spawn(async move {
+            while let Ok(request) = route.requested_broadcast().await {
+                request.accept(consumer.clone());
+            }
+        })
+    };
+    let direct_route = serve(1, &direct);
+    let relayed_route = serve(10, &relayed);
+
+    let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
+    let player = remote.play(PlayerConfig::default()).expect("valid");
+    let mut frames = player.video();
+    wait_for_size(&mut frames, video::Size::new(320, 180)).await;
+    let (states, recorder) = record_states(&player);
+
+    // The direct session goes: its route is withdrawn and its broadcast ends.
+    direct_route.abort();
+    let _ = direct_route.await;
+    direct.close();
+
+    wait_for_size(&mut frames, video::Size::new(640, 360)).await;
+    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("video"))
+        .await
+        .expect("in time")
+        .expect("the relayed broadcast plays");
+    assert!(!remote.is_closed());
+    assert_eq!(player.status().get().video, SlotState::Running);
+    recorder.abort();
+    never_over(&states);
+    relayed_route.abort();
+    driver.abort();
+}
+
+/// N2: a publisher that replaced its video used to leave the player's video
+/// ended when the old track's end arrived after the new catalog, since only a
+/// later catalog update would revive it. The player waits for what follows a
+/// clean end, and asks again after a backoff whatever the order. In-process
+/// the order is usually the kind one, so this covers the recovery and the
+/// status on the way; `select::tests::a_track_that_ended_is_asked_for_again`
+/// forces the other order.
+#[tokio::test]
+async fn video_comes_back_after_the_publisher_replaces_it() {
+    let broadcast = single(video::Size::new(320, 180));
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video();
+    wait_for_size(&mut frames, video::Size::new(320, 180)).await;
+    let (states, recorder) = record_states(&player);
+    // A camera switch: the same rendition name, another source.
+    let size = video::Size::new(640, 360);
+    broadcast
+        .set_video(
+            VideoSource::test_pattern(size, fps(30)),
+            VideoEncoding::single(VideoRendition::new("video").with_size(size))
+                .with_prefer_hardware(false),
+        )
+        .expect("a valid encoding");
+    wait_for_size(&mut frames, size).await;
+    recorder.abort();
+    never_over(&states);
+}
+
 #[tokio::test]
 async fn turning_video_off_leaves_nothing_decoding() {
     let (broadcast, _source) = ladder();
