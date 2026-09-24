@@ -14,11 +14,9 @@
 use std::{fmt, str::FromStr};
 
 use iroh::EndpointId;
-use moq_net::PathOwned;
-use n0_error::e;
+use iroh_tickets::ParseError;
+use moq_net::{Path, PathOwned};
 use serde::{Deserialize, Serialize};
-
-use crate::{Error, path::live_path};
 
 /// URI scheme prefix of a broadcast ticket.
 const SCHEME: &str = "iroh-live:";
@@ -36,14 +34,14 @@ const ENDPOINT_ID_LEN: usize = 32;
 /// # Examples
 ///
 /// ```
-/// use iroh_moq::BroadcastTicket;
+/// use iroh_live::BroadcastTicket;
 ///
 /// let peer = iroh::SecretKey::generate().public();
 /// let ticket = BroadcastTicket::new(peer, "studio");
 /// let parsed: BroadcastTicket = ticket.to_string().parse()?;
 /// assert_eq!(parsed, ticket);
 /// assert_eq!(ticket.path().as_str(), format!("live/{peer}/studio"));
-/// # Ok::<(), iroh_moq::Error>(())
+/// # Ok::<(), iroh_tickets::ParseError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BroadcastTicket {
@@ -72,10 +70,10 @@ impl BroadcastTicket {
 
     /// Returns the path the broadcast is published at: `live/<peer>/<name>`.
     pub fn path(&self) -> PathOwned {
-        live_path(self.peer, &self.name)
+        Path::new(&format!("live/{}/{}", self.peer, self.name)).to_owned()
     }
 
-    fn parse_uri(rest: &str) -> Result<Self, Error> {
+    fn parse_uri(rest: &str) -> Result<Self, ParseError> {
         let (id, name) = rest
             .split_once('/')
             .ok_or_else(|| invalid("missing / separator"))?;
@@ -89,10 +87,8 @@ impl BroadcastTicket {
     }
 }
 
-fn invalid(reason: &str) -> Error {
-    e!(Error::InvalidTicket {
-        reason: reason.to_owned()
-    })
+fn invalid(reason: &'static str) -> ParseError {
+    ParseError::verification_failed(reason)
 }
 
 impl fmt::Display for BroadcastTicket {
@@ -103,7 +99,7 @@ impl fmt::Display for BroadcastTicket {
 }
 
 impl FromStr for BroadcastTicket {
-    type Err = Error;
+    type Err = ParseError;
 
     /// Parses the `iroh-live:` URI, with or without its scheme.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -135,16 +131,15 @@ impl iroh_tickets::Ticket for BroadcastTicket {
         bytes
     }
 
-    fn decode_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
-        let too_short = || iroh_tickets::ParseError::verification_failed("ticket too short");
+    fn decode_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
+        let too_short = || invalid("ticket too short");
         let id: &[u8; ENDPOINT_ID_LEN] = bytes
             .get(..ENDPOINT_ID_LEN)
             .and_then(|id| id.try_into().ok())
             .ok_or_else(too_short)?;
-        let peer = EndpointId::from_bytes(id)
-            .map_err(|_| iroh_tickets::ParseError::verification_failed("invalid endpoint id"))?;
+        let peer = EndpointId::from_bytes(id).map_err(|_| invalid("invalid endpoint id"))?;
         let name = std::str::from_utf8(&bytes[ENDPOINT_ID_LEN..])
-            .map_err(|_| iroh_tickets::ParseError::verification_failed("name is not UTF-8"))?;
+            .map_err(|_| invalid("name is not UTF-8"))?;
         Ok(Self::new(peer, name))
     }
 }

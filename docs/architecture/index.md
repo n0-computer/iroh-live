@@ -72,8 +72,8 @@ transport's own concepts (audiences, admission, relays, routes) live in
 [`iroh-moq`](transport.md) and are reached through `live.moq()`.
 
 A one-to-one call is publish plus subscribe: `irl call` and the Android demo each
-publish under `calls/<their own endpoint id>` and subscribe to the other's on
-the session between them.
+publish a broadcast named `call` and subscribe to the other's on the session
+between them.
 
 ## Conventions
 

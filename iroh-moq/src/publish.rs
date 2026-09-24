@@ -14,9 +14,7 @@ use tracing::{debug, info};
 
 use crate::{
     node::Shared,
-    path::{LIVE, publisher_of},
     state::{self, PeerSet},
-    ticket::BroadcastTicket,
 };
 
 /// Who may see a publication.
@@ -106,22 +104,6 @@ impl Publication {
     /// Returns the path the broadcast is published at.
     pub fn path(&self) -> &Path<'_> {
         &self.inner.path
-    }
-
-    /// Returns the ticket that names this broadcast.
-    ///
-    /// `None` for a publication at any path other than
-    /// `live/<publisher>/<name>`, such as a room's: a ticket names a publisher
-    /// and a name, which only that layout spells.
-    pub fn ticket(&self) -> Option<BroadcastTicket> {
-        let path = &self.inner.path;
-        let (namespace, rest) = path.next_part()?;
-        if namespace != LIVE {
-            return None;
-        }
-        let publisher = publisher_of(path)?;
-        let (_, name) = rest.next_part()?;
-        Some(BroadcastTicket::new(publisher, name.as_str()))
     }
 
     /// Replaces who may see the publication.

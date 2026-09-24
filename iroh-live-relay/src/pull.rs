@@ -36,7 +36,8 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_moq::{BroadcastTicket, Moq, MoqConfig, Reach, Subscription};
+use iroh_live::BroadcastTicket;
+use iroh_moq::{Moq, Reach, Subscription};
 use moq_net::{broadcast, origin};
 use moq_relay::cluster::Cluster;
 use n0_watcher::Watcher;
@@ -64,7 +65,7 @@ const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Shared state for pull operations.
 #[derive(Clone)]
 pub struct PullState {
-    /// Dials publishers and resolves ticket paths, old path layout included.
+    /// Dials publishers and resolves ticket paths.
     moq: Moq,
     cluster: Cluster,
     linger: Duration,
@@ -149,7 +150,7 @@ impl PullState {
     /// Creates pull state that dials over `endpoint` and mirrors into `cluster`.
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         Self {
-            moq: Moq::new(endpoint, MoqConfig::default()),
+            moq: Moq::new(endpoint, iroh_live::moq_config()),
             cluster,
             linger: DEFAULT_LINGER,
             pulls: Arc::new(Mutex::new(HashMap::new())),
@@ -477,7 +478,7 @@ impl Drop for PublisherClaim {
 
 #[cfg(test)]
 mod tests {
-    use iroh_moq::BroadcastTicket;
+    use iroh_live::BroadcastTicket;
 
     #[test]
     fn ticket_round_trip() {

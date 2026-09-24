@@ -327,7 +327,7 @@ async fn a_member_cannot_forge_anothers_chat() {
     let forged = broadcast::Info::new().produce();
     let mut track = forged
         .create_track(
-            "chat.v2",
+            "chat",
             track::Info::default().with_max_age(Duration::from_secs(5)),
         )
         .expect("track");
@@ -351,7 +351,7 @@ async fn a_member_cannot_forge_anothers_chat() {
     }));
     let _forged = mallory
         .moq
-        .publish_at(
+        .publish(
             format!("rooms/{topic}/{}/.chat", bob.id()),
             &forged,
             iroh_moq::Audience::Everyone,

@@ -11,12 +11,13 @@ build on top.
 
 ## Paths name the publisher
 
-A node's own broadcasts live at `live/<endpoint id>/<name>`, and room broadcasts
+`iroh-moq` knows no path layout; `iroh-live` and the rooms crate bring theirs. A
+node's own broadcasts live at `live/<endpoint id>/<name>`, and room broadcasts
 at `rooms/<topic>/<endpoint id>/<name>`. The same broadcast therefore has the
 same path over every link, direct or through any number of relays, which is what
 lets a route table see several routes to it, and what lets a relay's token grant
-`live/<id>/**` to exactly one publisher. A `BroadcastTicket` still names a
-publisher and a name; `ticket.path()` is the path.
+`live/<id>/**` to exactly one publisher. A `BroadcastTicket` names a publisher
+and a name; `ticket.path()` is the path.
 
 ## One route table, fed by every link
 
@@ -32,16 +33,16 @@ which link serves a path (`Moq::routes`, `Subscription::session`,
 `Subscription::link`), and lets a
 direct session answer a path that only means something on that session.
 
-The bridge of a direct session mirrors only the routes to that peer's own
-broadcasts: paths that name the peer, `live/<peer>/...` and
-`rooms/<topic>/<peer>/...`. The table is shared by everything on the node and
-answers a ticket without dialing, so a peer must not be able to put a route to
-another publisher's path into it; hop chains cannot vouch for anything, since a
-peer declares its own hop. Whatever else a peer announces, such as an
-application path like `calls/<id>`, stays reachable over its session with
-`Session::subscribe`. A relay link mirrors everything, because forwarding other
-publishers' broadcasts is its job: attaching a relay trusts it, and its
-admission, with every path it forwards.
+A direct session's ingest holds only what the session's grant lets the peer
+publish, and `MoqConfig::grant` computes that grant from the peer's endpoint
+id. `iroh_live::grant` lets a peer publish under `live/<peer>/` and, with rooms,
+`rooms/*/<peer>/`, nothing else. The table is shared by everything on the node
+and answers a ticket without dialing, so a peer must not be able to put a route
+to another publisher's path into it; hop chains cannot vouch for anything, since
+a peer declares its own hop. `Session::subscribe` resolves a path over one
+session only, which is how a call reads the other side. A relay link mirrors
+everything, because forwarding other publishers' broadcasts is its job:
+attaching a relay trusts it, and its admission, with every path it forwards.
 
 moq re-splices a broadcast between routes that share a first hop, the
 publisher the chain starts at, and a first hop is only what the publisher
@@ -59,13 +60,14 @@ session dropped. This is the RFD's "a change of first hop ends a broadcast";
 
 `Moq::subscribe(path, reach)` resolves a path in the table. With no route yet it
 reaches out as `Reach` says: dial the publisher (`Reach::Direct(id)`), wait for
-a relay (`Reach::Relays`), or both (`Reach::Both(id)`). The node's hop id is derived from its endpoint id, so a relay
-recognizes its routes across a restart.
+a relay (`Reach::Relays`), or both (`Reach::Both(id)`). The node's hop id is
+derived from its endpoint id, so a relay recognizes its routes across a
+restart.
 
 ## Publications and audiences
 
-`Moq::publish(name, broadcast, audience)` places an existing broadcast at
-`live/<our id>/<name>`; `publish_at` takes an explicit path. The broadcast is not
+`Moq::publish(path, broadcast, audience)` places an existing broadcast at a
+path; `Live::publish(name, ..)` puts it at `live/<our id>/<name>`. The broadcast is not
 created by the transport: anything implementing `Consume<broadcast::Consumer>`
 is published by splicing it (`Request::accept`), so one broadcast can be
 published at several paths at once.

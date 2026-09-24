@@ -1,32 +1,32 @@
-//! MoQ transport over iroh.
+//! MoQ over iroh.
 //!
 //! A [`Moq`] node keeps one route table fed by every link it has: direct
-//! sessions with peers, and relays it is attached to. Broadcasts are published
-//! at paths that name their publisher (`live/<endpoint id>/<name>`), so the
-//! same broadcast has the same path over every link, and subscribing is
-//! resolving a path in the table rather than asking one session.
+//! sessions with peers, and relays it is attached to. The application picks
+//! the paths. If a broadcast has the same path over every link, the table sees
+//! every route to it, and subscribing is resolving a path in the table rather
+//! than asking one session.
 //!
 //! Two settings decide what flows over a session. A publication's [`Audience`]
 //! says who may see it, and a session's [`Grant`], decided when the session is
 //! admitted, says what the peer may subscribe to and publish. A publication is
-//! offered on a session when both allow it.
+//! offered on a session when both allow it. [`MoqConfig::grant`] gives each
+//! peer its grant from its endpoint id, which is how an application keeps a
+//! peer to the paths that name it.
 //!
 //! ```no_run
-//! use iroh_moq::{Audience, BroadcastTicket, MediaPreset, Moq, MoqConfig, Reach};
+//! use iroh::EndpointId;
+//! use iroh_moq::{Audience, MediaPreset, Moq, MoqConfig, Reach};
 //!
-//! # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let endpoint = iroh::Endpoint::bind(MediaPreset).await?;
 //! let moq = Moq::new(endpoint, MoqConfig::default());
 //!
 //! // Publish a broadcast this process writes.
 //! let broadcast = moq_net::broadcast::Info::new().produce();
-//! let _publication = moq.publish("studio", &broadcast, Audience::Everyone)?;
-//! println!("share {}", moq.ticket("studio"));
+//! let _publication = moq.publish("demo/studio", &broadcast, Audience::Everyone)?;
 //!
-//! // Resolve someone else's, dialing its publisher if no route exists yet.
-//! let subscription = moq
-//!     .subscribe(ticket.path(), Reach::Both(ticket.peer()))
-//!     .await?;
+//! // Resolve a peer's broadcast, dialing it if no route exists yet.
+//! let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
 //! let remote = subscription.as_moq();
 //! # drop(remote);
 //! # Ok(())
@@ -67,14 +67,12 @@ mod error;
 mod grant;
 mod link;
 mod node;
-mod path;
 mod publish;
 #[cfg(feature = "relay-links")]
 mod relay;
 mod route;
 mod session;
 mod state;
-mod ticket;
 pub mod transport;
 
 /// The moq-net this crate builds against.
@@ -88,14 +86,12 @@ pub use self::relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, Re
 pub use self::{
     endpoint::{EndpointOptions, Mdns, MediaPreset},
     error::Error,
-    grant::{Admission, ConnectOptions, Grant, Reject, Role, SessionRequest},
+    grant::{Admission, ConnectOptions, Grant, GrantFn, Reject, Role, SessionRequest},
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},
-    path::{live_path, publisher_of},
     publish::{Audience, OfferGuard, Publication},
     route::{LinkId, LinkKind, RouteInfo, Subscription},
     session::{Incoming, Session},
-    ticket::BroadcastTicket,
 };
 
 /// The ALPN this node prefers, the newest MoQ version it speaks.

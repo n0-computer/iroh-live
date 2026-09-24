@@ -7,37 +7,29 @@ use std::{collections::BTreeSet, time::Duration};
 
 use common::{Node, TIMEOUT, TestBroadcast, ends, read_counter, reading, stays_pending, step};
 use iroh_moq::{
-    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach,
-    Reject,
+    Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach, Reject,
 };
 use moq_net::{Hop, Pattern, Patterns, origin};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher};
 
-/// A subscriber reaches a broadcast by its ticket alone: the path names the
-/// publisher, so the node knows whom to dial.
+/// A subscriber reaches a broadcast by dialing its publisher.
 #[tokio::test]
 #[traced_test]
-async fn a_ticket_resolves_by_dialing_its_publisher() {
+async fn a_path_resolves_by_dialing_its_publisher() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
 
     let broadcast = TestBroadcast::start();
     let publication = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
         .expect("publish");
-    let ticket = publication.ticket().expect("a live path");
-    assert_eq!(ticket, BroadcastTicket::new(alice.id(), "cam"));
-    assert_eq!(
-        publication.path().as_str(),
-        format!("live/{}/cam", alice.id())
-    );
-
     let subscription = step(
         "subscribe",
-        bob.moq.subscribe(ticket.path(), Reach::Direct(alice.id())),
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
@@ -45,7 +37,7 @@ async fn a_ticket_resolves_by_dialing_its_publisher() {
     let session = subscription.session().expect("served by a direct session");
     assert_eq!(session.remote_id(), alice.id());
 
-    let routes = bob.moq.routes(ticket.path()).get();
+    let routes = bob.moq.routes(publication.path()).get();
     assert_eq!(routes.len(), 1, "{routes:?}");
     assert_eq!(routes[0].kind, LinkKind::Direct);
     assert_eq!(routes[0].remote, Some(alice.id()));
@@ -64,7 +56,7 @@ async fn an_own_publication_resolves_locally() {
     let broadcast = TestBroadcast::start();
     let publication = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
         .expect("publish");
     let subscription = step(
         "subscribe",
@@ -93,12 +85,12 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     let first = TestBroadcast::start();
     alice
         .moq
-        .publish("cam", &first.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &first.producer, Audience::Everyone)
         .expect("publish");
     let second = TestBroadcast::start();
     let err = alice
         .moq
-        .publish("cam", &second.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &second.producer, Audience::Everyone)
         .expect_err("a second publication at one path");
     assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
 
@@ -107,13 +99,13 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     first.producer.finish();
     alice
         .moq
-        .publish("cam", &second.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &second.producer, Audience::Everyone)
         .expect("publish over an ended broadcast");
 
     let err = alice
         .moq
         .publish("", &second.producer, Audience::Everyone)
-        .expect_err("an empty name");
+        .expect_err("an empty path");
     assert!(matches!(err, Error::InvalidPath { .. }), "{err:#}");
     alice.shutdown().await;
 }
@@ -134,7 +126,11 @@ async fn a_peers_audience_follows_its_set() {
     let broadcast = TestBroadcast::start();
     let publication = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Peers(members.watch()))
+        .publish(
+            alice.path("cam"),
+            &broadcast.producer,
+            Audience::Peers(members.watch()),
+        )
         .expect("publish");
 
     let for_bob = step(
@@ -202,7 +198,7 @@ async fn a_manual_audience_needs_an_offer() {
     let broadcast = TestBroadcast::start();
     let publication = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Manual)
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Manual)
         .expect("publish");
     let bob_session = step("connect", bob.moq.connect(alice.endpoint.addr()))
         .await
@@ -254,7 +250,7 @@ async fn unpublishing_ends_what_peers_read() {
     let broadcast = TestBroadcast::start();
     let publication = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
         .expect("publish");
     let subscription = step(
         "subscribe",
@@ -287,7 +283,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let public = (
         alice
             .moq
-            .publish("public", &public.producer, Audience::Manual)
+            .publish(alice.path("public"), &public.producer, Audience::Manual)
             .expect("publish"),
         public,
     );
@@ -295,7 +291,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let secret = (
         alice
             .moq
-            .publish("secret", &secret.producer, Audience::Manual)
+            .publish(alice.path("secret"), &secret.producer, Audience::Manual)
             .expect("publish"),
         secret,
     );
@@ -406,9 +402,8 @@ const FORGED: u64 = 1_000_000;
 
 /// A peer cannot route another publisher's path through this node's table.
 ///
-/// A ticket resolves to the broadcast of the publisher it names, never to one a
-/// third peer announces under that name, and the bare names a peer announces
-/// stay on its own session.
+/// With a grant that keeps each peer to paths naming it, a path resolves to
+/// its publisher's broadcast, never to one a third peer announces there.
 #[tokio::test]
 #[traced_test]
 async fn a_peer_cannot_route_another_publishers_path() {
@@ -419,29 +414,24 @@ async fn a_peer_cannot_route_another_publishers_path() {
     let real = TestBroadcast::start();
     let publication = alice
         .moq
-        .publish("cam", &real.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &real.producer, Audience::Everyone)
         .expect("publish");
-    let ticket = publication.ticket().expect("a live path");
-
     let forged = TestBroadcast::starting_at(FORGED);
     let _forged = mallory
         .moq
-        .publish_at(ticket.path(), &forged.producer, Audience::Everyone)
+        .publish(publication.path(), &forged.producer, Audience::Everyone)
         .expect("publish at alice's path");
     let own = mallory
         .moq
-        .publish("cam", &forged.producer, Audience::Everyone)
+        .publish(mallory.path("cam"), &forged.producer, Audience::Everyone)
         .expect("publish");
     step("mallory connects", mallory.moq.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
     let session = step("bob sees mallory", session_with(&bob, mallory.id())).await;
 
-    // Both announcements reach bob: the forged one on mallory's session, and
-    // her own path into the table.
-    step("the forged path arrives", session.subscribe(ticket.path()))
-        .await
-        .expect("the forged path on mallory's session");
+    // Her own path reaches bob's table, and the forged one does not even
+    // reach her session: the grant refuses it.
     let mut own_routes = bob.moq.routes(own.path());
     step("bob routes mallory's own path", async {
         while own_routes.get().is_empty() {
@@ -449,22 +439,28 @@ async fn a_peer_cannot_route_another_publishers_path() {
         }
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    stays_pending(
+        "mallory announced alice's path",
+        QUIET,
+        session.subscribe(publication.path()),
+    )
+    .await;
     assert!(
-        bob.moq.routes(ticket.path()).get().is_empty(),
+        bob.moq.routes(publication.path()).get().is_empty(),
         "mallory routed alice's path"
     );
 
     let subscription = step(
         "subscribe",
-        bob.moq.subscribe(ticket.path(), Reach::Direct(alice.id())),
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
     assert_eq!(
         subscription.session().map(|session| session.remote_id()),
         Some(alice.id()),
-        "served by someone other than the publisher the ticket names"
+        "served by someone other than the publisher"
     );
     assert!(read_counter(&subscription.as_moq()).await < FORGED);
 
@@ -481,24 +477,24 @@ async fn a_subscriber_started_first_gets_the_named_path() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
 
-    let ticket = BroadcastTicket::new(alice.id(), "cam");
+    let path = alice.path("cam");
     let subscribing = tokio::spawn({
         let moq = bob.moq.clone();
-        let (path, publisher) = (ticket.path(), ticket.peer());
+        let (path, publisher) = (path.clone(), alice.id());
         async move { moq.subscribe(path, Reach::Direct(publisher)).await }
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     let broadcast = TestBroadcast::start();
     let _publication = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
         .expect("publish");
 
     let subscription = step("subscribe", subscribing)
         .await
         .expect("task")
         .expect("subscribe");
-    assert_eq!(subscription.path().as_str(), ticket.path().as_str());
+    assert_eq!(subscription.path().as_str(), path);
     read_counter(&subscription.as_moq()).await;
 
     alice.shutdown().await;
@@ -615,7 +611,7 @@ async fn the_router_shuts_the_node_down() {
     let broadcast = TestBroadcast::start();
     let err = alice
         .moq
-        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
         .expect_err("publish after the router shut down");
     assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
     alice.shutdown().await;
@@ -630,11 +626,11 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     let (allowed, other) = (TestBroadcast::start(), TestBroadcast::start());
     let allowed = bob
         .moq
-        .publish("allowed", &allowed.producer, Audience::Everyone)
+        .publish(bob.path("allowed"), &allowed.producer, Audience::Everyone)
         .expect("publish");
     let other = bob
         .moq
-        .publish("other", &other.producer, Audience::Everyone)
+        .publish(bob.path("other"), &other.producer, Audience::Everyone)
         .expect("publish");
 
     let moq = alice.moq.clone();
@@ -686,11 +682,11 @@ async fn a_shared_route_table_carries_public_publications() {
     let (public, secret) = (TestBroadcast::start(), TestBroadcast::start());
     let public = alice
         .moq
-        .publish("public", &public.producer, Audience::Everyone)
+        .publish(alice.path("public"), &public.producer, Audience::Everyone)
         .expect("publish");
     let secret = alice
         .moq
-        .publish("secret", &secret.producer, Audience::Manual)
+        .publish(alice.path("secret"), &secret.producer, Audience::Manual)
         .expect("publish");
 
     let served = step(

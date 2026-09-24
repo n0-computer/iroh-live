@@ -3,6 +3,7 @@
 
 use clap::Parser;
 use iroh::Endpoint;
+use iroh_live::moq::{ConnectOptions, Grant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,14 +21,16 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
     // The relay names broadcasts as its publishers did, so the name is resolved
-    // on the session with the relay rather than through the route table.
-    // Retried: the publisher may not have announced the catalog yet.
+    // on the session with the relay rather than through the route table, and
+    // the relay may publish anything on it. Retried: the publisher may not have
+    // announced the catalog yet.
     let broadcast = {
         let mut last_err = String::new();
         let mut result = None;
         for attempt in 0..5 {
             let attempt_result = async {
-                let session = live.moq().connect(id).await?;
+                let trusted = ConnectOptions::default().with_grant(Grant::everything());
+                let session = live.moq().connect_with(id, trusted).await?;
                 let subscription = session.subscribe(cli.name.as_str()).await?;
                 Ok::<_, iroh_live::moq::Error>(live.remote_broadcast(&subscription))
             }

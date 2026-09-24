@@ -116,6 +116,7 @@
 mod error;
 mod live;
 mod network;
+mod ticket;
 
 pub use iroh_live_media as media;
 pub use iroh_live_media::{
@@ -124,13 +125,14 @@ pub use iroh_live_media::{
 };
 pub use iroh_moq as moq;
 pub use iroh_moq::{
-    Audience, BroadcastTicket, EndpointOptions, Mdns, MediaPreset, Moq, MoqConfig, Publication,
-    Reach, Session, Subscription,
+    Audience, EndpointOptions, Mdns, MediaPreset, Moq, MoqConfig, Publication, Reach, Session,
+    Subscription,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_rooms as rooms;
 
 pub use self::{
     error::Error,
-    live::{Live, LiveBuilder},
+    live::{Live, LiveBuilder, grant, moq_config, publish_scope},
+    ticket::BroadcastTicket,
 };

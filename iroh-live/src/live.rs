@@ -1,17 +1,52 @@
 //! The node: an endpoint, the MoQ transport on it, and the router that accepts.
 
+use std::sync::Arc;
+
 use iroh::{
-    Endpoint,
+    Endpoint, EndpointId,
     protocol::{DynProtocolHandler, ProtocolHandler, Router},
 };
 use iroh_live_media::RemoteBroadcast;
 use iroh_moq::{
-    Audience, BroadcastTicket, Moq, MoqConfig, Publication, Reach, RouteInfo, Subscription,
+    Audience, Grant, Moq, MoqConfig, Publication, Reach, RouteInfo, Subscription,
+    net::{Pattern, Patterns},
 };
 use moq_net::{Consume, broadcast};
+use n0_error::e;
 use tracing::{error, info, instrument};
 
-use crate::{Error, network};
+use crate::{BroadcastTicket, Error, network};
+
+/// Returns the paths `peer` publishes its own broadcasts under: `live/<peer>/**`.
+pub fn publish_scope(peer: EndpointId) -> Pattern {
+    format!("live/{peer}/**")
+        .parse()
+        .expect("an endpoint id is a valid path segment")
+}
+
+/// Returns the grant a live node gives `peer`.
+///
+/// The peer may subscribe to anything and publish only its own broadcasts,
+/// under [`publish_scope`], so no peer can stand in for another at a path that
+/// names it. With the `rooms` feature it may also publish into rooms, under
+/// `rooms::publish_scope`.
+pub fn grant(peer: EndpointId) -> Grant {
+    #[cfg_attr(
+        not(feature = "rooms"),
+        allow(unused_mut, reason = "rooms add a scope")
+    )]
+    let mut publish = Patterns::from(publish_scope(peer));
+    #[cfg(feature = "rooms")]
+    publish.insert(iroh_rooms::publish_scope(peer));
+    Grant::new(Patterns::from(Pattern::all()), publish)
+}
+
+/// Returns the [`MoqConfig`] of a live node: admission open, with [`grant`].
+pub fn moq_config() -> MoqConfig {
+    let mut config = MoqConfig::default();
+    config.grant = Some(Arc::new(grant));
+    config
+}
 
 /// A node ready for live media.
 ///
@@ -60,7 +95,9 @@ impl LiveBuilder {
 
     /// Uses a [`Moq`] the application created first.
     ///
-    /// So it can hand it to `Rooms` before the router is built.
+    /// So it can hand it to `Rooms` before the router is built. Create it with
+    /// [`moq_config`], or a config whose grant keeps peers to their own paths
+    /// as [`grant`] does.
     ///
     /// # Panics
     ///
@@ -80,7 +117,7 @@ impl LiveBuilder {
     pub fn spawn(self) -> Live {
         let moq = self
             .moq
-            .unwrap_or_else(|| Moq::new(self.endpoint.clone(), MoqConfig::default()));
+            .unwrap_or_else(|| Moq::new(self.endpoint.clone(), moq_config()));
         let router = (self.router || !self.protocols.is_empty()).then(|| {
             let mut router = Router::builder(self.endpoint.clone());
             // Every MoQ version this build speaks, not only the newest, so a
@@ -154,7 +191,15 @@ impl Live {
         name: &str,
         broadcast: impl Consume<broadcast::Consumer>,
     ) -> Result<Publication, Error> {
-        Ok(self.moq.publish(name, broadcast, Audience::Everyone)?)
+        if name.is_empty() {
+            return Err(e!(iroh_moq::Error::InvalidPath {
+                path: name.to_owned()
+            })
+            .into());
+        }
+        Ok(self
+            .moq
+            .publish(self.ticket(name).path(), broadcast, Audience::Everyone)?)
     }
 
     /// Returns the ticket for this node's broadcast `name`.
@@ -163,7 +208,7 @@ impl Live {
     /// puts it, so it is what to share after publishing. The ticket is only a
     /// name: it does not check that anything is published there.
     pub fn ticket(&self, name: &str) -> BroadcastTicket {
-        self.moq.ticket(name)
+        BroadcastTicket::new(self.endpoint.id(), name)
     }
 
     /// Resolves the ticket's broadcast over whichever link serves it.

@@ -259,7 +259,7 @@ bar, the stats overlay, and the rendition and volume controls; leaving it still
 hides them again.
 
 Hanging up on either side returns both windows to the waiting screen, ready for
-the next call. The path a peer publishes on is `calls/<its endpoint id>`, which
+the next call. A peer publishes its side as the broadcast `call`, which
 `irl watch` can subscribe to like any other broadcast if all that is wanted is
 one direction.
 

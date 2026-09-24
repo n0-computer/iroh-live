@@ -101,12 +101,6 @@ pub enum Error {
         #[error(source, std_err)]
         source: moq_net::Error,
     },
-    /// A ticket did not parse.
-    #[error("invalid ticket: {reason}")]
-    InvalidTicket {
-        /// What was wrong with it.
-        reason: String,
-    },
     /// The endpoint could not be bound.
     #[error("failed to bind the endpoint")]
     Bind {

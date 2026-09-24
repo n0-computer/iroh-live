@@ -2,7 +2,7 @@
 name = "iroh-moq"
 version = "0.1.0"
 edition = "2024"
-description = "audio and video live streaming over iroh"
+description = "MoQ over iroh: one route table fed by direct sessions and relays"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
@@ -11,14 +11,11 @@ license = "MIT OR Apache-2.0"
 workspace = true
 
 [dependencies]
-data-encoding = "2.11.1"
 derive_more = { version = "2.1.1", features = ["display", "debug"] }
 iroh = { workspace = true }
 # mDNS address lookup, so a ticket that names an endpoint id and no
 # addresses still resolves on a network with no route to the internet.
 iroh-mdns-peer-lookup = "0.1.2"
-# `BroadcastTicket` implements iroh's ticket trait, next to `RoomTicket`.
-iroh-tickets = { workspace = true }
 # `Grant::from_claims`, behind `auth`: one token format for our nodes and moq
 # relays.
 moq-auth = { version = "0.1.0", default-features = false, optional = true }
@@ -32,7 +29,6 @@ n0-future = "0.3.2"
 n0-watcher = "1"
 # BBR3, the congestion controller every endpoint binds with.
 noq-proto = { workspace = true }
-serde = { version = "1.0.229", features = ["derive"] }
 # `time` seeds each session driver's clock, and `macros` is for the `select!`
 # that runs it. Both used to arrive only through feature unification with the
 # rest of the workspace, which is not a thing a library can lean on.
@@ -58,5 +54,4 @@ auth = ["dep:moq-auth"]
 futures-lite = "2"
 iroh = { workspace = true, features = ["test-utils"] }
 n0-tracing-test = "0.3.0"
-postcard = { version = "1.1.3", features = ["use-std"] }
 tokio = { version = "1.53.1", features = ["full"] }

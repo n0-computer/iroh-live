@@ -24,13 +24,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, Incoming, LinkKind,
-    Publication, RouteInfo, Session, SessionRequest, Subscription,
+    Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, LinkKind, Publication,
+    RouteInfo, Session, SessionRequest, Subscription,
     link::{self, LinkState},
-    path::{hop_for, live_path},
     publish::peers_task,
     route,
-    session::{SessionInner, SessionParts, Transport, dial_session, driver_now},
+    session::{SessionInner, SessionParts, Transport, dial_session, driver_now, hop_for},
     state::{self, LinkEntry, PubEntry, State},
     transport::accept_transport,
 };
@@ -83,6 +82,17 @@ pub enum Reach {
 pub struct MoqConfig {
     /// How incoming sessions are admitted.
     pub admission: Admission,
+    /// Returns the grant of a session with a peer, from its endpoint id.
+    ///
+    /// Used under [`Admission::Open`], and for a dial without
+    /// [`ConnectOptions::grant`]. `None` grants everything.
+    ///
+    /// The grant's publish patterns decide which paths a peer may put into
+    /// the route table, which every subscriber on the node shares. A function
+    /// that lets each peer publish only under paths naming it keeps one peer
+    /// from standing in for another: `iroh-live` lets a peer publish under
+    /// `live/<its id>/` only.
+    pub grant: Option<GrantFn>,
     /// A route table to share with another server, instead of the node's own.
     ///
     /// A relay binary shares its cluster's. The node's hop is then the
@@ -102,6 +112,7 @@ impl fmt::Debug for MoqConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MoqConfig")
             .field("admission", &self.admission)
+            .field("grant", &self.grant.is_some())
             .field("origin", &self.origin.as_ref().map(|origin| origin.hop()))
             .finish()
     }
@@ -147,8 +158,7 @@ impl MoqConfig {
 ///
 /// let broadcast = moq_net::broadcast::Info::new().produce();
 /// // write tracks into `broadcast`, then:
-/// let _publication = moq.publish("camera", &broadcast, Audience::Everyone)?;
-/// println!("{}", moq.ticket("camera"));
+/// let _publication = moq.publish("demo/camera", &broadcast, Audience::Everyone)?;
 /// # Ok(())
 /// # }
 /// ```
@@ -178,6 +188,7 @@ pub(crate) struct Shared {
     pub(crate) id: EndpointId,
     pub(crate) hop: moq_net::Hop,
     pub(crate) admission: Admission,
+    grant: Option<GrantFn>,
     /// The route table.
     pub(crate) table: origin::Producer,
     pub(crate) state: Mutex<State>,
@@ -231,6 +242,7 @@ impl Moq {
             id,
             hop,
             admission: config.admission,
+            grant: config.grant,
             table,
             state: Mutex::new(State::default()),
             sessions: Watchable::new(Vec::new()),
@@ -263,63 +275,21 @@ impl Moq {
         &self.shared.endpoint
     }
 
-    /// Returns the ticket for this node's broadcast `name`.
-    ///
-    /// Names `live/<this node's id>/<name>`, where [`publish`](Self::publish)
-    /// puts a broadcast. The ticket is only a name: it does not check that
-    /// anything is published there.
-    pub fn ticket(&self, name: &str) -> BroadcastTicket {
-        BroadcastTicket::new(self.shared.id, name)
-    }
-
-    /// Publishes `broadcast` as `live/<this node's id>/<name>` to `audience`.
+    /// Publishes `broadcast` at `path` to `audience`.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::Duplicate`] if a live publication already has the
-    /// path, [`Error::InvalidPath`] for an empty name or one with a `*`
+    /// path, [`Error::InvalidPath`] for an empty path or one with a `*`
     /// segment, and [`Error::ShutDown`] once the node has shut down.
     pub fn publish(
-        &self,
-        name: &str,
-        broadcast: impl Consume<broadcast::Consumer>,
-        audience: Audience,
-    ) -> Result<Publication, Error> {
-        if Path::new(name).is_empty() {
-            return Err(e!(Error::InvalidPath {
-                path: name.to_owned()
-            }));
-        }
-        self.publish_inner(
-            live_path(self.shared.id, name),
-            broadcast.consume(),
-            audience,
-        )
-    }
-
-    /// Publishes `broadcast` at an explicit path.
-    ///
-    /// For namespaces other than `live/`: rooms publish at
-    /// `rooms/<topic>/<id>/<name>`.
-    ///
-    /// # Errors
-    ///
-    /// As [`publish`](Self::publish).
-    pub fn publish_at(
         &self,
         path: impl AsPath,
         broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
-        self.publish_inner(path.as_path().to_owned(), broadcast.consume(), audience)
-    }
-
-    fn publish_inner(
-        &self,
-        path: PathOwned,
-        broadcast: broadcast::Consumer,
-        audience: Audience,
-    ) -> Result<Publication, Error> {
+        let path = path.as_path().to_owned();
+        let broadcast = broadcast.consume();
         check_path(&path)?;
         let weak = Arc::downgrade(&self.shared);
         let mut state = self.shared.state.lock().expect("poisoned");
@@ -379,15 +349,16 @@ impl Moq {
     /// If no route exists yet, it reaches out as `reach` says. Cancellation
     /// safe: a dial it started continues for other callers.
     ///
-    /// The route table holds routes a direct peer announces to its own
-    /// broadcasts, routes an attached relay forwards, and this node's own
-    /// publications for [`Audience::Everyone`]. A path naming a publisher
-    /// therefore resolves to that publisher's broadcast, directly or through a
-    /// relay, and never to one a third peer announced under its name. A relay
-    /// is trusted with every path it forwards, so attach only relays whose
-    /// admission keeps each publisher to its own paths (moq-relay's tokens do).
-    /// This node's `Peers` and `Manual` publications are not in the table, which
-    /// may be shared with a cluster; read those from the broadcast itself.
+    /// The route table holds what direct peers announce within their grants,
+    /// routes an attached relay forwards, and this node's own publications for
+    /// [`Audience::Everyone`]. With grants that keep each peer to paths naming
+    /// it (see [`MoqConfig::grant`]), a path resolves to its publisher's
+    /// broadcast, directly or through a relay, and never to one a third peer
+    /// announced there. A relay is trusted with every path it forwards, so
+    /// attach only relays whose admission keeps each publisher to its own
+    /// paths (moq-relay's tokens do). This node's `Peers` and `Manual`
+    /// publications are not in the table, which may be shared with a cluster;
+    /// read those from the broadcast itself.
     ///
     /// # Errors
     ///
@@ -667,7 +638,7 @@ impl Moq {
         };
         match self.shared.admission {
             Admission::Open => {
-                incoming.admit(Grant::everything()).await?;
+                incoming.admit(self.shared.grant_for(remote)).await?;
             }
             Admission::Manual => {
                 let room = tokio::select! {
@@ -719,6 +690,13 @@ impl ProtocolHandler for Moq {
 }
 
 impl Shared {
+    /// Returns the grant [`MoqConfig::grant`] gives `peer`.
+    pub(crate) fn grant_for(&self, peer: EndpointId) -> Grant {
+        self.grant
+            .as_ref()
+            .map_or_else(Grant::everything, |grant| grant(peer))
+    }
+
     /// Hands an established session to the actor, which runs it.
     pub(crate) async fn register(&self, parts: SessionParts) -> Result<Session, Error> {
         let (reply, reply_rx) = oneshot::channel();
@@ -1071,7 +1049,7 @@ impl Actor {
                     moq_net::time::run(ingest_driver).await;
                 }));
                 let _bridge = AbortOnDropHandle::new(tokio::spawn(
-                    route::bridge(shared, link, ingest, Some(remote)).in_current_span(),
+                    route::bridge(shared, link, ingest, false).in_current_span(),
                 ));
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
                     connection,

@@ -4,14 +4,13 @@
 [iroh](https://github.com/n0-computer/iroh).
 
 A `Moq` node keeps one route table fed by every link it has: direct sessions
-with peers, and moq relays it is attached to. Broadcasts are published at paths
-that name their publisher, `live/<endpoint id>/<name>`, so the same broadcast has
-the same path over every link, and subscribing resolves a path in the table
-rather than asking one session. moq picks the best route (lowest cost, then
-fewest hops) and fails over when it dies.
+with peers, and moq relays it is attached to. The application picks the paths;
+when a broadcast has the same path over every link, subscribing resolves a path
+in the table rather than asking one session. moq picks the best route (lowest
+cost, then fewest hops) and fails over when it dies.
 
 ```rust
-use iroh_moq::{Audience, BroadcastTicket, MediaPreset, Moq, MoqConfig, Reach};
+use iroh_moq::{Audience, MediaPreset, Moq, MoqConfig, Reach};
 
 let endpoint = iroh::Endpoint::bind(MediaPreset).await?;
 let moq = Moq::new(endpoint.clone(), MoqConfig::default());
@@ -25,11 +24,10 @@ let router = router.spawn();
 
 // Publish a broadcast this process writes, to everyone.
 let broadcast = moq_net::broadcast::Info::new().produce();
-let publication = moq.publish("my-stream", &broadcast, Audience::Everyone)?;
-println!("{}", moq.ticket("my-stream"));
+let publication = moq.publish("demo/my-stream", &broadcast, Audience::Everyone)?;
 
-// Or resolve someone else's, dialing its publisher if no route exists yet.
-let subscription = moq.subscribe(ticket.path(), Reach::Both(ticket.peer())).await?;
+// Or resolve a peer's, dialing it if no route exists yet.
+let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
 let consumer = subscription.as_moq();
 ```
 
@@ -38,7 +36,9 @@ let consumer = subscription.as_moq();
 A publication's `Audience` says who may see it: `Everyone`, a watched set of
 `Peers`, or `Manual`, offered per session with `Session::offer`. A session's
 `Grant`, decided when it is admitted, says what the peer may subscribe to and
-publish, in moq-auth's pattern shape. With `Admission::Manual` every incoming
+publish, in moq-auth's pattern shape. `MoqConfig::grant` gives each peer its
+grant from its endpoint id, so an application can keep every peer to the paths
+that name it; `iroh-live` lets a peer publish under `live/<its id>/` only. With `Admission::Manual` every incoming
 session waits in `Moq::accept` for the application to admit or reject it, which
 is where a token check goes; `Grant::from_claims` behind the `auth` feature
 turns verified moq-auth claims into a grant.

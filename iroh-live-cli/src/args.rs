@@ -11,7 +11,7 @@ use clap::{Args, ValueEnum};
 use iroh::EndpointId;
 use iroh_live::BroadcastTicket;
 #[cfg(feature = "render")]
-use iroh_rooms::RoomTicket;
+use iroh_live::rooms::RoomTicket;
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 

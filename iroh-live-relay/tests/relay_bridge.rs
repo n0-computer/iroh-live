@@ -338,7 +338,7 @@ async fn iroh_publish_iroh_subscribe() {
     // same path the publisher offers on a direct session.
     let path = iroh_live::BroadcastTicket::new(pub_ep.id(), "relay-test").path();
     let sub = tokio::time::timeout(TIMEOUT, async {
-        let session = subscriber.moq().connect(relay_id).await?;
+        let session = subscriber.moq().connect_with(relay_id, trusted()).await?;
         let subscription = session.subscribe(path).await?;
         Ok::<_, iroh_live::moq::Error>(subscriber.remote_broadcast(&subscription))
     })
@@ -427,7 +427,7 @@ async fn noq_publish_iroh_subscribe() {
     let mut last_err = None;
     for attempt in 0..3 {
         let result = tokio::time::timeout(Duration::from_secs(5), async {
-            let session = subscriber.moq().connect(relay_id).await?;
+            let session = subscriber.moq().connect_with(relay_id, trusted()).await?;
             let subscription = session.subscribe("browser-stream").await?;
             Ok::<_, iroh_live::moq::Error>(subscriber.remote_broadcast(&subscription))
         })
@@ -576,6 +576,14 @@ async fn iroh_publish_noq_subscribe() {
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
+}
+
+/// Dials a relay as a direct session whose peer may publish anything here.
+///
+/// A live node's own grant keeps a peer to `live/<its id>/`, and a relay
+/// forwards everyone's broadcasts.
+fn trusted() -> iroh_moq::ConnectOptions {
+    iroh_moq::ConnectOptions::default().with_grant(iroh_moq::Grant::everything())
 }
 
 /// How long a pull may linger unwatched in the pull-lifecycle tests. Short
@@ -1014,7 +1022,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
 
     let (_viewer_endpoint, viewer) = relay_node(false).await;
     let link = attached(&viewer, &relay, RelayOffer::Nothing).await;
-    let ticket = publisher.moq().ticket("studio");
+    let ticket = publisher.ticket("studio");
     let subscription = tokio::time::timeout(
         TIMEOUT,
         viewer.moq().subscribe(ticket.path(), Reach::Relays),
@@ -1086,15 +1094,19 @@ async fn a_relay_gets_public_publications_only() {
     let members = Watchable::new(BTreeSet::from([relay.iroh_id]));
     let public = live
         .moq()
-        .publish("public", &public, Audience::Everyone)
+        .publish(live.ticket("public").path(), &public, Audience::Everyone)
         .expect("publish");
     let peers = live
         .moq()
-        .publish("peers", &peers, Audience::Peers(members.watch()))
+        .publish(
+            live.ticket("peers").path(),
+            &peers,
+            Audience::Peers(members.watch()),
+        )
         .expect("publish");
     let manual = live
         .moq()
-        .publish("manual", &manual, Audience::Manual)
+        .publish(live.ticket("manual").path(), &manual, Audience::Manual)
         .expect("publish");
 
     let (sub_origin, _sub_driver) = test_origin();
@@ -1183,7 +1195,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let (broadcast, _writer) = counter("data");
     let publication = alice
         .moq()
-        .publish("cam", &broadcast, Audience::Everyone)
+        .publish(alice.ticket("cam").path(), &broadcast, Audience::Everyone)
         .expect("publish");
     let _alice_link = attached(&alice, &relay, RelayOffer::Public).await;
 
@@ -1288,7 +1300,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let (broadcast, _writer) = counter("data");
     let publication = alice
         .moq()
-        .publish("cam", &broadcast, Audience::Everyone)
+        .publish(alice.ticket("cam").path(), &broadcast, Audience::Everyone)
         .expect("publish");
 
     // Mallory, a browser-like client, publishes at Alice's path, declaring
@@ -1400,17 +1412,17 @@ async fn the_shipped_relay_refuses_forged_paths() {
     let (room_forged, _room_forged) = counter("data");
     let own = mallory
         .moq()
-        .publish("cam", &own, Audience::Everyone)
+        .publish(mallory.ticket("cam").path(), &own, Audience::Everyone)
         .expect("publish");
     let forged_path = format!("live/{alice}/cam");
     let room_path = format!("rooms/topic/{alice}/cam");
     let _forged = mallory
         .moq()
-        .publish_at(forged_path.as_str(), &forged, Audience::Everyone)
+        .publish(forged_path.as_str(), &forged, Audience::Everyone)
         .expect("publish at alice's path");
     let _room_forged = mallory
         .moq()
-        .publish_at(room_path.as_str(), &room_forged, Audience::Everyone)
+        .publish(room_path.as_str(), &room_forged, Audience::Everyone)
         .expect("publish at alice's room path");
     let _link = attached(&mallory, &relay, RelayOffer::Public).await;
 

@@ -1,8 +1,8 @@
 //! `irl call`: a 1:1 bidirectional video call.
 //!
-//! Both peers publish their own side at `calls/<their endpoint id>` and
-//! subscribe to the other's on the session between them, which is all a
-//! [`Call`] is. The path is a convention this command shares with the Android
+//! Both peers publish their own side as the broadcast `call`, at
+//! `live/<their endpoint id>/call`, and subscribe to the other's on the session
+//! between them, which is all a [`Call`] is. The name is a convention this command shares with the Android
 //! demo, so the two can call each other. Everything here is the window over that,
 //! plus the small state machine that decides whether this node is dialing,
 //! answering, or already talking.
@@ -16,7 +16,7 @@
 
 use iroh::EndpointId;
 use iroh_live::{
-    Audience, Live, RemoteBroadcast, Session,
+    BroadcastTicket, Live, RemoteBroadcast, Session,
     media::{AudioOutput, LocalBroadcast},
 };
 use n0_error::Result;
@@ -29,13 +29,10 @@ use crate::{
     transport::{self, Subscribed},
 };
 
-/// The path a peer publishes its side of a call at: `calls/<endpoint id>`.
+/// The broadcast a peer publishes its side of a call as.
 ///
-/// Named by the publisher, so two calls on one node never collide, and shared
-/// with the Android demo, which is what lets the two call each other.
-fn call_path(publisher: EndpointId) -> String {
-    format!("calls/{publisher}")
-}
+/// Shared with the Android demo, which is what lets the two call each other.
+const CALL: &str = "call";
 
 /// A call in progress: the session with the peer, and the peer's side read
 /// over it.
@@ -57,7 +54,8 @@ impl Call {
     ///
     /// Waits for the peer to announce it; its catalog arrives afterwards.
     async fn accept(live: &Live, session: Session) -> Result<Self> {
-        let subscription = session.subscribe(call_path(session.remote_id())).await?;
+        let path = BroadcastTicket::new(session.remote_id(), CALL).path();
+        let subscription = session.subscribe(path).await?;
         let remote = Subscribed::open(live, subscription);
         Ok(Self { session, remote })
     }
@@ -111,7 +109,7 @@ async fn setup(args: &CallArgs) -> Result<Local> {
     let live = transport::setup_live(true).await?;
     let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
         let (broadcast, sources) = publish_local(live, &args.capture, &output).await?;
-        let ticket = live.ticket(&call_path(live.endpoint().id())).to_string();
+        let ticket = live.ticket(CALL).to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
@@ -140,11 +138,7 @@ async fn publish_local(
 ) -> Result<(LocalBroadcast, source::Opened)> {
     let broadcast = LocalBroadcast::new();
     let sources = source::configure(&broadcast, args, Some(output)).await?;
-    live.moq().publish_at(
-        call_path(live.endpoint().id()),
-        &broadcast,
-        Audience::Everyone,
-    )?;
+    live.publish(CALL, &broadcast)?;
     Ok((broadcast, sources))
 }
 

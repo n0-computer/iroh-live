@@ -12,13 +12,15 @@ the broadcast carries is the application's business.
 ## Joining
 
 `Rooms` owns the one gossip instance rooms need. Create it on the node's `Moq`
-before the router, so the router can mount it:
+before the router, so the router can mount it. The node must let members
+publish their room broadcasts, under `iroh_rooms::publish_scope(member)`;
+`iroh_live::moq_config()` does with the `rooms` feature:
 
 ```rust
-use iroh_live::{Live, Moq, MoqConfig};
+use iroh_live::{Live, Moq};
 use iroh_rooms::{RoomConfig, RoomTicket, Rooms};
 
-let moq = Moq::new(endpoint.clone(), MoqConfig::default());
+let moq = Moq::new(endpoint.clone(), iroh_live::moq_config());
 let rooms = Rooms::new(&moq);
 let live = Live::builder(endpoint)
     .with_moq(moq)

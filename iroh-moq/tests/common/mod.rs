@@ -7,11 +7,16 @@
     reason = "a `tests/common.rs` would become a test binary of its own"
 )]
 
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_moq::{Moq, MoqConfig};
-use moq_net::{Timestamp, broadcast, bytes::Bytes, track};
+use iroh::{
+    Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
+};
+use iroh_moq::{Grant, Moq, MoqConfig};
+use moq_net::{Pattern, Patterns, Timestamp, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -42,11 +47,19 @@ pub(crate) struct Node {
 }
 
 impl Node {
+    /// Spawns a node whose peers may publish only under `live/<their id>/`.
     pub(crate) async fn spawn() -> Self {
         Self::with_config(MoqConfig::default()).await
     }
 
-    pub(crate) async fn with_config(config: MoqConfig) -> Self {
+    /// Returns `live/<this node's id>/<name>`.
+    pub(crate) fn path(&self, name: &str) -> String {
+        format!("live/{}/{name}", self.id())
+    }
+
+    /// Spawns a node with `config`, filling in the grant `spawn` gives.
+    pub(crate) async fn with_config(mut config: MoqConfig) -> Self {
+        config.grant.get_or_insert_with(|| Arc::new(own_paths));
         let endpoint = endpoint().await;
         let moq = Moq::new(endpoint.clone(), config);
         let mut router = Router::builder(endpoint.clone());
@@ -69,6 +82,13 @@ impl Node {
         self.router.shutdown().await.expect("router task panicked");
         self.endpoint.close().await;
     }
+}
+
+/// Returns a grant that lets `peer` subscribe to anything and publish under
+/// `live/<peer>/` only.
+pub(crate) fn own_paths(peer: EndpointId) -> Grant {
+    let own: Pattern = format!("live/{peer}/**").parse().expect("pattern");
+    Grant::new(Patterns::from(Pattern::all()), Patterns::from(own))
 }
 
 /// A standalone broadcast with one track that writes a counter every few

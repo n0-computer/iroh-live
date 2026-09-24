@@ -140,16 +140,9 @@ impl ProtocolHandler for IrohSessions {
 }
 
 /// Returns what the iroh client `id` may publish into the relay: the paths
-/// that name it, `live/<id>/**` and `rooms/*/<id>/**`.
+/// that name it, as [`iroh_live::grant`] allows.
 pub fn publish_scope(id: EndpointId) -> Patterns {
-    [format!("live/{id}/**"), format!("rooms/*/{id}/**")]
-        .iter()
-        .map(|pattern| {
-            pattern
-                .parse::<Pattern>()
-                .expect("an endpoint id is a valid path segment")
-        })
-        .collect()
+    iroh_live::grant(id).publish
 }
 
 /// Returns moq-relay's auth for sessions that are not iroh's, browsers above

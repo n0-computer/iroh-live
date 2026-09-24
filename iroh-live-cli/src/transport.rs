@@ -104,17 +104,17 @@ pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<L
 ///
 /// Fails if the endpoint cannot bind.
 #[cfg(feature = "render")]
-pub async fn setup_live_with_rooms() -> Result<(Live, iroh_rooms::Rooms)> {
+pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
     let endpoint = EndpointOptions::default()
         .with_secret_key(secret_key_from_env()?)
         .bind()
         .await?;
-    let moq = iroh_live::Moq::new(endpoint.clone(), iroh_live::MoqConfig::default());
-    let rooms = iroh_rooms::Rooms::new(&moq);
+    let moq = iroh_live::Moq::new(endpoint.clone(), iroh_live::moq_config());
+    let rooms = iroh_live::rooms::Rooms::new(&moq);
     let live = Live::builder(endpoint)
         .with_moq(moq)
         .with_router()
-        .accept(iroh_rooms::ALPN, rooms.protocol_handler())
+        .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())
         .spawn();
     Ok((live, rooms))
 }
@@ -311,7 +311,7 @@ fn attach_relay(live: &Live, relay: EndpointId, name: &str) -> Result<RelayLink>
     let link = live
         .moq()
         .attach_relay(RelayConfig::new(url).with_consume(false))?;
-    let path = iroh_live::moq::live_path(live.endpoint().id(), name);
+    let path = live.ticket(name).path();
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");
     println!("pushing to relay {relay}: viewers find the broadcast there at {path}");
     Ok(link)

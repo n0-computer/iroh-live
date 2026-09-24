@@ -19,10 +19,8 @@ assert_eq!(ticket.path().as_str(), format!("live/{}/hello", ticket.peer()));
 let parsed: BroadcastTicket = string.parse()?;
 ```
 
-The publishing node mints its own with `live.ticket("hello")` (or
-`Moq::ticket`), which names the path `Live::publish` puts a broadcast at.
-`Publication::ticket()` also exists, but returns an `Option`, since a
-publication at any other path, such as a room's, has no ticket.
+The publishing node mints its own with `live.ticket("hello")`, which names the
+path `Live::publish` puts a broadcast at.
 
 `Display` produces a URI:
 
@@ -56,10 +54,9 @@ read a ticket minted after it.
 ## Call tickets
 
 A call needs no ticket type of its own. `irl call` and the Android demo each
-publish under `calls/<their own endpoint id>` and subscribe to the other's on
-the session between them, so the callee only needs the caller's endpoint id. The
-ticket they hand out is a `BroadcastTicket` named `calls/<endpoint id>`, which
-is what earlier builds handed out too.
+publish a broadcast named `call` and subscribe to the other's on the session
+between them, so the callee only needs the caller's endpoint id. The ticket they
+hand out is a `BroadcastTicket` named `call`.
 
 ## RoomTicket
 

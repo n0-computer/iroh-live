@@ -1,12 +1,22 @@
 //! Admission: who gets a session, and what it may do once it has one.
 
+use std::sync::Arc;
+
+use iroh::EndpointId;
 use moq_net::{Pattern, Patterns};
+
+/// Returns the grant of a session with a peer, from its endpoint id.
+///
+/// See [`MoqConfig::grant`](crate::MoqConfig::grant).
+pub type GrantFn = Arc<dyn Fn(EndpointId) -> Grant + Send + Sync>;
 
 /// How a node treats incoming sessions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Admission {
-    /// Admits every session with [`Grant::everything`].
+    /// Admits every session with the grant [`MoqConfig::grant`] gives its peer.
+    ///
+    /// [`MoqConfig::grant`]: crate::MoqConfig::grant
     #[default]
     Open,
     /// Holds every incoming session until the application decides.
@@ -82,7 +92,7 @@ impl Grant {
 }
 
 impl Default for Grant {
-    /// Returns [`Grant::everything`], which is what [`Admission::Open`] gives.
+    /// Returns [`Grant::everything`].
     fn default() -> Self {
         Self::everything()
     }
@@ -199,8 +209,8 @@ pub struct ConnectOptions {
     pub cost: Option<u64>,
     /// What the dialed peer may do on this node.
     ///
-    /// Defaults to [`Grant::everything`]: dialing a peer is trusting it.
-    pub grant: Grant,
+    /// `None` takes it from [`MoqConfig::grant`](crate::MoqConfig::grant).
+    pub grant: Option<Grant>,
 }
 
 impl ConnectOptions {
@@ -218,7 +228,7 @@ impl ConnectOptions {
 
     /// Limits what the dialed peer may do on this node.
     pub fn with_grant(mut self, grant: Grant) -> Self {
-        self.grant = grant;
+        self.grant = Some(grant);
         self
     }
 

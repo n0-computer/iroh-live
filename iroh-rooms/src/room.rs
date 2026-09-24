@@ -13,7 +13,7 @@ use iroh_moq::{Audience, Moq, Publication, Subscription};
 use iroh_smol_kv::{
     ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
 };
-use moq_net::{Consume, broadcast};
+use moq_net::{Consume, Pattern, broadcast};
 use n0_error::{e, stack_error};
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
@@ -178,7 +178,7 @@ impl Rooms {
 
         let members = Watchable::new(BTreeSet::new());
         let chat = ChatWriter::new().map_err(|source| e!(Error::Chat { source }))?;
-        let chat_publication = self.moq.publish_at(
+        let chat_publication = self.moq.publish(
             room_path(topic, me, CHAT_BROADCAST),
             chat.consume(),
             Audience::Peers(members.watch()),
@@ -346,7 +346,7 @@ impl Room {
             return Err(e!(Error::Left));
         }
         let topic = self.inner.ticket.topic_id();
-        let publication = self.inner.moq.publish_at(
+        let publication = self.inner.moq.publish(
             room_path(topic, self.inner.me, name),
             broadcast,
             Audience::Peers(self.inner.members.watch()),
@@ -928,6 +928,19 @@ async fn put(writer: &WriteScope, state: &PeerState) {
     }
 }
 
+/// Returns the paths `member` publishes its room broadcasts under:
+/// `rooms/*/<member>/**`.
+///
+/// A node that runs rooms lets every peer publish under it, next to whatever
+/// else its [`MoqConfig::grant`](iroh_moq::MoqConfig::grant) allows, or room
+/// broadcasts do not reach it. Anything else would let one member stand in
+/// for another.
+pub fn publish_scope(member: EndpointId) -> Pattern {
+    format!("rooms/*/{member}/**")
+        .parse()
+        .expect("an endpoint id is a valid path segment")
+}
+
 /// Returns the path a room broadcast lives at: `rooms/<topic>/<publisher>/<name>`.
 ///
 /// The topic scopes it, so a member of two rooms can publish "cam" in each, and
@@ -968,10 +981,7 @@ mod tests {
         let publisher = SecretKey::from_bytes(&[3; 32]).public();
         let path = room_path(topic, publisher, "cam");
         assert_eq!(path, format!("rooms/{topic}/{publisher}/cam"));
-        assert_eq!(
-            iroh_moq::publisher_of(&moq_net::Path::new(&path)),
-            Some(publisher),
-            "the transport dials the publisher a room path names",
-        );
+        assert!(publish_scope(publisher).matches(&path));
+        assert!(!publish_scope(SecretKey::from_bytes(&[4; 32]).public()).matches(&path));
     }
 }

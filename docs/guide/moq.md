@@ -15,7 +15,7 @@ This page is the short version, in the vocabulary the rest of these docs use.
 A **broadcast** is a named collection of tracks published by one endpoint. In
 iroh-live a broadcast lives at a *path* that names its publisher:
 `live/<endpoint id>/hello` from `irl publish`, `live/<endpoint id>/pi-zero` from
-the Pi demo, `calls/<endpoint id>` from a call. A ticket names the endpoint and
+the Pi demo, `live/<endpoint id>/call` from a call. A ticket names the endpoint and
 the name, and maps to the path.
 
 A **track** is one media stream inside a broadcast: one video rendition, or the

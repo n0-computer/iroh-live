@@ -15,8 +15,24 @@ use tracing::{info, warn};
 
 use crate::{
     ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication, Reject,
-    SessionRequest, Subscription, link::LinkState, node::Shared, path::hop_for, transport,
+    SessionRequest, Subscription, link::LinkState, node::Shared, transport,
 };
+
+/// Returns the moq hop id of the node with endpoint id `id`.
+///
+/// Derived rather than drawn at random per start, so a relay that saw this node
+/// before recognizes its routes after a restart. An endpoint id is an ed25519
+/// public key, whose bytes are already spread evenly, so the first eight are
+/// used as they are. Truncated below 2^53, the bound moq documents for the
+/// JavaScript clients, which read hop ids as numbers. Zero names nobody in moq,
+/// so it maps to one.
+pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
+    let bytes: [u8; 8] = id.as_bytes()[..8]
+        .try_into()
+        .expect("an endpoint id is 32 bytes");
+    let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
+    moq_net::Hop::new(value.max(1)).expect("non-zero and below 2^62")
+}
 
 /// The transport a MoQ session runs over.
 ///
@@ -364,13 +380,17 @@ pub(crate) async fn dial_session(
     options: ConnectOptions,
 ) -> Result<SessionParts, Error> {
     let remote_id = remote.id;
+    let grant = options
+        .grant
+        .clone()
+        .unwrap_or_else(|| shared.grant_for(remote_id));
     let transport = transport::dial_with(&shared.endpoint, remote, &options).await?;
     let connection = transport.conn().clone();
     let origins = Origins::new(&shared);
     let mut client = moq_net::Client::new()
         .with_publisher(origins.publish.consume())
         .with_peer_hop(hop_for(&remote_id));
-    if let Some(subscriber) = origins.subscriber(&options.grant) {
+    if let Some(subscriber) = origins.subscriber(&grant) {
         client = client.with_subscriber(subscriber);
     }
     if let Some(cost) = options.cost {
@@ -394,10 +414,30 @@ pub(crate) async fn dial_session(
         remote: remote_id,
         connection,
         dialed: true,
-        grant: options.grant,
+        grant,
         request: SessionRequest::default(),
         moq,
         driver,
         origins,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    use super::*;
+
+    #[test]
+    fn the_hop_is_stable_and_in_range() {
+        let id = SecretKey::generate().public();
+        let hop = hop_for(&id);
+        assert_eq!(hop, hop_for(&id), "the same id gives the same hop");
+        assert!(hop.id() > 0 && hop.id() < 1 << 53, "{}", hop.id());
+        assert_ne!(
+            hop,
+            hop_for(&SecretKey::generate().public()),
+            "two ids give two hops"
+        );
+    }
 }

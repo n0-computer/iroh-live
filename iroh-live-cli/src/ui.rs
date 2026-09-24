@@ -725,12 +725,11 @@ mod tests {
     }
 
     /// The whole point of drawing the code: the peer's `irl call --scan`
-    /// equivalent reads it back off a camera. A call ticket is the longest one
-    /// this CLI shows, because its broadcast name is an endpoint id.
+    /// equivalent reads it back off a camera.
     #[test]
     fn a_call_ticket_survives_the_round_trip_through_the_rendered_code() {
         let id = iroh::SecretKey::generate().public();
-        let ticket = BroadcastTicket::new(id, format!("calls/{id}"));
+        let ticket = BroadcastTicket::new(id, "call");
         let pixels = QrPixels::render(&ticket.to_string()).expect("a ticket fits in a QR code");
         let text = decode(&upscale(&pixels)).expect("the code is there to be found");
         assert_eq!(

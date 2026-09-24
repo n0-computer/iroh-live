@@ -40,10 +40,10 @@ broadcast and back, which smoke-tests the codec on a device without needing a
 peer. Both exist because "is it the codec or is it the network" is the first
 question when a device misbehaves.
 
-A call is a small type in the bridge itself: each peer publishes under
-`calls/<its own endpoint id>` with `Moq::publish_at`, and subscribes to the
-other's over the session between them with `Session::subscribe`, wrapping the
-result with `Live::remote_broadcast`. That path is the convention `irl call`
+A call is a small type in the bridge itself: each peer publishes a
+broadcast named `call` with `Live::publish`, and subscribes to the other's over
+the session between them with `Session::subscribe`, wrapping the result with
+`Live::remote_broadcast`. That name is the convention `irl call`
 uses too, so a phone and a desktop can call each other. Which side dialed stops
 mattering once the session is up.
 

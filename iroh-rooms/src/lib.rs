@@ -21,6 +21,10 @@
 //! whoever holds the ticket: anyone who knows the topic id can join the gossip
 //! topic and announce itself, so the ticket is the boundary.
 //!
+//! The node's [`MoqConfig::grant`](iroh_moq::MoqConfig::grant) has to let each
+//! peer publish under [`publish_scope`], or room broadcasts never reach it.
+//! `iroh_live::moq_config` does with the `rooms` feature.
+//!
 //! Chat receivers carry what other members send from the moment of joining
 //! on, each message once, also when two arrive out of order or a member's
 //! session drops and comes back. What a member said before is told apart by
@@ -86,6 +90,6 @@ mod ticket;
 
 pub use self::{
     chat::{ChatError, ChatMessage, ChatReceiver},
-    room::{ALPN, Error, Room, RoomConfig, RoomPeer, RoomState, Rooms},
+    room::{ALPN, Error, Room, RoomConfig, RoomPeer, RoomState, Rooms, publish_scope},
     ticket::RoomTicket,
 };

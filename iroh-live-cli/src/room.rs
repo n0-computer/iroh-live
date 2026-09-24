@@ -11,8 +11,11 @@
 //! Every participant subscribes to every other, so this is a small-group
 //! design. There is no selective forwarding.
 
-use iroh_live::{Live, LocalBroadcast, media::AudioOutput};
-use iroh_rooms::{Room, RoomConfig, RoomTicket, Rooms};
+use iroh_live::{
+    Live, LocalBroadcast,
+    media::AudioOutput,
+    rooms::{Room, RoomConfig, RoomTicket, Rooms},
+};
 use n0_error::Result;
 use tracing::info;
 
@@ -116,9 +119,9 @@ mod window {
     use iroh_live::{
         Live,
         media::{AudioOutput, LocalBroadcast, Player, VideoSource},
+        rooms::{ChatError, ChatMessage, Room, RoomState},
     };
     use iroh_live_egui::egui_wgpu::RenderState;
-    use iroh_rooms::{ChatError, ChatMessage, Room, RoomState};
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
     use n0_watcher::Watcher;

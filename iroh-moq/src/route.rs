@@ -23,7 +23,7 @@ use moq_net::{
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, trace, warn};
 
-use crate::{ServingLink, Session, node::Shared, path::publisher_of};
+use crate::{ServingLink, Session, node::Shared};
 
 /// A broadcast that lived shorter than this before it ended counts as ending
 /// at once, for [`Subscription::closed`]'s pause.
@@ -221,40 +221,23 @@ impl Subscription {
 /// spliced. Recording which link served each request is what
 /// [`Subscription::session`] and [`Moq::routes`](crate::Moq::routes) read.
 ///
-/// With `publisher` set, only routes to that publisher's own broadcasts are
-/// mirrored, meaning paths that [`publisher_of`] reads as `publisher`'s. That is
-/// what a direct session gets: the table is shared by every subscriber on the
-/// node and answers a ticket without dialing, so a peer must not be able to put
-/// a route to someone else's path into it. Anything else the peer announces,
-/// a bare name from the older layout or a call path, stays reachable over that
-/// session alone through [`Session::subscribe`]. A relay link passes `None`,
-/// since forwarding other publishers' broadcasts is what a relay is for.
+/// A direct session's ingest holds only what its grant lets the peer publish,
+/// so the grant is what keeps a peer from routing someone else's path.
 ///
-/// A relay's routes enter the table under a first hop of their own (see
-/// [`relayed`]), so the table never takes a relay route for the same source as
-/// a direct one. moq re-splices a broadcast only between routes that share a
+/// A relay's routes (`relay` set) enter the table under a first hop of their
+/// own (see [`relayed`]), so the table never takes a relay route for the same
+/// source as a direct one. moq re-splices a broadcast only between routes that share a
 /// first hop, and a first hop is only what a publisher declares: without this, a
 /// peer that publishes someone else's path into a relay under that publisher's
 /// hop would be spliced into a subscription the moment its direct session
 /// dropped. A subscription that loses its direct route therefore ends, and
 /// asking again resolves through the relay.
-pub(crate) async fn bridge(
-    shared: Arc<Shared>,
-    link: u64,
-    ingest: origin::Producer,
-    publisher: Option<EndpointId>,
-) {
+pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Producer, relay: bool) {
     let mut announced = ingest.consume().announced();
     let mut mirrors: HashMap<PathOwned, (Arc<origin::Dynamic>, AbortOnDropHandle<()>)> =
         HashMap::new();
     while let Some(update) = announced.next().await {
         let prefix = update.prefix.clone();
-        if let Some(publisher) = publisher
-            && publisher_of(&prefix) != Some(publisher)
-        {
-            trace!(link, %prefix, "route names another publisher, not mirrored");
-            continue;
-        }
         if update.kind == announce::Kind::Retracted {
             trace!(link, %prefix, "route retracted");
             mirrors.remove(&prefix);
@@ -265,15 +248,16 @@ pub(crate) async fn bridge(
                 .set_announced(link, prefix, None);
             continue;
         }
-        let hops = match publisher {
-            Some(_) => update.route.hops.clone(),
-            None => match relayed(&update.route.hops) {
+        let hops = if relay {
+            match relayed(&update.route.hops) {
                 Some(hops) => hops,
                 None => {
                     warn!(link, %prefix, "relay route with an unusable hop chain, not mirrored");
                     continue;
                 }
-            },
+            }
+        } else {
+            update.route.hops.clone()
         };
         let route = Route::default()
             .with_hops(hops)

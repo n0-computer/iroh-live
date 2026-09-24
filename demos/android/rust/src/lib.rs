@@ -19,7 +19,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_live::{Audience, BroadcastTicket, EndpointOptions, Live, Session, Subscription};
+use iroh_live::{BroadcastTicket, EndpointOptions, Live, Session, Subscription};
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Catalog, LocalBroadcast, MicrophoneConfig, Player,
     PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFrames, VideoRendition,
@@ -124,16 +124,14 @@ async fn bind_live() -> Result<Live> {
 /// would hold up answering until its session closed.
 const CALLER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Returns the path a peer publishes its side of a call at:
-/// `calls/<endpoint id>`, the convention `irl call` shares.
-fn call_path(publisher: EndpointId) -> String {
-    format!("calls/{publisher}")
-}
+/// The broadcast a peer publishes its side of a call as, the convention
+/// `irl call` shares.
+const CALL: &str = "call";
 
-/// Publishes a fresh broadcast at `path` to everyone.
-fn publish_at(live: &Live, path: &str) -> Result<LocalBroadcast> {
+/// Publishes a fresh broadcast as `name` to everyone.
+fn publish(live: &Live, name: &str) -> Result<LocalBroadcast> {
     let local = LocalBroadcast::new();
-    live.moq().publish_at(path, &local, Audience::Everyone)?;
+    live.publish(name, &local)?;
     Ok(local)
 }
 
@@ -153,7 +151,8 @@ impl Call {
 
     /// Subscribes to the side of the call the peer of `session` publishes.
     async fn accept(live: &Live, session: Session) -> Result<Self> {
-        let subscription = session.subscribe(call_path(session.remote_id())).await?;
+        let path = BroadcastTicket::new(session.remote_id(), CALL).path();
+        let subscription = session.subscribe(path).await?;
         let remote = live.remote_broadcast(&subscription);
         Ok(Self { session, remote })
     }
@@ -465,7 +464,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     // Each peer publishes its own side of the call under its own endpoint id,
     // and subscribes to the other's.
     let output = open_output().await;
-    let broadcast = publish_at(&live, &call_path(live.endpoint().id()))?;
+    let broadcast = publish(&live, CALL)?;
     let (camera, _preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
@@ -521,9 +520,8 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // camera starts here rather than when a peer arrives, so the preview is
     // live while the code is on screen and the first frame the peer sees does
     // not wait for a device to open.
-    let path = call_path(id);
     let output = open_output().await;
-    let broadcast = publish_at(&live, &path)?;
+    let broadcast = publish(&live, CALL)?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
@@ -531,7 +529,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.frames = Some(preview);
     session.output = Some(output.clone());
     session.camera = Some(camera);
-    session.ticket = Some(BroadcastTicket::new(id, path.as_str()).to_string());
+    session.ticket = Some(live.ticket(CALL).to_string());
     session.broadcast = Some(broadcast);
     session.live = Some(live.clone());
     let shared = session.into_shared();
