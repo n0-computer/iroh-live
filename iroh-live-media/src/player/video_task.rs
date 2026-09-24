@@ -290,7 +290,7 @@ pub(crate) async fn run(inputs: Inputs) {
                 if due {
                     stats.video_timeline.push(FrameTiming {
                         kind: MediaKind::Video,
-                        pts: frame_pts(&frame),
+                        pts: frame.timestamp.into(),
                         decoded,
                         presented: Instant::now(),
                     });
@@ -310,7 +310,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     switcher.opened(generation, result)
                 }
                 Event::Replacement(Some(frame)) => {
-                    match switcher.replacement_frame(frame_pts(&frame), tokio::time::Instant::now()) {
+                    match switcher.replacement_frame(frame.timestamp.into(), tokio::time::Instant::now()) {
                         (Verdict::Promote, outcome) => {
                             // Whatever the incumbent was about to show is older
                             // than what takes over, so it goes.
@@ -327,7 +327,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     switcher.replacement_ended()
                 }
                 Event::Incumbent(Some(frame)) => {
-                    switcher.incumbent_frame(frame_pts(&frame));
+                    switcher.incumbent_frame(frame.timestamp.into());
                     delivery = Some(pacing.pace(frame, &clock, &controls, &stats));
                     Outcome::Idle
                 }
@@ -552,11 +552,6 @@ async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
     .await
 }
 
-/// The presentation time of `frame`.
-fn frame_pts(frame: &moq_video::Frame) -> Duration {
-    Duration::from_micros(frame.timestamp.as_micros() as u64)
-}
-
 /// The shown-frame rate, counted over a window.
 #[derive(Debug, Default)]
 struct Pacing {
@@ -575,7 +570,7 @@ impl Pacing {
         controls: &Controls,
         stats: &PlaybackRecorder,
     ) -> Delivery {
-        let pts = frame_pts(&frame);
+        let pts = frame.timestamp.into();
         let size = frame.size();
         let rate = self.meter.tick(0);
         stats.video.update(|video| {

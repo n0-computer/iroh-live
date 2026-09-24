@@ -324,11 +324,6 @@ impl RpicamConfig {
     }
 }
 
-/// An `rpicam-vid` failure, as the crate reports it.
-fn camera_error(err: RpicamError) -> Error {
-    Error::device(err)
-}
-
 /// Starts `rpicam-vid` for the H.264 its hardware encoder writes.
 pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Error> {
     let bitrate = u32::try_from(config.bitrate.as_bps()).map_err(|_| {
@@ -348,7 +343,7 @@ pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Err
         config.framerate,
         output,
     ))
-    .map_err(camera_error)
+    .map_err(Error::device)
 }
 
 /// Starts `rpicam-vid` for raw pictures, read into `slot` on a thread of its
@@ -365,7 +360,7 @@ pub(super) async fn open_raw(
         size: Size::new(raw.width(), raw.height()),
         rate,
     };
-    let mut pictures = frames(raw, moq_mux::Clock::new()).map_err(camera_error)?;
+    let mut pictures = frames(raw, moq_mux::Clock::new()).map_err(Error::device)?;
     let (first_tx, first) = tokio::sync::oneshot::channel();
     let task = crate::local_task::spawn("rpicam", stop, move |stop| async move {
         use n0_future::StreamExt;

@@ -38,7 +38,7 @@ pub(super) async fn open(
         let mut stream = match opened {
             Ok(stream) => stream,
             Err(err) => {
-                let _ = opened_tx.send(Err(capture_error(err)));
+                let _ = opened_tx.send(Err(Error::device(err)));
                 return;
             }
         };
@@ -65,7 +65,7 @@ pub(super) async fn open(
                 return;
             }
             Ok(Err(err)) => {
-                let _ = opened_tx.send(Err(capture_error(err)));
+                let _ = opened_tx.send(Err(Error::device(err)));
                 return;
             }
             Err(_) => {
@@ -94,7 +94,7 @@ pub(super) async fn open(
                 }
                 Err(err) => {
                     warn!(error = %err, "video capture failed");
-                    slot.fail(Arc::new(capture_error(err)));
+                    slot.fail(Arc::new(Error::device(err)));
                     return;
                 }
             }
@@ -109,9 +109,4 @@ pub(super) async fn open(
             "the capture thread stopped before the device opened",
         )),
     }
-}
-
-/// A capture failure, as the crate reports it.
-fn capture_error(err: video::Error) -> Error {
-    Error::device(err)
 }

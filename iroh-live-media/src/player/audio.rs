@@ -211,7 +211,7 @@ impl Job {
             self.sink.write(&frame.data)?;
             self.stats.audio_timeline.push(FrameTiming {
                 kind: MediaKind::Audio,
-                pts: Duration::from_micros(frame.timestamp.as_micros() as u64),
+                pts: frame.timestamp.into(),
                 decoded,
                 presented: std::time::Instant::now() + buffered,
             });

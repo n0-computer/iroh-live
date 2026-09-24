@@ -175,7 +175,7 @@ pub(crate) fn run_pattern(size: Size, rate: video::Rate, slot: FrameSlot, stop: 
         // Read the clock after the wait and paint from what it says, so the
         // digits describe the frame that carries them.
         let timestamp = clock.now();
-        let media = Duration::from_micros(timestamp.as_micros() as u64);
+        let media = Duration::from(timestamp);
         let rgba = canvas.paint(count, media, SystemTime::now());
         match Surface::rgba(rgba, size) {
             Ok(surface) => slot.send(Arc::new(video::Frame::new(surface, timestamp))),
@@ -205,7 +205,7 @@ pub(crate) fn run_tone(
     let step = hz * std::f64::consts::TAU / f64::from(sample_rate);
     // Where the track starts on the test clock's timeline, so the beep lines
     // up with the flash the picture draws off the same clock.
-    let origin = Duration::from_micros(clock.now().as_micros() as u64);
+    let origin = Duration::from(clock.now());
     let started = Instant::now();
     let mut sample = 0usize;
 
