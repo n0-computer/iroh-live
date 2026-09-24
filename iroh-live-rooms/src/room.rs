@@ -367,17 +367,6 @@ impl Room {
     }
 }
 
-impl Drop for Inner {
-    /// Withdraws this member's publications when the last handle of a room
-    /// that was never left goes, rather than leaving them offered to a
-    /// membership nobody updates any more.
-    fn drop(&mut self) {
-        for local in self.local.get_mut().expect("poisoned").values() {
-            local.publication.unpublish();
-        }
-    }
-}
-
 impl Inner {
     /// Forgets the local publication `name`, if it is still `publication`.
     ///
