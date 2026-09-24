@@ -253,7 +253,7 @@ async fn room_broadcasts_are_private() {
     let outsider = Peer::spawn().await;
     tokio::time::timeout(
         TIMEOUT,
-        outsider.moq.subscribe(public.path(), Reach::Direct),
+        outsider.moq.subscribe(public.path(), Reach::Direct(a)),
     )
     .await
     .expect("timed out")
@@ -268,7 +268,7 @@ async fn room_broadcasts_are_private() {
     let (private, chat) = tokio::join!(
         tokio::time::timeout(
             window,
-            outsider.moq.subscribe(publication.path(), Reach::Direct)
+            outsider.moq.subscribe(publication.path(), Reach::Direct(a))
         ),
         tokio::time::timeout(
             window,

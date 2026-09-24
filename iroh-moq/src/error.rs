@@ -82,8 +82,8 @@ pub enum Error {
     },
     /// No link can serve the path.
     ///
-    /// The reach asks for relays and none is attached, or it asks for a direct
-    /// dial and the path names no publisher.
+    /// The reach asks for relays and none is attached, or names this node as
+    /// the publisher of a path it does not publish.
     #[error("no link can reach {path}")]
     NoRoute {
         /// The path that was asked for.

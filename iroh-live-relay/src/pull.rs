@@ -283,7 +283,7 @@ impl PullState {
         // path layout before paths named their publisher as well.
         let subscription = self
             .moq
-            .subscribe(ticket.path(), Reach::Direct)
+            .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
             .await
             .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))?;
         let mirror = self

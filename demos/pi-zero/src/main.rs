@@ -131,7 +131,7 @@ mod app {
         let live = Live::builder(crate::endpoint_options()?.bind().await?).spawn();
         let sub = live
             .moq()
-            .subscribe(ticket.path(), live.moq().reach())
+            .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
             .await?;
         let remote = live.remote_broadcast(&sub);
         let session = sub

@@ -24,7 +24,9 @@
 //! println!("share {}", moq.ticket("studio"));
 //!
 //! // Resolve someone else's, dialing its publisher if no route exists yet.
-//! let subscription = moq.subscribe(ticket.path(), Reach::default()).await?;
+//! let subscription = moq
+//!     .subscribe(ticket.path(), Reach::Both(ticket.peer()))
+//!     .await?;
 //! let remote = subscription.as_moq();
 //! # drop(remote);
 //! # Ok(())

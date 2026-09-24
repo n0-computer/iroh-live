@@ -5,7 +5,9 @@ use iroh::{
     protocol::{DynProtocolHandler, ProtocolHandler, Router},
 };
 use iroh_live_media::RemoteBroadcast;
-use iroh_moq::{Audience, BroadcastTicket, Moq, MoqConfig, Publication, RouteInfo, Subscription};
+use iroh_moq::{
+    Audience, BroadcastTicket, Moq, MoqConfig, Publication, Reach, RouteInfo, Subscription,
+};
 use moq_net::{Consume, broadcast};
 use tracing::{error, info, instrument};
 
@@ -179,7 +181,10 @@ impl Live {
     /// Fails if no link reaches the broadcast.
     #[instrument("subscribe", skip_all, fields(ticket = %ticket))]
     pub async fn subscribe(&self, ticket: &BroadcastTicket) -> Result<RemoteBroadcast, Error> {
-        let subscription = self.moq.subscribe(ticket.path(), self.moq.reach()).await?;
+        let subscription = self
+            .moq
+            .subscribe(ticket.path(), Reach::Both(ticket.peer()))
+            .await?;
         Ok(self.remote_broadcast(&subscription))
     }
 

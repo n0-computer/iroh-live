@@ -167,7 +167,7 @@ impl Fixture {
         let ticket = BroadcastTicket::new(publisher.endpoint().id(), "patchbay");
         let subscription = subscriber
             .moq()
-            .subscribe(ticket.path(), Reach::Direct)
+            .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
             .await
             .expect("failed to subscribe");
         let remote = subscriber.remote_broadcast(&subscription);

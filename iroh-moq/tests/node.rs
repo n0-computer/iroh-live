@@ -35,9 +35,12 @@ async fn a_ticket_resolves_by_dialing_its_publisher() {
         format!("live/{}/cam", alice.id())
     );
 
-    let subscription = step("subscribe", bob.moq.subscribe(ticket.path(), Reach::Direct))
-        .await
-        .expect("subscribe");
+    let subscription = step(
+        "subscribe",
+        bob.moq.subscribe(ticket.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
     read_counter(&subscription.as_moq()).await;
     let session = subscription.session().expect("served by a direct session");
     assert_eq!(session.remote_id(), alice.id());
@@ -65,7 +68,9 @@ async fn an_own_publication_resolves_locally() {
         .expect("publish");
     let subscription = step(
         "subscribe",
-        alice.moq.subscribe(publication.path(), Reach::Direct),
+        alice
+            .moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
@@ -132,9 +137,13 @@ async fn a_peers_audience_follows_its_set() {
         .publish("cam", &broadcast.producer, Audience::Peers(members.watch()))
         .expect("publish");
 
-    let for_bob = step("bob", bob.moq.subscribe(publication.path(), Reach::Direct))
-        .await
-        .expect("bob is a member");
+    let for_bob = step(
+        "bob",
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("bob is a member");
     let mut bob_reading = reading(&for_bob.as_moq()).await;
 
     // Carol has a session, but nothing is offered on it: neither the path nor
@@ -160,7 +169,9 @@ async fn a_peers_audience_follows_its_set() {
     members.set(BTreeSet::from([bob.id(), carol.id()])).ok();
     let for_carol = step(
         "carol",
-        carol.moq.subscribe(publication.path(), Reach::Direct),
+        carol
+            .moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("carol after joining the set");
@@ -207,7 +218,8 @@ async fn a_manual_audience_needs_an_offer() {
     let offer = session.offer(&publication).expect("offer");
     let subscription = step(
         "subscribe",
-        bob.moq.subscribe(publication.path(), Reach::Direct),
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe after the offer");
@@ -246,7 +258,8 @@ async fn unpublishing_ends_what_peers_read() {
         .expect("publish");
     let subscription = step(
         "subscribe",
-        bob.moq.subscribe(publication.path(), Reach::Direct),
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
@@ -319,7 +332,8 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     .expect("admitted");
     let subscription = step(
         "bob subscribes",
-        bob.moq.subscribe(public.0.path(), Reach::Direct),
+        bob.moq
+            .subscribe(public.0.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("the offered publication");
@@ -367,7 +381,9 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     );
     let err = step(
         "mallory subscribes",
-        mallory.moq.subscribe(public.0.path(), Reach::Direct),
+        mallory
+            .moq
+            .subscribe(public.0.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect_err("mallory resolved a broadcast without a token");
@@ -438,14 +454,13 @@ async fn a_peer_cannot_route_another_publishers_path() {
         bob.moq.routes(ticket.path()).get().is_empty(),
         "mallory routed alice's path"
     );
-    let err = step("the bare name", bob.moq.subscribe("cam", Reach::Direct))
-        .await
-        .expect_err("a bare name in the table");
-    assert!(matches!(err, Error::NoRoute { .. }), "{err:#}");
 
-    let subscription = step("subscribe", bob.moq.subscribe(ticket.path(), Reach::Direct))
-        .await
-        .expect("subscribe");
+    let subscription = step(
+        "subscribe",
+        bob.moq.subscribe(ticket.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
     assert_eq!(
         subscription.session().map(|session| session.remote_id()),
         Some(alice.id()),
@@ -469,8 +484,8 @@ async fn a_subscriber_started_first_gets_the_named_path() {
     let ticket = BroadcastTicket::new(alice.id(), "cam");
     let subscribing = tokio::spawn({
         let moq = bob.moq.clone();
-        let path = ticket.path();
-        async move { moq.subscribe(path, Reach::Direct).await }
+        let (path, publisher) = (ticket.path(), ticket.peer());
+        async move { moq.subscribe(path, Reach::Direct(publisher)).await }
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     let broadcast = TestBroadcast::start();
@@ -641,7 +656,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
 
     let subscription = step(
         "within the grant",
-        alice.moq.subscribe(allowed.path(), Reach::Direct),
+        alice.moq.subscribe(allowed.path(), Reach::Direct(bob.id())),
     )
     .await
     .expect("subscribe");
@@ -649,7 +664,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     stays_pending(
         "alice took a broadcast outside bob's grant",
         QUIET,
-        alice.moq.subscribe(other.path(), Reach::Direct),
+        alice.moq.subscribe(other.path(), Reach::Direct(bob.id())),
     )
     .await;
 

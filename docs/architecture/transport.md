@@ -58,8 +58,8 @@ session dropped. This is the RFD's "a change of first hop ends a broadcast";
 `iroh-live-relay/tests/relay_bridge.rs` the node's.
 
 `Moq::subscribe(path, reach)` resolves a path in the table. With no route yet it
-reaches out as `Reach` says: dial the publisher the path names, wait for a relay,
-or both. The node's hop id is derived from its endpoint id, so a relay
+reaches out as `Reach` says: dial the publisher (`Reach::Direct(id)`), wait for
+a relay (`Reach::Relays`), or both (`Reach::Both(id)`). The node's hop id is derived from its endpoint id, so a relay
 recognizes its routes across a restart.
 
 ## Publications and audiences

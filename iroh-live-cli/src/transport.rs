@@ -236,7 +236,7 @@ pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscrib
     let mut subscribing = std::pin::pin!(async {
         let subscription = live
             .moq()
-            .subscribe(ticket.path(), live.moq().reach())
+            .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
             .await?;
         n0_error::Ok(Subscribed::open(live, subscription))
     });

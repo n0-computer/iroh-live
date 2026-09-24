@@ -27,7 +27,7 @@ use crate::{
     Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, Incoming, LinkKind,
     Publication, RouteInfo, Session, SessionRequest, Subscription,
     link::{self, LinkState},
-    path::{hop_for, live_path, publisher_of},
+    path::{hop_for, live_path},
     publish::peers_task,
     route,
     session::{SessionInner, SessionParts, Transport, dial_session, driver_now},
@@ -63,20 +63,18 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How [`Moq::subscribe`] reaches a path the route table has no route to yet.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
-    /// Dials the publisher the path names.
+    /// Dials the publisher and waits for it to announce the path.
     ///
     /// Relays serve only if they already have a route.
-    Direct,
+    Direct(EndpointId),
     /// Waits for an attached relay to route the path.
     Relays,
-    /// Dials directly and waits on relays at once.
+    /// Dials the publisher and waits on relays at once.
     ///
     /// The route table serves the cheaper route.
-    #[default]
-    Both,
+    Both(EndpointId),
 }
 
 /// How a [`Moq`] node runs.
@@ -85,12 +83,6 @@ pub enum Reach {
 pub struct MoqConfig {
     /// How incoming sessions are admitted.
     pub admission: Admission,
-    /// How callers that do not choose reach a path with no route yet.
-    ///
-    /// [`Live::subscribe`] and rooms use it.
-    ///
-    /// [`Live::subscribe`]: https://docs.rs/iroh-live
-    pub reach: Reach,
     /// A route table to share with another server, instead of the node's own.
     ///
     /// A relay binary shares its cluster's. The node's hop is then the
@@ -110,7 +102,6 @@ impl fmt::Debug for MoqConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MoqConfig")
             .field("admission", &self.admission)
-            .field("reach", &self.reach)
             .field("origin", &self.origin.as_ref().map(|origin| origin.hop()))
             .finish()
     }
@@ -120,12 +111,6 @@ impl MoqConfig {
     /// Sets how incoming sessions are admitted.
     pub fn with_admission(mut self, admission: Admission) -> Self {
         self.admission = admission;
-        self
-    }
-
-    /// Sets the default reach.
-    pub fn with_reach(mut self, reach: Reach) -> Self {
-        self.reach = reach;
         self
     }
 
@@ -193,7 +178,6 @@ pub(crate) struct Shared {
     pub(crate) id: EndpointId,
     pub(crate) hop: moq_net::Hop,
     pub(crate) admission: Admission,
-    pub(crate) reach: Reach,
     /// The route table.
     pub(crate) table: origin::Producer,
     pub(crate) state: Mutex<State>,
@@ -247,7 +231,6 @@ impl Moq {
             id,
             hop,
             admission: config.admission,
-            reach: config.reach,
             table,
             state: Mutex::new(State::default()),
             sessions: Watchable::new(Vec::new()),
@@ -287,13 +270,6 @@ impl Moq {
     /// anything is published there.
     pub fn ticket(&self, name: &str) -> BroadcastTicket {
         BroadcastTicket::new(self.shared.id, name)
-    }
-
-    /// Returns the reach [`MoqConfig::reach`] set.
-    ///
-    /// For callers that do not choose their own.
-    pub fn reach(&self) -> Reach {
-        self.shared.reach
     }
 
     /// Publishes `broadcast` as `live/<this node's id>/<name>` to `audience`.
@@ -400,10 +376,8 @@ impl Moq {
 
     /// Resolves `path` in the route table.
     ///
-    /// If no route exists yet, it reaches out as `reach` says. A direct reach
-    /// dials the publisher the path names (`live/<id>/...` or
-    /// `rooms/<topic>/<id>/...`) and waits for it to announce the path.
-    /// Cancellation safe: a dial it started continues for other callers.
+    /// If no route exists yet, it reaches out as `reach` says. Cancellation
+    /// safe: a dial it started continues for other callers.
     ///
     /// The route table holds routes a direct peer announces to its own
     /// broadcasts, routes an attached relay forwards, and this node's own
@@ -435,13 +409,14 @@ impl Moq {
             return Ok(self.subscription(path, table, broadcast));
         }
 
-        let publisher = publisher_of(&path).filter(|peer| *peer != self.shared.id);
-        let relays = matches!(reach, Reach::Relays | Reach::Both) && self.has_relays();
-        let dial = match reach {
-            Reach::Direct | Reach::Both => publisher,
-            Reach::Relays => None,
+        let (dial, relays) = match reach {
+            Reach::Direct(peer) => (Some(peer), false),
+            Reach::Relays => (None, true),
+            Reach::Both(peer) => (Some(peer), true),
         };
-        let Some(peer) = dial else {
+        let relays = relays && self.has_relays();
+        // This node's own publications are in the table already.
+        let Some(peer) = dial.filter(|peer| *peer != self.shared.id) else {
             if !relays {
                 return Err(e!(Error::NoRoute { path }));
             }

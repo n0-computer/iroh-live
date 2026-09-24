@@ -1190,7 +1190,8 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let (_bob_endpoint, bob) = relay_node(false).await;
     let subscription = tokio::time::timeout(
         TIMEOUT,
-        bob.moq().subscribe(publication.path(), Reach::Direct),
+        bob.moq()
+            .subscribe(publication.path(), Reach::Direct(alice.endpoint().id())),
     )
     .await
     .expect("subscribe timeout")
@@ -1327,7 +1328,8 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let (_bob_endpoint, bob) = relay_node(false).await;
     let subscription = tokio::time::timeout(
         TIMEOUT,
-        bob.moq().subscribe(publication.path(), Reach::Direct),
+        bob.moq()
+            .subscribe(publication.path(), Reach::Direct(alice.endpoint().id())),
     )
     .await
     .expect("subscribe timeout")

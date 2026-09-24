@@ -29,7 +29,7 @@ let publication = moq.publish("my-stream", &broadcast, Audience::Everyone)?;
 println!("{}", moq.ticket("my-stream"));
 
 // Or resolve someone else's, dialing its publisher if no route exists yet.
-let subscription = moq.subscribe(ticket.path(), Reach::default()).await?;
+let subscription = moq.subscribe(ticket.path(), Reach::Both(ticket.peer())).await?;
 let consumer = subscription.as_moq();
 ```
 

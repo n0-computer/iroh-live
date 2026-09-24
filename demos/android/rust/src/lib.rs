@@ -410,7 +410,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
 
     let subscription = live
         .moq()
-        .subscribe(ticket.path(), live.moq().reach())
+        .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
         .await?;
     info!("subscribed");
 
