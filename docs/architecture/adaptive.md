@@ -36,11 +36,10 @@ started from that broadcast afterwards reads them.
 
 iroh-live-media does not depend on iroh, so it never produces these. Every
 `iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that reads
-its statistics every 200 ms, along with the peer's bandwidth estimate, and
-keeps the latest `LinkSample`. A direct session reads the QUIC statistics of
-its selected path and starts the sample history over when the connection
-selects another; a relay link reads the statistics of its current MoQ session
-and starts over on every reconnect. Either says so in `path_generation`.
+its MoQ session's statistics every 200 ms, the peer's bandwidth estimate
+included, and keeps the latest `LinkSample`. A direct session starts the sample
+history over when the connection selects another path, a relay link on every
+reconnect, and either says so in `path_generation`.
 `Live::subscribe` and `Live::remote_broadcast` attach a closure to the
 broadcast (`iroh-live/src/network.rs`) that reads `Subscription::link()`, the
 sample of whichever link serves the subscription at that moment, converts it
@@ -85,11 +84,11 @@ under the step-down threshold; below that count the rate is unmeasured rather
 than clean, and reads as zero.
 
 The round trip and its minimum ride along in the sample, and the transport's
-`LinkSample` also carries a receiver-side goodput and a congestion event
-counter, but the selector reads none of them. They are there for diagnostics and for tests that
-check an impairment reached the transport. `min_rtt` is a windowed minimum over
-two 15-second buckets rather than the smallest reading ever taken, so a
-connection that fell back to a relay does not read as a queue that never drains.
+`LinkSample` also carries a receiver-side goodput, but the selector reads none
+of them. They are there for diagnostics and for tests that check an impairment
+reached the transport. `min_rtt` is the minimum over the last 15 seconds rather
+than the smallest reading ever taken, so a baseline that moved does not read as
+a queue that never drains.
 
 ## Ranking
 
@@ -220,12 +219,10 @@ The end-to-end test in `iroh-live/tests/e2e.rs` drives a player with its own
 closure as the network signals and feeds it a 25% loss reading, which is an
 emergency and switches without waiting out a hold.
 
-The link monitor in `iroh-moq/src/link.rs` logs every sample at TRACE, as
-`link sample` for a direct session and `relay link sample` for a relay link,
-with the path generation, whether the path is relayed, the round trip, its
+The link monitor in `iroh-moq/src/link.rs` logs every sample at TRACE as
+`link sample`, with the path generation, whether the path is relayed, the round trip, its
 minimum, the loss rate, goodput, and the publisher's estimate. What the player
-reads is that sample converted in `iroh-live/src/network.rs`, which logs a
-change of serving link at DEBUG.
+reads is that sample converted in `iroh-live/src/network.rs`.
 The selector logs the rendition it asks for at TRACE whenever it changes, a
 change of path at DEBUG, and a rendition it backs off from after a decoder
 failure at INFO. Read together, they tell a loop that holds because the link is

@@ -635,7 +635,6 @@ impl Actor {
         let task_session = session.clone();
         let handle = self.sessions.spawn(
             async move {
-                let delivery = moq.recv_bandwidth();
                 let crate::session::Origins {
                     publish_driver,
                     ingest,
@@ -652,8 +651,7 @@ impl Actor {
                     route::bridge(shared, link, ingest, false).in_current_span(),
                 ));
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
-                    connection,
-                    delivery,
+                    link::Source::Direct(moq.clone(), connection),
                     link_state,
                     cancel.child_token(),
                 )));

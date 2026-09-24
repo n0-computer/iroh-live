@@ -306,9 +306,8 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
     let status = Watchable::new(RelayStatus::Connecting);
     let task = {
         let shared = shared.clone();
-        let monitor = link::monitor_relay(
-            connection.monitor(),
-            connection.recv_bandwidth(),
+        let monitor = link::monitor(
+            link::Source::Relay(connection.monitor()),
             link_state.clone(),
             shared.shutdown.child_token(),
         );

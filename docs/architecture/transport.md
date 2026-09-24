@@ -125,10 +125,8 @@ relay sets `consume: false`, so it neither mirrors routes it will never
 read nor answers requests for them.
 
 A relay link runs the same kind of monitor as a session, over the statistics
-of its current MoQ session: `RelayLink::link()` returns its sample, and the
-monitor logs it at TRACE as `relay link sample`. Its samples carry no path
-details (`relayed` is false, `remote_addr` is `None`), and each reconnect
-starts a new path generation.
+of its current MoQ session: `RelayLink::link()` returns its sample. `relayed`
+is always false there, and each reconnect starts a new path generation.
 
 ## ALPN negotiation
 

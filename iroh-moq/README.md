@@ -65,8 +65,7 @@ figures are `Option`s, where `None` means not measured yet, never zero.
 `Session::link()` and `RelayLink::link()` return a link's latest sample, and
 `Subscription::link()` returns the `ServingLink` (`id`, `kind`, `sample`) of
 whichever link serves a subscription at the moment, relay-served ones
-included. The monitor logs each sample at trace level as `link sample` for a
-direct session and `relay link sample` for a relay link.
+included. The monitor logs each sample at trace level as `link sample`.
 
 ## Driving moq-net directly
 

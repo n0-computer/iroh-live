@@ -395,8 +395,8 @@ impl Link {
         Some(self.lines())
     }
 
-    /// The selected path's kind and address, the number of paths, and the
-    /// bytes arriving, as the overlay's NET lines.
+    /// Whether the path is direct or relayed, and the bytes arriving, as the
+    /// overlay's NET lines.
     ///
     /// Follows the route: a relay link has no iroh path to describe, so it
     /// says which link serves and what arrives over it.
@@ -410,12 +410,6 @@ impl Link {
             (_, true) => "relayed".to_string(),
             (_, false) => "direct".to_string(),
         }];
-        if let Some(addr) = &link.remote_addr {
-            lines.push(format!("address: {addr}"));
-        }
-        if link.paths > 0 {
-            lines.push(format!("paths: {}", link.paths));
-        }
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",

@@ -40,7 +40,7 @@
 //! [`Subscription::link`] return its
 //! latest [`LinkSample`]: round trip, loss, arriving goodput and the peer's
 //! delivery estimate, with `None` for whatever is not measured yet. It traces
-//! each reading at `trace` level as `link sample` or `relay link sample`.
+//! each reading at `trace` level as `link sample`.
 //!
 //! A relay attached with [`RelayConfig::new`] also consumes: every route the
 //! relay announces enters this node's route table, priced at the relay's cost.

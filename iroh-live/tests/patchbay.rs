@@ -514,9 +514,9 @@ fn ladder() -> Vec<VideoRendition> {
 /// Part of the claim rather than a convenience. A bandwidth figure that arrives
 /// at the right answer a minute later has not measured the link, it has been
 /// dragged along by it, and a loop that acts on it is acting on the link the
-/// subscriber had rather than the one it has. Measured through this lab the
-/// goodput window follows a cap in two to three seconds, so this leaves room
-/// for a loaded machine without leaving room for a signal that lags.
+/// subscriber had rather than the one it has. The goodput window spans two
+/// seconds and follows a cap within a few, so this leaves room for a loaded
+/// machine without leaving room for a signal that lags.
 const SIGNAL_LAG: Duration = Duration::from_secs(15);
 
 /// The longest the round trip readings that corroborate a queue may take to
@@ -816,7 +816,7 @@ async fn adaptation_follows_a_rate_limit() {
     let impaired = Instant::now();
     let (saw_the_cap, readings) = tokio::time::timeout(SIGNAL_LAG + RTT_CORROBORATION, async {
         let mut since = None;
-        // Distinct values of `rtt_samples` seen while the cap has been visible
+        // Distinct round trip readings seen while the cap has been visible
         // without a break. The loop below lifts the cap once its evidence is in,
         // and the loop's evidence is not elapsed time: a queueing round trip
         // only counts as corroboration when QUIC measures it again. Waiting out
@@ -830,8 +830,8 @@ async fn adaptation_follows_a_rate_limit() {
             let pinned = signals.goodput_bps.is_some_and(|bps| bps < 250_000);
             if pinned && queued(&signals) {
                 let start = *since.get_or_insert_with(Instant::now);
-                if last_sample != Some(signals.rtt_samples) {
-                    last_sample = Some(signals.rtt_samples);
+                if last_sample != Some(signals.rtt) {
+                    last_sample = Some(signals.rtt);
                     readings += 1;
                 }
                 // One more reading than the loop counts. The loop's window opens
