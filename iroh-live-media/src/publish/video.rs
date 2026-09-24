@@ -138,18 +138,24 @@ pub(super) async fn run_raw(
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
+    // Every rendition is probed before any is advertised, so the ladder
+    // reaches the catalog in one go, with no await between its entries: a
+    // viewer that sees the catalog between two probes would take a rendition
+    // still being probed for one the broadcast does not have.
+    let mut probed = Vec::with_capacity(encoding.renditions.len());
     for rendition in &encoding.renditions {
         let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
-        let published = match probe(&mut config).await {
-            Ok(published) => published,
+        match probe(&mut config).await {
+            Ok(published) => probed.push((rendition, config, published)),
             Err(err) => {
                 let err = Arc::new(err);
                 warn!(rendition = %rendition.name, error = %err, "no encoder for this rendition");
                 reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
                 last_failure = Some(err);
-                continue;
             }
-        };
+        }
+    }
+    for (rendition, config, published) in probed {
         let track = match producer.create_track(
             rendition.name.as_str(),
             Some(catalog.track_info(hang::catalog::PRIORITY.video)),
