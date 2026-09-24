@@ -4549,6 +4549,7 @@ dependencies = [
  "iroh-live",
  "iroh-live-media",
  "iroh-moq",
+ "iroh-rooms",
  "moq-net",
  "moq-relay",
  "moq-tokio",

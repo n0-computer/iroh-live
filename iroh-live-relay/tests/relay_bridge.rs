@@ -1374,3 +1374,254 @@ async fn the_shipped_relay_refuses_forged_paths() {
     mallory.shutdown().await;
     drop(mallory_endpoint);
 }
+
+/// Two pulls of one publisher share the relay's session with it: retiring
+/// one leaves the other reading, and the session closes only with the last.
+#[tokio::test]
+#[serial]
+async fn a_publisher_session_outlives_all_but_its_last_pull() {
+    use n0_watcher::Watcher;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (pub_ep, publisher, first_broadcast, first) = start_publisher("first").await;
+    let second_broadcast = publish_video(&publisher, "second");
+    let second = iroh_live::BroadcastTicket::new(pub_ep.id(), "second");
+    let (first_name, second_name) = (first.to_string(), second.to_string());
+
+    let pull_ep = pull_endpoint().await;
+    let pull_id = pull_ep.id();
+    let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
+        .with_linger(PULL_LINGER);
+    let first_guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&first_name, &first))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+    let second_guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&second_name, &second))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+    for name in [&first_name, &second_name] {
+        assert!(
+            wait_for_broadcast(&relay.cluster, name, true).await,
+            "{name} was never mirrored"
+        );
+    }
+    let pull_sessions = || {
+        publisher
+            .moq()
+            .sessions()
+            .get()
+            .iter()
+            .filter(|session| session.remote_id() == pull_id)
+            .count()
+    };
+    assert_eq!(
+        pull_sessions(),
+        1,
+        "two pulls of one publisher, two sessions"
+    );
+
+    drop(first_guard);
+    assert!(
+        wait_for_broadcast(&relay.cluster, &first_name, false).await,
+        "the first pull was not retired"
+    );
+    let mirrored = relay
+        .cluster
+        .origin
+        .consume()
+        .routed_broadcast(second_name.as_str())
+        .await
+        .expect("the second pull's mirror");
+    first_frame(&mirrored, "catalog.json").await;
+    assert_eq!(
+        pull_sessions(),
+        1,
+        "retiring one pull closed the session the other reads"
+    );
+    drop(mirrored);
+
+    drop(second_guard);
+    let mut sessions = publisher.moq().sessions();
+    tokio::time::timeout(TIMEOUT, async {
+        while sessions
+            .get()
+            .iter()
+            .any(|session| session.remote_id() == pull_id)
+        {
+            sessions.updated().await.expect("publisher gone");
+        }
+    })
+    .await
+    .expect("the session outlived the last pull");
+
+    drop((first_broadcast, second_broadcast));
+    publisher.shutdown().await;
+    pub_ep.close().await;
+}
+
+/// A node with rooms, accepting both MoQ and the rooms' gossip.
+async fn room_node() -> (
+    iroh::Endpoint,
+    iroh_moq::Moq,
+    iroh_rooms::Rooms,
+    iroh::protocol::Router,
+) {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
+        .secret_key(iroh::SecretKey::generate())
+        .bind()
+        .await
+        .expect("bind node");
+    shared_lookup().add_endpoint_info(endpoint.addr());
+    let moq = iroh_moq::Moq::new(endpoint.clone(), iroh_moq::MoqConfig::default());
+    let rooms = iroh_rooms::Rooms::new(&moq);
+    let mut router = iroh::protocol::Router::builder(endpoint.clone());
+    for alpn in iroh_moq::alpns() {
+        router = router.accept(alpn, moq.clone());
+    }
+    let router = router
+        .accept(iroh_rooms::ALPN, rooms.protocol_handler())
+        .spawn();
+    (endpoint, moq, rooms, router)
+}
+
+/// Encodes a room chat message the way `chat.v2` carries it: postcard's
+/// length-prefixed text, then the send time and the writer id as varints.
+fn chat_frame(text: &str, writer: u64) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            out.push((value as u8) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+    let sent_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_millis() as u64;
+    let mut out = Vec::new();
+    varint(&mut out, text.len() as u64);
+    out.extend_from_slice(text.as_bytes());
+    varint(&mut out, sent_at_ms);
+    varint(&mut out, writer);
+    out
+}
+
+/// A room reads a member's chat over the session with that member, so a
+/// forgery of it that a relay routes into the member's own path never
+/// reaches the room, even though the forged route sits in the route table
+/// before the member joins.
+#[tokio::test]
+#[serial]
+async fn a_relay_cannot_forge_a_room_members_chat() {
+    use iroh_moq::{LinkKind, LinkStatus, RelayConfig, RelayOffer};
+    use n0_watcher::Watcher;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (alice_endpoint, alice_moq, alice_rooms, alice_router) = room_node().await;
+    let (bob_endpoint, bob_moq, bob_rooms, bob_router) = room_node().await;
+    let room_a = alice_rooms
+        .join(
+            &iroh_rooms::RoomTicket::generate(),
+            iroh_rooms::RoomConfig::default().with_display_name("alice"),
+        )
+        .await
+        .expect("join");
+    let topic = room_a.ticket().topic_id();
+    let chat_path = format!("rooms/{topic}/{}/.chat", bob_endpoint.id());
+
+    // Mallory publishes Bob's chat into the relay before Bob is there.
+    let (mallory, _mallory_driver) = test_origin();
+    let forged = mallory
+        .publish(chat_path.as_str(), origin::Route::default())
+        .expect("forged broadcast");
+    let mut track = forged
+        .create_track(
+            "chat.v2",
+            moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
+        )
+        .expect("track");
+    let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
+        loop {
+            if track
+                .write_frame(Timestamp::now(), chat_frame("forged", 1))
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }));
+    let _mallory_session = established(
+        noq_client()
+            .with_publisher(mallory.consume())
+            .connect(relay.url()),
+    )
+    .await;
+
+    // Alice consumes through the relay, and the forged route is in her table.
+    let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
+    let link = alice_moq
+        .attach_relay(RelayConfig::new(url).with_offer(RelayOffer::Nothing))
+        .expect("attach");
+    let mut status = link.status();
+    tokio::time::timeout(TIMEOUT, async {
+        while status.get() != LinkStatus::Connected {
+            status.updated().await.expect("link gone");
+        }
+    })
+    .await
+    .expect("the relay link never connected");
+    let mut routes = alice_moq.routes(chat_path.as_str());
+    tokio::time::timeout(TIMEOUT, async {
+        while !routes
+            .get()
+            .iter()
+            .any(|route| route.kind == LinkKind::Relay)
+        {
+            routes.updated().await.expect("node gone");
+        }
+    })
+    .await
+    .expect("the forged chat never reached alice's table");
+
+    let mut chat = room_a.chat();
+    let room_b = bob_rooms
+        .join(
+            &room_a.ticket(),
+            iroh_rooms::RoomConfig::default().with_display_name("bob"),
+        )
+        .await
+        .expect("join");
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            room_b.send_chat("real").await.expect("send");
+            if let Ok(Ok(message)) =
+                tokio::time::timeout(Duration::from_millis(500), chat.recv()).await
+            {
+                assert_eq!(message.text, "real", "the relay's forgery reached the room");
+                return;
+            }
+        }
+    })
+    .await
+    .expect("bob's chat never arrived");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while let Ok(Ok(message)) = tokio::time::timeout_at(deadline, chat.recv()).await {
+        assert_ne!(
+            message.text, "forged",
+            "the relay's forgery reached the room"
+        );
+    }
+
+    room_b.leave().await;
+    room_a.leave().await;
+    bob_moq.shutdown().await;
+    alice_moq.shutdown().await;
+    bob_router.shutdown().await.expect("router");
+    alice_router.shutdown().await.expect("router");
+    drop((alice_endpoint, link));
+}
