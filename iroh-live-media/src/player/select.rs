@@ -25,18 +25,12 @@ use super::{
 };
 use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
 
-/// How long a rendition whose decoder failed is left alone, the first time.
-const BACKOFF_FIRST: Duration = Duration::from_secs(5);
-
-/// The longest a failing rendition is left alone.
-const BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// How long a rendition whose decoder failed is left alone.
+const EXCLUSION: Duration = Duration::from_secs(10);
 
 /// How long after a track ended with nothing to follow it the target is asked
-/// for again, doubling up to [`REVIVE_MAX`].
-const REVIVE_FIRST: Duration = Duration::from_secs(1);
-
-/// The longest wait before a target whose track ended is asked for again.
-const REVIVE_MAX: Duration = Duration::from_secs(30);
+/// for again.
+const REVIVE_AFTER: Duration = Duration::from_secs(2);
 
 /// How long a catalog that lost its video is given before the video counts as
 /// over.
@@ -143,59 +137,33 @@ pub(crate) struct Inputs {
     pub shutdown: CancellationToken,
 }
 
-/// One failing rendition's backoff.
-#[derive(Debug)]
-struct Excluded {
-    until: Instant,
-    backoff: Duration,
-}
-
-/// The renditions whose decoders failed, and how long each is left alone.
-///
-/// An entry outlives its exclusion: the rendition can only be tried again once
-/// its exclusion is over, so an entry dropped at that point would make every
-/// retry a first failure, and a rendition that never decodes would be retried
-/// at the first backoff forever. Entries go only when the rendition lands, or
-/// when the decoder configuration changes and every rendition deserves a fresh
-/// try.
+/// The renditions whose decoders failed, and until when each is left alone.
 #[derive(Debug, Default)]
-struct Backoffs(BTreeMap<String, Excluded>);
+struct Backoffs(BTreeMap<String, Instant>);
 
 impl Backoffs {
-    /// Records a failure of `rendition` at `now`, doubling its backoff, and
-    /// returns the backoff.
-    fn fail(&mut self, rendition: &str, now: Instant) -> Duration {
-        let entry = self.0.entry(rendition.to_string()).or_insert(Excluded {
-            until: now,
-            backoff: BACKOFF_FIRST / 2,
-        });
-        entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
-        entry.until = now + entry.backoff;
-        entry.backoff
+    /// Leaves `rendition` alone for [`EXCLUSION`] from `now`.
+    fn fail(&mut self, rendition: &str, now: Instant) {
+        self.0.insert(rendition.to_string(), now + EXCLUSION);
     }
 
     /// Returns the renditions left alone at `now`.
     fn excluded(&self, now: Instant) -> BTreeSet<String> {
         self.0
             .iter()
-            .filter(|(_, entry)| entry.until > now)
+            .filter(|(_, until)| **until > now)
             .map(|(name, _)| name.clone())
             .collect()
     }
 
     /// Reports whether `rendition` is left alone at `now`.
     fn is_excluded(&self, rendition: &str, now: Instant) -> bool {
-        self.0.get(rendition).is_some_and(|entry| entry.until > now)
+        self.0.get(rendition).is_some_and(|until| *until > now)
     }
 
     /// Reports whether any rendition is left alone at `now`.
     fn any_excluded(&self, now: Instant) -> bool {
-        self.0.values().any(|entry| entry.until > now)
-    }
-
-    /// Forgets `rendition`'s failures, as it plays.
-    fn landed(&mut self, rendition: &str) {
-        self.0.remove(rendition);
+        self.0.values().any(|until| *until > now)
     }
 
     /// Forgets every failure, as the decoder configuration changed.
@@ -246,10 +214,6 @@ pub(crate) async fn run(inputs: Inputs) {
     // asked for again if neither the catalog nor the route moves first.
     let mut ended: Option<Target> = None;
     let mut revive_at: Option<Instant> = None;
-    let mut revive_backoff = REVIVE_FIRST;
-    // Since when the target on screen has played, so a track that plays for
-    // a while earns a quick revival and one that ends at once backs off.
-    let mut playing_since: Option<Instant> = None;
     // Since when the catalog has had nothing to play while something was
     // asked for.
     let mut vanished_since: Option<Instant> = None;
@@ -291,11 +255,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     if changed.is_err() {
                         return;
                     }
-                    if let Some(target) = playing.borrow_and_update().clone() {
-                        // A rendition that plays has recovered: its next
-                        // failure starts again from the first backoff.
-                        backoffs.landed(&target.rendition);
-                        playing_since = Some(Instant::now());
+                    if playing.borrow_and_update().is_some() {
                         ended = None;
                         revive_at = None;
                     }
@@ -329,27 +289,22 @@ pub(crate) async fn run(inputs: Inputs) {
                         .as_ref()
                         .is_some_and(|desired| Some(&desired.target) == ended.as_ref());
                     if ended.take().is_some() && still && playing.borrow().is_none() {
-                        debug!(backoff = ?revive_backoff, "asking again for video that ended");
+                        debug!("asking again for video that ended");
                         restart += 1;
-                        revive_backoff = (revive_backoff * 2).min(REVIVE_MAX);
                     }
                 }
                 report = reports.recv() => match report {
                     None => return,
                     Some(Report::Ended(target)) => {
-                        if playing_since.is_some_and(|since| since.elapsed() >= REVIVE_MAX) {
-                            revive_backoff = REVIVE_FIRST;
-                        }
-                        playing_since = None;
-                        debug!(rendition = %target.rendition, backoff = ?revive_backoff, "video ended, asking again after a backoff");
-                        revive_at = Some(Instant::now() + revive_backoff);
+                        debug!(rendition = %target.rendition, "video ended, asking again shortly");
+                        revive_at = Some(Instant::now() + REVIVE_AFTER);
                         ended = Some(target);
                     }
                     Some(Report::Failed(reported)) => {
                     let rendition = &reported.target.rendition;
                     if reported.exclude && !reported.config_only {
-                        let backoff = backoffs.fail(rendition, Instant::now());
-                        info!(%rendition, ?backoff, "leaving a failing rendition alone");
+                        backoffs.fail(rendition, Instant::now());
+                        info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
                     }
                     failed = Some(reported);
                     }
@@ -763,36 +718,6 @@ mod tests {
         let again = next_target(&mut desired, Some(&first)).await;
         assert_eq!(again.rendition, first.rendition);
         assert!(again.config > first.config, "{again:?} after {first:?}");
-    }
-
-    /// N1: an entry used to be dropped    /// N1: an entry used to be dropped the moment its exclusion ran out, and
-    /// a rendition can only be retried after that, so every retry that failed
-    /// was a first failure and the backoff never grew past its first step.
-    #[test]
-    fn the_backoff_grows_across_retries() {
-        let mut backoffs = Backoffs::default();
-        let mut now = Instant::now();
-        let mut seen = Vec::new();
-        for _ in 0..5 {
-            let backoff = backoffs.fail("high", now);
-            seen.push(backoff);
-            assert!(backoffs.is_excluded("high", now));
-            // The retry comes once the exclusion is over, and fails again.
-            now += backoff;
-            assert!(
-                !backoffs.is_excluded("high", now),
-                "still excluded at retry"
-            );
-            assert!(backoffs.excluded(now).is_empty());
-        }
-        assert_eq!(
-            seen,
-            [5, 10, 20, 40, 60].map(Duration::from_secs),
-            "the backoff did not grow"
-        );
-        // Playing resets it.
-        backoffs.landed("high");
-        assert_eq!(backoffs.fail("high", now), BACKOFF_FIRST);
     }
 
     #[test]
