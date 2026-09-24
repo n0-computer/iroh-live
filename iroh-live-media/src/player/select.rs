@@ -88,6 +88,8 @@ pub(crate) struct Inputs {
     pub stats: PlaybackRecorder,
     /// Replacement decoders that failed, reported by the supervisor.
     pub failures: mpsc::Receiver<Failure>,
+    /// The target on screen, as the supervisor reports it.
+    pub playing: watch::Receiver<Option<Target>>,
     pub desired: watch::Sender<Option<Desired>>,
     pub shutdown: CancellationToken,
 }
@@ -154,7 +156,7 @@ impl Backoffs {
 }
 
 /// The decoder configuration a target was last built under.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Config {
     decoder: video::decode::Kind,
     max_age: Duration,
@@ -171,6 +173,7 @@ pub(crate) async fn run(inputs: Inputs) {
         status,
         stats,
         mut failures,
+        mut playing,
         desired,
         shutdown,
     } = inputs;
@@ -185,7 +188,16 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut bound = Bound::new(Tuning::default());
     let mut backoffs = Backoffs::default();
     let mut generation = 0u64;
+    let mut generations = 0u64;
     let mut last_config: Option<Config> = None;
+    // Every configuration since the one on screen, by generation, so a failed
+    // change of decoder can go back to the configuration that works.
+    let mut configs: BTreeMap<u64, Config> = BTreeMap::new();
+    // The generation of the target on screen.
+    let mut working: Option<u64> = None;
+    // The decoder played instead of the one asked for, after the one asked for
+    // failed beside a working one; cleared when another is asked for.
+    let mut fallback: Option<video::decode::Kind> = None;
     let mut restart = 0u64;
     let mut ended_seen = false;
     // The reason for a pin this selector could not honour, as last written, so
@@ -220,7 +232,24 @@ pub(crate) async fn run(inputs: Inputs) {
                 }
                 changed = mode.changed() => if changed.is_err() { return },
                 changed = latency.changed() => if changed.is_err() { return },
-                changed = decoder.changed() => if changed.is_err() { return },
+                changed = decoder.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    fallback = None;
+                }
+                changed = playing.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    if let Some(target) = playing.borrow_and_update().clone() {
+                        // A rendition that plays has recovered: its next
+                        // failure starts again from the first backoff.
+                        backoffs.landed(&target.rendition);
+                        working = Some(target.config);
+                        configs.retain(|&known, _| known >= target.config);
+                    }
+                }
                 updated = catalog.updated() => {
                     if updated.is_err() {
                         return;
@@ -237,24 +266,28 @@ pub(crate) async fn run(inputs: Inputs) {
                     if updated.is_err() {
                         return;
                     }
-                    let now_playing = player.peek();
-                    if matches!(now_playing.video, SlotState::Ended) {
+                    if matches!(player.peek().video, SlotState::Ended) {
                         ended_seen = true;
-                    }
-                    // A rendition that plays has recovered: its next failure
-                    // starts again from the first backoff.
-                    if let Some(playing) = &now_playing.rendition {
-                        backoffs.landed(playing);
                     }
                 }
                 failed_report = failures.recv() => {
                     let Some(reported) = failed_report else { return };
                     let rendition = &reported.target.rendition;
                     if reported.config_only {
+                        // Go back to the decoder that works, so the next switch
+                        // opens under it rather than under the one that failed,
+                        // which would walk the ladder down one failure at a time.
+                        let restored = working
+                            .and_then(|working| configs.get(&working))
+                            .map(|config| config.decoder.clone());
                         info!(
                             %rendition,
-                            "the new decoder configuration failed; the rendition keeps playing under the old one"
+                            ?restored,
+                            "the new decoder failed; going back to the one that works"
                         );
+                        if restored.is_some() {
+                            fallback = restored;
+                        }
                     } else {
                         let backoff = backoffs.fail(rendition, Instant::now());
                         info!(%rendition, ?backoff, "leaving a failing rendition alone");
@@ -276,14 +309,27 @@ pub(crate) async fn run(inputs: Inputs) {
         };
 
         let latency: Latency = *latency.borrow();
+        let effective = fallback.clone().unwrap_or_else(|| decoder.borrow().clone());
         let config = Config {
-            decoder: decoder.borrow().clone(),
+            decoder: effective.clone(),
             max_age: latency.max,
             epoch: epoch.peek().generation,
             restart,
         };
         if last_config.as_ref() != Some(&config) {
-            generation += 1;
+            // Back to the configuration on screen keeps its generation, so the
+            // supervisor sees the target playing and opens nothing.
+            generation = match working.filter(|working| configs.get(working) == Some(&config)) {
+                Some(working) => working,
+                None => {
+                    generations += 1;
+                    configs.insert(generations, config.clone());
+                    // Bounded while nothing lands: the one on screen and the
+                    // last few are all a fallback can want.
+                    configs.retain(|&known, _| Some(known) == working || known + 16 > generations);
+                    generations
+                }
+            };
             debug!(generation, ?config, "decoder configuration changed");
             last_config = Some(config);
             // A rendition that failed under the old configuration deserves a
@@ -292,7 +338,7 @@ pub(crate) async fn run(inputs: Inputs) {
         }
         let settings = DecodeSettings {
             consumer,
-            decoder: decoder.borrow().clone(),
+            decoder: effective,
             max_age: latency.max,
         };
 

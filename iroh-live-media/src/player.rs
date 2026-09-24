@@ -360,6 +360,9 @@ impl Player {
         // report of a failure already being backed off.
         let (failures_tx, failures_rx) = mpsc::channel(8);
         let (desired_tx, desired_rx) = watch::channel(None);
+        // The target on screen, exactly: the selector falls back to its
+        // decoder configuration when a change of decoder fails.
+        let (playing_tx, playing_rx) = watch::channel(None);
 
         let mut tasks = Vec::new();
         tasks.push(AbortOnDropHandle::new(n0_future::task::spawn(
@@ -369,6 +372,7 @@ impl Player {
                 status: status.clone(),
                 stats: stats.clone(),
                 failures: failures_rx,
+                playing: playing_rx,
                 desired: desired_tx,
                 shutdown: shutdown.clone(),
             })
@@ -382,6 +386,7 @@ impl Player {
                 status: status.clone(),
                 events: events.clone(),
                 failures: failures_tx,
+                playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
                 shutdown: shutdown.clone(),

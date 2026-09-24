@@ -257,6 +257,8 @@ pub(crate) struct Inputs {
     pub events: broadcast::Sender<SwitchEvent>,
     /// Where replacement decoders that failed are reported, for backoff.
     pub failures: mpsc::Sender<Failure>,
+    /// The target on screen, for the selector.
+    pub playing: watch::Sender<Option<Target>>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
     pub shutdown: CancellationToken,
@@ -295,6 +297,7 @@ pub(crate) async fn run(inputs: Inputs) {
         status,
         events,
         failures,
+        playing,
         clock,
         stats,
         shutdown,
@@ -410,6 +413,14 @@ pub(crate) async fn run(inputs: Inputs) {
         let switching = switcher
             .switching_to()
             .map(|target| target.rendition.clone());
+        let on_screen = switcher.current().cloned();
+        playing.send_if_modified(|playing| {
+            let changed = *playing != on_screen;
+            if changed {
+                playing.clone_from(&on_screen);
+            }
+            changed
+        });
         status.update(|status| {
             if status.switching_to != switching {
                 status.switching_to = switching;

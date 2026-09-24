@@ -317,19 +317,43 @@ async fn a_failed_first_decoder_is_tried_again() {
     .expect("the decoder was never tried again");
 }
 
-/// S2: a decoder change that failed used to exclude the rendition playing, so
-/// the selector stepped down the ladder under the same broken decoder. The
-/// rendition keeps playing under the decoder that works.
+/// S2 and N4: a decoder change that failed used to exclude the rendition
+/// playing, and once that was fixed the broken decoder still stayed the one
+/// asked for, so the next switch opened under it, failed, and walked the ladder
+/// down one failure at a time. The player goes back to the decoder that works,
+/// and the next switch lands under it.
 #[tokio::test]
-async fn a_failed_decoder_change_keeps_the_rendition_playing() {
-    let (broadcast, _source) = ladder();
+async fn a_failed_decoder_change_falls_back_to_the_one_that_works() {
+    let source = VideoSource::test_pattern(video::Size::new(640, 360), fps(30));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            VideoEncoding::ladder([
+                VideoRendition::new("high")
+                    .with_size(video::Size::new(640, 360))
+                    .with_bitrate(Bitrate::from_bps(2_000_000)),
+                VideoRendition::new("low")
+                    .with_size(video::Size::new(320, 180))
+                    .with_bitrate(Bitrate::from_bps(200_000)),
+            ])
+            .with_prefer_hardware(false),
+        )
+        .expect("a valid ladder");
+    let sample = Arc::new(Mutex::new(
+        NetworkSample::default().with_delivery(Bitrate::from_bps(10_000_000)),
+    ));
+    let reader = sample.clone();
     let player = RemoteBroadcast::local(&broadcast)
+        .with_network(move || *reader.lock().expect("poisoned"))
         .play(PlayerConfig::default())
         .expect("valid");
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
         .await
         .expect("in time")
         .expect("the top rendition plays");
+    let working = player.status().get().decoder;
+
     player.set_decoder(video::decode::Kind::Named("no-such-decoder".to_string()));
     let mut status = player.status();
     tokio::time::timeout(TIMEOUT, async {
@@ -339,13 +363,19 @@ async fn a_failed_decoder_change_keeps_the_rendition_playing() {
     })
     .await
     .expect("the failed change shows in the status");
-    // Long enough for a step down to have started, had the failure excluded
-    // the rendition: the selector ticks every 200 ms while one is excluded.
-    tokio::time::sleep(Duration::from_secs(1)).await;
     let current = status.get();
     assert_eq!(current.rendition.as_deref(), Some("high"), "{current:?}");
-    assert_eq!(current.switching_to, None, "{current:?}");
     assert_eq!(current.video, SlotState::Running);
+
+    // The link narrows: the switch to `low` opens under the decoder that
+    // works, where under the broken one it would fail.
+    *sample.lock().expect("poisoned") =
+        NetworkSample::default().with_delivery(Bitrate::from_bps(300_000));
+    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
+        .await
+        .expect("the switch never landed")
+        .expect("the switch to low opened under the decoder that works");
+    assert_eq!(player.status().get().decoder, working);
 }
 
 #[tokio::test]
