@@ -102,9 +102,16 @@ pub struct MoqConfig {
     pub reach: Reach,
     /// A route table to share with another server, instead of the node's own.
     ///
-    /// A relay binary shares its cluster's.
-    /// The node's hop is then the origin's, so every route it forwards carries
-    /// one identity.
+    /// A relay binary shares its cluster's. The node's hop is then the
+    /// origin's, so every route it forwards carries one identity.
+    ///
+    /// Everything the table holds is then the other server's to serve, to
+    /// whoever it serves: the node's own `Everyone` publications, every route
+    /// an attached relay forwards, and every broadcast a direct peer announces
+    /// to this node under a path that names it, including ones the peer
+    /// offered to this node alone. The table cannot tell those apart, since a
+    /// peer's audience is the peer's business. Share a table only with a
+    /// server that serves no more widely than the peers of this node expect.
     pub origin: Option<origin::Producer>,
 }
 
@@ -628,8 +635,16 @@ impl Moq {
         let mut queue = self.shared.incoming_rx.lock().await;
         loop {
             let incoming = tokio::select! {
+                // A session is never handed out after the shutdown, even one
+                // that was queued before it.
+                biased;
+                _ = self.shared.shutdown.cancelled() => {
+                    // The actor may have found the queue held by this call and
+                    // left it; whatever is queued is refused on the way out.
+                    refuse_queued(&mut queue);
+                    return None;
+                }
                 incoming = queue.recv() => incoming?,
-                _ = self.shared.shutdown.cancelled() => return None,
             };
             if incoming.queued_at.elapsed() <= ADMISSION_TIMEOUT {
                 return Some(incoming);
@@ -637,6 +652,15 @@ impl Moq {
             info!(remote = %incoming.remote.fmt_short(), "admission timed out in the queue");
             incoming.close(moq_net::Error::Timeout);
         }
+    }
+
+    /// Returns how many incoming sessions wait for [`accept`](Self::accept).
+    ///
+    /// For an application that watches its accept loop keep up. Always zero
+    /// under [`Admission::Open`].
+    pub fn waiting_for_admission(&self) -> usize {
+        let tx = &self.shared.incoming_tx;
+        tx.max_capacity() - tx.capacity()
     }
 
     /// Shuts the node down for every clone.
@@ -733,7 +757,13 @@ impl Moq {
                     _ = self.shared.shutdown.cancelled() => Ok(Err(mpsc::error::SendError(()))),
                 };
                 match room {
-                    Ok(Ok(permit)) => permit.send(incoming),
+                    Ok(Ok(permit)) => {
+                        // Time in the queue is what `accept` judges, not the
+                        // wait for room in it.
+                        let mut incoming = incoming;
+                        incoming.queued_at = tokio::time::Instant::now();
+                        permit.send(incoming);
+                    }
                     Ok(Err(_)) => {
                         incoming.close(moq_net::Error::Cancel);
                         return Err(e!(Error::ShutDown));
@@ -779,6 +809,15 @@ impl Shared {
             .await
             .map_err(|_| e!(Error::ShutDown))?;
         reply_rx.await.map_err(|_| e!(Error::ShutDown))?
+    }
+}
+
+/// Closes the admission queue and refuses every session still in it.
+fn refuse_queued(queue: &mut mpsc::Receiver<Incoming>) {
+    queue.close();
+    while let Ok(incoming) = queue.try_recv() {
+        debug!(remote = %incoming.remote.fmt_short(), "refusing a queued session at shutdown");
+        incoming.close(moq_net::Error::Cancel);
     }
 }
 
@@ -895,15 +934,16 @@ impl Actor {
             }
         }
         // Sessions still queued for admission are refused first, rather than
-        // left to their peers' idle timeout. `accept` gives the queue up as
-        // soon as the node shuts down, so this lock is not held for long.
-        let mut queue = self.shared.incoming_rx.lock().await;
-        queue.close();
-        while let Ok(incoming) = queue.try_recv() {
-            debug!(remote = %incoming.remote.fmt_short(), "rejecting a queued session at shutdown");
-            incoming.close(moq_net::Error::Cancel);
+        // left to their peers' idle timeout. Not waited for: an `accept` call
+        // holds the queue for as long as it runs, possibly in a future that
+        // is not being polled, and it refuses the queue itself when it next
+        // sees the shutdown.
+        match self.shared.incoming_rx.try_lock() {
+            Ok(mut queue) => refuse_queued(&mut queue),
+            Err(_) => {
+                debug!("an accept call holds the admission queue and refuses it on its way out")
+            }
         }
-        drop(queue);
         self.drain().await;
         // The rest happens in `Drop`, which also runs if this task panics.
     }
@@ -994,7 +1034,8 @@ impl Actor {
         self.dial_ids.insert(handle.id(), id);
     }
 
-    /// Returns the oldest session with `peer` whose connection is still open.
+    /// Returns the oldest session with `peer` that is neither closed nor
+    /// closing.
     ///
     /// A session stays listed until its task lands, a scheduling hop after the
     /// connection went, so the front of the list can be one on its way out.
@@ -1002,7 +1043,7 @@ impl Actor {
         self.peers.get(peer).and_then(|sessions| {
             sessions
                 .iter()
-                .find(|session| session.inner.connection.close_reason().is_none())
+                .find(|session| !session.is_closing())
                 .cloned()
         })
     }
@@ -1052,6 +1093,7 @@ impl Actor {
                 ingest: origins.ingest.clone(),
                 link_state: link_state.clone(),
                 shared: Arc::downgrade(&self.shared),
+                closing: Default::default(),
             }),
         };
         state.add_link(

@@ -2,7 +2,10 @@
 
 use std::{
     fmt,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -57,6 +60,9 @@ pub(crate) struct SessionInner {
     pub(crate) ingest: origin::Producer,
     pub(crate) link_state: LinkState,
     pub(crate) shared: Weak<Shared>,
+    /// Set by [`Session::close`], which closes asynchronously, so that a
+    /// connect right after it dials anew rather than getting this session.
+    pub(crate) closing: AtomicBool,
 }
 
 impl fmt::Debug for Session {
@@ -222,7 +228,13 @@ impl Session {
     /// `reason` is logged here; the peer sees a clean close.
     pub fn close(&self, reason: &str) {
         info!(remote = %self.inner.remote.fmt_short(), reason, "closing session");
+        self.inner.closing.store(true, Ordering::Release);
         self.inner.moq.abort(moq_net::Error::Cancel);
+    }
+
+    /// Reports whether the session is closed or on its way to closing.
+    pub(crate) fn is_closing(&self) -> bool {
+        self.inner.closing.load(Ordering::Acquire) || self.inner.connection.close_reason().is_some()
     }
 
     /// Waits until the session ends, and returns why.

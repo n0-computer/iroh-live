@@ -556,12 +556,50 @@ async fn shutdown_refuses_the_sessions_waiting_for_admission() {
     let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await
         .expect("the dialer's half completes before the decision");
-    // Queued at alice, with nobody accepting.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    step("bob is queued at alice, with nobody accepting", async {
+        while alice.moq.waiting_for_admission() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     step("alice shuts down", alice.moq.shutdown()).await;
     tokio::time::timeout(Duration::from_secs(5), session.closed())
         .await
         .expect("a queued session outlived the shutdown");
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// An `accept` call that holds the admission queue in a future nobody polls
+/// does not hold up the shutdown, and refuses the queue once it is polled.
+#[tokio::test]
+#[traced_test]
+async fn a_parked_accept_does_not_hold_up_shutdown() {
+    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let bob = Node::spawn().await;
+    let mut accepting = Box::pin(alice.moq.accept());
+    assert!(
+        futures_lite::future::poll_once(&mut accepting)
+            .await
+            .is_none(),
+        "nothing to accept yet"
+    );
+    let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("the dialer's half completes before the decision");
+    step("bob is queued", async {
+        while alice.moq.waiting_for_admission() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    step("the shutdown ends", alice.moq.shutdown()).await;
+    assert!(
+        step("the parked accept returns", accepting).await.is_none(),
+        "accept handed out a session after the shutdown"
+    );
+    step("bob is refused", session.closed()).await;
     alice.shutdown().await;
     bob.shutdown().await;
 }

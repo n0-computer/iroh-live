@@ -37,6 +37,28 @@ async fn connecting_twice_to_a_peer_reuses_the_session() {
     bob.shutdown().await;
 }
 
+/// A connect right after a close dials anew rather than handing out the
+/// session that is closing.
+#[tokio::test]
+#[traced_test]
+async fn a_connect_after_a_close_dials_anew() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+
+    let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("failed to dial");
+    first.close("done with it");
+    let second = step("dial again", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("the second dial failed");
+    assert_ne!(first, second, "connect handed out the session being closed");
+    assert!(second.connection().close_reason().is_none());
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
 /// Concurrent calls for one peer coalesce onto a single dial.
 #[tokio::test]
 #[traced_test]
