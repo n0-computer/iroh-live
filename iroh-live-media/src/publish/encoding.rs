@@ -6,7 +6,6 @@ use crate::{AudioFormat, Bitrate, audio, error::Error, video};
 
 /// How a video source is encoded: one or more renditions of the same picture.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct VideoEncoding {
     /// The renditions, which a subscriber chooses among.
     pub renditions: Vec<VideoRendition>,
@@ -28,13 +27,6 @@ impl VideoEncoding {
             renditions: renditions.into_iter().collect(),
             prefer_hardware: true,
         }
-    }
-
-    /// Returns the encoding with hardware encoders tried first or skipped.
-    #[must_use]
-    pub fn with_prefer_hardware(mut self, prefer: bool) -> Self {
-        self.prefer_hardware = prefer;
-        self
     }
 
     /// Checks everything that can be checked without opening an encoder.
@@ -102,7 +94,6 @@ impl VideoEncoding {
 
 /// One encoding of a broadcast's picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct VideoRendition {
     /// The name, which is its track name and what a subscriber picks by.
     pub name: String,
@@ -165,51 +156,11 @@ impl VideoRendition {
     /// a ladder rung that starves at its own ceiling is worse than one that
     /// spends a bit more.
     fn preset(name: &str, width: u32, height: u32, kbps: u64) -> Self {
-        Self::new(name)
-            .with_size(video::Size::new(width, height))
-            .with_bitrate(Bitrate::from_kbps(kbps))
-    }
-
-    /// Returns the rendition scaled to `size`.
-    #[must_use]
-    pub fn with_size(mut self, size: video::Size) -> Self {
-        self.size = Some(size);
-        self
-    }
-
-    /// Returns the rendition with a target bitrate.
-    #[must_use]
-    pub fn with_bitrate(mut self, bitrate: Bitrate) -> Self {
-        self.bitrate = Some(bitrate);
-        self
-    }
-
-    /// Returns the rendition at a frame rate below the source's.
-    #[must_use]
-    pub fn with_rate(mut self, rate: video::Rate) -> Self {
-        self.rate = Some(rate);
-        self
-    }
-
-    /// Returns the rendition with a different keyframe interval.
-    #[must_use]
-    pub fn with_keyframe_interval(mut self, interval: Duration) -> Self {
-        self.keyframe_interval = interval;
-        self
-    }
-
-    /// Returns the rendition encoded with `codec`.
-    #[must_use]
-    pub fn with_codec(mut self, codec: video::encode::Codec) -> Self {
-        self.codec = codec;
-        self
-    }
-
-    /// Returns the rendition encoded by a specific backend.
-    #[must_use]
-    pub fn with_encoder(mut self, encoder: video::encode::Kind) -> Self {
-        self.encoder = encoder;
-        self
+        Self {
+            size: Some(video::Size::new(width, height)),
+            bitrate: Some(Bitrate::from_kbps(kbps)),
+            ..Self::new(name)
+        }
     }
 
     /// The encoder config for this rendition of a source of `size` at `rate`.
@@ -237,7 +188,6 @@ impl VideoRendition {
 
 /// How an audio source is encoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct AudioEncoding {
     /// Which codec to encode.
     pub codec: audio::encode::Codec,
@@ -279,27 +229,6 @@ impl AudioEncoding {
             layout: None,
             frame_duration: Duration::from_millis(20),
         }
-    }
-
-    /// Returns the encoding with a target bitrate.
-    #[must_use]
-    pub fn with_bitrate(mut self, bitrate: Bitrate) -> Self {
-        self.bitrate = Some(bitrate);
-        self
-    }
-
-    /// Returns the encoding with a channel layout.
-    #[must_use]
-    pub fn with_layout(mut self, layout: audio::Layout) -> Self {
-        self.layout = Some(layout);
-        self
-    }
-
-    /// Returns the encoding with a frame duration.
-    #[must_use]
-    pub fn with_frame_duration(mut self, duration: Duration) -> Self {
-        self.frame_duration = duration;
-        self
     }
 
     /// The track name the encoding publishes under.
@@ -388,16 +317,23 @@ mod tests {
 
     #[test]
     fn a_rate_above_the_source_is_refused() {
-        let encoding = VideoEncoding::single(VideoRendition::p360().with_rate(fps(60)));
+        let encoding = VideoEncoding::single(VideoRendition {
+            rate: Some(fps(60)),
+            ..VideoRendition::p360()
+        });
         assert!(encoding.validate(fps(30), &[]).is_err());
         assert!(encoding.validate(fps(60), &[]).is_ok());
     }
 
     #[test]
     fn software_h265_has_no_encoder() {
-        let encoding =
-            VideoEncoding::single(VideoRendition::p360().with_codec(video::encode::Codec::H265))
-                .with_prefer_hardware(false);
+        let encoding = VideoEncoding {
+            prefer_hardware: false,
+            ..VideoEncoding::single(VideoRendition {
+                codec: video::encode::Codec::H265,
+                ..VideoRendition::p360()
+            })
+        };
         assert!(matches!(
             encoding.validate(fps(30), &[]),
             Err(Error::NoEncoder { .. })
@@ -406,7 +342,10 @@ mod tests {
 
     #[test]
     fn the_keyframe_interval_reaches_the_encoder_config() {
-        let rendition = VideoRendition::new("video").with_keyframe_interval(Duration::from_secs(1));
+        let rendition = VideoRendition {
+            keyframe_interval: Duration::from_secs(1),
+            ..VideoRendition::new("video")
+        };
         let size = video::Size::new(1280, 720);
         assert_eq!(
             rendition.encode_config(size, fps(30), None, true).gop,
@@ -423,31 +362,39 @@ mod tests {
         let size = video::Size::new(640, 360);
         let auto = VideoRendition::p360().encode_config(size, fps(30), None, false);
         assert_eq!(auto.kind, video::encode::Kind::Software);
-        let named = VideoRendition::p360()
-            .with_encoder(video::encode::Kind::Named("vaapi".into()))
-            .encode_config(size, fps(30), None, false);
+        let named = VideoRendition {
+            encoder: video::encode::Kind::Named("vaapi".into()),
+            ..VideoRendition::p360()
+        }
+        .encode_config(size, fps(30), None, false);
         assert_eq!(named.kind, video::encode::Kind::Named("vaapi".into()));
     }
 
     #[test]
     fn voice_is_mono_opus() {
-        let settings =
-            AudioEncoding::voice().settings(Some(AudioFormat::new(48_000, audio::Layout::Stereo)));
+        let settings = AudioEncoding::voice().settings(Some(AudioFormat {
+            sample_rate: 48_000,
+            layout: audio::Layout::Stereo,
+        }));
         assert_eq!(settings.layout, audio::Layout::Mono);
         assert_eq!(settings.codec, audio::encode::Codec::Opus);
     }
 
     #[test]
     fn pcm_follows_the_source() {
-        let settings =
-            AudioEncoding::pcm().settings(Some(AudioFormat::new(44_100, audio::Layout::Stereo)));
+        let settings = AudioEncoding::pcm().settings(Some(AudioFormat {
+            sample_rate: 44_100,
+            layout: audio::Layout::Stereo,
+        }));
         assert_eq!(settings.sample_rate, 44_100);
         assert_eq!(settings.layout, audio::Layout::Stereo);
         assert!(
-            AudioEncoding::pcm()
-                .with_bitrate(Bitrate::from_kbps(1))
-                .validate()
-                .is_err()
+            AudioEncoding {
+                bitrate: Some(Bitrate::from_kbps(1)),
+                ..AudioEncoding::pcm()
+            }
+            .validate()
+            .is_err()
         );
     }
 }

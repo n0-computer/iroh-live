@@ -32,11 +32,19 @@ fn ladder() -> (LocalBroadcast, VideoSource) {
     broadcast
         .set_video(
             source.clone(),
-            VideoEncoding::ladder([
-                VideoRendition::new("high").with_size(video::Size::new(640, 360)),
-                VideoRendition::new("low").with_size(video::Size::new(320, 180)),
-            ])
-            .with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::ladder([
+                    VideoRendition {
+                        size: Some(video::Size::new(640, 360)),
+                        ..VideoRendition::new("high")
+                    },
+                    VideoRendition {
+                        size: Some(video::Size::new(320, 180)),
+                        ..VideoRendition::new("low")
+                    },
+                ])
+            },
         )
         .expect("a valid ladder");
     (broadcast, source)
@@ -60,7 +68,10 @@ async fn wait_for_size(frames: &mut iroh_live_media::VideoFrames, size: video::S
 async fn a_local_broadcast_plays_in_process() {
     let (broadcast, _source) = ladder();
     let player = RemoteBroadcast::local(&broadcast)
-        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
+        .play(PlayerConfig {
+            rendition: RenditionMode::pinned("low"),
+            ..PlayerConfig::default()
+        })
         .expect("a valid config");
     player
         .wait_for_rendition("low")
@@ -108,7 +119,10 @@ async fn a_player_started_after_the_catalog_plays() {
     .await
     .expect("the catalog arrives");
     let player = remote
-        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
+        .play(PlayerConfig {
+            rendition: RenditionMode::pinned("low"),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     tokio::time::timeout(TIMEOUT, player.video().next())
         .await
@@ -128,20 +142,27 @@ async fn a_held_shortfall_moves_the_player_down() {
     broadcast
         .set_video(
             source,
-            VideoEncoding::ladder([
-                VideoRendition::new("high")
-                    .with_size(video::Size::new(640, 360))
-                    .with_bitrate(Bitrate::from_bps(2_000_000)),
-                VideoRendition::new("low")
-                    .with_size(video::Size::new(320, 180))
-                    .with_bitrate(Bitrate::from_bps(200_000)),
-            ])
-            .with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::ladder([
+                    VideoRendition {
+                        size: Some(video::Size::new(640, 360)),
+                        bitrate: Some(Bitrate::from_bps(2_000_000)),
+                        ..VideoRendition::new("high")
+                    },
+                    VideoRendition {
+                        size: Some(video::Size::new(320, 180)),
+                        bitrate: Some(Bitrate::from_bps(200_000)),
+                        ..VideoRendition::new("low")
+                    },
+                ])
+            },
         )
         .expect("a valid ladder");
-    let sample = Arc::new(Mutex::new(
-        NetworkSample::default().with_delivery(Bitrate::from_bps(10_000_000)),
-    ));
+    let sample = Arc::new(Mutex::new(NetworkSample {
+        delivery: Some(Bitrate::from_bps(10_000_000)),
+        ..NetworkSample::default()
+    }));
     let reader = sample.clone();
     let player = RemoteBroadcast::local(&broadcast)
         .with_network(move || *reader.lock().expect("poisoned"))
@@ -153,8 +174,10 @@ async fn a_held_shortfall_moves_the_player_down() {
         .expect("a healthy link plays the top rendition");
     // Room for `low` and not for `high`, without any loss: only the bound's
     // hold stands between the shortfall and the switch.
-    *sample.lock().expect("poisoned") =
-        NetworkSample::default().with_delivery(Bitrate::from_bps(300_000));
+    *sample.lock().expect("poisoned") = NetworkSample {
+        delivery: Some(Bitrate::from_bps(300_000)),
+        ..NetworkSample::default()
+    };
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
         .await
         .expect("the downgrade never landed")
@@ -169,10 +192,16 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
     let (broadcast, _source) = ladder();
     let remote = RemoteBroadcast::local(&broadcast);
     let high = remote
-        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("high")))
+        .play(PlayerConfig {
+            rendition: RenditionMode::pinned("high"),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let low = remote
-        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
+        .play(PlayerConfig {
+            rendition: RenditionMode::pinned("low"),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let mut high_frames = high.video();
     let mut low_frames = low.video();
@@ -186,7 +215,10 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
 async fn a_pin_switches_without_ending_the_frames() {
     let (broadcast, _source) = ladder();
     let player = RemoteBroadcast::local(&broadcast)
-        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("high")))
+        .play(PlayerConfig {
+            rendition: RenditionMode::pinned("high"),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let mut frames = player.video();
     wait_for_size(&mut frames, video::Size::new(640, 360)).await;
@@ -221,7 +253,10 @@ async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
 async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
     let (broadcast, _source) = ladder();
     let player = RemoteBroadcast::local(&broadcast)
-        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("4k")))
+        .play(PlayerConfig {
+            rendition: RenditionMode::pinned("4k"),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let mut status = player.status();
     let fell_back = tokio::time::timeout(TIMEOUT, async {
@@ -245,10 +280,10 @@ async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
 async fn a_decoder_that_will_not_open_fails_the_video() {
     let (broadcast, _source) = ladder();
     let player = RemoteBroadcast::local(&broadcast)
-        .play(
-            PlayerConfig::default()
-                .with_decoder(video::decode::Kind::Named("no-such-decoder".to_string())),
-        )
+        .play(PlayerConfig {
+            decoder: video::decode::Kind::Named("no-such-decoder".to_string()),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
         .await
@@ -283,14 +318,17 @@ async fn a_failed_first_decoder_is_tried_again() {
     broadcast
         .set_video(
             source,
-            VideoEncoding::single(VideoRendition::new("video")).with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::single(VideoRendition::new("video"))
+            },
         )
         .expect("valid");
     let player = RemoteBroadcast::local(&broadcast)
-        .play(
-            PlayerConfig::default()
-                .with_decoder(video::decode::Kind::Named("no-such-decoder".to_string())),
-        )
+        .play(PlayerConfig {
+            decoder: video::decode::Kind::Named("no-such-decoder".to_string()),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let mut status = player.status();
     let first = tokio::time::timeout(TIMEOUT, async {
@@ -329,20 +367,27 @@ async fn a_failed_decoder_change_falls_back_to_the_one_that_works() {
     broadcast
         .set_video(
             source,
-            VideoEncoding::ladder([
-                VideoRendition::new("high")
-                    .with_size(video::Size::new(640, 360))
-                    .with_bitrate(Bitrate::from_bps(2_000_000)),
-                VideoRendition::new("low")
-                    .with_size(video::Size::new(320, 180))
-                    .with_bitrate(Bitrate::from_bps(200_000)),
-            ])
-            .with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::ladder([
+                    VideoRendition {
+                        size: Some(video::Size::new(640, 360)),
+                        bitrate: Some(Bitrate::from_bps(2_000_000)),
+                        ..VideoRendition::new("high")
+                    },
+                    VideoRendition {
+                        size: Some(video::Size::new(320, 180)),
+                        bitrate: Some(Bitrate::from_bps(200_000)),
+                        ..VideoRendition::new("low")
+                    },
+                ])
+            },
         )
         .expect("a valid ladder");
-    let sample = Arc::new(Mutex::new(
-        NetworkSample::default().with_delivery(Bitrate::from_bps(10_000_000)),
-    ));
+    let sample = Arc::new(Mutex::new(NetworkSample {
+        delivery: Some(Bitrate::from_bps(10_000_000)),
+        ..NetworkSample::default()
+    }));
     let reader = sample.clone();
     let player = RemoteBroadcast::local(&broadcast)
         .with_network(move || *reader.lock().expect("poisoned"))
@@ -369,8 +414,10 @@ async fn a_failed_decoder_change_falls_back_to_the_one_that_works() {
 
     // The link narrows: the switch to `low` opens under the decoder that
     // works, where under the broken one it would fail.
-    *sample.lock().expect("poisoned") =
-        NetworkSample::default().with_delivery(Bitrate::from_bps(300_000));
+    *sample.lock().expect("poisoned") = NetworkSample {
+        delivery: Some(Bitrate::from_bps(300_000)),
+        ..NetworkSample::default()
+    };
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
         .await
         .expect("the switch never landed")
@@ -384,8 +431,13 @@ fn single(size: video::Size) -> LocalBroadcast {
     broadcast
         .set_video(
             VideoSource::test_pattern(size, fps(30)),
-            VideoEncoding::single(VideoRendition::new("video").with_size(size))
-                .with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::single(VideoRendition {
+                    size: Some(size),
+                    ..VideoRendition::new("video")
+                })
+            },
         )
         .expect("a valid encoding");
     broadcast
@@ -497,8 +549,13 @@ async fn video_comes_back_after_the_publisher_replaces_it() {
     broadcast
         .set_video(
             VideoSource::test_pattern(size, fps(30)),
-            VideoEncoding::single(VideoRendition::new("video").with_size(size))
-                .with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::single(VideoRendition {
+                    size: Some(size),
+                    ..VideoRendition::new("video")
+                })
+            },
         )
         .expect("a valid encoding");
     wait_for_size(&mut frames, size).await;
@@ -538,10 +595,13 @@ async fn turning_video_off_leaves_nothing_decoding() {
 #[tokio::test]
 async fn a_latency_below_its_own_minimum_is_refused() {
     let (broadcast, _source) = ladder();
-    let config = PlayerConfig::default().with_latency(iroh_live_media::Latency::range(
-        Duration::from_millis(500),
-        Duration::from_millis(100),
-    ));
+    let config = PlayerConfig {
+        latency: iroh_live_media::Latency {
+            min: Duration::from_millis(500),
+            max: Duration::from_millis(100),
+        },
+        ..PlayerConfig::default()
+    };
     let result = RemoteBroadcast::local(&broadcast).play(config);
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
 }
@@ -558,7 +618,10 @@ async fn audio_plays_through_a_null_output() {
         )
         .expect("a valid encoding");
     let player = RemoteBroadcast::local(&broadcast)
-        .play(PlayerConfig::default().with_audio(&AudioOutput::null()))
+        .play(PlayerConfig {
+            audio: Some(AudioOutput::null().clone()),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     tokio::time::timeout(TIMEOUT, async {
         loop {
@@ -585,7 +648,10 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
         .set_audio(tone(), AudioEncoding::voice())
         .expect("a valid encoding");
     let player = RemoteBroadcast::local(&broadcast)
-        .play(PlayerConfig::default().with_audio(&AudioOutput::null()))
+        .play(PlayerConfig {
+            audio: Some(AudioOutput::null().clone()),
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let frames_past = |count: u64| {
         let player = &player;
@@ -655,7 +721,10 @@ async fn the_publish_status_follows_the_video_slot() {
 /// than in a log line from a task that retries forever (R08).
 #[tokio::test]
 async fn a_source_that_fails_shows_in_the_status() {
-    let format = VideoFormat::new(video::Size::new(64, 48), fps(30));
+    let format = VideoFormat {
+        size: video::Size::new(64, 48),
+        rate: fps(30),
+    };
     let source = VideoSource::spawn("failing", format, |_frames| {
         Err(iroh_live_media::Error::from(std::io::Error::other(
             "the camera caught fire",
@@ -692,7 +761,10 @@ async fn an_empty_ladder_is_refused_at_once() {
 /// can idle it when nobody does.
 #[tokio::test]
 async fn a_pushed_source_sees_demand_while_played() {
-    let format = VideoFormat::new(video::Size::new(64, 48), fps(30));
+    let format = VideoFormat {
+        size: video::Size::new(64, 48),
+        rate: fps(30),
+    };
     let (sender, source) = VideoSource::push(format);
     let feeder = tokio::spawn({
         let sender = sender.clone();
@@ -713,7 +785,10 @@ async fn a_pushed_source_sees_demand_while_played() {
     broadcast
         .set_video(
             source,
-            VideoEncoding::single(VideoRendition::new("video")).with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::single(VideoRendition::new("video"))
+            },
         )
         .expect("valid");
     let mut demand = sender.demand();
@@ -738,7 +813,10 @@ async fn a_pushed_source_sees_demand_while_played() {
 /// did not exist. The track is created from the source's format.
 #[tokio::test]
 async fn a_source_that_waits_for_demand_is_played() {
-    let format = VideoFormat::new(video::Size::new(64, 48), fps(30));
+    let format = VideoFormat {
+        size: video::Size::new(64, 48),
+        rate: fps(30),
+    };
     let (sender, source) = VideoSource::push(format);
     let feeder = tokio::spawn({
         let sender = sender.clone();
@@ -765,7 +843,10 @@ async fn a_source_that_waits_for_demand_is_played() {
     broadcast
         .set_video(
             source,
-            VideoEncoding::single(VideoRendition::new("video")).with_prefer_hardware(false),
+            VideoEncoding {
+                prefer_hardware: false,
+                ..VideoEncoding::single(VideoRendition::new("video"))
+            },
         )
         .expect("valid");
     let player = RemoteBroadcast::local(&broadcast)
@@ -817,9 +898,11 @@ async fn a_recording_writes_a_container() {
     let mut recording = remote
         .record(
             file,
-            RecordConfig::default()
-                .with_format(RecordFormat::Fmp4)
-                .with_rendition("low"),
+            RecordConfig {
+                format: RecordFormat::Fmp4,
+                rendition: Some("low".into()),
+                ..RecordConfig::default()
+            },
         )
         .expect("a valid config");
     tokio::time::timeout(TIMEOUT, async {

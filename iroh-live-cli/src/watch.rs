@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, Live,
-    media::{AudioOutput, Player, RenditionMode},
+    media::{AudioOutput, Player, PlayerConfig, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 
@@ -254,15 +254,20 @@ async fn connect(
     #[cfg(feature = "render")]
     let config = crate::ui::player_config(&options.playback, Some(&options.output));
     #[cfg(not(feature = "render"))]
-    let config = iroh_live::media::PlayerConfig::default().with_audio(&options.output);
-    let config = match (options.tracks, &options.rendition) {
+    let config = PlayerConfig {
+        audio: Some(options.output.clone()),
+        ..PlayerConfig::default()
+    };
+    let rendition = match (options.tracks, &options.rendition) {
         // Opening the video and discarding its frames would still cost a core
         // to a decoder nobody draws from.
-        (TrackSelection::AudioOnly, _) => config.with_rendition(RenditionMode::Off),
-        (TrackSelection::Both, Some(name)) => {
-            config.with_rendition(RenditionMode::pinned(name.clone()))
-        }
-        (TrackSelection::Both, None) => config,
+        (TrackSelection::AudioOnly, _) => RenditionMode::Off,
+        (TrackSelection::Both, Some(name)) => RenditionMode::pinned(name.clone()),
+        (TrackSelection::Both, None) => config.rendition.clone(),
+    };
+    let config = PlayerConfig {
+        rendition,
+        ..config
     };
     let player = sub.broadcast().play(config)?;
     Ok((sub, player))

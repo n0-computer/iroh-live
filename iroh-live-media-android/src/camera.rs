@@ -16,7 +16,6 @@ use n0_error::stack_error;
 
 /// Errors raised while pushing a camera frame.
 #[stack_error(derive, add_meta)]
-#[non_exhaustive]
 pub enum CameraError {
     /// The pixel buffer did not match the declared size and format.
     #[error("invalid camera frame")]
@@ -90,6 +89,6 @@ impl CameraSink {
 /// [`LocalBroadcast::set_video`](iroh_live_media::LocalBroadcast::set_video);
 /// the [`CameraSink`] goes to whatever drives the camera.
 pub fn camera(size: Size, rate: Rate) -> (CameraSink, VideoSource) {
-    let (frames, source) = VideoSource::push(VideoFormat::new(size, rate));
+    let (frames, source) = VideoSource::push(VideoFormat { size, rate });
     (CameraSink { frames, size }, source)
 }

@@ -25,16 +25,15 @@ use crate::{args::PlaybackArgs, backend::DecoderArg};
 /// The player config a window wants: the decoder `--decoder` asked for, the
 /// latency `--latency` names, and audio through `output`.
 pub fn player_config(args: &PlaybackArgs, output: Option<&AudioOutput>) -> PlayerConfig {
-    let mut config = PlayerConfig::default()
-        .with_decoder(args.decoder.into())
-        .with_latency(Latency::range(
-            args.latency.jitter(),
-            args.latency.max_latency(),
-        ));
-    if let Some(output) = output {
-        config = config.with_audio(output);
+    PlayerConfig {
+        decoder: args.decoder.into(),
+        latency: Latency {
+            min: args.latency.jitter(),
+            max: args.latency.max_latency(),
+        },
+        audio: output.cloned(),
+        ..PlayerConfig::default()
     }
-    config
 }
 
 /// Height of the top bar, in points.

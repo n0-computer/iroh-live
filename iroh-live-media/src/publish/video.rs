@@ -640,7 +640,10 @@ mod tests {
     #[test]
     fn a_slower_rendition_keeps_every_other_frame() {
         let fps = |n| video::Rate::new(n, 1).expect("valid");
-        let half = VideoRendition::new("half").with_rate(fps(15));
+        let half = VideoRendition {
+            rate: Some(fps(15)),
+            ..VideoRendition::new("half")
+        };
         assert_eq!(
             frame_interval(&half, fps(30)),
             Some(std::time::Duration::from_secs_f64(1.0 / 15.0))

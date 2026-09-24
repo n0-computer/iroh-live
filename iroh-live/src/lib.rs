@@ -110,8 +110,7 @@
 //! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
 //! codecs, and forward to [`media`]. `rooms` re-exports `iroh-rooms`,
 //! `relay-links` enables `Moq::attach_relay`, and `auth` enables
-//! `Grant::from_claims`. `test-util` exposes the player's adaptation timers
-//! for tests, as `media::test_util`; no application should enable it.
+//! `Grant::from_claims`.
 
 mod error;
 mod live;

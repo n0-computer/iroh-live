@@ -22,7 +22,6 @@ use crate::{Bitrate, NetworkSample, video};
 
 /// What a [`LocalBroadcast`](crate::LocalBroadcast) is sending.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct PublishStats {
     /// Frames per second arriving from the video source, which every
     /// rendition of a ladder shares.
@@ -35,7 +34,6 @@ pub struct PublishStats {
 
 /// One video rendition's encoder.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct EncodeStats {
     /// The encoder backend that opened, such as `openh264` or `vaapi`.
     pub encoder: Option<String>,
@@ -55,7 +53,6 @@ pub struct EncodeStats {
 
 /// The audio publication.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct AudioEncodeStats {
     /// The codec, such as `opus`.
     pub codec: Option<String>,
@@ -67,7 +64,6 @@ pub struct AudioEncodeStats {
 
 /// What a [`Player`](crate::Player) is playing.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct PlaybackStats {
     /// The video decoder, while video plays.
     pub video: Option<VideoPlaybackStats>,
@@ -82,7 +78,6 @@ pub struct PlaybackStats {
 
 /// The video decoder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct VideoPlaybackStats {
     /// The rendition on screen.
     pub rendition: String,
@@ -102,7 +97,6 @@ pub struct VideoPlaybackStats {
 
 /// The audio decoder.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct AudioPlaybackStats {
     /// The rendition playing.
     pub rendition: String,
@@ -116,7 +110,6 @@ pub struct AudioPlaybackStats {
 
 /// Which medium a [`FrameTiming`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum MediaKind {
     /// A decoded picture.
     Video,
@@ -131,7 +124,6 @@ pub enum MediaKind {
 /// the two instants is what the playout clock held the frame for, and pictures
 /// and audio with the same timestamp should be presented together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct FrameTiming {
     /// The medium.
     pub kind: MediaKind,

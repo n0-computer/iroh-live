@@ -197,12 +197,8 @@ place of the old rule's probe cooldown.
 
 ## Configuration
 
-The thresholds and timers are an internal `Tuning` value, so they can be
-retuned in a patch without an API change. Tests that cannot wait out the
-production timers reach it as `iroh_live_media::test_util::Tuning` behind the
-`test-util` feature (which `iroh-live` forwards) and hand it to one player with
-`PlayerConfig::with_tuning`. No application should enable that feature: the
-fields change without notice.
+The thresholds and timers are `PlayerConfig::adaptation`, an `Adaptation`
+value. Tests that cannot wait out the production timers shorten them there.
 
 | Field | Default | Meaning |
 |---|---|---|

@@ -119,9 +119,8 @@ cap, a cap that sits on a rung's threshold, and a path that got longer;
 `a_switch_does_not_blank_the_picture` holds the decode supervisor to its overlap,
 that a replacement decoder warms up beside the incumbent and takes over rather
 than opening after the incumbent is gone. The adaptation tests shorten the
-player's timers, but not its thresholds, through
-`iroh_live_media::test_util::Tuning` and `PlayerConfig::with_tuning`, behind the
-`test-util` feature. It is Linux-only and needs
+player's timers, but not its thresholds, through `PlayerConfig::adaptation`.
+It is Linux-only and needs
 unprivileged user namespaces, set up from an ELF initialiser before the harness
 has a second thread. nextest
 gives the binary a single-threaded group of its own, because the timing

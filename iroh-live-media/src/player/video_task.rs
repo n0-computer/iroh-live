@@ -253,7 +253,7 @@ pub(crate) struct Inputs {
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
     /// How long a replacement decoder has to take over; see
-    /// [`Tuning::switch_deadline`](super::bound::Tuning::switch_deadline).
+    /// [`Adaptation::switch_deadline`](super::Adaptation::switch_deadline).
     pub switch_deadline: Duration,
     pub shutdown: CancellationToken,
 }

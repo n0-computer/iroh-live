@@ -93,8 +93,6 @@ mod record;
 mod remote;
 mod source;
 mod stats;
-#[cfg(feature = "test-util")]
-pub mod test_util;
 
 /// The upstream audio stack: capture, encode, decode, playback, and echo
 /// cancellation.
@@ -113,7 +111,7 @@ pub use self::{
     frames::VideoFrames,
     network::{NetworkSample, NetworkSignals},
     output::AudioOutput,
-    player::{Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
+    player::{Adaptation, Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
     publish::{
         AudioEncoding, LocalBroadcast, PublishStatus, RenditionState, SlotState, VideoEncoding,
         VideoRendition,

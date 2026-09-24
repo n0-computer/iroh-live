@@ -74,10 +74,6 @@ vaapi = ["moq-video/vaapi"]
 # NVIDIA hardware encode and decode. On by default upstream; off here so a
 # default build stays free of the CUDA graph.
 nvidia = ["moq-video/nvidia"]
-# Test knobs: `test_util::Tuning` and `PlayerConfig::with_tuning`, for tests
-# that cannot wait out the player's production adaptation timers. Never for an
-# application.
-test-util = []
 # The V4L2 stateful memory-to-memory H.264 encoder and decoder that most ARM
 # SoCs expose, a Raspberry Pi's VideoCore among them. Both were validated
 # upstream on a Raspberry Pi 4. Off by default because only ARM SoCs have the

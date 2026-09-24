@@ -30,7 +30,10 @@ pub(crate) fn signals(subscription: Subscription) -> impl NetworkSignals {
         );
         match link {
             Some(link) => to_sample(&link.sample, generation),
-            None => NetworkSample::default().with_path_generation(generation),
+            None => NetworkSample {
+                path_generation: generation,
+                ..NetworkSample::default()
+            },
         }
     }
 }
@@ -77,20 +80,13 @@ impl<K: PartialEq + fmt::Debug> Serving<K> {
 ///
 /// What the link has not measured stays unmeasured.
 fn to_sample(link: &LinkSample, path_generation: u64) -> NetworkSample {
-    let mut sample = NetworkSample::default().with_path_generation(path_generation);
-    if let Some(loss) = link.loss_rate {
-        sample = sample.with_loss(loss as f32);
+    NetworkSample {
+        rtt: link.rtt,
+        min_rtt: link.min_rtt,
+        loss: link.loss_rate.map(|loss| loss as f32),
+        delivery: link.delivery_bps.map(Bitrate::from_bps),
+        path_generation,
     }
-    if let Some(rtt) = link.rtt {
-        sample = sample.with_rtt(rtt);
-    }
-    if let Some(min_rtt) = link.min_rtt {
-        sample = sample.with_min_rtt(min_rtt);
-    }
-    if let Some(delivery) = link.delivery_bps {
-        sample = sample.with_delivery(Bitrate::from_bps(delivery));
-    }
-    sample
 }
 
 #[cfg(test)]

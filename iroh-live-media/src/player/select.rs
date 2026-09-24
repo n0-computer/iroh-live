@@ -20,7 +20,7 @@ use tracing::{debug, info, trace};
 
 use super::{
     Controls, Latency, PlaybackRecorder, RenditionMode, StatusCell,
-    bound::{Bound, Constraints, Reading, Rung, Tuning},
+    bound::{Adaptation, Bound, Constraints, Reading, Rung},
     switch::Target,
 };
 use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
@@ -139,7 +139,7 @@ pub(crate) struct Inputs {
     /// The player's playout clock, started over on a new route.
     pub clock: super::PlayoutClock,
     /// The thresholds and timers the choice follows.
-    pub tuning: Tuning,
+    pub adaptation: Adaptation,
     pub shutdown: CancellationToken,
 }
 
@@ -225,7 +225,7 @@ pub(crate) async fn run(inputs: Inputs) {
         mut playing,
         desired,
         clock,
-        tuning,
+        adaptation,
         shutdown,
     } = inputs;
     let mut mode = controls.mode.subscribe();
@@ -236,8 +236,8 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut player = status.watch.watch();
     let network = broadcast.network();
 
-    let mut ticker = tokio::time::interval(tuning.tick);
-    let mut bound = Bound::new(tuning);
+    let mut ticker = tokio::time::interval(adaptation.tick);
+    let mut bound = Bound::new(adaptation);
     let mut backoffs = Backoffs::default();
     let mut generation = 0u64;
     let mut generations = 0u64;
@@ -648,7 +648,7 @@ mod tests {
 
     fn pick(mode: &RenditionMode, excluded: &[&str]) -> (Option<String>, Option<Arc<Error>>) {
         let excluded = excluded.iter().map(|name| name.to_string()).collect();
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         choose(
             mode,
             &catalog(),
@@ -726,8 +726,10 @@ mod tests {
                     video::Size::new(320, 180),
                     video::Rate::new(30, 1).expect("a valid rate"),
                 ),
-                crate::VideoEncoding::single(crate::VideoRendition::new("video"))
-                    .with_prefer_hardware(false),
+                crate::VideoEncoding {
+                    prefer_hardware: false,
+                    ..crate::VideoEncoding::single(crate::VideoRendition::new("video"))
+                },
             )
             .expect("a valid encoding");
         let (reports_tx, reports) = mpsc::channel(8);
@@ -748,7 +750,7 @@ mod tests {
             playing,
             desired,
             clock: super::super::PlayoutClock::new(),
-            tuning: Tuning::default(),
+            adaptation: Adaptation::default(),
             shutdown: CancellationToken::new(),
         };
         let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));

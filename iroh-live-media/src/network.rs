@@ -46,7 +46,6 @@ impl fmt::Debug for SharedSignals {
 /// Every field is optional because every transport measures a different
 /// subset, and a field left `None` is read as unmeasured rather than as zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[non_exhaustive]
 pub struct NetworkSample {
     /// The round trip to the peer.
     pub rtt: Option<Duration>,
@@ -69,50 +68,16 @@ pub struct NetworkSample {
     pub path_generation: u64,
 }
 
-impl NetworkSample {
-    /// Returns the sample with a round trip.
-    #[must_use]
-    pub fn with_rtt(mut self, rtt: Duration) -> Self {
-        self.rtt = Some(rtt);
-        self
-    }
-
-    /// Returns the sample with a minimum round trip.
-    #[must_use]
-    pub fn with_min_rtt(mut self, min_rtt: Duration) -> Self {
-        self.min_rtt = Some(min_rtt);
-        self
-    }
-
-    /// Returns the sample with a loss fraction.
-    #[must_use]
-    pub fn with_loss(mut self, loss: f32) -> Self {
-        self.loss = Some(loss);
-        self
-    }
-
-    /// Returns the sample with the sender's delivery estimate.
-    #[must_use]
-    pub fn with_delivery(mut self, delivery: Bitrate) -> Self {
-        self.delivery = Some(delivery);
-        self
-    }
-
-    /// Returns the sample with a path generation.
-    #[must_use]
-    pub fn with_path_generation(mut self, generation: u64) -> Self {
-        self.path_generation = generation;
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_closure_is_a_signal_source() {
-        let signals = || NetworkSample::default().with_loss(0.5);
+        let signals = || NetworkSample {
+            loss: Some(0.5),
+            ..Default::default()
+        };
         fn read(signals: &impl NetworkSignals) -> NetworkSample {
             signals.sample()
         }

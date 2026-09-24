@@ -17,7 +17,6 @@ use crate::error::Error;
 /// hold the same error, which is what a watcher needs to tell an update from
 /// a repeat.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub enum SlotState {
     /// Nothing is set.
     #[default]
@@ -53,7 +52,6 @@ impl Eq for SlotState {}
 
 /// Whether one rendition is encoding.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub enum RenditionState {
     /// Advertised, with nobody watching, so nothing is encoded.
     #[default]
@@ -82,7 +80,6 @@ impl Eq for RenditionState {}
 
 /// The state of both slots of a broadcast, and of every rendition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct PublishStatus {
     /// The video slot.
     pub video: SlotState,

@@ -47,8 +47,7 @@ application pushes (`push`) or produces on a thread of its own (`spawn`), or the
 Raspberry Pi camera. `EncodedVideoSource` is an Annex-B H.264 byte stream a
 source already encoded, published with `set_encoded_video`; that is the cheapest
 Raspberry Pi path. `AudioSource` is a microphone, a WAV or MP3 file, a tone, or
-pushed PCM. `VideoSource::push` and `spawn` take a `VideoFormat`, built with
-`VideoFormat::new(size, rate)`.
+pushed PCM. `VideoSource::push` and `spawn` take a `VideoFormat`.
 
 A microphone is the one source that is not opened up front:
 `AudioSource::microphone` checks that the device exists, and moq-audio opens it
@@ -99,8 +98,7 @@ cancelled.
 
 ## Modules
 
-Every type is exported from the crate root; the modules are internal, except
-`test_util`, below.
+Every type is exported from the crate root; the modules are internal.
 
 | Module | What it is |
 |---|---|
@@ -133,7 +131,6 @@ tones need no flag.
 | `nvidia` | no | NVIDIA hardware encode and decode |
 | `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs |
 | `rpicam` | no | The `rpicam-vid` sources. Linux only |
-| `test-util` | no | `test_util::Tuning` and `PlayerConfig::with_tuning`, which shorten the adaptation timers for tests. Never for an application |
 
 ## Errors
 

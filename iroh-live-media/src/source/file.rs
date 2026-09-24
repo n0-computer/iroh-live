@@ -43,7 +43,10 @@ pub(crate) fn spawn(
     stop: CancellationToken,
 ) -> Result<AudioFormat, Error> {
     let probe = probe(&path)?;
-    let format = AudioFormat::new(probe.sample_rate, probe.layout);
+    let format = AudioFormat {
+        sample_rate: probe.sample_rate,
+        layout: probe.layout,
+    };
     std::thread::Builder::new()
         .name("audio-file".into())
         .spawn(move || {

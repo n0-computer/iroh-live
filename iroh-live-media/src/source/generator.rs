@@ -680,7 +680,10 @@ mod tests {
     fn the_tone_keeps_up_with_the_clock() {
         let (fanout, mut frames) = tokio::sync::broadcast::channel(64);
         let stop = CancellationToken::new();
-        let format = AudioFormat::new(TONE_RATE, audio::Layout::Mono);
+        let format = AudioFormat {
+            sample_rate: TONE_RATE,
+            layout: audio::Layout::Mono,
+        };
         let thread = {
             let stop = stop.clone();
             std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, fanout, stop))

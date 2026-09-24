@@ -14,7 +14,6 @@ use n0_error::{AnyError, stack_error};
 /// Stored as `Arc<Error>` where a watched status has to hold one: see
 /// [`SlotState::Failed`](crate::SlotState::Failed).
 #[stack_error(derive, add_meta)]
-#[non_exhaustive]
 pub enum Error {
     /// A capture or playback device would not open, or failed while running.
     #[error("device failed")]
@@ -154,7 +153,6 @@ impl From<std::io::Error> for Error {
 ///
 /// Returned by [`Player::wait_for_rendition`](crate::Player::wait_for_rendition).
 #[stack_error(derive, add_meta)]
-#[non_exhaustive]
 pub enum SwitchError {
     /// A newer request replaced it before it landed.
     #[error("the switch to {rendition} was superseded")]

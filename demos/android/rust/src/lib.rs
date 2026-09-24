@@ -349,10 +349,10 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(CameraSink, Vid
 /// voice straight back. A microphone that will not open is logged and left
 /// out, so the session still carries video.
 async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) {
-    let mut config = MicrophoneConfig::default();
-    if let Some(output) = echo {
-        config = config.with_echo_cancellation(output);
-    }
+    let config = MicrophoneConfig {
+        echo_reference: echo.cloned(),
+        ..MicrophoneConfig::default()
+    };
     let published = AudioSource::microphone(config)
         .await
         .and_then(|source| broadcast.set_audio(source, AudioEncoding::voice()));
@@ -378,7 +378,10 @@ async fn open_output() -> AudioOutput {
 
 /// Starts playing `remote`, with its audio through `output`.
 fn play(remote: &RemoteBroadcast, output: &AudioOutput) -> Result<Player> {
-    Ok(remote.play(PlayerConfig::default().with_audio(output))?)
+    Ok(remote.play(PlayerConfig {
+        audio: Some(output.clone()),
+        ..PlayerConfig::default()
+    })?)
 }
 
 // ── JNI: connect (subscribe only) ───────────────────────────────────

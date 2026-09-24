@@ -68,7 +68,6 @@ const COLOR_DIM: egui::Color32 = egui::Color32::from_rgb(160, 160, 160);
 
 /// A section of the overlay's bottom bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum StatCategory {
     /// The link: round trip, loss and the sender's delivery estimate on a
     /// player; the encoded video leaving a broadcast on the publish side,
@@ -576,7 +575,6 @@ fn slot_line(name: &str, state: &SlotState) -> Line {
         SlotState::Running => Line::colored(format!("{name}: running"), COLOR_GOOD),
         SlotState::Failed(err) => Line::colored(format!("{name}: failed: {err}"), COLOR_BAD),
         SlotState::Ended => Line::info(format!("{name}: ended")),
-        other => Line::info(format!("{name}: {other:?}")),
     }
 }
 
@@ -589,7 +587,6 @@ fn mode_text(mode: &RenditionMode) -> String {
         } => format!("auto, up to {height}p"),
         RenditionMode::Pinned(name) => format!("pinned to {name}"),
         RenditionMode::Off => "off".to_string(),
-        other => format!("{other:?}"),
     }
 }
 

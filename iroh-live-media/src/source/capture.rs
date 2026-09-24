@@ -46,7 +46,7 @@ pub(super) async fn open(
             .framerate
             .or_else(|| stream.framerate())
             .unwrap_or_else(default_rate);
-        let format = VideoFormat::new(size, rate);
+        let format = VideoFormat { size, rate };
 
         // The first frame is what proves the device works: a node that opens
         // and hands back nothing (a Pi's Unicam node, whose raw Bayer only

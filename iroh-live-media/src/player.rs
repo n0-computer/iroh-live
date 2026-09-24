@@ -31,17 +31,17 @@ use crate::{
 };
 
 mod audio;
-pub(crate) mod bound;
+mod bound;
 mod clock;
 mod select;
 pub(crate) mod switch;
 mod video_task;
 
+pub use self::bound::Adaptation;
 pub(crate) use self::clock::PlayoutClock;
 
 /// How to choose the video rendition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RenditionMode {
     /// Follow the link, never above `max_height` if set (a grid tile).
     ///
@@ -94,7 +94,6 @@ impl RenditionMode {
 /// skipped rather than played; `max` also bounds what the transport keeps for
 /// the player (moq `max_age`). `min == max` is a fixed latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Latency {
     /// The jitter allowance every picture is held for.
     pub min: Duration,
@@ -109,11 +108,6 @@ impl Latency {
             min: latency,
             max: latency,
         }
-    }
-
-    /// Returns a latency the playout may run anywhere between `min` and `max`.
-    pub const fn range(min: Duration, max: Duration) -> Self {
-        Self { min, max }
     }
 
     /// No buffer and no pacing: a frame presents as soon as it decodes.
@@ -134,13 +128,15 @@ impl Latency {
 impl Default for Latency {
     /// Held for 100 ms, and skipped past 150 ms.
     fn default() -> Self {
-        Self::range(Duration::from_millis(100), Duration::from_millis(150))
+        Self {
+            min: Duration::from_millis(100),
+            max: Duration::from_millis(150),
+        }
     }
 }
 
 /// How a player plays.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
@@ -150,52 +146,11 @@ pub struct PlayerConfig {
     pub audio: Option<AudioOutput>,
     /// Which decoder backend to open; upstream's `Kind`, `Auto` by default.
     pub decoder: video::decode::Kind,
-    /// The adaptation thresholds and timers, the production ones unless a
-    /// test set others through `with_tuning`.
-    pub(crate) tuning: bound::Tuning,
+    /// How automatic selection follows the link.
+    pub adaptation: Adaptation,
 }
 
 impl PlayerConfig {
-    /// Returns the config with a rendition mode.
-    #[must_use]
-    pub fn with_rendition(mut self, mode: RenditionMode) -> Self {
-        self.rendition = mode;
-        self
-    }
-
-    /// Returns the config with a latency.
-    #[must_use]
-    pub fn with_latency(mut self, latency: Latency) -> Self {
-        self.latency = latency;
-        self
-    }
-
-    /// Returns the config with audio playing through `output`.
-    #[must_use]
-    pub fn with_audio(mut self, output: &AudioOutput) -> Self {
-        self.audio = Some(output.clone());
-        self
-    }
-
-    /// Returns the config with a decoder backend.
-    #[must_use]
-    pub fn with_decoder(mut self, decoder: video::decode::Kind) -> Self {
-        self.decoder = decoder;
-        self
-    }
-
-    /// Returns the config with the adaptation thresholds and timers `tuning`.
-    ///
-    /// For tests that cannot wait out the production timers; see
-    /// [`test_util`](crate::test_util). Behind the `test-util` feature, which
-    /// no application should enable.
-    #[cfg(feature = "test-util")]
-    #[must_use]
-    pub fn with_tuning(mut self, tuning: crate::test_util::Tuning) -> Self {
-        self.tuning = tuning;
-        self
-    }
-
     fn validate(&self) -> Result<(), Error> {
         validate_latency(&self.latency)
     }
@@ -213,7 +168,6 @@ fn validate_latency(latency: &Latency) -> Result<(), Error> {
 
 /// The state of a player.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct PlayerStatus {
     /// The video slot.
     pub video: SlotState,
@@ -394,7 +348,7 @@ impl Player {
                 playing: playing_rx,
                 desired: desired_tx,
                 clock: clock.clone(),
-                tuning: config.tuning.clone(),
+                adaptation: config.adaptation.clone(),
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::debug_span!(parent: &span, "select")),
@@ -410,7 +364,7 @@ impl Player {
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
-                switch_deadline: config.tuning.switch_deadline,
+                switch_deadline: config.adaptation.switch_deadline,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::info_span!(parent: &span, "video")),

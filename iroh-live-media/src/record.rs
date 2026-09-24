@@ -40,7 +40,6 @@ const LOCAL_PATH: &str = "recorded";
 
 /// A container to record into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RecordFormat {
     /// Fragmented MP4, complete at every fragment boundary.
     #[default]
@@ -65,7 +64,6 @@ impl RecordFormat {
 
 /// How to record.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct RecordConfig {
     /// The container.
     pub format: RecordFormat,
@@ -85,29 +83,6 @@ impl Default for RecordConfig {
             rendition: None,
             max_age: Duration::from_secs(2),
         }
-    }
-}
-
-impl RecordConfig {
-    /// Returns the config writing `format`.
-    #[must_use]
-    pub fn with_format(mut self, format: RecordFormat) -> Self {
-        self.format = format;
-        self
-    }
-
-    /// Returns the config keeping only the video rendition `name`.
-    #[must_use]
-    pub fn with_rendition(mut self, name: impl Into<String>) -> Self {
-        self.rendition = Some(name.into());
-        self
-    }
-
-    /// Returns the config waiting `max_age` for a stalled group.
-    #[must_use]
-    pub fn with_max_age(mut self, max_age: Duration) -> Self {
-        self.max_age = max_age;
-        self
     }
 }
 

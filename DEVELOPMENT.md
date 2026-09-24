@@ -55,11 +55,8 @@ Run `cargo make check-all` before committing code. It covers default features,
 `--all-features`, and `--no-default-features`, which is where feature-gated
 mistakes show up. Markdown-only changes can skip it.
 
-Tests that have to see a rendition switch inside their own timeout enable the
-`test-util` feature of `iroh-live-media` (`iroh-live` forwards it) and shorten
-the adaptation timers with `test_util::Tuning` and `PlayerConfig::with_tuning`,
-as the patchbay suite does. It is a dev-dependency feature only; nothing an
-application builds should turn it on.
+Tests that have to see a rendition switch inside their own timeout shorten the
+timers in `PlayerConfig::adaptation`, as the patchbay suite does.
 
 Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 `cargo make cross-build-aarch64 -- <cargo args>`. See

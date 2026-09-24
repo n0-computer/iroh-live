@@ -64,9 +64,11 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
 
     // A keyframe a second, which is how long a subscriber waits before the
     // picture starts.
-    let config = RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
-        .with_bitrate(Bitrate::from_bps(u64::from(opts.bitrate)))
-        .with_keyframe_interval(opts.fps);
+    let config = RpicamConfig {
+        bitrate: Bitrate::from_bps(u64::from(opts.bitrate)),
+        keyframe_interval: opts.fps,
+        ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
+    };
     tracing::info!(
         width = opts.width,
         height = opts.height,

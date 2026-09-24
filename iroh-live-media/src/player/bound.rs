@@ -4,7 +4,7 @@
 //! wins:
 //!
 //! - The publisher's delivery estimate times a margin caps the bitrate. A rung
-//!   fits while the estimate covers [`Tuning::fit_ratio`] of its advertised
+//!   fits while the estimate covers [`Adaptation::fit_ratio`] of its advertised
 //!   bitrate, the same figure for staying and for stepping up.
 //! - Sustained loss lowers a ceiling one rung at a time, emergency loss drops it
 //!   to the bottom, and a clean stretch raises it again one rung at a time.
@@ -14,9 +14,9 @@
 //!   is always an answer.
 //!
 //! Time enters only as hysteresis around that answer: a lower target has to
-//! hold for [`Tuning::downgrade_hold`] and a higher one for
-//! [`Tuning::upgrade_hold`], and no step up comes within
-//! [`Tuning::post_downgrade_cooldown`] of a step down.
+//! hold for [`Adaptation::downgrade_hold`] and a higher one for
+//! [`Adaptation::upgrade_hold`], and no step up comes within
+//! [`Adaptation::post_downgrade_cooldown`] of a step down.
 //!
 //! This replaces the probe-and-headroom rule of the old `adaptive` module,
 //! whose upgrade gate asked the estimate to cover one and a half times the next
@@ -72,18 +72,10 @@ pub(crate) struct Reading {
 
 /// The player's adaptation thresholds and timers.
 ///
-/// Internal, so they can be retuned in a patch release. Tests that cannot wait
-/// out the production timers reach them behind the `test-util` feature, as
-/// `iroh_live_media::test_util::Tuning`, and pass them to a player with
-/// `PlayerConfig::with_tuning`. Nothing in an application should: the values
-/// are tuned together, and the fields change without notice.
+/// The defaults are tuned together on real and simulated links. Tests shorten
+/// the timers to see a switch inside their own timeout.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
-#[cfg_attr(
-    not(feature = "test-util"),
-    allow(unreachable_pub, reason = "public only under the test-util feature")
-)]
-pub struct Tuning {
+pub struct Adaptation {
     /// The share of a rung's advertised bitrate the estimate has to cover for
     /// the rung to fit.
     ///
@@ -147,7 +139,7 @@ pub struct Tuning {
     pub switch_deadline: Duration,
 }
 
-impl Default for Tuning {
+impl Default for Adaptation {
     fn default() -> Self {
         Self {
             fit_ratio: 1.25,
@@ -168,7 +160,7 @@ impl Default for Tuning {
 /// The selection state carried from one tick to the next.
 #[derive(Debug)]
 pub(crate) struct Bound {
-    tuning: Tuning,
+    adaptation: Adaptation,
     /// The path the history below was gathered on.
     path_generation: Option<u64>,
     /// Recent estimates, oldest first, for the sliding maximum.
@@ -201,7 +193,7 @@ pub(crate) struct Bound {
     /// Whether a switch was on its way at the last decision.
     in_flight: bool,
     /// Failed tries at each rung, by name, which lengthen the hold before
-    /// the next; see [`Tuning::trial`].
+    /// the next; see [`Adaptation::trial`].
     failed_tries: BTreeMap<String, u32>,
     /// The rung last stepped up to, and when it landed once it has, while
     /// its trial runs.
@@ -210,9 +202,9 @@ pub(crate) struct Bound {
 
 impl Bound {
     /// Creates a bound with nothing learned yet.
-    pub(crate) fn new(tuning: Tuning) -> Self {
+    pub(crate) fn new(adaptation: Adaptation) -> Self {
         Self {
-            tuning,
+            adaptation,
             path_generation: None,
             estimates: VecDeque::new(),
             loss_ceiling: None,
@@ -232,10 +224,10 @@ impl Bound {
     /// `rung`, after its failed tries.
     fn upgrade_hold(&self, rung: &str) -> Duration {
         let tries = self.failed_tries.get(rung).copied().unwrap_or(0).min(8);
-        self.tuning
+        self.adaptation
             .upgrade_hold
             .saturating_mul(4u32.pow(tries))
-            .min(self.tuning.upgrade_hold_max)
+            .min(self.adaptation.upgrade_hold_max)
     }
 
     /// Forgets everything learned about the network.
@@ -259,7 +251,7 @@ impl Bound {
             self.estimates.push_back((now, delivery));
         }
         while let Some((at, _)) = self.estimates.front()
-            && now.duration_since(*at) > self.tuning.estimate_window
+            && now.duration_since(*at) > self.adaptation.estimate_window
         {
             self.estimates.pop_front();
         }
@@ -271,16 +263,16 @@ impl Bound {
     /// `current` is the index of the rung playing, which a sustained loss
     /// steps one below; `lowest` is the index of the bottom eligible rung.
     fn follow_loss(&mut self, loss: f64, current: usize, lowest: usize, now: Instant) {
-        if loss >= self.tuning.loss_emergency {
+        if loss >= self.adaptation.loss_emergency {
             self.loss_ceiling = Some(lowest);
             self.lossy_since = None;
             self.clean_since = None;
             return;
         }
-        if loss >= self.tuning.loss_step_down {
+        if loss >= self.adaptation.loss_step_down {
             self.clean_since = None;
             let since = *self.lossy_since.get_or_insert(now);
-            if now.duration_since(since) >= self.tuning.downgrade_hold {
+            if now.duration_since(since) >= self.adaptation.downgrade_hold {
                 let below = (current + 1).min(lowest);
                 self.loss_ceiling = Some(
                     self.loss_ceiling
@@ -298,7 +290,7 @@ impl Bound {
             return;
         };
         let since = *self.clean_since.get_or_insert(now);
-        if now.duration_since(since) >= self.tuning.upgrade_hold {
+        if now.duration_since(since) >= self.adaptation.upgrade_hold {
             // One rung at a time, and gone once it reaches the top.
             self.loss_ceiling = ceiling.checked_sub(1);
             self.clean_since = Some(now);
@@ -364,7 +356,7 @@ impl Bound {
             // whatever is on its way rather than stacking on it.
             if reading
                 .loss
-                .is_some_and(|loss| loss >= self.tuning.loss_emergency)
+                .is_some_and(|loss| loss >= self.adaptation.loss_emergency)
             {
                 self.loss_ceiling = Some(lowest);
                 self.lossy_since = None;
@@ -387,7 +379,7 @@ impl Bound {
             if let Some((rung, landed)) = &mut self.trial {
                 match landed {
                     None if on_screen == Some(rung.as_str()) => *landed = Some(now),
-                    Some(at) if now.duration_since(*at) >= self.tuning.trial => {
+                    Some(at) if now.duration_since(*at) >= self.adaptation.trial => {
                         self.failed_tries.remove(rung.as_str());
                         self.trial = None;
                     }
@@ -399,7 +391,7 @@ impl Bound {
 
         let fits = |rung: &Rung| match (estimate, rung.bitrate) {
             (Some(estimate), Some(bitrate)) => {
-                bitrate as f64 * self.tuning.fit_ratio <= estimate as f64
+                bitrate as f64 * self.adaptation.fit_ratio <= estimate as f64
             }
             _ => true,
         };
@@ -429,9 +421,9 @@ impl Bound {
                 self.higher = None;
                 let emergency = reading
                     .loss
-                    .is_some_and(|loss| loss >= self.tuning.loss_emergency);
+                    .is_some_and(|loss| loss >= self.adaptation.loss_emergency);
                 let since = *self.lower.get_or_insert(now);
-                if emergency || now.duration_since(since) >= self.tuning.downgrade_hold {
+                if emergency || now.duration_since(since) >= self.adaptation.downgrade_hold {
                     self.lower = None;
                     self.last_downgrade = Some(now);
                     self.downgrading = true;
@@ -454,9 +446,9 @@ impl Bound {
             }
             std::cmp::Ordering::Less => {
                 self.lower = None;
-                let cooling = self
-                    .last_downgrade
-                    .is_some_and(|at| now.duration_since(at) < self.tuning.post_downgrade_cooldown);
+                let cooling = self.last_downgrade.is_some_and(|at| {
+                    now.duration_since(at) < self.adaptation.post_downgrade_cooldown
+                });
                 let since = *self.higher.get_or_insert(now);
                 if !cooling && now.duration_since(since) >= self.upgrade_hold(target) {
                     self.higher = None;
@@ -534,7 +526,7 @@ mod tests {
 
     #[test]
     fn the_best_fitting_rung_is_chosen_from_nothing() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let chosen = bound.decide(
             &ladder(),
             None,
@@ -548,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_shortfall_steps_down_after_the_hold() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let start = Instant::now();
         // Covers the fit ratio of 720p but not of 1080p.
         let (playing, _) = run(&mut bound, "1080p", estimate(3_750_000), start, ms(400));
@@ -578,7 +570,7 @@ mod tests {
                 stalled: false,
             },
         ];
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let start = Instant::now();
         let mut playing = "low".to_string();
         let mut now = start;
@@ -604,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_step_up_waits_out_the_upgrade_hold() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let start = Instant::now();
         let (playing, _) = run(&mut bound, "360p", estimate(10_000_000), start, ms(3900));
         assert_eq!(playing, "360p");
@@ -617,9 +609,9 @@ mod tests {
 
     #[test]
     fn no_step_up_inside_the_cooldown_after_a_step_down() {
-        let tuning = Tuning {
+        let tuning = Adaptation {
             post_downgrade_cooldown: Duration::from_secs(10),
-            ..Tuning::default()
+            ..Adaptation::default()
         };
         let mut bound = Bound::new(tuning);
         let start = Instant::now();
@@ -631,7 +623,7 @@ mod tests {
 
     #[test]
     fn a_single_low_reading_inside_the_window_is_not_a_shortfall() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let ranked = ladder();
         let start = Instant::now();
         let mut playing = "1080p".to_string();
@@ -657,7 +649,7 @@ mod tests {
 
     #[test]
     fn emergency_loss_drops_to_the_bottom_at_once() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let reading = Reading {
             loss: Some(0.25),
             delivery: None,
@@ -676,7 +668,7 @@ mod tests {
 
     #[test]
     fn sustained_loss_steps_down_one_rung_per_hold_and_recovers() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let start = Instant::now();
         let lossy = Reading {
             loss: Some(0.12),
@@ -702,7 +694,7 @@ mod tests {
     /// sends none is held back only by loss.
     #[test]
     fn no_estimate_leaves_only_loss() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let reading = Reading {
             loss: Some(0.0),
             delivery: None,
@@ -714,7 +706,7 @@ mod tests {
 
     #[test]
     fn the_height_limit_caps_the_choice() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let constraints = Constraints {
             max_height: Some(720),
             ..Constraints::default()
@@ -733,7 +725,7 @@ mod tests {
     /// A rendition ruled out while it plays is left at once, without a hold.
     #[test]
     fn an_excluded_rendition_is_left_at_once() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let constraints = Constraints {
             excluded: BTreeSet::from(["1080p".to_string()]),
             ..Constraints::default()
@@ -753,7 +745,7 @@ mod tests {
     fn a_stalled_rendition_is_avoided() {
         let mut ranked = ladder();
         ranked[0].stalled = true;
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let chosen = bound.decide(
             &ranked,
             None,
@@ -767,7 +759,7 @@ mod tests {
 
     #[test]
     fn with_everything_ruled_out_the_smallest_still_plays() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let constraints = Constraints {
             max_height: Some(100),
             ..Constraints::default()
@@ -788,7 +780,7 @@ mod tests {
     /// window and hold the top rung on a path that cannot carry it.
     #[test]
     fn a_new_path_forgets_the_old_one() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let start = Instant::now();
         // Plenty on path 0.
         let (playing, now) = run(&mut bound, "1080p", estimate(100_000_000), start, ms(2000));
@@ -809,9 +801,9 @@ mod tests {
     fn a_wavering_lower_target_still_steps_down() {
         // Each reading stands alone, so the sliding maximum does not smooth
         // the waver away before the hold sees it.
-        let mut bound = Bound::new(Tuning {
+        let mut bound = Bound::new(Adaptation {
             estimate_window: ms(1),
-            ..Tuning::default()
+            ..Adaptation::default()
         });
         let ranked = ladder();
         let start = Instant::now();
@@ -840,7 +832,7 @@ mod tests {
     /// switch is in flight, and the next step comes a hold after the landing.
     #[test]
     fn loss_does_not_stack_steps_while_a_switch_is_in_flight() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let ranked = ladder();
         let lossy = Reading {
             loss: Some(0.12),
@@ -903,7 +895,7 @@ mod tests {
     /// almost as soon as it played. It runs from the landing.
     #[test]
     fn the_cooldown_runs_from_the_landing() {
-        let tuning = Tuning::default();
+        let tuning = Adaptation::default();
         let mut bound = Bound::new(tuning.clone());
         let ranked = ladder();
         let start = Instant::now();
@@ -987,7 +979,7 @@ mod tests {
     /// try at it.
     #[test]
     fn failed_steps_up_back_off() {
-        let tuning = Tuning::default();
+        let tuning = Adaptation::default();
         let mut bound = Bound::new(tuning.clone());
         let ranked = ladder();
         let start = Instant::now();
@@ -1033,7 +1025,7 @@ mod tests {
     /// after a later step down.
     #[test]
     fn a_step_up_that_held_clears_its_failures() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         bound.failed_tries.insert("1080p".into(), 3);
         bound.trial = Some(("1080p".into(), None));
         let start = Instant::now();
@@ -1045,13 +1037,16 @@ mod tests {
             ms(25_000),
         );
         assert!(bound.failed_tries.is_empty(), "{:?}", bound.failed_tries);
-        assert_eq!(bound.upgrade_hold("1080p"), Tuning::default().upgrade_hold);
+        assert_eq!(
+            bound.upgrade_hold("1080p"),
+            Adaptation::default().upgrade_hold
+        );
     }
 
     /// The loss ceiling is part of what a path taught: it goes with it.
     #[test]
     fn a_new_path_lifts_the_loss_ceiling() {
-        let mut bound = Bound::new(Tuning::default());
+        let mut bound = Bound::new(Adaptation::default());
         let reading = Reading {
             loss: Some(0.25),
             delivery: None,

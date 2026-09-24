@@ -53,7 +53,10 @@ async fn main() -> n0_error::Result {
         false => VideoEncoding::single(VideoRendition::new("video")),
         true => VideoEncoding::ladder([
             VideoRendition::new("high"),
-            VideoRendition::new("low").with_size(video::Size::new(320, 180)),
+            VideoRendition {
+                size: Some(video::Size::new(320, 180)),
+                ..VideoRendition::new("low")
+            },
         ]),
     };
     broadcast.set_video(source, encoding)?;

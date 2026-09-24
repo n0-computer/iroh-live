@@ -128,13 +128,11 @@ impl RecordOptions {
             RecordFormat::Fmp4 => media::RecordFormat::Fmp4,
             RecordFormat::Mkv => media::RecordFormat::Mkv,
         };
-        let mut config = RecordConfig::default()
-            .with_format(format)
-            .with_max_age(self.latency);
-        if let Some(name) = &self.rendition {
-            config = config.with_rendition(name.clone());
+        RecordConfig {
+            format,
+            rendition: self.rendition.clone(),
+            max_age: self.latency,
         }
-        config
     }
 }
 
@@ -205,8 +203,6 @@ fn format_from_extension(path: &Path) -> Option<RecordFormat> {
     match media::RecordFormat::from_path(path)? {
         media::RecordFormat::Fmp4 => Some(RecordFormat::Fmp4),
         media::RecordFormat::Mkv => Some(RecordFormat::Mkv),
-        // A container the media crate learned and this flag has not.
-        _ => None,
     }
 }
 

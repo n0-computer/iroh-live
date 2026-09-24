@@ -48,7 +48,6 @@ const PCM_BUFFER: usize = 100;
 
 /// The size and cadence of a raw video source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct VideoFormat {
     /// The picture size.
     pub size: video::Size,
@@ -56,34 +55,16 @@ pub struct VideoFormat {
     pub rate: video::Rate,
 }
 
-impl VideoFormat {
-    /// Creates a format of `size` pictures at `rate`.
-    pub fn new(size: video::Size, rate: video::Rate) -> Self {
-        Self { size, rate }
-    }
-}
-
 /// The sample rate and speaker layout of a raw audio source.
 ///
 /// Samples are interleaved 32-bit floats in `-1.0..=1.0`, which is what every
 /// encoder takes without a conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct AudioFormat {
     /// Samples per second per channel.
     pub sample_rate: u32,
     /// The channels and their order.
     pub layout: audio::Layout,
-}
-
-impl AudioFormat {
-    /// Creates a format of `sample_rate` samples a second in `layout`.
-    pub fn new(sample_rate: u32, layout: audio::Layout) -> Self {
-        Self {
-            sample_rate,
-            layout,
-        }
-    }
 }
 
 /// What keeps a source's producer running, dropped with the last handle.
@@ -209,7 +190,7 @@ impl VideoSource {
         }
         Self::new(
             "test-pattern",
-            VideoFormat::new(size, rate),
+            VideoFormat { size, rate },
             reader,
             stop,
             Driver::Thread,
@@ -397,12 +378,17 @@ impl EncodedVideoSource {
 /// Which microphone, and which output's signal to cancel from it.
 #[cfg(feature = "capture")]
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct MicrophoneConfig {
     /// The device and its capture settings.
     pub capture: audio::capture::Config,
-    /// The output whose signal is removed from the microphone. `None` disables
-    /// echo cancellation.
+    /// The output whose signal is removed from the microphone, or `None` for
+    /// no echo cancellation.
+    ///
+    /// Without it, a handset on speakerphone publishes its own output back to
+    /// the peer. Needs the `aec` feature: [`AudioSource::microphone`] refuses
+    /// the config without it. The canceller is built when a broadcast starts
+    /// publishing the microphone, after the publication it replaces has let go
+    /// of its own, since an output feeds one canceller at a time.
     pub echo_reference: Option<AudioOutput>,
 }
 
@@ -413,23 +399,6 @@ impl MicrophoneConfig {
     #[must_use]
     pub fn with_device(mut self, device: impl Into<String>) -> Self {
         self.capture.source = audio::capture::Source::Microphone(Some(device.into()));
-        self
-    }
-
-    /// Returns the config with `output`'s signal cancelled from the
-    /// microphone.
-    ///
-    /// Without it, a handset on speakerphone publishes its own output back to
-    /// the peer, which is the one audio failure everybody notices. Needs the
-    /// `aec` feature: [`AudioSource::microphone`] refuses the config without
-    /// it, rather than opening a microphone that echoes.
-    ///
-    /// The canceller itself is built when a broadcast starts publishing the
-    /// microphone, after the publication it replaces has let go of its own:
-    /// an output feeds one canceller at a time.
-    #[must_use]
-    pub fn with_echo_cancellation(mut self, output: &AudioOutput) -> Self {
-        self.echo_reference = Some(output.clone());
         self
     }
 
@@ -658,7 +627,10 @@ impl AudioSource {
         layout: audio::Layout,
         gate: generator::Gate,
     ) -> Self {
-        let format = AudioFormat::new(generator::TONE_RATE, layout);
+        let format = AudioFormat {
+            sample_rate: generator::TONE_RATE,
+            layout,
+        };
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
         let spawned = {
@@ -738,7 +710,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_pushed_source_ends_when_its_senders_go() {
-        let format = VideoFormat::new(video::Size::new(2, 2), rate(30));
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
         let (sender, source) = VideoSource::push(format);
         let mut frames = source.frames();
         let surface = video::Surface::rgba(&[0; 16], format.size).expect("2x2");
@@ -755,7 +730,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_pushed_source_reports_demand_while_something_encodes() {
-        let format = VideoFormat::new(video::Size::new(2, 2), rate(30));
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
         let (sender, source) = VideoSource::push(format);
         let mut demand = sender.demand();
         use n0_watcher::Watcher as _;
@@ -770,7 +748,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_spawned_source_that_fails_reports_why() {
-        let format = VideoFormat::new(video::Size::new(2, 2), rate(30));
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
         let source = VideoSource::spawn("failing", format, |_sender| {
             Err(Error::device_msg("the camera caught fire"))
         })
@@ -794,10 +775,12 @@ mod tests {
         let output = AudioOutput::open(None)
             .await
             .expect("an audio output device");
-        let capture = MicrophoneConfig::default()
-            .with_echo_cancellation(&output)
-            .resolve()
-            .expect("the canceller builds");
+        let capture = MicrophoneConfig {
+            echo_reference: Some(output.clone()),
+            ..MicrophoneConfig::default()
+        }
+        .resolve()
+        .expect("the canceller builds");
         assert!(
             capture.aec.is_some(),
             "the microphone config carries no canceller"
@@ -810,7 +793,10 @@ mod tests {
     #[test]
     fn echo_cancellation_without_the_feature_is_refused() {
         use crate::output::AudioOutput;
-        let config = MicrophoneConfig::default().with_echo_cancellation(&AudioOutput::null());
+        let config = MicrophoneConfig {
+            echo_reference: Some(AudioOutput::null().clone()),
+            ..MicrophoneConfig::default()
+        };
         assert!(matches!(config.resolve(), Err(Error::InvalidConfig { .. })));
     }
 }

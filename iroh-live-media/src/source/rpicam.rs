@@ -108,7 +108,6 @@ const RAW_WIDTH_ALIGN: u32 = 64;
 
 /// Errors raised while running `rpicam-vid`.
 #[stack_error(derive, add_meta, from_sources)]
-#[non_exhaustive]
 pub(crate) enum RpicamError {
     /// The subprocess could not be started, usually because it is not installed.
     #[error("failed to start {RPICAM_VID}")]
@@ -194,7 +193,6 @@ pub(crate) enum Output {
 
 /// How to run `rpicam-vid`.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub(crate) struct Config {
     /// Capture width in pixels.
     pub(crate) width: u32,
@@ -329,7 +327,6 @@ impl Config {
 
 /// How to run the Raspberry Pi camera.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct RpicamConfig {
     /// The capture size. The raw path rounds the width up to one libcamera
     /// leaves tightly packed.
@@ -355,20 +352,6 @@ impl RpicamConfig {
             bitrate: Bitrate::from_bps(u64::from(DEFAULT_BITRATE)),
             keyframe_interval: framerate.max(1),
         }
-    }
-
-    /// Returns the config with a bitrate for the hardware encoder.
-    #[must_use]
-    pub fn with_bitrate(mut self, bitrate: Bitrate) -> Self {
-        self.bitrate = bitrate;
-        self
-    }
-
-    /// Returns the config with a keyframe every `frames` frames.
-    #[must_use]
-    pub fn with_keyframe_interval(mut self, frames: u32) -> Self {
-        self.keyframe_interval = frames.max(1);
-        self
     }
 }
 
@@ -409,7 +392,10 @@ pub(super) async fn open_raw(
     let raw = RawConfig::new(config.size.width, config.size.height, config.framerate);
     let rate = crate::video::Rate::new(raw.framerate().max(1), 1)
         .map_err(|err| Error::invalid(err.to_string()))?;
-    let format = VideoFormat::new(Size::new(raw.width(), raw.height()), rate);
+    let format = VideoFormat {
+        size: Size::new(raw.width(), raw.height()),
+        rate,
+    };
     let mut pictures = frames(raw, moq_mux::Clock::new()).map_err(camera_error)?;
     let (first_tx, first) = tokio::sync::oneshot::channel();
     let task = crate::local_task::spawn("rpicam", stop, move |stop| async move {

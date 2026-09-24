@@ -89,7 +89,10 @@ async fn two_audio_sets_in_a_row_keep_publishing() {
 async fn a_microphone_publication_asks_for_its_canceller() {
     use crate::{AudioOutput, MicrophoneConfig};
     let output = AudioOutput::null();
-    let config = MicrophoneConfig::default().with_echo_cancellation(&output);
+    let config = MicrophoneConfig {
+        echo_reference: Some(output.clone()),
+        ..MicrophoneConfig::default()
+    };
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
