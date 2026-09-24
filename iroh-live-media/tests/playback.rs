@@ -1,9 +1,8 @@
 //! Publishing and playing back in-process, with no transport.
 //!
-//! Every test here builds a [`LocalBroadcast`] from a generated source and
-//! plays it through [`RemoteBroadcast::local`], which is the path the crate
-//! promises works without a network: the whole pipeline from source to
-//! decoded frame, encoders and decoders included.
+//! Each test builds a [`LocalBroadcast`] from a generated or pushed source and
+//! plays it through [`RemoteBroadcast::local`]. That covers the whole pipeline
+//! from source to decoded frame, encoders and decoders included.
 
 use std::{
     sync::{Arc, Mutex},
@@ -17,15 +16,17 @@ use iroh_live_media::{
 };
 use n0_watcher::Watcher;
 
-/// Generous: software encoding and decoding in a debug build share the
-/// machine with the rest of the suite.
+/// How long any one wait may take.
+///
+/// Generous, because debug-build software codecs share the machine with the
+/// rest of the suite.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn fps(n: u32) -> video::Rate {
     video::Rate::new(n, 1).expect("a valid rate")
 }
 
-/// `encoding` on the software encoder, which every build has.
+/// Returns `encoding` on the software encoder, which every build has.
 fn software(encoding: VideoEncoding) -> VideoEncoding {
     VideoEncoding {
         prefer_hardware: false,
@@ -62,7 +63,7 @@ async fn push_frames(sender: FrameSender<video::Frame>, format: VideoFormat) {
     }
 }
 
-/// A two-rung ladder of the test pattern.
+/// Returns a two-rung ladder of the test pattern.
 fn ladder() -> (LocalBroadcast, VideoSource) {
     let source = VideoSource::test_pattern(video::Size::new(640, 360), fps(30));
     let broadcast = LocalBroadcast::new();
@@ -84,7 +85,7 @@ fn ladder() -> (LocalBroadcast, VideoSource) {
     (broadcast, source)
 }
 
-/// Waits until `player`'s frames have a picture of `size`.
+/// Waits until `frames` yields a picture of `size`.
 async fn wait_for_size(frames: &mut iroh_live_media::VideoFrames, size: video::Size) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
@@ -117,8 +118,7 @@ async fn a_local_broadcast_plays_in_process() {
     assert_eq!(status.video, SlotState::Running);
     assert_eq!(status.rendition.as_deref(), Some("low"));
     assert!(status.decoder.is_some());
-    // The timeline behind the overlay's TIME panel has the pictures shown,
-    // each held for the clock rather than presented before it decoded.
+    // The timeline has the pictures shown, none presented before it decoded.
     let timeline = player.timeline();
     assert!(
         timeline
@@ -133,10 +133,10 @@ async fn a_local_broadcast_plays_in_process() {
     );
 }
 
-/// A player started after the catalog arrived used to wait for something to
-/// change before it chose a rendition, which with no audio and no network
-/// signals never happened: `irl watch` and every patchbay test, which wait for
-/// the catalog before playing, got no picture.
+/// A player started after the catalog arrived chooses a rendition and plays.
+///
+/// There is no audio and no network signal, so nothing changes after the
+/// player starts.
 #[tokio::test]
 async fn a_player_started_after_the_catalog_plays() {
     let (broadcast, _source) = ladder();
@@ -159,11 +159,7 @@ async fn a_player_started_after_the_catalog_plays() {
         .expect("the video plays");
 }
 
-/// A shortfall that has to hold before the player steps down used to be
-/// taken back on the next pass: the selector weighed its target against the
-/// rendition on screen, which is still the old one while the replacement warms
-/// up, so the hold restarted and the old rendition was asked for again. On a
-/// real link no bandwidth downgrade ever landed.
+/// A bandwidth shortfall that holds moves the player down a rendition.
 #[tokio::test]
 async fn a_held_shortfall_moves_the_player_down() {
     let source = VideoSource::test_pattern(video::Size::new(640, 360), fps(30));
@@ -198,8 +194,8 @@ async fn a_held_shortfall_moves_the_player_down() {
         .await
         .expect("in time")
         .expect("a healthy link plays the top rendition");
-    // Room for `low` and not for `high`, without any loss: only the bound's
-    // hold stands between the shortfall and the switch.
+    // Room for `low` but not for `high`, with no loss, so only the hold delays
+    // the switch.
     *sample.lock().expect("poisoned") = NetworkSample {
         delivery: Some(Bitrate::from_bps(300_000)),
         ..NetworkSample::default()
@@ -210,9 +206,7 @@ async fn a_held_shortfall_moves_the_player_down() {
         .expect("the switch to low lands");
 }
 
-/// R12: two players of one broadcast used to share one playout clock and
-/// one policy, so a second view overwrote the first. Each player now owns
-/// its own.
+/// Two players of one broadcast each keep their own rendition.
 #[tokio::test]
 async fn two_players_of_one_broadcast_do_not_interfere() {
     let (broadcast, _source) = ladder();
@@ -273,8 +267,9 @@ async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
     );
 }
 
-/// A pin to a rendition that is not there falls back to what automatic
-/// selection would play, and says why.
+/// A pin to a missing rendition falls back to automatic selection.
+///
+/// The status says why.
 #[tokio::test]
 async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
     let (broadcast, _source) = ladder();
@@ -291,9 +286,7 @@ async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
     assert_eq!(fell_back.rendition.as_deref(), Some("high"));
 }
 
-/// C2: a decoder that failed on its first open used to leave the player
-/// `Ended`, with no error and nothing else tried. It is a failed switch, and
-/// the video says so.
+/// A decoder that does not open fails the switch and the video.
 #[tokio::test]
 async fn a_decoder_that_will_not_open_fails_the_video() {
     let (broadcast, _source) = ladder();
@@ -318,9 +311,9 @@ async fn a_decoder_that_will_not_open_fails_the_video() {
     assert!(failed.switch_error.is_some());
 }
 
-/// A first decoder that failed is tried again once its backoff is over, even
-/// when the broadcast has no other rendition to step to: nothing changed in
-/// what the selector wanted, which used to mean nothing was asked for again.
+/// A failed first decoder is tried again after its backoff.
+///
+/// This holds even with no other rendition to step to.
 #[tokio::test]
 async fn a_failed_first_decoder_is_tried_again() {
     let source = VideoSource::test_pattern(video::Size::new(320, 180), fps(30));
@@ -394,19 +387,17 @@ fn never_over(states: &Mutex<Vec<SlotState>>) {
     );
 }
 
-/// A player following a path through a route table keeps playing when the
-/// route it plays through goes and another serves the path.
+/// A player keeps playing when its route goes and another serves the path.
 ///
-/// The transport ends a broadcast when the session carrying it closes, rather
-/// than failing over inside it, so `from_origin` asks for the path again, and
-/// the player takes the new broadcast as a switch: the picture goes on and the
-/// video is never reported ended.
+/// The transport ends a broadcast when its session closes, so `from_origin`
+/// asks for the path again. The player takes the new broadcast as a switch and
+/// never reports the video ended.
 #[tokio::test]
 async fn a_player_keeps_playing_when_its_route_goes() {
     let (origin, driver) = moq_net::origin::Producer::new(Default::default());
     let driver = tokio::spawn(moq_net::time::run(driver));
-    // The same broadcast twice, as a direct peer and a relay would carry it:
-    // the direct route is the cheaper one and serves first.
+    // The same path twice, as a direct peer and a relay would carry it. The
+    // cheaper direct route serves first.
     let direct = single(video::Size::new(320, 180));
     let relayed = single(video::Size::new(640, 360));
     let serve = |cost: u64, broadcast: &LocalBroadcast| {
@@ -450,13 +441,11 @@ async fn a_player_keeps_playing_when_its_route_goes() {
     driver.abort();
 }
 
-/// N2: a publisher that replaced its video used to leave the player's video
-/// ended when the old track's end arrived after the new catalog, since only a
-/// later catalog update would revive it. The player waits for what follows a
-/// clean end, and asks again after a backoff whatever the order. In-process
-/// the order is usually the kind one, so this covers the recovery and the
-/// status on the way; `select::tests::a_track_that_ended_is_asked_for_again`
-/// forces the other order.
+/// Video comes back after the publisher replaces it, and never reports ended.
+///
+/// In-process the old track usually ends before the new catalog arrives.
+/// `select::tests::a_track_that_ended_is_asked_for_again` forces the other
+/// order.
 #[tokio::test]
 async fn video_comes_back_after_the_publisher_replaces_it() {
     let broadcast = single(video::Size::new(320, 180));
@@ -517,8 +506,9 @@ async fn a_latency_below_its_own_minimum_is_refused() {
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
 }
 
-/// Audio plays through a null output, which still runs the audio path and
-/// the clock off it.
+/// Audio plays through a null output.
+///
+/// A null output still runs the audio path and its clock.
 #[tokio::test]
 async fn audio_plays_through_a_null_output() {
     let broadcast = LocalBroadcast::new();
@@ -547,10 +537,7 @@ async fn audio_plays_through_a_null_output() {
     assert_eq!(player.status().get().audio, SlotState::Running);
 }
 
-/// S7: audio a publisher replaced used to stay `Ended` when the new catalog
-/// arrived before the old track's end, since a catalog update was ignored
-/// while the old track still read. The player looks at the catalog again
-/// after an end, so the new track plays whichever arrived first.
+/// Audio comes back after the publisher replaces it.
 #[tokio::test]
 async fn audio_comes_back_after_the_publisher_replaces_it() {
     let broadcast = LocalBroadcast::new();
@@ -586,9 +573,9 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
     broadcast
         .set_audio(tone(), AudioEncoding::voice())
         .expect("a valid encoding");
-    // The stats start over with every track, so a count below the one the
-    // first track had reached means it ended; polled, since the status can
-    // pass through `Ended` faster than a watcher looks.
+    // The stats restart with every track, so a lower count means the first
+    // track ended. This polls, because the status can pass through `Ended`
+    // faster than a watcher sees.
     tokio::time::timeout(TIMEOUT, async {
         while player
             .stats()
@@ -606,8 +593,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
     assert_eq!(player.status().get().audio, SlotState::Running);
 }
 
-/// The broadcast's status follows its slots: starting, running, and back to
-/// off once cleared.
+/// The broadcast's status follows its video slot, back to off once cleared.
 #[tokio::test]
 async fn the_publish_status_follows_the_video_slot() {
     let (broadcast, _source) = ladder();
@@ -625,8 +611,7 @@ async fn the_publish_status_follows_the_video_slot() {
     assert!(cleared.renditions.is_empty());
 }
 
-/// A pushed source that fails says why in the broadcast's status, rather
-/// than in a log line from a task that retries forever (R08).
+/// A source that fails shows why in the broadcast's status.
 #[tokio::test]
 async fn a_source_that_fails_shows_in_the_status() {
     let format = VideoFormat {
@@ -661,8 +646,7 @@ async fn an_empty_ladder_is_refused_at_once() {
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
 }
 
-/// A pushed camera reports demand while someone watches, so an application
-/// can idle it when nobody does.
+/// A pushed source reports demand while a player watches.
 #[tokio::test]
 async fn a_pushed_source_sees_demand_while_played() {
     let format = VideoFormat {
@@ -687,10 +671,9 @@ async fn a_pushed_source_sees_demand_while_played() {
     feeder.abort();
 }
 
-/// C1: a producer that pushes only while somebody watches, as a phone camera
-/// does, used to be never watched: the broadcast waited for a first frame
-/// before it advertised a track, and nothing could subscribe to a track that
-/// did not exist. The track is created from the source's format.
+/// A source that pushes only on demand still gets played.
+///
+/// The broadcast creates the track from the source's format, before any frame.
 #[tokio::test]
 async fn a_source_that_waits_for_demand_is_played() {
     let format = VideoFormat {
@@ -724,8 +707,9 @@ async fn a_source_that_waits_for_demand_is_played() {
     feeder.abort();
 }
 
-/// S9: a player's frames used to end only when the player was dropped, so a
-/// reader looping on `next()` waited forever once the publisher had gone.
+/// A player's frames end when the broadcast closes.
+///
+/// The video then reports `Ended`.
 #[tokio::test]
 async fn the_frames_end_when_the_broadcast_closes() {
     let (broadcast, _source) = ladder();
@@ -746,8 +730,7 @@ async fn the_frames_end_when_the_broadcast_closes() {
     assert_eq!(status.rendition, None);
 }
 
-/// A recording remuxes what the broadcast carries into a container without
-/// decoding it.
+/// A recording remuxes the broadcast into a container without decoding it.
 #[tokio::test]
 async fn a_recording_writes_a_container() {
     let (broadcast, _source) = ladder();

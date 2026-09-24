@@ -1,10 +1,7 @@
 //! Camera, display and window capture, on a thread of its own.
 //!
-//! moq's native capture backends are not all `Send`: an Apple camera or screen
-//! stream holds AVFoundation objects, so neither the stream nor a future
-//! holding one can go to a work-stealing executor. The device is opened on a
-//! dedicated thread with a current-thread runtime and never leaves it; only
-//! its geometry and its frames cross.
+//! The device opens on a dedicated thread and never leaves it, because Apple
+//! capture streams are not `Send`. Only its format and its frames cross.
 
 use std::sync::Arc;
 
@@ -22,8 +19,8 @@ fn default_rate() -> video::Rate {
 
 /// Opens the device `config` names and starts reading it into `slot`.
 ///
-/// Returns once the first frame arrived, with the format the device opened at
-/// and the task that owns it.
+/// Returns once the first frame has arrived, with the format the device opened
+/// at and the task that owns it.
 pub(super) async fn open(
     config: video::capture::Config,
     slot: FrameSlot,
@@ -49,9 +46,9 @@ pub(super) async fn open(
             .unwrap_or_else(default_rate);
         let format = VideoFormat { size, rate };
 
-        // The first frame is what proves the device works: a node that opens
-        // and hands back nothing (a Pi's Unicam node, whose raw Bayer only
-        // libcamera can drive) otherwise looks exactly like a slow camera.
+        // Only the first frame proves the device works. A Pi's Unicam node
+        // opens and returns nothing, because only libcamera can drive its raw
+        // Bayer, and would otherwise look like a slow camera.
         let first = tokio::select! {
             first = tokio::time::timeout(FIRST_FRAME_PATIENCE, stream.read()) => first,
             () = stop.cancelled() => return,

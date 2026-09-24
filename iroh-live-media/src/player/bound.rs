@@ -3,32 +3,23 @@
 //! Each tick computes which renditions are allowed, and the best allowed one
 //! wins:
 //!
-//! - The publisher's delivery estimate times a margin caps the bitrate. A rung
-//!   fits while the estimate covers [`Adaptation::fit_ratio`] of its advertised
-//!   bitrate, the same figure for staying and for stepping up.
-//! - Sustained loss lowers a ceiling one rung at a time, emergency loss drops it
-//!   to the bottom, and a clean stretch raises it again one rung at a time.
+//! - The publisher's delivery estimate caps the bitrate. A rung fits while the
+//!   estimate covers [`Adaptation::fit_ratio`] of its advertised bitrate.
+//! - Sustained loss lowers a ceiling one rung at a time, and emergency loss
+//!   drops it to the bottom. A clean stretch raises it one rung at a time.
 //! - The caller's constraints exclude the rest: a height limit, a catalog
 //!   `stalled` flag, and renditions whose decoders failed.
-//! - The smallest eligible rendition is the fallback when nothing fits, so there
-//!   is always an answer.
+//! - When nothing fits, the smallest eligible rendition plays.
 //!
-//! Time enters only as hysteresis around that answer: a lower target has to
+//! Time enters only as hysteresis around that answer. A lower target has to
 //! hold for [`Adaptation::downgrade_hold`] and a higher one for
-//! [`Adaptation::upgrade_hold`], and no step up comes within
+//! [`Adaptation::upgrade_hold`]. No step up comes within
 //! [`Adaptation::post_downgrade_cooldown`] of a step down.
 //!
-//! This replaces the probe-and-headroom rule of the old `adaptive` module,
-//! whose upgrade gate asked the estimate to cover one and a half times the next
-//! rung's bitrate. Parked on a low rung, a publisher sends only that rung's bytes, so
-//! its estimate is application-limited at a few times that rate and never
-//! reached the gate: `adaptation_follows_a_real_link` sat at 380 to 490 kbit/s
-//! against a 1.2 Mbit/s gate for a full minute with nothing wrong with the link.
-//! One ratio for both directions, with the asymmetry moved into the timers, is
-//! what lets the ladder climb back on a clear link.
+//! One ratio serves both directions. A publisher parked on a low rung has an
+//! estimate limited by what it sends, and it can still climb back.
 //!
-//! A change of network path resets everything learned so far, since history
-//! from the old path says nothing about the new one.
+//! A change of network path resets everything learned on the old one.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -60,8 +51,7 @@ pub(crate) struct Constraints {
 }
 
 impl Constraints {
-    /// Reports whether `rung` may play: not stalled, not excluded, and not
-    /// above the height limit.
+    /// Reports whether `rung` is not stalled, not excluded and not too tall.
     pub(crate) fn allows(&self, rung: &Rung) -> bool {
         !rung.stalled
             && !self.excluded.contains(&rung.name)
@@ -85,33 +75,23 @@ pub(crate) struct Reading {
 
 /// The player's adaptation thresholds and timers.
 ///
-/// The defaults are tuned together on real and simulated links. Tests shorten
-/// the timers to see a switch inside their own timeout.
+/// The defaults are tuned together on real and simulated links.
 #[derive(Debug, Clone, Copy)]
 pub struct Adaptation {
-    /// The share of a rung's advertised bitrate the estimate has to cover for
-    /// the rung to fit.
+    /// The multiple of a rung's advertised bitrate the estimate has to cover.
     ///
-    /// Above one, because of how the two sides of the comparison read. The
-    /// encoders send close to what they are asked for once they know the
-    /// source's real frame rate: openh264 and VA-API were measured sending
-    /// 82% of the advertised bitrate on the patchbay suite's picture. And the
-    /// estimate an iroh publisher sends is its congestion window over the
-    /// round trip, which reads above the path: a capped link read at 0.8 to
-    /// 1.6 times its cap in the patchbay lab, and the sliding maximum below
-    /// keeps the top of that. A rung fits while that maximum covers 1.25 times
-    /// its advertised bitrate, which is 1.5 times what it sends.
-    ///
-    /// It was 0.5 until the second review round, tuned on an encoder that sent
-    /// 40% of its bitrate because it was told the wrong frame rate; once that
-    /// was fixed, a rung that needed 650 kbit/s fitted a 400 kbit/s cap and
-    /// played at one frame a second.
+    /// openh264 and VA-API were measured sending 82% of the advertised bitrate
+    /// on the patchbay suite's picture. The estimate an iroh publisher sends is
+    /// its congestion window over the round trip, and a capped link read at 0.8
+    /// to 1.6 times its cap in the patchbay lab. The sliding maximum keeps the
+    /// top of that range. At 1.25, a rung fits while the maximum covers 1.5
+    /// times what the rung sends.
     pub fit_ratio: f64,
     /// How long the estimate is remembered, as a sliding maximum.
     ///
-    /// The estimate is refreshed ten times a second and moves with every
-    /// acknowledgement, so a single low reading is not a smaller link. A
-    /// maximum over a second is what a sustained shortfall has to beat.
+    /// The estimate refreshes ten times a second and moves with every
+    /// acknowledgement. A single low reading does not mean a smaller link, so
+    /// only a shortfall that lasts the whole window counts.
     pub estimate_window: Duration,
     /// Loss above which the ceiling steps down one rung, once held for
     /// [`downgrade_hold`](Self::downgrade_hold).
@@ -120,35 +100,32 @@ pub struct Adaptation {
     pub loss_emergency: f64,
     /// How long a lower target has to hold before the switch.
     pub downgrade_hold: Duration,
-    /// How long a higher target has to hold before the switch, and how long
-    /// loss has to stay clear before the loss ceiling rises a rung.
+    /// How long a higher target has to hold before the switch.
+    ///
+    /// Loss also has to stay clear this long before the loss ceiling rises a
+    /// rung.
     pub upgrade_hold: Duration,
     /// How long after a step down no step up is taken.
     pub post_downgrade_cooldown: Duration,
-    /// How long a rung stepped up to has to play before the step counts as
-    /// one that held.
+    /// How long a rung has to play after a step up before the step counts as held.
     ///
-    /// Every step down from a rung counts against it until a step up to it
-    /// holds this long: the link has just shown it cannot carry the rung, and
-    /// the estimate that would allow the next step up is read while the link
-    /// carries only the rung below, which says little about whether it carries
-    /// this one. Each count multiplies the hold before the next step up to the
-    /// rung by four, up to [`upgrade_hold_max`](Self::upgrade_hold_max), so a
-    /// marginal link settles on the rung it can carry instead of trying the
-    /// one above every few seconds.
+    /// Each step down from a rung multiplies the hold before the next step up
+    /// to it by four, up to [`upgrade_hold_max`](Self::upgrade_hold_max). A
+    /// step up that plays this long clears the count. The estimate read on the
+    /// rung below says little about the rung above, so this lets a marginal
+    /// link settle on the rung it can carry.
     pub trial: Duration,
     /// The longest hold before a step up.
     pub upgrade_hold_max: Duration,
     /// How often the network is read while it can change the choice.
     pub tick: Duration,
-    /// How long a replacement decoder has to take over, from the request to
-    /// the picture it takes over with, before the switch is given up.
+    /// How long a replacement decoder has to take over before the switch is given up.
     ///
-    /// It has to cover a real handover: the replacement subscribes to another
-    /// rendition, waits for that track's next keyframe, which on a two second
-    /// GOP over an impaired link is already seconds, and then decodes until it
-    /// has caught up with the picture on screen. Beyond that it is not slow, it
-    /// is not coming, and the incumbent keeps playing either way.
+    /// It covers a real handover. The replacement subscribes to the other
+    /// rendition, waits for its next keyframe, and decodes until it catches up
+    /// with the picture on screen. On a two second GOP over an impaired link,
+    /// the keyframe alone takes seconds. The incumbent keeps playing either
+    /// way.
     pub switch_deadline: Duration,
 }
 
@@ -178,8 +155,7 @@ pub(crate) struct Bound {
     path_generation: Option<u64>,
     /// Recent estimates, oldest first, for the sliding maximum.
     estimates: VecDeque<(Instant, u64)>,
-    /// The best rung loss allows, as an index into the ranked renditions, or
-    /// `None` when loss allows everything.
+    /// The index of the best rung loss allows, or `None` when loss allows all.
     loss_ceiling: Option<usize>,
     /// When loss above the step-down threshold began, if it is above it.
     lossy_since: Option<Instant>,
@@ -187,29 +163,24 @@ pub(crate) struct Bound {
     clean_since: Option<Instant>,
     /// Since when the target has been below the rung playing.
     ///
-    /// Held for "any lower rung" rather than for one of them, so a target that
-    /// wavers between two lower rungs under a noisy shortfall still reaches the
-    /// hold; the switch goes to whichever is the target when it does.
+    /// Timed for any lower rung, so a target that wavers between two lower
+    /// rungs still reaches the hold.
     lower: Option<Instant>,
     /// Since when the target has been above the rung playing, likewise.
     higher: Option<Instant>,
-    /// When the last step down landed, or the last time it was seen still on
-    /// its way.
+    /// When the last step down landed, or was last seen still on its way.
     ///
-    /// The cooldown runs from the landing rather than the decision: a switch
-    /// takes a decoder open and a keyframe to land, seconds over an impaired
-    /// link, and a cooldown counted from the decision could be over before the
-    /// lower rung ever played.
+    /// The cooldown runs from the landing. A switch needs a decoder and a
+    /// keyframe to land, which takes seconds on an impaired link. A cooldown
+    /// from the decision could end before the lower rung played.
     last_downgrade: Option<Instant>,
     /// Whether the last decision was a step down that has not landed yet.
     downgrading: bool,
     /// Whether a switch was on its way at the last decision.
     in_flight: bool,
-    /// Failed tries at each rung, by name, which lengthen the hold before
-    /// the next; see [`Adaptation::trial`].
+    /// Failed tries at each rung, by name. See [`Adaptation::trial`].
     failed_tries: BTreeMap<String, u32>,
-    /// The rung last stepped up to, and when it landed once it has, while
-    /// its trial runs.
+    /// The rung last stepped up to while its trial runs, and when it landed.
     trial: Option<(String, Option<Instant>)>,
 }
 
@@ -222,8 +193,7 @@ impl Bound {
         }
     }
 
-    /// Returns how long a higher target has to hold before a step up to
-    /// `rung`, after its failed tries.
+    /// Returns the hold before a step up to `rung`, lengthened by failed tries.
     fn upgrade_hold(&self, rung: &str) -> Duration {
         let tries = self.failed_tries.get(rung).copied().unwrap_or(0).min(8);
         self.adaptation
@@ -247,8 +217,9 @@ impl Bound {
 
     /// Moves the loss ceiling on this reading.
     ///
-    /// `current` is the index of the rung playing, which a sustained loss
-    /// steps one below; `lowest` is the index of the bottom eligible rung.
+    /// `current` is the index of the rung playing, and `lowest` the index of
+    /// the bottom eligible rung. Sustained loss moves the ceiling one below
+    /// `current`.
     fn follow_loss(&mut self, loss: f64, current: usize, lowest: usize, now: Instant) {
         if loss >= self.adaptation.loss_emergency {
             self.loss_ceiling = Some(lowest);
@@ -265,8 +236,7 @@ impl Bound {
                     self.loss_ceiling
                         .map_or(below, |ceiling| ceiling.max(below)),
                 );
-                // A fresh hold for the next step, so a lasting loss walks the
-                // ladder down one rung per hold rather than all at once.
+                // A lasting loss steps down one rung per hold.
                 self.lossy_since = Some(now);
             }
             return;
@@ -287,12 +257,12 @@ impl Bound {
     /// Picks the rendition to play.
     ///
     /// `ranked` is the catalog's video renditions, best first. `current` is the
-    /// one last asked for, which is on screen or on its way, and the hold
-    /// timers weigh the target against it. `on_screen` is the one actually
-    /// playing: while the two differ a switch is in flight, and loss is not
-    /// followed, since the loss measured then is the old rendition's and a
-    /// step taken on it would pile a second step onto the first before the
-    /// first could help. Returns `None` only when `ranked` is empty.
+    /// one last asked for, on screen or on its way, and the hold timers weigh
+    /// the target against it. `on_screen` is the one playing. While the two
+    /// differ, a switch is in flight and loss is not followed: the loss then is
+    /// the old rendition's, and a step on it would stack onto the first.
+    ///
+    /// Returns `None` only when `ranked` is empty.
     pub(crate) fn decide(
         &mut self,
         ranked: &[Rung],
@@ -321,8 +291,7 @@ impl Bound {
             .filter(|(_, rung)| constraints.allows(rung))
             .map(|(index, _)| index)
             .collect();
-        // The guaranteed fallback: with every rung ruled out, the smallest
-        // still plays rather than nothing.
+        // With every rung ruled out, the smallest still plays.
         let Some(&lowest) = eligible.last() else {
             return ranked.last().map(|rung| rung.name.clone());
         };
@@ -334,8 +303,8 @@ impl Bound {
             if self.downgrading {
                 self.last_downgrade = Some(now);
             }
-            // An emergency still drops to the bottom at once: it overrides
-            // whatever is on its way rather than stacking on it.
+            // An emergency still drops to the bottom at once, overriding the
+            // switch on its way.
             if reading
                 .loss
                 .is_some_and(|loss| loss >= self.adaptation.loss_emergency)
@@ -346,8 +315,8 @@ impl Bound {
             }
         } else {
             if std::mem::take(&mut self.in_flight) {
-                // Landed: the loss seen from here on is the new rendition's,
-                // and a lasting loss earns its next step one hold from now.
+                // Landed. Loss from here on is the new rendition's, and a
+                // lasting loss steps again one hold from now.
                 self.downgrading = false;
                 if self.lossy_since.is_some() {
                     self.lossy_since = Some(now);
@@ -385,8 +354,7 @@ impl Bound {
             .unwrap_or(lowest);
         let target = &ranked[target_index].name;
 
-        // A rendition that is gone, or no longer allowed at all, is left at
-        // once: there is nothing to wait for.
+        // A rendition that is gone or no longer allowed is left at once.
         let Some(current_index) = current_index.filter(|index| eligible.contains(index)) else {
             self.lower = None;
             self.higher = None;
@@ -409,8 +377,8 @@ impl Bound {
                     self.lower = None;
                     self.last_downgrade = Some(now);
                     self.downgrading = true;
-                    // The rung stepped down from counts as one the link could
-                    // not carry, and a trial of it is over.
+                    // The rung stepped down from counts as a failed try, and its
+                    // trial ends.
                     let rung = ranked[current_index].name.clone();
                     if self.trial.as_ref().is_some_and(|(trial, _)| *trial == rung) {
                         self.trial = None;
@@ -506,8 +474,9 @@ mod tests {
         bound.decide(&ladder(), None, None, constraints, reading, Instant::now())
     }
 
-    /// Runs `reading` every 100ms from `start` for `span`, feeding each
-    /// decision back as the rendition playing, and returns it with the time.
+    /// Runs `reading` every 100ms for `span`, feeding each decision back.
+    ///
+    /// Returns the rendition playing at the end, and the time.
     fn run(
         bound: &mut Bound,
         current: &str,
@@ -543,19 +512,14 @@ mod tests {
         assert_eq!(playing, "720p");
     }
 
-    /// The fix for the stalled upgrade gate. The old rule asked the estimate
-    /// to cover one and a half times the rung above before stepping up, and
-    /// probed without one; the bound steps up once the estimate covers the
-    /// rung above by the same ratio it stays by, however it wanders about
-    /// that.
+    /// An estimate that wanders just above the top rung's fit threshold steps up.
     #[test]
     fn an_application_limited_estimate_still_climbs_back() {
         let ranked = vec![rung("high", 800_000, 480), rung("low", 200_000, 240)];
         let mut bound = Bound::default();
         let mut playing = "low".to_string();
         let mut now = Instant::now();
-        // Readings that wander just above the top rung's fit threshold of
-        // 1 Mbit/s, and below the old rule's 1.2.
+        // Readings just above the top rung's fit threshold of 1 Mbit/s.
         let readings = [1_010_000, 1_075_000, 1_190_000, 1_020_000, 1_125_000];
         for tick in 0..60 {
             let reading = estimate(readings[tick % readings.len()]);
@@ -638,8 +602,7 @@ mod tests {
         assert_eq!(playing, "1080p", "clean loss lifts the ceiling again");
     }
 
-    /// Without an estimate there is no bandwidth bound, so a publisher that
-    /// sends none is held back only by loss.
+    /// Without an estimate, only loss holds a rendition back.
     #[test]
     fn no_estimate_leaves_only_loss() {
         let mut bound = Bound::default();
@@ -700,9 +663,7 @@ mod tests {
         assert_eq!(chosen.as_deref(), Some("360p"));
     }
 
-    /// R16's fix made visible: a new path starts with no history. The old
-    /// path's estimate would otherwise sit in the sliding maximum for a whole
-    /// window and hold the top rung on a path that cannot carry it.
+    /// A new path drops the old path's estimates from the sliding maximum.
     #[test]
     fn a_new_path_forgets_the_old_one() {
         let mut bound = Bound::default();
@@ -720,8 +681,7 @@ mod tests {
         assert_eq!(playing, "720p", "the old path's estimate held the top rung");
     }
 
-    /// S6: a shortfall whose target wavers between two lower rungs still
-    /// steps down after one hold; timing each target separately never did.
+    /// A shortfall whose target wavers between two lower rungs steps down after one hold.
     #[test]
     fn a_wavering_lower_target_still_steps_down() {
         // Each reading stands alone, so the sliding maximum does not smooth
@@ -742,10 +702,9 @@ mod tests {
         assert_ne!(playing, "1080p", "the hold restarted with every waver");
     }
 
-    /// N3: with the rendition asked for fed back as current, sustained loss
-    /// used to step the ceiling below the replacement still on its way every
-    /// hold, superseding it before it could land. Loss is not followed while a
-    /// switch is in flight, and the next step comes a hold after the landing.
+    /// Sustained loss does not stack a second step while a switch is in flight.
+    ///
+    /// The next step comes one hold after the landing.
     #[test]
     fn loss_does_not_stack_steps_while_a_switch_is_in_flight() {
         let mut bound = Bound::default();
@@ -754,8 +713,8 @@ mod tests {
         let start = Instant::now();
         let mut asked = "1080p".to_string();
         let mut now = start;
-        // The loss holds; the first step's replacement takes three seconds
-        // to land, and 1080p stays on screen meanwhile.
+        // The loss holds. The first step's replacement takes three seconds to
+        // land, and 1080p stays on screen meanwhile.
         while now < start + ms(3500) {
             asked = step(&mut bound, &ranked, &asked, "1080p", &lossy, now);
             now += ms(100);
@@ -775,9 +734,7 @@ mod tests {
         assert_eq!(asked, "360p");
     }
 
-    /// N3: the cooldown after a step down used to run from the decision, so a
-    /// switch that took longer than the cooldown to land could be taken back
-    /// almost as soon as it played. It runs from the landing.
+    /// The cooldown after a step down runs from the landing.
     #[test]
     fn the_cooldown_runs_from_the_landing() {
         let tuning = Adaptation::default();
@@ -846,11 +803,10 @@ mod tests {
         assert_eq!(asked, "1080p", "never came back up");
     }
 
-    /// N7: on a link that carries the lower rung but not the upper, an
-    /// estimate read while only the lower one plays keeps saying the upper
-    /// fits, and the ladder went up and straight back down every few seconds.
-    /// Each step down from the upper rung multiplies the hold before the next
-    /// try at it.
+    /// Each step down from a rung multiplies the hold before the next try at it.
+    ///
+    /// The link carries 720p but not 1080p, and the estimate read on 720p says
+    /// 1080p fits.
     #[test]
     fn failed_steps_up_back_off() {
         let mut bound = Bound::default();
@@ -885,8 +841,7 @@ mod tests {
         );
     }
 
-    /// A rung that holds through its trial is tried at the usual hold again
-    /// after a later step down.
+    /// A rung that holds through its trial gets the usual hold back.
     #[test]
     fn a_step_up_that_held_clears_its_failures() {
         let mut bound = Bound::default();

@@ -1,14 +1,12 @@
 //! The video publish task: one source, one encoder per rendition.
 //!
-//! Every rendition needs the same picture at the same instant and a camera can
-//! only be opened once, so each rendition's encoder reads the source through a
-//! latest-wins handle of its own: a rendition that falls behind drops frames
-//! instead of stalling the ones that have not.
+//! A camera opens only once, and every rendition needs the same picture. Each
+//! rendition's encoder reads the source through its own latest-wins handle, so
+//! a rendition that falls behind drops frames without stalling the others.
 //!
-//! Encoders are demand-gated the way upstream gates its devices: a rendition
-//! encodes only while someone watches it. The source itself is not, because a
-//! preview reads the same frames and a publisher expects to see itself before
-//! anyone tunes in.
+//! A rendition encodes only while someone watches it. The source runs even
+//! when nobody watches, because a preview reads the same frames and a
+//! publisher expects to see itself before anyone tunes in.
 
 use std::{
     sync::{Arc, OnceLock},
@@ -53,20 +51,17 @@ pub(super) async fn run_raw(
         reporter,
         ..
     } = job;
-    // Shared with every encoder task, so the names are released only once the
-    // last of them is gone: tasks aborted along with this one finish being
-    // dropped after it returns, and a replacement must not create its tracks
-    // before then.
+    // Every encoder task holds a share of the track names. Encoder tasks
+    // aborted with this one are dropped after it returns, and a replacement
+    // must not create its tracks before then.
     let tracks = Arc::new(tracks);
-    // The predecessor has finished, so its renditions' figures are final and
-    // go: a replaced ladder does not linger in the stats.
+    // The predecessor has finished, so its renditions leave the stats.
     stats.clear_video();
 
-    // Tracks are created from the source's format rather than from its first
-    // frame: a source that idles until someone watches, as a phone camera
-    // does, produces nothing until a track exists to be watched. A frame that
-    // is already there refines the guess, and a later one of another size is
-    // scaled to the size advertised.
+    // Tracks take their size from the source's format. A source that idles
+    // until watched, such as a phone camera, produces no frame before a track
+    // exists. A frame that is already there refines the size, and a later
+    // frame of another size is scaled to the advertised one.
     let mut frames = source.frames();
     let format = source.format();
     let (size, color) = match frames.current() {
@@ -74,8 +69,8 @@ pub(super) async fn run_raw(
         None => (format.size, None),
     };
     let rate = format.rate;
-    // Anchored by whichever rendition encodes first, and shared, so every rung
-    // carries the same timestamp for the same picture.
+    // The first rendition to encode anchors it. It is shared so every
+    // rendition carries the same timestamp for the same picture.
     let rebase = Arc::new(OnceLock::new());
 
     let mut encoders = JoinSet::new();
@@ -86,10 +81,9 @@ pub(super) async fn run_raw(
         reporter.rendition(rendition, RenditionState::Failed(err.clone()));
         last_failure = Some(err);
     };
-    // Every rendition is probed before any is advertised, so the ladder
-    // reaches the catalog in one go, with no await between its entries: a
-    // viewer that sees the catalog between two probes would take a rendition
-    // still being probed for one the broadcast does not have.
+    // Every rendition is probed before any is advertised, so the whole ladder
+    // reaches the catalog at once. A viewer that read the catalog between two
+    // probes would miss the renditions still being probed.
     let mut probed = Vec::with_capacity(encoding.renditions.len());
     for rendition in &encoding.renditions {
         let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
@@ -145,8 +139,8 @@ pub(super) async fn run_raw(
     let spawned = encoders.len();
     let mut failed = 0;
 
-    // The source's own frame rate is written here, the one place that reads
-    // every frame, rather than by each encoder.
+    // The source frame rate is measured here, the one place that reads every
+    // frame.
     let source_fps = stats.source_fps();
     let mut meter = RateMeter::default();
     loop {
@@ -164,8 +158,8 @@ pub(super) async fn run_raw(
                     failed += 1;
                     last_failure = Some(failure);
                 }
-                // Every rendition's encoder failed while the source runs on:
-                // nothing is published, which the slot has to say.
+                // Every encoder failed while the source runs on. Nothing is
+                // published, and the slot must say so.
                 if failed == spawned {
                     let failure = last_failure.clone().expect("counted above");
                     warn!(error = %failure, "no rendition can encode");
@@ -195,8 +189,9 @@ pub(super) async fn run_raw(
     }
 }
 
-/// Returns why an encoder stopped, if it failed or panicked; one that failed
-/// reported itself in its rendition's state already.
+/// Returns why an encoder stopped, if it failed or panicked.
+///
+/// A failed encoder has already reported itself in its rendition's state.
 fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Option<Arc<Error>> {
     match joined {
         Ok(failure) => failure,
@@ -209,19 +204,17 @@ fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Opt
     }
 }
 
-/// The gap between frames a rendition keeps, when it runs slower than its
-/// source.
+/// Returns the gap between kept frames for a rendition slower than its source.
 fn frame_interval(rendition: &VideoRendition, source: video::Rate) -> Option<std::time::Duration> {
     let rate = rendition.rate?;
     (rate.as_f64() < source.as_f64())
         .then(|| std::time::Duration::from_secs_f64(1.0 / rate.as_f64()))
 }
 
-/// Probes the encoder `config` asks for, falling back to software once where
-/// the choice was left open.
+/// Probes the encoder `config` asks for, falling back to software once if allowed.
 ///
-/// A backend named explicitly is not replaced: naming one says to fail rather
-/// than fall back, so a broken driver shows up as an encoder that will not open.
+/// An explicitly named backend is never replaced, so a broken driver shows up
+/// as an encoder that does not open.
 async fn probe(config: &mut encode::Config) -> Result<hang::catalog::VideoConfig, Error> {
     match config.probe().await {
         Ok(published) => Ok(published),
@@ -230,13 +223,14 @@ async fn probe(config: &mut encode::Config) -> Result<hang::catalog::VideoConfig
     }
 }
 
-/// Whether a failure of `kind` falls back to software.
+/// Returns whether an encoder of `kind` falls back to software.
 fn falls_back(kind: &encode::Kind) -> bool {
     matches!(kind, encode::Kind::Auto | encode::Kind::Hardware)
 }
 
-/// Switches `config` to the software encoder after `err`, if its backend was
-/// left open, and says whether it did.
+/// Switches `config` to the software encoder if its backend allows a fallback.
+///
+/// Returns whether it switched.
 fn fall_back(config: &mut encode::Config, err: &video::Error) -> bool {
     if !falls_back(&config.kind) {
         return false;
@@ -246,7 +240,7 @@ fn fall_back(config: &mut encode::Config, err: &video::Error) -> bool {
     true
 }
 
-/// An encoder failure, as the crate reports it.
+/// Converts an encoder failure into the crate's error.
 fn encode_error(err: video::Error) -> Error {
     match err {
         video::Error::NoEncoder(tried) => n0_error::e!(Error::NoEncoder { codec: tried }),
@@ -269,7 +263,7 @@ struct Encoder {
     rebase: Arc<OnceLock<Rebase>>,
     /// The slot's hold on its track names.
     _tracks: Arc<tokio::sync::OwnedMutexGuard<()>>,
-    /// The gap between frames kept, for a rendition slower than its source.
+    /// The gap between kept frames, for a rendition slower than its source.
     interval: Option<std::time::Duration>,
     reporter: Reporter,
     stats: Cell<EncodeStats>,
@@ -277,15 +271,15 @@ struct Encoder {
 }
 
 impl Encoder {
-    /// Encodes for as long as someone watches, until the source ends or the
-    /// slot stops, and reports a failure in the rendition's state.
+    /// Encodes while someone watches, until the source ends or the slot stops.
     ///
-    /// Returns the failure, for the slot to count.
+    /// Reports a failure in the rendition's state and returns it for the slot
+    /// to count.
     async fn run(mut self) -> Option<Arc<Error>> {
         let err = self.encode().await.err()?;
         warn!(error = %err, "rendition encoder failed");
-        // Aborted rather than dropped, so a subscriber sees the cause rather
-        // than a bare reset.
+        // Aborting the track shows a subscriber the cause instead of a bare
+        // reset.
         let cause = moq_net::Error::Transport(err.to_string());
         let err = Arc::new(err);
         self.reporter
@@ -301,7 +295,7 @@ impl Encoder {
 
         loop {
             // Idle until someone subscribes, the source ends, or the slot
-            // stops. The track and its catalog entry are advertised already.
+            // stops. The track and its catalog entry are already advertised.
             tokio::select! {
                 used = demand.used() => {
                     if let Err(err) = used {
@@ -316,8 +310,8 @@ impl Encoder {
                 () = self.stop.cancelled() => break,
             }
 
-            // Counted as demand on the source for as long as this encodes, so
-            // an application camera can idle while nobody watches.
+            // Counts as demand on the source while this encodes, so an
+            // application camera can idle while nobody watches.
             let _wanted = self.source.want();
             let mut encoder = match encode::Sink::open(&self.config).await {
                 Ok(encoder) => encoder,
@@ -333,7 +327,7 @@ impl Encoder {
             let mut timing = Smoothed::default();
             loop {
                 let frame = tokio::select! {
-                    // The last viewer left: mark the gap so the next timestamp
+                    // The last viewer left. Mark the gap so the next timestamp
                     // does not stretch this frame across it.
                     _ = demand.unused() => {
                         self.producer.discontinuity().map_err(Error::broadcast)?;
@@ -343,9 +337,8 @@ impl Encoder {
                     frame = self.frames.next() => frame,
                     () = self.stop.cancelled() => None,
                 };
-                // The source ended, or the slot stopped: drain the encoder,
-                // publish the tail, and close the track so subscribers see a
-                // clean end rather than a reset.
+                // The source ended or the slot stopped. Drain the encoder and
+                // finish the track so subscribers see a clean end.
                 let Some(frame) = frame else {
                     let mut tail = encoder.finish().await.map_err(Error::encoder)?;
                     self.restamp(&mut tail);
@@ -363,8 +356,8 @@ impl Encoder {
                     let next = frame.timestamp.as_micros() as u64 + interval.as_micros() as u64;
                     due = moq_net::Timestamp::from_micros(next).ok();
                 }
-                // A frame of another size than the track advertises, a phone
-                // camera turned to portrait say, is scaled to it.
+                // A frame of another size than the track advertises is scaled
+                // to it, for example after a phone camera turns to portrait.
                 let frame = match frame.size() == target {
                     true => frame,
                     false => Arc::new(
@@ -404,7 +397,7 @@ impl Encoder {
         Ok(())
     }
 
-    /// Records that `encoder` is now the one running.
+    /// Records which encoder is running.
     fn encoding(&self, encoder: &str) {
         debug!(encoder, "rendition encoding");
         self.reporter.rendition(
@@ -431,9 +424,9 @@ impl Encoder {
 
 /// Publishes a pre-encoded Annex-B stream as the one rendition.
 ///
-/// `Split` cuts the byte stream into access units and `Import` publishes them,
-/// filling the catalog rendition in from the first SPS it sees, so this path
-/// needs no description from the caller.
+/// `Split` cuts the byte stream into access units. `Import` publishes them and
+/// fills in the catalog rendition from the first SPS, so the caller does not
+/// describe the stream.
 pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: CancellationToken) {
     let Some(_tracks) = job.take_over(&stop).await else {
         return;
@@ -502,9 +495,8 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
         return;
     }
     match result {
-        // A source that ends without a single access unit never described
-        // itself: that is a failed camera rather than a stream that ran its
-        // course.
+        // A source that ends before any access unit never described itself.
+        // That is a failed camera, not a finished stream.
         Ok(0) => reporter.slot(SlotState::Failed(Arc::new(Error::device_msg(
             "the pre-encoded source ended before its first access unit",
         )))),

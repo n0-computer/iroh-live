@@ -1,21 +1,10 @@
 //! Live audio and video for iroh-live: sources, broadcasts and players.
 //!
-//! The media itself is upstream: `moq_video` captures, encodes, decodes and
-//! renders; `moq_audio` does the same for sound and owns the speaker. What
-//! lives here is the layer an application talks to, in concepts of its own:
-//!
-//! - A [`VideoSource`] or [`AudioSource`] is an opened device or generator,
-//!   running on a thread of its own.
-//! - A [`LocalBroadcast`] encodes one video source into a ladder of
-//!   renditions, and one audio source, whatever transport carries it.
-//! - A [`RemoteBroadcast`] reads a broadcast's [`Catalog`], and a [`Player`]
-//!   plays it: it picks a rendition as the link allows, switches without the
-//!   picture going blank or stepping backwards, and keeps audio and video in
-//!   step through its own playout clock.
-//! - [`VideoFrames`] is the one frame stream every renderer reads, whether
-//!   from a player, a source's preview, or a scanner.
-//! - An [`AudioOutput`] is an opened speaker, passed to every player that
-//!   plays through it and to the microphone whose echo it cancels.
+//! The codecs and devices come from `moq_video` and `moq_audio`, re-exported
+//! as [`video`] and [`audio`]. This crate adds what a live app needs on top:
+//! a broadcast that encodes one source into several renditions, and a player
+//! that picks the rendition the link can carry and keeps audio and video in
+//! step.
 //!
 //! Nothing here depends on iroh. A transport publishes a [`LocalBroadcast`]
 //! through `moq_net::Consume`, builds a [`RemoteBroadcast`] from what it
@@ -23,7 +12,7 @@
 //!
 //! # Example
 //!
-//! Publish a generated pattern and play it back in-process:
+//! This publishes a test pattern and plays it back in-process:
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), iroh_live_media::Error> {
@@ -52,31 +41,39 @@
 //! # }
 //! ```
 //!
-//! # Behaviour worth knowing
+//! The main types are:
 //!
-//! - Opening a source is where its failure shows: [`VideoSource::capture`]
-//!   returns once the device produced a frame. The microphone is the
-//!   exception. `AudioSource::microphone` checks that a matching device exists
-//!   and that echo cancellation, if asked for, is compiled in; the device
-//!   itself opens when a broadcast first has a listener for it, and a failure
-//!   then shows in [`LocalBroadcast::status`]. Upstream opens a microphone only
-//!   inside the publication that encodes it.
-//! - A [`RemoteBroadcast`] that follows a route table
-//!   ([`RemoteBroadcast::from_origin`], [`RemoteBroadcast::from_resolved`])
-//!   treats the end of its broadcast as a possible change of route and asks the
-//!   table again, so it closes about three seconds after the publisher went.
-//! - Players adapt only on [`NetworkSignals`] a transport attached; without
-//!   them a player in [`RenditionMode::Auto`] holds the best rendition its
-//!   constraints allow.
+//! - [`VideoSource`] and [`AudioSource`]: an opened device, file or generator,
+//!   running on its own thread.
+//! - [`LocalBroadcast`]: encodes one video source into a ladder of renditions,
+//!   and one audio source.
+//! - [`RemoteBroadcast`]: a subscribed broadcast and its [`Catalog`].
+//!   [`RemoteBroadcast::play`] starts a [`Player`].
+//! - [`VideoFrames`]: the frame stream every renderer reads, from a player or
+//!   from a source's preview.
+//! - [`AudioOutput`]: an opened speaker. Players play through it, and a
+//!   microphone can cancel its echo.
+//!
+//! A source fails where it opens: `VideoSource::capture` returns once the
+//! device produced a frame. A microphone is different, because moq-audio opens
+//! it inside the publication that encodes it. `AudioSource::microphone` only
+//! checks that the device exists, and a device that fails later shows in
+//! [`LocalBroadcast::status`].
+//!
+//! A [`RemoteBroadcast`] that follows a route table looks for another route
+//! when its broadcast ends, so it closes about three seconds after the
+//! publisher went. A player adapts only to the [`NetworkSignals`] a transport
+//! attached. Without them, [`RenditionMode::Auto`] plays the best rendition
+//! its limits allow.
 //!
 //! # Cancellation safety
 //!
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
-//! | [`VideoSource::capture`], `VideoSource::rpicam`, `EncodedVideoSource::rpicam`, [`AudioSource::file`] | yes | stops the thread or subprocess and releases the device |
+//! | `VideoSource::capture`, `VideoSource::rpicam`, `EncodedVideoSource::rpicam`, [`AudioSource::file`] | yes | stops the thread or subprocess and releases the device |
 //! | `AudioSource::microphone` | yes | nothing is open yet |
 //! | `AudioOutput::open`, `AudioOutput::devices` | yes | closes the device, or abandons the query |
-//! | `AudioOutput::switch` | yes | the switch was queued before the first wait and completes; only its result is lost |
+//! | `AudioOutput::switch` | yes | the switch still completes, only its result is lost |
 //! | [`VideoFrames::next`], [`FrameSender::closed`], [`LocalBroadcast::closed`], [`RemoteBroadcast::closed`] | yes | loses nothing |
 //! | [`Player::wait_for_rendition`] | yes | the switch continues |
 //! | [`Recording::wait`], [`Recording::stop`] | yes, while the [`Recording`] is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
@@ -95,13 +92,12 @@ mod remote;
 mod source;
 mod stats;
 
-/// The upstream audio stack: capture, encode, decode, playback, and echo
-/// cancellation.
+/// The upstream audio stack: capture, encode, decode and playback.
 pub use moq_audio as audio;
 /// A rate in bits per second, as moq-net measures it.
 pub use moq_net::bandwidth::Rate as Bitrate;
-/// The upstream video stack: capture, encode, decode, render, and the
-/// [`Frame`](moq_video::Frame) vocabulary every one of them speaks.
+/// The upstream video stack: capture, encode, decode, render and
+/// [`Frame`](moq_video::Frame).
 pub use moq_video as video;
 
 #[cfg(feature = "capture")]

@@ -1,24 +1,20 @@
 //! The player's video task: decoders, the rendition swap, and pacing.
 //!
-//! One decoder plays at a time. A switch or a decoder change opens the
+//! One decoder plays at a time. A switch or a decoder change opens a
 //! replacement beside it and hands over once the replacement has caught up
-//! with the picture on screen, so the picture neither goes blank nor steps
-//! backwards across a change. The state machine for that lives in
-//! [`switch`](super::switch); this is the loop that drives it with real
-//! decoders.
+//! with the picture on screen. The state machine for that lives in
+//! [`switch`](super::switch), and this module drives it with real decoders.
 //!
-//! Each decoder is read by its own task rather than from a `select!` arm.
-//! `moq_video::decode::Consumer` reads through a `Sink`, which is documented as
-//! not cancel-safe: dropping a `read` future poisons the decoder for good. A
-//! `select!` cancels every arm it does not pick, so the read has to live
-//! somewhere nothing cancels it and reach the supervisor over a channel.
+//! Each decoder is read by its own task, not from a `select!` arm.
+//! `moq_video::decode::Consumer` reads through a `Sink`, whose `read` is not
+//! cancel-safe: dropping the future poisons the decoder. So the read runs in a
+//! task and reaches the supervisor over a channel.
 //!
-//! An access unit the decoder refuses is skipped rather than fatal. A live
-//! stream loses pictures to a skipped group or a truncated access unit, and a
-//! decoder without its reference chain refuses every picture until the next
-//! keyframe, so a reader that stopped on the first of those would turn a
-//! recoverable break into a permanent freeze. The reader gives up only on a run
-//! long enough that no keyframe is coming, and says so.
+//! An access unit the decoder refuses is skipped. After a skipped group or a
+//! truncated access unit, a decoder refuses every picture until the next
+//! keyframe. Stopping on the first refusal would turn that break into a
+//! permanent freeze. The reader gives up only after
+//! `MAX_CONSECUTIVE_DECODE_FAILURES` refusals in a row.
 
 use std::{
     future::Future,
@@ -54,33 +50,23 @@ use crate::{
 
 /// How many decoded frames a reader may run ahead of the supervisor.
 ///
-/// Small on purpose: the supervisor only paces and forwards, so a backlog here
-/// would be latency rather than throughput. Two slots absorb a scheduling
-/// hiccup without letting the decoder race ahead of the clock.
+/// Two frames absorb a scheduling hiccup. More would only add latency.
 const READ_AHEAD: usize = 2;
 
 /// How many access units in a row may fail to decode before the reader stops.
 ///
-/// One failure is not a broken stream. A group skipped under congestion, a
-/// truncated access unit, or a decoder that ran out of picture buffers all cost
-/// the reference chain, and a decoder without it refuses every picture until the
-/// next keyframe. So the threshold has to span a keyframe interval, or a
-/// stream a keyframe was about to repair would be ended a frame into the
-/// break, which is the freeze this exists to prevent.
-///
-/// Publishers key every two seconds by default, which is 120 access units at
-/// 60fps and 60 at 30. Three hundred spans several of those at any rate we
-/// publish, and still reports a decoder that will never produce another picture
-/// within about ten seconds rather than reading a track forever.
+/// A decoder that lost its reference chain refuses every picture until the
+/// next keyframe, so the limit must span a keyframe interval. Publishers key
+/// every two seconds by default, which is 120 access units at 60fps. Three
+/// hundred covers that with room, and still reports a dead decoder within
+/// about ten seconds.
 const MAX_CONSECUTIVE_DECODE_FAILURES: u32 = 300;
 
 /// How often the decode cadence is logged.
 ///
-/// A picture that is starving looks, from every log line above this one, like
-/// a picture that is fine: the transport signals say what arrived and the
-/// decoder says nothing unless it fails. One line every few seconds with the
-/// frame rate that actually decoded is what lets a goodput reading in a trace
-/// be matched to what the viewer saw.
+/// A starving picture looks fine in every other log line: the transport logs
+/// what arrived, and the decoder is silent unless it fails. The decoded frame
+/// rate shows what the viewer saw.
 const CADENCE_EVERY: Duration = Duration::from_secs(5);
 
 /// The task opening a replacement decoder.
@@ -96,15 +82,15 @@ pub(crate) struct Inputs {
     pub controls: Arc<Controls>,
     pub status: StatusCell,
     pub events: broadcast::Sender<SwitchEvent>,
-    /// Where decoders that failed or ended are reported, for the selector's
-    /// backoff and revival.
+    /// Where failed or ended decoders are reported, for the selector.
     pub reports: mpsc::Sender<Report>,
     /// The target on screen, for the selector.
     pub playing: watch::Sender<Option<Target>>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
-    /// How long a replacement decoder has to take over; see
-    /// [`Adaptation::switch_deadline`](super::Adaptation::switch_deadline).
+    /// How long a replacement decoder has to take over.
+    ///
+    /// Set from [`Adaptation::switch_deadline`](super::Adaptation::switch_deadline).
     pub switch_deadline: Duration,
     pub shutdown: CancellationToken,
 }
@@ -127,13 +113,11 @@ struct Delivery {
     due: BoxFuture<bool>,
 }
 
-/// Forwards frames to the player's output and swaps decoders when the
-/// selector asks for another rendition or configuration.
+/// Forwards frames to the player's output and swaps decoders on request.
 ///
-/// Every await sits in the `select!` itself and none in an arm body: pacing a
-/// picture is a future the loop keeps across iterations rather than one it
-/// waits on, so a request that arrives while a picture is held for the clock
-/// is acted on at once, not when the picture is due.
+/// Every await sits in the `select!` itself, never in an arm body. Pacing is a
+/// future the loop keeps across iterations, so a request that arrives while a
+/// picture waits for the clock is handled at once.
 pub(crate) async fn run(inputs: Inputs) {
     let Inputs {
         mut desired,
@@ -156,9 +140,8 @@ pub(crate) async fn run(inputs: Inputs) {
     loop {
         let deadline = switcher.deadline();
         let delivering = delivery.is_some();
-        // Why a decoder's track stopped, read off the reader before the
-        // switcher drops it: a clean end and a failure call for different
-        // things.
+        // Why a decoder's track stopped, read before the switcher drops the
+        // reader.
         let mut replacement_failure: Option<Arc<Error>> = None;
         let mut incumbent_end: Option<(Target, Option<Arc<Error>>)> = None;
         let outcome: Outcome<Error> = tokio::select! {
@@ -171,8 +154,8 @@ pub(crate) async fn run(inputs: Inputs) {
 
             changed = desired.changed() => {
                 if changed.is_err() {
-                    // The selector stopped, which it does when the broadcast
-                    // closes: the video ended, whatever its tracks said yet.
+                    // The selector stops when the broadcast closes, so the
+                    // video has ended.
                     status.update(|status| {
                         let video = match &status.video {
                             SlotState::Running | SlotState::Starting => SlotState::Ended,
@@ -200,14 +183,14 @@ pub(crate) async fn run(inputs: Inputs) {
                         outcome
                     }
                     None => {
-                        // Video turned off, or nothing left to play: drop both
-                        // decoders and keep the last picture where it is.
+                        // Video is off or nothing is left to play. Drop both
+                        // decoders and keep the last picture up.
                         switcher = VideoSwitcher::new(switch_deadline);
                         delivery = None;
                         stats.video.update(|video| *video = None);
                         status.update(|status| {
-                            // Off was set by the selector; anything else means
-                            // the catalog has no video left to play.
+                            // The selector sets Off. Anything else means the
+                            // catalog has no video left.
                             let video = match status.video {
                                 SlotState::Off => SlotState::Off,
                                 _ => SlotState::Ended,
@@ -254,8 +237,8 @@ pub(crate) async fn run(inputs: Inputs) {
                 Event::Replacement(Some(frame)) => {
                     match switcher.replacement_frame(frame.timestamp.into(), tokio::time::Instant::now()) {
                         (Verdict::Promote, outcome) => {
-                            // Whatever the incumbent was about to show is older
-                            // than what takes over, so it goes.
+                            // The incumbent's pending picture is older, so it
+                            // is replaced.
                             delivery = Some(pace(frame, &mut shown, &clock, &controls, &stats));
                             outcome
                         }
@@ -321,9 +304,9 @@ pub(crate) async fn run(inputs: Inputs) {
                 });
                 let _ = events.send(SwitchEvent::Landed(target.rendition));
             }
-            // A replacement whose track ended cleanly before it took over is
-            // not a broken decoder: the publisher replaced the track or the
-            // route changed. The selector asks for it again.
+            // A replacement whose track ended cleanly is not a broken decoder.
+            // The publisher replaced the track or the route changed, and the
+            // selector asks for it again.
             Outcome::Abandoned(target, Abandoned::Ended) if replacement_failure.is_none() => {
                 debug!(rendition = %target.rendition, "replacement's track ended before it took over");
                 if switcher.current().is_none() {
@@ -357,9 +340,8 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                     Abandoned::TimedOut => {
                         warn!(%rendition, after = ?switch_deadline, "replacement did not take over in time");
-                        // With nothing on screen there is nothing better to
-                        // play meanwhile, and a slow link is not a broken
-                        // rendition: it is asked for again at once.
+                        // With nothing on screen, a slow link is no reason to
+                        // exclude the rendition, so it is asked for again.
                         exclude = playing.is_some();
                         Abandon::Failed(Arc::new(Error::decoder(std::io::Error::other(format!(
                             "the decoder for {rendition} did not produce a picture within {}s",
@@ -374,14 +356,14 @@ pub(crate) async fn run(inputs: Inputs) {
                     status.update(|status| {
                         status.switch_error = Some(err.clone());
                         // Nothing on screen and nothing on its way: the video
-                        // failed, until the selector finds something to try.
+                        // has failed until the selector finds something to try.
                         if playing.is_none() && status.switching_to.is_none() {
                             status.clear_video(SlotState::Failed(err.clone()));
                             status.failed_rendition = Some(rendition.clone());
                         }
                     });
-                    // Full means a failure is already being reported; one more
-                    // for the same backoff is not worth waiting for.
+                    // A full channel already holds a failure, so dropping
+                    // this one loses nothing.
                     let _ = reports.try_send(Report::Failed(Failure {
                         target: target.clone(),
                         config_only,
@@ -394,9 +376,9 @@ pub(crate) async fn run(inputs: Inputs) {
                 delivery = None;
                 stats.video.update(|video| *video = None);
                 match incumbent_end {
-                    // The reader gave up on its track: a decoder or transport
-                    // failure, reported like a failed switch so the selector
-                    // backs off from the rendition and tries another.
+                    // The reader gave up on its track. Report it like a failed
+                    // switch, so the selector backs off and tries another
+                    // rendition.
                     Some((target, Some(err))) => {
                         warn!(error = %err, rendition = %target.rendition, "video failed");
                         status.update(|status| {
@@ -412,9 +394,8 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                     // A clean end: the publisher replaced or withdrew the
                     // video, or the route changed. The player waits for what
-                    // comes next rather than calling the video over; only the
-                    // broadcast closing, or a catalog with no video left, is
-                    // the end.
+                    // follows. Only the broadcast closing or a catalog without
+                    // video ends the video.
                     Some((target, None)) => {
                         info!(rendition = %target.rendition, "video track ended, waiting for what follows");
                         status.update(|status| status.clear_video(SlotState::Starting));
@@ -439,20 +420,19 @@ fn open_replacement(
     let config = config.clone();
     let name = target.rendition.clone();
     let stats = stats.clone();
-    // Abort-on-drop, not a bare handle: a superseded open is dropped with its
-    // replacement, and a detached one would keep a track subscription alive for
-    // as long as the peer took to answer.
+    // Aborted on drop, so a superseded open does not hold a track subscription
+    // until the peer answers.
     AbortOnDropHandle::new(spawn(async move {
         spawn_reader(&settings, &config, &name, stats).await
     }))
 }
 
-/// Waits for whichever decoder has something to say first.
+/// Waits for the next event from any decoder.
 ///
-/// One future over every part of the switcher, so the `select!` above holds a
-/// single borrow of it. The incumbent is not read while a picture is waiting
-/// for the clock: its channel is bounded, which is what keeps the decoder from
-/// running ahead of playout.
+/// Polls the whole switcher in one future, so the `select!` holds a single
+/// borrow of it. The incumbent is not read while a picture waits for the
+/// clock, and its bounded channel then keeps the decoder from running ahead of
+/// playout.
 async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
     std::future::poll_fn(|cx| {
         if let Some(task) = switcher.opening_mut()
@@ -476,11 +456,10 @@ async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
     .await
 }
 
-/// Starts pacing one frame against the playout clock, and counts it in
-/// `shown`.
+/// Starts pacing one frame against the playout clock.
 ///
-/// Reads the latency on every frame, so a change of the pacing mode
-/// reaches the picture at once.
+/// Counts the frame in `shown`. Reads the latency mode on every frame, so a
+/// change takes effect at once.
 fn pace(
     frame: moq_video::Frame,
     shown: &mut RateMeter,
@@ -517,44 +496,38 @@ fn pace(
 
 /// One decoder plus the task reading it.
 struct Reader {
-    /// The backend that opened, for a status line: which decoder is running is
-    /// the first thing anyone asks when playback looks wrong on a device.
+    /// The name of the decoder backend, for status and logs.
     decoder: String,
     frames: mpsc::Receiver<moq_video::Frame>,
-    /// Why the reader gave up on its track, if it did rather than reaching a
-    /// clean end.
+    /// Why the reader gave up on its track, unset after a clean end.
     failure: Arc<OnceLock<Arc<Error>>>,
-    /// Set once this reader's pictures are the ones on screen.
+    /// Set once this reader's pictures are on screen.
     ///
-    /// Only that reader writes the playback stats: a replacement warming up
-    /// beside the incumbent would otherwise write the same figures for as long
-    /// as the switch takes.
+    /// Only that reader writes the playback stats, so a warming replacement
+    /// does not overwrite them.
     on_screen: Arc<AtomicBool>,
     /// Dropping this aborts the read loop, which drops the decoder with it.
     _task: AbortOnDropHandle<()>,
 }
 
-/// The decode options a player's settings imply.
+/// Returns the decode options for a player's settings.
 fn decode_options(settings: &DecodeSettings) -> moq_video::decode::Options {
     let mut options = moq_video::decode::Options::new();
     options.decoder.kind = settings.decoder.clone();
-    // Left on the GPU: a player's frames go to a renderer, which imports a
-    // shared decode surface without a round trip through system memory, and
-    // a frame converts to CPU pixels on demand for anything that reads them.
+    // Frames stay on the GPU for the renderer to import. A frame converts to
+    // CPU pixels on demand.
     options.decoder.output = moq_video::Output::Native;
     options.max_age = settings.max_age;
-    // This is a player, so the groups a track still holds are behind the live
-    // edge by definition. A decoder rebuilt on a backend change, or opened on a
-    // rendition switched away from and back to, would otherwise walk that whole
-    // backlog at decode speed before catching up.
+    // A player wants the live edge. Without this, a rebuilt decoder or one
+    // reopened on an earlier rendition decodes the whole cached backlog first.
     options.start = moq_video::decode::Start::Latest;
     options
 }
 
 /// Subscribes to a rendition, opens its decoder, and starts reading it.
 ///
-/// Returns once the decoder is open, so a caller can tell an unusable rendition
-/// from a slow one before committing to a switch.
+/// Returns once the decoder is open, so the caller can tell an unusable
+/// rendition from a slow one.
 async fn spawn_reader(
     settings: &DecodeSettings,
     config: &hang::catalog::VideoConfig,
@@ -592,9 +565,8 @@ async fn spawn_reader(
                         if let Some((fps, _)) = cadence.tick(0) {
                             debug!(fps = format_args!("{fps:.1}"), "video decoding cadence");
                         }
-                        // Covers the transport read as well as the decode: the
-                        // two happen inside one `read`, with no earlier point
-                        // to attribute arrival to.
+                        // Includes the transport read, since both happen
+                        // inside one `read`.
                         let took = timing.record(started.elapsed());
                         if writes.load(Ordering::Relaxed) {
                             stats.video.update(|video| {
@@ -612,9 +584,9 @@ async fn spawn_reader(
                         debug!("video track ended");
                         return;
                     }
-                    // `Codec` is the one error about the bytes of a single
-                    // picture, which the next keyframe makes good. The others
-                    // describe the track, and reading again fails the same way.
+                    // Only `Codec` is about a single picture, and the next
+                    // keyframe repairs it. The other errors are about the
+                    // track and repeat on every read.
                     Err(err) if !matches!(err, moq_video::Error::Codec(_)) => {
                         warn!(error = %err, "video track failed");
                         let _ = gave_up.set(Arc::new(decode_error(err)));
@@ -636,9 +608,8 @@ async fn spawn_reader(
                             ))));
                             return;
                         }
-                        // Once per run: a lost reference chain fails every
-                        // picture until the next keyframe, and the first of
-                        // those says everything the rest would.
+                        // Warns once per run, since a lost reference chain
+                        // fails every picture until the next keyframe.
                         if failures == 1 {
                             warn!(error = %err, "video decode failed, skipping the access unit");
                         } else {
@@ -660,7 +631,7 @@ async fn spawn_reader(
     })
 }
 
-/// A decoder failure, as the crate reports it.
+/// Converts a decoder error into the crate's error.
 fn decode_error(err: moq_video::Error) -> Error {
     match err {
         moq_video::Error::NoDecoder(tried) => n0_error::e!(Error::NoDecoder { codec: tried }),
@@ -683,27 +654,24 @@ mod tests {
     use super::{super::PlaybackRecorder, *};
     use crate::RemoteBroadcast;
 
-    /// The test stream's geometry. Small, so encoding thirty pictures in a unit
-    /// test costs nothing.
+    /// The test stream's picture size, small to keep encoding fast.
     const SIZE: Size = Size {
         width: 320,
         height: 240,
     };
 
-    /// Pictures per test stream, and the keyframe interval within it. Three
-    /// groups, so a break in the first still leaves two keyframes to recover on.
+    /// Pictures per test stream: three groups of [`GOP`].
     const PICTURES: u64 = 30;
+    /// The keyframe interval of the test stream.
     const GOP: u32 = 10;
 
     /// The interval between pictures at the 30fps the stream is encoded for.
     const FRAME_MICROS: u64 = 33_333;
 
-    /// Whatever a step of these tests can fail with, which is one error type
-    /// per crate in the media stack and not worth enumerating.
+    /// The result of a test step, boxing whatever error the media stack returns.
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-    /// The producers a subscribed broadcast needs alive. Dropping any of them
-    /// closes the broadcast under the subscriber.
+    /// The producers that keep a subscribed broadcast open.
     struct Published {
         _broadcast: moq_net::broadcast::Producer,
         _catalog: moq_mux::catalog::Producer,
@@ -714,9 +682,8 @@ mod tests {
 
     /// Encodes [`PICTURES`] pictures of a moving pattern as H.264 access units.
     ///
-    /// Moving rather than flat so the inter-coded pictures carry residuals: a
-    /// static picture codes to almost nothing and a decoder can conceal its way
-    /// through a break in it without ever reporting one.
+    /// The pattern moves so inter-coded pictures carry data. A decoder can
+    /// conceal a break in a static picture, and the test would see no loss.
     fn encoded_stream() -> Vec<encode::Encoded> {
         let framerate = moq_video::Rate::new(30, 1).expect("a valid frame rate");
         let mut config = encode::Config::new(SIZE.width, SIZE.height, framerate);
@@ -745,26 +712,19 @@ mod tests {
         units
     }
 
-    /// The presentation time of `picture`, in the microseconds a timestamp
-    /// carries.
+    /// Returns the presentation time of `picture`, in microseconds.
     fn pts(picture: u64) -> u64 {
         picture * FRAME_MICROS
     }
 
-    /// Feeds `units` into `import`, truncating the access unit whose
-    /// presentation time is `broken` to a third of its bytes.
+    /// Feeds `units` into `import`, cutting the access unit at `broken` to a third.
     ///
-    /// A truncated access unit is what a decoder sees after a group is skipped
-    /// under congestion: the slice data stops mid-picture, the reference chain
-    /// breaks, and nothing decodes again until the next keyframe.
+    /// A truncated access unit breaks the reference chain until the next
+    /// keyframe, as a group skipped under congestion does.
     ///
-    /// The break is named by presentation time rather than by position in
-    /// `units`, because the two are not the same thing. openh264's rate
-    /// control drops a picture from this pattern, so the encoder emits
-    /// twenty-nine access units for thirty pictures and every index past the
-    /// drop names a later picture than it looks like. Indexing cost a day: the
-    /// break landed one picture further on than intended, and the two
-    /// platforms then disagreed about whether that picture was concealed.
+    /// The break is named by presentation time, not by index. openh264's rate
+    /// control drops a picture from this pattern, so an index past the drop
+    /// names a later picture than it seems to.
     fn feed(
         import: &mut moq_mux::codec::h264::Import,
         split: &mut moq_mux::codec::h264::Split,
@@ -784,19 +744,12 @@ mod tests {
         Ok(())
     }
 
-    /// Publishes a stream whose access unit at `broken` is truncated, and opens
-    /// a track that reads it.
+    /// Publishes a stream with a break at `broken`, and opens a reader on it.
     ///
-    /// The order here is the point of the helper. A player opens its decoder at
-    /// the live edge, so an access unit published before the reader subscribed
-    /// is one the reader never sees. Publishing the whole stream up front left
-    /// this test asserting only that pictures arrived from a group the reader
-    /// had started *after*, which an intact stream satisfies just as well: it
-    /// passed without the decoder ever meeting the break.
-    ///
-    /// So the first access unit goes out on its own, because the catalog
-    /// rendition is derived from its SPS and there is nothing to open without
-    /// it, and everything else follows once the reader is subscribed.
+    /// A reader opens at the live edge and never sees what was published before
+    /// it read. So the first group goes out alone, the reader reads its first
+    /// picture, and only then does the rest follow, break included. The first
+    /// group also carries the SPS the catalog rendition comes from.
     async fn publish(broken: Option<u64>) -> TestResult<(Reader, Vec<u64>, Vec<u64>, Published)> {
         let mut broadcast = moq_net::broadcast::Info::new().produce();
         let consumer = broadcast.consume();
@@ -817,23 +770,22 @@ mod tests {
             .map(|unit| unit.timestamp.as_micros() as u64)
             .collect();
 
-        // The whole of the first group, so the only live edge a reader can open
-        // at is inside it, whichever way its start policy resolves. Split by
-        // presentation time rather than by count, for the reason `feed` gives.
+        // Publish only the first group, so the reader opens inside it. Split by
+        // presentation time, as `feed` explains.
         let boundary =
             units.partition_point(|unit| (unit.timestamp.as_micros() as u64) < pts(GOP.into()));
         feed(&mut import, &mut split, &units[..boundary], None)?;
 
-        // The latency ceiling would otherwise have the container consumer skip
-        // ahead of the break rather than deliver it.
+        // A long max age, so the consumer delivers the break instead of
+        // skipping past it.
         let settings = DecodeSettings {
             consumer: consumer.clone(),
             decoder: moq_video::decode::Kind::Software,
             max_age: Duration::from_secs(60),
         };
         let remote = RemoteBroadcast::from_moq(consumer);
-        // The catalog travels on a track of its own, so the rendition that
-        // first SPS filled in may not have arrived with the first snapshot.
+        // The catalog has its own track, so the first snapshot may not have
+        // the rendition yet.
         let mut snapshots = remote.catalog();
         let config = loop {
             if let Some(known) = snapshots.get()
@@ -849,13 +801,9 @@ mod tests {
         let mut reader =
             spawn_reader(&settings, &config, "video", PlaybackRecorder::default()).await?;
 
-        // Read one picture before publishing any more, and hand it back so the
-        // caller can count it. Subscribing is not enough: the reader's cursor
-        // is only fixed once it has actually read, so publishing the rest
-        // first left it opening at whatever the live edge had become by then.
-        // On this machine that was still the first group and the test passed;
-        // on a slower one it was the last, the reader never met the break, and
-        // macOS CI said so.
+        // Read one picture before publishing the rest, and hand it back so the
+        // caller counts it. The reader's position is fixed only once it has
+        // read, not when it subscribes.
         let first = tokio::time::timeout(Duration::from_secs(10), reader.frames.recv())
             .await
             .map_err(|_| "the reader produced no picture from the first group")?
@@ -879,15 +827,11 @@ mod tests {
         ))
     }
 
-    /// The presentation time of every picture the reader decodes, in order.
+    /// Returns the presentation time of every picture the reader decodes.
     ///
-    /// Read from the reader's own channel rather than through a `VideoTrack`.
-    /// The track hands pictures over through a latest-wins slot, which drops
-    /// whatever a slow consumer did not take: on this machine that cost one
-    /// picture in thirty and on macOS CI it cost twenty-eight of them, so no
-    /// assertion about *which* pictures decoded can be made through it. This
-    /// channel is bounded and lossless, and the reader is what these two tests
-    /// are about.
+    /// Reads the reader's own channel, which is bounded and lossless. A
+    /// latest-wins frame slot drops pictures a slow consumer misses, so it
+    /// cannot show which pictures decoded.
     async fn read_all(reader: &mut Reader) -> Vec<u64> {
         let mut seen = Vec::new();
         while let Some(frame) = reader.frames.recv().await {
@@ -896,45 +840,35 @@ mod tests {
         seen
     }
 
-    /// The picture whose access unit this pair truncates.
+    /// The picture whose access unit the broken stream truncates.
     ///
-    /// Inside the second group: the first is published before anyone
-    /// subscribes, so that the live edge a reader opens at is inside it, and a
-    /// break there would be one the reader started after. The keyframe opening
-    /// the third group is what repairs the damage.
+    /// It lies in the second group, after the reader's start in the first. The
+    /// keyframe opening the third group repairs it.
     const BROKEN: u64 = GOP as u64 + 3;
 
     /// Publishes one stream and reads it to the end.
     ///
     /// Returns the pictures the encoder produced and the pictures the reader
-    /// delivered, so a caller can compare the two rather than assume they
-    /// match: the encoder does not emit one access unit per input picture.
+    /// delivered. The encoder does not emit one access unit per input picture,
+    /// so compare the two instead of assuming they match.
     async fn read_stream(broken: Option<u64>) -> TestResult<(BTreeSet<u64>, BTreeSet<u64>)> {
         let (mut reader, published, mut seen, _published) = publish(broken).await?;
         seen.extend(read_all(&mut reader).await);
         Ok((published.into_iter().collect(), seen.into_iter().collect()))
     }
 
-    /// Regression: one access unit the decoder refuses used to end the reader,
-    /// which dropped the decoder and the subscription with it. A player showed
-    /// a picture for a fraction of a second and then froze for good, with one
-    /// warning in the log and nothing after it.
+    /// The reader carries on through a broken access unit to the next keyframe.
     ///
-    /// What this covers is the reader carrying on through a break in the
-    /// bitstream and delivering the pictures after the next keyframe. It does
-    /// not reach the failure counter: openh264 absorbs a truncated access unit
-    /// and the ones that lost their reference to it by producing no picture,
-    /// rather than by returning an error, so `read` never fails here.
+    /// This does not reach the failure counter: openh264 drops the broken
+    /// pictures without returning an error.
     #[tokio::test]
     async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
         let (encoded, intact) = read_stream(None).await?;
         let (_, broken) = read_stream(Some(pts(BROKEN))).await?;
 
-        // What the break cost, measured rather than predicted. How many
-        // pictures a decoder conceals before giving up on a reference chain is
-        // its own business and the platforms disagree: macOS hands over the
-        // truncated picture and Linux drops it. Both agree on where the damage
-        // stops, which is the claim worth making.
+        // Measure the loss instead of predicting it. Platforms conceal
+        // differently: macOS delivers the truncated picture and Linux drops it.
+        // Both confine the loss to the broken group.
         let lost: Vec<u64> = intact.difference(&broken).copied().collect();
         let group = pts(BROKEN)..pts(u64::from(GOP) * 2);
 
@@ -965,13 +899,11 @@ mod tests {
         Ok(())
     }
 
-    /// The control: with nothing broken the reader delivers every picture the
-    /// encoder produced.
+    /// An intact stream delivers every picture the encoder produced.
     ///
-    /// Exact rather than approximate, and it is what licenses the comparison
-    /// above. `encoded` is what the encoder emitted, which is not one access
-    /// unit per input picture: openh264 drops one under its own rate control,
-    /// and reading that as damage is the mistake this pair is built to avoid.
+    /// This exact match is what makes the loss check in the broken test valid.
+    /// openh264 drops a picture under rate control, so compare against what it
+    /// emitted.
     #[tokio::test]
     async fn an_intact_stream_plays_to_the_end() -> TestResult {
         let (encoded, seen) = read_stream(None).await?;

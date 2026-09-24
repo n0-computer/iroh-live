@@ -1,8 +1,8 @@
 //! The selector: which rendition should play, under which decoder settings.
 //!
 //! Turns the rendition mode, the catalog, the network and the decoders'
-//! failures into one [`Desired`] value the video supervisor follows. Nothing
-//! here opens a decoder; a changed desire is all it produces.
+//! failures into one [`Desired`] value for the video supervisor. It never
+//! opens a decoder.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,17 +28,14 @@ use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
 /// How long a rendition whose decoder failed is left alone.
 const EXCLUSION: Duration = Duration::from_secs(10);
 
-/// How long after a track ended with nothing to follow it the target is asked
-/// for again.
+/// How long after a track ended with no successor the target is asked for again.
 const REVIVE_AFTER: Duration = Duration::from_secs(2);
 
-/// How long a catalog that lost its video is given before the video counts as
-/// over.
+/// How long a catalog may lack video before the video counts as over.
 ///
 /// A publisher replacing its video removes the old renditions before it adds
-/// the new ones, and one that closes empties its catalog before it ends, which
-/// a player following a route table sees just before the next route serves the
-/// path. Either is a moment, not the end of the video.
+/// the new ones. A closing publisher empties its catalog before it ends, just
+/// before the next route in a route table serves the path. Both gaps are brief.
 const VANISH_GRACE: Duration = Duration::from_secs(3);
 
 /// What the decoder of a target is built with.
@@ -62,14 +59,13 @@ pub(crate) struct Desired {
     pub settings: DecodeSettings,
     /// The catalog's description of the rendition.
     pub config: hang::catalog::VideoConfig,
-    /// Whether this is automatic selection stepping down from the rendition
-    /// on screen, which it does because the link cannot carry that one.
+    /// Whether automatic selection is stepping down from the rendition on screen.
     ///
-    /// Such a switch does not overlap: the incumbent's track would go on
-    /// taking the link the replacement needs, and on a saturated link the
-    /// replacement's groups age out before they arrive and the switch never
-    /// lands. The supervisor lets go of the incumbent, whose last picture
-    /// stays up until the replacement's first.
+    /// Such a switch does not overlap. On a saturated link the incumbent's
+    /// track would keep taking the bandwidth the replacement needs, and the
+    /// replacement's groups would age out before they arrive. The supervisor
+    /// drops the incumbent, and its last picture stays up until the
+    /// replacement's first.
     pub step_down: bool,
 }
 
@@ -78,36 +74,30 @@ pub(crate) struct Desired {
 pub(crate) struct Failure {
     /// The rendition and configuration it was for.
     pub target: Target,
-    /// Whether it only changed the decoder configuration of the rendition
-    /// already playing.
+    /// Whether it only changed the decoder configuration of the rendition playing.
     ///
-    /// Such a failure says the configuration is broken, not the rendition:
-    /// the incumbent keeps playing under the configuration that works, and the
-    /// rendition is not excluded, which would only walk the ladder down under
-    /// the same broken configuration.
+    /// Such a failure means the configuration is broken, not the rendition.
+    /// The incumbent keeps playing under the working configuration. Excluding
+    /// the rendition would only walk the ladder down under the broken one.
     pub config_only: bool,
-    /// Whether the rendition is left alone for a backoff before it is tried
-    /// again.
+    /// Whether the rendition is backed off before it is tried again.
     ///
-    /// Not for a first decoder that timed out: with nothing on screen there is
-    /// nothing better to play meanwhile, and a slow link is not a broken
-    /// rendition, so it is asked for again at once.
+    /// A first decoder that timed out is asked for again at once. With nothing
+    /// on screen there is nothing better to play, and a slow link does not
+    /// mean a broken rendition.
     pub exclude: bool,
 }
 
 /// What the supervisor tells the selector about the decoders it ran.
 #[derive(Debug, Clone)]
 pub(crate) enum Report {
-    /// A decoder failed: it did not open, did not produce a picture in time,
-    /// or gave up on its track.
+    /// A decoder did not open, missed its deadline, or gave up on its track.
     Failed(Failure),
     /// A track ended cleanly with nothing to take over from it.
     ///
-    /// The publisher replaced or withdrew its video, or the route to it
-    /// changed. The catalog or the route usually says what comes next, but
-    /// not always in an order that shows it: a replacement's catalog can land
-    /// before the old track's end. So the selector asks for the target again
-    /// after a backoff as well.
+    /// The publisher replaced or withdrew its video, or the route changed. A
+    /// replacement's catalog can arrive before the old track's end, so the
+    /// selector also asks for the target again after a backoff.
     Ended(Target),
 }
 
@@ -158,7 +148,7 @@ impl Backoffs {
         self.0.values().any(|until| *until > now)
     }
 
-    /// Forgets every failure, as the decoder configuration changed.
+    /// Forgets every failure, for a new decoder configuration.
     fn clear(&mut self) {
         self.0.clear();
     }
@@ -170,7 +160,7 @@ struct Config {
     decoder: video::decode::Kind,
     max_age: Duration,
     epoch: u64,
-    /// Bumped to rebuild a video that ended, when the catalog moves.
+    /// Bumped to rebuild a video that ended.
     restart: u64,
 }
 
@@ -202,28 +192,23 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut generation = 0u64;
     let mut last_config: Option<Config> = None;
     let mut restart = 0u64;
-    // The target whose track ended with nothing to follow it, and when it is
-    // asked for again if neither the catalog nor the route moves first.
+    // The target whose track ended with nothing to follow it, and when to ask
+    // for it again if neither the catalog nor the route changes first.
     let mut ended: Option<Target> = None;
     let mut revive_at: Option<Instant> = None;
-    // Since when the catalog has had nothing to play while something was
-    // asked for.
+    // Since when the catalog has had nothing to play while something was asked for.
     let mut vanished_since: Option<Instant> = None;
-    // The reason for a pin this selector could not honour, as last written, so
-    // it replaces only its own reports and leaves a failed switch's alone.
+    // The pin error this selector last wrote, so it replaces only its own
+    // errors and leaves a failed switch's alone.
     let mut last_why: Option<Arc<Error>> = None;
-    // The last target the supervisor gave up on, and whether it only changed
-    // the configuration of the rendition playing. The desired value does not
-    // change when the same target is chosen again after its backoff, so this
-    // is what asks the supervisor for it once more: without it, a first decoder
-    // that failed to open was never tried again.
+    // The last target the supervisor gave up on. Choosing the same target
+    // again leaves the desired value unchanged, so this forces a resend.
     let mut failed: Option<Failure> = None;
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // The first pass decides at once: a broadcast whose catalog arrived before
-    // the player started changes nothing the loop below waits on, so waiting
-    // first would leave such a player without video until something else
-    // moved, which with no audio and no network signals is never.
+    // The first pass decides at once. A catalog that arrived before the player
+    // started wakes nothing below, and without audio or network signals
+    // nothing else would.
     let mut first = true;
     loop {
         let auto = matches!(*mode.borrow(), RenditionMode::Auto { .. });
@@ -233,9 +218,8 @@ pub(crate) async fn run(inputs: Inputs) {
         if !std::mem::take(&mut first) {
             tokio::select! {
                 () = shutdown.cancelled() => return,
-                // Returning drops the desired rendition's sender, which ends the
-                // video task and with it the player's frames: a reader waiting on
-                // `next()` sees the end rather than waiting forever.
+                // Returning drops the desired sender. That ends the video task
+                // and the player's frames, so a reader in `next()` sees the end.
                 () = broadcast.closed() => {
                     debug!("the broadcast closed");
                     return;
@@ -256,8 +240,8 @@ pub(crate) async fn run(inputs: Inputs) {
                     if updated.is_err() {
                         return;
                     }
-                    // A video that ended gets another go when the publisher
-                    // republishes, which is what a new catalog says.
+                    // A new catalog means the publisher republished, so a
+                    // video that ended is rebuilt.
                     if ended.take().is_some() {
                         restart += 1;
                         revive_at = None;
@@ -274,8 +258,8 @@ pub(crate) async fn run(inputs: Inputs) {
                     if revive_at.is_some() =>
                 {
                     revive_at = None;
-                    // Asked for again only if nothing moved meanwhile: a new
-                    // route or catalog has asked for something already.
+                    // Ask again only if nothing changed meanwhile. A new route
+                    // or catalog has already asked for something.
                     let still = desired
                         .borrow()
                         .as_ref()
@@ -326,8 +310,8 @@ pub(crate) async fn run(inputs: Inputs) {
             generation += 1;
             debug!(generation, ?config, "decoder configuration changed");
             last_config = Some(config);
-            // A rendition that failed under the old configuration deserves a
-            // try under the new one.
+            // A rendition that failed under the old configuration gets a try
+            // under the new one.
             backoffs.clear();
         }
         let settings = DecodeSettings {
@@ -341,10 +325,8 @@ pub(crate) async fn run(inputs: Inputs) {
         let on_screen = status.get().rendition;
         let nothing_playing = on_screen.is_none();
         // The bound weighs its target against what this selector last asked
-        // for, which is on screen or on its way. While a replacement warms up,
-        // the rendition on screen is still the old one: weighed against that,
-        // the next pass restarted the downgrade hold and took the decision
-        // straight back, and on a real link a switch never landed.
+        // for, on screen or on its way. Weighed against the old rendition still
+        // on screen, each pass would restart the hold and undo the switch.
         let current = desired
             .borrow()
             .as_ref()
@@ -403,9 +385,9 @@ pub(crate) async fn run(inputs: Inputs) {
             debug!("the catalog has had no video for a while; the video is over");
         }
         vanished_since = None;
-        // The target given up on is asked for again once it is chosen with its
-        // backoff over, or, for a configuration that failed beside a working
-        // one, once nothing plays any more.
+        // Ask again for a target given up on once its backoff is over. A
+        // configuration that failed beside a working one waits until nothing
+        // plays.
         let retry = match (&failed, &next) {
             (Some(failed), Some(next)) => {
                 failed.target == next.target
@@ -426,10 +408,9 @@ pub(crate) async fn run(inputs: Inputs) {
     }
 }
 
-/// Whether two optional errors say the same thing.
+/// Returns whether two optional errors say the same thing.
 ///
-/// Compared by message rather than identity, because the selector builds a
-/// fresh error on every pass for a reason that has not changed.
+/// Compares messages, because the selector builds a fresh error on every pass.
 fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.to_string() == right.to_string(),
@@ -510,7 +491,7 @@ fn choose(
     (choice, why)
 }
 
-/// The best rendition the constraints allow, or the smallest when none is.
+/// Returns the best rendition the constraints allow, or the smallest if none is.
 fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
     rungs
         .iter()
@@ -580,8 +561,7 @@ mod tests {
         assert!(why.is_none());
     }
 
-    /// A pin that cannot be honoured falls back to automatic selection and
-    /// says why, rather than holding a rendition that never plays.
+    /// A pin to a missing rendition falls back to automatic and says why.
     #[test]
     fn a_pin_to_a_missing_rendition_falls_back_and_says_why() {
         let (choice, why) = pick(&RenditionMode::pinned("4k"), &[]);
@@ -629,7 +609,7 @@ mod tests {
             )
             .expect("a valid encoding");
         let (reports_tx, reports) = mpsc::channel(8);
-        // Nothing is ever on screen, which is the state the revival acts in.
+        // Nothing is ever on screen, which a revival requires.
         let (playing_tx, playing) = watch::channel(None);
         let (desired, desired_rx) = watch::channel(None);
         let inputs = Inputs {
@@ -681,15 +661,11 @@ mod tests {
         .expect("the selector asked for nothing new")
     }
 
-    /// N2: a track that ended with nothing to follow it was asked for again
-    /// only when a catalog update came after the end. The replacement's
-    /// catalog can land first, and then nothing more ever comes: the video
-    /// stayed over for good. The target is asked for again after a backoff,
-    /// with the catalog unchanged.
+    /// An ended track is asked for again after a backoff, with no catalog update.
     #[tokio::test]
     async fn a_track_that_ended_is_asked_for_again() {
-        // Bound whole: a field left out of a pattern would drop at once, and
-        // with it the channel that keeps the selector running.
+        // Bound whole: a field left out of a pattern would drop at once and
+        // stop the selector.
         let running = selector();
         let Running {
             reports, desired, ..

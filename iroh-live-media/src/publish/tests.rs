@@ -21,9 +21,10 @@ async fn audio_becomes(broadcast: &LocalBroadcast, state: SlotState) {
     .unwrap_or_else(|_| panic!("the audio slot never became {state:?}"));
 }
 
-/// R07: a replacement must not create a track whose name its predecessor still
-/// holds. Driven through the slot lock itself: something holding the audio
-/// track names keeps the new publish at `Starting`, and letting go lets it run.
+/// A replacement waits for its predecessor's track names.
+///
+/// The test holds the audio track lock itself. The new publish stays at
+/// `Starting` until the test releases it.
 #[tokio::test]
 async fn a_replacement_waits_for_the_track_names() {
     let broadcast = LocalBroadcast::new();
@@ -50,8 +51,7 @@ async fn a_replacement_waits_for_the_track_names() {
     audio_becomes(&broadcast, SlotState::Running).await;
 }
 
-/// Two `set_audio` calls in a row name the same track; the second takes over
-/// once the first has let it go, and keeps publishing.
+/// A second `set_audio` takes over the same track name and keeps publishing.
 #[tokio::test]
 async fn two_audio_sets_in_a_row_keep_publishing() {
     let broadcast = LocalBroadcast::new();
@@ -81,9 +81,9 @@ async fn two_audio_sets_in_a_row_keep_publishing() {
     .expect("the replacement keeps encoding");
 }
 
-/// S3: nothing used to fail if the microphone publication stopped building
-/// the canceller its config asks for. The publication asks the output for one
-/// when it starts, which a null output counts without any device behind it.
+/// A microphone publication asks its echo reference output for a canceller.
+///
+/// A null output counts the request without any device behind it.
 #[cfg(all(feature = "capture", feature = "aec"))]
 #[tokio::test]
 async fn a_microphone_publication_asks_for_its_canceller() {

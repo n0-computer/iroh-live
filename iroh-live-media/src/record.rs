@@ -1,15 +1,13 @@
-//! Recording a broadcast to a file, remuxed rather than transcoded.
+//! Recording a broadcast to a file, remuxed without transcoding.
 //!
-//! `moq_mux`'s container exporters read encoded frames off the wire and write
-//! them into fragmented MP4 or Matroska with no decoder in the path. They also
-//! build the container's decoder configuration from the catalog, turning an
-//! `avc3` track with inline parameter sets into the `avc1` shape a player
-//! expects, so nothing here has to understand H.264 framing.
+//! `moq_mux`'s container exporters write encoded frames into fragmented MP4 or
+//! Matroska with no decoder in the path. They also build the container's
+//! decoder configuration from the catalog. For example, they turn an `avc3`
+//! track with inline parameter sets into the `avc1` shape a player expects.
 //!
-//! What this settles once is the pair of settings that differ between a
-//! recorder and a player: a recording starts from the oldest group the track
-//! still holds rather than at the live edge, and it waits much longer for a
-//! stalled group before skipping it.
+//! A recording differs from a player in two settings. It starts from the
+//! oldest group the track still holds instead of the live edge, and it waits
+//! much longer for a stalled group before skipping it.
 
 use std::{
     path::Path,
@@ -34,8 +32,7 @@ use tracing::{Instrument, debug, info};
 
 use crate::{RemoteBroadcast, error::Error};
 
-/// The path a recording serves a bare broadcast under, on its private route
-/// table.
+/// The path a recording serves a bare broadcast under on its private route table.
 const LOCAL_PATH: &str = "recorded";
 
 /// A container to record into.
@@ -71,8 +68,8 @@ pub struct RecordConfig {
     pub rendition: Option<String>,
     /// How long a stalled group is waited for before it is skipped.
     ///
-    /// Generous next to what a player allows: a recording would rather buffer
-    /// a late group than drop it.
+    /// This is longer than a player allows, because a recording would sooner
+    /// buffer a late group than drop it.
     pub max_age: Duration,
 }
 
@@ -86,17 +83,16 @@ impl Default for RecordConfig {
     }
 }
 
-/// A recording in progress.
+/// A recording in progress, started by [`RemoteBroadcast::record`].
 ///
-/// Started by [`RemoteBroadcast::record`]. Dropping it stops the recording
-/// without flushing; [`stop`](Self::stop) and [`wait`](Self::wait) finish it.
+/// [`stop`](Self::stop) and [`wait`](Self::wait) finish the file. Dropping it
+/// stops the recording without flushing.
 #[derive(Debug)]
 pub struct Recording {
     stop: CancellationToken,
     written: Arc<AtomicU64>,
     task: AbortOnDropHandle<Result<u64, Error>>,
-    /// The bytes written, once the task finished cleanly, so a second wait
-    /// returns them rather than polling a finished task.
+    /// The result of the finished task, kept for later calls to `wait`.
     finished: Option<Result<u64, ()>>,
 }
 
@@ -138,18 +134,18 @@ impl Recording {
         self.written.load(Ordering::Relaxed)
     }
 
-    /// Waits until the broadcast ends and the file is finished, and returns the
-    /// bytes written.
+    /// Waits until the broadcast ends and the file is finished.
     ///
-    /// Cancellation safe: the recording runs on its own task until the
-    /// [`Recording`] itself is dropped, so dropping this future loses nothing,
-    /// and a later call picks the wait up again. Calling it again after it
-    /// returned gives the same byte count.
+    /// Returns the bytes written. A call after it returned gives the same byte
+    /// count.
+    ///
+    /// Cancellation safe. The recording runs on its own task until the
+    /// [`Recording`] is dropped, and a later call picks up the wait.
     ///
     /// # Errors
     ///
-    /// Fails on an export or a write error. After a failure has been returned
-    /// once, later calls return [`Error::Closed`].
+    /// Fails on an export or write error. Once a failure has been returned,
+    /// later calls return [`Error::Closed`].
     pub async fn wait(&mut self) -> Result<u64, Error> {
         if let Some(finished) = self.finished {
             return finished.map_err(|()| n0_error::e!(Error::Closed));
@@ -162,15 +158,13 @@ impl Recording {
         result
     }
 
-    /// Ends the file at the last complete fragment and returns the bytes
-    /// written.
+    /// Ends the file at the last complete fragment and returns the bytes written.
     ///
-    /// The fragment the exporter is still assembling is not written: upstream
-    /// has no way to close one early. Fragmented containers are complete at
-    /// every fragment boundary, so the file plays up to that point.
+    /// Upstream cannot close a fragment early, so the one still being assembled
+    /// is lost. The file plays up to the last fragment boundary.
     ///
-    /// Takes `&mut self` rather than `self`, so it can run in one arm of a
-    /// `select!` whose other arm waits on [`wait`](Self::wait):
+    /// It takes `&mut self`, so it can run in one arm of a `select!` whose other
+    /// arm waits on [`wait`](Self::wait):
     ///
     /// ```no_run
     /// # async fn example(
@@ -189,14 +183,12 @@ impl Recording {
     /// # }
     /// ```
     ///
-    /// Cancellation safe as long as the [`Recording`] is kept: the stop is
-    /// signalled before the first wait, the file is finished on the
-    /// recording's own task, and [`wait`](Self::wait) returns the result.
-    /// Dropping the [`Recording`] before that stops it without flushing.
+    /// Cancellation safe while the [`Recording`] is kept. The file is finished
+    /// on the recording's own task, and [`wait`](Self::wait) returns the result.
     ///
     /// # Errors
     ///
-    /// Fails on an export or a write error.
+    /// Fails on an export or write error.
     pub async fn stop(&mut self) -> Result<u64, Error> {
         self.stop.cancel();
         self.wait().await
@@ -232,12 +224,12 @@ fn selection(rendition: Option<&str>) -> select::Broadcast {
         .audio(select::Audio::default())
 }
 
-/// Serves a bare broadcast on a private route table, for the exporter, which
-/// resolves renditions through one.
+/// Serves a bare broadcast on a private route table for the exporter.
 ///
-/// A rendition that names a sibling broadcast cannot resolve here: a bare
-/// consumer has no siblings to find. A broadcast that follows a route table
-/// records through that one instead.
+/// The exporter resolves renditions through a route table. A rendition that
+/// names a sibling broadcast cannot resolve here, because a bare consumer has
+/// no siblings. A broadcast that follows a route table records through that
+/// table instead.
 struct LocalOrigin {
     origin: moq_net::origin::Producer,
     _tasks: [AbortOnDropHandle<()>; 2],
@@ -276,8 +268,7 @@ async fn record(
     stop: CancellationToken,
     written: Arc<AtomicU64>,
 ) -> Result<u64, Error> {
-    // The broadcast as it is now: a recording follows one route, and a change
-    // of route is the end of the file.
+    // A recording follows one route. A change of route ends the file.
     let mut epoch = broadcast.epoch();
     let consumer = loop {
         if let Some(consumer) = epoch.get().consumer {

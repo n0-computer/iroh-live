@@ -9,9 +9,10 @@ use crate::{AudioFormat, Bitrate, audio, error::Error, video};
 pub struct VideoEncoding {
     /// The renditions, which a subscriber chooses among.
     pub renditions: Vec<VideoRendition>,
-    /// Try hardware encoders first, falling back to software once per
-    /// rendition if the hardware one fails to open or fails mid-stream.
-    /// Default: true.
+    /// Whether hardware encoders are tried first. Default: true.
+    ///
+    /// A rendition falls back to software once if the hardware encoder fails
+    /// to open or fails mid-stream.
     pub prefer_hardware: bool,
 }
 
@@ -72,8 +73,8 @@ impl VideoEncoding {
                     rendition.name
                 )));
             }
-            // The one encoder every build carries is OpenH264, which speaks
-            // H.264 alone, so a software-only H.265 rendition can never open.
+            // OpenH264 is the one encoder every build carries, and it only
+            // encodes H.264. A software-only H.265 rendition can never open.
             let software_only =
                 !self.prefer_hardware || rendition.encoder == video::encode::Kind::Software;
             if rendition.codec == video::encode::Codec::H265 && software_only {
@@ -89,20 +90,19 @@ impl VideoEncoding {
 /// One encoding of a broadcast's picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoRendition {
-    /// The name, which is its track name and what a subscriber picks by.
+    /// The track name, which a subscriber picks the rendition by.
     pub name: String,
     /// The encoded size. `None` encodes at the source's own size.
     pub size: Option<video::Size>,
     /// The target bitrate. `None` derives one from the size and rate.
     pub bitrate: Option<Bitrate>,
-    /// The frame rate. `None` follows the source; at most the source's rate.
+    /// The frame rate. `None` follows the source. It cannot exceed the source's rate.
     pub rate: Option<video::Rate>,
     /// How often the encoder inserts a keyframe.
     ///
-    /// A subscriber cannot draw anything until the next keyframe, so this is
-    /// join latency far more than it is bitrate: how long somebody who just
-    /// scanned a code waits for a picture, and how long a rendition switch
-    /// takes to land.
+    /// A subscriber cannot draw anything before a keyframe. This interval
+    /// mostly sets how long a new viewer waits for a picture and how long a
+    /// rendition switch takes.
     pub keyframe_interval: Duration,
     /// Which codec to encode.
     pub codec: video::encode::Codec,
@@ -111,8 +111,7 @@ pub struct VideoRendition {
 }
 
 impl VideoRendition {
-    /// Creates a rendition at the source's own size, with a keyframe every two
-    /// seconds.
+    /// Creates a rendition at the source's size with a keyframe every two seconds.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -145,10 +144,11 @@ impl VideoRendition {
         Self::preset("1080p", 1920, 1080, 4_000)
     }
 
-    /// A preset at 16:9, with a bitrate reviewed for 30 fps camera content:
-    /// about what the encoder derives on its own, rounded up a little, since
-    /// a ladder rung that starves at its own ceiling is worse than one that
-    /// spends a bit more.
+    /// Creates a 16:9 preset with a bitrate chosen for 30 fps camera content.
+    ///
+    /// The bitrate is a little above what the encoder derives on its own. A
+    /// rendition that starves at its ceiling looks worse than one that spends a
+    /// bit more.
     fn preset(name: &str, width: u32, height: u32, kbps: u64) -> Self {
         Self {
             size: Some(video::Size::new(width, height)),
@@ -157,7 +157,7 @@ impl VideoRendition {
         }
     }
 
-    /// The encoder config for this rendition of a source of `size` at `rate`.
+    /// Returns the encoder config for this rendition of a source of `size` at `rate`.
     pub(crate) fn encode_config(
         &self,
         size: video::Size,
@@ -189,8 +189,9 @@ pub struct AudioEncoding {
     pub bitrate: Option<Bitrate>,
     /// The channel layout. `None` follows the source.
     pub layout: Option<audio::Layout>,
-    /// The duration of one encoded frame. Opus takes 2.5, 5, 10, 20, 40 or 60
-    /// ms.
+    /// The duration of one encoded frame.
+    ///
+    /// Opus accepts 2.5, 5, 10, 20, 40 or 60 ms.
     pub frame_duration: Duration,
 }
 
@@ -225,7 +226,7 @@ impl AudioEncoding {
         }
     }
 
-    /// The track name the encoding publishes under.
+    /// Returns the track name the encoding publishes under.
     pub(crate) fn track_name(&self) -> String {
         self.codec.to_string()
     }
@@ -240,8 +241,8 @@ impl AudioEncoding {
         if self.frame_duration.is_zero() {
             return Err(Error::invalid("an audio frame duration cannot be zero"));
         }
-        // Opus encodes only these frame sizes; another one would fail in the
-        // publication, long after the call that asked for it returned.
+        // Opus accepts only these frame sizes. Another one would fail later in
+        // the publication, after this call has returned.
         const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_000];
         if self.codec == audio::encode::Codec::Opus
             && !OPUS_FRAMES_MICROS.contains(&self.frame_duration.as_micros())
@@ -254,8 +255,9 @@ impl AudioEncoding {
         Ok(())
     }
 
-    /// The codec settings for a source in `format`, or at the codec's default
-    /// rate where the source is not described yet.
+    /// Returns the codec settings for a source in `format`.
+    ///
+    /// Without a format, the codec's default rate applies.
     pub(crate) fn settings(&self, format: Option<AudioFormat>) -> audio::encode::Settings {
         let input = match format {
             Some(format) => audio::encode::Input::new(format.sample_rate, format.layout),

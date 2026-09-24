@@ -9,8 +9,8 @@ use crate::{audio, error::Closed, frames::FrameSlot, video};
 
 /// Whether anything currently wants a source's frames.
 ///
-/// Counted rather than flagged: every encoder that runs holds a
-/// [`DemandGuard`], and the source is wanted while any guard lives.
+/// Every running encoder holds a [`DemandGuard`]. The source is wanted while
+/// any guard lives.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Demand {
     count: Arc<Mutex<usize>>,
@@ -34,7 +34,7 @@ impl Demand {
     }
 }
 
-/// One consumer's claim on a source's frames. Dropping it withdraws the claim.
+/// One consumer's claim on a source's frames, withdrawn on drop.
 #[derive(Debug)]
 pub(crate) struct DemandGuard {
     demand: Demand,
@@ -50,10 +50,11 @@ impl Drop for DemandGuard {
     }
 }
 
-/// Where pushed frames go: a latest-wins slot for video, a bounded fan-out for
-/// PCM.
+/// Where pushed frames go.
+///
+/// Video goes to a latest-wins slot, PCM to a bounded fan-out.
 pub(crate) trait Sink<T>: Send + Sync + 'static {
-    /// Hands one frame on. Never blocks.
+    /// Hands one frame on without blocking.
     fn deliver(&self, frame: T);
 }
 
@@ -63,32 +64,34 @@ impl Sink<video::Frame> for FrameSlot {
     }
 }
 
-/// The fan-out a PCM source writes into: every attached broadcast reads it
-/// through a receiver of its own.
+/// The fan-out a PCM source writes into.
+///
+/// Every attached broadcast reads it through its own receiver.
 pub(crate) type PcmFanout = tokio::sync::broadcast::Sender<audio::Frame>;
 
 impl Sink<audio::Frame> for PcmFanout {
     fn deliver(&self, frame: audio::Frame) {
-        // An error only means no broadcast is attached right now, and a
-        // source that nobody reads drops what it produces.
+        // An error only means no broadcast is attached, and the frame is
+        // dropped.
         let _ = self.send(frame);
     }
 }
 
 /// The push end of a source.
 ///
-/// Returned by [`VideoSource::push`](crate::VideoSource::push),
-/// [`AudioSource::push`](crate::AudioSource::push), and handed to the closure
-/// [`VideoSource::spawn`](crate::VideoSource::spawn) runs. Never blocks: a
-/// video frame replaces a pending one, and PCM beyond the buffer drops its
-/// oldest samples, which the broadcast reading it counts in its stats.
+/// [`VideoSource::push`](crate::VideoSource::push) and
+/// [`AudioSource::push`](crate::AudioSource::push) return one, and
+/// [`VideoSource::spawn`](crate::VideoSource::spawn) hands one to its closure.
+/// Pushing never blocks. A video frame replaces a pending one. PCM beyond the
+/// buffer drops the oldest frames, and the broadcast reading it counts them in
+/// its stats.
 ///
 /// The source ends when every sender is dropped. Cheap to clone.
 #[derive(derive_more::Debug)]
 pub struct FrameSender<T> {
     #[debug(skip)]
     sink: Arc<dyn Sink<T>>,
-    /// Cancelled once the source is gone, so nothing reads what is pushed.
+    /// Cancelled once the source is gone.
     closed: CancellationToken,
     demand: Demand,
 }
@@ -116,8 +119,8 @@ impl<T: 'static> FrameSender<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`Closed`] once every handle to the source has been dropped, so
-    /// a producing loop knows to stop.
+    /// Returns [`Closed`] once every handle to the source has been dropped.
+    /// A producing loop should stop then.
     pub fn push(&self, frame: T) -> Result<(), Closed> {
         if self.closed.is_cancelled() {
             return Err(Closed);
@@ -126,11 +129,11 @@ impl<T: 'static> FrameSender<T> {
         Ok(())
     }
 
-    /// Returns whether any broadcast currently wants frames.
+    /// Returns a watcher over whether any broadcast wants frames.
     ///
-    /// True while at least one rendition of a broadcast this source feeds is
-    /// encoding, which is to say while somebody watches. A camera the
-    /// application drives itself can idle while this is false.
+    /// It is true while a broadcast this source feeds encodes it, which for
+    /// video means while somebody watches. A camera the application drives
+    /// itself can idle while it is false.
     pub fn demand(&self) -> n0_watcher::Direct<bool> {
         self.demand.watch()
     }
@@ -140,7 +143,9 @@ impl<T: 'static> FrameSender<T> {
         self.closed.is_cancelled()
     }
 
-    /// Waits until the source is gone. Cancellation safe.
+    /// Waits until the source is gone.
+    ///
+    /// Cancellation safe.
     pub async fn closed(&self) {
         self.closed.cancelled().await;
     }

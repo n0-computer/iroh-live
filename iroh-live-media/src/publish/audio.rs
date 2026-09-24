@@ -38,9 +38,9 @@ pub(super) async fn run(
     let result = match source.kind() {
         #[cfg(feature = "capture")]
         AudioKind::Microphone(config) => {
-            // Built here rather than when the source opened: the publication
-            // this one replaces has finished, and with it the canceller it
-            // held, which an output hands out one at a time.
+            // Resolved here because an output hands its echo canceller to one
+            // microphone at a time. The publication this one replaces has only
+            // now let go of it.
             match config.resolve() {
                 Ok(capture) => microphone(&job, capture, &encoding, &stop).await,
                 Err(err) => Err(err),
@@ -116,11 +116,10 @@ async fn pcm(
 }
 
 /// Captures and encodes a microphone through moq-audio's publication.
-#[cfg(feature = "capture")]
 ///
 /// The publication owns the device and opens it only while someone listens.
-/// Its driver future is not `Send` on macOS, so it runs on a thread of its
-/// own, and its state changes come back here to be reported.
+/// Its driver future is not `Send` on macOS, so it runs on its own thread.
+#[cfg(feature = "capture")]
 async fn microphone(
     job: &Job,
     capture: audio::capture::Config,
@@ -165,16 +164,15 @@ async fn microphone(
         },
     )?;
     let result = follow(handle, &job.reporter, &track, encoding, stop).await;
-    // The capture thread holds the echo canceller, which its output hands out
-    // to one microphone at a time: a publication replacing this one asks for
-    // it as soon as this returns, so the thread has let go first.
+    // The capture thread holds the echo canceller. A publication replacing
+    // this one asks for it as soon as this returns, so the thread must let go
+    // first.
     driver_stop.cancel();
     driver.joined().await;
     result
 }
 
-/// Reports the microphone publication's state changes until it ends or the
-/// slot stops.
+/// Reports the microphone's state changes until it ends or the slot stops.
 #[cfg(feature = "capture")]
 async fn follow(
     handle: oneshot::Receiver<Result<audio::encode::Publication, Error>>,
@@ -194,7 +192,7 @@ async fn follow(
             () = stop.cancelled() => return Ok(()),
         };
         let Some(state) = state else {
-            // The driver exited: the track ended.
+            // The driver exited, so the track ended.
             return Ok(());
         };
         match state.status() {

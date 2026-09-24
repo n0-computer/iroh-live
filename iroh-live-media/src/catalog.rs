@@ -1,4 +1,4 @@
-//! A broadcast's catalog: hang's, shared between the watchers of one broadcast.
+//! A broadcast's catalog, shared between the watchers of one broadcast.
 
 use std::sync::Arc;
 
@@ -7,8 +7,8 @@ use hang::catalog::VideoConfig;
 /// A broadcast's catalog, as hang describes it.
 ///
 /// Cheap to clone, and derefs to [`hang::catalog::Catalog`]. Two catalogs are
-/// equal only when they are the same snapshot, so a watcher tells an update
-/// from a repeat.
+/// equal only when they are the same snapshot. This lets a watcher tell an
+/// update from a repeat.
 #[derive(Debug, Clone, derive_more::Deref)]
 #[deref(forward)]
 pub struct Catalog(Arc<hang::catalog::Catalog>);
@@ -30,8 +30,8 @@ impl From<hang::catalog::Catalog> for Catalog {
 impl Catalog {
     /// Returns the video renditions, largest first.
     ///
-    /// Largest by coded pixel count, and between two of the same size by the
-    /// higher bitrate.
+    /// Size is the coded pixel count. Between two of the same size, the higher
+    /// bitrate comes first.
     pub fn ranked_video(&self) -> Vec<(&str, &VideoConfig)> {
         let mut ranked: Vec<_> = self
             .video

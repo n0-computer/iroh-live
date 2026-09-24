@@ -1,29 +1,20 @@
 //! Raspberry Pi camera capture through `rpicam-vid`.
 //!
-//! On Raspberry Pi OS the CSI camera is only reachable through the libcamera
-//! stack: `/dev/video0` hands back raw Bayer data from the Unicam sensor, which
-//! is unusable without the ISP. `rpicam-vid` drives that pipeline, so this
-//! module runs it as a subprocess and reads whatever it writes to stdout.
+//! On Raspberry Pi OS the CSI camera is only reachable through libcamera.
+//! `/dev/video0` returns raw Bayer data from the Unicam sensor, which is
+//! unusable without the ISP. This module runs `rpicam-vid` as a subprocess and
+//! reads its stdout, which carries one of two [`Output`]s:
 //!
-//! It writes one of two things, and [`Output`] picks which:
-//!
-//! - [`Output::H264`] is the Annex-B stream the Pi's hardware encoder produced.
-//!   It is the cheapest thing a Pi Zero can publish, because it avoids both the
-//!   raw-YUV pipe (about 10 MB/s at 640x360) and a second encode. It becomes an
-//!   [`EncodedVideoSource`](crate::EncodedVideoSource); `moq_mux` splits the
-//!   stream and derives the catalog rendition from its first SPS.
+//! - [`Output::H264`] is Annex-B from the Pi's hardware encoder. It becomes an
+//!   [`EncodedVideoSource`](crate::EncodedVideoSource), and it avoids both the
+//!   raw pipe (about 10 MB/s at 640x360) and a second encode.
 //! - [`Output::I420`] is raw pictures, which become a
 //!   [`VideoSource`](crate::VideoSource) of [`Surface::I420`]. It costs the
-//!   pipe and an encode, and it is the only way anything that needs pixels can
-//!   see this camera: a preview, a QR scanner, a software encode, or a
-//!   simulcast ladder that has to produce the same picture at several sizes.
+//!   pipe and an encode. It is the only path for anything that needs pixels,
+//!   such as a preview, a QR scanner or a rendition ladder.
 //!
-//! The raw path takes a [`RawConfig`]: a geometry that has been rounded to one
-//! libcamera leaves tightly packed, which the raw split depends on and which no
-//! other type can promise.
-//!
-//! Shelling out to a camera app is an application concern rather than a
-//! `moq-video` one, which is why this lives here.
+//! The raw path takes a [`RawConfig`], whose geometry is aligned so libcamera
+//! does not pad its rows.
 
 use std::{
     collections::VecDeque,
@@ -51,45 +42,41 @@ use crate::{
     video::{Frame, I420, Size, Surface},
 };
 
-/// The subprocess we drive. Named here so a caller can substitute a wrapper.
+/// The camera app this module runs.
 const RPICAM_VID: &str = "rpicam-vid";
 
-/// How much stdout to take per read. One H.264 access unit at 500 kbps and
-/// 30 fps is about 2 KB, so this is a handful of frames per wakeup without the
-/// syscall rate of a tiny buffer. A raw picture is far larger than this and
-/// takes several reads, which costs nothing next to the copy each one avoids.
+/// How much stdout to take per read.
+///
+/// One H.264 access unit at 500 kbps and 30 fps is about 2 KB, so one read
+/// takes several frames. A raw picture takes several reads.
 const READ_CHUNK: usize = 32 * 1024;
 
 /// How many lines of the subprocess's stderr to keep for the exit report.
 ///
-/// `rpicam-vid` says what went wrong in its last line or two, after a banner
-/// from libcamera. Ten is enough to carry the reason without holding a log.
+/// `rpicam-vid` gives its reason in the last line or two, after a libcamera
+/// banner.
 const STDERR_TAIL_LINES: usize = 10;
 
-/// How long to wait for the subprocess's exit status once it closes stdout.
+/// How long to wait for the exit status once the subprocess closes stdout.
 ///
-/// A camera app that has stopped writing is on its way out, so this only
-/// exists so that one which is not cannot hang the publish task.
+/// It only matters for an app that stops writing but does not exit.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Pixel alignment libcamera gives each row of a raw picture.
+/// The pixel alignment libcamera gives each row of a raw picture.
 ///
-/// The raw stream carries no strides, so a picture can only be split off it if
-/// the rows are tightly packed. They are not always: libcamera rounds the luma
-/// row up to a multiple of this and the chroma rows to half of it, and the
-/// padding goes down the pipe with everything else.
+/// The raw stream carries no strides, so pictures can only be split off it if
+/// the rows are tightly packed. libcamera rounds the luma row up to a multiple
+/// of this and the chroma rows to half of it, and the padding goes down the
+/// pipe.
 ///
-/// Measured on a Pi 4 (rpicam-apps 2024-06-17, libcamera v0.3.0, IMX708): a
-/// 1500 ms capture at 320x240, 640x360 and 1280x720 divides exactly into
-/// `width * height * 3 / 2` byte pictures, while 642, 656, 672, 688 and 700 all
-/// produce the same byte count as 704, 800 produces the same as 832, and 96
-/// produces the same as 128. Heights are not padded: 358 and 362 both come out
-/// exact.
+/// Measured on a Pi 4 (rpicam-apps 2024-06-17, libcamera v0.3.0, IMX708) with
+/// 1500 ms captures: 320x240, 640x360 and 1280x720 divide exactly into
+/// `width * height * 3 / 2` byte pictures. Widths 642, 656, 672, 688 and 700
+/// give the same byte count as 704, 800 the same as 832, and 96 the same as
+/// 128. Heights are not padded: 358 and 362 come out exact.
 ///
-/// So [`RawConfig::new`] rounds the width up to this rather than accepting a
-/// geometry whose padding we would have to reconstruct. Asking for a picture we
-/// know the layout of is worth more than honouring a width to the pixel, and it
-/// keeps the read path a plain split with no per-row copy.
+/// [`RawConfig::new`] rounds the width up to this, so reading is a plain split
+/// with no per-row copy.
 const RAW_WIDTH_ALIGN: u32 = 64;
 
 /// Errors raised while running `rpicam-vid`.
@@ -102,7 +89,7 @@ pub(crate) enum RpicamError {
         #[error(source, std_err)]
         source: std::io::Error,
     },
-    /// The subprocess started but gave us no stdout to read.
+    /// The subprocess started without a stdout pipe.
     #[error("{RPICAM_VID} produced no output pipe")]
     NoOutput,
     /// The raw geometry cannot hold I420 pictures.
@@ -117,9 +104,8 @@ pub(crate) enum RpicamError {
     },
     /// The raw stream ended part way through a picture.
     ///
-    /// The byte count did not divide by the picture size, so the rows were not
-    /// the length computed from the geometry. On this camera that means
-    /// libcamera padded them, which [`RAW_WIDTH_ALIGN`] is meant to rule out.
+    /// The rows were not the length the geometry implies. On this camera that
+    /// means libcamera padded them, which [`RAW_WIDTH_ALIGN`] should prevent.
     #[error(
         "{RPICAM_VID} wrote {trailing} bytes that are not a whole {width}x{height} \
          picture of {frame} bytes; its rows are not the length this geometry implies"
@@ -138,9 +124,8 @@ pub(crate) enum RpicamError {
 
 /// Target bitrate for [`Output::H264`] when the caller names none.
 ///
-/// 500 kbps is what 640x360 off the Pi's encoder needs to look clean, and on
-/// the machines this module exists for the uplink is the constraint long before
-/// the encoder is.
+/// 500 kbps keeps 640x360 from the Pi's encoder clean. On these machines the
+/// uplink is the limit long before the encoder.
 pub(crate) const DEFAULT_BITRATE: u32 = 500_000;
 
 /// What `rpicam-vid` writes to its stdout.
@@ -152,8 +137,8 @@ pub(crate) enum Output {
         bitrate: u32,
         /// Keyframe interval, in frames.
         ///
-        /// A subscriber cannot start decoding until the next keyframe, so this
-        /// is join latency far more than it is bitrate.
+        /// A subscriber cannot start decoding before the next keyframe, so this
+        /// sets join latency more than bitrate.
         keyframe_interval: u32,
     },
     /// Raw planar I420 pictures, tightly packed.
@@ -169,19 +154,14 @@ pub(crate) struct Config {
     pub(crate) height: u32,
     /// Capture and encode framerate.
     pub(crate) framerate: u32,
-    /// What the camera app hands us.
+    /// What the camera app writes to stdout.
     pub(crate) output: Output,
 }
 
-/// A capture geometry `rpicam-vid` leaves tightly packed, and the rate to
-/// capture it at.
+/// A raw capture geometry that libcamera does not pad, and its frame rate.
 ///
-/// The raw stream carries no strides, so splitting pictures off it needs rows
-/// of exactly the length the geometry implies, and libcamera pads any width
-/// that is not a multiple of [`RAW_WIDTH_ALIGN`]. [`RawConfig::new`] is the
-/// only way to build one and it rounds, so a value of this type is a geometry
-/// that has already been aligned. That is why [`frames`] takes this rather than
-/// a [`Config`]: the precondition it used to carry in prose is now the type.
+/// [`RawConfig::new`] is the only constructor, and it rounds the width up to
+/// [`RAW_WIDTH_ALIGN`]. That lets [`frames`] split pictures by size alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RawConfig {
     width: u32,
@@ -190,12 +170,10 @@ pub(crate) struct RawConfig {
 }
 
 impl RawConfig {
-    /// Creates a raw capture configuration, rounding the geometry up to one
-    /// whose rows libcamera leaves tightly packed.
+    /// Creates a raw capture config, rounding the geometry up to avoid padding.
     ///
-    /// See [`RAW_WIDTH_ALIGN`] for the measurements. An encoder downstream
-    /// scales to whatever the renditions asked for, so the rounding costs a few
-    /// columns of capture rather than the geometry the caller publishes.
+    /// The encoder scales to the renditions, so the rounding costs a few
+    /// captured columns and does not change what is published.
     pub(crate) fn new(width: u32, height: u32, framerate: u32) -> Self {
         let capture_width = align_up(width.max(1), RAW_WIDTH_ALIGN);
         let capture_height = even(height.max(1));
@@ -214,7 +192,7 @@ impl RawConfig {
         }
     }
 
-    /// The [`Config`] this runs `rpicam-vid` with.
+    /// Returns the [`Config`] that runs `rpicam-vid` for this capture.
     fn config(self) -> Config {
         Config {
             width: self.width,
@@ -226,11 +204,11 @@ impl RawConfig {
 }
 
 impl Config {
-    /// The command line this configuration runs.
+    /// Returns the command line for this config.
     fn args(&self) -> Vec<String> {
         let mut args = vec![
             "--nopreview".to_string(),
-            // Run until killed; the process dies when the source is dropped.
+            // Run until killed. The process dies with the source.
             "--timeout".to_string(),
             "0".to_string(),
             "--width".to_string(),
@@ -266,23 +244,26 @@ impl Config {
 /// How to run the Raspberry Pi camera.
 #[derive(Debug, Clone)]
 pub struct RpicamConfig {
-    /// The capture size. The raw path rounds the width up to one libcamera
-    /// leaves tightly packed.
+    /// The capture size.
+    ///
+    /// The raw path rounds the width up to a multiple of 64, so libcamera does
+    /// not pad the rows.
     pub size: Size,
     /// Frames per second.
     pub framerate: u32,
     /// The hardware encoder's target bitrate, for the encoded path.
     pub bitrate: Bitrate,
-    /// A keyframe every this many frames, for the encoded path.
+    /// The keyframe interval in frames, for the encoded path.
     ///
-    /// A subscriber cannot start decoding until the next keyframe, so this is
-    /// join latency far more than it is bitrate.
+    /// A subscriber cannot start decoding before the next keyframe, so this
+    /// sets join latency more than bitrate.
     pub keyframe_interval: u32,
 }
 
 impl RpicamConfig {
-    /// Creates a config for `size` at `framerate`, at 500 kbit/s with a
-    /// keyframe every second.
+    /// Creates a config for `size` at `framerate`.
+    ///
+    /// The encoded path defaults to 500 kbit/s with a keyframe every second.
     pub fn new(size: Size, framerate: u32) -> Self {
         Self {
             size,
@@ -315,8 +296,9 @@ pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Err
     .map_err(Error::device)
 }
 
-/// Starts `rpicam-vid` for raw pictures, read into `slot` on a thread of its
-/// own, and returns once the first picture arrived.
+/// Starts `rpicam-vid` for raw pictures and waits for the first one.
+///
+/// Pictures are read into `slot` on a thread of their own.
 pub(super) async fn open_raw(
     config: RpicamConfig,
     slot: FrameSlot,
@@ -359,12 +341,9 @@ pub(super) async fn open_raw(
     }
 }
 
-/// Starts `rpicam-vid` and returns the raw pictures it writes, stamped on
-/// `clock`.
+/// Starts `rpicam-vid` and returns its raw pictures, stamped on `clock`.
 ///
 /// The broadcast restamps what it reads, so `clock` only has to be monotonic.
-/// The stream carries [`Surface::I420`], so anything that reads pixels can
-/// take it: an encoder, a preview, or a QR scanner.
 ///
 /// # Errors
 ///
@@ -395,10 +374,9 @@ fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, 
                 {
                     Ok(0) => {
                         debug!("{RPICAM_VID} closed its output");
-                        // Before the exit report, because a stream that ended
-                        // mid-picture says something the exit status does not:
-                        // the rows were not the length we split at, so every
-                        // picture handed on was a shear of two.
+                        // A stream that ended mid-picture means the rows were
+                        // not the length we split at, and every picture was
+                        // sheared. The exit status does not show that.
                         if let Err(err) = state.pictures.finish() {
                             warn!(error = %err, "the raw camera stream does not divide into pictures");
                         }
@@ -427,8 +405,8 @@ fn annexb(config: Config) -> Result<BoxStream<Bytes>, RpicamError> {
     Ok(Box::pin(n0_future::stream::unfold(
         state,
         |mut state| async move {
-            // No clear first: `split` below hands the whole buffer on and
-            // leaves this one empty, so every read starts from zero length.
+            // `split` below empties the buffer, so each read starts from zero
+            // length.
             match state.process.stdout.read_buf(&mut state.buffer).await {
                 Ok(0) => {
                     debug!("{RPICAM_VID} closed its output");
@@ -449,15 +427,13 @@ fn annexb(config: Config) -> Result<BoxStream<Bytes>, RpicamError> {
     )))
 }
 
-/// The Annex-B stream's state: the running process and the buffer each read
-/// fills.
+/// The state of the Annex-B stream.
 struct AnnexB {
     process: Process,
     buffer: BytesMut,
 }
 
-/// The raw stream's state: the running process, the split, and the clock its
-/// pictures are stamped from.
+/// The state of the raw stream.
 struct Raw {
     process: Process,
     pictures: Pictures,
@@ -466,11 +442,9 @@ struct Raw {
 
 /// Splits `rpicam-vid`'s raw output into tightly-packed I420 pictures.
 ///
-/// The stream is a run of fixed-size pictures with nothing framing them, so the
-/// only thing that says where one ends is the geometry. That makes a wrong
-/// geometry silent rather than loud, which is why [`finish`](Self::finish)
-/// exists: leftover bytes at the end are the one signal that the size we split
-/// at was not the size the camera wrote.
+/// Nothing frames the pictures, so only the geometry says where one ends, and
+/// a wrong geometry goes unnoticed while reading. Leftover bytes at the end,
+/// reported by [`finish`](Self::finish), are the one sign of it.
 struct Pictures {
     width: u32,
     height: u32,
@@ -482,16 +456,13 @@ struct Pictures {
 impl Pictures {
     /// Creates a split for pictures of the given geometry.
     ///
-    /// # Errors
-    ///
-    /// Fails if either dimension is odd or zero, which 4:2:0 chroma cannot
-    /// describe.
+    /// Fails if either dimension is odd or zero, which 4:2:0 cannot describe.
     fn new(width: u32, height: u32) -> Result<Self, RpicamError> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(n0_error::e!(RpicamError::Geometry { width, height }));
         }
-        // The check above rules out every geometry `len` refuses except one
-        // too large to address, which is no more a picture than an odd one.
+        // After the check above, `len` only refuses a geometry too large to
+        // address.
         let frame = I420::len(Size::new(width, height))
             .map_err(|_| n0_error::e!(RpicamError::Geometry { width, height }))?;
         Ok(Self {
@@ -502,7 +473,7 @@ impl Pictures {
         })
     }
 
-    /// The buffer to read into, with room for at least one more chunk.
+    /// Returns the buffer to read into, with room for at least one more chunk.
     fn buffer_mut(&mut self) -> &mut BytesMut {
         self.buffer.reserve(READ_CHUNK);
         &mut self.buffer
@@ -514,9 +485,8 @@ impl Pictures {
             return None;
         }
         let data: Vec<u8> = self.buffer.split_to(self.frame).into();
-        // `I420::new` rejects only an odd or zero dimension and a buffer of the
-        // wrong length. `new` checked the geometry, and `frame` is `I420::len`
-        // of it, so this split is exactly the length it wants.
+        // `new` checked the geometry and `frame` is `I420::len` of it, so
+        // `I420::new` cannot fail.
         let picture = I420::new(Size::new(self.width, self.height), data)
             .expect("the geometry and the length were both checked");
         Some(picture)
@@ -524,11 +494,8 @@ impl Pictures {
 
     /// Checks that the stream ended on a picture boundary.
     ///
-    /// # Errors
-    ///
-    /// Fails naming the leftover byte count if it did not. That is what a row
-    /// stride other than the one this geometry implies looks like from here,
-    /// and it means the pictures already handed on were sheared.
+    /// Leftover bytes mean the camera wrote a different row stride and the
+    /// pictures handed on were sheared. The error names the leftover count.
     fn finish(&self) -> Result<(), RpicamError> {
         match self.buffer.len() {
             0 => Ok(()),
@@ -542,27 +509,23 @@ impl Pictures {
     }
 }
 
-/// A running `rpicam-vid`, its output pipe, and the stderr that says why it
-/// stopped.
+/// A running `rpicam-vid` with its stdout and the tail of its stderr.
 struct Process {
-    /// Killed on drop, which is what stops the camera when the source ends.
+    /// Killed on drop, which stops the camera.
     child: tokio::process::Child,
     stdout: tokio::process::ChildStdout,
-    /// The last few lines the subprocess wrote to stderr, which is where it
-    /// says why it stopped.
+    /// The last few lines the subprocess wrote to stderr.
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
-    /// Held so the forwarding task stops with the stream rather than outliving
-    /// it. `None` only if the child gave us no stderr pipe.
+    /// The task that collects stderr, stopped with the stream.
+    ///
+    /// `None` if the child had no stderr pipe.
     stderr_reader: Option<AbortOnDropHandle<()>>,
 }
 
 impl Process {
     /// Starts `rpicam-vid` with the command line `config` describes.
     ///
-    /// # Errors
-    ///
-    /// Fails if the subprocess cannot be started, or starts without a stdout
-    /// pipe.
+    /// Fails if the subprocess cannot be started or has no stdout pipe.
     fn spawn(config: &Config) -> Result<Self, RpicamError> {
         let args = config.args();
         info!(
@@ -586,10 +549,9 @@ impl Process {
             .take()
             .ok_or_else(|| n0_error::e!(RpicamError::NoOutput))?;
 
-        // Everything that can go wrong with a camera is reported on stderr and
-        // nowhere else: a ribbon cable nobody seated reads as "no cameras
-        // available" there, and as an empty stdout here. Discarding it turns a
-        // one-line diagnosis into a stream that simply never carries a picture.
+        // The camera app reports every problem on stderr only. An unseated
+        // ribbon cable reads as "no cameras available" there, and as an empty
+        // stdout here.
         let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)));
         let stderr_reader = child.stderr.take().map(|stderr| {
             let tail = Arc::clone(&stderr_tail);
@@ -616,11 +578,9 @@ impl Process {
 
     /// Reports how `rpicam-vid` exited, once it has closed its output.
     ///
-    /// A camera app that fails leaves a healthy-looking publisher behind: the
-    /// broadcast is announced, the catalog is never written because no SPS
-    /// ever arrived, and a subscriber waits on a picture that is not coming.
-    /// So a non-zero exit is logged at `warn` with whatever the subprocess
-    /// gave as its reason.
+    /// A failed camera app leaves a publisher that looks healthy. The broadcast
+    /// is announced, but no SPS arrives, so the catalog is never written. A
+    /// non-zero exit is therefore logged at `warn` with the reason from stderr.
     async fn report_exit(&mut self) {
         let status = match tokio::time::timeout(EXIT_TIMEOUT, self.child.wait()).await {
             Ok(Ok(status)) => status,
@@ -640,13 +600,9 @@ impl Process {
             debug!(%status, "{RPICAM_VID} exited");
             return;
         }
-        // Wait for the forwarding task before reading what it collected. The
-        // child has exited, so its stderr is at end of file and the task is
-        // about to finish, but "about to" is not "has": a camera app that fails
-        // on startup writes its reason and exits within a millisecond or two,
-        // and reading the ring first reports `reason=` empty on exactly the
-        // failure the reason was wanted for. Seen doing it, on a second
-        // publisher finding the camera busy.
+        // Wait for the stderr task before reading the tail. An app that fails
+        // on startup exits a millisecond after writing its reason, and reading
+        // first would report an empty reason.
         if let Some(task) = self.stderr_reader.take()
             && tokio::time::timeout(EXIT_TIMEOUT, task).await.is_err()
         {
@@ -667,8 +623,8 @@ impl Process {
 impl Drop for Process {
     fn drop(&mut self) {
         debug!("stopping {RPICAM_VID}");
-        // `kill_on_drop` handles the signal; this only makes the intent visible
-        // in a log, since a camera that stays on is the failure people notice.
+        // `kill_on_drop` already sends the signal. This impl exists for the
+        // log line, since a camera that stays on is the failure people notice.
         let _ = self.child.start_kill();
     }
 }
@@ -694,8 +650,7 @@ mod tests {
     /// Bytes one 640x360 I420 picture takes: 345,600.
     const FRAME: usize = (WIDTH * HEIGHT) as usize * 3 / 2;
 
-    /// Feeds `bytes` to a split in chunks that do not line up with picture
-    /// boundaries, which is what reading a pipe gives.
+    /// Feeds `bytes` to a split in chunks, the way reads from a pipe arrive.
     fn split(pictures: &mut Pictures, bytes: &[u8], chunk: usize) -> Vec<I420> {
         let mut taken = Vec::new();
         for part in bytes.chunks(chunk) {
@@ -725,8 +680,7 @@ mod tests {
         pictures.finish().expect("the stream ended on a boundary");
     }
 
-    /// Each picture is handed on whole and in order, rather than sheared across
-    /// the reads that carried it.
+    /// Each picture comes out whole and in order, whatever the read boundaries.
     #[test]
     fn a_picture_is_not_sheared_by_the_reads_that_carried_it() {
         let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
@@ -749,14 +703,12 @@ mod tests {
         }
     }
 
-    /// A padded row stride shows up here as a stream that does not divide, and
-    /// the leftover count is what says by how much.
+    /// A padded row stride shows as leftover bytes, and the error names them.
     #[test]
     fn a_stream_that_does_not_divide_is_reported() {
         let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
 
-        // What a 704-byte row stride at a 640 pixel width would write: two
-        // pictures' worth of padded rows, which is more than two of ours.
+        // Two pictures with a 704-byte row stride at a 640 pixel width.
         let padded = (704 * HEIGHT) as usize * 3 / 2;
         let stream = vec![0u8; padded * 2];
         let taken = split(&mut pictures, &stream, READ_CHUNK);
@@ -791,8 +743,7 @@ mod tests {
         }
     }
 
-    /// The raw geometry is rounded up to rows libcamera does not pad, so the
-    /// split above always has a whole number of pictures to find.
+    /// The raw width rounds up to a multiple of 64 and the height to even.
     #[test]
     fn raw_capture_rounds_up_to_an_unpadded_geometry() {
         assert_eq!(RawConfig::new(640, 360, 30).width, 640);
@@ -817,9 +768,7 @@ mod tests {
         assert!(!raw.contains("--intra"), "{raw}");
     }
 
-    /// The encoder settings travel with the variant that has fields for them,
-    /// so a raw capture has nowhere to put a bitrate rather than a place that
-    /// quietly drops it.
+    /// The bitrate and keyframe interval reach the command line.
     #[test]
     fn the_encoder_settings_reach_the_command_line() {
         let args = h264(2_000_000, 60).args().join(" ");
@@ -827,8 +776,7 @@ mod tests {
         assert!(args.contains("--intra 60"), "{args}");
     }
 
-    /// A raw capture is described by a geometry that has been aligned, and the
-    /// command line it runs asks for that same geometry.
+    /// A raw capture runs `rpicam-vid` at its aligned geometry.
     #[test]
     fn a_raw_capture_runs_at_the_geometry_it_was_aligned_to() {
         let raw = RawConfig::new(854, 480, 30);

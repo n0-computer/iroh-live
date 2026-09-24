@@ -9,13 +9,11 @@ use n0_watcher::Watchable;
 
 use crate::error::Error;
 
-/// The state of one media slot, on either side: a broadcast's video or audio,
-/// or a player's.
+/// The state of one media slot, on a broadcast or on a player.
 ///
-/// Shared by [`PublishStatus`] and [`PlayerStatus`](crate::PlayerStatus), so a
-/// UI reports both the same way. Two `Failed` states are equal only when they
-/// hold the same error, which is what a watcher needs to tell an update from
-/// a repeat.
+/// [`PublishStatus`] and [`PlayerStatus`](crate::PlayerStatus) both use it, so
+/// a UI reports both the same way. Two `Failed` states are equal only when they
+/// hold the same error. This lets a watcher tell an update from a repeat.
 #[derive(Debug, Clone, Default)]
 pub enum SlotState {
     /// Nothing is set.
@@ -27,9 +25,8 @@ pub enum SlotState {
     Running,
     /// Stopped by an error.
     ///
-    /// Nothing retries except the documented hardware-to-software encoder
-    /// fallback, and a microphone, which moq-audio reopens on its own when the
-    /// device returns.
+    /// Two things retry: the hardware-to-software encoder fallback, and a
+    /// microphone, which moq-audio reopens when the device returns.
     Failed(Arc<Error>),
     /// The source ended.
     Ended,
@@ -53,7 +50,7 @@ impl Eq for SlotState {}
 /// Whether one rendition is encoding.
 #[derive(Debug, Clone, Default)]
 pub enum RenditionState {
-    /// Advertised, with nobody watching, so nothing is encoded.
+    /// Advertised, but nobody is watching, so nothing is encoded.
     #[default]
     Idle,
     /// Somebody is watching, and this encoder is running.
@@ -61,7 +58,7 @@ pub enum RenditionState {
         /// The encoder backend, such as `openh264` or `vaapi`.
         encoder: String,
     },
-    /// Its encoder failed, and the fallback too if there was one.
+    /// The encoder failed, and so did its fallback if there was one.
     Failed(Arc<Error>),
 }
 
@@ -85,8 +82,7 @@ pub struct PublishStatus {
     pub video: SlotState,
     /// The audio slot.
     pub audio: SlotState,
-    /// Per rendition, video and audio alike, by track name: whether anyone is
-    /// watching it, and so whether it encodes.
+    /// The state of each rendition, video and audio alike, keyed by track name.
     pub renditions: BTreeMap<String, RenditionState>,
 }
 
@@ -97,8 +93,7 @@ pub(crate) enum Medium {
     Audio,
 }
 
-/// The status, and the generation and rendition names of the bundle that owns
-/// each slot.
+/// The status, and the owner of each slot.
 #[derive(Debug, Default)]
 struct Guarded {
     status: PublishStatus,
@@ -106,7 +101,7 @@ struct Guarded {
     audio: Owner,
 }
 
-/// Which bundle owns a slot.
+/// The task generation that owns a slot, with its rendition names.
 #[derive(Debug, Default)]
 struct Owner {
     generation: u64,
@@ -129,14 +124,12 @@ impl Guarded {
     }
 }
 
-/// The broadcast's status, written only by the task whose slot bundle is
-/// current.
+/// The broadcast's status, written only by the task that owns each slot.
 ///
-/// A replaced publish task can still be finishing when its replacement starts,
-/// and a report from it would overwrite the new slot's state. Every write goes
-/// through a [`Reporter`] carrying the generation of the bundle it belongs to,
-/// and is dropped unless that generation is still the slot's, checked under the
-/// same lock the write takes.
+/// A replaced publish task can still be finishing when its replacement starts.
+/// Every write goes through a [`Reporter`] that carries its task's generation.
+/// Under the same lock, the write is dropped unless that generation still owns
+/// the slot.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StatusCell {
     guarded: Arc<Mutex<Guarded>>,
@@ -155,8 +148,9 @@ impl StatusCell {
         self.watch.get()
     }
 
-    /// Hands `medium` to a new bundle of `generation`, replacing what the old
-    /// one reported, and returns the new bundle's reporter.
+    /// Hands `medium` to the task of `generation` and returns its reporter.
+    ///
+    /// The renditions of the previous owner are removed.
     pub(crate) fn begin(&self, medium: Medium, generation: u64, names: &[String]) -> Reporter {
         let mut guarded = self.guarded.lock().expect("poisoned");
         let previous = std::mem::replace(
@@ -185,8 +179,7 @@ impl StatusCell {
         }
     }
 
-    /// Clears `medium` to `Off`, provided the bundle of `generation` still
-    /// owns it.
+    /// Turns `medium` off if the task of `generation` still owns it.
     pub(crate) fn clear(&self, medium: Medium, generation: u64) {
         let mut guarded = self.guarded.lock().expect("poisoned");
         if guarded.owner(medium).generation != generation {
@@ -210,7 +203,7 @@ impl StatusCell {
     }
 }
 
-/// Writes one slot bundle's state into a [`StatusCell`].
+/// Writes one slot task's state into a [`StatusCell`].
 #[derive(Debug, Clone)]
 pub(crate) struct Reporter {
     cell: StatusCell,
@@ -251,8 +244,8 @@ mod tests {
         names.iter().map(|name| name.to_string()).collect()
     }
 
-    /// R07's status half: a replaced publish that is still winding down must
-    /// not overwrite what its replacement reports.
+    /// A replaced task that is still finishing cannot overwrite its
+    /// replacement's state.
     #[test]
     fn a_stale_bundle_cannot_write() {
         let cell = StatusCell::default();

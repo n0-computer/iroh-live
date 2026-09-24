@@ -1,10 +1,10 @@
 //! What a transport tells a player about the link it plays over.
 //!
-//! [`NetworkSignals`] is the one coupling between media and transport. A
-//! transport attaches it to a [`RemoteBroadcast`](crate::RemoteBroadcast) with
-//! [`with_network`](crate::RemoteBroadcast::with_network), and every player of
-//! that broadcast reads a [`NetworkSample`] from it a few times a second to
-//! choose a rendition. Nothing here names iroh or QUIC.
+//! A transport attaches [`NetworkSignals`] to a
+//! [`RemoteBroadcast`](crate::RemoteBroadcast) with
+//! [`with_network`](crate::RemoteBroadcast::with_network). Every player of that
+//! broadcast reads a [`NetworkSample`] from it a few times a second to choose a
+//! rendition.
 
 use std::time::Duration;
 
@@ -12,13 +12,12 @@ use crate::Bitrate;
 
 /// A source of [`NetworkSample`]s for automatic rendition selection.
 ///
-/// Pull-style rather than a channel: adaptation samples on its own schedule,
-/// and a transport computes a sample on demand. A closure returning a
-/// [`NetworkSample`] implements it.
+/// The player asks for a sample when it needs one. A closure returning a
+/// [`NetworkSample`] implements this trait.
 pub trait NetworkSignals: Send + Sync + 'static {
     /// Returns the link as it is now.
     ///
-    /// Called a few times per second from the adaptation loop. Must not block.
+    /// Called a few times per second. Must not block.
     fn sample(&self) -> NetworkSample;
 }
 
@@ -31,35 +30,37 @@ where
     }
 }
 
-/// A shared [`NetworkSignals`], as a broadcast holds it.
+/// A shared [`NetworkSignals`].
 #[derive(derive_more::Debug, Clone)]
 #[debug("SharedSignals")]
 pub(crate) struct SharedSignals(pub(crate) std::sync::Arc<dyn NetworkSignals>);
 
 /// One reading of the link a broadcast arrives over.
 ///
-/// Every field is optional because every transport measures a different
-/// subset, and a field left `None` is read as unmeasured rather than as zero.
+/// Transports measure different things, so most fields are optional. A field
+/// left `None` means unmeasured, not zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct NetworkSample {
     /// The round trip to the peer.
     pub rtt: Option<Duration>,
-    /// The smallest recent round trip on the current path: its delay with
-    /// nothing queued.
+    /// The smallest recent round trip on the current path.
+    ///
+    /// This is the path's delay with nothing queued.
     pub min_rtt: Option<Duration>,
     /// The fraction of this endpoint's packets lost, in `0.0..=1.0`.
     ///
-    /// On a subscriber these are mostly acknowledgements, so this stands in for
-    /// loss on the media's direction only as far as the two directions are
+    /// On a subscriber these packets are mostly acknowledgements. The figure
+    /// matches loss on the media's direction only when both directions are
     /// impaired alike.
     pub loss: Option<f32>,
     /// The sender's estimate of what the path to this endpoint delivers.
     ///
-    /// The one figure here that describes capacity rather than what arrived,
-    /// and the one adaptation bounds the rendition's bitrate with.
+    /// This is the only field that measures capacity. Adaptation caps the
+    /// rendition's bitrate with it.
     pub delivery: Option<Bitrate>,
-    /// Bumped whenever the path changes, so history does not straddle two
-    /// paths.
+    /// A counter that changes whenever the path changes.
+    ///
+    /// Adaptation drops its history when it changes.
     pub path_generation: u64,
 }
 

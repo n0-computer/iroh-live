@@ -1,67 +1,59 @@
-//! The decode supervisor's state machine: one incumbent, at most one
-//! replacement.
+//! The decode supervisor's state machine.
 //!
-//! A rendition switch or a decoder change opens a replacement decoder beside
-//! the one playing and hands the picture over once the replacement has caught
-//! up. Everything about that handover that can go wrong in an ordering lives
-//! here, as plain transitions on plain data, so it can be driven step by step
-//! from a test with no decoder, no network and no clock behind it.
+//! It tracks one incumbent and at most one replacement. A rendition switch or a
+//! decoder change opens a replacement decoder beside the one playing, and hands
+//! the picture over once the replacement has caught up. The transitions work on
+//! plain data, so a test can drive them step by step without real decoders or
+//! a clock.
 //!
-//! The rules, each of which fixes a way the previous supervisor went wrong:
+//! The rules:
 //!
-//! - There is at most one replacement. A new request supersedes it as a whole,
-//!   open task and warm decoder alike, so a switch to C while B is warming never
+//! - There is at most one replacement. A new request supersedes it whole, open
+//!   task and warm decoder alike, so a switch to C while B is warming never
 //!   lands on B first.
-//! - A replacement carries its target, a generation and a deadline from the
-//!   moment it is requested until it takes over. The deadline covers the open as
-//!   well as the first picture, so neither can wait forever.
-//! - A replacement takes over once its playhead has caught up with the
-//!   incumbent's, which is `@moq/watch`'s rule: the picture does not step
-//!   backwards across a switch by more than [`CATCH_UP_SLACK`]. It waits for
-//!   that only for [`CATCH_UP_PATIENCE`] after its first picture, though:
-//!   both tracks share the link while it does, and a replacement asked for
-//!   because the link cannot carry the incumbent may never catch up on it.
-//!   Past the patience it takes over where it is, a step back in time being
-//!   the lesser evil against a picture starved to a frame a second.
-//! - A replacement takes over on a picture it decoded, never on opening alone:
-//!   a decoder that opens and then stays silent keeps its deadline and is given
-//!   up, rather than taking over a screen it never draws on. With nothing
+//! - A replacement has a target, a generation, and a deadline from its request
+//!   until it takes over. The deadline covers both the open and the first
+//!   picture.
+//! - A replacement takes over once its playhead is within [`CATCH_UP_SLACK`] of
+//!   the incumbent's, as in `@moq/watch`, so the picture does not step
+//!   backwards. It waits for that at most [`CATCH_UP_PATIENCE`] after its first
+//!   picture, then takes over where it is. While both run they share the link,
+//!   and a replacement asked for because the link cannot carry the incumbent
+//!   may never catch up.
+//! - A replacement takes over on a picture it decoded, never on opening alone.
+//!   A decoder that opens and stays silent runs out its deadline. With nothing
 //!   playing, including after the incumbent ended, its first picture is enough.
-//! - A replacement that is given up is reported as given up, whether or not
-//!   anything is playing, so the caller can tell a failed first open from the
-//!   end of the video and try something else.
+//! - A replacement that is given up is reported as given up, even with nothing
+//!   playing, so the caller can tell a failed first open from the end of the
+//!   video.
 
 use std::time::Duration;
 
 use tokio::time::Instant;
 
-/// How far behind the incumbent's playhead a replacement may still be when it
-/// takes over.
+/// How far a replacement may trail the incumbent's playhead when it takes over.
 ///
-/// The same slack `@moq/watch` uses: it absorbs scheduling noise, so a switch
-/// does not hinge on a picture landing inside one frame interval, and it is the
+/// The same slack `@moq/watch` uses. It absorbs scheduling noise, and it is the
 /// largest step backwards a switch can show.
 pub(crate) const CATCH_UP_SLACK: Duration = Duration::from_millis(100);
 
-/// How long after its first picture a replacement waits to catch up with the
-/// incumbent before it takes over regardless.
+/// How long a replacement waits to catch up after its first picture.
 ///
-/// Long enough for a replacement opened on a link with room, which catches up
-/// within a group, and short against the switch deadline: under a saturated
-/// link the two tracks starve each other for as long as they overlap, so the
-/// overlap is what has to end.
+/// That is enough on a link with room, where a replacement catches up within a
+/// group. It is short against the switch deadline because on a saturated link
+/// the two tracks starve each other while they overlap.
 pub(crate) const CATCH_UP_PATIENCE: Duration = Duration::from_secs(1);
 
 /// What a decoder is built for: a rendition, under one decoder configuration.
 ///
-/// The configuration is a generation rather than the settings themselves, so
-/// that a decoder change for the rendition already playing is a different
-/// target, and asking for the playing rendition again is not.
+/// The configuration is a generation number. A decoder change for the playing
+/// rendition is then a different target, while asking for the playing
+/// rendition again is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Target {
     /// The rendition's track name.
     pub rendition: String,
-    /// Bumped whenever the decoder settings change.
+    /// The decoder settings generation, bumped on every change.
     pub config: u64,
 }
 
@@ -95,7 +87,7 @@ pub(crate) enum Abandoned<E> {
 pub(crate) enum Outcome<E> {
     /// Nothing the caller has to act on.
     Idle,
-    /// A replacement took over; the caller reports the new target as playing.
+    /// A replacement took over, and the caller reports it as playing.
     Promoted(Target),
     /// A replacement was given up, and why.
     Abandoned(Target, Abandoned<E>),
@@ -106,8 +98,7 @@ pub(crate) enum Outcome<E> {
 /// What to do with a picture the replacement decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// Drop it: it is from a superseded replacement, or it is still behind the
-    /// incumbent's playhead.
+    /// Drop it: no replacement is warming, or it is still behind the playhead.
     Discard,
     /// Show it: the replacement has just taken over.
     Promote,
@@ -129,7 +120,7 @@ struct Replacement<R, O> {
     target: Target,
     deadline: Instant,
     phase: Phase<R, O>,
-    /// When its first picture arrived, which its catch-up patience runs from.
+    /// When its first picture arrived, the start of its catch-up patience.
     first_picture: Option<Instant>,
 }
 
@@ -138,16 +129,15 @@ struct Replacement<R, O> {
 struct Playing<R> {
     target: Target,
     reader: R,
-    /// The presentation time of the last picture shown, or `None` before the
-    /// first.
+    /// The presentation time of the last picture shown.
     playhead: Option<Duration>,
 }
 
 /// One incumbent and at most one replacement.
 ///
-/// `R` is a running decoder and `O` the task opening one, so a test drives the
-/// transitions with stand-ins for both. Dropping a replacement drops its `O`
-/// and its `R`, which is what cancels the work behind it.
+/// `R` is a running decoder and `O` the task opening one, so tests can use
+/// stand-ins for both. Dropping a replacement drops its `O` and `R`, which
+/// cancels its work.
 #[derive(Debug)]
 pub(crate) struct Switcher<R, O> {
     incumbent: Option<Playing<R>>,
@@ -232,11 +222,10 @@ impl<R, O> Switcher<R, O> {
 
     /// Asks for `target`, starting at `now`.
     ///
-    /// Asking for the target already playing withdraws a replacement, and
-    /// asking for the one already on its way changes nothing. Anything else
-    /// starts a replacement, calling `open` with its generation and target to
-    /// build the task that opens its decoder, and supersedes the replacement
-    /// before it.
+    /// Asking for the playing target withdraws the replacement. Asking for the
+    /// replacement's target changes nothing. Anything else starts a new
+    /// replacement and supersedes the previous one. `open` gets the new
+    /// generation and target, and builds the task that opens the decoder.
     ///
     /// Returns the replacement this request withdrew or superseded, if any.
     pub(crate) fn request<E>(
@@ -281,8 +270,8 @@ impl<R, O> Switcher<R, O> {
             .as_mut()
             .filter(|replacement| replacement.generation == generation)
         else {
-            // A superseded open that finished anyway; dropping its decoder is
-            // all there is to do.
+            // A superseded open that finished anyway. Dropping its decoder is
+            // enough.
             return Outcome::Idle;
         };
         match result {
@@ -297,21 +286,19 @@ impl<R, O> Switcher<R, O> {
         }
     }
 
-    /// Records a picture the incumbent decoded at `pts`, which the caller
-    /// shows.
+    /// Records that the incumbent decoded a picture at `pts`.
     pub(crate) fn incumbent_frame(&mut self, pts: Duration) {
         if let Some(playing) = &mut self.incumbent {
             playing.playhead = Some(pts);
         }
     }
 
-    /// Decides what to do with a picture the replacement decoded at `pts`,
-    /// arriving at `now`.
+    /// Decides what to do with a replacement picture at `pts`, arriving at `now`.
     ///
     /// Promotes the replacement once `pts` has caught up with the incumbent's
     /// playhead, or once [`CATCH_UP_PATIENCE`] has passed since its first
-    /// picture; the caller then shows this picture and drops whatever of the
-    /// incumbent's it was about to show.
+    /// picture. The caller then shows this picture and drops any pending
+    /// incumbent picture.
     pub(crate) fn replacement_frame<E>(
         &mut self,
         pts: Duration,
@@ -350,13 +337,12 @@ impl<R, O> Switcher<R, O> {
         (Verdict::Promote, outcome)
     }
 
-    /// Lets go of the incumbent, so a replacement that could not otherwise
-    /// arrive takes over on its first picture.
+    /// Drops the incumbent, so the replacement takes over on its first picture.
     ///
-    /// For a step down on a link that cannot carry the incumbent: the two
-    /// would share the link while they overlap, and the replacement's groups
-    /// age out before they arrive. Dropping the incumbent's reader drops its
-    /// subscription. The caller keeps its last picture up.
+    /// For a step down on a link that cannot carry the incumbent. While both
+    /// overlap they share the link, and the replacement's groups age out before
+    /// they arrive. Dropping the incumbent's reader drops its subscription. The
+    /// caller keeps its last picture up.
     pub(crate) fn release_incumbent(&mut self) {
         self.incumbent = None;
     }
@@ -364,8 +350,7 @@ impl<R, O> Switcher<R, O> {
     /// Records that the incumbent's track ended.
     ///
     /// A replacement on its way keeps its deadline and takes over on its first
-    /// picture, which no longer has anything to catch up with. Without one,
-    /// the video has ended.
+    /// picture. Without one, the video has ended.
     pub(crate) fn incumbent_ended<E>(&mut self) -> Outcome<E> {
         self.incumbent = None;
         match &self.replacement {
@@ -416,9 +401,8 @@ impl<R, O> Switcher<R, O> {
 mod tests {
     //! The supervisor's transitions, driven one event at a time.
     //!
-    //! Readers and open tasks are stand-ins: a reader is its name, and an open
-    //! task is the generation it opens, so a test can see which of them the
-    //! switcher kept and which it dropped.
+    //! A reader is its name and an open task is its generation, so a test can
+    //! see which ones the switcher kept.
 
     use super::*;
 
@@ -434,7 +418,7 @@ mod tests {
         Target::new(rendition, 0)
     }
 
-    /// A switcher playing `high` with its playhead at `playhead`.
+    /// Returns a switcher playing `high` with its playhead at `playhead`.
     fn playing(playhead: Duration) -> (Test, Instant) {
         let now = Instant::now();
         let mut switcher = Test::new(PATIENCE);
@@ -448,13 +432,12 @@ mod tests {
         (switcher, now)
     }
 
-    /// Asks `switcher` for `rendition` and returns the generation it opens.
+    /// Asks `switcher` for `rendition`.
     fn ask(switcher: &mut Test, rendition: &str, now: Instant) -> Outcome<()> {
         switcher.request(target(rendition), now, |generation, _| generation)
     }
 
-    /// A first decoder takes over on its first picture, not on opening: one
-    /// that opens and stays silent must not reach `Running` on a black screen.
+    /// A first decoder takes over on its first picture, not when it opens.
     #[test]
     fn a_first_decoder_takes_over_on_its_first_picture() {
         let now = Instant::now();
@@ -473,8 +456,7 @@ mod tests {
         assert_eq!(switcher.deadline(), None);
     }
 
-    /// A first decoder that opens and never decodes is given up at its
-    /// deadline, and reported as a failed switch rather than as the end.
+    /// A first decoder that never decodes times out as a failed switch.
     #[test]
     fn a_silent_first_decoder_times_out() {
         let now = Instant::now();
@@ -488,9 +470,9 @@ mod tests {
         assert!(switcher.is_idle());
     }
 
-    /// R10: a request for C while B is still opening used to leave B in place,
-    /// so B landed on its first frame and C replaced it afterwards. B is
-    /// dropped with its open task, and its late result changes nothing.
+    /// A newer request drops an opening replacement with its open task.
+    ///
+    /// The superseded open's late result changes nothing.
     #[test]
     fn a_newer_request_supersedes_an_opening_replacement() {
         let (mut switcher, now) = playing(ms(1000));
@@ -510,8 +492,7 @@ mod tests {
         assert!(switcher.warming_mut().is_none(), "mid must not warm up");
     }
 
-    /// The same for a replacement that has opened and is decoding: it goes
-    /// whole, decoder included.
+    /// A newer request drops a warming replacement, decoder included.
     #[test]
     fn a_newer_request_supersedes_a_warming_replacement() {
         let (mut switcher, now) = playing(ms(1000));
@@ -539,8 +520,7 @@ mod tests {
         );
     }
 
-    /// Asking for what is playing is how a pin or an un-pin withdraws a switch
-    /// that has not landed.
+    /// Asking for the playing rendition withdraws a pending switch.
     #[test]
     fn asking_for_the_playing_rendition_withdraws_the_replacement() {
         let (mut switcher, now) = playing(ms(1000));
@@ -553,9 +533,7 @@ mod tests {
         assert_eq!(switcher.current(), Some(&target("high")));
     }
 
-    /// Regression, carried over from the old supervisor: a decoder change is a
-    /// replacement for the rendition already playing, and pinning that
-    /// rendition while the new decoder comes up must not throw the change away.
+    /// Pinning the playing rendition keeps a pending decoder change for it.
     #[test]
     fn a_decoder_change_survives_repinning_the_playing_rendition() {
         let (mut switcher, now) = playing(ms(1000));
@@ -568,9 +546,7 @@ mod tests {
         assert_eq!(switcher.switching_to(), Some(&rebuild));
     }
 
-    /// The `@moq/watch` rule: a replacement that opened at an older keyframe
-    /// decodes its way forward in silence, and takes over only once it has
-    /// caught up with the picture on screen.
+    /// A replacement behind the playhead decodes in silence until it catches up.
     #[test]
     fn a_replacement_behind_the_playhead_is_held_back() {
         let (mut switcher, now) = playing(ms(10_000));
@@ -595,9 +571,7 @@ mod tests {
         assert_eq!(switcher.incumbent_mut(), Some(&mut "low"));
     }
 
-    /// Under a saturated link a replacement behind the playhead may never
-    /// catch up, and both tracks starve while they overlap. Past its patience
-    /// it takes over where it is.
+    /// A replacement that cannot catch up takes over once its patience ends.
     #[test]
     fn a_replacement_that_cannot_catch_up_takes_over_after_its_patience() {
         let (mut switcher, now) = playing(ms(10_000));
@@ -621,9 +595,7 @@ mod tests {
         assert_eq!(switcher.current(), Some(&target("low")));
     }
 
-    /// A step down on a starved link lets go of the incumbent: the
-    /// replacement takes over on its first picture, with nothing to catch up
-    /// with, and keeps its deadline until then.
+    /// A released incumbent lets the replacement take over on its first picture.
     #[test]
     fn a_released_incumbent_leaves_the_replacement_to_take_over() {
         let (mut switcher, now) = playing(ms(10_000));
@@ -667,8 +639,7 @@ mod tests {
         );
     }
 
-    /// Pictures from a replacement that is still opening, or from none at all,
-    /// are dropped rather than shown.
+    /// Pictures without a warm replacement are discarded.
     #[test]
     fn only_a_warm_replacement_can_take_over() {
         let (mut switcher, now) = playing(ms(1000));
@@ -683,9 +654,7 @@ mod tests {
         );
     }
 
-    /// R10: the incumbent ending used to promote a replacement without a
-    /// frame and drop its deadline. A warm one now takes over on its next
-    /// picture, whatever its playhead, since nothing is left to step back from.
+    /// After the incumbent ends, a warm replacement takes over on any picture.
     #[test]
     fn the_incumbent_ending_hands_over_on_the_next_picture() {
         let (mut switcher, now) = playing(ms(10_000));
@@ -726,9 +695,7 @@ mod tests {
         assert!(switcher.is_idle());
     }
 
-    /// R10: the open phase had no deadline, so an open that never returned was
-    /// waited on for the rest of the session. The deadline runs from the
-    /// request and covers the open.
+    /// The deadline runs from the request and covers the open.
     #[test]
     fn a_replacement_that_never_opens_times_out() {
         let (mut switcher, now) = playing(ms(1000));
@@ -742,8 +709,7 @@ mod tests {
         assert_eq!(switcher.current(), Some(&target("high")));
     }
 
-    /// And the same deadline covers catching up, which a replacement stuck
-    /// behind the playhead would otherwise do forever.
+    /// The deadline also covers catching up.
     #[test]
     fn a_replacement_that_never_catches_up_times_out() {
         let (mut switcher, now) = playing(ms(60_000));
@@ -757,8 +723,7 @@ mod tests {
         assert!(switcher.warming_mut().is_none());
     }
 
-    /// A deadline carried over from a superseded replacement would give the
-    /// newer one less time than it is owed.
+    /// A superseding request gets a fresh deadline.
     #[test]
     fn a_superseding_request_starts_its_own_deadline() {
         let (mut switcher, now) = playing(ms(1000));
@@ -792,9 +757,7 @@ mod tests {
         assert_eq!(switcher.current(), Some(&target("high")));
     }
 
-    /// C2: a replacement that fails with nothing playing used to report the
-    /// end of the video, so a first decoder that would not open left the
-    /// player `Ended` with no error and no fallback. It is a failed switch.
+    /// A failure with nothing playing is a failed switch, not the end.
     #[test]
     fn a_failure_with_nothing_playing_is_a_failed_switch() {
         let now = Instant::now();

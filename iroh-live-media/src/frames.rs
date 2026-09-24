@@ -1,11 +1,9 @@
 //! Latest-frame-wins video frames, with a cursor per handle.
 //!
-//! Every renderer in the crate reads the same type: a player's decoded
-//! pictures, a source's captured ones, and anything that scans them for a code.
-//! It is a `tokio::sync::watch` channel: the producer overwrites one value, so a
-//! reader that falls behind skips to the newest picture instead of draining a
-//! backlog, and two readers of one stream both see every picture that is
-//! current when they look.
+//! Players and sources both hand out this type, and every renderer reads it.
+//! It wraps a `tokio::sync::watch` channel. The producer overwrites one value,
+//! so a reader that falls behind skips to the newest picture instead of
+//! draining a backlog.
 
 use std::sync::{Arc, OnceLock};
 
@@ -59,8 +57,8 @@ impl FrameSlot {
 
 /// Reads a slot without holding it open.
 ///
-/// What a source keeps, so the stream ends when the frames stop coming rather
-/// than when the last handle to the source goes.
+/// A source keeps this, so its stream ends when the frames stop even while
+/// handles to the source remain.
 #[derive(derive_more::Debug, Clone)]
 pub(crate) struct FrameReader {
     #[debug(skip)]
@@ -80,15 +78,15 @@ impl FrameReader {
     }
 }
 
-/// Latest-frame-wins video frames. Each clone keeps its own cursor.
+/// Latest-frame-wins video frames.
 ///
 /// Returned by [`VideoSource::frames`](crate::VideoSource::frames) for a local
-/// preview and by [`Player::video`](crate::Player::video) for playback. A frame
-/// comes as an `Arc` because upstream frames are not `Clone`: a GPU surface is
-/// shared, not copied.
+/// preview and by [`Player::video`](crate::Player::video) for playback. Each
+/// clone keeps its own cursor. A frame comes as an `Arc` because upstream
+/// frames are not `Clone`: a GPU surface is shared, not copied.
 ///
-/// A fresh handle treats the frame current when it was created as new, so the
-/// first [`next`](Self::next) returns at once if a picture is already there.
+/// On a fresh handle, the first [`next`](Self::next) returns at once if a
+/// picture is already there.
 #[derive(derive_more::Debug, Clone)]
 pub struct VideoFrames {
     #[debug(skip)]
@@ -124,8 +122,7 @@ impl VideoFrames {
         }
     }
 
-    /// Returns a frame newer than the last this handle returned, or `None`
-    /// without waiting.
+    /// Returns a newer frame without waiting, if there is one.
     ///
     /// For a render loop that draws only when the picture changed.
     pub fn try_next(&mut self) -> Option<Arc<video::Frame>> {

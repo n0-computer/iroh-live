@@ -15,7 +15,7 @@ use crate::{
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
-/// How long after audio ended or failed the catalog is looked at again.
+/// How long after audio ended or failed the catalog is read again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 
 /// The audio task's inputs.
@@ -31,9 +31,8 @@ pub(crate) struct Inputs {
 
 /// Plays the broadcast's audio until the player is dropped.
 ///
-/// Reopens on a new catalog or a new route to the broadcast, so audio follows
-/// a publisher that restarts its microphone and a subscription that changes
-/// path.
+/// Reopens on a new catalog or a new route. Audio then follows a publisher
+/// that restarts its microphone, and a subscription that changes path.
 pub(crate) async fn run(inputs: Inputs) {
     let Inputs {
         broadcast,
@@ -94,10 +93,9 @@ pub(crate) async fn run(inputs: Inputs) {
         };
 
         // Wait for the reader to end, or for a reason to reopen. Without a
-        // reader, the catalog is looked at again after a pause as well as on
-        // every update: a publisher that replaced its audio may have sent the
-        // new catalog before the old track's end reached us, and no later
-        // update is coming to say so.
+        // reader, the catalog is also read again after a pause. A publisher
+        // that replaced its audio may have sent the new catalog before the old
+        // track ended here, and no later update follows.
         let mut retry = std::pin::pin!(tokio::time::sleep(RETRY_AFTER));
         loop {
             let reading = reader.is_some();
@@ -120,8 +118,8 @@ pub(crate) async fn run(inputs: Inputs) {
                     if updated.is_err() {
                         return;
                     }
-                    // A running track keeps playing across a catalog update;
-                    // only one that ended or never opened is tried again.
+                    // A running track keeps playing across a catalog update.
+                    // Only a track that ended or never opened is tried again.
                     if !reading {
                         break;
                     }
@@ -165,7 +163,7 @@ async fn open(
     let mut options = moq_audio::decode::Options::new();
     options.output.format = moq_audio::Format::F32;
     options.max_age = max_age;
-    // The live edge, as a player wants: the backlog a track holds is behind it.
+    // Start at the live edge. The backlog a track holds is behind it.
     options.start = moq_audio::decode::Start::Latest;
     let decoder = moq_audio::decode::Consumer::new(consumer, config, name, options)
         .await
@@ -184,7 +182,7 @@ struct Job {
     decoder: moq_audio::decode::Consumer,
     sink: crate::output::OutputSink,
     control: OutputControl,
-    /// Clears this track's contribution to the clock on every way out.
+    /// Clears this track's contribution to the clock when dropped.
     latency: super::clock::AudioLatency,
     stats: PlaybackRecorder,
 }
@@ -192,8 +190,8 @@ struct Job {
 impl Job {
     /// Decodes until the track ends.
     ///
-    /// The read is the only await, so nothing cancels it but the task's own
-    /// end: the decoder is never polled again after a dropped read.
+    /// The read is the only await, and only the task's end cancels it. The
+    /// decoder is never polled again after a dropped read.
     async fn run(mut self) -> Result<(), Error> {
         self.stats.audio.update(|audio| {
             *audio = Some(AudioPlaybackStats {
@@ -203,9 +201,8 @@ impl Job {
         });
         while let Some(frame) = self.decoder.read().await.map_err(Error::decoder)? {
             let decoded = std::time::Instant::now();
-            // The video clock steers off how much audio is still buffered
-            // ahead of the speaker, which is the only latency either side can
-            // actually measure.
+            // The playout clock holds video back by the audio buffered ahead
+            // of the speaker. It is the only latency either side can measure.
             let buffered = self.sink.buffered();
             self.latency.set(buffered);
             self.sink.write(&frame.data)?;

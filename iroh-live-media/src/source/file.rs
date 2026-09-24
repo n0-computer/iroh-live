@@ -1,12 +1,11 @@
 //! Decoding an audio file as a source.
 //!
-//! `moq-audio` pulls symphonia only to decode raw AAC-LC frames off the wire,
-//! so it has no container reader. This one demuxes and decodes a local file on
-//! a thread of its own, in real time, into the fan-out every attached
+//! `moq-audio` has no container reader, so this module demuxes and decodes a
+//! local file on its own thread, in real time, into the fan-out every attached
 //! broadcast reads.
 //!
-//! No resampling happens here. The encoder is told the file's own rate and
-//! converts to the codec's rate itself, which is one resampler instead of two.
+//! No resampling happens here. The encoder gets the file's own rate and
+//! converts it itself, so there is one resampler instead of two.
 
 use std::{
     path::{Path, PathBuf},
@@ -26,16 +25,12 @@ use tracing::{debug, warn};
 use super::{AudioFormat, sender::PcmFanout};
 use crate::error::Error;
 
-/// Opens `path`, and decodes it into `fanout` on a thread of its own until the
-/// file ends, or `stop` is cancelled.
+/// Opens `path` and decodes it into `fanout` on its own thread.
 ///
-/// Returns the file's own sample rate and layout, which the encoder is told.
-///
-/// # Errors
-///
-/// Fails if the file cannot be read, holds no audio track, or uses a codec
-/// symphonia cannot decode. The first packet is decoded before this returns,
-/// so a file that opens and then refuses its first packet fails here too.
+/// Decoding runs until the file ends or `stop` is cancelled. Returns the
+/// file's own sample rate and layout. Fails if the file cannot be read or
+/// holds no audio track. A codec that does not decode stops the thread with a
+/// warning.
 pub(crate) fn spawn(
     path: PathBuf,
     looping: bool,
@@ -57,31 +52,32 @@ pub(crate) fn spawn(
     Ok(format)
 }
 
-/// An error about `path`, with `source` behind it.
+/// Returns a device error that names `path`.
 fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
     n0_error::e!(Error::Device {
         source: AnyError::from_string(format!("{}: {source}", path.display()))
     })
 }
 
-/// What probing a file tells us before any of it is decoded.
+/// The rate and layout a file declares, read before decoding.
 struct Probe {
     sample_rate: u32,
     layout: moq_audio::Layout,
 }
 
 impl Probe {
-    /// Reads the layout off a track, falling back to CD-adjacent defaults for a
-    /// container that declares neither.
+    /// Reads the rate and layout off a track.
+    ///
+    /// Falls back to 48 kHz and stereo for what the container does not declare.
     fn of(track: &Track) -> Self {
         let params = audio_params(track);
         Self {
             sample_rate: params
                 .and_then(|params| params.sample_rate)
                 .unwrap_or(48_000),
-            // A declared count of zero is treated like no count at all, and
-            // both fall back to stereo. Zero is the only count `from_channels`
-            // refuses, so after the filter it cannot fail.
+            // A declared count of zero also falls back to stereo. Zero is the
+            // only count `from_channels` refuses, so after the filter it cannot
+            // fail.
             layout: params
                 .and_then(|params| params.channels.as_ref())
                 .map(|channels| channels.count() as u32)
@@ -92,12 +88,10 @@ impl Probe {
     }
 }
 
-/// Opens `path` and returns its container reader alongside the first track that
-/// carries audio.
+/// Opens `path` and returns its container reader and first audio track.
 ///
-/// Shared by the probe and by each decode pass, which both need exactly this
-/// and nothing else: looping reopens the file rather than seeking, so the pass
-/// starts from the same place the probe did.
+/// Looping reopens the file instead of seeking, so each pass starts where the
+/// probe did.
 fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), Error> {
     let file = std::fs::File::open(path).map_err(|source| file_error(path, source))?;
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
@@ -123,12 +117,9 @@ fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), Error> {
     Ok((format, track))
 }
 
-/// The audio codec parameters of `track`, or `None` when it carries none or is
-/// not an audio track.
+/// Returns the audio codec parameters of `track`.
 ///
-/// Both are one check now: symphonia types the parameters per media kind, where
-/// it used to hand out one struct for every track and a null codec id for the
-/// ones it could not read.
+/// Returns `None` for a track that is not audio or declares no parameters.
 fn audio_params(track: &Track) -> Option<&symphonia::core::codecs::audio::AudioCodecParameters> {
     match track.codec_params.as_ref()? {
         CodecParameters::Audio(params) => Some(params),
@@ -141,12 +132,11 @@ fn probe(path: &Path) -> Result<Probe, Error> {
     Ok(Probe::of(&track))
 }
 
-/// Decodes `path` into `fanout`, restarting at the beginning when `looping`,
-/// until the file ends or `stop` is cancelled.
+/// Decodes `path` into `fanout` until the file ends or `stop` is cancelled.
 ///
-/// Paced against the sample count rather than run flat out, because the
-/// publisher stamps PTS from sample counts: a decoder that raced ahead would
-/// publish a minute of audio in a second and then starve.
+/// Restarts at the beginning when `looping`. Decoding is paced to the wall
+/// clock, because timestamps come from the sample count. A decoder that raced
+/// ahead would publish a minute of audio in a second and then starve.
 fn decode_loop(
     path: &Path,
     looping: bool,
@@ -162,10 +152,9 @@ fn decode_loop(
             debug!(path = %path.display(), "audio file ended");
             return Ok(());
         }
-        // A pass that decoded nothing would loop again immediately, and every
-        // pass after it too: the pacing sleep is driven by decoded audio, so
-        // there is nothing to slow the retry down. A file truncated to less
-        // than one packet does exactly that.
+        // The pacing sleep depends on decoded audio, so a pass that decoded
+        // nothing would loop again at once, forever. A file shorter than one
+        // packet does that.
         if frames == 0 {
             warn!(path = %path.display(), "audio file decoded to nothing, not looping");
             return Ok(());
@@ -197,14 +186,12 @@ fn decode_once(
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(decode_err)?;
-    // Reused across packets so a file is not one allocation per packet.
     let mut interleaved: Vec<f32> = Vec::new();
     let mut sent = 0;
 
-    // `next_packet` reports the end of the file as `None` and a file it cannot
-    // read the rest of as an error. Symphonia 0.5 had only the error, so this
-    // loop used to read every failure as the end and `:loop` replayed the
-    // readable prefix of a corrupt file forever, silently.
+    // `next_packet` returns `None` at the end of the file and an error when
+    // the rest cannot be read. The error ends the pass, so a corrupt file does
+    // not loop over its readable prefix.
     while let Some(packet) = format.next_packet().map_err(decode_err)? {
         if packet.track_id != track_id {
             continue;
@@ -230,8 +217,8 @@ fn decode_once(
                 .flat_map(|sample| sample.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
-        // `Frame::new` classifies the samples as active, which is right for a
-        // file: the encoder decides what is silence, not the source.
+        // `Frame::new` marks the samples active. The encoder decides what is
+        // silence.
         let frame = moq_audio::Frame::new(
             data,
             moq_net::Timestamp::from_micros(published.as_micros() as u64)
@@ -247,8 +234,7 @@ fn decode_once(
 
         let frames = interleaved.len() / channels.max(1) as usize;
         *published += Duration::from_secs_f64(frames as f64 / sample_rate as f64);
-        // Stay roughly in step with wall clock; a small lead is fine and is
-        // what the queue absorbs.
+        // Keep in step with the wall clock. The fan-out absorbs a small lead.
         if let Some(ahead) = published.checked_sub(started.elapsed()) {
             std::thread::sleep(ahead);
         }
@@ -267,10 +253,7 @@ mod tests {
         wav(&[], 1)
     }
 
-    /// A PCM WAV carrying `samples` interleaved across `channels`.
-    ///
-    /// Sixteen-bit, 48 kHz, which is what the decoder converts from and the
-    /// only thing about the file this crate does not choose.
+    /// A 16-bit 48 kHz PCM WAV of `samples` interleaved across `channels`.
     fn wav(samples: &[i16], channels: u16) -> Vec<u8> {
         let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
         let block_align = channels * 2;
@@ -304,15 +287,11 @@ mod tests {
         path
     }
 
-    /// The decoder converts to interleaved f32 and the publisher stamps from
-    /// the sample count, so a file that decodes to the wrong number of samples
-    /// or the wrong channel order publishes audio that is the wrong length and
-    /// the wrong shape. Neither shows up in a test that only opens an empty
-    /// file, which is all this had when symphonia 0.6 rewrote the conversion.
+    /// A stereo file decodes to every one of its samples, interleaved in order.
     #[test]
     fn a_file_decodes_to_interleaved_samples_in_order() {
-        // Distinguishable per channel and per frame, so interleaving that is
-        // transposed or off by one is visible in the values.
+        // Each channel and frame has its own value, so transposed or shifted
+        // interleaving shows.
         let frames: Vec<i16> = (0..960).flat_map(|n| [n as i16, -(n as i16)]).collect();
         let path = temp_file("stereo", &wav(&frames, 2));
 
@@ -360,8 +339,7 @@ mod tests {
         }
     }
 
-    /// A pass that decodes nothing must not be retried, or the pacing sleep has
-    /// nothing to slow it down and the thread spins on the file forever.
+    /// A looping file that decodes to nothing stops instead of retrying.
     #[test]
     fn a_file_with_no_samples_stops_instead_of_looping() {
         let path =
@@ -370,9 +348,8 @@ mod tests {
             .and_then(|mut file| file.write_all(&empty_wav()))
             .expect("write the test file");
 
-        // On its own thread with a deadline, because the failure this guards
-        // against is a loop that never returns rather than one that returns the
-        // wrong thing.
+        // On its own thread with a deadline, because the failure is a loop
+        // that never returns.
         let (done, finished) = std::sync::mpsc::sync_channel(1);
         let looping = path.clone();
         std::thread::spawn(move || {
