@@ -1046,12 +1046,15 @@ async fn shutdown_detaches_relay_links() {
     .expect("a relay link outlived its node's shutdown");
 }
 
-/// A subscription follows its publisher from a direct session to a relay when
-/// the direct session goes, without ending: both routes start at the same
-/// publisher, so moq re-splices at a group boundary.
+/// A subscription served by a direct session ends when that session goes, and
+/// asking again resolves the path through the relay.
+///
+/// It does not move over on its own: a relay route cannot vouch that it comes
+/// from the publisher the direct session authenticated, so the node keeps the
+/// two apart (see `a_relay_cannot_splice_a_forgery_into_a_direct_subscription`).
 #[tokio::test]
 #[serial]
-async fn a_subscription_fails_over_from_direct_to_the_relay() {
+async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     use iroh_moq::{Audience, LinkKind, Reach, RelayOffer};
     use n0_watcher::Watcher;
 
@@ -1073,19 +1076,7 @@ async fn a_subscription_fails_over_from_direct_to_the_relay() {
     .await
     .expect("subscribe timeout")
     .expect("subscribe");
-    let mut reader = tokio::time::timeout(
-        TIMEOUT,
-        subscription
-            .as_moq()
-            .track("data")
-            .expect("track")
-            .subscribe(
-                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(5)),
-            ),
-    )
-    .await
-    .expect("track subscribe timeout")
-    .expect("track subscribe");
+    let mut reader = subscribed(&subscription.as_moq()).await;
     let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
     let mut routes = bob.moq().routes(publication.path());
     tokio::time::timeout(TIMEOUT, async {
@@ -1100,17 +1091,24 @@ async fn a_subscription_fails_over_from_direct_to_the_relay() {
     .await
     .expect("the relay never routed the publication");
 
-    let session = subscription.session().expect("served directly");
-    session.close("testing failover");
-    // Groups keep coming, well past the ones in flight when the session went.
-    for _ in 0..100 {
-        tokio::time::timeout(TIMEOUT, reader.recv_group())
-            .await
-            .expect("the subscription stalled after the direct session went")
-            .expect("track failed")
-            .expect("the subscription ended with the direct session");
-    }
-    assert!(!subscription.as_moq().is_closed());
+    subscription
+        .session()
+        .expect("served directly")
+        .close("testing failover");
+    tokio::time::timeout(TIMEOUT, async {
+        while let Ok(Some(_)) = reader.recv_group().await {}
+    })
+    .await
+    .expect("the subscription outlived its direct session");
+
+    let again = tokio::time::timeout(
+        TIMEOUT,
+        bob.moq().subscribe(publication.path(), Reach::Relays),
+    )
+    .await
+    .expect("subscribe timeout")
+    .expect("subscribe through the relay");
+    subscribed(&again.as_moq()).await;
     let routes = bob.moq().routes(publication.path()).get();
     assert!(
         routes
@@ -1118,6 +1116,138 @@ async fn a_subscription_fails_over_from_direct_to_the_relay() {
             .any(|route| route.kind == LinkKind::Relay && route.active),
         "{routes:?}"
     );
+
+    bob.shutdown().await;
+    alice.shutdown().await;
+}
+
+/// Subscribes to the counter track of `broadcast` and reads one group.
+async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track::Subscriber {
+    let mut reader = tokio::time::timeout(
+        TIMEOUT,
+        broadcast.track("data").expect("track").subscribe(
+            moq_net::track::Subscription::default().with_max_age(Duration::from_secs(5)),
+        ),
+    )
+    .await
+    .expect("track subscribe timeout")
+    .expect("track subscribe");
+    tokio::time::timeout(TIMEOUT, reader.recv_group())
+        .await
+        .expect("no group")
+        .expect("track failed")
+        .expect("track ended");
+    reader
+}
+
+/// The hop a node with endpoint id `id` announces under, as `iroh-moq` derives
+/// it: public, so anyone can compute it.
+fn hop_of(id: iroh::EndpointId) -> moq_net::Hop {
+    let bytes: [u8; 8] = id.as_bytes()[..8].try_into().expect("32 bytes");
+    let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
+    moq_net::Hop::new(value.max(1)).expect("a valid hop")
+}
+
+/// A peer that publishes Alice's path into a relay under Alice's own hop is
+/// never spliced into a subscription Bob holds over his direct session with
+/// Alice, not even once that session goes.
+///
+/// The test relay lets anyone publish anywhere, as a relay with loose
+/// admission would; the node must hold on its own.
+#[tokio::test]
+#[serial]
+async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
+    use iroh_moq::{Audience, LinkKind, Reach, RelayOffer};
+    use n0_watcher::Watcher;
+
+    const FORGED: u64 = 1_000_000;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (alice_endpoint, alice) = relay_node(true).await;
+    let (broadcast, _writer) = counter("data");
+    let publication = alice
+        .moq()
+        .publish("cam", &broadcast, Audience::Everyone)
+        .expect("publish");
+
+    // Mallory, a browser-like client, publishes at Alice's path, declaring
+    // Alice's hop.
+    let (mallory, mallory_driver) =
+        origin::Producer::new(origin::Config::new(hop_of(alice_endpoint.id())));
+    let _mallory_driver = AbortOnDropHandle::new(tokio::spawn(async move {
+        moq_net::time::run(mallory_driver).await;
+    }));
+    let forged = mallory
+        .publish(publication.path().as_str(), origin::Route::default())
+        .expect("forged broadcast");
+    let mut forged_track = forged
+        .create_track(
+            "data",
+            moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
+        )
+        .expect("track");
+    let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
+        for n in FORGED.. {
+            if forged_track
+                .write_frame(Timestamp::now(), n.to_be_bytes().to_vec())
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }));
+    let _mallory_session = established(
+        noq_client()
+            .with_publisher(mallory.consume())
+            .connect(relay.url()),
+    )
+    .await;
+
+    let (_bob_endpoint, bob) = relay_node(false).await;
+    let subscription = tokio::time::timeout(
+        TIMEOUT,
+        bob.moq().subscribe(publication.path(), Reach::Direct),
+    )
+    .await
+    .expect("subscribe timeout")
+    .expect("subscribe");
+    let mut reader = subscribed(&subscription.as_moq()).await;
+    let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
+    let mut routes = bob.moq().routes(publication.path());
+    tokio::time::timeout(TIMEOUT, async {
+        while !routes
+            .get()
+            .iter()
+            .any(|route| route.kind == LinkKind::Relay)
+        {
+            routes.updated().await.expect("node gone");
+        }
+    })
+    .await
+    .expect("the relay never routed the forged path");
+
+    subscription
+        .session()
+        .expect("served directly")
+        .close("the forger's chance");
+    let read = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let Ok(Some(mut group)) = reader.recv_group().await else {
+                return;
+            };
+            if let Ok(Some(frame)) = group.read_frame().await {
+                let bytes: [u8; 8] = frame.payload[..].try_into().expect("a u64");
+                assert!(
+                    u64::from_be_bytes(bytes) < FORGED,
+                    "the forged broadcast was spliced into the subscription"
+                );
+            }
+        }
+    })
+    .await;
+    assert!(read.is_ok(), "the subscription outlived its direct session");
 
     bob.shutdown().await;
     alice.shutdown().await;

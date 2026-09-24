@@ -49,9 +49,19 @@ application path such as `calls/<id>`, stays reachable over its session with
 publishers' broadcasts is its job: attaching a relay trusts it, and its
 admission, with every path it forwards.
 
-Failover between a direct route and a relay route re-splices without ending the
-broadcast: moq's first hop is the original publisher, which both chains share.
-`iroh-moq/tests/origin.rs` pins this down.
+moq re-splices a broadcast between routes that share a first hop, the
+publisher the chain starts at, and a first hop is only what the publisher
+declared, which anyone can compute from a public endpoint id. A relay's routes
+therefore enter the table under a first hop derived from the one they claim:
+routes to one source through different relays still share it, and can take over
+from each other, but a relay route never shares a first hop with a direct one.
+A subscription served by a direct session ends when that session goes, and
+asking again (`Subscription::closed` does) resolves through the relay. Without
+this, a peer that publishes someone else's path into a relay under that
+publisher's hop would be spliced into a subscription the moment its direct
+session dropped. This is the RFD's "a change of first hop ends a broadcast";
+`iroh-moq/tests/origin.rs` pins down the moq behaviour underneath, and
+`iroh-live-relay/tests/relay_bridge.rs` the node's.
 
 `Moq::subscribe(path, reach)` resolves a path in the table. With no route yet it
 reaches out as `Reach` says: dial the publisher the path names, wait for a relay,

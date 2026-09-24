@@ -17,7 +17,7 @@ use std::{
 
 use iroh::EndpointId;
 use moq_net::{
-    Path, PathOwned, announce, broadcast,
+    Hop, Hops, Path, PathOwned, announce, broadcast,
     origin::{self, Route},
 };
 use n0_future::task::{AbortOnDropHandle, JoinSet};
@@ -79,9 +79,11 @@ pub struct RouteInfo {
 /// A path resolved in a route table.
 ///
 /// Follows the best route to its path: moq re-splices the broadcast when the
-/// serving route changes within the same first hop, and a subscriber that sees
-/// the broadcast end can ask the table again through [`as_origin`]. Cheap to
-/// clone; dropping it releases nothing the route table needs.
+/// serving route changes within the same first hop, which routes through
+/// different relays to one source share and a direct and a relay route never
+/// do. A subscriber that sees the broadcast end can ask the table again
+/// through [`as_origin`], or wait on [`closed`](Self::closed). Cheap to clone;
+/// dropping it releases nothing the route table needs.
 ///
 /// [`as_origin`]: Self::as_origin
 #[derive(Clone)]
@@ -206,6 +208,15 @@ impl Subscription {
 /// a bare name from the older layout or a call path, stays reachable over that
 /// session alone through [`Session::subscribe`]. A relay link passes `None`,
 /// since forwarding other publishers' broadcasts is what a relay is for.
+///
+/// A relay's routes enter the table under a first hop of their own (see
+/// [`relayed`]), so the table never takes a relay route for the same source as
+/// a direct one. moq re-splices a broadcast only between routes that share a
+/// first hop, and a first hop is only what a publisher declares: without this, a
+/// peer that publishes someone else's path into a relay under that publisher's
+/// hop would be spliced into a subscription the moment its direct session
+/// dropped. A subscription that loses its direct route therefore ends, and
+/// asking again resolves through the relay.
 pub(crate) async fn bridge(
     shared: Arc<Shared>,
     link: u64,
@@ -233,8 +244,18 @@ pub(crate) async fn bridge(
                 .set_announced(link, prefix, None);
             continue;
         }
+        let hops = match publisher {
+            Some(_) => update.route.hops.clone(),
+            None => match relayed(&update.route.hops) {
+                Some(hops) => hops,
+                None => {
+                    warn!(link, %prefix, "relay route with an unusable hop chain, not mirrored");
+                    continue;
+                }
+            },
+        };
         let route = Route::default()
-            .with_hops(update.route.hops.clone())
+            .with_hops(hops)
             .with_cost(update.route.cost);
         trace!(link, %prefix, hops = route.hops.len(), cost = route.cost.warm, "route");
         shared.state.lock().expect("poisoned").set_announced(
@@ -264,6 +285,41 @@ pub(crate) async fn bridge(
         mirrors.insert(prefix, (dynamic, AbortOnDropHandle::new(task)));
     }
 }
+
+/// Returns `hops` with its first hop, the source it claims, replaced by a hop
+/// that stands for that source as reached through a relay.
+///
+/// Derived from the claimed hop alone, so every relay's route to one source
+/// shares it and a subscription can still move between relays, while no relay
+/// route shares a first hop with a direct one. An anonymous chain is left as it
+/// is: moq never re-splices one. `None` if the new chain would repeat a hop,
+/// which a real chain cannot.
+fn relayed(hops: &Hops) -> Option<Hops> {
+    let mut chain = hops.iter();
+    let Some(first) = chain.next() else {
+        return Some(hops.clone());
+    };
+    if *first == Hop::UNKNOWN {
+        return Some(hops.clone());
+    }
+    // SplitMix64's finalizer, so nearby ids do not map to nearby ids, then
+    // masked below 2^53 as every hop this crate derives is.
+    let mut value = first.id() ^ RELAYED_SALT;
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^= value >> 31;
+    let relayed = Hop::new((value & ((1u64 << 53) - 1)).max(1)).ok()?;
+    let mut out = Hops::new();
+    out.push(relayed).ok()?;
+    for hop in chain {
+        out.push(*hop).ok()?;
+    }
+    Some(out)
+}
+
+/// Mixed into a claimed hop for [`relayed`], so the relayed identity of a hop
+/// is not a hop some node derives for itself.
+const RELAYED_SALT: u64 = 0x7265_6c61_7965_6421;
 
 /// Answers the requests one mirrored route receives.
 ///
@@ -301,5 +357,50 @@ async fn answer(
             }
             Some(_) = pending.join_next(), if !pending.is_empty() => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chain(ids: &[u64]) -> Hops {
+        let mut hops = Hops::new();
+        for id in ids {
+            hops.push(Hop::new(*id).expect("a valid hop"))
+                .expect("distinct");
+        }
+        hops
+    }
+
+    fn ids(hops: &Hops) -> Vec<u64> {
+        hops.iter().map(|hop| hop.id()).collect()
+    }
+
+    /// A relayed chain keeps its length and the hops after the first, and
+    /// its first hop depends on the claimed source alone.
+    #[test]
+    fn a_relayed_chain_names_its_source_apart() {
+        let direct = chain(&[7, 11]);
+        let relayed_once = relayed(&direct).expect("relayed");
+        let relayed_elsewhere = relayed(&chain(&[7, 13])).expect("relayed");
+        assert_eq!(relayed_once.len(), 2);
+        assert_ne!(
+            ids(&relayed_once)[0],
+            7,
+            "a relay route shares the direct source"
+        );
+        assert_eq!(ids(&relayed_once)[1], 11);
+        assert_eq!(
+            ids(&relayed_once)[0],
+            ids(&relayed_elsewhere)[0],
+            "two relays' routes to one source differ"
+        );
+        assert_ne!(
+            ids(&relayed_once)[0],
+            ids(&relayed(&chain(&[8, 11])).expect("relayed"))[0],
+            "two sources collapse into one"
+        );
+        assert!(ids(&relayed_once)[0] < 1 << 53);
     }
 }
