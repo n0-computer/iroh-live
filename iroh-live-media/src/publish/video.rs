@@ -188,7 +188,6 @@ pub(super) async fn run_raw(
             rebase: rebase.clone(),
             _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
-            quiet_after: hang::catalog::stalled::interval_from_fps(Some(rate.as_f64())),
             reporter: reporter.clone(),
             stats: stats.rendition(&rendition.name),
             stop: stop.clone(),
@@ -328,9 +327,6 @@ struct Encoder {
     _tracks: Arc<tokio::sync::OwnedMutexGuard<()>>,
     /// The gap between frames kept, for a rendition slower than its source.
     interval: Option<std::time::Duration>,
-    /// How long without a source frame counts as a quiet source, for the
-    /// catalog's stalled flag.
-    quiet_after: std::time::Duration,
     reporter: Reporter,
     stats: Cell<EncodeStats>,
     stop: CancellationToken,
@@ -403,22 +399,10 @@ impl Encoder {
                     // does not stretch this frame across it.
                     _ = demand.unused() => {
                         self.producer.discontinuity().map_err(Error::transport)?;
-                        // Idle is not stalled: a rendition nobody watches is
-                        // not late.
-                        self.producer.idle().map_err(Error::transport)?;
                         self.reporter.rendition(&self.name, RenditionState::Idle);
                         break;
                     }
-                    // A source that goes quiet while watched is what marks the
-                    // rendition stalled in the catalog, so a viewer's selector
-                    // steps away from it; upstream's capture loop does the same.
-                    frame = tokio::time::timeout(self.quiet_after, self.frames.next()) => match frame {
-                        Ok(frame) => frame,
-                        Err(_) => {
-                            self.producer.tick().map_err(Error::transport)?;
-                            continue;
-                        }
-                    },
+                    frame = self.frames.next() => frame,
                     () = self.stop.cancelled() => None,
                 };
                 // The source ended, or the slot stopped: drain the encoder,
@@ -466,9 +450,6 @@ impl Encoder {
                     Err(err) => return Err(encode_error(err)),
                 };
                 let took = started.elapsed();
-                // Before the frames go out, as upstream orders it: a slow
-                // encode is lag the stalled detector counts.
-                self.producer.observe_lag(took).map_err(Error::transport)?;
                 let mut encoded = encoded;
                 self.restamp(&mut encoded);
                 let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
