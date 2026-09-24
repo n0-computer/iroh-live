@@ -102,14 +102,12 @@ mod app {
     /// Renders a generated test pattern directly to HDMI - no network, no
     /// window system, no camera needed.
     async fn cmd_fb_demo() -> n0_error::Result {
-        use iroh_live_media::{publish::VideoSource, test_source};
-        use moq_video::Size;
+        use iroh_live_media::VideoSource;
+        use moq_video::{Rate, Size};
 
-        let VideoSource::Frames(frames) = test_source::video(Size::new(640, 480), 30) else {
-            unreachable!("test_source::video always returns VideoSource::Frames")
-        };
-
-        watch::run_fb_demo(frames).await?;
+        let source =
+            VideoSource::test_pattern(Size::new(640, 480), Rate::new(30, 1).expect("a valid rate"));
+        watch::run_fb_demo(source.frames()).await?;
         Ok(())
     }
 
@@ -135,16 +133,18 @@ mod app {
             .await?;
         println!("connected!");
 
-        let tracks = sub.media().await;
-        let video_track = tracks.video.expect("no video track in broadcast");
-        video_track.enable_adaptation(sub.signals().clone());
+        // The subscription attached its link signals, so the player adapts
+        // the rendition on its own.
+        let player = sub
+            .broadcast()
+            .play(iroh_live_media::PlayerConfig::default())?;
         let session = sub.session().clone();
 
         if opts.fb {
-            watch::run_drm(video_track, session).await?;
+            watch::run_drm(player, session).await?;
         } else {
             #[cfg(feature = "windowed")]
-            watch::run_windowed(video_track, session, opts.fullscreen)?;
+            watch::run_windowed(player, session, opts.fullscreen)?;
             #[cfg(not(feature = "windowed"))]
             {
                 eprintln!(

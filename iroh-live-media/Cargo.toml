@@ -71,9 +71,6 @@ render = ["moq-video/render"]
 # Raspberry Pi camera capture by driving `rpicam-vid` and publishing the H.264
 # it already encoded. Linux only, and it needs `rpicam-vid` on PATH at runtime.
 rpicam = ["tokio/process", "tokio/io-util"]
-# Generated video and audio sources, so a test can publish over a real
-# transport without a camera or a microphone.
-test-source = ["tokio/time"]
 # Intel and AMD hardware H.264 encoding.
 vaapi = ["moq-video/vaapi"]
 # NVIDIA hardware encode and decode. On by default upstream; off here so a

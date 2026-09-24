@@ -4,7 +4,7 @@
 //! out to the simulcast ladder `--renditions` describes. A `file:` source takes
 //! the import path instead: its tracks are republished as they already are.
 
-use iroh_live::{Live, media::publish::LocalBroadcast};
+use iroh_live::{Live, media::LocalBroadcast};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -43,11 +43,13 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 }
 
 /// Opens the devices, publishes them, and prints the ticket.
-async fn setup_capture(args: &PublishArgs) -> Result<(Live, LocalBroadcast, String)> {
+async fn setup_capture(
+    args: &PublishArgs,
+) -> Result<(Live, LocalBroadcast, source::Opened, String)> {
     let live = setup_live(!args.transport.no_serve).await?;
-    let (live, (broadcast, ticket)) = transport::with_live(live, async |live| {
+    let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
         let broadcast = live.publish(&args.transport.name)?;
-        source::configure(&broadcast, &args.capture)?;
+        let sources = source::configure(&broadcast, &args.capture, None).await?;
         let ticket = transport::advertise(live, &args.transport).await?;
         // `--test-source` overrides both flags, so logging what was typed would
         // name a camera that was never opened.
@@ -61,10 +63,10 @@ async fn setup_capture(args: &PublishArgs) -> Result<(Live, LocalBroadcast, Stri
             audio,
             "publishing"
         );
-        Ok((broadcast, ticket))
+        Ok((broadcast, sources, ticket))
     })
     .await?;
-    Ok((live, broadcast, ticket))
+    Ok((live, broadcast, sources, ticket))
 }
 
 /// Publishes capture devices, optionally alongside a preview window.
@@ -79,10 +81,10 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
         ));
     }
 
-    let (live, broadcast, ticket) = rt.block_on(setup_capture(args))?;
+    let (live, broadcast, sources, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
-        return wait_for_ctrl_c(rt, live, broadcast);
+        return wait_for_ctrl_c(rt, live, broadcast, sources);
     }
 
     #[cfg(feature = "render")]
@@ -90,7 +92,7 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
         // eframe owns the main thread, so the runtime stays alive only for as
         // long as this guard does.
         let _guard = rt.enter();
-        preview::run(live, broadcast, ticket, args)
+        preview::run(live, broadcast, sources, ticket, args)
     }
     #[cfg(not(feature = "render"))]
     {
@@ -134,12 +136,19 @@ async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> 
     Ok(())
 }
 
-/// Holds the broadcast open until the user interrupts.
-fn wait_for_ctrl_c(rt: &tokio::runtime::Runtime, live: Live, broadcast: LocalBroadcast) -> Result {
+/// Holds the broadcast and its sources open until the user interrupts.
+fn wait_for_ctrl_c(
+    rt: &tokio::runtime::Runtime,
+    live: Live,
+    broadcast: LocalBroadcast,
+    sources: source::Opened,
+) -> Result {
     println!("press Ctrl+C to stop");
     rt.block_on(async move {
         tokio::signal::ctrl_c().await?;
-        broadcast.finish().await;
+        broadcast.close();
+        broadcast.closed().await;
+        drop(sources);
         live.shutdown().await;
         Ok(())
     })
@@ -156,16 +165,18 @@ mod preview {
     use eframe::egui;
     use iroh_live::{
         Live,
-        media::{
-            publish::{LocalBroadcast, VideoRendition, VideoSource},
-            video,
-        },
+        media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
     };
     use iroh_live_egui::overlay::{DebugOverlay, StatCategory, fit_to_aspect};
     use n0_error::{Result, anyerr};
+    use n0_future::task::AbortOnDropHandle;
+    use n0_watcher::Watcher as _;
+    use tokio::sync::oneshot;
     use tracing::{info, warn};
 
-    use crate::{args::PublishArgs, source_spec::VideoSourceSpec, ui::LocalPreview};
+    use crate::{
+        args::PublishArgs, source::Opened, source_spec::VideoSourceSpec, ui::LocalPreview,
+    };
 
     /// Opens the preview window and runs it until it closes.
     ///
@@ -174,6 +185,7 @@ mod preview {
     pub(super) fn run(
         live: Live,
         broadcast: LocalBroadcast,
+        sources: Opened,
         ticket: String,
         args: &PublishArgs,
     ) -> Result {
@@ -183,14 +195,18 @@ mod preview {
             crate::ui::native_options(args.fullscreen),
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
-                let view =
-                    LocalPreview::new(&cc.egui_ctx, "preview", cc.wgpu_render_state.as_ref());
+                let view = LocalPreview::new(
+                    &cc.egui_ctx,
+                    "preview",
+                    sources.video.as_ref().map(VideoSource::frames),
+                    cc.wgpu_render_state.as_ref(),
+                );
                 Ok(Box::new(PreviewApp {
                     live,
                     broadcast,
                     ticket,
                     view,
-                    picker: SourcePicker::new(&flag),
+                    picker: SourcePicker::new(&flag, sources),
                     overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
                 }))
             }),
@@ -213,7 +229,10 @@ mod preview {
             crate::ui::escape_leaves_fullscreen(&ctx);
             ctx.request_repaint_after(Duration::from_millis(16));
 
-            self.view.update(&ctx, &self.broadcast);
+            if let Some(frames) = self.picker.poll() {
+                self.view.set_frames(frames);
+            }
+            self.view.update(&ctx);
 
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             crate::ui::top_bar(ui, &ctx, &self.ticket);
@@ -224,8 +243,9 @@ mod preview {
             let image = self.view.image();
             ui.centered_and_justified(|ui| ui.add_sized(size, image));
 
-            self.overlay
-                .show_publish(ui, video_rect, self.broadcast.stats());
+            let stats = self.broadcast.stats();
+            let status = self.broadcast.status().get();
+            self.overlay.show_publish(ui, video_rect, &stats, &status);
 
             crate::ui::control_panel(&ctx, "publish-controls", |ui| {
                 self.picker.ui(ui, &self.broadcast);
@@ -234,7 +254,7 @@ mod preview {
 
         fn on_exit(&mut self) {
             info!("exit");
-            crate::ui::shutdown_publish_blocking(&self.live, &mut self.broadcast);
+            crate::ui::shutdown_publish_blocking(&self.live, &self.broadcast);
         }
     }
 
@@ -281,19 +301,31 @@ mod preview {
 
     /// The source combo.
     ///
-    /// Switching is just `set_renditions` again: it replaces whatever was
-    /// publishing, so there is no separate teardown step and the catalog keeps
-    /// the same rendition name across the swap.
+    /// Switching opens the new source first and then sets it, which replaces
+    /// whatever was publishing: there is no separate teardown step, and the
+    /// catalog keeps the same rendition name across the swap. A source that
+    /// will not open leaves the old one publishing.
     #[derive(Debug)]
     struct SourcePicker {
         selected: Option<PickedSource>,
         /// What `--video` said, shown while nothing in the combo matches it.
         flag: String,
         error: Option<String>,
+        /// The sources publishing now, held so they keep running.
+        sources: Opened,
+        /// A source being opened, and where it reports.
+        opening: Option<Opening>,
+    }
+
+    /// A source switch in flight.
+    #[derive(Debug)]
+    struct Opening {
+        done: oneshot::Receiver<Result<Option<VideoSource>>>,
+        _task: AbortOnDropHandle<()>,
     }
 
     impl SourcePicker {
-        fn new(flag: &str) -> Self {
+        fn new(flag: &str, sources: Opened) -> Self {
             let selected = VideoSourceSpec::parse(flag)
                 .ok()
                 .as_ref()
@@ -302,6 +334,8 @@ mod preview {
                 selected,
                 flag: flag.to_string(),
                 error: None,
+                sources,
+                opening: None,
             }
         }
 
@@ -323,37 +357,88 @@ mod preview {
                 });
 
             if changed {
-                self.error = self.apply(broadcast).err().map(|err| format!("{err:#}"));
-                if let Some(err) = &self.error {
-                    warn!(error = %err, "source switch failed");
-                }
+                self.error = None;
+                self.apply(broadcast);
+            }
+            if self.opening.is_some() {
+                ui.label("opening ...");
             }
             if let Some(err) = &self.error {
                 ui.colored_label(egui::Color32::RED, err);
             }
         }
 
-        /// Publishes the selected source at the source's own resolution.
-        fn apply(&self, broadcast: &LocalBroadcast) -> Result<()> {
-            let source = match self.selected {
-                None | Some(PickedSource::None) => {
-                    broadcast.video().clear();
-                    return Ok(());
+        /// Collects a finished switch, returning the frames the preview should
+        /// draw from now on when the source changed.
+        fn poll(&mut self) -> Option<Option<iroh_live::media::VideoFrames>> {
+            let opening = self.opening.as_mut()?;
+            let result = match opening.done.try_recv() {
+                Ok(result) => result,
+                Err(oneshot::error::TryRecvError::Empty) => return None,
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    Err(anyerr!("the source switch was abandoned"))
                 }
-                Some(PickedSource::Camera) => {
-                    VideoSource::Capture(video::capture::Config::default())
-                }
-                Some(PickedSource::Screen) => {
-                    let mut config = video::capture::Config::default();
-                    config.source = video::capture::Source::Display(None);
-                    VideoSource::Capture(config)
-                }
-                Some(PickedSource::Test) => crate::source::default_test_pattern(*broadcast.clock()),
             };
-            broadcast
-                .video()
-                .set_renditions(source, vec![VideoRendition::new("video")])?;
-            Ok(())
+            self.opening = None;
+            match result {
+                Ok(video) => {
+                    let frames = video.as_ref().map(VideoSource::frames);
+                    self.sources.video = video;
+                    Some(frames)
+                }
+                Err(err) => {
+                    let err = format!("{err:#}");
+                    warn!(error = %err, "source switch failed");
+                    self.error = Some(err);
+                    None
+                }
+            }
         }
+
+        /// Opens the selected source and publishes it at its own resolution.
+        ///
+        /// The open runs as a task, since a camera takes a moment; a switch
+        /// chosen while another is opening replaces it.
+        fn apply(&mut self, broadcast: &LocalBroadcast) {
+            let selected = self.selected;
+            let broadcast = broadcast.clone();
+            let (done, report) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let result = open_and_set(&broadcast, selected).await;
+                let _ = done.send(result);
+            });
+            self.opening = Some(Opening {
+                done: report,
+                _task: AbortOnDropHandle::new(task),
+            });
+        }
+    }
+
+    /// Opens `selected` and sets it on `broadcast`, or clears the video for
+    /// no source.
+    async fn open_and_set(
+        broadcast: &LocalBroadcast,
+        selected: Option<PickedSource>,
+    ) -> Result<Option<VideoSource>> {
+        let source = match selected {
+            None | Some(PickedSource::None) => {
+                broadcast.clear_video();
+                return Ok(None);
+            }
+            Some(PickedSource::Camera) => {
+                VideoSource::capture(video::capture::Config::default()).await?
+            }
+            Some(PickedSource::Screen) => {
+                let mut config = video::capture::Config::default();
+                config.source = video::capture::Source::Display(None);
+                VideoSource::capture(config).await?
+            }
+            Some(PickedSource::Test) => crate::source::default_test_pattern(),
+        };
+        broadcast.set_video(
+            source.clone(),
+            VideoEncoding::single(VideoRendition::new("video")),
+        )?;
+        Ok(Some(source))
     }
 }

@@ -9,44 +9,32 @@ use eframe::egui;
 use iroh_live::{
     Live,
     media::{
-        net::NetworkSignals,
-        publish::LocalBroadcast,
-        subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
+        AudioOutput, Latency, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoFrames,
     },
 };
 use iroh_live_egui::{
-    FrameView, VideoTrackView,
+    FrameView, VideoView,
     overlay::{DebugOverlay, StatCategory},
 };
 use n0_future::task::{AbortOnDropHandle, spawn};
-use tokio::sync::watch;
+use n0_watcher::Watcher as _;
 use tracing::{info, warn};
 
 use crate::{args::PlaybackArgs, backend::DecoderArg};
 
-/// Sets the playback policy a window wants on `broadcast`: the decoder
-/// `--decoder` asked for, and GPU-resident frames.
-///
-/// Call it before opening the video track. A decoder reads the policy when it is
-/// built rather than watching it afterwards, so setting it later reaches a track
-/// already playing only through
-/// [`VideoTrack::reopen_decoder`](iroh_live::media::subscribe::VideoTrack::reopen_decoder).
-///
-/// GPU-resident frames are right for every window in this CLI: they all draw
-/// what they decode and none of them reads a pixel. What that buys is the
-/// download: a hardware decoder that can share its decode surface hands one over
-/// and the renderer imports it, so a full frame is not copied out of the GPU and
-/// straight back in. `irl record` is the other side of the choice and does not
-/// ask, since it never decodes at all.
-pub fn prepare_playback(broadcast: &RemoteBroadcast, args: &PlaybackArgs) {
-    broadcast.set_playback_policy(
-        broadcast
-            .playback_policy()
-            .with_gpu_frames(true)
-            .with_decoder(args.decoder.into())
-            .with_jitter(args.latency.jitter())
-            .with_max_latency(args.latency.max_latency()),
-    );
+/// The player config a window wants: the decoder `--decoder` asked for, the
+/// latency `--latency` names, and audio through `output`.
+pub fn player_config(args: &PlaybackArgs, output: Option<&AudioOutput>) -> PlayerConfig {
+    let mut config = PlayerConfig::default()
+        .with_decoder(args.decoder.into())
+        .with_latency(Latency::range(
+            args.latency.jitter(),
+            args.latency.max_latency(),
+        ));
+    if let Some(output) = output {
+        config = config.with_audio(output);
+    }
+    config
 }
 
 /// Height of the top bar, in points.
@@ -259,10 +247,12 @@ pub fn shutdown_live_blocking(live: &Live) {
 }
 
 /// Finishes a local publication before shutting its transport down.
-pub fn shutdown_publish_blocking(live: &Live, broadcast: &mut LocalBroadcast) {
+pub fn shutdown_publish_blocking(live: &Live, broadcast: &LocalBroadcast) {
     let live = live.clone();
+    let broadcast = broadcast.clone();
     tokio::runtime::Handle::current().block_on(async move {
-        broadcast.shutdown().await;
+        broadcast.close();
+        broadcast.closed().await;
         live.shutdown().await;
     });
 }
@@ -281,38 +271,44 @@ pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     }
 }
 
-/// The publisher's own picture, drawn from the frames already on their way to
-/// the encoders.
+/// The publisher's own picture, drawn from the frames its source captures.
 ///
-/// Costs no extra decode: [`LocalBroadcast::preview`] taps the capture output
-/// before the encoder sees it. The tap is replaced whenever the source is, so
-/// [`update`](Self::update) reads it fresh every frame rather than holding a
-/// receiver that a source switch would silently orphan.
+/// Costs no extra decode: the frames are the source's own, read through a
+/// handle of their own. A source switch hands the preview the new source's
+/// frames with [`set_frames`](Self::set_frames).
 #[derive(Debug)]
 pub struct LocalPreview {
     view: FrameView,
+    frames: Option<VideoFrames>,
 }
 
 impl LocalPreview {
-    /// Creates a preview that draws through `render_state`, if one is
-    /// available.
+    /// Creates a preview of `frames` that draws through `render_state`, if one
+    /// is available.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
+        frames: Option<VideoFrames>,
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
         Self {
             view: FrameView::new_wgpu(ctx, name, render_state),
+            frames,
         }
+    }
+
+    /// Points the preview at another source's frames, or at nothing.
+    pub fn set_frames(&mut self, frames: Option<VideoFrames>) {
+        self.frames = frames;
     }
 
     /// Draws the newest captured frame, if one arrived since the last call.
     ///
     /// Requests a repaint when it did, so the picture advances without waiting
     /// for the next input event.
-    pub fn update(&mut self, ctx: &egui::Context, broadcast: &LocalBroadcast) {
-        if let Some(frames) = broadcast.preview()
-            && let Some(frame) = frames.take()
+    pub fn update(&mut self, ctx: &egui::Context) {
+        if let Some(frames) = self.frames.as_mut()
+            && let Some(frame) = frames.try_next()
         {
             self.view.render_frame(&frame);
             ctx.request_repaint();
@@ -325,79 +321,50 @@ impl LocalPreview {
     }
 }
 
-/// The rendition a viewer asked for, as distinct from the one decoding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RenditionChoice {
-    /// Follow the downlink: the transport signals drive `iroh-live-media`'s
-    /// adaptation, which swaps renditions without the picture going blank.
-    Auto,
-    /// Hold one rendition whatever the downlink does.
-    Pinned(String),
-}
-
 /// One remote broadcast on screen.
 ///
-/// Owns the decoded picture, the audio track that keeps playing while the
-/// window draws, and the stats overlay drawn over the frame. Both the single
-/// remote of a call and every tile of a room grid are one of these.
+/// Owns the player, which decodes the picture and plays the sound, and the
+/// stats overlay drawn over the frame. Both the single remote of a call and
+/// every tile of a room grid are one of these.
 ///
-/// Dropping it stops the decoders; [`shutdown`](Self::shutdown) also ends the
-/// subscription, which is what a window closing wants.
+/// Dropping it stops the decoders.
 #[derive(Debug)]
 pub struct RemoteView {
-    broadcast: RemoteBroadcast,
-    video: Option<VideoTrackView>,
-    audio: Option<AudioTrack>,
+    player: Player,
+    video: VideoView,
     overlay: DebugOverlay,
-    signals: watch::Receiver<NetworkSignals>,
-    choice: RenditionChoice,
     /// The decoder the picker last asked for, which is not necessarily the one
     /// running: `Auto` names a strategy, and a backend that fails to open leaves
     /// the incumbent playing.
     decoder: DecoderArg,
-    /// The output gain the slider last set. Only a build with `playback` has a
-    /// sink to apply it to.
-    #[cfg(feature = "playback")]
+    /// The output gain the slider last set.
     volume: f32,
 }
 
 impl RemoteView {
-    /// Opens a view onto `broadcast`, drawing `tracks` through `render_state`.
+    /// Opens a view onto `player`, drawing through `render_state`.
     ///
     /// `name` salts the texture and the widget ids, so a grid of these needs a
-    /// distinct one per tile. The video track starts on
-    /// [`RenditionChoice::Auto`]; [`set_rendition`](Self::set_rendition) pins
-    /// one instead. The decoder picker starts on whatever
-    /// [`prepare_playback`] left in the broadcast's policy, which is what the
-    /// track was just opened with.
+    /// distinct one per tile.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
-        broadcast: RemoteBroadcast,
-        tracks: MediaTracks,
-        signals: watch::Receiver<NetworkSignals>,
+        player: Player,
+        decoder: DecoderArg,
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
-        let MediaTracks { video, audio } = tracks;
-        let video = video.map(|track| VideoTrackView::new_wgpu(ctx, name, track, render_state));
-        let decoder = DecoderArg::from_kind(&broadcast.playback_policy().decoder);
-        let view = Self {
-            broadcast,
+        let video = VideoView::new(ctx, name, player.video(), render_state);
+        Self {
+            player,
             video,
-            audio,
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
-                StatCategory::Time,
+                StatCategory::Audio,
             ]),
-            signals,
-            choice: RenditionChoice::Auto,
             decoder,
-            #[cfg(feature = "playback")]
             volume: 1.0,
-        };
-        view.apply_rendition();
-        view
+        }
     }
 
     /// Reports whether the stats overlay is expanded, which keeps the
@@ -406,47 +373,20 @@ impl RemoteView {
         self.overlay.any_expanded()
     }
 
-    /// Points the video track at `choice`.
-    pub fn set_rendition(&mut self, choice: RenditionChoice) {
-        self.choice = choice;
-        self.apply_rendition();
+    /// Chooses how the rendition is picked.
+    pub fn set_rendition(&mut self, mode: RenditionMode) {
+        info!(?mode, "rendition mode");
+        self.player.set_rendition(mode);
     }
 
-    /// Tells the video track to follow the downlink or hold one rendition,
-    /// whichever [`RenditionChoice`] is currently selected.
-    fn apply_rendition(&self) {
-        let Some(view) = self.video.as_ref() else {
-            return;
-        };
-        let track = view.track();
-        match &self.choice {
-            RenditionChoice::Auto => {
-                track.enable_adaptation(self.signals.clone());
-                info!(rendition = track.rendition(), "following the downlink");
-            }
-            RenditionChoice::Pinned(name) => {
-                track.disable_adaptation();
-                track.set_rendition(name.clone());
-                info!(rendition = %name, "rendition pinned");
-            }
-        }
-    }
-
-    /// Points the video decoder at `choice` and rebuilds it.
+    /// Points the video decoder at `choice`.
     ///
-    /// The policy is where the choice lives, so a track opened later, after a
-    /// republish or a resubscribe, decodes the same way. The track already
-    /// running reads it only when it builds a decoder, so it is asked for a
-    /// rebuild: the replacement opens alongside the incumbent and takes over on
-    /// its first frame, leaving the picture up across the change.
+    /// The replacement opens alongside the incumbent and takes over once it has
+    /// caught up, leaving the picture up across the change.
     pub fn set_decoder(&mut self, choice: DecoderArg) {
         self.decoder = choice;
-        self.broadcast
-            .set_playback_policy(self.broadcast.playback_policy().with_decoder(choice.into()));
         info!(decoder = %choice, "decoder selected");
-        if let Some(view) = self.video.as_ref() {
-            view.track().reopen_decoder();
-        }
+        self.player.set_decoder(choice.into());
     }
 
     /// Draws the picture at `size`, or a placeholder while the peer sends no
@@ -455,23 +395,15 @@ impl RemoteView {
     /// Returns the response of whatever was drawn, whose rect is what
     /// [`draw_overlay`](Self::draw_overlay) wants.
     pub fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
-        let ctx = ui.ctx().clone();
-        match self.video.as_mut() {
-            Some(view) => {
-                let (image, _) = view.render(&ctx, size);
-                ui.add_sized(size, image)
-            }
-            None => ui.add_sized(size, egui::Label::new("no video")),
-        }
+        let (image, _) = self.video.render(size);
+        ui.add_sized(size, image)
     }
 
     /// Draws the stats overlay over `rect`.
     pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        if let Some(view) = self.video.as_ref() {
-            self.overlay
-                .update_from_track(self.broadcast.stats(), view.track());
-        }
-        self.overlay.show(ui, rect, self.broadcast.stats());
+        let stats = self.player.stats();
+        let status = self.player.status().get();
+        self.overlay.show_playback(ui, rect, &stats, &status);
     }
 
     /// Draws the rendition and decoder pickers and the volume slider.
@@ -479,37 +411,38 @@ impl RemoteView {
     /// `id` salts the widget ids, so a grid of these needs a distinct one per
     /// tile.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
-        let Some(view) = self.video.as_ref() else {
+        let status = self.player.status().get();
+        let catalog = self.player.broadcast().catalog().get();
+        let Some(catalog) = catalog.filter(|catalog| !catalog.video().is_empty()) else {
             ui.label("no video");
             return;
         };
-        let rendition = view.track().rendition();
-        let running = view.track().decoder();
+        let rendition = status.rendition.clone().unwrap_or_default();
+        let running = status.decoder.clone().unwrap_or_default();
 
         ui.label("Rendition");
-        let label = match &self.choice {
-            RenditionChoice::Auto => format!("Auto ({rendition})"),
-            RenditionChoice::Pinned(name) => name.clone(),
+        let label = match &status.mode {
+            RenditionMode::Pinned(name) => name.clone(),
+            _ => format!("Auto ({rendition})"),
         };
         let mut chosen = None;
         egui::ComboBox::from_id_salt(format!("{id}-rendition"))
             .selected_text(label)
             .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(self.choice == RenditionChoice::Auto, "Auto")
-                    .clicked()
-                {
-                    chosen = Some(RenditionChoice::Auto);
+                let auto = matches!(status.mode, RenditionMode::Auto { .. });
+                if ui.selectable_label(auto, "Auto").clicked() {
+                    chosen = Some(RenditionMode::auto());
                 }
-                for name in self.broadcast.catalog().video().keys() {
-                    let pinned = self.choice == RenditionChoice::Pinned(name.clone());
-                    if ui.selectable_label(pinned, name).clicked() {
-                        chosen = Some(RenditionChoice::Pinned(name.clone()));
+                for info in catalog.video() {
+                    let pinned = status.mode == RenditionMode::pinned(info.name.clone());
+                    let text = info.label.clone().unwrap_or_else(|| info.name.clone());
+                    if ui.selectable_label(pinned, text).clicked() {
+                        chosen = Some(RenditionMode::pinned(info.name.clone()));
                     }
                 }
             });
-        if let Some(choice) = chosen {
-            self.set_rendition(choice);
+        if let Some(mode) = chosen {
+            self.set_rendition(mode);
         }
 
         ui.label("Decoder");
@@ -538,27 +471,15 @@ impl RemoteView {
             self.set_decoder(choice);
         }
 
-        #[cfg(feature = "playback")]
-        if let Some(audio) = self.audio.as_ref() {
+        if self.player.stats().audio.is_some() {
             ui.label("Volume");
             if ui
                 .add(egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(false))
                 .changed()
             {
-                audio.set_volume(self.volume);
+                self.player.set_volume(self.volume);
             }
         }
-    }
-
-    /// Drops the decoders and ends the subscription.
-    ///
-    /// The session itself belongs to whoever opened it, so this leaves it
-    /// alone: a room keeps one session per peer and several views can ride on
-    /// it.
-    pub fn shutdown(&mut self) {
-        self.video = None;
-        self.audio = None;
-        self.broadcast.shutdown();
     }
 }
 

@@ -40,15 +40,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!("subscribed, waiting for video");
-    let track = _sub
+    let player = _sub
         .broadcast()
-        .video()
-        .await
+        .play(iroh_live::media::PlayerConfig::default())
         .map_err(|err| anyhow::anyhow!("{err:#}"))?;
+    let mut frames = player.video();
 
     let mut received = 0u32;
     while received < cli.frames {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), track.recv()).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), frames.next()).await {
             Ok(Some(frame)) => {
                 received += 1;
                 let size = frame.size();

@@ -4465,6 +4465,7 @@ dependencies = [
  "moq-net",
  "n0-error",
  "n0-future",
+ "n0-watcher",
  "qr2term",
  "qrcode",
  "rqrr",
@@ -4529,6 +4530,7 @@ dependencies = [
  "moq-video",
  "n0-error",
  "n0-future",
+ "n0-watcher",
  "tracing",
 ]
 
@@ -7513,6 +7515,7 @@ dependencies = [
  "moq-video",
  "n0-error",
  "n0-future",
+ "n0-watcher",
  "qrcode",
  "raw-window-handle",
  "tokio",

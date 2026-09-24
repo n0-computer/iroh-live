@@ -1,755 +1,580 @@
 //! The video publish task: one source, one encoder per rendition.
 //!
-//! `moq_video::encode::publish_capture` covers the single-rendition case and
-//! owns its device. Simulcast cannot reuse it, because every rendition needs
-//! the same picture at the same instant and a camera can only be opened once.
-//! So the source is read here and its frames are handed to each rendition's
-//! encoder through a latest-wins slot: a rendition that falls behind drops
-//! frames instead of stalling the ones that have not.
+//! Every rendition needs the same picture at the same instant and a camera can
+//! only be opened once, so each rendition's encoder reads the source through a
+//! latest-wins handle of its own: a rendition that falls behind drops frames
+//! instead of stalling the ones that have not.
 //!
-//! Encoders are demand-gated the way upstream gates its device: a rendition
-//! encodes only while someone is watching it. The source itself is not, because
-//! the local preview draws the same frames the encoders receive and a publisher
-//! expects to see itself before anyone has tuned in.
+//! Encoders are demand-gated the way upstream gates its devices: a rendition
+//! encodes only while someone watches it. The source itself is not, because a
+//! preview reads the same frames and a publisher expects to see itself before
+//! anyone tunes in.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
-use moq_video::{
-    Frame, Size,
-    encode::{self, Encoded},
-};
-use n0_error::Result;
-use n0_future::{
-    StreamExt,
-    boxed::BoxStream,
-    task::{AbortOnDropHandle, JoinSet, spawn},
-};
+use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, info, instrument, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::{CatalogProducer, PublishError, VideoRendition, VideoSource};
+use super::{
+    FINISH_PATIENCE, SlotTask,
+    encoding::{VideoEncoding, VideoRendition},
+    status::{RenditionState, Reporter, SlotState},
+};
 use crate::{
-    frame_channel::{FrameReceiver, FrameSender, frame_channel},
-    stats::PublishStats,
+    EncodedVideoSource, VideoSource,
+    catalog::CatalogProducer,
+    error::Error,
+    frames::VideoFrames,
+    stats::{Cell, EncodeStats, PublishRecorder, RateMeter, Smoothed},
+    video::{self, encode},
 };
 
-/// Returns the frame rate used when neither the source nor the caller reports
-/// one.
-fn default_framerate() -> moq_video::Rate {
-    moq_video::Rate::new(30, 1).expect("30/1 is a valid frame rate")
-}
+/// The name of the one rendition a pre-encoded source publishes.
+pub(super) const ENCODED_RENDITION: &str = "video";
 
-/// How long a source may take over its first frame before it is worth a word
-/// in the log.
-///
-/// Long enough that a camera warming up, or a screen capture waiting on a
-/// portal dialog the user has not answered yet, says nothing.
-const FIRST_FRAME_GRACE: Duration = Duration::from_secs(5);
-
-/// Everything the publish task needs, moved into it whole.
-pub(super) struct Publish {
-    pub broadcast: moq_net::broadcast::Producer,
+/// Everything a video publish task needs, moved into it whole.
+pub(super) struct Job {
+    pub producer: moq_net::broadcast::Producer,
     pub catalog: CatalogProducer,
     pub clock: moq_mux::Clock,
-    pub stats: PublishStats,
-    /// Held for this task's whole life so a replacement cannot create a track
-    /// whose name this task still owns.
-    pub slot: std::sync::Arc<tokio::sync::Mutex<()>>,
-    pub source: VideoSource,
-    pub renditions: Vec<VideoRendition>,
-    pub preview: FrameSender<Arc<Frame>>,
+    /// Held while this task owns track names.
+    pub tracks: Arc<tokio::sync::Mutex<()>>,
+    pub stats: PublishRecorder,
+    pub reporter: Reporter,
+    /// The task this one replaces, finished before its track names are taken.
+    pub predecessor: Option<SlotTask>,
 }
 
-/// A video publication that can be asked to stop at a frame boundary.
-#[derive(Debug)]
-pub(super) struct PublishTask {
-    shutdown: CancellationToken,
-    task: AbortOnDropHandle<()>,
+/// Maps a source's own timestamps onto the broadcast clock.
+///
+/// Anchored at the first frame the broadcast reads, and shared by every
+/// rendition, so two rungs of one ladder carry the same timestamp for the same
+/// picture and a subscriber switching between them sees no jump.
+#[derive(Debug, Clone, Copy)]
+struct Rebase {
+    /// Broadcast micros minus source micros.
+    delta: i128,
 }
 
-impl PublishTask {
-    pub(super) async fn shutdown(self) {
-        self.shutdown.cancel();
-        let _ = self.task.await;
-    }
-}
-
-/// Starts the publish task. Dropping the returned handle still stops it, while
-/// [`PublishTask::shutdown`] lets every encoder finish its track first.
-pub(super) fn spawn_publish(publish: Publish) -> PublishTask {
-    let shutdown = CancellationToken::new();
-    let token = shutdown.clone();
-    let task = spawn(
-        async move {
-            if let Err(err) = run(publish, token).await {
-                warn!(error = %err, "video publish stopped");
-            }
+impl Rebase {
+    fn anchor(clock: moq_mux::Clock, first: moq_net::Timestamp) -> Self {
+        Self {
+            delta: clock.now().as_micros() as i128 - first.as_micros() as i128,
         }
-        .instrument(error_span!("video-publish")),
-    );
-    PublishTask {
-        shutdown,
-        task: AbortOnDropHandle::new(task),
+    }
+
+    fn map(self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
+        let micros = (timestamp.as_micros() as i128 + self.delta).max(0) as u64;
+        moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp)
     }
 }
 
-async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), PublishError> {
-    let Publish {
-        broadcast,
+/// Finishes the predecessor, then waits for the track names, or returns `None`
+/// once stopped.
+async fn take_over(
+    predecessor: Option<SlotTask>,
+    tracks: Arc<tokio::sync::Mutex<()>>,
+    stop: &CancellationToken,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    if let Some(predecessor) = predecessor {
+        tokio::select! {
+            () = predecessor.finish(FINISH_PATIENCE) => {}
+            () = stop.cancelled() => return None,
+        }
+    }
+    tokio::select! {
+        guard = tracks.lock_owned() => Some(guard),
+        () = stop.cancelled() => None,
+    }
+}
+
+/// Encodes a raw source into every rendition of `encoding`.
+pub(super) async fn run_raw(
+    job: Job,
+    source: VideoSource,
+    encoding: VideoEncoding,
+    stop: CancellationToken,
+) {
+    let Job {
+        producer,
         catalog,
-        #[cfg_attr(
-            not(feature = "capture"),
-            allow(unused_variables, reason = "only the capture source stamps frames")
-        )]
         clock,
+        tracks,
         stats,
-        slot,
-        source,
-        renditions,
-        preview,
-    } = publish;
+        reporter,
+        predecessor,
+    } = job;
+    let Some(_tracks) = take_over(predecessor, tracks, &stop).await else {
+        return;
+    };
 
-    // Wait for the previous publish to have dropped its track producers. The
-    // guard is shared with every encoder task, because that is where the
-    // producers actually live: releasing it when this function returns would
-    // let a replacement create a track whose name an aborted encoder still
-    // owns for a few more scheduler ticks.
-    let slot = Arc::new(slot.lock_owned().await);
+    let mut frames = source.frames();
+    let first = tokio::select! {
+        first = frames.next() => first,
+        () = stop.cancelled() => return,
+    };
+    let Some(first) = first else {
+        let failure = source.failure().unwrap_or_else(|| {
+            Arc::new(Error::device_msg(
+                "the video source ended before its first frame",
+            ))
+        });
+        warn!(error = %failure, "video source produced nothing");
+        reporter.slot(SlotState::Failed(failure));
+        return;
+    };
+    let size = first.size();
+    let color = first.surface.color();
+    let rate = source.format().rate;
+    let rebase = Rebase::anchor(clock, first.timestamp);
+    drop(first);
 
-    match source {
-        VideoSource::AnnexB(bytes) => {
-            // A pre-encoded stream is one rendition by definition: we did not
-            // perform the encode and cannot repeat it at another size.
-            if renditions.len() > 1 {
-                warn!(
-                    given = renditions.len(),
-                    "a pre-encoded source publishes one rendition, ignoring the rest",
-                );
+    let mut encoders = JoinSet::new();
+    let mut last_failure = None;
+    for rendition in &encoding.renditions {
+        let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
+        let published = match probe(&mut config).await {
+            Ok(published) => published,
+            Err(err) => {
+                let err = Arc::new(err);
+                warn!(rendition = %rendition.name, error = %err, "no encoder for this rendition");
+                reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
+                last_failure = Some(err);
+                continue;
             }
-            let name = renditions
-                .first()
-                .map(|rendition| rendition.name.clone())
-                .unwrap_or_else(|| "video".to_string());
-            publish_annexb(broadcast, catalog, bytes, name, stats, shutdown).await
-        }
-        #[cfg(feature = "capture")]
-        VideoSource::Capture(config) => {
-            // The device is opened on a thread of its own and never leaves it;
-            // only its geometry and its frames cross. moq's native backends
-            // are not all `Send`: an Apple camera or screen stream holds
-            // AVFoundation objects, so neither the stream nor a future holding
-            // one can go to a work-stealing executor. Frames can.
-            let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
-            let (opened_tx, opened) = tokio::sync::oneshot::channel();
-            let open_config = config.clone();
-            let reader = crate::local_task::spawn("video-capture", move |shutdown| async move {
-                let Some(mut stream) = open_capture(&open_config, &shutdown).await else {
-                    // Cancelled while retrying. Dropping the sender is what
-                    // tells the caller, which already reads a dropped channel
-                    // as a reader that could not start.
-                    return;
-                };
-                // The geometry is read here because the caller needs it to
-                // register the catalog, and the stream itself cannot travel.
-                let geometry = (
-                    Size::new(stream.width(), stream.height()),
-                    stream.framerate(),
-                    stream.color(),
-                );
-                if opened_tx.send(geometry).is_err() {
-                    return;
-                }
+        };
+        let track = match producer.create_track(
+            rendition.name.as_str(),
+            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+        ) {
+            Ok(track) => track,
+            Err(err) => {
+                let err = Arc::new(Error::transport(err));
+                reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
+                last_failure = Some(err);
+                continue;
+            }
+        };
+        let producer = match encode::Producer::with_track(track, catalog.clone(), published) {
+            Ok(producer) => producer,
+            Err(err) => {
+                let err = Arc::new(Error::catalog(err));
+                reporter.rendition(&rendition.name, RenditionState::Failed(err.clone()));
+                last_failure = Some(err);
+                continue;
+            }
+        };
+        info!(rendition = %rendition.name, size = %config.size(), %rate, "publishing video rendition");
+        let encoder = Encoder {
+            name: rendition.name.clone(),
+            producer,
+            config,
+            frames: source.frames(),
+            source: source.clone(),
+            rebase,
+            interval: frame_interval(rendition, rate),
+            reporter: reporter.clone(),
+            stats: stats.rendition(&rendition.name),
+            stop: stop.clone(),
+        };
+        encoders.spawn(
+            encoder
+                .run()
+                .instrument(info_span!("rendition", name = %rendition.name)),
+        );
+    }
+    if encoders.is_empty() {
+        let failure = last_failure
+            .unwrap_or_else(|| Arc::new(Error::invalid("no rendition could be encoded")));
+        reporter.slot(SlotState::Failed(failure));
+        return;
+    }
+    reporter.slot(SlotState::Running);
 
-                loop {
-                    // `read` reports a failed capture as well as its end. Either
-                    // way the stream stops here and the encoders downstream see
-                    // the source close; the error is logged rather than
-                    // propagated, since by now there is nobody to return it to.
-                    let frame = tokio::select! {
-                        read = stream.read() => read,
-                        _ = shutdown.cancelled() => break,
-                    };
-                    let frame = match frame {
-                        Ok(Some(frame)) => frame,
-                        Ok(None) => break,
-                        Err(err) => {
-                            warn!(error = %err, "video capture failed");
-                            break;
-                        }
-                    };
-                    // A full channel means the encoders are behind. Waiting is
-                    // right: the capture backend paces itself against the
-                    // device, so dropping here would only hide that.
-                    if frame_tx.send(frame).await.is_err() {
+    // The source's own frame rate is written here, the one place that reads
+    // every frame, rather than by each encoder.
+    let source_fps = stats.source_fps();
+    let mut meter = RateMeter::default();
+    loop {
+        tokio::select! {
+            frame = frames.next() => match frame {
+                Some(_) => {
+                    if let Some((fps, _)) = meter.tick(0) {
+                        source_fps.update(|value| *value = Some(fps as f32));
+                    }
+                }
+                None => break,
+            },
+            Some(joined) = encoders.join_next() => report(joined),
+            () = stop.cancelled() => break,
+        }
+    }
+    // The encoders see the same end or the same stop, and finish their tracks.
+    while let Some(joined) = encoders.join_next().await {
+        report(joined);
+    }
+    if stop.is_cancelled() {
+        return;
+    }
+    match source.failure() {
+        Some(failure) => {
+            warn!(error = %failure, "video source failed");
+            reporter.slot(SlotState::Failed(failure));
+        }
+        None => {
+            debug!("video source ended");
+            reporter.slot(SlotState::Ended);
+        }
+    }
+}
+
+/// Logs an encoder that panicked; one that failed reported itself.
+fn report(joined: Result<(), n0_future::task::JoinError>) {
+    if let Err(err) = joined {
+        warn!(error = %err, "rendition encoder panicked");
+    }
+}
+
+/// The gap between frames a rendition keeps, when it runs slower than its
+/// source.
+fn frame_interval(rendition: &VideoRendition, source: video::Rate) -> Option<std::time::Duration> {
+    let rate = rendition.rate?;
+    (rate.as_f64() < source.as_f64())
+        .then(|| std::time::Duration::from_secs_f64(1.0 / rate.as_f64()))
+}
+
+/// Probes the encoder `config` asks for, falling back to software once where
+/// the choice was left open.
+///
+/// A backend named explicitly is not replaced: naming one says to fail rather
+/// than fall back, so a broken driver shows up as an encoder that will not open.
+async fn probe(config: &mut encode::Config) -> Result<hang::catalog::VideoConfig, Error> {
+    match config.probe().await {
+        Ok(published) => Ok(published),
+        Err(err) if falls_back(&config.kind) => {
+            warn!(error = %err, "the hardware encoder would not open, falling back to software");
+            config.kind = encode::Kind::Software;
+            config.probe().await.map_err(encode_error)
+        }
+        Err(err) => Err(encode_error(err)),
+    }
+}
+
+/// Whether a failure of `kind` falls back to software.
+fn falls_back(kind: &encode::Kind) -> bool {
+    matches!(kind, encode::Kind::Auto | encode::Kind::Hardware)
+}
+
+/// An encoder failure, as the crate reports it.
+fn encode_error(err: video::Error) -> Error {
+    match err {
+        video::Error::NoEncoder(tried) => n0_error::e!(Error::NoEncoder { codec: tried }),
+        video::Error::UnknownEncoder { codec, .. } => n0_error::e!(Error::NoEncoder {
+            codec: format!("{codec:?}")
+        }),
+        other => Error::encoder(other),
+    }
+}
+
+/// One rendition's encoder.
+struct Encoder {
+    name: String,
+    producer: encode::Producer<crate::catalog::IrohLiveExt>,
+    config: encode::Config,
+    frames: VideoFrames,
+    source: VideoSource,
+    rebase: Rebase,
+    /// The gap between frames kept, for a rendition slower than its source.
+    interval: Option<std::time::Duration>,
+    reporter: Reporter,
+    stats: Cell<EncodeStats>,
+    stop: CancellationToken,
+}
+
+impl Encoder {
+    /// Encodes for as long as someone watches, until the source ends or the
+    /// slot stops, and reports a failure in the rendition's state.
+    async fn run(mut self) {
+        if let Err(err) = self.encode().await {
+            warn!(error = %err, "rendition encoder failed");
+            // Aborted rather than dropped, so a subscriber sees the cause
+            // rather than a bare reset.
+            let cause = moq_net::Error::Transport(err.to_string());
+            self.reporter
+                .rendition(&self.name, RenditionState::Failed(Arc::new(err)));
+            self.producer.abort(cause);
+        }
+    }
+
+    async fn encode(&mut self) -> Result<(), Error> {
+        let demand = self.producer.demand();
+        let target = self.config.size();
+        self.stats.update(|stats| stats.size = Some(target));
+        let mut fell_back = false;
+
+        loop {
+            // Idle until someone subscribes, the source ends, or the slot
+            // stops. The track and its catalog entry are advertised already.
+            tokio::select! {
+                used = demand.used() => {
+                    if let Err(err) = used {
+                        debug!(error = %err, "rendition no longer watched");
                         break;
                     }
                 }
-            });
-
-            // The reader stopping before it opened anything now means only that
-            // the source was replaced or dropped while it was still waiting for
-            // the device: an open that fails is retried rather than reported.
-            let opened = tokio::select! {
-                opened = opened => opened,
-                () = shutdown.cancelled() => return Ok(()),
-            };
-            let Ok((size, device_framerate, color)) = opened else {
-                return Err(moq_video::Error::Unsupported(
-                    "the video capture source was dropped before its device opened".into(),
-                )
-                .into());
-            };
-            let framerate = config
-                .framerate
-                .or(device_framerate)
-                .unwrap_or_else(default_framerate);
-            // The reader handle rides along in the stream's state so the thread
-            // lives exactly as long as anything is still reading from it.
-            let frames = Box::pin(n0_future::stream::unfold(
-                (frame_rx, reader),
-                |(mut rx, reader)| async move { rx.recv().await.map(|frame| (frame, (rx, reader))) },
-            ));
-            // Restamped on arrival: the capture stream keeps a timeline of its
-            // own, and the broadcast clock is the one audio shares.
-            let clock_for_stamp = clock;
-            let frames: BoxStream<Frame> = Box::pin(
-                frames.map(move |frame: Frame| Frame::new(frame.surface, clock_for_stamp.now())),
-            );
-            fan_out(
-                broadcast, catalog, stats, renditions, preview, frames, size, framerate, color,
-                slot, shutdown,
-            )
-            .await
-        }
-        VideoSource::Frames(mut frames) => {
-            // The first frame is what tells us the geometry, and the catalog
-            // has to be exact before an encoder opens, so wait for it here and
-            // put it back at the head of the stream.
-            // The same failure the Annex-B path reports as `EmptySource`, and
-            // reported the same way. A source that ends before its first frame
-            // never described itself, so the catalog has no rendition and a
-            // subscriber waits on a track that cannot carry anything. Returning
-            // `Ok` here left `--video rpicam:raw` silent about a camera that
-            // would not open while `--video rpicam` said so, which is the same
-            // camera and the same cause.
-            let first = tokio::select! {
-                first = frames.next() => first,
-                () = shutdown.cancelled() => return Ok(()),
-            };
-            let Some(first) = first else {
-                return Err(n0_error::e!(PublishError::EmptySource));
-            };
-            let size = first.size();
-            let color = first.surface.color();
-            let frames: BoxStream<Frame> = Box::pin(n0_future::stream::once(first).chain(frames));
-            fan_out(
-                broadcast,
-                catalog,
-                stats,
-                renditions,
-                preview,
-                frames,
-                size,
-                default_framerate(),
-                color,
-                slot,
-                shutdown,
-            )
-            .await
-        }
-    }
-}
-
-/// Reads `frames` and drives one encoder per rendition.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one call site, all of it is source geometry"
-)]
-async fn fan_out(
-    broadcast: moq_net::broadcast::Producer,
-    catalog: CatalogProducer,
-    stats: PublishStats,
-    renditions: Vec<VideoRendition>,
-    preview: FrameSender<Arc<Frame>>,
-    mut frames: BoxStream<Frame>,
-    size: Size,
-    framerate: moq_video::Rate,
-    color: Option<moq_video::Color>,
-    slot: Arc<tokio::sync::OwnedMutexGuard<()>>,
-    shutdown: CancellationToken,
-) -> Result<(), PublishError> {
-    let mut senders = Vec::with_capacity(renditions.len());
-    let mut encoders = JoinSet::new();
-
-    for rendition in renditions {
-        let config = encode_config(&rendition, size, framerate, color);
-        // Probing costs one encoder open and buys a catalog entry that says
-        // exactly what the track will carry, so a subscriber can size itself
-        // against it before a single frame is encoded.
-        let published = config.probe().await?;
-        info!(
-            rendition = %rendition.name,
-            size = %config.size(),
-            %framerate,
-            "publishing video rendition",
-        );
-
-        let track = broadcast.create_track(
-            rendition.name.as_str(),
-            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
-        )?;
-        let producer = encode::Producer::with_track(track, catalog.clone(), published)?;
-
-        let (tx, rx) = frame_channel();
-        senders.push(tx);
-        encoders.spawn({
-            let slot = slot.clone();
-            let encode = encode_rendition(producer, config, rx, stats.clone())
-                .instrument(error_span!("rendition", name = %rendition.name));
-            async move {
-                let result = encode.await;
-                // Explicit so the guard's lifetime is visible: it is what keeps
-                // a replacement publish from creating a track this encoder's
-                // producer still owns.
-                drop(slot);
-                result
-            }
-        });
-    }
-
-    // The gap between source frames, which is the one frame rate a ladder has:
-    // every rung sees the same pictures, so recording it per encoder would
-    // write the same figure to one metric several times over.
-    // Frames per second out of the source, counted over a window.
-    let source_rate = crate::stats::Rate::default();
-
-    // A device that opens and then delivers nothing is the quietest failure in
-    // the stack. It happens: `/dev/video0` on a Raspberry Pi is the Unicam
-    // node, which accepts a format and hands back raw Bayer that only
-    // libcamera can drive, so the open succeeds, the encoder opens, the
-    // catalog is written from the probe, and a subscriber waits on a track
-    // whose first frame is never coming. Nothing above reports it, because
-    // nothing above has failed. So the wait for the first frame is bounded by
-    // a warning rather than by an error: the source may legitimately be slow
-    // to start, and a publisher that gave up on a slow camera would be worse.
-    let first_frame_grace = tokio::time::sleep(FIRST_FRAME_GRACE);
-    tokio::pin!(first_frame_grace);
-    let mut warned_no_frames = false;
-
-    loop {
-        // Both futures are pinned across iterations, so neither is dropped
-        // when the other completes: the frame stream is never polled from a
-        // fresh future and cannot lose a frame to the warning firing.
-        let frame = tokio::select! {
-            frame = frames.next() => frame,
-            () = &mut first_frame_grace, if !warned_no_frames => {
-                warned_no_frames = true;
-                warn!(
-                    after = ?FIRST_FRAME_GRACE,
-                    %size,
-                    "the video source opened but has not produced a frame; \
-                     subscribers will see the track announced and nothing on it",
-                );
-                continue;
-            }
-            () = shutdown.cancelled() => None,
-        };
-        let Some(frame) = frame else { break };
-        // Reaching a frame at all means the source works; the warning has
-        // nothing left to say.
-        warned_no_frames = true;
-        if let Some(rate) = source_rate.tick() {
-            stats.encode.fps.record(rate);
-        }
-        // One allocation per frame, shared by the preview and every encoder.
-        // `encode::Sink::encode` takes an `Arc<Frame>` for exactly this reason:
-        // a ladder hands the same picture to several encoders.
-        let frame = Arc::new(frame);
-        preview.send(frame.clone());
-        for sender in &senders {
-            sender.send(frame.clone());
-        }
-        // A rung that gave up is reported here rather than after the source
-        // ends, which on a live capture is never. Reading the source on is
-        // still right: the local preview draws these same frames, and a
-        // publisher expects to see itself whatever the encoders are doing.
-        while let Some(joined) = encoders.try_join_next() {
-            report_encoder(joined);
-        }
-    }
-
-    // The source ended: drop the senders so every encoder sees the close and
-    // finishes its track, then wait for them.
-    drop(senders);
-    drop(preview);
-    while let Some(joined) = encoders.join_next().await {
-        report_encoder(joined);
-    }
-    Ok(())
-}
-
-/// Logs how one rendition's encoder ended.
-fn report_encoder(joined: Result<Result<(), PublishError>, n0_future::task::JoinError>) {
-    match joined {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => warn!(error = %err, "rendition encoder failed"),
-        Err(err) => warn!(error = %err, "rendition encoder panicked"),
-    }
-}
-
-/// Encodes one rendition for as long as someone is watching it.
-#[instrument(skip_all)]
-async fn encode_rendition(
-    mut producer: encode::Producer<crate::catalog::IrohLiveExt>,
-    config: encode::Config,
-    frames: FrameReceiver<Arc<Frame>>,
-    stats: PublishStats,
-) -> Result<(), PublishError> {
-    let demand = producer.demand();
-    let target = config.size();
-    // When this rendition last published, so a bitrate can be read off the
-    // bytes since then.
-    let mut published: Option<Instant> = None;
-
-    loop {
-        // Idle until someone subscribes, or until the source ends. Waiting on
-        // demand alone would park here forever on a rendition nobody watched:
-        // the source's end closes the frame channel, which `demand` cannot see.
-        // The track and its catalog entry are already advertised, so a
-        // subscriber gets here without a frame ever having been encoded.
-        tokio::select! {
-            used = demand.used() => {
-                if let Err(err) = used {
-                    debug!(error = %err, "rendition no longer watched");
-                    break;
+                () = self.frames.closed() => {
+                    self.producer.finish().map_err(Error::transport)?;
+                    return Ok(());
                 }
+                () = self.stop.cancelled() => break,
             }
-            () = frames.closed() => {
-                debug!("source ended with nobody watching this rendition");
-                producer.finish()?;
-                return Ok(());
-            }
-        }
 
-        let mut encoder = encode::Sink::open(&config).await?;
-        stats.encode.encoder.set(encoder.name());
-        // `Codec` has no `Display`, and its `Debug` is already the name a
-        // reader wants: `H264`, `H265`.
-        stats.encode.codec.set(format!("{:?}", config.codec));
-        stats.encode.resolution.set(target.to_string());
-        debug!(encoder = encoder.name(), %target, "rendition encoding");
-
-        loop {
-            let frame = tokio::select! {
-                // The last viewer left. Mark the gap so the next timestamp does
-                // not stretch this frame across it, then wait for demand again.
-                _ = demand.unused() => {
-                    producer.discontinuity()?;
-                    break;
+            // Counted as demand on the source for as long as this encodes, so
+            // an application camera can idle while nobody watches.
+            let _wanted = self.source.want();
+            let mut encoder = match encode::Sink::open(&self.config).await {
+                Ok(encoder) => encoder,
+                Err(err) if !fell_back && falls_back(&self.config.kind) => {
+                    warn!(error = %err, "the hardware encoder would not open, falling back to software");
+                    fell_back = true;
+                    self.config.kind = encode::Kind::Software;
+                    encode::Sink::open(&self.config)
+                        .await
+                        .map_err(encode_error)?
                 }
-                frame = frames.recv() => match frame {
-                    Some(frame) => frame,
-                    // The source ended: drain the encoder, publish the tail,
-                    // and close the track so subscribers see a clean end
-                    // rather than `Error::Dropped`.
-                    None => {
-                        let tail = encoder.finish().await?;
-                        producer.publish(&tail)?;
-                        producer.finish()?;
-                        return Ok(());
+                Err(err) => return Err(encode_error(err)),
+            };
+            self.encoding(encoder.name());
+
+            let mut due: Option<moq_net::Timestamp> = None;
+            let mut meter = RateMeter::default();
+            let mut timing = Smoothed::default();
+            loop {
+                let frame = tokio::select! {
+                    // The last viewer left: mark the gap so the next timestamp
+                    // does not stretch this frame across it.
+                    _ = demand.unused() => {
+                        self.producer.discontinuity().map_err(Error::transport)?;
+                        self.reporter.rendition(&self.name, RenditionState::Idle);
+                        break;
                     }
-                },
-            };
-
-            let frame = match frame.size() == target {
-                true => frame,
-                false => Arc::new(frame.resize(target, &Default::default())?),
-            };
-
-            let started = Instant::now();
-            // Abort rather than drop on failure, again so the subscriber sees
-            // the real cause instead of `Error::Dropped`.
-            let encoded = match encoder.encode(frame).await {
-                Ok(encoded) => encoded,
-                Err(err) => {
-                    producer.abort(moq_net::Error::Transport(err.to_string()));
-                    return Err(err.into());
+                    frame = self.frames.next() => frame,
+                    () = self.stop.cancelled() => None,
+                };
+                // The source ended, or the slot stopped: drain the encoder,
+                // publish the tail, and close the track so subscribers see a
+                // clean end rather than a reset.
+                let Some(frame) = frame else {
+                    let mut tail = encoder.finish().await.map_err(Error::encoder)?;
+                    self.restamp(&mut tail);
+                    self.producer.publish(&tail).map_err(Error::transport)?;
+                    self.producer.finish().map_err(Error::transport)?;
+                    return Ok(());
+                };
+                if let Some(interval) = self.interval {
+                    if due.is_some_and(|due| frame.timestamp < due) {
+                        continue;
+                    }
+                    let next = frame.timestamp.as_micros() as u64 + interval.as_micros() as u64;
+                    due = moq_net::Timestamp::from_micros(next).ok();
                 }
-            };
-            record(&stats, started, &mut published, &encoded);
-            producer.publish(&encoded)?;
+                let frame = match frame.size() == target {
+                    true => frame,
+                    false => Arc::new(
+                        frame
+                            .resize(target, &Default::default())
+                            .map_err(Error::encoder)?,
+                    ),
+                };
+
+                let started = Instant::now();
+                let encoded = match encoder.encode(frame).await {
+                    Ok(encoded) => encoded,
+                    Err(err) if !fell_back && falls_back(&self.config.kind) => {
+                        warn!(error = %err, "the hardware encoder failed, falling back to software");
+                        fell_back = true;
+                        self.config.kind = encode::Kind::Software;
+                        encoder = encode::Sink::open(&self.config)
+                            .await
+                            .map_err(encode_error)?;
+                        self.encoding(encoder.name());
+                        continue;
+                    }
+                    Err(err) => return Err(encode_error(err)),
+                };
+                let took = started.elapsed();
+                let mut encoded = encoded;
+                self.restamp(&mut encoded);
+                let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
+                let rates = meter.tick(bytes as u64);
+                let smoothed = timing.record(took);
+                self.stats.update(|stats| {
+                    stats.frames += 1;
+                    stats.bytes += bytes as u64;
+                    stats.encode_time = Some(smoothed);
+                    if let Some((fps, bytes_per_second)) = rates {
+                        stats.fps = Some(fps as f32);
+                        stats.bitrate =
+                            Some(crate::Bitrate::from_bps((bytes_per_second * 8.0) as u64));
+                    }
+                });
+                self.producer.publish(&encoded).map_err(Error::transport)?;
+            }
         }
+
+        self.producer.finish().map_err(Error::transport)?;
+        Ok(())
     }
 
-    producer.finish()?;
-    Ok(())
+    /// Records that `encoder` is now the one running.
+    fn encoding(&self, encoder: &str) {
+        debug!(encoder, "rendition encoding");
+        self.reporter.rendition(
+            &self.name,
+            RenditionState::Encoding {
+                encoder: encoder.to_string(),
+            },
+        );
+        let encoder = encoder.to_string();
+        self.stats.update(|stats| stats.encoder = Some(encoder));
+    }
+
+    /// Moves encoded timestamps onto the broadcast clock.
+    fn restamp(&self, encoded: &mut [encode::Encoded]) {
+        for packet in encoded {
+            packet.timestamp = self.rebase.map(packet.timestamp);
+        }
+    }
 }
 
-/// Publishes an Annex-B stream the source encoded itself.
+/// Publishes a pre-encoded Annex-B stream as the one rendition.
 ///
 /// `Split` cuts the byte stream into access units and `Import` publishes them,
-/// filling the catalog rendition in from the first SPS it sees. That is why
-/// this path needs no `VideoConfig` from the caller: the stream describes
-/// itself, and guessing at a profile and level we did not choose would only be
-/// wrong in a way subscribers have to work around.
-async fn publish_annexb(
-    broadcast: moq_net::broadcast::Producer,
-    catalog: CatalogProducer,
-    mut bytes: BoxStream<bytes::Bytes>,
-    name: String,
-    stats: PublishStats,
-    shutdown: CancellationToken,
-) -> Result<(), PublishError> {
-    let track = broadcast.create_track(
-        name.as_str(),
-        Some(catalog.track_info(hang::catalog::PRIORITY.video)),
-    )?;
-    let mut import =
-        moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
-    let mut split = moq_mux::codec::h264::Split::new();
-    stats.encode.encoder.set("pre-encoded");
-    info!(rendition = %name, "publishing pre-encoded video");
+/// filling the catalog rendition in from the first SPS it sees, so this path
+/// needs no description from the caller.
+pub(super) async fn run_encoded(job: Job, source: EncodedVideoSource, stop: CancellationToken) {
+    let Job {
+        producer,
+        catalog,
+        tracks,
+        stats,
+        reporter,
+        predecessor,
+        ..
+    } = job;
+    let Some(_tracks) = take_over(predecessor, tracks, &stop).await else {
+        return;
+    };
+    let EncodedVideoSource { mut bytes, _guard } = source;
+    let result = async {
+        let track = producer
+            .create_track(
+                ENCODED_RENDITION,
+                Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+            )
+            .map_err(Error::transport)?;
+        let mut import =
+            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
+                .map_err(Error::catalog)?;
+        let mut split = moq_mux::codec::h264::Split::new();
+        let entry = stats.rendition(ENCODED_RENDITION);
+        entry.update(|stats| stats.encoder = Some("pre-encoded".to_string()));
+        info!("publishing pre-encoded video");
 
-    let mut units = 0usize;
-    loop {
-        let chunk = tokio::select! {
-            chunk = bytes.next() => chunk,
-            () = shutdown.cancelled() => {
-                import.finish()?;
-                return Ok(());
+        let mut units = 0u64;
+        let mut meter = RateMeter::default();
+        loop {
+            let chunk = tokio::select! {
+                chunk = bytes.next() => chunk,
+                () = stop.cancelled() => None,
+            };
+            let Some(chunk) = chunk else { break };
+            let frames = split.decode(&chunk, None).map_err(Error::decoder)?;
+            if units == 0 && !frames.is_empty() {
+                reporter.slot(SlotState::Running);
+                reporter.rendition(
+                    ENCODED_RENDITION,
+                    RenditionState::Encoding {
+                        encoder: "pre-encoded".to_string(),
+                    },
+                );
             }
-        };
-        let Some(chunk) = chunk else { break };
-        let frames = split.decode(&chunk, None)?;
-        units += frames.len();
-        import.decode(frames)?;
-    }
-    // The splitter holds the final access unit until the next start code, so
-    // end of stream has to flush it explicitly.
-    let tail = split.flush(None)?;
-    units += tail.len();
-    import.decode(tail)?;
-    import.finish()?;
-
-    // A source that ends without a single access unit never described itself:
-    // the catalog rendition comes from the first SPS, so there is nothing for a
-    // subscriber to read and nothing that says why. That is a failed camera
-    // rather than a stream that ran its course, and it is reported as one.
-    if units == 0 {
-        return Err(n0_error::e!(PublishError::EmptySource));
-    }
-    debug!(rendition = %name, units, "pre-encoded source ended");
-    Ok(())
-}
-
-/// The first and the longest a capture open waits before trying again.
-///
-/// A device is busy for as long as whatever holds it takes to let go, which is
-/// a person closing something or another part of this program handing it over.
-/// The first retry is quick because the common case is a handover measured in
-/// milliseconds, and the ceiling is low because a camera that frees up should
-/// be picked up while somebody is still looking at the screen.
-#[cfg(feature = "capture")]
-const OPEN_RETRY_FIRST: Duration = Duration::from_millis(200);
-#[cfg(feature = "capture")]
-const OPEN_RETRY_MAX: Duration = Duration::from_secs(2);
-
-/// Opens the capture device, retrying until it opens or the source is dropped.
-///
-/// Returns `None` only for the drop: there is no attempt count to run out,
-/// because a device that is busy now is the same device that will be free in a
-/// moment, and the caller has no better answer to a failure than to ask again.
-///
-/// A capture device is busy far more often than it is broken, and the two look
-/// the same from here: `EBUSY` from a camera another program has, from another
-/// window of this one, or from the scanner in `irl call` that borrowed it for a
-/// QR code. Failing once and stopping meant a publisher that lost that race
-/// stayed dark for the rest of the session, with one warning to say so and
-/// nothing to change it.
-///
-/// Every error is retried, not just the busy ones. Which errno means "try
-/// again" is not portable, and a device that will never appear costs a log line
-/// every two seconds, which is cheap next to a publisher that gives up on one
-/// that would have.
-#[cfg(feature = "capture")]
-async fn open_capture(
-    config: &moq_video::capture::Config,
-    shutdown: &tokio_util::sync::CancellationToken,
-) -> Option<moq_video::capture::Stream> {
-    let mut backoff = OPEN_RETRY_FIRST;
-    let mut attempt = 1u32;
-    loop {
-        let result = tokio::select! {
-            opened = moq_video::capture::open(config) => opened,
-            () = shutdown.cancelled() => return None,
-        };
-        let err = match result {
-            Ok(stream) => {
-                if attempt > 1 {
-                    info!(attempt, "the capture device opened");
-                }
-                return Some(stream);
+            for frame in &frames {
+                let rates = meter.tick(frame.payload.len() as u64);
+                entry.update(|stats| {
+                    stats.frames += 1;
+                    stats.bytes += frame.payload.len() as u64;
+                    if let Some((fps, bytes)) = rates {
+                        stats.fps = Some(fps as f32);
+                        stats.bitrate = Some(crate::Bitrate::from_bps((bytes * 8.0) as u64));
+                    }
+                });
             }
-            Err(err) => err,
-        };
-        warn!(
-            error = %err,
-            attempt,
-            retry_in = ?backoff,
-            "the capture device would not open, trying again",
-        );
-        tokio::select! {
-            () = tokio::time::sleep(backoff) => {}
-            () = shutdown.cancelled() => return None,
+            units += frames.len() as u64;
+            import.decode(frames).map_err(Error::decoder)?;
         }
-        backoff = (backoff * 2).min(OPEN_RETRY_MAX);
-        attempt += 1;
+        // The splitter holds the final access unit until the next start code,
+        // so the end of the stream has to flush it explicitly.
+        let tail = split.flush(None).map_err(Error::decoder)?;
+        units += tail.len() as u64;
+        import.decode(tail).map_err(Error::decoder)?;
+        import.finish().map_err(Error::catalog)?;
+        Ok::<_, Error>(units)
     }
-}
+    .await;
 
-/// Builds the encoder config for one rendition of a source.
-fn encode_config(
-    rendition: &VideoRendition,
-    source: Size,
-    framerate: moq_video::Rate,
-    color: Option<moq_video::Color>,
-) -> encode::Config {
-    let size = rendition.size.unwrap_or(source);
-    let mut config = encode::Config::new(size.width, size.height, framerate);
-    config.bitrate = rendition.bitrate.map(moq_net::bandwidth::Rate::from_bps);
-    config.codec = rendition.codec;
-    config.kind = rendition.kind.clone();
-    config.color = color;
-    if let Some(interval) = rendition.keyframe_interval {
-        config.gop = encode::Gop::keyframe_every(interval, framerate);
+    if stop.is_cancelled() {
+        return;
     }
-    config
-}
-
-/// Records what one encode call cost and produced.
-///
-/// The rate is taken over the gap since this rendition last published. The
-/// bits of one picture are not a bitrate: at 30 fps they are a thirtieth of
-/// one, which is what the metric used to carry under a `kbps` label.
-fn record(
-    stats: &PublishStats,
-    started: Instant,
-    published: &mut Option<Instant>,
-    encoded: &[Encoded],
-) {
-    record_at(stats, started, Instant::now(), published, encoded);
-}
-
-/// [`record`], against a clock the caller supplies.
-///
-/// The bitrate is bytes divided by the gap between publications, so every
-/// assertion about it is an assertion about elapsed time. A test that sleeps
-/// and hopes is asserting that the machine slept for as long as it was asked
-/// to, which a loaded CI runner does not.
-fn record_at(
-    stats: &PublishStats,
-    started: Instant,
-    finished: Instant,
-    published: &mut Option<Instant>,
-    encoded: &[Encoded],
-) {
-    stats
-        .encode
-        .encode_ms
-        .record_ms(finished.duration_since(started));
-
-    let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
-    let gap = published
-        .replace(finished)
-        .map(|previous| finished.duration_since(previous));
-    // Nothing to divide by on the first call, and an encoder that buffered a
-    // picture rather than emitting one has no bytes to attribute yet.
-    if let Some(gap) = gap
-        && bytes > 0
-        && !gap.is_zero()
-    {
-        stats
-            .encode
-            .bitrate_kbps
-            .record(bytes as f64 * 8.0 / 1000.0 / gap.as_secs_f64());
+    match result {
+        // A source that ends without a single access unit never described
+        // itself: that is a failed camera rather than a stream that ran its
+        // course.
+        Ok(0) => reporter.slot(SlotState::Failed(Arc::new(Error::device_msg(
+            "the pre-encoded source ended before its first access unit",
+        )))),
+        Ok(units) => {
+            debug!(units, "pre-encoded source ended");
+            reporter.slot(SlotState::Ended);
+        }
+        Err(err) => {
+            warn!(error = %err, "pre-encoded video failed");
+            reporter.slot(SlotState::Failed(Arc::new(err)));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
-    fn encoded(bytes: usize) -> Vec<Encoded> {
-        vec![Encoded::new(
-            bytes::Bytes::from(vec![0u8; bytes]),
-            moq_net::Timestamp::from_secs(0).expect("zero is in range"),
-        )]
+    #[test]
+    fn a_rebase_moves_every_timestamp_by_one_offset() {
+        let clock = moq_mux::Clock::new();
+        let first = moq_net::Timestamp::from_micros(1_000_000).expect("in range");
+        let rebase = Rebase::anchor(clock, first);
+        let later = moq_net::Timestamp::from_micros(1_033_333).expect("in range");
+        let gap = rebase.map(later).as_micros() - rebase.map(first).as_micros();
+        assert_eq!(gap, 33_333, "the cadence survives the rebase");
     }
 
     #[test]
-    fn the_bitrate_metric_is_per_second_not_per_picture() {
-        // 2500 bytes every 33ms is 20000 bits thirty times a second, which is
-        // 600 kbit/s. Recording the bits of one picture would read as 20.
-        let stats = PublishStats::default();
-        let mut published = None;
-        let start = Instant::now();
-        let step = Duration::from_millis(33);
-
-        record_at(&stats, start, start, &mut published, &encoded(2500));
-        assert!(
-            !stats.encode.bitrate_kbps.has_samples(),
-            "the first call has no gap to divide by",
-        );
-
-        for tick in 1..=4u32 {
-            let at = start + step * tick;
-            record_at(&stats, at, at, &mut published, &encoded(2500));
-        }
-        let kbps = stats.encode.bitrate_kbps.current();
-        assert!(
-            (599.0..=607.0).contains(&kbps),
-            "expected 606 kbit/s, which is 2500 bytes every 33ms, got {kbps}",
-        );
-    }
-
-    /// The whole path from what a caller asks for to what the encoder is told.
-    #[test]
-    fn a_rendition_keyframe_interval_reaches_the_encoder_config() {
-        let source = Size::new(1280, 720);
-        let fps = |n| moq_video::Rate::new(n, 1).expect("a valid frame rate");
-        let plain = VideoRendition::new("video");
-        assert_eq!(
-            encode_config(&plain, source, fps(30), None).gop,
-            encode::Config::new(1280, 720, fps(30)).gop,
-            "a rendition that names no interval leaves the encoder's own default",
-        );
-
-        let keyed = VideoRendition::new("video").with_keyframe_interval(Duration::from_secs(1));
-        assert_eq!(
-            encode_config(&keyed, source, fps(30), None).gop,
-            encode::Gop::Keyframe { interval: 30 },
-        );
-        assert_eq!(
-            encode_config(&keyed, source, fps(15), None).gop,
-            encode::Gop::Keyframe { interval: 15 },
-        );
+    fn only_an_open_choice_falls_back() {
+        assert!(falls_back(&encode::Kind::Auto));
+        assert!(falls_back(&encode::Kind::Hardware));
+        assert!(!falls_back(&encode::Kind::Software));
+        assert!(!falls_back(&encode::Kind::Named("vaapi".into())));
     }
 
     #[test]
-    fn an_encoder_that_emitted_nothing_records_no_rate() {
-        let stats = PublishStats::default();
-        let mut published = None;
-        record(&stats, Instant::now(), &mut published, &encoded(1000));
-        std::thread::sleep(Duration::from_millis(10));
-        record(&stats, Instant::now(), &mut published, &[]);
-        assert!(
-            !stats.encode.bitrate_kbps.has_samples(),
-            "a call that buffered rather than emitted has no bytes to attribute",
+    fn a_slower_rendition_keeps_every_other_frame() {
+        let fps = |n| video::Rate::new(n, 1).expect("valid");
+        let half = VideoRendition::new("half").with_rate(fps(15));
+        assert_eq!(
+            frame_interval(&half, fps(30)),
+            Some(std::time::Duration::from_secs_f64(1.0 / 15.0))
         );
+        assert_eq!(frame_interval(&VideoRendition::new("full"), fps(30)), None);
     }
 }

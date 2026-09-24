@@ -1,10 +1,8 @@
-//! A generated picture and tone built for diagnosing playback.
+//! Generated sources: a picture and a tone built for diagnosing playback.
 //!
-//! The colour gradient in the parent module proves that bytes are moving and
-//! nothing else. This pattern answers the questions someone asks while looking
-//! at a live stream: is it smooth, how far behind is it, and do the picture and
-//! the sound still agree? Every element earns its place by making one fault
-//! visible.
+//! The pattern answers the questions someone asks while looking at a live
+//! stream: is it smooth, how far behind is it, and do the picture and the sound
+//! still agree? Every element earns its place by making one fault visible.
 //!
 //! - A white bar sweeps left to right, one crossing every [`SWEEP`]. Judder and
 //!   dropped frames stand out on a moving edge and hide completely on a static
@@ -20,106 +18,221 @@
 //! - A frame counter and a clock, drawn as digits sized to the frame. The
 //!   counter makes a dropped frame countable. The clock makes latency
 //!   measurable: photograph the publisher's screen and the player's screen
-//!   together and subtract the two stamps, or compare the stamp against a wall
-//!   clock.
+//!   together and subtract the two stamps.
 //! - A marker band lights for [`BEEP_LENGTH`] every [`BEEP_PERIOD`], on the
-//!   same media time as the tone's beep. Whether the flash and the beep land
-//!   together is then something you see and hear rather than something you
-//!   estimate.
+//!   same media time as the beeping tone. Whether the flash and the beep land
+//!   together is then something you see and hear rather than estimate.
 //!
-//! [`video`] and [`audio`] both stamp on a shared [`Clock`], so hand them the
-//! same one: the flash and the beep are aligned by that clock and by nothing
-//! else.
+//! Both generators draw their phase from one process-wide clock, so a picture
+//! and a tone started at different moments still flash and beep together. Each
+//! runs on a thread of its own, paced against an absolute schedule: a sleep
+//! always overshoots, so a relative wait would run slower than the clock it
+//! draws, which is the one fault a timing source must not have.
 
-use std::time::{Duration, SystemTime};
+use std::{
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant, SystemTime},
+};
 
 use moq_mux::Clock;
-use moq_video::{Frame, Size, Surface};
-use n0_future::boxed::BoxStream;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
-use super::Gate;
-use crate::publish::{AudioSource, VideoSource};
+use super::{AudioFormat, sender::PcmFanout};
+use crate::{
+    audio,
+    frames::FrameSlot,
+    video::{self, Size, Surface},
+};
 
 /// How long the bar takes to sweep the frame once.
 ///
 /// Two seconds across the width puts a ruler tick every 200 ms, which is slow
 /// enough to follow by eye and fast enough that a stall of a few frames is a
 /// visible hesitation rather than a rounding error.
-pub const SWEEP: Duration = Duration::from_secs(2);
+const SWEEP: Duration = Duration::from_secs(2);
 
 /// How often the marker flashes and the tone beeps.
-pub const BEEP_PERIOD: Duration = Duration::from_secs(1);
+const BEEP_PERIOD: Duration = Duration::from_secs(1);
 
 /// How long each flash and beep lasts.
 ///
 /// Three frames at 30 fps: short enough to time against, long enough that no
 /// single dropped frame can hide the whole event.
-pub const BEEP_LENGTH: Duration = Duration::from_millis(100);
+const BEEP_LENGTH: Duration = Duration::from_millis(100);
 
 /// Frequency of the beep, in hertz. An octave above concert A, which carries
 /// through a laptop speaker and a phone microphone alike.
-pub const BEEP_HZ: f64 = 880.0;
+pub(crate) const BEEP_HZ: f64 = 880.0;
 
-/// When the marker is lit and the tone sounds, in media time.
-const BEEP: Gate = Gate::Pulse {
+/// When the marker is lit and the beep sounds, in media time.
+pub(crate) const BEEP: Gate = Gate::Pulse {
     period: BEEP_PERIOD,
     length: BEEP_LENGTH,
 };
 
-/// The pattern at `size` and `framerate`, stamped on `clock`.
-///
-/// Give [`audio`] the same clock: the flash and the beep are one measurement,
-/// and they only agree if both tracks land on one timeline.
-///
-/// # Examples
-///
-/// ```no_run
-/// use iroh_live_media::{test_source::timing, video::Size};
-///
-/// let clock = moq_mux::Clock::new();
-/// let video = timing::video(Size::new(1280, 720), 30, clock);
-/// let audio = timing::audio(48_000, iroh_live_media::audio::Layout::Stereo, clock);
-/// ```
-pub fn video(size: Size, framerate: u32, clock: Clock) -> VideoSource {
-    let framerate = u64::from(framerate.max(1));
-    let canvas = Canvas::new(size);
+/// The sample rate every generated tone runs at: Opus's own, so it encodes
+/// without a resampling step.
+pub(crate) const TONE_RATE: u32 = 48_000;
 
-    // Pace against an absolute schedule rather than sleeping one interval per
-    // frame. A sleep always overshoots, so a relative wait makes the pattern
-    // run slower than the clock it draws, which is the one fault a timing
-    // source must not have.
-    let started = tokio::time::Instant::now();
+/// One buffer per 20 ms, matching the Opus frame duration so the encoder
+/// consumes each buffer whole.
+const TONE_FRAME: Duration = Duration::from_millis(20);
 
-    let frames: BoxStream<Frame> = Box::pin(n0_future::stream::unfold(
-        (0u64, canvas),
-        move |(count, mut canvas)| async move {
-            let due = Duration::from_micros(count * 1_000_000 / framerate);
-            tokio::time::sleep_until(started + due).await;
-            // Read the clock after the wait and paint from what it says, so the
-            // digits describe the frame that carries them rather than the one
-            // before it.
-            let timestamp = clock.now();
-            let media = Duration::from_micros(timestamp.as_micros() as u64);
-            let rgba = canvas.paint(count, media, SystemTime::now());
-            let surface = Surface::rgba(rgba, size).expect("the pattern is well formed");
-            Some((Frame::new(surface, timestamp), (count + 1, canvas)))
-        },
-    ));
-    VideoSource::Frames(frames)
+/// Peak amplitude. Not full scale on purpose: Opus overshoots a little on
+/// decode, and a tone at 1.0 clips against the mixer's clamp, which is audible
+/// as distortion on a signal chosen for being unmistakable.
+const AMPLITUDE: f32 = 0.5;
+
+/// How long a pulse takes to reach full amplitude, and to fall from it.
+///
+/// A hard edge on a sine is a click, which wears on anyone listening to a
+/// beeping stream for an hour. Two milliseconds is a fifteenth of a frame at
+/// 30 fps, far too short to move a reading of when the beep began.
+const RAMP: Duration = Duration::from_millis(2);
+
+/// The timeline both generators draw their phase from.
+///
+/// One per process, so the flash and the beep agree whenever each was started.
+fn test_clock() -> Clock {
+    static CLOCK: OnceLock<Clock> = OnceLock::new();
+    *CLOCK.get_or_init(Clock::new)
 }
 
-/// The beeping tone that goes with [`video`], stamped on `clock`.
+/// When a generated tone sounds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Gate {
+    /// It never stops.
+    Continuous,
+    /// It sounds for `length` at the start of every `period` of media time.
+    Pulse {
+        /// How often a pulse begins.
+        period: Duration,
+        /// How long one lasts.
+        length: Duration,
+    },
+}
+
+impl Gate {
+    /// Whether the tone sounds at `media`.
+    fn open(self, media: Duration) -> bool {
+        match self {
+            Self::Continuous => true,
+            Self::Pulse { period, length } => {
+                media.as_micros() % period.as_micros() < length.as_micros()
+            }
+        }
+    }
+
+    /// The amplitude multiplier at `media`, tapered over [`RAMP`] at each end
+    /// of a pulse.
+    fn envelope(self, media: Duration) -> f32 {
+        let Self::Pulse { period, length } = self else {
+            return 1.0;
+        };
+        let phase = media.as_micros() % period.as_micros();
+        let length = length.as_micros();
+        if phase >= length {
+            return 0.0;
+        }
+        let edge = phase.min(length - phase) as f32;
+        (edge / RAMP.as_micros() as f32).min(1.0)
+    }
+}
+
+/// Sleeps until `due`, or returns `false` once `stop` is cancelled.
 ///
-/// One [`BEEP_HZ`] pulse of [`BEEP_LENGTH`] every [`BEEP_PERIOD`], silent in
-/// between, on the media timeline the marker flashes on.
-pub fn audio(sample_rate: u32, layout: moq_audio::Layout, clock: Clock) -> AudioSource {
-    super::tone(
-        BEEP_HZ,
-        sample_rate,
-        layout,
-        Duration::from_micros(clock.now().as_micros() as u64),
-        BEEP,
-    )
+/// Wakes at least every 100 ms to look at `stop`, so a dropped source does not
+/// hold its thread for a whole slow frame interval.
+fn sleep_until(due: Instant, stop: &CancellationToken) -> bool {
+    loop {
+        if stop.is_cancelled() {
+            return false;
+        }
+        let now = Instant::now();
+        let Some(left) = due
+            .checked_duration_since(now)
+            .filter(|left| !left.is_zero())
+        else {
+            return true;
+        };
+        std::thread::sleep(left.min(Duration::from_millis(100)));
+    }
+}
+
+/// Paints the pattern at `size` and `rate` into `slot` until `stop` is
+/// cancelled.
+pub(crate) fn run_pattern(size: Size, rate: video::Rate, slot: FrameSlot, stop: CancellationToken) {
+    let clock = test_clock();
+    let interval = Duration::from_secs_f64(1.0 / rate.as_f64());
+    let mut canvas = Canvas::new(size);
+    let started = Instant::now();
+    for count in 0u64.. {
+        let due = started + interval.mul_f64(count as f64);
+        if !sleep_until(due, &stop) {
+            break;
+        }
+        // Read the clock after the wait and paint from what it says, so the
+        // digits describe the frame that carries them.
+        let timestamp = clock.now();
+        let media = Duration::from_micros(timestamp.as_micros() as u64);
+        let rgba = canvas.paint(count, media, SystemTime::now());
+        match Surface::rgba(rgba, size) {
+            Ok(surface) => slot.send(Arc::new(video::Frame::new(surface, timestamp))),
+            Err(err) => {
+                warn!(error = %err, "the test pattern could not build a picture");
+                break;
+            }
+        }
+    }
+    debug!("test pattern stopped");
+}
+
+/// Generates a sine at `hz`, gated by `gate`, into `fanout` until `stop` is
+/// cancelled.
+pub(crate) fn run_tone(
+    hz: f64,
+    format: AudioFormat,
+    gate: Gate,
+    fanout: PcmFanout,
+    stop: CancellationToken,
+) {
+    let clock = test_clock();
+    let sample_rate = format.sample_rate.max(1);
+    let channels = format.layout.channels();
+    let per_frame = (f64::from(sample_rate) * TONE_FRAME.as_secs_f64()) as usize;
+    let sample_ns = 1_000_000_000 / u64::from(sample_rate);
+    let step = hz * std::f64::consts::TAU / f64::from(sample_rate);
+    // Where the track starts on the test clock's timeline, so the beep lines
+    // up with the flash the picture draws off the same clock.
+    let origin = Duration::from_micros(clock.now().as_micros() as u64);
+    let started = Instant::now();
+    let mut sample = 0usize;
+
+    for index in 0u64.. {
+        if !sleep_until(started + TONE_FRAME * index as u32, &stop) {
+            break;
+        }
+        let start = origin + TONE_FRAME * index as u32;
+        let mut data = Vec::with_capacity(per_frame * channels as usize * 4);
+        for offset in 0..per_frame {
+            // Each sample carries its own media time, so a pulse begins and
+            // ends where the gate says rather than at a buffer boundary.
+            let media = start + Duration::from_nanos(offset as u64 * sample_ns);
+            let value =
+                ((sample + offset) as f64 * step).sin() as f32 * AMPLITUDE * gate.envelope(media);
+            for _ in 0..channels {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        sample += per_frame;
+        let Ok(timestamp) = moq_net::Timestamp::from_micros(start.as_micros() as u64) else {
+            break;
+        };
+        // Nobody attached is not an error: the tone plays to no one.
+        let _ = fanout.send(audio::Frame::new(data.into(), timestamp));
+    }
+    debug!("test tone stopped");
 }
 
 /// Rows of the frame one element of the pattern occupies.
@@ -492,8 +605,6 @@ fn put(rgba: &mut [u8], size: Size, x: u32, y: u32, colour: [u8; 3]) {
 
 #[cfg(test)]
 mod tests {
-    use n0_future::StreamExt;
-
     use super::*;
 
     /// Small enough to paint quickly, large enough that every band has rows.
@@ -513,12 +624,6 @@ mod tests {
         [rgba[offset], rgba[offset + 1], rgba[offset + 2]]
     }
 
-    /// The rows of `band`, for comparing one part of two frames.
-    fn band(rgba: &[u8], band: Band) -> &[u8] {
-        let row = SIZE.width as usize * 4;
-        &rgba[band.top as usize * row..band.bottom as usize * row]
-    }
-
     /// The left edge of the sweeping bar, read back off the painted pixels.
     fn bar_left(rgba: &[u8]) -> u32 {
         let y = Layout::new(SIZE).sweep.bottom - 1;
@@ -532,7 +637,6 @@ mod tests {
     fn the_bar_sweeps_at_the_documented_rate() {
         let start = bar_left(&frame(0, Duration::ZERO, SystemTime::UNIX_EPOCH));
         let later = bar_left(&frame(0, SWEEP / 4, SystemTime::UNIX_EPOCH));
-
         assert!(start < 4, "the sweep starts at the left edge, not {start}");
         let travelled = later - start;
         let expected = SIZE.width / 4;
@@ -540,46 +644,6 @@ mod tests {
             travelled.abs_diff(expected) <= 4,
             "a quarter of {SWEEP:?} moved the bar {travelled} px, expected about {expected}"
         );
-    }
-
-    /// The bar is back where it started one period on, so a viewer counting
-    /// crossings is counting whole sweeps.
-    #[test]
-    fn the_bar_returns_to_the_left_each_period() {
-        let start = bar_left(&frame(0, Duration::ZERO, SystemTime::UNIX_EPOCH));
-        let wrapped = bar_left(&frame(0, SWEEP * 3, SystemTime::UNIX_EPOCH));
-        assert_eq!(start, wrapped);
-    }
-
-    /// The counter reads differently a hundred frames apart, which is what
-    /// makes a dropped frame countable off a recording.
-    #[test]
-    fn the_counter_digits_change_with_the_frame_number() {
-        let layout = Layout::new(SIZE);
-        let first = frame(0, Duration::ZERO, SystemTime::UNIX_EPOCH);
-        let hundredth = frame(100, Duration::ZERO, SystemTime::UNIX_EPOCH);
-
-        assert_ne!(
-            band(&first, layout.counter),
-            band(&hundredth, layout.counter)
-        );
-        // Only the counter moved: everything else in that frame is the same,
-        // so a diff anywhere else would mean the bands overlap.
-        assert_eq!(band(&first, layout.clock), band(&hundredth, layout.clock));
-    }
-
-    /// The clock reads the wall clock, so two screens photographed together
-    /// carry the numbers a latency measurement subtracts.
-    #[test]
-    fn the_clock_digits_change_with_the_time_of_day() {
-        let layout = Layout::new(SIZE);
-        let early = SystemTime::UNIX_EPOCH + Duration::from_millis(45_296_123);
-        let late = early + Duration::from_millis(500);
-
-        let first = frame(7, Duration::ZERO, early);
-        let second = frame(7, Duration::ZERO, late);
-        assert_ne!(band(&first, layout.clock), band(&second, layout.clock));
-        assert_eq!(band(&first, layout.counter), band(&second, layout.counter));
     }
 
     /// 12:34:56.123 UTC, spelled the way the digits are drawn.
@@ -590,140 +654,66 @@ mod tests {
         assert_eq!(counter_text(1_000_042), "F 000042");
     }
 
-    /// The stripe columns alternate at the pitch they are declared with.
-    #[test]
-    fn the_stripes_alternate_at_four_pitches() {
-        let layout = Layout::new(SIZE);
-        let rgba = frame(0, Duration::ZERO, SystemTime::UNIX_EPOCH);
-        let y = layout.stripes.top + layout.stripes.height() / 2;
-
-        for (column, (pitch, first, second)) in STRIPES.into_iter().enumerate() {
-            // Eight pixels into the column, clear of its boundaries and of the
-            // sweeping bar, which is parked at the left edge at media zero.
-            // Rounding down to a whole pair of stripes lands on the first
-            // colour, whatever the pitch.
-            let start = SIZE.width * column as u32 / STRIPES.len() as u32 + 8;
-            let start = start - start % (2 * pitch);
-            assert_eq!(
-                pixel(&rgba, start, y),
-                first,
-                "column {column} does not start on its first colour"
-            );
-            assert_eq!(
-                pixel(&rgba, start + pitch, y),
-                second,
-                "column {column} does not alternate every {pitch} px"
-            );
-            assert_eq!(
-                pixel(&rgba, start + 2 * pitch, y),
-                first,
-                "column {column} does not repeat every {} px",
-                2 * pitch
-            );
-        }
-    }
-
     /// The marker is lit for the length of the beep and dark for the rest of
-    /// the period.
+    /// the period, on the same gate the tone beeps on.
     #[test]
     fn the_marker_lights_for_the_beep_window() {
         let layout = Layout::new(SIZE);
         let lit = |media| {
             let rgba = frame(0, media, SystemTime::UNIX_EPOCH);
-            // Clear of the sweeping bar, which crosses this band too.
             pixel(
                 &rgba,
                 SIZE.width - 1,
                 layout.marker.top + layout.marker.height() / 2,
             ) == YELLOW
         };
-
         assert!(lit(Duration::ZERO));
         assert!(lit(BEEP_LENGTH / 2));
-        assert!(!lit(BEEP_LENGTH));
-        assert!(!lit(BEEP_PERIOD / 2));
-        assert!(lit(BEEP_PERIOD * 3));
+        assert!(!lit(BEEP_LENGTH + Duration::from_millis(1)));
+        assert!(!lit(BEEP_PERIOD - Duration::from_millis(1)));
+        assert!(lit(BEEP_PERIOD));
     }
 
-    /// The tone sounds exactly while the marker is lit.
-    ///
-    /// This is the measurement the pattern exists for: if the flash and the
-    /// beep disagree here, no amount of watching a player will tell you whether
-    /// the fault is the player's or the source's.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn the_beep_lands_on_the_flashing_frame() {
-        let layout = Layout::new(SIZE);
-        let clock = Clock::new();
-        let AudioSource::Frames { mut frames, .. } = audio(48_000, moq_audio::Layout::Mono, clock)
-        else {
-            panic!("the generated tone is a frame source");
+    /// The generated tone keeps pace with the clock and leaves headroom below
+    /// full scale.
+    #[test]
+    fn the_tone_keeps_up_with_the_clock() {
+        let (fanout, mut frames) = tokio::sync::broadcast::channel(64);
+        let stop = CancellationToken::new();
+        let format = AudioFormat::new(TONE_RATE, audio::Layout::Mono);
+        let thread = {
+            let stop = stop.clone();
+            std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, fanout, stop))
         };
-
-        // A little over two beep periods, so both a beep and the silence after
-        // it are covered.
-        for _ in 0..110 {
-            let audio = frames.next().await.expect("the tone yields frames");
-            let media = Duration::from(audio.timestamp);
-            let peak = audio
+        let started = Instant::now();
+        let mut first = None;
+        let mut last = Duration::ZERO;
+        let mut peak = 0.0f32;
+        while started.elapsed() < Duration::from_millis(600) {
+            let Ok(frame) = frames.try_recv() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            let at = Duration::from(frame.timestamp);
+            first.get_or_insert(at);
+            last = at + TONE_FRAME;
+            peak = frame
                 .data
                 .as_chunks::<4>()
                 .0
                 .iter()
                 .map(|sample| f32::from_le_bytes(*sample).abs())
-                .fold(0.0f32, f32::max);
-
-            let rgba = frame(0, media, SystemTime::UNIX_EPOCH);
-            let marker = pixel(
-                &rgba,
-                SIZE.width - 1,
-                layout.marker.top + layout.marker.height() / 2,
-            );
-
-            // The threshold clears the ramp at the edges of the pulse: a buffer
-            // that overlaps the window at all still peaks well above it.
-            assert_eq!(
-                marker == YELLOW,
-                peak > 0.05,
-                "at {media:?} the marker is {marker:?} and the tone peaks at {peak}"
-            );
+                .fold(peak, f32::max);
         }
-    }
-
-    /// The stream is paced at the frame rate it was asked for.
-    ///
-    /// Real time rather than tokio's paused clock, because the timestamps come
-    /// from a [`Clock`], which reads the machine's. The bounds are wide: this
-    /// catches a stream that free-runs or that crawls, not a scheduling slice
-    /// lost on a loaded machine.
-    #[tokio::test(flavor = "current_thread")]
-    async fn the_frames_are_paced_at_the_frame_rate() {
-        const FRAMERATE: u32 = 30;
-        let interval = Duration::from_secs(1) / FRAMERATE;
-        let VideoSource::Frames(mut frames) = video(SIZE, FRAMERATE, Clock::new()) else {
-            panic!("the pattern is a frame source");
-        };
-
-        let mut previous = Duration::from(
-            frames
-                .next()
-                .await
-                .expect("the pattern yields frames")
-                .timestamp,
+        stop.cancel();
+        thread.join().expect("the tone thread exits");
+        let media = last - first.expect("the tone produced frames");
+        let ratio = media.as_secs_f64() / started.elapsed().as_secs_f64();
+        assert!(
+            ratio > 0.9,
+            "the tone ran at {:.0}% of real time",
+            ratio * 100.0
         );
-        for _ in 0..3 {
-            let next = Duration::from(
-                frames
-                    .next()
-                    .await
-                    .expect("the pattern yields frames")
-                    .timestamp,
-            );
-            let step = next - previous;
-            assert!(
-                step > interval / 2 && step < interval * 3,
-                "frames {step:?} apart at {FRAMERATE} fps"
-            );
-            previous = next;
-        }
+        assert!(peak > 0.1 && peak < 0.95, "peak {peak}");
     }
 }

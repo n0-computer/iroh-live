@@ -279,15 +279,12 @@ impl GlesRenderer {
     /// Uploads a decoded frame, taking the plane path when the surface is
     /// already I420 and downloading to RGBA otherwise.
     ///
-    /// Takes the frame by value because converting a surface consumes it, and
-    /// the renderer is the end of the pipeline.
-    ///
     /// # Safety
     ///
     /// The GL context must be current on the calling thread.
-    pub(crate) unsafe fn upload_frame(&mut self, frame: Frame) {
+    pub(crate) unsafe fn upload_frame(&mut self, frame: &Frame) {
         let size = frame.size();
-        match frame.surface {
+        match &frame.surface {
             Surface::I420(i420) => unsafe {
                 self.upload_i420(i420.y(), i420.u(), i420.v(), i420.width(), i420.height());
             },
@@ -367,7 +364,7 @@ impl GlesRenderer {
         dead_code,
         reason = "convenience wrapper for a caller that has no use for upload and draw separately"
     )]
-    pub(crate) unsafe fn render_frame(&mut self, frame: Frame, vp_w: i32, vp_h: i32) {
+    pub(crate) unsafe fn render_frame(&mut self, frame: &Frame, vp_w: i32, vp_h: i32) {
         unsafe {
             self.upload_frame(frame);
             self.draw(vp_w, vp_h);

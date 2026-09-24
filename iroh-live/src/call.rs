@@ -1,10 +1,11 @@
 use iroh::{EndpointAddr, EndpointId, endpoint::ConnectionError};
-use iroh_live_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
+use iroh_live_media::RemoteBroadcast;
 use iroh_moq::MoqSession;
 use n0_error::{AnyError, Result, stack_error};
+use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 
-use crate::{Live, types::DisconnectReason};
+use crate::{Live, types::DisconnectReason, util::LinkSignals};
 
 /// Errors from call operations.
 #[stack_error(derive)]
@@ -25,7 +26,7 @@ pub enum CallError {
 /// What it does internally:
 /// 1. Connects to the remote peer, or accepts an incoming session
 /// 2. Subscribes to the peer's broadcast -> [`RemoteBroadcast`]
-/// 3. Wires the stats recorder and the signal producer onto the connection
+/// 3. Attaches the connection's link signals to the broadcast
 ///
 /// The local side is not part of this. Publishing is node-wide, so a broadcast
 /// created with `live.publish(Call::path(own_id))` is announced on every
@@ -39,7 +40,9 @@ pub enum CallError {
 pub struct Call {
     session: MoqSession,
     remote: RemoteBroadcast,
-    signals: watch::Receiver<NetworkSignals>,
+    signals: watch::Receiver<LinkSignals>,
+    /// Stops the signal producer with the call.
+    _signals: AbortOnDropHandle<()>,
 }
 
 /// The path prefix a call publishes under.
@@ -93,33 +96,28 @@ impl Call {
     /// Nothing is published here: the local broadcast lives on the node origin
     /// and is already announced on this session.
     ///
-    /// Auto-wires stats recording and network signal production on the
-    /// connection, so callers do not need to do this manually.
+    /// Attaches the connection's link signals to the broadcast, so its
+    /// players adapt without the caller wiring anything.
     async fn setup(session: MoqSession) -> Result<Self, CallError> {
         let path = call_path(session.remote_id());
         let consumer = session
             .subscribe(&path)
             .await
             .map_err(|err| CallError::Rejected(err.into()))?;
-        let remote = RemoteBroadcast::new(&path, consumer)
-            .await
-            .map_err(|err| CallError::Rejected(err.into()))?;
-
-        crate::util::spawn_stats_recorder(
-            session.conn(),
-            remote.stats().net.clone(),
-            remote.shutdown_token(),
-        );
-        let signals = crate::util::spawn_signal_producer(&session, remote.shutdown_token());
+        let (signals, task) = crate::util::spawn_signal_producer(&session);
+        let reader = signals.clone();
+        let remote =
+            RemoteBroadcast::from_moq(consumer).with_network(move || reader.borrow().sample());
 
         Ok(Self {
             session,
             remote,
             signals,
+            _signals: task,
         })
     }
 
-    /// Returns the remote broadcast (subscribe to video/audio here).
+    /// Returns the remote broadcast, for playing it.
     pub fn remote(&self) -> &RemoteBroadcast {
         &self.remote
     }
@@ -134,11 +132,9 @@ impl Call {
         &self.session
     }
 
-    /// Returns the network signals receiver for adaptive rendition selection.
-    ///
-    /// Signals are produced automatically when the call is established, so
-    /// callers do not need to call `spawn_signal_producer` themselves.
-    pub fn signals(&self) -> &watch::Receiver<NetworkSignals> {
+    /// Returns the link signals, for diagnostics. Players of the remote
+    /// broadcast already adapt on them.
+    pub fn signals(&self) -> &watch::Receiver<LinkSignals> {
         &self.signals
     }
 

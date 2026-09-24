@@ -16,6 +16,7 @@ mod backend;
 mod call;
 mod devices;
 mod import;
+mod playback;
 mod publish;
 mod record;
 mod rendition;

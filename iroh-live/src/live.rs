@@ -5,7 +5,7 @@ use iroh::{
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
-use iroh_live_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
+use iroh_live_media::{LocalBroadcast, RemoteBroadcast};
 use iroh_moq::{Moq, MoqProtocolHandler};
 use n0_error::Result;
 use tracing::{error, info, instrument};
@@ -213,16 +213,15 @@ impl Live {
 
     /// Creates a media broadcast at `path`, announced to every peer.
     ///
-    /// Configure it through [`LocalBroadcast::video`] and
-    /// [`LocalBroadcast::audio`]; peers reach it with [`subscribe`](Self::subscribe)
-    /// under the same path.
+    /// Give it sources with [`LocalBroadcast::set_video`] and
+    /// [`LocalBroadcast::set_audio`]; peers reach it with
+    /// [`subscribe`](Self::subscribe) under the same path.
     ///
     /// # Errors
     ///
-    /// Fails if a broadcast already exists at `path`, or the catalog track
-    /// cannot be created.
+    /// Fails if a broadcast already exists at `path`.
     pub fn publish(&self, path: impl moq_net::AsPath) -> Result<LocalBroadcast> {
-        Ok(LocalBroadcast::new(self.moq.publish(path)?)?)
+        Ok(LocalBroadcast::from_moq(self.moq.publish(path)?))
     }
 
     /// Creates a raw broadcast at `path`, without the media catalog.
@@ -240,9 +239,9 @@ impl Live {
     /// Connects to a remote peer and subscribes to a named broadcast.
     ///
     /// Returns a [`Subscription`](crate::Subscription) that owns the
-    /// [`MoqSession`](iroh_moq::MoqSession), [`RemoteBroadcast`], and the
-    /// transport signals that drive rendition adaptation.
-    /// Stats recording and signal production are wired up automatically.
+    /// [`MoqSession`](iroh_moq::MoqSession) and the [`RemoteBroadcast`], with
+    /// the link's signals attached so its players adapt. The broadcast's
+    /// catalog arrives on its own; watch [`RemoteBroadcast::catalog`] for it.
     #[instrument("Subscribe", skip_all, fields(remote=tracing::field::Empty))]
     pub async fn subscribe(
         &self,
@@ -254,7 +253,7 @@ impl Live {
         let session = self.moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "connected");
         let consumer = session.subscribe(path).await?;
-        let broadcast = RemoteBroadcast::new(path, consumer).await?;
+        let broadcast = RemoteBroadcast::from_moq(consumer);
         Ok(crate::Subscription::new(session, broadcast))
     }
 

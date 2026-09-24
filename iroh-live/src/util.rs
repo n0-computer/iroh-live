@@ -1,13 +1,11 @@
 //! Pieces an application needs around the transport, rather than in it.
 //!
 //! The endpoint identity to bind with, the endpoint helpers re-exported from
-//! [`iroh_moq::endpoint`], and the two background samplers that turn a QUIC
-//! connection's path statistics into something a caller can act on:
-//! [`NetworkSignals`] for the adaptation loop, and
-//! [`NetStats`](iroh_live_media::stats::NetStats) for a user interface to draw.
-//! [`Live::subscribe`](crate::Live::subscribe) and [`Call`](crate::Call) wire
-//! both samplers up already; reach for them directly only when the session and
-//! the broadcast came from somewhere else.
+//! [`iroh_moq::endpoint`], and the background sampler that turns a QUIC
+//! connection's path statistics into [`LinkSignals`], which a
+//! [`Subscription`](crate::Subscription) hands to its broadcast's players as
+//! their network signals. [`Live::subscribe`](crate::Live::subscribe) and
+//! [`Call`](crate::Call) wire it up already.
 
 use std::{
     collections::VecDeque,
@@ -16,14 +14,67 @@ use std::{
 
 use iroh::{
     SecretKey,
-    endpoint::{Connection, PathId, PathStats},
+    endpoint::{PathId, PathStats},
 };
-use iroh_live_media::net::NetworkSignals;
+use iroh_live_media::{Bitrate, NetworkSample};
 use iroh_moq::MoqSession;
 pub use iroh_moq::endpoint::{LanPresence, transport_config, with_mdns};
+use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
+
+/// What one endpoint measures about the path its session runs over.
+///
+/// The sampler's full reading. Players read the part of it they adapt on as a
+/// [`NetworkSample`], through [`LinkSignals::sample`]; the rest is here for
+/// diagnostics and for tests that check an impairment reached the transport.
+///
+/// Every figure is measured by one endpoint about one path, which on a
+/// subscriber means most of them describe the wrong direction: QUIC reports a
+/// congestion window, a loss count and a congestion event count for what this
+/// endpoint sends, and a subscriber sends little but acknowledgements.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
+pub struct LinkSignals {
+    /// Round-trip time to the remote peer.
+    pub rtt: Duration,
+    /// The number of distinct [`rtt`](Self::rtt) readings taken, so a fresh
+    /// reading can be told from a repeat of the last.
+    pub rtt_samples: u64,
+    /// The smallest recent round trip on the path now selected; zero while
+    /// unmeasured.
+    pub min_rtt: Duration,
+    /// Loss among the packets this endpoint sent, over a two second window.
+    pub loss_rate: f64,
+    /// Bytes arriving per second, as bits, or `None` while too little arrives
+    /// to be media.
+    pub goodput_bps: Option<u64>,
+    /// The publisher's estimate of what the path to this endpoint carries.
+    pub delivery_bps: Option<u64>,
+    /// Bumped whenever the selected path changes.
+    pub path_generation: u64,
+    /// The congestion events this endpoint's own sending ran into.
+    pub congestion_events: u64,
+}
+
+impl LinkSignals {
+    /// Returns the part a player adapts on.
+    pub fn sample(&self) -> NetworkSample {
+        let mut sample = NetworkSample::default()
+            .with_loss(self.loss_rate as f32)
+            .with_path_generation(self.path_generation);
+        if !self.rtt.is_zero() {
+            sample = sample.with_rtt(self.rtt);
+        }
+        if !self.min_rtt.is_zero() {
+            sample = sample.with_min_rtt(self.min_rtt);
+        }
+        if let Some(delivery) = self.delivery_bps {
+            sample = sample.with_delivery(Bitrate::from_bps(delivery));
+        }
+        sample
+    }
+}
 
 /// Loads the iroh secret key from the `IROH_SECRET` environment variable, or
 /// generates a temporary one.
@@ -163,34 +214,30 @@ impl WindowedMin {
     }
 }
 
-/// Spawns a background task that polls the session's connection stats and
-/// produces [`NetworkSignals`] for adaptive rendition selection.
+/// Starts a task that polls the session's connection stats and produces
+/// [`LinkSignals`].
 ///
 /// Takes the session rather than its connection because one signal lives on
 /// the session and not in QUIC: the publisher's own estimate of the path,
 /// which moq-net delivers as a bandwidth consumer.
 ///
-/// The task runs until `shutdown` is cancelled, the connection closes, or
-/// every receiver is dropped. Returns a `watch::Receiver<NetworkSignals>` that
-/// the caller can pass to
-/// [`VideoTrack::enable_adaptation`](iroh_live_media::subscribe::VideoTrack::enable_adaptation).
-pub fn spawn_signal_producer(
+/// The task runs until the returned handle is dropped, the connection closes,
+/// or every receiver is dropped.
+pub(crate) fn spawn_signal_producer(
     session: &MoqSession,
-    shutdown: CancellationToken,
-) -> watch::Receiver<NetworkSignals> {
-    let (tx, rx) = watch::channel(NetworkSignals::default());
+) -> (watch::Receiver<LinkSignals>, AbortOnDropHandle<()>) {
+    let (tx, rx) = watch::channel(LinkSignals::default());
     let conn = session.conn().clone();
     // `None` for a publisher whose MoQ version predates the estimate, which
     // reads as an absent signal on every tick rather than as an error.
     let delivery = session.session().recv_bandwidth();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(SIGNAL_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut sampler = Sampler::default();
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
-                _ = shutdown.cancelled() => break,
                 // A connection that has gone has no more stats to give, and a
                 // subscription outlives it often enough to matter: the peer
                 // vanishing does not drop the broadcast this token belongs to,
@@ -235,13 +282,13 @@ pub fn spawn_signal_producer(
             }
         }
     });
-    rx
+    (rx, AbortOnDropHandle::new(task))
 }
 
 /// How often the signal producer reads the path.
 const SIGNAL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Turns one reading of a path's statistics into a [`NetworkSignals`].
+/// Turns one reading of a path's statistics into [`LinkSignals`].
 ///
 /// Everything a signal needs that one reading cannot give lives here: the
 /// counters from the previous reading, for the loss delta; the round trip
@@ -300,7 +347,7 @@ impl Sampler {
         stats: &PathStats,
         delivery_bps: Option<u64>,
         now: Instant,
-    ) -> NetworkSignals {
+    ) -> LinkSignals {
         let rtt = stats.rtt;
 
         // A minimum measured on one path says nothing about the next: a
@@ -338,7 +385,7 @@ impl Sampler {
             self.history.pop_front();
         }
 
-        NetworkSignals {
+        LinkSignals {
             rtt,
             rtt_samples: self.rtt_samples,
             min_rtt,
@@ -396,87 +443,6 @@ impl Sampler {
     }
 }
 
-/// Spawns a background task that records connection stats into a
-/// [`NetStats`](iroh_live_media::stats::NetStats) for a UI to draw.
-///
-/// Records RTT, loss rate, and bandwidth estimates every 200ms. The task runs
-/// until `shutdown` is cancelled or the connection closes. Callers should pass
-/// the broadcast's shutdown token so the task stops when the broadcast is
-/// dropped.
-pub fn spawn_stats_recorder(
-    conn: &Connection,
-    net: iroh_live_media::stats::NetStats,
-    shutdown: CancellationToken,
-) {
-    let conn = conn.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(200));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut prev_rx_bytes: u64 = 0;
-        let mut prev_tx_bytes: u64 = 0;
-        let mut prev_lost: u64 = 0;
-        let mut prev_sent: u64 = 0;
-        let mut prev_time = Instant::now();
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {}
-                _ = shutdown.cancelled() => break,
-                _ = conn.closed() => break,
-            }
-
-            let paths = conn.paths();
-            let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
-                continue;
-            };
-            let stats = selected.stats();
-            let rtt = selected.rtt();
-
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            net.rtt_ms.record(rtt_ms);
-
-            // Path type and address labels.
-            let path_type = if selected.is_relay() {
-                "relayed"
-            } else {
-                "direct"
-            };
-            net.path_type.set(path_type);
-            net.path_addr.set(format!("{:?}", selected.remote_addr()));
-
-            // Path counts.
-            let active = paths.iter().count();
-            net.paths_active.record(active as f64);
-
-            // Delta-based loss rate (recent interval, not session-lifetime).
-            let total_lost = stats.lost_packets;
-            let total_sent = stats.udp_tx.datagrams;
-            let delta_lost = total_lost.saturating_sub(prev_lost);
-            let delta_sent = total_sent.saturating_sub(prev_sent);
-            prev_lost = total_lost;
-            prev_sent = total_sent;
-            if delta_sent + delta_lost > 0 {
-                let loss = delta_lost as f64 / (delta_sent + delta_lost) as f64 * 100.0;
-                net.loss_pct.record(loss);
-            }
-
-            // Bandwidth from byte deltas.
-            let now = Instant::now();
-            let dt = now.duration_since(prev_time).as_secs_f64();
-            if dt > 0.0 {
-                let rx = stats.udp_rx.bytes;
-                let tx = stats.udp_tx.bytes;
-                let down_mbps = (rx.saturating_sub(prev_rx_bytes)) as f64 * 8.0 / dt / 1_000_000.0;
-                let up_mbps = (tx.saturating_sub(prev_tx_bytes)) as f64 * 8.0 / dt / 1_000_000.0;
-                net.bw_down_mbps.record(down_mbps);
-                net.bw_up_mbps.record(up_mbps);
-                prev_rx_bytes = rx;
-                prev_tx_bytes = tx;
-                prev_time = now;
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,8 +467,8 @@ mod tests {
         ticks: u32,
         sent_per_tick: u64,
         lost_per_tick: u64,
-    ) -> NetworkSignals {
-        let mut last = NetworkSignals::default();
+    ) -> LinkSignals {
+        let mut last = LinkSignals::default();
         for tick in 1..=ticks {
             let n = u64::from(tick);
             last = sampler.sample(

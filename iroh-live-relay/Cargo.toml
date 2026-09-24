@@ -33,7 +33,7 @@ http = "1"
 data-encoding = "2.11.1"
 iroh = { workspace = true }
 iroh-live = { workspace = true }
-iroh-live-media = { workspace = true, features = ["test-source"] }
+iroh-live-media = { workspace = true }
 n0-future = "0.3.2"
 rand = "0.10"
 serial_test = "4"

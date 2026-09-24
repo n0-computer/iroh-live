@@ -9,20 +9,18 @@
 //!
 //! - [`Output::H264`] is the Annex-B stream the Pi's hardware encoder produced.
 //!   It is the cheapest thing a Pi Zero can publish, because it avoids both the
-//!   raw-YUV pipe (about 10 MB/s at 640x360) and a second encode. It arrives as
-//!   a [`VideoSource::AnnexB`]; `moq_mux` splits the stream and derives the
-//!   catalog rendition from its first SPS.
-//! - [`Output::I420`] is raw pictures, which arrive as a
-//!   [`VideoSource::Frames`] of [`Surface::I420`]. It costs the pipe and an
-//!   encode, and it is the only way anything that needs pixels can see this
-//!   camera: a preview, a QR scanner, a software encode, or a simulcast ladder
-//!   that has to produce the same picture at several sizes.
+//!   raw-YUV pipe (about 10 MB/s at 640x360) and a second encode. It becomes an
+//!   [`EncodedVideoSource`](crate::EncodedVideoSource); `moq_mux` splits the
+//!   stream and derives the catalog rendition from its first SPS.
+//! - [`Output::I420`] is raw pictures, which become a
+//!   [`VideoSource`](crate::VideoSource) of [`Surface::I420`]. It costs the
+//!   pipe and an encode, and it is the only way anything that needs pixels can
+//!   see this camera: a preview, a QR scanner, a software encode, or a
+//!   simulcast ladder that has to produce the same picture at several sizes.
 //!
-//! [`open`] takes a [`Config`] and covers both. A caller that wants the raw
-//! pictures on a clock of its own calls [`frames`] instead, which takes a
-//! [`RawConfig`]: a geometry that has been rounded to one libcamera leaves
-//! tightly packed, which the raw split depends on and which no other type can
-//! promise.
+//! The raw path takes a [`RawConfig`]: a geometry that has been rounded to one
+//! libcamera leaves tightly packed, which the raw split depends on and which no
+//! other type can promise.
 //!
 //! Shelling out to a camera app is an application concern rather than a
 //! `moq-video` one, which is why this lives here.
@@ -41,10 +39,15 @@ use n0_future::{
     task::{AbortOnDropHandle, spawn},
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use super::VideoFormat;
 use crate::{
-    publish::VideoSource,
+    Bitrate,
+    error::Error,
+    frames::FrameSlot,
+    local_task::LocalTask,
     video::{Frame, I420, Size, Surface},
 };
 
@@ -106,7 +109,7 @@ const RAW_WIDTH_ALIGN: u32 = 64;
 /// Errors raised while running `rpicam-vid`.
 #[stack_error(derive, add_meta, from_sources)]
 #[non_exhaustive]
-pub enum RpicamError {
+pub(crate) enum RpicamError {
     /// The subprocess could not be started, usually because it is not installed.
     #[error("failed to start {RPICAM_VID}")]
     Spawn {
@@ -170,11 +173,11 @@ pub enum RpicamError {
 /// 500 kbps is what 640x360 off the Pi's encoder needs to look clean, and on
 /// the machines this module exists for the uplink is the constraint long before
 /// the encoder is.
-pub const DEFAULT_BITRATE: u32 = 500_000;
+pub(crate) const DEFAULT_BITRATE: u32 = 500_000;
 
 /// What `rpicam-vid` writes to its stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Output {
+pub(crate) enum Output {
     /// Annex-B H.264 from the Pi's hardware encoder.
     H264 {
         /// Target bitrate in bits per second.
@@ -192,15 +195,15 @@ pub enum Output {
 /// How to run `rpicam-vid`.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct Config {
+pub(crate) struct Config {
     /// Capture width in pixels.
-    pub width: u32,
+    pub(crate) width: u32,
     /// Capture height in pixels.
-    pub height: u32,
+    pub(crate) height: u32,
     /// Capture and encode framerate.
-    pub framerate: u32,
+    pub(crate) framerate: u32,
     /// What the camera app hands us.
-    pub output: Output,
+    pub(crate) output: Output,
 }
 
 impl Config {
@@ -214,7 +217,7 @@ impl Config {
     /// A raw geometry is rounded on the way to [`frames`], not here: see
     /// [`RawConfig`], which is what [`open`] builds for this case and what a
     /// caller who wants the pictures on their own clock passes instead.
-    pub fn new(width: u32, height: u32, framerate: u32, output: Output) -> Self {
+    pub(crate) fn new(width: u32, height: u32, framerate: u32, output: Output) -> Self {
         Self {
             width,
             height,
@@ -234,7 +237,7 @@ impl Config {
 /// that has already been aligned. That is why [`frames`] takes this rather than
 /// a [`Config`]: the precondition it used to carry in prose is now the type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RawConfig {
+pub(crate) struct RawConfig {
     width: u32,
     height: u32,
     framerate: u32,
@@ -247,7 +250,7 @@ impl RawConfig {
     /// See [`RAW_WIDTH_ALIGN`] for the measurements. An encoder downstream
     /// scales to whatever the renditions asked for, so the rounding costs a few
     /// columns of capture rather than the geometry the caller publishes.
-    pub fn new(width: u32, height: u32, framerate: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32, framerate: u32) -> Self {
         let capture_width = align_up(width.max(1), RAW_WIDTH_ALIGN);
         let capture_height = even(height.max(1));
         if (capture_width, capture_height) != (width, height) {
@@ -266,17 +269,17 @@ impl RawConfig {
     }
 
     /// Returns the aligned capture width, which is at least the one asked for.
-    pub fn width(&self) -> u32 {
+    pub(crate) fn width(&self) -> u32 {
         self.width
     }
 
     /// Returns the aligned capture height, which is at least the one asked for.
-    pub fn height(&self) -> u32 {
+    pub(crate) fn height(&self) -> u32 {
         self.height
     }
 
     /// Returns the capture frame rate.
-    pub fn framerate(&self) -> u32 {
+    pub(crate) fn framerate(&self) -> u32 {
         self.framerate
     }
 
@@ -324,43 +327,131 @@ impl Config {
     }
 }
 
-/// Starts `rpicam-vid` and returns what it writes as a video source.
-///
-/// [`Output::H264`] gives a [`VideoSource::AnnexB`] and [`Output::I420`] a
-/// [`VideoSource::Frames`]. The subprocess is killed when the returned stream
-/// is dropped, because `tokio::process::Child` is configured to kill on drop.
-///
-/// Raw pictures are stamped on a clock this call starts, which is a few
-/// milliseconds behind the broadcast's own. Use [`frames`] with
-/// `LocalBroadcast::clock` where audio has to line up with the video exactly.
-///
-/// # Errors
-///
-/// Fails if `rpicam-vid` is not installed or cannot open the camera, or if a
-/// raw geometry cannot hold I420 pictures.
-pub fn open(config: Config) -> Result<VideoSource, RpicamError> {
-    match config.output {
-        Output::H264 { .. } => Ok(VideoSource::AnnexB(annexb(config)?)),
-        Output::I420 => {
-            let raw = RawConfig::new(config.width, config.height, config.framerate);
-            Ok(VideoSource::Frames(frames(raw, moq_mux::Clock::new())?))
+/// How to run the Raspberry Pi camera.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RpicamConfig {
+    /// The capture size. The raw path rounds the width up to one libcamera
+    /// leaves tightly packed.
+    pub size: Size,
+    /// Frames per second.
+    pub framerate: u32,
+    /// The hardware encoder's target bitrate, for the encoded path.
+    pub bitrate: Bitrate,
+    /// A keyframe every this many frames, for the encoded path.
+    ///
+    /// A subscriber cannot start decoding until the next keyframe, so this is
+    /// join latency far more than it is bitrate.
+    pub keyframe_interval: u32,
+}
+
+impl RpicamConfig {
+    /// Creates a config for `size` at `framerate`, at 500 kbit/s with a
+    /// keyframe every second.
+    pub fn new(size: Size, framerate: u32) -> Self {
+        Self {
+            size,
+            framerate,
+            bitrate: Bitrate::from_bps(u64::from(DEFAULT_BITRATE)),
+            keyframe_interval: framerate.max(1),
         }
+    }
+
+    /// Returns the config with a bitrate for the hardware encoder.
+    #[must_use]
+    pub fn with_bitrate(mut self, bitrate: Bitrate) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+
+    /// Returns the config with a keyframe every `frames` frames.
+    #[must_use]
+    pub fn with_keyframe_interval(mut self, frames: u32) -> Self {
+        self.keyframe_interval = frames.max(1);
+        self
+    }
+}
+
+/// An `rpicam-vid` failure, as the crate reports it.
+fn camera_error(err: RpicamError) -> Error {
+    Error::device(err)
+}
+
+/// Starts `rpicam-vid` for the H.264 its hardware encoder writes.
+pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Error> {
+    let bitrate = u32::try_from(config.bitrate.as_bps()).map_err(|_| {
+        Error::invalid(format!(
+            "rpicam-vid takes at most {} bits per second, not {}",
+            u32::MAX,
+            config.bitrate
+        ))
+    })?;
+    let output = Output::H264 {
+        bitrate,
+        keyframe_interval: config.keyframe_interval,
+    };
+    annexb(Config::new(
+        config.size.width,
+        config.size.height,
+        config.framerate,
+        output,
+    ))
+    .map_err(camera_error)
+}
+
+/// Starts `rpicam-vid` for raw pictures, read into `slot` on a thread of its
+/// own, and returns once the first picture arrived.
+pub(super) async fn open_raw(
+    config: RpicamConfig,
+    slot: FrameSlot,
+    stop: CancellationToken,
+) -> Result<(VideoFormat, LocalTask), Error> {
+    let raw = RawConfig::new(config.size.width, config.size.height, config.framerate);
+    let rate = crate::video::Rate::new(raw.framerate().max(1), 1)
+        .map_err(|err| Error::invalid(err.to_string()))?;
+    let format = VideoFormat::new(Size::new(raw.width(), raw.height()), rate);
+    let mut pictures = frames(raw, moq_mux::Clock::new()).map_err(camera_error)?;
+    let (first_tx, first) = tokio::sync::oneshot::channel();
+    let task = crate::local_task::spawn("rpicam", stop, move |stop| async move {
+        use n0_future::StreamExt;
+        let mut first_tx = Some(first_tx);
+        loop {
+            let frame = tokio::select! {
+                frame = pictures.next() => frame,
+                () = stop.cancelled() => break,
+            };
+            let Some(frame) = frame else {
+                slot.close(Some(std::sync::Arc::new(Error::device_msg(format!(
+                    "{RPICAM_VID} stopped writing pictures"
+                )))));
+                break;
+            };
+            slot.send(std::sync::Arc::new(frame));
+            if let Some(tx) = first_tx.take() {
+                let _ = tx.send(());
+            }
+        }
+    })?;
+    match tokio::time::timeout(super::FIRST_FRAME_PATIENCE, first).await {
+        Ok(Ok(())) => Ok((format, task)),
+        _ => Err(Error::device_msg(format!(
+            "{RPICAM_VID} produced no picture; is the camera connected?"
+        ))),
     }
 }
 
 /// Starts `rpicam-vid` and returns the raw pictures it writes, stamped on
 /// `clock`.
 ///
-/// Pass the clock the rest of the broadcast is stamped from, so the video lands
-/// on the same timeline as the audio. The stream carries [`Surface::I420`], so
-/// anything that reads pixels can take it: an encoder, a preview, or a QR
-/// scanner.
+/// The broadcast restamps what it reads, so `clock` only has to be monotonic.
+/// The stream carries [`Surface::I420`], so anything that reads pixels can
+/// take it: an encoder, a preview, or a QR scanner.
 ///
 /// # Errors
 ///
 /// Fails if `rpicam-vid` is not installed or cannot open the camera, or if the
 /// geometry is odd or zero in either dimension.
-pub fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, RpicamError> {
+fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, RpicamError> {
     let pictures = Pictures::new(config.width(), config.height(), config.framerate())?;
     let process = Process::spawn(&config.config())?;
 

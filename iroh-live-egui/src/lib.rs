@@ -1,14 +1,14 @@
 //! Egui integration for `moq-video` rendering.
 //!
-//! Provides `VideoTrackView`, which wraps a `VideoTrack` with frame polling
-//! and drawing, and the lower-level `FrameView` it is built on, for callers
-//! that only have a raw frame stream (a publisher's local preview, for
-//! instance) rather than a full `VideoTrack`. Both live behind the
+//! Provides `VideoView`, which draws a `VideoFrames` stream (a player's
+//! pictures, a source's preview, anything else that hands one out) and wakes
+//! the window when a picture arrives, and the lower-level `FrameView` it is
+//! built on, for callers that hand it frames themselves. Both live behind the
 //! `wgpu-render` feature (on by default) and need it to actually draw a
 //! picture: upstream `moq_video` draws decoded frames through a `wgpu`
-//! pipeline (`iroh_live_media::video::render::Renderer`) and offers no other way to
-//! read a frame's pixels, so a view built without a real `wgpu` device only
-//! ever shows a placeholder.
+//! pipeline (`iroh_live_media::video::render::Renderer`) and offers no other
+//! way to read a frame's pixels, so a view built without a real `wgpu` device
+//! only ever shows a placeholder.
 //!
 //! Also provides `create_egui_wgpu_config` (also behind `wgpu-render`), which
 //! builds an `egui_wgpu::WgpuConfiguration` that requests zero-copy DMA-BUF
@@ -21,15 +21,15 @@
 //! # Example
 //!
 //! ```no_run
-//! use iroh_live_egui::VideoTrackView;
+//! use iroh_live_egui::VideoView;
 //!
 //! # fn draw(
 //! #     ctx: &egui::Context,
 //! #     ui: &mut egui::Ui,
-//! #     track: iroh_live_media::subscribe::VideoTrack,
+//! #     player: &iroh_live_media::Player,
 //! #     render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
 //! # ) {
-//! let mut view = VideoTrackView::new_wgpu(ctx, "video", track, render_state);
+//! let mut view = VideoView::new(ctx, "video", player.video(), render_state);
 //! // in the update loop:
 //! let (image, frame_ts) = view.render(ctx, ui.available_size());
 //! ui.add(image);
@@ -48,7 +48,7 @@ pub use egui_wgpu;
 pub use epaint;
 pub use iroh_live_media;
 #[cfg(feature = "wgpu-render")]
-use iroh_live_media::subscribe::VideoTrack;
+use iroh_live_media::VideoFrames;
 
 /// Formats a bitrate in bits per second as a human-readable string.
 ///
@@ -198,10 +198,8 @@ impl Drop for EguiVideoRenderer {
 /// frame, or a black placeholder before the first one arrives.
 ///
 /// The low-level building block: it knows nothing about where frames come
-/// from, only how to draw the ones it is handed. [`VideoTrackView`] adds the
-/// polling loop over a [`VideoTrack`]; a publisher's local preview (an
-/// `Arc<FrameReceiver<Arc<Frame>>>`, not a [`VideoTrack`]) polls its own
-/// receiver and feeds this directly.
+/// from, only how to draw the ones it is handed. [`VideoView`] adds the
+/// waking and the reading over a [`VideoFrames`] stream.
 #[cfg(feature = "wgpu-render")]
 pub struct FrameView {
     renderer: Option<EguiVideoRenderer>,
@@ -289,28 +287,29 @@ impl FrameView {
 }
 
 // ---------------------------------------------------------------------------
-// VideoTrackView: FrameView + VideoTrack polling
+// VideoView: FrameView + a VideoFrames stream
 // ---------------------------------------------------------------------------
 
-/// Renders a [`VideoTrack`] into an egui UI.
+/// Draws a [`VideoFrames`] stream into an egui UI.
 ///
-/// Polls the track for the newest decoded frame on every
-/// [`render`](Self::render) call and draws it through a [`FrameView`].
+/// Wakes the window when a picture arrives and draws the newest one on the
+/// next pass, whether the frames come from a player, a local preview, or a
+/// scanner.
 #[cfg(feature = "wgpu-render")]
-pub struct VideoTrackView {
-    track: VideoTrack,
+pub struct VideoView {
+    frames: VideoFrames,
     frame_view: FrameView,
-    /// The window to wake, kept so [`set_track`](Self::set_track) can build a
-    /// waker for the replacement.
+    /// The window to wake, kept so [`set_frames`](Self::set_frames) can build
+    /// a waker for the replacement.
     ctx: egui::Context,
     /// Wakes the window when a picture lands. Dropping it stops the waking.
     _wake: n0_future::task::AbortOnDropHandle<()>,
 }
 
 #[cfg(feature = "wgpu-render")]
-impl fmt::Debug for VideoTrackView {
+impl fmt::Debug for VideoView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VideoTrackView")
+        f.debug_struct("VideoView")
             .field("frame_view", &self.frame_view)
             .finish_non_exhaustive()
     }
@@ -318,71 +317,59 @@ impl fmt::Debug for VideoTrackView {
 
 /// Asks the window to draw whenever a picture arrives.
 ///
-/// The decoder does not hand a picture over until the playout clock says it is
-/// due, so by the time one reaches the slot it should be on screen. What put it
-/// off was the drawing loop: a window that repaints on a timer presents each
-/// picture at the next tick of its own clock rather than when the picture was
-/// due, which on a 30fps stream sampled every 16ms is up to half a frame of
-/// added latency and a spacing that wobbles between one tick and two. That is
-/// what a viewer sees as judder on an otherwise well paced stream.
+/// The player does not hand a picture over until its playout clock says it is
+/// due, so by the time one arrives it should be on screen. A window that
+/// repaints on a timer presents each picture at the next tick of its own clock
+/// rather than when it was due, which on a 30fps stream sampled every 16ms is
+/// up to half a frame of added latency and a spacing that wobbles between one
+/// tick and two: judder on an otherwise well paced stream.
 ///
-/// Watching rather than taking: the task only wakes the window, and the drawing
-/// pass is what takes the picture.
+/// The waker reads through a handle of its own, so it never takes a picture
+/// from the drawing pass.
 #[cfg(feature = "wgpu-render")]
 fn wake_on_frame(
     ctx: &egui::Context,
-    track: &VideoTrack,
+    frames: &VideoFrames,
 ) -> n0_future::task::AbortOnDropHandle<()> {
     let ctx = ctx.clone();
-    let mut watcher = track.frames().watch();
+    let mut frames = frames.clone();
     n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(async move {
-        while watcher.changed().await {
+        while frames.next().await.is_some() {
             ctx.request_repaint();
         }
     }))
 }
 
 #[cfg(feature = "wgpu-render")]
-impl VideoTrackView {
-    /// Creates a view with no renderer; see [`FrameView::new`].
-    pub fn new(ctx: &egui::Context, name: &str, track: VideoTrack) -> Self {
-        Self {
-            _wake: wake_on_frame(ctx, &track),
-            track,
-            frame_view: FrameView::new(ctx, name),
-            ctx: ctx.clone(),
-        }
-    }
-
-    /// Creates a view that draws through `render_state`, if given.
-    pub fn new_wgpu(
+impl VideoView {
+    /// Creates a view of `frames` that draws through `render_state`, if given.
+    ///
+    /// `name` names the placeholder texture. Must be called within a Tokio
+    /// runtime, which the waker runs on.
+    pub fn new(
         ctx: &egui::Context,
         name: &str,
-        track: VideoTrack,
+        frames: VideoFrames,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
         Self {
-            _wake: wake_on_frame(ctx, &track),
-            track,
+            _wake: wake_on_frame(ctx, &frames),
+            frames,
             frame_view: FrameView::new_wgpu(ctx, name, render_state),
             ctx: ctx.clone(),
         }
     }
 
-    /// Returns a reference to the underlying track.
-    pub fn track(&self) -> &VideoTrack {
-        &self.track
+    /// Returns the frames this view draws.
+    pub fn frames(&self) -> &VideoFrames {
+        &self.frames
     }
 
-    /// Replaces the underlying track.
-    ///
-    /// The waker is rebuilt with it. It watches one track's slot, so replacing
-    /// the track alone left it watching the one that was taken away: the new
-    /// track's pictures then reached the screen only when something else asked
-    /// for a repaint, which is the judder the waker exists to remove.
-    pub fn set_track(&mut self, track: VideoTrack) {
-        self._wake = wake_on_frame(&self.ctx, &track);
-        self.track = track;
+    /// Replaces the frames this view draws, keeping the last picture up until
+    /// the new stream has one.
+    pub fn set_frames(&mut self, frames: VideoFrames) {
+        self._wake = wake_on_frame(&self.ctx, &frames);
+        self.frames = frames;
     }
 
     /// Returns whether this view draws through `wgpu`.
@@ -390,26 +377,22 @@ impl VideoTrackView {
         self.frame_view.is_wgpu()
     }
 
-    /// Draws the newest available frame and returns `(image, frame_timestamp)`.
+    /// Draws the newest frame if one arrived since the last call, and returns
+    /// `(image, frame_timestamp)`.
     ///
-    /// The returned timestamp is the decoded frame's presentation time, or
-    /// `None` if no new frame arrived since the last call. Requests a
-    /// repaint on `ctx` when a new frame lands, so the picture advances
-    /// without waiting for the next input event.
-    pub fn render(
-        &mut self,
-        ctx: &egui::Context,
-        _available_size: egui::Vec2,
-    ) -> (egui::Image<'_>, Option<Duration>) {
-        let frame_ts = self.track.take().map(|frame| {
-            let ts = Duration::from_micros(frame.timestamp.as_micros() as u64);
+    /// The timestamp is the new frame's presentation time, or `None` when the
+    /// picture did not change.
+    pub fn render(&mut self, _available_size: egui::Vec2) -> (egui::Image<'_>, Option<Duration>) {
+        let frame_ts = self.frames.try_next().map(|frame| {
             self.frame_view.render_frame(&frame);
-            ts
+            Duration::from_micros(frame.timestamp.as_micros() as u64)
         });
-        if frame_ts.is_some() {
-            ctx.request_repaint();
-        }
         (self.frame_view.image(), frame_ts)
+    }
+
+    /// Returns the image for whatever frame was drawn last.
+    pub fn image(&self) -> egui::Image<'_> {
+        self.frame_view.image()
     }
 }
 

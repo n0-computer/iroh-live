@@ -265,13 +265,7 @@ async fn iroh_publish_iroh_subscribe() {
         .with_router()
         .spawn();
     let broadcast = publisher.publish("relay-test").expect("publish");
-    broadcast
-        .video()
-        .set(iroh_live_media::test_source::video(
-            iroh_live_media::video::Size::new(320, 240),
-            30,
-        ))
-        .expect("set video");
+    set_pattern(&broadcast);
 
     let _pub_session = tokio::time::timeout(TIMEOUT, publisher.transport().connect(relay_id))
         .await
@@ -293,19 +287,18 @@ async fn iroh_publish_iroh_subscribe() {
         .expect("timeout")
         .expect("subscribe");
 
-    assert!(sub.broadcast().has_video());
-    let video = tokio::time::timeout(TIMEOUT, sub.broadcast().video())
-        .await
-        .expect("timeout")
-        .expect("video track");
-    let frame = tokio::time::timeout(Duration::from_secs(10), video.frames().recv())
+    let player = sub
+        .broadcast()
+        .play(iroh_live_media::PlayerConfig::default())
+        .expect("play");
+    let frame = tokio::time::timeout(TIMEOUT, player.video().next())
         .await
         .expect("timeout")
         .expect("closed");
     let size = frame.size();
     assert!(size.width > 0 && size.height > 0);
 
-    drop(video);
+    drop(player);
     drop(sub);
     drop(_pub_session);
     drop(broadcast);
@@ -383,12 +376,7 @@ async fn noq_publish_iroh_subscribe() {
 
         match result {
             Ok(Ok(sub)) => {
-                tracing::info!(
-                    attempt,
-                    has_video = sub.broadcast().has_video(),
-                    has_audio = sub.broadcast().has_audio(),
-                    "subscribed to browser-stream via iroh"
-                );
+                tracing::info!(attempt, "subscribed to browser-stream via iroh");
                 // Success: clean up and return.
                 drop(sub);
                 drop(_pub_session);
@@ -444,13 +432,7 @@ async fn pull_remote_broadcast_via_ticket() {
         .with_router()
         .spawn();
     let broadcast = publisher.publish("remote-stream").expect("publish");
-    broadcast
-        .video()
-        .set(iroh_live_media::test_source::video(
-            iroh_live_media::video::Size::new(320, 240),
-            30,
-        ))
-        .expect("set video");
+    set_pattern(&broadcast);
 
     // Give publisher time to start producing frames.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -549,13 +531,7 @@ async fn iroh_publish_noq_subscribe() {
         .with_router()
         .spawn();
     let broadcast = publisher.publish("cli-stream").expect("publish");
-    broadcast
-        .video()
-        .set(iroh_live_media::test_source::video(
-            iroh_live_media::video::Size::new(320, 240),
-            30,
-        ))
-        .expect("set video");
+    set_pattern(&broadcast);
 
     let _pub_session = tokio::time::timeout(TIMEOUT, publisher.transport().connect(relay_id))
         .await
@@ -588,6 +564,18 @@ async fn iroh_publish_noq_subscribe() {
 /// enough to keep them quick, long enough to survive a slow CI scheduler.
 const PULL_LINGER: Duration = Duration::from_millis(200);
 
+/// Publishes a generated 320x240 pattern on `broadcast`, as one rendition.
+fn set_pattern(broadcast: &iroh_live_media::LocalBroadcast) {
+    use iroh_live_media::{VideoEncoding, VideoRendition, VideoSource, video};
+    let source = VideoSource::test_pattern(
+        video::Size::new(320, 240),
+        video::Rate::new(30, 1).expect("a valid rate"),
+    );
+    broadcast
+        .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
+        .expect("set video");
+}
+
 /// Starts a standalone iroh publisher (not connected to the relay) with a video
 /// track, and returns it with a ticket naming its broadcast.
 async fn start_publisher(
@@ -595,7 +583,7 @@ async fn start_publisher(
 ) -> (
     iroh::Endpoint,
     iroh_live::Live,
-    iroh_live_media::publish::LocalBroadcast,
+    iroh_live_media::LocalBroadcast,
     iroh_live::ticket::LiveTicket,
 ) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -610,13 +598,7 @@ async fn start_publisher(
         .with_router()
         .spawn();
     let broadcast = live.publish(name).expect("publish");
-    broadcast
-        .video()
-        .set(iroh_live_media::test_source::video(
-            iroh_live_media::video::Size::new(320, 240),
-            30,
-        ))
-        .expect("set video");
+    set_pattern(&broadcast);
 
     let ticket = iroh_live::ticket::LiveTicket::new(endpoint.id(), name);
     (endpoint, live, broadcast, ticket)

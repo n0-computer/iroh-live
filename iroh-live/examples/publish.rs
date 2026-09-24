@@ -9,13 +9,12 @@ use clap::Parser;
 use iroh_live::{
     Live,
     media::{
-        audio,
-        publish::{VideoRendition, VideoSource},
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
         video,
     },
     ticket::LiveTicket,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(about = "Publishes the default camera and microphone over iroh-live")]
@@ -45,21 +44,21 @@ async fn main() -> n0_error::Result {
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
-    let source = VideoSource::Capture(capture);
-    match args.simulcast {
-        false => broadcast.video().set(source)?,
-        true => broadcast.video().set_renditions(
-            source,
-            vec![
-                VideoRendition::new("high"),
-                VideoRendition::new("low").with_size(video::Size::new(320, 180)),
-            ],
-        )?,
-    }
+    let source = VideoSource::capture(capture).await?;
+    let encoding = match args.simulcast {
+        false => VideoEncoding::single(VideoRendition::new("video")),
+        true => VideoEncoding::ladder([
+            VideoRendition::new("high"),
+            VideoRendition::new("low").with_size(video::Size::new(320, 180)),
+        ]),
+    };
+    broadcast.set_video(source, encoding)?;
 
-    // A machine with no microphone still publishes video: the device opens
-    // inside the publish task, which logs and ends the audio track on failure.
-    broadcast.audio().set(audio::capture::Config::default());
+    // A machine with no microphone still publishes video.
+    match AudioSource::microphone(MicrophoneConfig::default()).await {
+        Ok(microphone) => broadcast.set_audio(microphone, AudioEncoding::voice())?,
+        Err(err) => warn!(error = %err, "no microphone, publishing video only"),
+    }
 
     let ticket = LiveTicket::new(live.endpoint().id(), &args.name);
     println!("{ticket}");

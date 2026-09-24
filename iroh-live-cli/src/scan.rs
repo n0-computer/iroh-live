@@ -6,11 +6,11 @@
 //! Raspberry Pi with a touchscreen reading the code off another node's e-paper
 //! display, where there is no keyboard to paste a ticket into.
 //!
-//! The camera runs on a thread of its own, the arrangement
-//! `iroh_live_media::local_task` exists for: a capture stream holds AVFoundation
-//! objects on Apple platforms and cannot go to a work-stealing executor, and
-//! the QR decoder is CPU-bound enough that a runtime worker is the wrong place
-//! for it either way.
+//! The camera is an opened [`VideoSource`], which runs on a thread of its own,
+//! and the QR decoder has another: it is CPU-bound enough that a runtime worker
+//! is the wrong place for it. A window that already publishes the camera hands
+//! the scanner that source's frames instead, since a device does not open
+//! twice.
 
 use std::{
     fmt,
@@ -23,17 +23,16 @@ use std::{
 
 use eframe::egui;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::media::rpicam;
+use iroh_live::media::RpicamConfig;
 use iroh_live::{
     media::{
-        frame_channel::{FrameReceiver, FrameSender, frame_channel},
-        local_task::{self, LocalTask},
-        video::{self, Frame, Size, Surface, capture},
+        VideoFrames, VideoSource,
+        video::{self, Size, Surface, capture},
     },
     ticket::LiveTicket,
 };
 use iroh_live_egui::FrameView;
-use moq_net::Timestamp;
+use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -100,27 +99,28 @@ pub struct Skip {
     pub until: Instant,
 }
 
-/// The camera the scanner reads, once a specifier has been resolved.
-enum ScanCamera {
-    Capture(capture::Stream),
-    #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    Rpicam {
-        frames: n0_future::boxed::BoxStream<Frame>,
-        size: Size,
-    },
+/// A camera the scanner opened, with what to call it.
+struct Camera {
+    source: VideoSource,
+    /// What to call it in a log line or an error.
+    label: String,
+    /// Whether this is the Raspberry Pi camera, which changes what a camera
+    /// that sends nothing is likely to mean.
+    rpicam: bool,
 }
 
-impl ScanCamera {
+impl Camera {
     /// Opens whichever camera `choice` names, or the best guess when it names
     /// none.
     ///
     /// # Errors
     ///
-    /// Returns a message for the screen if the camera will not open.
+    /// Returns a message for the screen if the camera will not open, or opens
+    /// and produces nothing within [`FIRST_FRAME_GRACE`].
     async fn open(choice: Option<&VideoSourceSpec>) -> Result<Self, String> {
         match resolve(choice) {
             #[cfg(all(target_os = "linux", feature = "rpicam"))]
-            VideoSourceSpec::Rpicam(_) => Self::open_rpicam(),
+            VideoSourceSpec::Rpicam(_) => Self::open_rpicam().await,
             VideoSourceSpec::Camera(id) => Self::open_capture(id).await,
             // `camera_spec` rejects everything else at the flag, so this is
             // unreachable rather than a case with a sensible answer.
@@ -129,86 +129,41 @@ impl ScanCamera {
     }
 
     async fn open_capture(id: Option<String>) -> Result<Self, String> {
+        let label = match &id {
+            Some(id) => format!("camera {id}"),
+            None => "the default camera".to_string(),
+        };
         let mut config = capture::Config::default();
         config.source = capture::Source::Camera(id);
         config.width = Some(SCAN_SIZE.width);
         config.height = Some(SCAN_SIZE.height);
         config.framerate =
             Some(video::Rate::new(SCAN_FRAMERATE, 1).expect("the scan rate is a valid frame rate"));
-        capture::open(&config)
+        // The source returns once the camera produced a picture, so a camera
+        // that opens and then says nothing is caught by the timeout. Dropping
+        // the open releases the device.
+        let source = tokio::time::timeout(FIRST_FRAME_GRACE, VideoSource::capture(config))
             .await
-            .map(Self::Capture)
-            .map_err(|err| format!("the camera would not open: {err}"))
+            .map_err(|_| no_frames(&label, false))?
+            .map_err(|err| format!("the camera would not open: {err:#}"))?;
+        Ok(Self {
+            source,
+            label,
+            rpicam: false,
+        })
     }
 
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    fn open_rpicam() -> Result<Self, String> {
-        // The geometry is rounded to one libcamera leaves unpadded, and the
-        // rounded figure is what the pictures arrive at, so it is what the QR
-        // decoder has to be told about.
-        let config = rpicam::RawConfig::new(SCAN_SIZE.width, SCAN_SIZE.height, SCAN_FRAMERATE);
-        let size = Size {
-            width: config.width(),
-            height: config.height(),
-        };
-        // A clock of its own: nothing here lines the pictures up against audio,
-        // and the timestamps are discarded where the frames are read.
-        let frames = rpicam::frames(config, moq_mux::Clock::new())
-            .map_err(|err| format!("the Raspberry Pi camera would not open: {err}"))?;
-        Ok(Self::Rpicam { frames, size })
-    }
-
-    /// What to call this camera in a log line or an error.
-    fn label(&self) -> String {
-        match self {
-            Self::Capture(stream) => stream.label().to_string(),
-            #[cfg(all(target_os = "linux", feature = "rpicam"))]
-            Self::Rpicam { .. } => "rpicam-vid".to_string(),
-        }
-    }
-
-    fn size(&self) -> Size {
-        match self {
-            Self::Capture(stream) => Size {
-                width: stream.width(),
-                height: stream.height(),
-            },
-            #[cfg(all(target_os = "linux", feature = "rpicam"))]
-            Self::Rpicam { size, .. } => *size,
-        }
-    }
-
-    /// Whether this is the Raspberry Pi camera, which changes what a camera
-    /// that sends nothing is likely to mean.
-    fn is_rpicam(&self) -> bool {
-        match self {
-            Self::Capture(_) => false,
-            #[cfg(all(target_os = "linux", feature = "rpicam"))]
-            Self::Rpicam { .. } => true,
-        }
-    }
-
-    /// The next picture, or `None` once the camera has stopped.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message for the screen if the camera fails mid-stream.
-    async fn read(&mut self) -> Result<Option<Surface>, String> {
-        match self {
-            Self::Capture(stream) => stream
-                .read()
-                .await
-                .map(|frame| frame.map(|frame| frame.surface))
-                .map_err(|err| format!("the camera failed: {err}")),
-            #[cfg(all(target_os = "linux", feature = "rpicam"))]
-            Self::Rpicam { frames, .. } => {
-                use n0_future::StreamExt as _;
-                // The timestamp goes: the preview draws whichever picture is in
-                // the slot when the window next paints, with no presentation
-                // clock in between.
-                Ok(frames.next().await.map(|frame| frame.surface))
-            }
-        }
+    async fn open_rpicam() -> Result<Self, String> {
+        let config = RpicamConfig::new(SCAN_SIZE, SCAN_FRAMERATE);
+        let source = VideoSource::rpicam(config)
+            .await
+            .map_err(|err| format!("the Raspberry Pi camera would not open: {err:#}"))?;
+        Ok(Self {
+            source,
+            label: "rpicam-vid".to_string(),
+            rpicam: true,
+        })
     }
 }
 
@@ -299,16 +254,27 @@ enum ScanState {
     Failed(String),
 }
 
+/// Where the scanner's pictures come from.
+enum Pictures {
+    /// A camera the scanner opens itself, and opens again if it fails.
+    Open(Option<VideoSourceSpec>),
+    /// The frames of a source something else opened.
+    Borrowed(VideoFrames),
+}
+
 /// The scan screen: a live camera picture and the ticket read out of it.
 ///
-/// Dropping it cancels the capture thread, which releases the camera. Create
+/// Dropping it stops the scan, which releases a camera it opened itself. Create
 /// one when the window enters scan mode and drop it when the window leaves,
 /// rather than holding an idle camera open behind a player.
 pub struct ScanView {
     view: FrameView,
-    frames: FrameReceiver<Frame>,
+    /// The frames being drawn, once a camera has opened.
+    frames: Option<VideoFrames>,
+    /// Hands over the frames of each camera the scan opens.
+    opened: watch::Receiver<Option<VideoFrames>>,
     state: watch::Receiver<ScanState>,
-    _capture: LocalTask,
+    _scan: AbortOnDropHandle<()>,
 }
 
 impl fmt::Debug for ScanView {
@@ -331,21 +297,39 @@ impl ScanView {
         skip: Option<Skip>,
         camera: Option<VideoSourceSpec>,
     ) -> Self {
-        let (frame_tx, frames) = frame_channel::<Frame>();
+        Self::start(ctx, render_state, skip, Pictures::Open(camera))
+    }
+
+    /// Starts looking for a ticket in `frames`, from a camera something else
+    /// holds open.
+    pub fn from_frames(
+        ctx: &egui::Context,
+        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+        skip: Option<Skip>,
+        frames: VideoFrames,
+    ) -> Self {
+        Self::start(ctx, render_state, skip, Pictures::Borrowed(frames))
+    }
+
+    fn start(
+        ctx: &egui::Context,
+        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+        skip: Option<Skip>,
+        pictures: Pictures,
+    ) -> Self {
+        let (opened_tx, opened) = watch::channel(None);
         let (state_tx, state) = watch::channel(ScanState::Looking);
+        let view = FrameView::new_wgpu(ctx, "scan", render_state);
         let ctx = ctx.clone();
-        let view = FrameView::new_wgpu(&ctx, "scan", render_state);
-        let capture = local_task::spawn("qr-scan", move |shutdown| async move {
-            tokio::select! {
-                () = scan(&frame_tx, &state_tx, &ctx, skip.as_ref(), camera.as_ref()) => {}
-                () = shutdown.cancelled() => info!("scan cancelled"),
-            }
-        });
+        let scan = AbortOnDropHandle::new(tokio::spawn(async move {
+            scan(pictures, &opened_tx, &state_tx, &ctx, skip.as_ref()).await;
+        }));
         Self {
             view,
-            frames,
+            frames: None,
+            opened,
             state,
-            _capture: capture,
+            _scan: scan,
         }
     }
 
@@ -361,7 +345,12 @@ impl ScanView {
     /// Draws the camera picture filling `ui`, with the instruction over it.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        if let Some(frame) = self.frames.take() {
+        if self.opened.has_changed().unwrap_or(false) {
+            self.frames = self.opened.borrow_and_update().clone();
+        }
+        if let Some(frames) = self.frames.as_mut()
+            && let Some(frame) = frames.try_next()
+        {
             self.view.render_frame(&frame);
         }
 
@@ -411,30 +400,56 @@ impl ScanView {
     }
 }
 
-/// Reads the camera until it yields a ticket, reopening it whenever it fails.
+/// Reads the pictures until they yield a ticket.
 ///
-/// The scan screen has no way forward other than a working camera, so a device
-/// that is momentarily busy (another process letting go of it, a USB camera
-/// settling after a replug) is worth waiting for rather than reporting once and
-/// giving up.
+/// A camera the scanner opened itself is opened again whenever it fails: the
+/// scan screen has no way forward other than a working camera, so a device that
+/// is momentarily busy (another process letting go of it, a USB camera settling
+/// after a replug) is worth waiting for rather than reporting once and giving
+/// up. Borrowed frames that end are reported, since nothing here can bring
+/// them back.
 async fn scan(
-    frames: &FrameSender<Frame>,
+    pictures: Pictures,
+    opened: &watch::Sender<Option<VideoFrames>>,
     state: &watch::Sender<ScanState>,
     ctx: &egui::Context,
     skip: Option<&Skip>,
-    camera: Option<&VideoSourceSpec>,
 ) {
+    let choice = match pictures {
+        Pictures::Borrowed(frames) => {
+            opened.send_replace(Some(frames.clone()));
+            report(state, ctx, ScanState::Looking);
+            match look(frames, "the camera", false, state, ctx, skip).await {
+                Ok(ticket) => found(state, ctx, ticket),
+                Err(problem) => {
+                    warn!(%problem, "the scan camera is unusable");
+                    report(state, ctx, ScanState::Failed(problem));
+                }
+            }
+            return;
+        }
+        Pictures::Open(choice) => choice,
+    };
     let mut said_so = false;
     loop {
-        let problem = match look(frames, state, ctx, skip, camera).await {
-            Ok(ticket) => {
+        let problem = match Camera::open(choice.as_ref()).await {
+            Ok(camera) => {
+                let size = camera.source.format().size;
                 info!(
-                    remote = %ticket.endpoint.id.fmt_short(),
-                    broadcast = %ticket.broadcast_name,
-                    "ticket scanned"
+                    device = camera.label,
+                    width = size.width,
+                    height = size.height,
+                    "scanning for a ticket QR code"
                 );
-                report(state, ctx, ScanState::Found(Box::new(ticket)));
-                return;
+                opened.send_replace(Some(camera.source.frames()));
+                report(state, ctx, ScanState::Looking);
+                let frames = camera.source.frames();
+                // Returning drops the camera, so it is released while the
+                // window dials rather than held open behind it.
+                match look(frames, &camera.label, camera.rpicam, state, ctx, skip).await {
+                    Ok(ticket) => return found(state, ctx, ticket),
+                    Err(problem) => problem,
+                }
             }
             Err(problem) => problem,
         };
@@ -452,30 +467,32 @@ async fn scan(
     }
 }
 
-/// Opens the camera and reads it, forwarding every frame for drawing and
-/// decoding some of them, until one carries a ticket.
+/// Reports a ticket the scan read.
+fn found(state: &watch::Sender<ScanState>, ctx: &egui::Context, ticket: LiveTicket) {
+    info!(
+        remote = %ticket.endpoint.id.fmt_short(),
+        broadcast = %ticket.broadcast_name,
+        "ticket scanned"
+    );
+    report(state, ctx, ScanState::Found(Box::new(ticket)));
+}
+
+/// Reads `frames`, decoding some of them, until one carries a ticket.
+///
+/// `label` and `rpicam` describe the camera, for what to say when it goes
+/// quiet.
 ///
 /// # Errors
 ///
-/// Returns a message for the screen if the camera will not open, or if it stops
-/// producing frames.
+/// Returns a message for the screen if the camera stops producing frames.
 async fn look(
-    frames: &FrameSender<Frame>,
+    mut frames: VideoFrames,
+    label: &str,
+    rpicam: bool,
     state: &watch::Sender<ScanState>,
     ctx: &egui::Context,
     skip: Option<&Skip>,
-    camera: Option<&VideoSourceSpec>,
 ) -> Result<LiveTicket, String> {
-    let mut stream = ScanCamera::open(camera).await?;
-    let size = stream.size();
-    info!(
-        device = stream.label(),
-        width = size.width,
-        height = size.height,
-        "scanning for a ticket QR code"
-    );
-    report(state, ctx, ScanState::Looking);
-
     let opened = Instant::now();
     let mut seen_a_frame = false;
     let mut delivered = 0u64;
@@ -488,18 +505,13 @@ async fn look(
         // screen is black with no explanation, which is indistinguishable from
         // a lens cap.
         let read = tokio::select! {
-            read = tokio::time::timeout(FIRST_FRAME_GRACE, stream.read()) => read,
-            found = decoder.found() => {
-                // Returning here drops the stream, so the camera is released
-                // while the window dials rather than held open behind it.
-                return Ok(found);
-            }
+            read = tokio::time::timeout(FIRST_FRAME_GRACE, frames.next()) => read,
+            found = decoder.found() => return Ok(found),
         };
-        let surface = match read {
-            Ok(Ok(Some(surface))) => surface,
-            Ok(Ok(None)) => return Err("the camera stopped".to_string()),
-            Ok(Err(err)) => return Err(err),
-            Err(_) if !seen_a_frame => return Err(no_frames(&stream)),
+        let frame = match read {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Err("the camera stopped".to_string()),
+            Err(_) if !seen_a_frame => return Err(no_frames(label, rpicam)),
             // Already delivering, so a gap is the camera stalling rather than
             // the wrong device: say so and let the reopen loop have it.
             Err(_) => {
@@ -513,47 +525,26 @@ async fn look(
         delivered += 1;
         if delivered.is_multiple_of(PREVIEW_REPORT_EVERY) {
             // A rate for the preview, read off the log rather than the eye.
-            // The decode used to run on this thread and froze the picture for
-            // its duration; this is what says whether that is still so.
             debug!(
                 frames = delivered,
                 fps = format_args!("{:.1}", delivered as f64 / opened.elapsed().as_secs_f64()),
                 "scan camera delivering"
             );
         }
-
-        // Taken before the frame is handed over, because handing it over gives
-        // up ownership and reading the pixels needs it. Only when the decoder
-        // is free: a look it cannot take yet is a look at a frame it will never
-        // see anyway, so the interval restarts from the hand-over rather than
-        // from a wish.
-        let (surface, luma) = match Instant::now() >= next_look && decoder.is_idle() {
-            false => (surface, None),
-            true => match split_luma(surface) {
-                Ok((surface, luma)) => (surface, Some(luma)),
-                Err(err) => {
-                    // The download consumed the surface, so there is nothing
-                    // left to draw for this frame either. The interval restarts
-                    // here as well: a download that fails once will fail again,
-                    // and retrying it on every frame costs what decoding on
-                    // every frame costs.
-                    next_look = Instant::now() + DECODE_INTERVAL;
-                    warn!(error = %err, "could not read the frame's luma plane");
-                    continue;
-                }
-            },
-        };
-
-        // Drawn regardless of whether this frame is being decoded: the decode
-        // runs on its own thread now, so the preview never waits on it. The
-        // timestamp is zero because nothing reads it: the preview draws
-        // whichever frame is in the slot when the window next paints, with no
-        // presentation clock in between.
-        frames.send(Frame::new(surface, Timestamp::ZERO));
+        // The view draws from a handle of its own; this only wakes it.
         ctx.request_repaint();
 
-        if let Some(luma) = luma {
-            decoder.look_at(luma);
+        // Only when the decoder is free: a look it cannot take yet is a look at
+        // a frame it will never see anyway, so the interval restarts from the
+        // hand-over rather than from a wish.
+        if Instant::now() >= next_look && decoder.is_idle() {
+            match luma(&frame.surface) {
+                Ok(luma) => decoder.look_at(luma),
+                // A download that fails once will fail again, and retrying it
+                // on every frame costs what decoding on every frame costs, so
+                // the interval restarts here as well.
+                Err(err) => warn!(error = %err, "could not read the frame's luma plane"),
+            }
             // Measured from the hand-over. The decoder reports when it is idle
             // again, so a decode slower than the interval simply means the next
             // look waits for it rather than piling up behind it.
@@ -680,9 +671,8 @@ fn still_skipped(skip: Option<&Skip>, ticket: &LiveTicket) -> Option<Duration> {
 ///
 /// Names the flag, because the fix is a flag and the reader is looking at a
 /// black rectangle.
-fn no_frames(stream: &ScanCamera) -> String {
-    let device = stream.label();
-    match stream.is_rpicam() {
+fn no_frames(device: &str, rpicam: bool) -> String {
+    match rpicam {
         // Already on the Pi camera, so the next question is the hardware.
         true => format!(
             "{device} opened but sent no pictures within {}s; check the ribbon cable",
@@ -713,26 +703,23 @@ struct Luma {
     data: Vec<u8>,
 }
 
-/// Copies the luma plane out of `surface` and hands the surface back for
-/// drawing.
+/// Copies the luma plane out of `surface`.
 ///
-/// A Linux or Windows camera hands over CPU-resident I420, which passes through
-/// untouched, so the only cost is copying the Y plane out. A macOS camera's
-/// `CVPixelBuffer`, and any other GPU-resident surface, is downloaded first,
-/// and what comes back for drawing is the downloaded I420.
+/// A Linux or Windows camera hands over CPU-resident I420, so the only cost is
+/// copying the Y plane out. A macOS camera's `CVPixelBuffer`, and any other
+/// GPU-resident surface, is downloaded first; the surface itself is left alone
+/// for the preview.
 ///
 /// # Errors
 ///
-/// Fails if a GPU surface cannot be downloaded, in which case the frame is lost
-/// along with it.
-fn split_luma(surface: Surface) -> Result<(Surface, Luma), video::Error> {
-    let i420 = surface.into_i420()?;
-    let luma = Luma {
+/// Fails if a GPU surface cannot be downloaded.
+fn luma(surface: &Surface) -> Result<Luma, video::Error> {
+    let i420 = surface.to_i420()?;
+    Ok(Luma {
         width: i420.width(),
         height: i420.height(),
         data: i420.y().to_vec(),
-    };
-    Ok((Surface::I420(i420), luma))
+    })
 }
 
 /// Reads the first QR code in `image`, if it holds one.

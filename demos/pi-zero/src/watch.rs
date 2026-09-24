@@ -3,13 +3,19 @@
 //! Uses [`GlesRenderer`] for GLES2 rendering. The
 //! DRM and windowed display backends handle EGL context + buffer swapping.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result};
 use glow::HasContext;
-use iroh_live::{media::subscribe::VideoTrack, moq::MoqSession};
+use iroh_live::{
+    media::{Player, VideoFrames},
+    moq::MoqSession,
+};
 use moq_video::Frame;
-use n0_future::{StreamExt, boxed::BoxStream};
+use n0_watcher::Watcher as _;
 
 use crate::gles::GlesRenderer;
 
@@ -20,22 +26,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(4);
 /// Uploads the newest frame, if one arrived since the last call, and reports
 /// whether it did.
 ///
-/// `VideoTrack::take` already implements "only if new", so there is no
+/// [`VideoFrames::try_next`] already implements "only if new", so there is no
 /// timestamp bookkeeping to do here.
 #[cfg(feature = "windowed")]
 fn try_upload_frame(
     renderer: &mut GlesRenderer,
-    track: &VideoTrack,
+    frames: &mut VideoFrames,
     frame_count: &mut u64,
 ) -> bool {
-    let Some(frame) = track.take() else {
+    let Some(frame) = frames.try_next() else {
         return false;
     };
     *frame_count += 1;
     if *frame_count <= 3 {
         tracing::info!(frame = *frame_count, size = %frame.size(), "decoding frame");
     }
-    unsafe { renderer.upload_frame(frame) };
+    unsafe { renderer.upload_frame(&frame) };
     true
 }
 
@@ -43,7 +49,7 @@ fn try_upload_frame(
 #[allow(dead_code, reason = "useful for debugging but not called in release")]
 fn print_stats(
     session: &MoqSession,
-    track: &VideoTrack,
+    player: &Player,
     frame_count: &mut u64,
     fps_last: &mut Instant,
 ) {
@@ -65,7 +71,7 @@ fn print_stats(
     println!(
         "fps: {fps:.0}  rtt: {}ms  rendition: {}",
         rtt.as_millis(),
-        track.rendition(),
+        player.status().get().rendition.unwrap_or_default(),
     );
 }
 
@@ -387,11 +393,11 @@ impl DrmDisplay {
 ///
 /// Spawns a dedicated render thread so the tokio runtime stays free for
 /// packet ingestion and decode. Frames are forwarded via a bounded channel.
-pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Result<()> {
+pub(crate) async fn run_drm(player: Player, _session: MoqSession) -> Result<()> {
     use tokio::sync::mpsc as tokio_mpsc;
 
     // Channel from async world (frame producer) to render thread (consumer).
-    let (frame_tx, frame_rx) = tokio_mpsc::channel::<Frame>(4);
+    let (frame_tx, frame_rx) = tokio_mpsc::channel::<Arc<Frame>>(4);
 
     // Render thread - owns DRM display, receives frames, renders.
     let render_handle = std::thread::Builder::new()
@@ -413,7 +419,7 @@ pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Re
                 }
 
                 frame_count += 1;
-                unsafe { disp.renderer.upload_frame(latest) };
+                unsafe { disp.renderer.upload_frame(&latest) };
                 disp.flip()?;
 
                 let elapsed = fps_last.elapsed();
@@ -430,7 +436,8 @@ pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Re
         .context("spawn render thread")?;
 
     // Async frame pump - runs on tokio, feeds the render thread.
-    while let Some(frame) = video_track.recv().await {
+    let mut frames = player.video();
+    while let Some(frame) = frames.next().await {
         if frame_tx.send(frame).await.is_err() {
             break; // render thread exited
         }
@@ -452,9 +459,10 @@ pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Re
     Ok(())
 }
 
-/// Renders a generated frame stream (e.g. [`iroh_live_media::test_source`]) to HDMI
-/// - no network needed.
-pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
+/// Renders a generated frame stream (e.g.
+/// [`VideoSource::test_pattern`](iroh_live_media::VideoSource::test_pattern)) to
+/// HDMI, with no network needed.
+pub(crate) async fn run_fb_demo(mut frames: VideoFrames) -> Result<()> {
     let mut disp = DrmDisplay::init()?;
     let mut frame_count = 0u64;
     let mut fps_last = Instant::now();
@@ -463,7 +471,7 @@ pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
 
     while let Some(frame) = frames.next().await {
         frame_count += 1;
-        unsafe { disp.renderer.upload_frame(frame) };
+        unsafe { disp.renderer.upload_frame(&frame) };
         disp.flip()?;
 
         let elapsed = fps_last.elapsed();
@@ -482,11 +490,7 @@ pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
 
 /// Renders video in a window using glutin + winit + GLES2.
 #[cfg(feature = "windowed")]
-pub(crate) fn run_windowed(
-    video_track: VideoTrack,
-    session: MoqSession,
-    fullscreen: bool,
-) -> Result<()> {
+pub(crate) fn run_windowed(player: Player, session: MoqSession, fullscreen: bool) -> Result<()> {
     use std::num::NonZeroU32;
 
     use glutin::{
@@ -510,7 +514,8 @@ pub(crate) fn run_windowed(
         surface: Option<glutin::surface::Surface<WindowSurface>>,
         context: Option<glutin::context::PossiblyCurrentContext>,
         window: Option<Window>,
-        video_track: VideoTrack,
+        frames: VideoFrames,
+        player: Player,
         session: MoqSession,
         fullscreen: bool,
         frame_count: u64,
@@ -619,7 +624,7 @@ pub(crate) fn run_windowed(
                     let Some(surface) = &self.surface else { return };
                     let Some(context) = &self.context else { return };
 
-                    try_upload_frame(renderer, &self.video_track, &mut self.frame_count);
+                    try_upload_frame(renderer, &mut self.frames, &mut self.frame_count);
 
                     // The renderer, surface and context above are only ever set
                     // alongside the window, so reaching here without one is a
@@ -636,7 +641,7 @@ pub(crate) fn run_windowed(
 
                     print_stats(
                         &self.session,
-                        &self.video_track,
+                        &self.player,
                         &mut self.frame_count,
                         &mut self.fps_last,
                     );
@@ -658,7 +663,8 @@ pub(crate) fn run_windowed(
         surface: None,
         context: None,
         window: None,
-        video_track,
+        frames: player.video(),
+        player,
         session,
         fullscreen,
         frame_count: 0,
