@@ -325,6 +325,62 @@ async fn audio_plays_through_a_null_output() {
     assert_eq!(player.status().get().audio, SlotState::Running);
 }
 
+/// S7: audio a publisher replaced used to stay `Ended` when the new catalog
+/// arrived before the old track's end, since a catalog update was ignored
+/// while the old track still read. The player looks at the catalog again
+/// after an end, so the new track plays whichever arrived first.
+#[tokio::test]
+async fn audio_comes_back_after_the_publisher_replaces_it() {
+    let broadcast = LocalBroadcast::new();
+    let tone = || AudioSource::tone(440.0, audio::Layout::Mono);
+    broadcast
+        .set_audio(tone(), AudioEncoding::voice())
+        .expect("a valid encoding");
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(PlayerConfig::default().with_audio(&AudioOutput::null()))
+        .expect("valid");
+    let frames_past = |count: u64| {
+        let player = &player;
+        async move {
+            loop {
+                if player
+                    .stats()
+                    .audio
+                    .is_some_and(|audio| audio.frames > count)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    tokio::time::timeout(TIMEOUT, frames_past(10))
+        .await
+        .expect("the first track played");
+    let played = player.stats().audio.map_or(0, |audio| audio.frames);
+    broadcast
+        .set_audio(tone(), AudioEncoding::voice())
+        .expect("a valid encoding");
+    // The stats start over with every track, so a count below the one the
+    // first track had reached means it ended; polled, since the status can
+    // pass through `Ended` faster than a watcher looks.
+    tokio::time::timeout(TIMEOUT, async {
+        while player
+            .stats()
+            .audio
+            .is_some_and(|audio| audio.frames >= played)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the first track never ended");
+    tokio::time::timeout(TIMEOUT, frames_past(10))
+        .await
+        .expect("the replacement never played");
+    assert_eq!(player.status().get().audio, SlotState::Running);
+}
+
 /// The broadcast's status follows its slots: starting, running, and back to
 /// off once cleared.
 #[tokio::test]

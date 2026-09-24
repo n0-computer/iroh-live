@@ -74,7 +74,6 @@ pub(crate) async fn run(inputs: Inputs) {
                         control.set_volume(*volume.borrow());
                         info!(rendition = %name, "audio playing");
                         status.update(|status| status.audio = SlotState::Running);
-                        backoff = RETRY_FIRST;
                         let job = Job {
                             name: name.clone(),
                             decoder,
@@ -89,6 +88,7 @@ pub(crate) async fn run(inputs: Inputs) {
                                     .instrument(info_span!("decode", rendition = %name)),
                             )),
                             control,
+                            tokio::time::Instant::now(),
                         ))
                     }
                     Err(err) => {
@@ -112,8 +112,14 @@ pub(crate) async fn run(inputs: Inputs) {
             tokio::select! {
                 () = shutdown.cancelled() => return,
                 result = async { (&mut reader.as_mut().expect("guarded").0).await }, if reading => {
-                    reader = None;
+                    let (_, _, started) = reader.take().expect("guarded");
                     stats.audio.update(|audio| *audio = None);
+                    // A track that played for a while earns a quick retry; one
+                    // that ends as soon as it opens, as a listed but finished
+                    // track does, backs off rather than reopening every second.
+                    if started.elapsed() >= RETRY_MAX {
+                        backoff = RETRY_FIRST;
+                    }
                     retry.as_mut().reset(tokio::time::Instant::now() + backoff);
                     match result {
                         Ok(Ok(())) => status.update(|status| status.audio = SlotState::Ended),
@@ -149,7 +155,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     if changed.is_err() {
                         return;
                     }
-                    if let Some((_, control)) = &reader {
+                    if let Some((_, control, _)) = &reader {
                         control.set_volume(*volume.borrow());
                     }
                 }
