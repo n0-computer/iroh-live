@@ -68,8 +68,8 @@ pub(crate) struct Desired {
 /// A replacement decoder that failed, as the supervisor reports it.
 #[derive(Debug, Clone)]
 pub(crate) struct Failure {
-    /// The rendition it was for.
-    pub rendition: String,
+    /// The rendition and configuration it was for.
+    pub target: Target,
     /// Whether it only changed the decoder configuration of the rendition
     /// already playing.
     ///
@@ -137,6 +137,12 @@ pub(crate) async fn run(inputs: Inputs) {
     // The reason for a pin this selector could not honour, as last written, so
     // it replaces only its own reports and leaves a failed switch's alone.
     let mut last_why: Option<Arc<Error>> = None;
+    // The last target the supervisor gave up on, and whether it only changed
+    // the configuration of the rendition playing. The desired value does not
+    // change when the same target is chosen again after its backoff, so this
+    // is what asks the supervisor for it once more: without it, a first decoder
+    // that failed to open was never tried again.
+    let mut failed: Option<Failure> = None;
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -175,23 +181,25 @@ pub(crate) async fn run(inputs: Inputs) {
                     ended_seen = true;
                 }
             }
-            failed = failures.recv() => {
-                let Some(failed) = failed else { return };
-                if failed.config_only {
+            failed_report = failures.recv() => {
+                let Some(reported) = failed_report else { return };
+                let rendition = &reported.target.rendition;
+                if reported.config_only {
                     info!(
-                        rendition = %failed.rendition,
+                        %rendition,
                         "the new decoder configuration failed; the rendition keeps playing under the old one"
                     );
                 } else {
                     let now = Instant::now();
-                    let entry = excluded.entry(failed.rendition.clone()).or_insert(Excluded {
+                    let entry = excluded.entry(rendition.clone()).or_insert(Excluded {
                         until: now,
                         backoff: BACKOFF_FIRST / 2,
                     });
                     entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
                     entry.until = now + entry.backoff;
-                    info!(rendition = %failed.rendition, backoff = ?entry.backoff, "leaving a failing rendition alone");
+                    info!(%rendition, backoff = ?entry.backoff, "leaving a failing rendition alone");
                 }
+                failed = Some(reported);
             }
             _ = ticker.tick(), if ticking => {}
         }
@@ -231,6 +239,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let sample = network.as_ref().map(|network| network.0.sample());
         stats.network.update(|last| *last = sample);
         let current = status.get().rendition;
+        let nothing_playing = current.is_none();
 
         let (choice, why) = choose(
             &mode,
@@ -263,13 +272,25 @@ pub(crate) async fn run(inputs: Inputs) {
                 config,
             })
         });
+        // The target given up on is asked for again once it is chosen with its
+        // backoff over, or, for a configuration that failed beside a working
+        // one, once nothing plays any more.
+        let retry = match (&failed, &next) {
+            (Some(failed), Some(next)) => {
+                failed.target == next.target
+                    && !excluded.contains_key(&failed.target.rendition)
+                    && (!failed.config_only || nothing_playing)
+            }
+            _ => false,
+        };
         desired.send_if_modified(|desired| {
             let changed = desired.as_ref().map(|d| &d.target) != next.as_ref().map(|d| &d.target);
-            if changed {
-                trace!(target = ?next.as_ref().map(|d| &d.target), "desired rendition");
+            if changed || retry {
+                trace!(target = ?next.as_ref().map(|d| &d.target), retry, "desired rendition");
                 *desired = next;
+                failed = None;
             }
-            changed
+            changed || retry
         });
     }
 }

@@ -465,7 +465,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     // Full means a failure is already being reported; one more
                     // for the same backoff is not worth waiting for.
                     let _ = failures.try_send(Failure {
-                        rendition: rendition.clone(),
+                        target: target.clone(),
                         config_only,
                     });
                 }

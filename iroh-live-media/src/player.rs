@@ -507,8 +507,18 @@ impl Player {
                     rendition: name.to_string()
                 }));
             }
-            if matches!(current.video, SlotState::Ended | SlotState::Failed(_)) {
-                return Err(n0_error::e!(SwitchError::Ended));
+            match &current.video {
+                SlotState::Ended => return Err(n0_error::e!(SwitchError::Ended)),
+                // Nothing on screen and nothing on its way: the last switch
+                // failed, which the waiter hears as such rather than as an end,
+                // whichever of the status and the event it sees first.
+                SlotState::Failed(source) if current.switching_to.is_none() => {
+                    return Err(n0_error::e!(SwitchError::Failed {
+                        rendition: name.to_string(),
+                        source: source.clone(),
+                    }));
+                }
+                _ => {}
             }
             if let Some(known) = catalog.get()
                 && known.video_rendition(name).is_none()

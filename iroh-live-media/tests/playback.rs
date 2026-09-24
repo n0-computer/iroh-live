@@ -148,6 +148,116 @@ async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
     assert_eq!(fell_back.rendition.as_deref(), Some("high"));
 }
 
+/// C2: a decoder that failed on its first open used to leave the player
+/// `Ended`, with no error and nothing else tried. It is a failed switch, and
+/// the video says so.
+#[tokio::test]
+async fn a_decoder_that_will_not_open_fails_the_video() {
+    let (broadcast, _source) = ladder();
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(
+            PlayerConfig::default()
+                .with_decoder(video::decode::Kind::Named("no-such-decoder".to_string())),
+        )
+        .expect("valid");
+    let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
+        .await
+        .expect("the wait ends");
+    assert!(
+        matches!(result, Err(SwitchError::Failed { .. })),
+        "{result:?}"
+    );
+    let mut status = player.status();
+    let failed = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let current = status.get();
+            if matches!(current.video, SlotState::Failed(_)) {
+                return current;
+            }
+            status.updated().await.expect("the player keeps running");
+        }
+    })
+    .await
+    .expect("the video shows the failure");
+    assert!(failed.rendition.is_none());
+    assert!(failed.switch_error.is_some());
+}
+
+/// A first decoder that failed is tried again once its backoff is over, even
+/// when the broadcast has no other rendition to step to: nothing changed in
+/// what the selector wanted, which used to mean nothing was asked for again.
+#[tokio::test]
+async fn a_failed_first_decoder_is_tried_again() {
+    let source = VideoSource::test_pattern(video::Size::new(320, 180), fps(30));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            VideoEncoding::single(VideoRendition::new("video")).with_prefer_hardware(false),
+        )
+        .expect("valid");
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(
+            PlayerConfig::default()
+                .with_decoder(video::decode::Kind::Named("no-such-decoder".to_string())),
+        )
+        .expect("valid");
+    let mut status = player.status();
+    let first = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(error) = status.get().switch_error {
+                return error;
+            }
+            status.updated().await.expect("the player keeps running");
+        }
+    })
+    .await
+    .expect("the first open fails");
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(error) = status.get().switch_error
+                && !std::sync::Arc::ptr_eq(&error, &first)
+            {
+                return;
+            }
+            status.updated().await.expect("the player keeps running");
+        }
+    })
+    .await
+    .expect("the decoder was never tried again");
+}
+
+/// S2: a decoder change that failed used to exclude the rendition playing, so
+/// the selector stepped down the ladder under the same broken decoder. The
+/// rendition keeps playing under the decoder that works.
+#[tokio::test]
+async fn a_failed_decoder_change_keeps_the_rendition_playing() {
+    let (broadcast, _source) = ladder();
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
+        .await
+        .expect("in time")
+        .expect("the top rendition plays");
+    player.set_decoder(video::decode::Kind::Named("no-such-decoder".to_string()));
+    let mut status = player.status();
+    tokio::time::timeout(TIMEOUT, async {
+        while status.get().switch_error.is_none() {
+            status.updated().await.expect("the player keeps running");
+        }
+    })
+    .await
+    .expect("the failed change shows in the status");
+    // Long enough for a step down to have started, had the failure excluded
+    // the rendition: the selector ticks every 200 ms while one is excluded.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let current = status.get();
+    assert_eq!(current.rendition.as_deref(), Some("high"), "{current:?}");
+    assert_eq!(current.switching_to, None, "{current:?}");
+    assert_eq!(current.video, SlotState::Running);
+}
+
 #[tokio::test]
 async fn turning_video_off_leaves_nothing_decoding() {
     let (broadcast, _source) = ladder();
