@@ -1,46 +1,34 @@
 //! Room chat: one more broadcast every member publishes into the room.
 //!
-//! The broadcast is named `chat` and has one track of that name, which carries
-//! one message per group. The grid leaves it out, and the window reads every
+//! The broadcast is named `chat` and carries `moq-room`'s chat track, a JSON
+//! window that holds the last ten seconds of messages, which is what
+//! `@moq/room` reads too. The grid leaves it out, and the window reads every
 //! other member's with [`read`].
 
-use std::time::{Duration, SystemTime};
+use std::{collections::VecDeque, time::Duration};
 
 use eframe::egui;
 use iroh::EndpointId;
 use iroh_live::rooms::Room;
-use moq_net::{Timestamp, broadcast, track};
+use moq_net::broadcast;
+use moq_room::chat::{Event, Publisher, Subscriber};
 use n0_error::{Result, StdResultExt};
-use serde::{Deserialize, Serialize};
+use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-/// The name of the chat broadcast, and of its one track.
+/// The name of the chat broadcast.
 pub(super) const NAME: &str = "chat";
 
-/// How long a message stays readable, on both ends of the track.
-///
-/// moq's default is zero, "the newest group or nothing", which would drop a
-/// message that a second one overtook before it was read.
-const MAX_AGE: Duration = Duration::from_secs(5);
+/// How many typed messages wait for the writer task.
+const SEND_QUEUE: usize = 16;
 
 /// How long a reader waits before reading a member again once its read ended.
 const RETRY: Duration = Duration::from_secs(2);
 
-/// How long before joining a message may have been sent and still show, for
-/// clocks that disagree a little.
-const CLOCK_TOLERANCE: Duration = Duration::from_secs(2);
-
-/// One message on the chat track.
-#[derive(Debug, Serialize, Deserialize)]
-struct Frame {
-    text: String,
-    /// Milliseconds since the Unix epoch, by the sender's clock.
-    sent_at_ms: u64,
-    /// Drawn per chat broadcast, so a reader can tell a member that restarted,
-    /// whose group sequence starts over, from a repeat.
-    writer: u64,
-}
+/// How many delivered messages a reader remembers, to skip them when a new
+/// read replays the window.
+const REMEMBERED: usize = 64;
 
 /// A message another member sent.
 #[derive(Debug)]
@@ -49,73 +37,75 @@ pub(super) struct Message {
     pub(super) text: String,
 }
 
-/// This member's chat broadcast.
+/// This member's chat broadcast, and the task that writes and expires it.
 pub(super) struct Writer {
-    broadcast: broadcast::Producer,
-    track: track::Producer,
-    writer: u64,
+    broadcast: broadcast::Consumer,
+    tx: mpsc::Sender<String>,
+    _task: AbortOnDropHandle<()>,
 }
 
 impl Writer {
     /// Creates the chat broadcast.
     pub(super) fn new() -> Result<Self> {
-        let broadcast = broadcast::Info::new().produce();
-        let track = broadcast
-            .create_track(NAME, track::Info::default().with_max_age(MAX_AGE))
-            .std_context("creating the chat track")?;
+        let mut producer = broadcast::Info::new().produce();
+        let mut publisher =
+            Publisher::create(&mut producer).std_context("creating the chat track")?;
+        let broadcast = producer.consume();
+        let (tx, mut rx) = mpsc::channel::<String>(SEND_QUEUE);
+        let task = tokio::spawn(async move {
+            // Held here, so the broadcast lives as long as the task.
+            let _producer = producer;
+            loop {
+                let text = tokio::select! {
+                    text = rx.recv() => text,
+                    expired = publisher.expire() => match expired {
+                        Ok(()) => continue,
+                        Err(err) => {
+                            warn!(error = %err, "the chat window failed");
+                            return;
+                        }
+                    },
+                };
+                let Some(text) = text else { return };
+                if let Err(err) = publisher.send(&text) {
+                    warn!(error = %err, "failed to send the chat message");
+                }
+            }
+        });
         Ok(Self {
             broadcast,
-            track,
-            writer: rand::random(),
+            tx,
+            _task: AbortOnDropHandle::new(task),
         })
     }
 
     /// Returns the broadcast, for publishing it into the room.
     pub(super) fn broadcast(&self) -> broadcast::Consumer {
-        self.broadcast.consume()
+        self.broadcast.clone()
     }
 
-    /// Sends `text` to the room.
-    pub(super) fn send(&mut self, text: &str) -> Result<()> {
-        let frame = Frame {
-            text: text.to_owned(),
-            sent_at_ms: unix_ms(SystemTime::now()),
-            writer: self.writer,
-        };
-        let bytes = postcard::to_stdvec(&frame).expect("a chat frame serializes");
-        self.track
-            .write_frame(Timestamp::now(), bytes)
-            .std_context("writing a chat message")?;
-        Ok(())
+    /// Sends `text` to the room, unless the writer is backed up.
+    pub(super) fn send(&self, text: String) {
+        if self.tx.try_send(text).is_err() {
+            warn!("the chat writer is backed up, dropping a message");
+        }
     }
-}
-
-/// How far a member's chat has been delivered.
-#[derive(Debug, Default)]
-struct Cursor {
-    /// The writer the count is of.
-    writer: Option<u64>,
-    /// One past the highest group sequence delivered.
-    next: u64,
 }
 
 /// Reads member `from`'s chat into `tx` until the task is dropped.
 ///
-/// Reads the member again after [`RETRY`] whenever a read ends, and delivers a
-/// message once across those reads: a new subscription starts with the newest
-/// message, which the last read may have delivered already. The first message
-/// the first read gets was sent before this member joined if the sender's
-/// clock says so, and is left out.
+/// Reads the member again after [`RETRY`] whenever a read ends. A new read
+/// starts with the member's whole window, and the messages this reader
+/// delivered already are skipped.
 pub(super) async fn read(
     room: Room,
     from: EndpointId,
     tx: mpsc::Sender<Message>,
     ctx: egui::Context,
 ) {
-    let joined = SystemTime::now() - CLOCK_TOLERANCE;
-    let mut cursor = Cursor::default();
+    let mut delivered = VecDeque::new();
     loop {
-        if let Err(err) = read_once(&room, from, joined, &mut cursor, &tx, &ctx).await {
+        if let Err(err) = read_once(&room, from, &mut delivered, &tx, &ctx).await {
             debug!(remote = %from.fmt_short(), error = %err, "chat read ended");
         }
         if tx.is_closed() {
@@ -129,73 +119,88 @@ pub(super) async fn read(
 async fn read_once(
     room: &Room,
     from: EndpointId,
-    joined: SystemTime,
-    cursor: &mut Cursor,
+    delivered: &mut VecDeque<(u64, String)>,
     tx: &mpsc::Sender<Message>,
     ctx: &egui::Context,
 ) -> Result<()> {
     let subscription = room.subscribe(from, NAME).await?;
     let broadcast = subscription.as_moq();
-    let mut track = broadcast
-        .track(NAME)
-        .std_context("no chat track")?
-        .subscribe(track::Subscription::default().with_max_age(MAX_AGE))
+    let mut chat = Subscriber::subscribe(&broadcast)
         .await
-        .std_context("subscribing to the chat track")?;
-    // Groups below this were delivered by an earlier read.
-    let mut floor = cursor.next;
+        .std_context("subscribing to the chat")?;
     loop {
         // A broadcast whose session died does not always end its tracks.
-        let group = tokio::select! {
-            group = track.recv_group() => group.std_context("reading the chat track")?,
+        let event = tokio::select! {
+            event = chat.recv() => event.std_context("reading the chat")?,
             _ = broadcast.closed() => None,
         };
-        let Some(mut group) = group else {
+        let Some(event) = event else {
             return Ok(());
         };
-        let Some(frame) = group
-            .read_frame()
-            .await
-            .std_context("reading a chat message")?
-        else {
+        let Event::Push { index, value } = event else {
             continue;
         };
-        let frame: Frame = match postcard::from_bytes(&frame.payload) {
-            Ok(frame) => frame,
-            Err(err) => {
-                warn!(remote = %from.fmt_short(), error = %err, "chat frame does not decode");
-                continue;
-            }
-        };
-        if cursor.writer != Some(frame.writer) {
-            let first = cursor.writer.is_none();
-            *cursor = Cursor {
-                writer: Some(frame.writer),
-                next: 0,
-            };
-            floor = 0;
-            if first && frame.sent_at_ms < unix_ms(joined) {
-                cursor.next = group.sequence + 1;
-                continue;
-            }
-        }
-        if group.sequence < floor {
+        let Some(text) = remember(delivered, index, value) else {
             continue;
-        }
-        cursor.next = cursor.next.max(group.sequence + 1);
-        let message = Message {
-            from,
-            text: frame.text,
         };
-        if tx.send(message).await.is_err() {
+        if tx.send(Message { from, text }).await.is_err() {
             return Ok(());
         }
         ctx.request_repaint();
     }
 }
 
-/// Returns `time` as milliseconds since the Unix epoch.
-fn unix_ms(time: SystemTime) -> u64 {
-    time.duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
+/// Returns the message at `index` unless it was delivered already, and
+/// remembers it.
+///
+/// Keyed by index and text: a member that restarted counts from zero again,
+/// with new text.
+fn remember(delivered: &mut VecDeque<(u64, String)>, index: u64, text: String) -> Option<String> {
+    let seen = (index, text);
+    if delivered.contains(&seen) {
+        return None;
+    }
+    let text = seen.1.clone();
+    delivered.push_back(seen);
+    if delivered.len() > REMEMBERED {
+        delivered.pop_front();
+    }
+    Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A message the writer sends reaches a subscriber of its broadcast.
+    #[tokio::test]
+    async fn a_message_reaches_a_subscriber() {
+        let writer = Writer::new().expect("writer");
+        let mut chat = Subscriber::subscribe(&writer.broadcast())
+            .await
+            .expect("subscribe");
+        writer.send("hello".into());
+        let event = tokio::time::timeout(Duration::from_secs(5), chat.recv())
+            .await
+            .expect("timed out")
+            .expect("read")
+            .expect("an event");
+        assert!(matches!(event, Event::Push { value, .. } if value == "hello"));
+    }
+
+    /// A replayed window is skipped, and a restarted member is heard.
+    #[test]
+    fn a_replay_is_skipped_and_a_restart_is_not() {
+        let mut delivered = VecDeque::new();
+        assert!(remember(&mut delivered, 0, "a".into()).is_some());
+        assert!(remember(&mut delivered, 1, "b".into()).is_some());
+        assert!(
+            remember(&mut delivered, 1, "b".into()).is_none(),
+            "a replay"
+        );
+        assert!(
+            remember(&mut delivered, 0, "again".into()).is_some(),
+            "a restart"
+        );
+    }
 }

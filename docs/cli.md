@@ -287,9 +287,10 @@ selective forwarding. The ticket a window prints includes itself as a bootstrap
 peer, so it is the one to pass on to the next participant.
 
 Chat is one more broadcast: every participant publishes one named `chat` into
-the room, members only, so chat works with the camera off. A message is shown
-once, including across a dropped session; a message sent while a session was
-down for more than a few seconds can be lost.
+the room, members only, so chat works with the camera off. It carries
+`moq-room`'s chat track, a window of the last ten seconds of messages, so a
+participant that joins or reconnects sees what was said in them, each message
+once.
 Joining and leaving appear in the panel as they happen.
 
 Leaving is derived from media, not from membership: a participant's tile

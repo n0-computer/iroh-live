@@ -642,9 +642,7 @@ mod window {
                 return;
             }
             self.chat.input.clear();
-            if let Err(err) = self.chat_writer.send(&text) {
-                warn!(error = %err, "failed to send the chat message");
-            }
+            self.chat_writer.send(text.clone());
             self.chat.push(self.display_name.clone(), text);
         }
     }
