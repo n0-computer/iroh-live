@@ -54,7 +54,7 @@ with backoff. `RelayLink::status()` watches its `RelayStatus`.
 `RelayConfig::consume` is on by default, which copies every route the relay
 knows into the node's route table, so every broadcast on the relay becomes
 resolvable here. A node that only publishes through the relay should attach
-with `RelayConfig::new(url).with_consume(false)`.
+with `RelayConfig { consume: false, ..RelayConfig::new(url) }`.
 
 ## Links
 

@@ -583,7 +583,10 @@ async fn iroh_publish_noq_subscribe() {
 /// A live node's own grant keeps a peer to `live/<its id>/`, and a relay
 /// forwards everyone's broadcasts.
 fn trusted() -> iroh_moq::ConnectOptions {
-    iroh_moq::ConnectOptions::default().with_grant(iroh_moq::Grant::everything())
+    iroh_moq::ConnectOptions {
+        grant: Some(iroh_moq::Grant::everything()),
+        ..Default::default()
+    }
 }
 
 /// How long a pull may linger unwatched in the pull-lifecycle tests. Short
@@ -956,7 +959,10 @@ async fn attached(
     let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
     let link = live
         .moq()
-        .attach_relay(iroh_moq::RelayConfig::new(url).with_offer(offer))
+        .attach_relay(iroh_moq::RelayConfig {
+            offer,
+            ..iroh_moq::RelayConfig::new(url)
+        })
         .expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
@@ -1152,7 +1158,10 @@ async fn shutdown_detaches_relay_links() {
     let link = attached(&live, &relay, RelayOffer::Public).await;
     let consume_only = live
         .moq()
-        .attach_relay(iroh_moq::RelayConfig::new(link.url().clone()).with_consume(false))
+        .attach_relay(iroh_moq::RelayConfig {
+            consume: false,
+            ..iroh_moq::RelayConfig::new(link.url().clone())
+        })
         .expect("attach");
 
     link.detach().await;
@@ -1609,7 +1618,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     let room_a = alice_rooms
         .join(
             &iroh_live_rooms::RoomTicket::generate(),
-            iroh_live_rooms::RoomConfig::default().with_display_name("alice"),
+            Some("alice".into()),
         )
         .await
         .expect("join");
@@ -1642,7 +1651,10 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     // Alice consumes through the relay, and the forged route is in her table.
     let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
     let link = alice_moq
-        .attach_relay(RelayConfig::new(url).with_offer(RelayOffer::Nothing))
+        .attach_relay(RelayConfig {
+            offer: RelayOffer::Nothing,
+            ..RelayConfig::new(url)
+        })
         .expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
@@ -1666,10 +1678,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     .expect("the forged camera never reached alice's table");
 
     let room_b = bob_rooms
-        .join(
-            &room_a.ticket(),
-            iroh_live_rooms::RoomConfig::default().with_display_name("bob"),
-        )
+        .join(&room_a.ticket(), Some("bob".into()))
         .await
         .expect("join");
     let (cam, _writer) = counter("data");

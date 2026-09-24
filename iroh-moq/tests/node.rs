@@ -6,9 +6,7 @@ mod common;
 use std::{collections::BTreeSet, time::Duration};
 
 use common::{Node, TIMEOUT, TestBroadcast, ends, read_counter, reading, stays_pending, step};
-use iroh_moq::{
-    Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach, Reject,
-};
+use iroh_moq::{Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach};
 use moq_net::{Hop, Pattern, Patterns, origin};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -275,7 +273,11 @@ async fn unpublishing_ends_what_peers_read() {
 #[tokio::test]
 #[traced_test]
 async fn manual_admission_checks_a_token_and_bounds_offers() {
-    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let alice = Node::with_config(MoqConfig {
+        admission: Admission::Manual,
+        ..Default::default()
+    })
+    .await;
     let bob = Node::spawn().await;
     let mallory = Node::spawn().await;
 
@@ -303,11 +305,14 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
         let mut offers = Vec::new();
         while let Some(incoming) = moq.accept().await {
             if incoming.request().query("jwt") != Some("letmein") {
-                incoming.reject(Reject::Unauthorized);
+                incoming.reject(moq_net::Error::Unauthorized);
                 continue;
             }
             let pattern: Pattern = format!("live/{alice_id}/public").parse().expect("pattern");
-            let grant = Grant::new(Patterns::from(pattern), Patterns::new());
+            let grant = Grant {
+                subscribe: Patterns::from(pattern),
+                publish: Patterns::new(),
+            };
             let session = incoming.admit(grant).await.expect("admit");
             offers.push(
                 session
@@ -321,7 +326,10 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
         "bob connects with the token",
         bob.moq.connect_with(
             alice.endpoint.addr(),
-            ConnectOptions::default().with_token("letmein"),
+            ConnectOptions {
+                token: Some("letmein".into()),
+                ..Default::default()
+            },
         ),
     )
     .await
@@ -528,7 +536,11 @@ async fn refused(dialer: &Node, to: &Node, within: Duration) {
 #[tokio::test]
 #[traced_test]
 async fn an_undecided_session_is_refused() {
-    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let alice = Node::with_config(MoqConfig {
+        admission: Admission::Manual,
+        ..Default::default()
+    })
+    .await;
     let bob = Node::spawn().await;
     let moq = alice.moq.clone();
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -546,7 +558,11 @@ async fn an_undecided_session_is_refused() {
 #[tokio::test]
 #[traced_test]
 async fn shutdown_refuses_the_sessions_waiting_for_admission() {
-    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let alice = Node::with_config(MoqConfig {
+        admission: Admission::Manual,
+        ..Default::default()
+    })
+    .await;
     let bob = Node::spawn().await;
     let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await
@@ -570,7 +586,11 @@ async fn shutdown_refuses_the_sessions_waiting_for_admission() {
 #[tokio::test]
 #[traced_test]
 async fn a_parked_accept_does_not_hold_up_shutdown() {
-    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let alice = Node::with_config(MoqConfig {
+        admission: Admission::Manual,
+        ..Default::default()
+    })
+    .await;
     let bob = Node::spawn().await;
     let mut accepting = Box::pin(alice.moq.accept());
     assert!(
@@ -621,7 +641,11 @@ async fn the_router_shuts_the_node_down() {
 #[tokio::test]
 #[traced_test]
 async fn a_grant_bounds_what_a_peer_publishes() {
-    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let alice = Node::with_config(MoqConfig {
+        admission: Admission::Manual,
+        ..Default::default()
+    })
+    .await;
     let bob = Node::spawn().await;
     let (allowed, other) = (TestBroadcast::start(), TestBroadcast::start());
     let allowed = bob
@@ -638,10 +662,10 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
         let mut sessions = Vec::new();
         while let Some(incoming) = moq.accept().await {
-            let grant = Grant::new(
-                Patterns::from(Pattern::all()),
-                Patterns::from(within.clone()),
-            );
+            let grant = Grant {
+                subscribe: Patterns::from(Pattern::all()),
+                publish: Patterns::from(within.clone()),
+            };
             sessions.push(incoming.admit(grant).await.expect("admit"));
         }
     }));
@@ -678,7 +702,11 @@ async fn a_shared_route_table_carries_public_publications() {
     let _driver = AbortOnDropHandle::new(tokio::spawn(async move {
         moq_net::time::run(driver).await;
     }));
-    let alice = Node::with_config(MoqConfig::default().with_origin(origin.clone())).await;
+    let alice = Node::with_config(MoqConfig {
+        origin: Some(origin.clone()),
+        ..Default::default()
+    })
+    .await;
     let (public, secret) = (TestBroadcast::start(), TestBroadcast::start());
     let public = alice
         .moq

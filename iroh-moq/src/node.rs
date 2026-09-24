@@ -45,7 +45,6 @@ pub enum Reach {
 
 /// How a [`Moq`] node runs.
 #[derive(Clone, Default)]
-#[non_exhaustive]
 pub struct MoqConfig {
     /// How incoming sessions are admitted.
     pub admission: Admission,
@@ -82,20 +81,6 @@ impl fmt::Debug for MoqConfig {
             .field("grant", &self.grant.is_some())
             .field("origin", &self.origin.as_ref().map(|origin| origin.hop()))
             .finish()
-    }
-}
-
-impl MoqConfig {
-    /// Sets how incoming sessions are admitted.
-    pub fn with_admission(mut self, admission: Admission) -> Self {
-        self.admission = admission;
-        self
-    }
-
-    /// Shares `origin` as the route table.
-    pub fn with_origin(mut self, origin: origin::Producer) -> Self {
-        self.origin = Some(origin);
-        self
     }
 }
 

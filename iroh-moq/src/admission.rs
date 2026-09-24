@@ -47,7 +47,6 @@ const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a node treats incoming sessions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Admission {
     /// Admits every session with the grant [`MoqConfig::grant`] gives its peer.
     ///
@@ -67,7 +66,6 @@ pub enum Admission {
 /// and to a moq relay. Patterns are moq's: `*` matches one segment, `**` a
 /// subtree, anything else itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Grant {
     /// The paths the peer may subscribe to from this node.
     pub subscribe: Patterns,
@@ -90,11 +88,6 @@ impl Grant {
             subscribe: Patterns::new(),
             publish: Patterns::new(),
         }
-    }
-
-    /// Returns a grant with these subscribe and publish patterns.
-    pub fn new(subscribe: Patterns, publish: Patterns) -> Self {
-        Self { subscribe, publish }
     }
 
     /// Returns the grant verified moq-auth claims describe.
@@ -133,45 +126,13 @@ impl Default for Grant {
     }
 }
 
-/// Whether a peer said it only publishes or only subscribes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Role {
-    /// The peer only publishes.
-    Publisher,
-    /// The peer only subscribes.
-    Subscriber,
-}
-
-/// Why an incoming session was refused, as the peer sees it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Reject {
-    /// The peer presented no credential, or one that did not verify.
-    Unauthorized,
-    /// The credential verified but does not allow what the peer asked for.
-    Forbidden,
-    /// An application-defined reason code.
-    App(u16),
-}
-
-impl From<Reject> for moq_net::Error {
-    fn from(reject: Reject) -> Self {
-        match reject {
-            // moq has one code for both; the distinction is for the log here.
-            Reject::Unauthorized | Reject::Forbidden => Self::Unauthorized,
-            Reject::App(code) => Self::App(code),
-        }
-    }
-}
-
 /// What a peer asked for when it opened a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionRequest {
     path: String,
     query: Vec<(String, String)>,
     headers: Vec<(String, String)>,
-    role: Option<Role>,
+    role: Option<moq_net::Role>,
 }
 
 impl SessionRequest {
@@ -185,11 +146,6 @@ impl SessionRequest {
         let query = url::form_urlencoded::parse(query.as_bytes())
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
             .collect();
-        let role = match role {
-            Some(moq_net::Role::Publisher) => Some(Role::Publisher),
-            Some(moq_net::Role::Subscriber) => Some(Role::Subscriber),
-            _ => None,
-        };
         Self {
             path: path.trim_matches('/').to_owned(),
             query,
@@ -227,14 +183,13 @@ impl SessionRequest {
     ///
     /// `None` for a peer that does both, and for one whose protocol version
     /// cannot say.
-    pub fn role(&self) -> Option<Role> {
+    pub fn role(&self) -> Option<moq_net::Role> {
         self.role
     }
 }
 
 /// How to dial a peer with [`Moq::connect_with`](crate::Moq::connect_with).
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct ConnectOptions {
     /// A token to present, sent as `?jwt=` in the setup path or the CONNECT URL.
     pub token: Option<String>,
@@ -249,24 +204,6 @@ pub struct ConnectOptions {
 }
 
 impl ConnectOptions {
-    /// Presents `token` to the peer.
-    pub fn with_token(mut self, token: impl Into<String>) -> Self {
-        self.token = Some(token.into());
-        self
-    }
-
-    /// Prices the link at `cost`.
-    pub fn with_cost(mut self, cost: u64) -> Self {
-        self.cost = Some(cost);
-        self
-    }
-
-    /// Limits what the dialed peer may do on this node.
-    pub fn with_grant(mut self, grant: Grant) -> Self {
-        self.grant = Some(grant);
-        self
-    }
-
     /// Returns the setup path that carries the token, if there is one.
     pub(crate) fn setup_path(&self) -> Option<String> {
         let token = self.token.as_ref()?;
@@ -357,10 +294,11 @@ impl Incoming {
         shared.register(parts).await
     }
 
-    /// Rejects the session.
-    pub fn reject(self, reason: Reject) {
-        info!(remote = %self.remote.fmt_short(), ?reason, "rejecting session");
-        self.handshake.close(reason.into());
+    /// Rejects the session with `reason`, such as
+    /// [`moq_net::Error::Unauthorized`].
+    pub fn reject(self, reason: moq_net::Error) {
+        info!(remote = %self.remote.fmt_short(), %reason, "rejecting session");
+        self.handshake.close(reason);
     }
 
     /// Refuses the session with a moq error code.
@@ -497,7 +435,10 @@ mod tests {
 
     #[test]
     fn a_token_rides_the_setup_path() {
-        let options = ConnectOptions::default().with_token("a+b");
+        let options = ConnectOptions {
+            token: Some("a+b".into()),
+            ..Default::default()
+        };
         let path = options.setup_path().expect("a path");
         let request = SessionRequest::new(&path, vec![], None);
         assert_eq!(request.query("jwt"), Some("a+b"));
@@ -512,7 +453,10 @@ mod tests {
         let nothing = Grant::nothing();
         assert!(!nothing.allows_subscribe("live/x/cam"));
         let live: Pattern = "live/**".parse().expect("pattern");
-        let scoped = Grant::new(Patterns::from(live), Patterns::new());
+        let scoped = Grant {
+            subscribe: Patterns::from(live),
+            publish: Patterns::new(),
+        };
         assert!(scoped.allows_subscribe("live/x/cam"));
         assert!(!scoped.allows_subscribe("rooms/t/x/cam"));
         assert!(!scoped.allows_publish("live/x/cam"));

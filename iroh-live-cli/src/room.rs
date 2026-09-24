@@ -16,7 +16,7 @@
 use iroh_live::{
     Live, LocalBroadcast,
     media::AudioOutput,
-    rooms::{Room, RoomConfig, RoomTicket, Rooms},
+    rooms::{Room, RoomTicket, Rooms},
 };
 use n0_error::Result;
 use tracing::info;
@@ -78,12 +78,7 @@ async fn join(live: &Live, rooms: &Rooms, args: &RoomArgs, output: AudioOutput) 
         .display_name
         .clone()
         .unwrap_or_else(|| live.endpoint().id().fmt_short().to_string());
-    let room = rooms
-        .join(
-            &ticket,
-            RoomConfig::default().with_display_name(display_name.clone()),
-        )
-        .await?;
+    let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
     let broadcast = LocalBroadcast::new();
     let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;

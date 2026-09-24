@@ -123,14 +123,6 @@ impl Session {
         LinkId(self.inner.link)
     }
 
-    /// Returns what kind of link the session is.
-    ///
-    /// Always [`LinkKind::Direct`], since relays are
-    /// [`RelayLink`](crate::RelayLink)s.
-    pub fn kind(&self) -> LinkKind {
-        LinkKind::Direct
-    }
-
     /// Reports whether this node dialed the session, rather than accepted it.
     ///
     /// Two peers that dial each other at once end up with one session of each

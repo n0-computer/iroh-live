@@ -29,7 +29,10 @@ async fn main() -> anyhow::Result<()> {
         let mut result = None;
         for attempt in 0..5 {
             let attempt_result = async {
-                let trusted = ConnectOptions::default().with_grant(Grant::everything());
+                let trusted = ConnectOptions {
+                    grant: Some(Grant::everything()),
+                    ..Default::default()
+                };
                 let session = live.moq().connect_with(id, trusted).await?;
                 let subscription = session.subscribe(cli.name.as_str()).await?;
                 Ok::<_, iroh_live::moq::Error>(live.remote_broadcast(&subscription))

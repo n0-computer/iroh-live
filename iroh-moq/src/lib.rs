@@ -44,8 +44,8 @@
 //!
 //! A relay attached with [`RelayConfig::new`] also consumes: every route the
 //! relay announces enters this node's route table, priced at the relay's cost.
-//! A node that only publishes through a relay turns that off with
-//! [`RelayConfig::with_consume`].
+//! A node that only publishes through a relay sets [`RelayConfig::consume`]
+//! to false.
 //!
 //! # Cancellation safety
 //!
@@ -81,9 +81,7 @@ pub mod transport;
 pub use moq_net as net;
 
 pub use self::{
-    admission::{
-        Admission, ConnectOptions, Grant, GrantFn, Incoming, Reject, Role, SessionRequest,
-    },
+    admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
     endpoint::{EndpointOptions, Mdns, MediaPreset},
     error::Error,
     link::{LinkSample, ServingLink},

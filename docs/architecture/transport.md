@@ -121,7 +121,7 @@ to the same broadcast wins while it exists. The link redials with backoff;
 
 `RelayConfig::consume` defaults to true, which copies every route the relay
 knows into the node's route table. A node that only publishes through the
-relay sets `.with_consume(false)`, so it neither mirrors routes it will never
+relay sets `consume: false`, so it neither mirrors routes it will never
 read nor answers requests for them.
 
 A relay link runs the same kind of monitor as a session, over the statistics

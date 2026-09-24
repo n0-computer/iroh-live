@@ -38,14 +38,18 @@ pub fn grant(peer: EndpointId) -> Grant {
     let mut publish = Patterns::from(publish_scope(peer));
     #[cfg(feature = "rooms")]
     publish.insert(iroh_live_rooms::publish_scope(peer));
-    Grant::new(Patterns::from(Pattern::all()), publish)
+    Grant {
+        subscribe: Patterns::from(Pattern::all()),
+        publish,
+    }
 }
 
 /// Returns the [`MoqConfig`] of a live node: admission open, with [`grant`].
 pub fn moq_config() -> MoqConfig {
-    let mut config = MoqConfig::default();
-    config.grant = Some(Arc::new(grant));
-    config
+    MoqConfig {
+        grant: Some(Arc::new(grant)),
+        ..Default::default()
+    }
 }
 
 /// A node ready for live media.

@@ -63,7 +63,6 @@ fn transport_config() -> QuicTransportConfig {
 /// conference network still find each other, because the lookup never leaves
 /// the link.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Mdns {
     /// Publishes this endpoint's addresses and resolves others'.
     ///
@@ -81,7 +80,6 @@ pub enum Mdns {
 
 /// A media endpoint with a key and mDNS, for applications that want both.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct EndpointOptions {
     /// The endpoint's identity. `None` generates an ephemeral one.
     pub secret_key: Option<SecretKey>,
@@ -90,18 +88,6 @@ pub struct EndpointOptions {
 }
 
 impl EndpointOptions {
-    /// Binds with `key` as the endpoint's identity.
-    pub fn with_secret_key(mut self, key: SecretKey) -> Self {
-        self.secret_key = Some(key);
-        self
-    }
-
-    /// Sets how the endpoint uses mDNS.
-    pub fn with_mdns(mut self, mdns: Mdns) -> Self {
-        self.mdns = mdns;
-        self
-    }
-
     /// Returns an endpoint builder with [`MediaPreset`], the key and mDNS applied.
     ///
     /// For a caller that sets more before binding: a relay adds its ALPNs.

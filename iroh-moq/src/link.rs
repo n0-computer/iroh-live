@@ -75,7 +75,6 @@ const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
 /// [`remote_addr`](Self::remote_addr) is `None` and [`paths`](Self::paths) is
 /// zero, and its path generation moves on every reconnect.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct LinkSample {
     /// The smoothed round trip time, `None` until the connection measured one.
     ///
@@ -135,7 +134,6 @@ pub struct LinkSample {
 ///
 /// Returned by [`Subscription::link`](crate::Subscription::link).
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub struct ServingLink {
     /// Which link serves: a session's [`Session::link_id`](crate::Session::link_id),
     /// or a relay link's.

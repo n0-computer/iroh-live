@@ -49,7 +49,6 @@ impl LinkId {
 
 /// What kind of link a route or session runs over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum LinkKind {
     /// This node's own publication.
     Local,
@@ -61,7 +60,6 @@ pub enum LinkKind {
 
 /// One route to a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct RouteInfo {
     /// The link the route arrived over.
     pub via: LinkId,

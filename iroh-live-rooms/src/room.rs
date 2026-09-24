@@ -70,7 +70,6 @@ const MAP_RESUBSCRIBES: u32 = 3;
 
 /// Everything that can go wrong in a room.
 #[stack_error(derive, add_meta, from_sources)]
-#[non_exhaustive]
 pub enum Error {
     /// The room's gossip topic could not be joined.
     #[error(transparent)]
@@ -125,7 +124,7 @@ impl Rooms {
         self.gossip.clone()
     }
 
-    /// Joins the room `ticket` names.
+    /// Joins the room `ticket` names, as `display_name` if given.
     ///
     /// Subscribes to the room's gossip topic and starts announcing this
     /// member. Cancellation safe: dropping the future leaves the topic.
@@ -133,7 +132,11 @@ impl Rooms {
     /// # Errors
     ///
     /// Fails if the gossip topic cannot be joined.
-    pub async fn join(&self, ticket: &RoomTicket, config: RoomConfig) -> Result<Room, Error> {
+    pub async fn join(
+        &self,
+        ticket: &RoomTicket,
+        display_name: Option<String>,
+    ) -> Result<Room, Error> {
         let topic = ticket.topic_id();
         let me = self.moq.endpoint().id();
         let gossip_topic = self
@@ -163,7 +166,7 @@ impl Rooms {
             leave,
             local: Mutex::new(BTreeMap::new()),
             local_changed: Watchable::new(0),
-            display_name: Watchable::new(config.display_name),
+            display_name: Watchable::new(display_name),
             done: Watchable::new(false),
         });
         let actor = Actor {
@@ -183,25 +186,8 @@ impl Rooms {
     }
 }
 
-/// How to join a room.
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct RoomConfig {
-    /// The name other members see, if any.
-    pub display_name: Option<String>,
-}
-
-impl RoomConfig {
-    /// Sets the name other members see.
-    pub fn with_display_name(mut self, name: impl Into<String>) -> Self {
-        self.display_name = Some(name.into());
-        self
-    }
-}
-
 /// Who is in a room, and what each member publishes into it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct RoomState {
     /// Every other member, by endpoint id. This node is not among them.
     pub peers: BTreeMap<EndpointId, RoomPeer>,
@@ -209,7 +195,6 @@ pub struct RoomState {
 
 /// One member of a room.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct RoomPeer {
     /// The name the member announced, if any.
     pub display_name: Option<String>,

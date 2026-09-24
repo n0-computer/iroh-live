@@ -18,7 +18,7 @@ publish their room broadcasts, under `iroh_live_rooms::publish_scope(member)`;
 
 ```rust
 use iroh_live::{Live, Moq};
-use iroh_live_rooms::{RoomConfig, RoomTicket, Rooms};
+use iroh_live_rooms::{RoomTicket, Rooms};
 
 let moq = Moq::new(endpoint.clone(), iroh_live::moq_config());
 let rooms = Rooms::new(&moq);
@@ -29,7 +29,7 @@ let live = Live::builder(endpoint)
     .spawn();
 
 let room = rooms
-    .join(&RoomTicket::generate(), RoomConfig::default().with_display_name("ada"))
+    .join(&RoomTicket::generate(), Some("ada".into()))
     .await?;
 ```
 

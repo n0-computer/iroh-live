@@ -70,5 +70,5 @@ publication whose audience is `Everyone` is offered to it. `irl publish --relay
 <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` that way. By default a relay
 link also consumes: it copies every route the relay knows into the node's route
 table. A node that only publishes, as `irl publish` does, attaches with
-`.with_consume(false)`. See the [browser relay
+`consume: false`. See the [browser relay
 guide](../guide/browser-relay.md) for the full workflow.

@@ -86,7 +86,7 @@ authenticated; the relay accepts iroh sessions itself to know that id. A browser
 has no such identity, so it publishes only at names of one segment, which is
 what the publish page's `?name=` gives, and never into `live/` or `rooms/`.
 `irl publish --relay` only publishes into the relay, and does not read the
-relay's other broadcasts: it attaches with `RelayConfig::with_consume(false)`.
+relay's other broadcasts: it attaches with `consume: false` in its `RelayConfig`.
 A node attached with the default config would copy every route the relay knows
 into its own route table.
 

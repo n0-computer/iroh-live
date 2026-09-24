@@ -111,7 +111,7 @@ fn runtime() -> &'static Runtime {
 async fn bind_live() -> Result<Live> {
     let mut options = EndpointOptions::default();
     if let Ok(key) = std::env::var("IROH_SECRET") {
-        options = options.with_secret_key(key.parse().context("IROH_SECRET is not a key")?);
+        options.secret_key = Some(key.parse().context("IROH_SECRET is not a key")?);
     }
     Ok(Live::builder(options.bind().await?).with_router().spawn())
 }

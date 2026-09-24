@@ -105,10 +105,12 @@ pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<L
 /// Fails if the endpoint cannot bind.
 #[cfg(feature = "render")]
 pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
-    let endpoint = EndpointOptions::default()
-        .with_secret_key(secret_key_from_env()?)
-        .bind()
-        .await?;
+    let endpoint = EndpointOptions {
+        secret_key: Some(secret_key_from_env()?),
+        ..Default::default()
+    }
+    .bind()
+    .await?;
     let moq = iroh_live::Moq::new(endpoint.clone(), iroh_live::moq_config());
     let rooms = iroh_live::rooms::Rooms::new(&moq);
     let live = Live::builder(endpoint)
@@ -136,11 +138,12 @@ pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> 
 /// Fails if the endpoint cannot bind.
 pub async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
-    let endpoint = EndpointOptions::default()
-        .with_secret_key(secret_key)
-        .with_mdns(mdns)
-        .bind()
-        .await?;
+    let endpoint = EndpointOptions {
+        secret_key: Some(secret_key),
+        mdns,
+    }
+    .bind()
+    .await?;
     let mut builder = Live::builder(endpoint);
     if serve {
         builder = builder.with_router();
@@ -308,9 +311,10 @@ fn attach_relay(live: &Live, relay: EndpointId, name: &str) -> Result<RelayLink>
     let url = format!("iroh://{relay}/")
         .parse()
         .std_context("an endpoint id is a valid URL host")?;
-    let link = live
-        .moq()
-        .attach_relay(RelayConfig::new(url).with_consume(false))?;
+    let link = live.moq().attach_relay(RelayConfig {
+        consume: false,
+        ..RelayConfig::new(url)
+    })?;
     let path = live.ticket(name).path();
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");
     println!("pushing to relay {relay}: viewers find the broadcast there at {path}");

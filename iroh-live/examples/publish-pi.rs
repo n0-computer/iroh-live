@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut options = EndpointOptions::default();
     if let Ok(key) = std::env::var("IROH_SECRET") {
-        options = options.with_secret_key(key.parse()?);
+        options.secret_key = Some(key.parse()?);
     }
     let live = Live::builder(options.bind().await?).with_router().spawn();
     let broadcast = LocalBroadcast::new();

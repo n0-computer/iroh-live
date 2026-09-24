@@ -62,8 +62,7 @@
 //!   shows in [`LocalBroadcast::status`].
 //! - A relay attached with its default config also consumes: every route the
 //!   relay knows enters this node's route table. A node that only publishes
-//!   through a relay turns that off with
-//!   `RelayConfig::with_consume(false)`.
+//!   through a relay sets `consume: false` in its `RelayConfig`.
 //! - In a room, a member can end a broadcast and publish it again under the
 //!   same name without the room's state changing. A grid of tiles has to drop
 //!   the players whose [`RemoteBroadcast::is_closed`] and open them again, on a

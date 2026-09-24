@@ -7,12 +7,9 @@ use n0_error::{AnyError, stack_error};
 
 /// Everything that can go wrong in the transport.
 ///
-/// Sources from the crates underneath (iroh's connection errors,
-/// web-transport-iroh, moq-tokio) are boxed into an [`AnyError`], so a bump of
-/// one of them is not a breaking change here. moq-net's own error is kept typed,
-/// because it is the protocol this crate speaks and callers match on it.
+/// moq-net's errors are kept typed, since callers match on them; the rest
+/// carry an [`AnyError`].
 #[stack_error(derive, add_meta)]
-#[non_exhaustive]
 pub enum Error {
     /// The peer could not be dialed.
     ///

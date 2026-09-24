@@ -28,15 +28,12 @@
 //! ```no_run
 //! # async fn example(moq: iroh_moq::Moq, broadcast: moq_net::broadcast::Producer)
 //! # -> Result<(), Box<dyn std::error::Error>> {
-//! use iroh_live_rooms::{RoomConfig, RoomTicket, Rooms};
+//! use iroh_live_rooms::{RoomTicket, Rooms};
 //!
 //! let rooms = Rooms::new(&moq);
 //! // Mount `rooms.protocol_handler()` under `iroh_live_rooms::ALPN` on the router.
 //! let room = rooms
-//!     .join(
-//!         &RoomTicket::generate(),
-//!         RoomConfig::default().with_display_name("ada"),
-//!     )
+//!     .join(&RoomTicket::generate(), Some("ada".into()))
 //!     .await?;
 //! room.publish("cam", &broadcast)?;
 //!
@@ -77,6 +74,6 @@ mod room;
 mod ticket;
 
 pub use self::{
-    room::{ALPN, Error, Room, RoomConfig, RoomPeer, RoomState, Rooms, publish_scope},
+    room::{ALPN, Error, Room, RoomPeer, RoomState, Rooms, publish_scope},
     ticket::RoomTicket,
 };

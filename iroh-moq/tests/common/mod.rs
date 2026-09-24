@@ -88,7 +88,10 @@ impl Node {
 /// `live/<peer>/` only.
 pub(crate) fn own_paths(peer: EndpointId) -> Grant {
     let own: Pattern = format!("live/{peer}/**").parse().expect("pattern");
-    Grant::new(Patterns::from(Pattern::all()), Patterns::from(own))
+    Grant {
+        subscribe: Patterns::from(Pattern::all()),
+        publish: Patterns::from(own),
+    }
 }
 
 /// A standalone broadcast with one track that writes a counter every few

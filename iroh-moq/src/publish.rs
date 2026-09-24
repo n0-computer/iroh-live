@@ -21,7 +21,6 @@ use crate::{
 
 /// Who may see a publication.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub enum Audience {
     /// Every admitted session, and every relay that takes public publications.
     ///

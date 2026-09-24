@@ -218,7 +218,7 @@ fn endpoint_options() -> n0_error::Result<iroh_live::EndpointOptions> {
         let key = key
             .parse()
             .map_err(|err| n0_error::anyerr!("IROH_SECRET is not a secret key: {err}"))?;
-        options = options.with_secret_key(key);
+        options.secret_key = Some(key);
     }
     Ok(options)
 }

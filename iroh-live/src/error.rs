@@ -4,7 +4,6 @@ use n0_error::stack_error;
 
 /// What can go wrong in the facade: the transport, or the media on top of it.
 #[stack_error(derive, add_meta, from_sources)]
-#[non_exhaustive]
 pub enum Error {
     /// The transport failed.
     ///

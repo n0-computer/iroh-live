@@ -10,7 +10,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_live_rooms::{Room, RoomConfig, RoomState, RoomTicket, Rooms};
+use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms};
 use iroh_moq::{Moq, MoqConfig};
 use n0_watcher::Watcher;
 
@@ -66,14 +66,10 @@ impl Peer {
 
     /// Joins the room `ticket` names under `name`.
     pub(crate) async fn join(&self, ticket: &RoomTicket, name: &str) -> Room {
-        tokio::time::timeout(
-            TIMEOUT,
-            self.rooms
-                .join(ticket, RoomConfig::default().with_display_name(name)),
-        )
-        .await
-        .expect("timed out joining")
-        .expect("failed to join the room")
+        tokio::time::timeout(TIMEOUT, self.rooms.join(ticket, Some(name.to_owned())))
+            .await
+            .expect("timed out joining")
+            .expect("failed to join the room")
     }
 
     /// Shuts down the MoQ node and the router, then closes the endpoint.

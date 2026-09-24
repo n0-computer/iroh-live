@@ -112,14 +112,15 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     //
     // `Announce` rather than `Lookup`: the relay accepts sessions, and a
     // publisher reaches it by endpoint id, so it has an address worth publishing.
-    let iroh_endpoint = EndpointOptions::default()
-        .with_secret_key(iroh_secret)
-        .with_mdns(Mdns::Announce)
-        .builder()
-        .await
-        .alpns(alpns)
-        .bind()
-        .await?;
+    let iroh_endpoint = EndpointOptions {
+        secret_key: Some(iroh_secret),
+        mdns: Mdns::Announce,
+    }
+    .builder()
+    .await
+    .alpns(alpns)
+    .bind()
+    .await?;
 
     // The backend is left to its default, which is noq. The iroh endpoint is
     // part of the configuration now rather than attached after `init`.

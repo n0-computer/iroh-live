@@ -35,7 +35,6 @@ pub const DEFAULT_RELAY_COST: u64 = 10;
 
 /// How to attach to a relay.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct RelayConfig {
     /// `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
     pub url: Url,
@@ -71,32 +70,6 @@ impl RelayConfig {
         }
     }
 
-    /// Presents `token` to the relay.
-    pub fn with_token(mut self, token: impl Into<String>) -> Self {
-        self.token = Some(token.into());
-        self
-    }
-
-    /// Prices the link at `cost`.
-    pub fn with_cost(mut self, cost: u64) -> Self {
-        self.cost = cost;
-        self
-    }
-
-    /// Sets what the node publishes into the relay.
-    pub fn with_offer(mut self, offer: RelayOffer) -> Self {
-        self.offer = offer;
-        self
-    }
-
-    /// Sets whether the node subscribes through the relay.
-    ///
-    /// See [`consume`](Self::consume) for what the default costs.
-    pub fn with_consume(mut self, consume: bool) -> Self {
-        self.consume = consume;
-        self
-    }
-
     /// Returns the URL to dial, with the token in its query.
     fn dial_url(&self) -> Url {
         let mut url = self.url.clone();
@@ -109,7 +82,6 @@ impl RelayConfig {
 
 /// What a node publishes into a relay.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub enum RelayOffer {
     /// Every publication whose audience is [`Everyone`](crate::Audience::Everyone).
     #[default]
@@ -122,7 +94,6 @@ pub enum RelayOffer {
 
 /// The state of a relay link.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RelayStatus {
     /// Dialing for the first time.
     #[default]
