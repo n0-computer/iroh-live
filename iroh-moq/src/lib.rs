@@ -62,12 +62,10 @@
 //!
 //! # Compatibility with the older path layout
 //!
-//! Publisher-named paths are this release's layout. For one release a node
-//! also answers the bare names the older layout used on direct sessions, and
+//! Publisher-named paths are this release's layout. For one release
 //! [`Moq::subscribe`] falls back to a publisher's bare name when it announces
-//! nothing under `live/<id>/`. That, the hidden `Moq::publish_at_with_legacy`
-//! the rooms crate uses for the older room layout, and every other piece marked
-//! `TODO(old-layout)` in the source go in the next release.
+//! nothing under `live/<id>/`. That, and every other piece marked
+//! `TODO(old-layout)` in the source, go in the next release.
 
 mod endpoint;
 mod error;

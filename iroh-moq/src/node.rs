@@ -309,31 +309,27 @@ impl Moq {
 
     /// Publishes `broadcast` as `live/<this node's id>/<name>` to `audience`.
     ///
-    /// For one release the broadcast is also offered to direct sessions at the
-    /// bare `name`, which is where nodes on the older path layout look for it.
-    /// A name that itself spells another publisher's path gets no such alias.
-    ///
     /// # Errors
     ///
-    /// Fails with [`Error::Duplicate`] if a live publication already answers the
-    /// path or the bare name, [`Error::InvalidPath`] for an empty name or one
-    /// with a `*` segment, and [`Error::ShutDown`] once the node has shut down.
+    /// Fails with [`Error::Duplicate`] if a live publication already has the
+    /// path, [`Error::InvalidPath`] for an empty name or one with a `*`
+    /// segment, and [`Error::ShutDown`] once the node has shut down.
     pub fn publish(
         &self,
         name: &str,
         broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
-        // TODO(old-layout): the bare-name alias goes with the older layout.
-        let legacy = Path::new(name).to_owned();
-        if legacy.is_empty() {
+        if Path::new(name).is_empty() {
             return Err(e!(Error::InvalidPath {
                 path: name.to_owned()
             }));
         }
-        let path = live_path(self.shared.id, name);
-        let legacy = publisher_of(&legacy).is_none().then_some(legacy);
-        self.publish_inner(path, legacy, broadcast.consume(), audience)
+        self.publish_inner(
+            live_path(self.shared.id, name),
+            broadcast.consume(),
+            audience,
+        )
     }
 
     /// Publishes `broadcast` at an explicit path.
@@ -350,42 +346,12 @@ impl Moq {
         broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
-        self.publish_inner(
-            path.as_path().to_owned(),
-            None,
-            broadcast.consume(),
-            audience,
-        )
-    }
-
-    /// Publishes at `path`, also answering `legacy` on direct sessions.
-    ///
-    /// For the rooms crate's one release of the older room layout; everything
-    /// else uses [`publish`](Self::publish) or [`publish_at`](Self::publish_at).
-    /// Removed together with that layout, in the release after the one that
-    /// introduced publisher-named paths.
-    // TODO(old-layout): remove with the older path layout, as the crate docs'
-    // "Compatibility" section lists.
-    #[doc(hidden)]
-    pub fn publish_at_with_legacy(
-        &self,
-        path: impl AsPath,
-        legacy: impl AsPath,
-        broadcast: impl Consume<broadcast::Consumer>,
-        audience: Audience,
-    ) -> Result<Publication, Error> {
-        self.publish_inner(
-            path.as_path().to_owned(),
-            Some(legacy.as_path().to_owned()),
-            broadcast.consume(),
-            audience,
-        )
+        self.publish_inner(path.as_path().to_owned(), broadcast.consume(), audience)
     }
 
     fn publish_inner(
         &self,
         path: PathOwned,
-        legacy: Option<PathOwned>,
         broadcast: broadcast::Consumer,
         audience: Audience,
     ) -> Result<Publication, Error> {
@@ -395,7 +361,7 @@ impl Moq {
         if state.closed {
             return Err(e!(Error::ShutDown));
         }
-        if let Some(existing) = state.publication_answering(&path, legacy.as_ref()) {
+        if let Some(existing) = state.publication_at(&path) {
             // A broadcast that ended is withdrawn by its closed task, which may
             // not have run yet; publishing anew at its path is not a clash.
             if !state.publications[&existing].broadcast.is_closed() {
@@ -431,7 +397,6 @@ impl Moq {
             id,
             PubEntry {
                 path: path.clone(),
-                legacy,
                 broadcast,
                 audience: kind,
                 manual: HashMap::new(),
@@ -1126,7 +1091,6 @@ impl Actor {
                 remote: Some(remote),
                 grant,
                 publish: origins.publish.clone(),
-                legacy: true,
                 public: true,
                 consume: true,
                 offers: HashMap::new(),

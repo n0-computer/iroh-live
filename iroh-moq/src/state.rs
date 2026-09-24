@@ -48,9 +48,6 @@ pub(crate) struct State {
 #[derive(derive_more::Debug)]
 pub(crate) struct PubEntry {
     pub(crate) path: PathOwned,
-    /// The path nodes on the layout before publisher-named paths ask for.
-    // TODO(old-layout): remove with the older path layout.
-    pub(crate) legacy: Option<PathOwned>,
     #[debug(skip)]
     pub(crate) broadcast: broadcast::Consumer,
     pub(crate) audience: AudienceKind,
@@ -86,16 +83,13 @@ pub(crate) struct LinkEntry {
     /// What this link's peer is offered.
     #[debug(skip)]
     pub(crate) publish: origin::Producer,
-    /// Whether publications are also offered at their pre-layout paths.
-    // TODO(old-layout): remove with the older path layout.
-    pub(crate) legacy: bool,
     /// For a relay, whether `Everyone` publications go to it.
     pub(crate) public: bool,
     /// Whether the link feeds the route table.
     pub(crate) consume: bool,
     /// The running offers, by publication.
     #[debug(skip)]
-    pub(crate) offers: HashMap<u64, Vec<Serve>>,
+    pub(crate) offers: HashMap<u64, Option<Serve>>,
     /// What the peer announces, by prefix: cost and hop count.
     pub(crate) announced: BTreeMap<PathOwned, (u64, usize)>,
     /// The session, for a direct link.
@@ -154,23 +148,11 @@ impl State {
         Some(entry)
     }
 
-    /// Returns the publication that already answers `path` or `legacy`, if any.
-    ///
-    /// At its path or at its alias: two publications answering one path would
-    /// put two routes at it on every link, and a subscriber would get either.
-    pub(crate) fn publication_answering(
-        &self,
-        path: &Path<'_>,
-        legacy: Option<&PathOwned>,
-    ) -> Option<u64> {
-        let taken = |candidate: &PathOwned| {
-            *candidate == *path || legacy.is_some_and(|legacy| candidate == legacy)
-        };
+    /// Returns the publication at `path`, if any.
+    pub(crate) fn publication_at(&self, path: &Path<'_>) -> Option<u64> {
         self.publications
             .iter()
-            .find(|(_, publication)| {
-                taken(&publication.path) || publication.legacy.as_ref().is_some_and(taken)
-            })
+            .find(|(_, publication)| publication.path == *path)
             .map(|(id, _)| *id)
     }
 
@@ -205,19 +187,12 @@ impl State {
             return;
         }
         debug!(path = %publication_entry.path, link, "offering");
-        let mut serves: Vec<Serve> = serve(
+        let offer = serve(
             &entry.publish,
             &publication_entry.path,
             &publication_entry.broadcast,
-        )
-        .into_iter()
-        .collect();
-        if entry.legacy
-            && let Some(legacy) = &publication_entry.legacy
-        {
-            serves.extend(serve(&entry.publish, legacy, &publication_entry.broadcast));
-        }
-        entry.offers.insert(publication, serves);
+        );
+        entry.offers.insert(publication, offer);
     }
 
     /// Records what link `link` announces at `prefix`, or that it withdrew it.

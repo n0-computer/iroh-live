@@ -322,7 +322,6 @@ impl Moq {
                         .and_then(|host| host.parse().ok()),
                     grant: Grant::everything(),
                     publish: origins.publish.clone(),
-                    legacy: false,
                     public: matches!(config.offer, RelayOffer::Public),
                     consume: config.consume,
                     offers: HashMap::new(),

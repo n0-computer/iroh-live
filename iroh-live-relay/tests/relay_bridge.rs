@@ -566,11 +566,8 @@ async fn iroh_publish_noq_subscribe() {
     )
     .await;
 
-    // At the path that names the publisher, and, for one release, at the bare
-    // name a browser on the older layout asks for.
     let named = iroh_live::BroadcastTicket::new(pub_ep.id(), "cli-stream").path();
     announced_at(&sub_origin, named.as_str()).await;
-    announced_at(&sub_origin, "cli-stream").await;
 
     tracing::info!("noq subscriber received cli-stream announcement");
 

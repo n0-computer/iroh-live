@@ -18,11 +18,10 @@ lets a route table see several routes to it, and what lets a relay's token grant
 `live/<id>/**` to exactly one publisher. A `BroadcastTicket` still names a
 publisher and a name; `ticket.path()` is the path.
 
-For one release a node also answers the bare name on direct sessions, which is
-where a node from before this layout looks, and a direct subscribe falls back to
-the bare name when the publisher-named path has not appeared within two seconds
-and the publisher announces nothing under `live/<its id>/`, the mark of a node on
-the older layout. Relays are never offered bare names.
+For one release a direct subscribe falls back to the bare name when the
+publisher-named path has not appeared within two seconds and the publisher
+announces nothing under `live/<its id>/`, the mark of a node on the older
+layout.
 
 ## One route table, fed by every link
 

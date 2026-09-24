@@ -101,14 +101,6 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
         .expect_err("a second publication at one path");
     assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
 
-    // The bare alias counts too: two publications answering `cam` would put
-    // two routes there on every direct session.
-    let err = alice
-        .moq
-        .publish_at("cam", &second.producer, Audience::Everyone)
-        .expect_err("a publication at another's alias");
-    assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
-
     // A broadcast that ended frees its path at once, before the node has
     // noticed on its own.
     first.producer.finish();
@@ -749,48 +741,6 @@ async fn a_publisher_on_the_older_layout_is_reached_by_its_bare_name() {
     assert_eq!(subscription.path().as_str(), "cam");
     read_counter(&subscription.as_moq()).await;
     bob.shutdown().await;
-}
-
-/// A node on the older layout asks for bare names, and a current publisher
-/// answers them on direct sessions.
-#[tokio::test]
-#[traced_test]
-async fn a_subscriber_on_the_older_layout_finds_the_bare_name() {
-    let alice = Node::spawn().await;
-    let broadcast = TestBroadcast::start();
-    alice
-        .moq
-        .publish("cam", &broadcast.producer, Audience::Everyone)
-        .expect("publish");
-
-    let old = common::endpoint().await;
-    let (ingest, _ingest_task) = legacy_origin();
-    let transport = step(
-        "dial",
-        iroh_moq::transport::dial(&old, alice.endpoint.addr()),
-    )
-    .await
-    .expect("dial");
-    let (session, driver) = step(
-        "handshake",
-        moq_net::Client::new()
-            .with_subscriber(ingest.clone())
-            .connect(now(), Transport::new(transport)),
-    )
-    .await
-    .expect("handshake");
-    let _driver = AbortOnDropHandle::new(tokio::spawn(async move {
-        moq_net::time::run(driver).await;
-    }));
-    let consumer = step(
-        "resolve the bare name",
-        ingest.consume().routed_broadcast("cam"),
-    )
-    .await
-    .expect("resolve");
-    read_counter(&consumer).await;
-    drop(session);
-    alice.shutdown().await;
 }
 
 fn now() -> std::time::Instant {
