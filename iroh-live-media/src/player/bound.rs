@@ -31,7 +31,7 @@
 //! from the old path says nothing about the new one.
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::Duration,
 };
 
@@ -76,13 +76,20 @@ pub(crate) struct Tuning {
     /// The share of a rung's advertised bitrate the estimate has to cover for
     /// the rung to fit.
     ///
-    /// Below one, and by this much, for two reasons that stack. An advertised
-    /// bitrate is a ceiling handed to the encoder, and openh264 was measured
-    /// sending about 40% of it. And the estimate an iroh publisher sends is its
-    /// congestion window over the round trip, which under BBR3 sits a gain
-    /// above the delivery rate: in the patchbay lab a 100 kbit/s cap read as
-    /// 108 to 164. Both errors point the same way, so the threshold sits under
-    /// them.
+    /// Above one, because of how the two sides of the comparison read. The
+    /// encoders send close to what they are asked for once they know the
+    /// source's real frame rate: openh264 and VA-API were measured sending
+    /// 82% of the advertised bitrate on the patchbay suite's picture. And the
+    /// estimate an iroh publisher sends is its congestion window over the
+    /// round trip, which reads above the path: a capped link read at 0.8 to
+    /// 1.6 times its cap in the patchbay lab, and the sliding maximum below
+    /// keeps the top of that. A rung fits while that maximum covers 1.25 times
+    /// its advertised bitrate, which is 1.5 times what it sends.
+    ///
+    /// It was 0.5 until the second review round, tuned on an encoder that sent
+    /// 40% of its bitrate because it was told the wrong frame rate; once that
+    /// was fixed, a rung that needed 650 kbit/s fitted a 400 kbit/s cap and
+    /// played at one frame a second.
     pub fit_ratio: f64,
     /// How long the estimate is remembered, as a sliding maximum.
     ///
@@ -102,18 +109,34 @@ pub(crate) struct Tuning {
     pub upgrade_hold: Duration,
     /// How long after a step down no step up is taken.
     pub post_downgrade_cooldown: Duration,
+    /// How long a rung stepped up to has to play before the step counts as
+    /// one that held.
+    ///
+    /// Every step down from a rung counts against it until a step up to it
+    /// holds this long: the link has just shown it cannot carry the rung, and
+    /// the estimate that would allow the next step up is read while the link
+    /// carries only the rung below, which says little about whether it carries
+    /// this one. Each count multiplies the hold before the next step up to the
+    /// rung by four, up to [`upgrade_hold_max`](Self::upgrade_hold_max), so a
+    /// marginal link settles on the rung it can carry instead of trying the
+    /// one above every few seconds.
+    pub trial: Duration,
+    /// The longest hold before a step up.
+    pub upgrade_hold_max: Duration,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         Self {
-            fit_ratio: 0.5,
+            fit_ratio: 1.25,
             estimate_window: Duration::from_secs(1),
             loss_step_down: 0.10,
             loss_emergency: 0.20,
             downgrade_hold: Duration::from_millis(500),
             upgrade_hold: Duration::from_secs(4),
             post_downgrade_cooldown: Duration::from_secs(4),
+            trial: Duration::from_secs(20),
+            upgrade_hold_max: Duration::from_secs(120),
         }
     }
 }
@@ -153,6 +176,12 @@ pub(crate) struct Bound {
     downgrading: bool,
     /// Whether a switch was on its way at the last decision.
     in_flight: bool,
+    /// Failed tries at each rung, by name, which lengthen the hold before
+    /// the next; see [`Tuning::trial`].
+    failed_tries: BTreeMap<String, u32>,
+    /// The rung last stepped up to, and when it landed once it has, while
+    /// its trial runs.
+    trial: Option<(String, Option<Instant>)>,
 }
 
 impl Bound {
@@ -170,7 +199,19 @@ impl Bound {
             last_downgrade: None,
             downgrading: false,
             in_flight: false,
+            failed_tries: BTreeMap::new(),
+            trial: None,
         }
+    }
+
+    /// Returns how long a higher target has to hold before a step up to
+    /// `rung`, after its failed tries.
+    fn upgrade_hold(&self, rung: &str) -> Duration {
+        let tries = self.failed_tries.get(rung).copied().unwrap_or(0).min(8);
+        self.tuning
+            .upgrade_hold
+            .saturating_mul(4u32.pow(tries))
+            .min(self.tuning.upgrade_hold_max)
     }
 
     /// Forgets everything learned about the network.
@@ -184,6 +225,8 @@ impl Bound {
         self.last_downgrade = None;
         self.downgrading = false;
         self.in_flight = false;
+        self.failed_tries.clear();
+        self.trial = None;
     }
 
     /// Returns the sliding maximum of the estimate, if there is one.
@@ -315,6 +358,18 @@ impl Bound {
             if let Some(loss) = reading.loss {
                 self.follow_loss(loss, current_index.unwrap_or(0), lowest, now);
             }
+            // A step up that landed starts its trial, and one that played
+            // through it clears the rung's failed tries.
+            if let Some((rung, landed)) = &mut self.trial {
+                match landed {
+                    None if on_screen == Some(rung.as_str()) => *landed = Some(now),
+                    Some(at) if now.duration_since(*at) >= self.tuning.trial => {
+                        self.failed_tries.remove(rung.as_str());
+                        self.trial = None;
+                    }
+                    _ => {}
+                }
+            }
         }
         self.in_flight = in_flight;
 
@@ -356,6 +411,19 @@ impl Bound {
                     self.lower = None;
                     self.last_downgrade = Some(now);
                     self.downgrading = true;
+                    // The rung stepped down from counts as one the link could
+                    // not carry, and a trial of it is over.
+                    let rung = ranked[current_index].name.clone();
+                    if self.trial.as_ref().is_some_and(|(trial, _)| *trial == rung) {
+                        self.trial = None;
+                    }
+                    let tries = self.failed_tries.entry(rung).or_default();
+                    *tries += 1;
+                    tracing::debug!(
+                        rung = %ranked[current_index].name,
+                        tries = *tries,
+                        "stepped down; the next step up to this rung waits longer"
+                    );
                     return Some(target.clone());
                 }
                 Some(ranked[current_index].name.clone())
@@ -366,8 +434,9 @@ impl Bound {
                     .last_downgrade
                     .is_some_and(|at| now.duration_since(at) < self.tuning.post_downgrade_cooldown);
                 let since = *self.higher.get_or_insert(now);
-                if !cooling && now.duration_since(since) >= self.tuning.upgrade_hold {
+                if !cooling && now.duration_since(since) >= self.upgrade_hold(target) {
                     self.higher = None;
+                    self.trial = Some((target.clone(), None));
                     return Some(target.clone());
                 }
                 Some(ranked[current_index].name.clone())
@@ -447,7 +516,7 @@ mod tests {
             None,
             None,
             &Constraints::default(),
-            &estimate(1_200_000),
+            &estimate(3_000_000),
             Instant::now(),
         );
         assert_eq!(chosen.as_deref(), Some("720p"));
@@ -457,18 +526,18 @@ mod tests {
     fn a_shortfall_steps_down_after_the_hold() {
         let mut bound = Bound::new(Tuning::default());
         let start = Instant::now();
-        // Covers half of 720p but not half of 1080p.
-        let (playing, _) = run(&mut bound, "1080p", estimate(1_500_000), start, ms(400));
+        // Covers the fit ratio of 720p but not of 1080p.
+        let (playing, _) = run(&mut bound, "1080p", estimate(3_750_000), start, ms(400));
         assert_eq!(playing, "1080p", "held for less than the downgrade hold");
-        let (playing, _) = run(&mut bound, "1080p", estimate(1_500_000), start, ms(700));
+        let (playing, _) = run(&mut bound, "1080p", estimate(3_750_000), start, ms(700));
         assert_eq!(playing, "720p");
     }
 
-    /// The fix for the stalled upgrade gate. Parked on `low`, a publisher
-    /// sends only `low`'s bytes, so its estimate is application-limited at a
-    /// few times that. Measured in the patchbay lab, 380 to 490 kbit/s: under
-    /// the old rule's 1.5 times the 800 kbit/s rung above, and over this rule's
-    /// half of it.
+    /// The fix for the stalled upgrade gate. The old rule asked the estimate
+    /// to cover one and a half times the rung above before stepping up, and
+    /// probed without one; the bound steps up once the estimate covers the
+    /// rung above by the same ratio it stays by, however it wanders about
+    /// that.
     #[test]
     fn an_application_limited_estimate_still_climbs_back() {
         let ranked = vec![
@@ -489,8 +558,9 @@ mod tests {
         let start = Instant::now();
         let mut playing = "low".to_string();
         let mut now = start;
-        // Readings that wander across the range the lab showed.
-        let readings = [380_000, 430_000, 490_000, 395_000, 450_000];
+        // Readings that wander just above the top rung's fit threshold of
+        // 1 Mbit/s, and below the old rule's 1.2.
+        let readings = [1_010_000, 1_075_000, 1_190_000, 1_020_000, 1_125_000];
         for tick in 0..60 {
             let reading = estimate(readings[tick % readings.len()]);
             playing = bound
@@ -529,7 +599,7 @@ mod tests {
         };
         let mut bound = Bound::new(tuning);
         let start = Instant::now();
-        let (playing, now) = run(&mut bound, "1080p", estimate(1_500_000), start, ms(1000));
+        let (playing, now) = run(&mut bound, "1080p", estimate(3_750_000), start, ms(1000));
         assert_eq!(playing, "720p");
         let (playing, _) = run(&mut bound, &playing, estimate(10_000_000), now, ms(6000));
         assert_eq!(playing, "720p", "inside the cooldown");
@@ -544,8 +614,8 @@ mod tests {
         for tick in 0..30u32 {
             // Nine readings that fit, then one that does not.
             let bps = match tick % 10 {
-                9 => 500_000,
-                _ => 3_000_000,
+                9 => 1_250_000,
+                _ => 7_500_000,
             };
             playing = bound
                 .decide(
@@ -598,7 +668,9 @@ mod tests {
             loss: Some(0.0),
             ..lossy
         };
-        let (playing, _) = run(&mut bound, &playing, clean, now, ms(20_000));
+        // Each rung stepped down from waits four times the usual hold before
+        // it is tried again, so the climb back takes two of those.
+        let (playing, _) = run(&mut bound, &playing, clean, now, ms(45_000));
         assert_eq!(playing, "1080p", "clean loss lifts the ceiling again");
     }
 
@@ -697,11 +769,11 @@ mod tests {
         // Plenty on path 0.
         let (playing, now) = run(&mut bound, "1080p", estimate(100_000_000), start, ms(2000));
         assert_eq!(playing, "1080p");
-        // The path changes, and the new one carries half of 720p's bitrate:
-        // the downgrade is due after one hold, not after the old maximum ages.
+        // The path changes, and the new one only just carries 720p: the
+        // downgrade is due after one hold, not after the old maximum ages.
         let fresh = Reading {
             path_generation: 1,
-            ..estimate(1_000_000)
+            ..estimate(2_500_000)
         };
         let (playing, _) = run(&mut bound, "1080p", fresh, now, ms(600));
         assert_eq!(playing, "720p", "the old path's estimate held the top rung");
@@ -721,8 +793,8 @@ mod tests {
         let start = Instant::now();
         let mut playing = "1080p".to_string();
         for tick in 0..8u32 {
-            // Alternately fits 720p and only 360p: 1.2 and 0.6 Mbit/s.
-            let bps = if tick % 2 == 0 { 1_200_000 } else { 600_000 };
+            // Alternately fits 720p and only 360p: 3 and 1.5 Mbit/s.
+            let bps = if tick % 2 == 0 { 3_000_000 } else { 1_500_000 };
             let now = start + ms(100) * tick;
             playing = bound
                 .decide(
@@ -822,7 +894,7 @@ mod tests {
                     Some(&asked),
                     Some(&on_screen),
                     &Constraints::default(),
-                    &estimate(1_500_000),
+                    &estimate(3_750_000),
                     now,
                 )
                 .expect("the ladder is not empty");
@@ -864,7 +936,11 @@ mod tests {
             asked, "720p",
             "stepped up inside the cooldown after the landing"
         );
-        while now < landed + tuning.post_downgrade_cooldown + tuning.upgrade_hold + ms(500) {
+        // The step down counts against 1080p, so its next try waits longer
+        // than the usual hold.
+        let hold = bound.upgrade_hold("1080p");
+        assert!(hold > tuning.upgrade_hold);
+        while now < landed + tuning.post_downgrade_cooldown.max(hold) + ms(500) {
             asked = bound
                 .decide(
                     &ranked,
@@ -878,6 +954,74 @@ mod tests {
             now += ms(100);
         }
         assert_eq!(asked, "1080p", "never came back up");
+    }
+
+    /// N7: on a link that carries the lower rung but not the upper, an
+    /// estimate read while only the lower one plays keeps saying the upper
+    /// fits, and the ladder went up and straight back down every few seconds.
+    /// Each step down from the upper rung multiplies the hold before the next
+    /// try at it.
+    #[test]
+    fn failed_steps_up_back_off() {
+        let tuning = Tuning::default();
+        let mut bound = Bound::new(tuning.clone());
+        let ranked = ladder();
+        let start = Instant::now();
+        let mut playing = "720p".to_string();
+        let mut now = start;
+        let mut ups = Vec::new();
+        // Plenty is read while 720p plays; 1080p, once it plays, is short.
+        while now < start + Duration::from_secs(200) {
+            let reading = match playing.as_str() {
+                "1080p" => estimate(3_000_000),
+                _ => estimate(100_000_000),
+            };
+            let next = bound
+                .decide(
+                    &ranked,
+                    Some(&playing),
+                    Some(&playing),
+                    &Constraints::default(),
+                    &reading,
+                    now,
+                )
+                .expect("the ladder is not empty");
+            if next == "1080p" && playing != "1080p" {
+                ups.push(now.duration_since(start));
+            }
+            playing = next;
+            now += ms(100);
+        }
+        let gaps: Vec<Duration> = ups.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(ups.len() >= 3, "tried {} times: {ups:?}", ups.len());
+        assert!(
+            gaps.windows(2).all(|pair| pair[1] > pair[0] * 3),
+            "the tries did not back off: {ups:?}"
+        );
+        assert!(
+            ups.len() <= 5,
+            "tried {} times in 200 s: {ups:?}",
+            ups.len()
+        );
+    }
+
+    /// A rung that holds through its trial is tried at the usual hold again
+    /// after a later step down.
+    #[test]
+    fn a_step_up_that_held_clears_its_failures() {
+        let mut bound = Bound::new(Tuning::default());
+        bound.failed_tries.insert("1080p".into(), 3);
+        bound.trial = Some(("1080p".into(), None));
+        let start = Instant::now();
+        run(
+            &mut bound,
+            "1080p",
+            estimate(100_000_000),
+            start,
+            ms(25_000),
+        );
+        assert!(bound.failed_tries.is_empty(), "{:?}", bound.failed_tries);
+        assert_eq!(bound.upgrade_hold("1080p"), Tuning::default().upgrade_hold);
     }
 
     /// The loss ceiling is part of what a path taught: it goes with it.

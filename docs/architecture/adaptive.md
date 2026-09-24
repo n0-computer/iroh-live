@@ -106,12 +106,20 @@ the target. Two bounds apply.
 **The delivery estimate caps the bitrate.** The estimate is taken as a sliding
 maximum over the last second, because it is refreshed ten times a second and
 moves with every acknowledgement, so a single low reading is not a smaller
-link. A rendition fits while that maximum covers half of its advertised bitrate.
-Half, because two errors stack in the same direction: the advertised figure is
-a ceiling the encoder spends about 40% of (openh264, measured), and the iroh
-publisher's estimate over-reads the path by BBR's gain. A rendition that
-advertises no bitrate, or a publisher that sends no estimate, fits
-unconditionally.
+link. A rendition fits while that maximum covers 1.25 times its advertised
+bitrate. More than the bitrate, because of how the two sides read: the encoders
+send close to what they are asked for once they know the source's frame rate
+(82% of it, openh264 and VA-API on the patchbay picture), and the iroh
+publisher's estimate, its congestion window over the round trip, reads a capped
+link at 0.8 to 1.6 times the cap, the sliding maximum keeping the top of that.
+So a rung fits while the maximum covers about one and a half times what the rung
+sends. A rendition that advertises no bitrate, or a publisher that sends no
+estimate, fits unconditionally.
+
+The ratio was 0.5 until the second review round, tuned on an encoder that sent
+40% of its bitrate because the publisher told it the wrong frame rate. Once
+sources carried their real rate, a rung that sent 650 kbit/s fitted a
+400 kbit/s cap by that ratio, was kept, and played at a frame a second.
 
 **Sustained loss lowers a ceiling.** Loss at or above 10% for 500 ms moves the
 ceiling one rung below the rendition playing, and a loss that lasts walks the
@@ -125,8 +133,22 @@ one. The asymmetry lives in the timers instead:
 
 - A lower target has to hold for 500 ms before the switch, except in an
   emergency, which switches at once.
-- A higher target has to hold for 4 s.
-- No step up is taken within 4 s of a step down.
+- A higher target has to hold for 4 s, times four for every step down from that
+  rung since a step up to it last held for 20 s, up to 120 s.
+- No step up is taken within 4 s of a step down landing.
+
+The multiplied hold is what keeps a marginal link from oscillating. Parked on a
+lower rung, the estimate is read while the link carries only that rung, so it
+says the upper one fits even when the link just showed it does not: without the
+backoff, a cap between the two rungs sent the ladder up and back down every
+eight seconds. With it, the rung the link cannot carry is tried after 16 s, then
+after 64 s, then every two minutes.
+
+An automatic step down from the rendition on screen does not overlap the two
+tracks the way other switches do: the link cannot carry the rendition on screen,
+which is why it steps down, and while both share it the lower rendition's
+groups age out before they arrive. The supervisor lets go of the rendition on
+screen, whose last picture stays up until the lower one's first.
 
 The asymmetry between the 500 ms downgrade hold and the 4 s upgrade hold is what
 keeps the ladder from oscillating: quality drops quickly when the link
@@ -163,12 +185,8 @@ The same suite's `a_risen_baseline_round_trip_does_not_downgrade` is why the
 round trip plays no part: a path that got longer, a relay fallback or a Wi-Fi to
 cellular handoff, is not a path that got smaller.
 
-Measured against the previous rule on the patchbay suite (five runs of each
-test, 2026-09), the bound passed every adaptation test the old rule passed,
-with exactly one downgrade and one upgrade per run, no withdrawn switch, and no
-switch at all under a risen round trip. With the old rule's shortened test
-timers applied to both, it climbed back after the link cleared in 2.4 s
-(median) where the old rule took 6.2 s, with one run at 26 s.
+A step up after a step down is in effect a probe, with the backoff above in
+place of the old rule's probe cooldown.
 
 ## Configuration
 
@@ -177,13 +195,15 @@ retuned in a patch without an API change.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `fit_ratio` | 0.5 | Share of a rung's advertised bitrate the estimate has to cover |
+| `fit_ratio` | 1.25 | Share of a rung's advertised bitrate the estimate has to cover |
 | `estimate_window` | 1 s | Span of the sliding maximum over the estimate |
 | `loss_step_down` | 0.10 | Loss that lowers the ceiling one rung, once held |
 | `loss_emergency` | 0.20 | Loss that drops the ceiling to the lowest rung at once |
 | `downgrade_hold` | 500 ms | How long a lower target, or step-down loss, has to hold |
 | `upgrade_hold` | 4 s | How long a higher target has to hold, and how long loss has to stay clear before the ceiling rises |
-| `post_downgrade_cooldown` | 4 s | Quiet period after a step down |
+| `post_downgrade_cooldown` | 4 s | Quiet period after a step down lands |
+| `trial` | 20 s | How long a step up has to hold before it clears its rung's step downs |
+| `upgrade_hold_max` | 120 s | The longest hold before a step up |
 
 The end-to-end test in `iroh-live/tests/e2e.rs` drives a player with its own
 closure as the network signals and feeds it a 25% loss reading, which is an
