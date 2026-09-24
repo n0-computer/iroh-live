@@ -223,10 +223,9 @@ impl VideoSource {
         F: FnOnce(FrameSender<video::Frame>) -> Result<(), Error> + Send + 'static,
     {
         let slot = FrameSlot::new();
-        let reader = slot.reader();
         let stop = CancellationToken::new();
-        let demand = Demand::default();
-        let sender = FrameSender::new(Arc::new(slot.clone()), stop.clone(), demand.clone());
+        let source = Self::new(name, format, slot.reader(), stop.clone(), Driver::Thread);
+        let sender = FrameSender::new(Arc::new(slot.clone()), stop, source.inner.demand.clone());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -243,16 +242,7 @@ impl VideoSource {
                     }
                 }
             })?;
-        Ok(Self {
-            inner: Arc::new(VideoInner {
-                kind: name.to_string(),
-                format,
-                frames: reader,
-                demand,
-                stop,
-                _driver: Driver::Thread,
-            }),
-        })
+        Ok(source)
     }
 
     /// Starts the Raspberry Pi camera through `rpicam-vid`, for raw pictures.
@@ -412,21 +402,12 @@ impl MicrophoneConfig {
     /// Fails if echo cancellation is asked for in a build without it, or if
     /// the output already feeds another canceller.
     pub(crate) fn resolve(&self) -> Result<audio::capture::Config, Error> {
+        self.check()?;
         #[cfg_attr(not(feature = "aec"), allow(unused_mut, reason = "only aec attaches"))]
         let mut capture = self.capture.clone();
+        #[cfg(feature = "aec")]
         if let Some(output) = &self.echo_reference {
-            #[cfg(feature = "aec")]
-            {
-                capture.aec = output.canceller()?;
-            }
-            #[cfg(not(feature = "aec"))]
-            {
-                let _ = output;
-                return Err(Error::invalid(
-                    "echo cancellation needs the `aec` feature, which this build was \
-                     compiled without",
-                ));
-            }
+            capture.aec = output.canceller()?;
         }
         Ok(capture)
     }
@@ -475,29 +456,17 @@ pub struct AudioSource {
 }
 
 impl AudioSource {
-    fn pcm(
+    fn new(
         kind_name: &'static str,
-        format: AudioFormat,
-        fanout: PcmFanout,
+        kind: AudioKind,
         stop: CancellationToken,
         driver: Driver,
-    ) -> Self {
-        Self::pcm_with_demand(kind_name, format, fanout, stop, driver, Demand::default())
-    }
-
-    fn pcm_with_demand(
-        kind_name: &'static str,
-        format: AudioFormat,
-        fanout: PcmFanout,
-        stop: CancellationToken,
-        driver: Driver,
-        demand: Demand,
     ) -> Self {
         Self {
             inner: Arc::new(AudioInner {
                 kind_name,
-                kind: AudioKind::Pcm { format, fanout },
-                demand,
+                kind,
+                demand: Demand::default(),
                 stop,
                 _driver: driver,
             }),
@@ -551,15 +520,12 @@ impl AudioSource {
     /// Wraps a microphone config without looking for the device.
     #[cfg(feature = "capture")]
     pub(crate) fn microphone_unchecked(config: MicrophoneConfig) -> Self {
-        Self {
-            inner: Arc::new(AudioInner {
-                kind_name: "microphone",
-                kind: AudioKind::Microphone(config),
-                demand: Demand::default(),
-                stop: CancellationToken::new(),
-                _driver: Driver::Pushed,
-            }),
-        }
+        Self::new(
+            "microphone",
+            AudioKind::Microphone(config),
+            CancellationToken::new(),
+            Driver::Pushed,
+        )
     }
 
     /// Decodes a file in real time, restarting at the beginning when
@@ -589,7 +555,8 @@ impl AudioSource {
                 .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
         };
         abandoned.disarm();
-        Ok(Self::pcm("file", format, fanout, stop, Driver::Thread))
+        let kind = AudioKind::Pcm { format, fanout };
+        Ok(Self::new("file", kind, stop, Driver::Thread))
     }
 
     /// Returns a steady sine tone at `hz`, at 48 kHz in `layout`.
@@ -629,7 +596,12 @@ impl AudioSource {
         if let Err(err) = spawned {
             warn!(error = %err, "the tone thread did not start");
         }
-        Self::pcm(name, format, fanout, stop, Driver::Thread)
+        Self::new(
+            name,
+            AudioKind::Pcm { format, fanout },
+            stop,
+            Driver::Thread,
+        )
     }
 
     /// Returns a source fed by the returned sender, for PCM the application
@@ -642,12 +614,15 @@ impl AudioSource {
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
-        let demand = Demand::default();
-        let sender = FrameSender::new(Arc::new(fanout.clone()), stop.clone(), demand.clone());
-        (
-            sender,
-            Self::pcm_with_demand("push", format, fanout, stop, Driver::Pushed, demand),
-        )
+        let sink = Arc::new(fanout.clone());
+        let source = Self::new(
+            "push",
+            AudioKind::Pcm { format, fanout },
+            stop.clone(),
+            Driver::Pushed,
+        );
+        let sender = FrameSender::new(sink, stop, source.inner.demand.clone());
+        (sender, source)
     }
 
     /// Returns what the source produces.

@@ -173,27 +173,6 @@ pub(crate) struct Config {
     pub(crate) output: Output,
 }
 
-impl Config {
-    /// Creates a configuration for the hardware H.264 encoder, or for the raw
-    /// pictures that skip it.
-    ///
-    /// The `output` is fixed here rather than adjusted afterwards, so that the
-    /// bitrate and the keyframe interval can only be given to the variant that
-    /// has fields for them.
-    ///
-    /// A raw geometry is rounded on the way to [`frames`], not here: see
-    /// [`RawConfig`], which is what [`open`] builds for this case and what a
-    /// caller who wants the pictures on their own clock passes instead.
-    pub(crate) fn new(width: u32, height: u32, framerate: u32, output: Output) -> Self {
-        Self {
-            width,
-            height,
-            framerate,
-            output,
-        }
-    }
-}
-
 /// A capture geometry `rpicam-vid` leaves tightly packed, and the rate to
 /// capture it at.
 ///
@@ -235,24 +214,14 @@ impl RawConfig {
         }
     }
 
-    /// Returns the aligned capture width, which is at least the one asked for.
-    pub(crate) fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Returns the aligned capture height, which is at least the one asked for.
-    pub(crate) fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// Returns the capture frame rate.
-    pub(crate) fn framerate(&self) -> u32 {
-        self.framerate
-    }
-
     /// The [`Config`] this runs `rpicam-vid` with.
     fn config(self) -> Config {
-        Config::new(self.width, self.height, self.framerate, Output::I420)
+        Config {
+            width: self.width,
+            height: self.height,
+            framerate: self.framerate,
+            output: Output::I420,
+        }
     }
 }
 
@@ -337,12 +306,12 @@ pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Err
         bitrate,
         keyframe_interval: config.keyframe_interval,
     };
-    annexb(Config::new(
-        config.size.width,
-        config.size.height,
-        config.framerate,
+    annexb(Config {
+        width: config.size.width,
+        height: config.size.height,
+        framerate: config.framerate,
         output,
-    ))
+    })
     .map_err(Error::device)
 }
 
@@ -354,10 +323,10 @@ pub(super) async fn open_raw(
     stop: CancellationToken,
 ) -> Result<(VideoFormat, LocalTask), Error> {
     let raw = RawConfig::new(config.size.width, config.size.height, config.framerate);
-    let rate = crate::video::Rate::new(raw.framerate().max(1), 1)
+    let rate = crate::video::Rate::new(raw.framerate.max(1), 1)
         .map_err(|err| Error::invalid(err.to_string()))?;
     let format = VideoFormat {
-        size: Size::new(raw.width(), raw.height()),
+        size: Size::new(raw.width, raw.height),
         rate,
     };
     let mut pictures = frames(raw, moq_mux::Clock::new()).map_err(Error::device)?;
@@ -402,7 +371,7 @@ pub(super) async fn open_raw(
 /// Fails if `rpicam-vid` is not installed or cannot open the camera, or if the
 /// geometry is odd or zero in either dimension.
 fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, RpicamError> {
-    let pictures = Pictures::new(config.width(), config.height())?;
+    let pictures = Pictures::new(config.width, config.height)?;
     let process = Process::spawn(&config.config())?;
 
     let state = Raw {
@@ -809,11 +778,16 @@ mod tests {
         assert!(Pictures::new(0, 360).is_err());
     }
 
-    /// H.264 at the default bitrate, with a keyframe every second.
-    fn h264_default(framerate: u32) -> Output {
-        Output::H264 {
-            bitrate: DEFAULT_BITRATE,
-            keyframe_interval: framerate,
+    /// A 640x360 capture at 30 fps writing H.264.
+    fn h264(bitrate: u32, keyframe_interval: u32) -> Config {
+        Config {
+            width: 640,
+            height: 360,
+            framerate: 30,
+            output: Output::H264 {
+                bitrate,
+                keyframe_interval,
+            },
         }
     }
 
@@ -821,18 +795,18 @@ mod tests {
     /// split above always has a whole number of pictures to find.
     #[test]
     fn raw_capture_rounds_up_to_an_unpadded_geometry() {
-        assert_eq!(RawConfig::new(640, 360, 30).width(), 640);
-        assert_eq!(RawConfig::new(1280, 720, 30).width(), 1280);
-        assert_eq!(RawConfig::new(854, 480, 30).width(), 896);
-        assert_eq!(RawConfig::new(700, 360, 30).width(), 704);
-        assert_eq!(RawConfig::new(96, 64, 30).width(), 128);
-        assert_eq!(RawConfig::new(640, 361, 30).height(), 362);
-        assert_eq!(RawConfig::new(0, 0, 30).width(), RAW_WIDTH_ALIGN);
+        assert_eq!(RawConfig::new(640, 360, 30).width, 640);
+        assert_eq!(RawConfig::new(1280, 720, 30).width, 1280);
+        assert_eq!(RawConfig::new(854, 480, 30).width, 896);
+        assert_eq!(RawConfig::new(700, 360, 30).width, 704);
+        assert_eq!(RawConfig::new(96, 64, 30).width, 128);
+        assert_eq!(RawConfig::new(640, 361, 30).height, 362);
+        assert_eq!(RawConfig::new(0, 0, 30).width, RAW_WIDTH_ALIGN);
     }
 
     #[test]
     fn the_output_picks_the_codec_flag() {
-        let h264 = Config::new(640, 360, 30, h264_default(30)).args().join(" ");
+        let h264 = h264(DEFAULT_BITRATE, 30).args().join(" ");
         assert!(h264.contains("--codec h264"), "{h264}");
         assert!(h264.contains("--bitrate 500000"), "{h264}");
         assert!(h264.contains("--intra 30"), "{h264}");
@@ -848,11 +822,7 @@ mod tests {
     /// quietly drops it.
     #[test]
     fn the_encoder_settings_reach_the_command_line() {
-        let output = Output::H264 {
-            bitrate: 2_000_000,
-            keyframe_interval: 60,
-        };
-        let args = Config::new(640, 360, 30, output).args().join(" ");
+        let args = h264(2_000_000, 60).args().join(" ");
         assert!(args.contains("--bitrate 2000000"), "{args}");
         assert!(args.contains("--intra 60"), "{args}");
     }
