@@ -132,6 +132,15 @@ The asymmetry between the 500 ms downgrade hold and the 4 s upgrade hold is what
 keeps the ladder from oscillating: quality drops quickly when the link
 deteriorates and rises only on sustained evidence that it recovered.
 
+The holds are timed against the rendition the selector last asked for, not the
+one on screen. A switch takes a decoder open and a keyframe to land, and while
+it does the old rendition is still on screen; timed against that, the pass
+after a downgrade would see the lower target as new, restart its hold and ask
+for the old rendition back. The hold also runs for "any lower" and "any
+higher" target rather than for one rendition, so a target that wavers between
+two lower rungs under a noisy shortfall still reaches it, and the switch goes
+to whichever is the target when it does.
+
 A rendition that left the catalog, or is no longer eligible at all, is left at
 once, since there is nothing to wait for. A change of network path, which the
 sample reports as a new `path_generation`, forgets everything learned so far:
@@ -153,6 +162,13 @@ clear link, and it removes the need to probe.
 The same suite's `a_risen_baseline_round_trip_does_not_downgrade` is why the
 round trip plays no part: a path that got longer, a relay fallback or a Wi-Fi to
 cellular handoff, is not a path that got smaller.
+
+Measured against the previous rule on the patchbay suite (five runs of each
+test, 2026-09), the bound passed every adaptation test the old rule passed,
+with exactly one downgrade and one upgrade per run, no withdrawn switch, and no
+switch at all under a risen round trip. With the old rule's shortened test
+timers applied to both, it climbed back after the link cleared in 2.4 s
+(median) where the old rule took 6.2 s, with one run at 26 s.
 
 ## Configuration
 

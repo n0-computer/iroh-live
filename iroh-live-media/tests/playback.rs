@@ -5,12 +5,15 @@
 //! promises works without a network: the whole pipeline from source to
 //! decoded frame, encoders and decoders included.
 
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use iroh_live_media::{
-    AudioEncoding, AudioOutput, AudioSource, Error, LocalBroadcast, PlayerConfig, RecordConfig,
-    RecordFormat, RemoteBroadcast, RenditionMode, SlotState, SwitchError, VideoEncoding,
-    VideoFormat, VideoRendition, VideoSource, audio, video,
+    AudioEncoding, AudioOutput, AudioSource, Bitrate, Error, LocalBroadcast, NetworkSample,
+    PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast, RenditionMode, SlotState,
+    SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource, audio, video,
 };
 use n0_watcher::Watcher as _;
 
@@ -111,6 +114,51 @@ async fn a_player_started_after_the_catalog_plays() {
         .await
         .expect("a player of a described broadcast never chose a rendition")
         .expect("the video plays");
+}
+
+/// A shortfall that has to hold before the player steps down used to be
+/// taken back on the next pass: the selector weighed its target against the
+/// rendition on screen, which is still the old one while the replacement warms
+/// up, so the hold restarted and the old rendition was asked for again. On a
+/// real link no bandwidth downgrade ever landed.
+#[tokio::test]
+async fn a_held_shortfall_moves_the_player_down() {
+    let source = VideoSource::test_pattern(video::Size::new(640, 360), fps(30));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            VideoEncoding::ladder([
+                VideoRendition::new("high")
+                    .with_size(video::Size::new(640, 360))
+                    .with_bitrate(Bitrate::from_bps(2_000_000)),
+                VideoRendition::new("low")
+                    .with_size(video::Size::new(320, 180))
+                    .with_bitrate(Bitrate::from_bps(200_000)),
+            ])
+            .with_prefer_hardware(false),
+        )
+        .expect("a valid ladder");
+    let sample = Arc::new(Mutex::new(
+        NetworkSample::default().with_delivery(Bitrate::from_bps(10_000_000)),
+    ));
+    let reader = sample.clone();
+    let player = RemoteBroadcast::local(&broadcast)
+        .with_network(move || *reader.lock().expect("poisoned"))
+        .play(PlayerConfig::default())
+        .expect("valid");
+    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
+        .await
+        .expect("in time")
+        .expect("a healthy link plays the top rendition");
+    // Room for `low` and not for `high`, without any loss: only the bound's
+    // hold stands between the shortfall and the switch.
+    *sample.lock().expect("poisoned") =
+        NetworkSample::default().with_delivery(Bitrate::from_bps(300_000));
+    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
+        .await
+        .expect("the downgrade never landed")
+        .expect("the switch to low lands");
 }
 
 /// R12: two players of one broadcast used to share one playout clock and

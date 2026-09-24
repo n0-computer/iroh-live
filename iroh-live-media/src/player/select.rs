@@ -245,8 +245,18 @@ pub(crate) async fn run(inputs: Inputs) {
 
         let sample = network.as_ref().map(|network| network.0.sample());
         stats.network.update(|last| *last = sample);
-        let current = status.get().rendition;
-        let nothing_playing = current.is_none();
+        let on_screen = status.get().rendition;
+        let nothing_playing = on_screen.is_none();
+        // The bound weighs its target against what this selector last asked
+        // for, which is on screen or on its way. While a replacement warms up,
+        // the rendition on screen is still the old one: weighed against that,
+        // the next pass restarted the downgrade hold and took the decision
+        // straight back, and on a real link a switch never landed.
+        let current = desired
+            .borrow()
+            .as_ref()
+            .map(|desired| desired.target.rendition.clone())
+            .or(on_screen);
 
         let (choice, why) = choose(
             &mode,
