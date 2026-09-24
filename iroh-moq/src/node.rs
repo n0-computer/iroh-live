@@ -339,9 +339,7 @@ impl Moq {
     /// Waits for the next session waiting to be admitted.
     ///
     /// Yields only under [`Admission::Manual`]. Returns `None` once the node
-    /// shuts down. A session that waited longer than a few seconds for this is
-    /// rejected rather than returned, since its peer has likely given up.
-    /// Cancellation safe.
+    /// shuts down. Cancellation safe.
     pub async fn accept(&self) -> Option<Incoming> {
         admission::next(&self.shared).await
     }

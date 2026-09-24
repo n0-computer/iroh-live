@@ -36,13 +36,11 @@ pub(crate) const INCOMING_QUEUE: usize = 16;
 /// and its connection for as long as QUIC keeps the connection alive.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long an incoming session waits for the application under
+/// How long an incoming session waits for room in the admission queue under
 /// [`Admission::Manual`].
 ///
-/// A session waits this long for room in the queue, and one that sat in the
-/// queue longer is rejected rather than handed out, so an accept loop that
-/// stalls, or never runs, cannot pile up connections whose peers believe they
-/// are connected.
+/// An accept loop that stalls, or never runs, cannot pile up connections whose
+/// peers believe they are connected.
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a node treats incoming sessions.
@@ -225,8 +223,6 @@ pub struct Incoming {
     pub(crate) connection: Connection,
     pub(crate) handshake: Handshake<Transport>,
     pub(crate) shared: Weak<Shared>,
-    /// When the session was queued for admission, to reject stale ones.
-    pub(crate) queued_at: tokio::time::Instant,
 }
 
 impl fmt::Debug for Incoming {
@@ -342,7 +338,6 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         connection,
         handshake,
         shared: Arc::downgrade(shared),
-        queued_at: tokio::time::Instant::now(),
     };
     match shared.admission {
         Admission::Open => {
@@ -357,13 +352,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
                 _ = shared.shutdown.cancelled() => Ok(Err(mpsc::error::SendError(()))),
             };
             match room {
-                Ok(Ok(permit)) => {
-                    // Time in the queue is what `accept` judges, not the
-                    // wait for room in it.
-                    let mut incoming = incoming;
-                    incoming.queued_at = tokio::time::Instant::now();
-                    permit.send(incoming);
-                }
+                Ok(Ok(permit)) => permit.send(incoming),
                 Ok(Err(_)) => {
                     incoming.close(moq_net::Error::Cancel);
                     return Err(e!(Error::ShutDown));
@@ -385,19 +374,12 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
 /// [`Moq::accept`](crate::Moq::accept).
 pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
     let mut queue = shared.incoming_rx.lock().await;
-    loop {
-        let incoming = tokio::select! {
-            // A session is never handed out after the shutdown, even one
-            // that was queued before it.
-            biased;
-            _ = shared.shutdown.cancelled() => return None,
-            incoming = queue.recv() => incoming?,
-        };
-        if incoming.queued_at.elapsed() <= ADMISSION_TIMEOUT {
-            return Some(incoming);
-        }
-        info!(remote = %incoming.remote.fmt_short(), "admission timed out in the queue");
-        incoming.close(moq_net::Error::Timeout);
+    tokio::select! {
+        // A session is never handed out after the shutdown, even one that
+        // was queued before it.
+        biased;
+        _ = shared.shutdown.cancelled() => None,
+        incoming = queue.recv() => incoming,
     }
 }
 
