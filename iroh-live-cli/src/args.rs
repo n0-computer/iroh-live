@@ -67,7 +67,7 @@ pub const DEFAULT_VIDEO: &str = "cam";
 pub const DEFAULT_AUDIO: &str = "mic";
 
 /// What to capture and how to encode it.
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct CaptureArgs {
     /// Video source: `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`,
     /// `app:<id>`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or `none`.
@@ -469,7 +469,7 @@ pub struct WatchArgs {
 
     /// Read the ticket from a QR code held up to the camera.
     ///
-    /// Supplies <TICKET>, so the window opens on the camera picture and
+    /// Supplies `<TICKET>`, so the window opens on the camera picture and
     /// connects as soon as a ticket decodes. Given alongside a ticket it
     /// starts on that one instead, and the scan screen stays a button away.
     #[cfg(feature = "render")]

@@ -3,6 +3,8 @@
 //! Every identifier printed here is one the `--video` and `--audio` specifiers
 //! accept, so the output doubles as the argument reference for `irl publish`.
 
+#[cfg(feature = "playback")]
+use iroh_live::media::AudioOutput;
 use iroh_live::media::{audio, video};
 
 /// Runs the `devices` command.
@@ -129,17 +131,13 @@ async fn list() {
     });
 
     #[cfg(feature = "playback")]
-    section(
-        "audio outputs",
-        audio::playback::devices().await,
-        |device| {
-            // The id is what `irl watch --audio-output` takes, so it leads: a
-            // user copies the first token of a line rather than the prose after
-            // it. The names alone do not distinguish a card's six subdevices.
-            let default = if device.default { " (default)" } else { "" };
-            format!("{}  {}{default}", device.id, device.name)
-        },
-    );
+    section("audio outputs", AudioOutput::devices().await, |device| {
+        // The id is what `irl watch --audio-output` takes, so it leads: a
+        // user copies the first token of a line rather than the prose after
+        // it. The names alone do not distinguish a card's six subdevices.
+        let default = if device.default { " (default)" } else { "" };
+        format!("{}  {}{default}", device.id, device.name)
+    });
 }
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -152,7 +150,8 @@ mod rpicam {
 
     use std::{path::PathBuf, time::Duration};
 
-    /// The subprocess we drive, the same one `iroh_live_media::rpicam` starts.
+    /// The subprocess we drive, the same one `iroh_live_media::VideoSource::rpicam`
+    /// starts.
     const RPICAM_VID: &str = "rpicam-vid";
 
     /// How long `--list-cameras` is given before we give up on it.

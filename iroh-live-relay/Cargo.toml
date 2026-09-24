@@ -36,7 +36,7 @@ http = "1"
 data-encoding = "2.11.1"
 iroh = { workspace = true }
 iroh-live = { workspace = true }
-iroh-live-media = { workspace = true, features = ["test-source"] }
+iroh-live-media = { workspace = true }
 # Relay links, attached to the relay these tests start.
 iroh-moq = { workspace = true, features = ["relay-links"] }
 # Rooms whose members attach to a relay, for forging a member through one.

@@ -567,6 +567,25 @@ mod tests {
         assert_eq!(relayed.rtt_samples, 1);
     }
 
+    /// A path's counters start from wherever that path's history left them,
+    /// so a backup path that lost packets long ago must not read as losing
+    /// them now.
+    #[test]
+    fn loss_starts_over_on_a_new_path() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        // A clean direct path, long enough to fill the window.
+        run_ticks(&mut sampler, t0, 12, 20, 0);
+        // The backup path's counters carry three hundred old losses.
+        let later = t0 + 13 * SAMPLE_INTERVAL;
+        let backup = sampler.sample(PathId::MAX, &reading(40, 300, 400, 0), None, later);
+        assert_eq!(backup.path_generation, 1);
+        assert_eq!(
+            backup.loss_rate, 0.0,
+            "the backup path's old losses read as new ones: {backup:?}"
+        );
+    }
+
     #[test]
     fn a_windowed_minimum_forgets_the_path_it_came_from() {
         let span = Duration::from_secs(15);

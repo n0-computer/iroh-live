@@ -1,124 +1,64 @@
-//! Publishing an audio file as if it were a microphone.
+//! Decoding an audio file as a source.
 //!
 //! `moq-audio` pulls symphonia only to decode raw AAC-LC frames off the wire,
-//! so it has no container reader. This one demuxes and decodes a local file and
-//! presents the result as a stream of [`moq_audio::Frame`]s that
-//! [`AudioSource::Frames`](crate::publish::AudioSource::Frames) accepts.
+//! so it has no container reader. This one demuxes and decodes a local file on
+//! a thread of its own, in real time, into the fan-out every attached
+//! broadcast reads.
 //!
-//! No resampling happens here. The encoder is told the file's own rate through
-//! [`AudioFile::input`] and converts to the codec's rate itself, which is one
-//! resampler instead of two.
+//! No resampling happens here. The encoder is told the file's own rate and
+//! converts to the codec's rate itself, which is one resampler instead of two.
 
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-use n0_error::{Result, stack_error};
-use n0_future::{boxed::BoxStream, stream::StreamExt};
+use n0_error::AnyError;
 use symphonia::core::{
     codecs::{CodecParameters, audio::AudioDecoderOptions},
     formats::{FormatOptions, FormatReader, Track, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
 };
-use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-/// How many decoded packets to keep queued ahead of the publisher.
+use super::{AudioFormat, sender::PcmFanout};
+use crate::error::Error;
+
+/// Opens `path`, and decodes it into `fanout` on a thread of its own until the
+/// file ends, or `stop` is cancelled.
 ///
-/// Bounded so a paused publisher cannot pull an entire file into memory; four
-/// packets is well under a second for any codec we read.
-const QUEUE_DEPTH: usize = 4;
-
-/// Errors raised while reading an audio file.
-#[stack_error(derive, add_meta, from_sources)]
-#[non_exhaustive]
-pub enum AudioFileError {
-    /// The file could not be opened or read.
-    #[error("failed to read {path}")]
-    Io {
-        /// The path that failed.
-        path: String,
-        /// The underlying error.
-        #[error(source, std_err)]
-        source: std::io::Error,
-    },
-    /// The container or codec is not one symphonia can read.
-    #[error("failed to decode {path}")]
-    Decode {
-        /// The path that failed.
-        path: String,
-        /// The underlying error.
-        #[error(source, std_err)]
-        source: symphonia::core::errors::Error,
-    },
-    /// The container held no audio track.
-    #[error("no audio track in {path}")]
-    NoTrack {
-        /// The path that failed.
-        path: String,
-    },
+/// Returns the file's own sample rate and layout, which the encoder is told.
+///
+/// # Errors
+///
+/// Fails if the file cannot be read, holds no audio track, or uses a codec
+/// symphonia cannot decode. The first packet is decoded before this returns,
+/// so a file that opens and then refuses its first packet fails here too.
+pub(crate) fn spawn(
+    path: PathBuf,
+    looping: bool,
+    fanout: PcmFanout,
+    stop: CancellationToken,
+) -> Result<AudioFormat, Error> {
+    let probe = probe(&path)?;
+    let format = AudioFormat::new(probe.sample_rate, probe.layout);
+    std::thread::Builder::new()
+        .name("audio-file".into())
+        .spawn(move || {
+            if let Err(err) = decode_loop(&path, looping, &fanout, &stop) {
+                warn!(path = %path.display(), error = %format!("{err:#}"), "audio file decode stopped");
+            }
+        })?;
+    Ok(format)
 }
 
-/// A decoded audio file, ready to publish.
-#[derive(Debug)]
-pub struct AudioFile {
-    input: moq_audio::encode::Input,
-    /// Dropping this is what stops the decode thread: its next
-    /// `blocking_send` fails and the loop returns.
-    frames: mpsc::Receiver<moq_audio::Frame>,
-}
-
-impl AudioFile {
-    /// Opens `path` and starts decoding it on a dedicated thread.
-    ///
-    /// `looping` restarts at the beginning on end of file, which is what a demo
-    /// or a hold-music source wants; otherwise the stream ends there.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file cannot be read, holds no audio track, or uses a codec
-    /// symphonia cannot decode.
-    pub fn open(path: impl AsRef<Path>, looping: bool) -> Result<Self, AudioFileError> {
-        let path = path.as_ref().to_path_buf();
-        let display = path.display().to_string();
-        let probe = probe(&path)?;
-        let input = moq_audio::encode::Input::new(probe.sample_rate, probe.layout);
-
-        let (tx, frames) = mpsc::channel(QUEUE_DEPTH);
-        std::thread::Builder::new()
-            .name("audio-file".into())
-            .spawn(move || {
-                if let Err(err) = decode_loop(&path, looping, &tx) {
-                    warn!(path = %path.display(), error = %err, "audio file decode stopped");
-                }
-            })
-            .map_err(|source| {
-                n0_error::e!(AudioFileError::Io {
-                    path: display.clone(),
-                    source,
-                })
-            })?;
-
-        Ok(Self { input, frames })
-    }
-
-    /// The PCM layout the file decodes to, for the encoder's `Input`.
-    pub fn input(&self) -> moq_audio::encode::Input {
-        self.input.clone()
-    }
-
-    /// Consumes the file and returns its frames as a stream.
-    ///
-    /// The decode thread stops when the returned stream is dropped, because the
-    /// receiver goes with it and the thread's next send fails.
-    pub fn into_stream(self) -> BoxStream<moq_audio::Frame> {
-        Box::pin(
-            n0_future::stream::unfold(self.frames, |mut frames| async move {
-                let frame = frames.recv().await?;
-                Some((frame, frames))
-            })
-            .fuse(),
-        )
-    }
+/// An error about `path`, with `source` behind it.
+fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
+    n0_error::e!(Error::Device {
+        source: AnyError::from_string(format!("{}: {source}", path.display()))
+    })
 }
 
 /// What probing a file tells us before any of it is decoded.
@@ -155,14 +95,8 @@ impl Probe {
 /// Shared by the probe and by each decode pass, which both need exactly this
 /// and nothing else: looping reopens the file rather than seeking, so the pass
 /// starts from the same place the probe did.
-fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), AudioFileError> {
-    let display = path.display().to_string();
-    let file = std::fs::File::open(path).map_err(|source| {
-        n0_error::e!(AudioFileError::Io {
-            path: display.clone(),
-            source,
-        })
-    })?;
+fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), Error> {
+    let file = std::fs::File::open(path).map_err(|source| file_error(path, source))?;
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
@@ -175,19 +109,14 @@ fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), AudioFileEr
             FormatOptions::default(),
             MetadataOptions::default(),
         )
-        .map_err(|source| {
-            n0_error::e!(AudioFileError::Decode {
-                path: display.clone(),
-                source,
-            })
-        })?;
+        .map_err(|source| file_error(path, source))?;
 
     let track = format
         .tracks()
         .iter()
         .find(|track| audio_params(track).is_some())
         .cloned()
-        .ok_or_else(|| n0_error::e!(AudioFileError::NoTrack { path: display }))?;
+        .ok_or_else(|| file_error(path, "the file holds no audio track"))?;
     Ok((format, track))
 }
 
@@ -204,12 +133,13 @@ fn audio_params(track: &Track) -> Option<&symphonia::core::codecs::audio::AudioC
     }
 }
 
-fn probe(path: &Path) -> Result<Probe, AudioFileError> {
+fn probe(path: &Path) -> Result<Probe, Error> {
     let (_, track) = open_track(path)?;
     Ok(Probe::of(&track))
 }
 
-/// Decodes `path` into `tx`, restarting at the beginning when `looping`.
+/// Decodes `path` into `fanout`, restarting at the beginning when `looping`,
+/// until the file ends or `stop` is cancelled.
 ///
 /// Paced against the sample count rather than run flat out, because the
 /// publisher stamps PTS from sample counts: a decoder that raced ahead would
@@ -217,14 +147,15 @@ fn probe(path: &Path) -> Result<Probe, AudioFileError> {
 fn decode_loop(
     path: &Path,
     looping: bool,
-    tx: &mpsc::Sender<moq_audio::Frame>,
-) -> Result<(), AudioFileError> {
+    fanout: &PcmFanout,
+    stop: &CancellationToken,
+) -> Result<(), Error> {
     let started = std::time::Instant::now();
     let mut published = Duration::ZERO;
 
     loop {
-        let frames = decode_once(path, tx, &started, &mut published)?;
-        if !looping {
+        let frames = decode_once(path, fanout, stop, &started, &mut published)?;
+        if !looping || stop.is_cancelled() {
             debug!(path = %path.display(), "audio file ended");
             return Ok(());
         }
@@ -243,17 +174,12 @@ fn decode_loop(
 /// Runs one pass over the file, returning how many frames it published.
 fn decode_once(
     path: &Path,
-    tx: &mpsc::Sender<moq_audio::Frame>,
+    fanout: &PcmFanout,
+    stop: &CancellationToken,
     started: &std::time::Instant,
     published: &mut Duration,
-) -> Result<usize, AudioFileError> {
-    let display = path.display().to_string();
-    let decode_err = |source| {
-        n0_error::e!(AudioFileError::Decode {
-            path: display.clone(),
-            source,
-        })
-    };
+) -> Result<usize, Error> {
+    let decode_err = |source: symphonia::core::errors::Error| file_error(path, source);
 
     let (mut format, track) = open_track(path)?;
     let track_id = track.id;
@@ -263,11 +189,8 @@ fn decode_once(
     } = Probe::of(&track);
     let channels = layout.channels();
 
-    let params = audio_params(&track).ok_or_else(|| {
-        n0_error::e!(AudioFileError::NoTrack {
-            path: display.clone()
-        })
-    })?;
+    let params =
+        audio_params(&track).ok_or_else(|| file_error(path, "the file holds no audio track"))?;
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(decode_err)?;
@@ -311,10 +234,12 @@ fn decode_once(
             moq_net::Timestamp::from_micros(published.as_micros() as u64)
                 .expect("published duration out of Timestamp range"),
         );
-        if tx.blocking_send(frame).is_err() {
-            // The publisher went away.
+        if stop.is_cancelled() {
+            // The source went away.
             return Ok(sent);
         }
+        // An error only means no broadcast is attached right now.
+        let _ = fanout.send(frame);
         sent += 1;
 
         let frames = interleaved.len() / channels.max(1) as usize;
@@ -388,19 +313,18 @@ mod tests {
         let frames: Vec<i16> = (0..960).flat_map(|n| [n as i16, -(n as i16)]).collect();
         let path = temp_file("stereo", &wav(&frames, 2));
 
-        let file = AudioFile::open(&path, false).expect("a valid stereo WAV opens");
-        let input = file.input();
-        assert_eq!(input.sample_rate, 48_000);
-        assert_eq!(input.layout, moq_audio::Layout::Stereo);
+        let probe = probe(&path).expect("a valid stereo WAV opens");
+        assert_eq!(probe.sample_rate, 48_000);
+        assert_eq!(probe.layout, moq_audio::Layout::Stereo);
 
-        let (tx, mut rx) = mpsc::channel(64);
+        let (fanout, mut rx) = tokio::sync::broadcast::channel(1024);
         let decoded = std::thread::spawn({
             let path = path.clone();
-            move || decode_loop(&path, false, &tx)
+            move || decode_loop(&path, false, &fanout, &CancellationToken::new())
         });
 
         let mut samples: Vec<f32> = Vec::new();
-        while let Some(frame) = rx.blocking_recv() {
+        while let Ok(frame) = rx.blocking_recv() {
             samples.extend(
                 frame
                     .data
@@ -449,8 +373,8 @@ mod tests {
         let (done, finished) = std::sync::mpsc::sync_channel(1);
         let looping = path.clone();
         std::thread::spawn(move || {
-            let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
-            let result = decode_loop(&looping, true, &tx);
+            let (fanout, rx) = tokio::sync::broadcast::channel(16);
+            let result = decode_loop(&looping, true, &fanout, &CancellationToken::new());
             let _ = done.send((result.is_ok(), rx.is_empty()));
         });
 

@@ -7,7 +7,7 @@
 //!
 //! `@<fps>` names a capture rate rather than a per-rung encode rate. Every rung
 //! of a ladder is fed the same pictures: `iroh_live_media` opens one capture, and
-//! `fan_out` hands each frame to every encoder, so there is one frame rate for
+//! the broadcast hands each frame to every encoder, so there is one frame rate for
 //! the whole ladder and no rung can run slower than another. The rung that asks
 //! for the most frames therefore sets the rate all of them are captured at, and
 //! [`Ladder::report`] names any rung that asked for something else.
@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use iroh_live::media::{
-    publish::VideoRendition,
+    Bitrate, VideoEncoding, VideoRendition,
     video::{self, Size},
 };
 use n0_error::{Result, anyerr};
@@ -130,8 +130,8 @@ struct Rung {
 /// settles.
 #[derive(Debug)]
 pub struct Ladder {
-    /// The rungs, ready for `set_renditions`.
-    pub renditions: Vec<VideoRendition>,
+    /// The rungs, ready for `set_video`.
+    pub encoding: VideoEncoding,
     /// The rate the capture backend is asked for.
     pub framerate: CaptureFramerate,
     /// The rungs whose `@<fps>` is not the rate the ladder is captured at, kept
@@ -183,7 +183,7 @@ pub fn ladder(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Ladder> {
     let rungs = rungs(args)?;
     let framerate = capture_framerate(spec, args, &rungs)?;
     Ok(Ladder {
-        renditions: renditions(args, &rungs),
+        encoding: VideoEncoding::ladder(renditions(args, &rungs)),
         unmet: unmet_rates(&rungs, framerate),
         framerate,
     })
@@ -324,7 +324,7 @@ fn unmet_rates(rungs: &[Rung], framerate: CaptureFramerate) -> Vec<UnmetRate> {
         .collect()
 }
 
-/// Turns parsed rungs into the ladder `set_renditions` takes.
+/// Turns parsed rungs into the renditions `set_video` encodes.
 fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
     let codec = args.codec.into();
     let kind = video::encode::Kind::from(args.encoder);
@@ -346,7 +346,7 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
         .map(|rung| {
             let mut rendition = VideoRendition::new(rung.name.clone())
                 .with_codec(codec)
-                .with_kind(kind.clone());
+                .with_encoder(kind.clone());
             if let Some(size) = rung.size {
                 rendition = rendition.with_size(size);
             }
@@ -360,7 +360,9 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
                 // subscriber compares its estimate against the rendition's
                 // bitrate, and identical figures make the rungs
                 // indistinguishable to it.
-                rendition = rendition.with_bitrate(scaled_bitrate(bitrate, rung.size, largest));
+                rendition = rendition.with_bitrate(Bitrate::from_bps(scaled_bitrate(
+                    bitrate, rung.size, largest,
+                )));
             }
             rendition
         })
@@ -628,9 +630,9 @@ mod tests {
     #[test]
     fn a_ladder_without_the_flag_is_one_unscaled_rendition() {
         let ladder = ladder(&TEST_SOURCE, &args(&[], None)).unwrap();
-        assert_eq!(ladder.renditions.len(), 1);
-        assert_eq!(ladder.renditions[0].name, SINGLE_RENDITION);
-        assert_eq!(ladder.renditions[0].size, None);
+        assert_eq!(ladder.encoding.renditions.len(), 1);
+        assert_eq!(ladder.encoding.renditions[0].name, SINGLE_RENDITION);
+        assert_eq!(ladder.encoding.renditions[0].size, None);
     }
 
     #[test]
@@ -638,8 +640,11 @@ mod tests {
         // Every rung of a ladder sees the same pictures, so `@<fps>` describes
         // the capture and leaves the rendition alone; the size still lands.
         let ladder = ladder(&TEST_SOURCE, &args(&["high:1280x720@60"], None)).unwrap();
-        assert_eq!(ladder.renditions.len(), 1);
-        assert_eq!(ladder.renditions[0].name, "high");
-        assert_eq!(ladder.renditions[0].size, Some(Size::new(1280, 720)));
+        assert_eq!(ladder.encoding.renditions.len(), 1);
+        assert_eq!(ladder.encoding.renditions[0].name, "high");
+        assert_eq!(
+            ladder.encoding.renditions[0].size,
+            Some(Size::new(1280, 720))
+        );
     }
 }

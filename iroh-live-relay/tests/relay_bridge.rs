@@ -14,6 +14,7 @@ use iroh::address_lookup::MemoryLookup;
 use moq_net::{Timestamp, origin};
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
+use n0_watcher::Watcher as _;
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -221,16 +222,16 @@ async fn announced_at(origin: &origin::Producer, path: &str) -> moq_net::broadca
 
 /// Publishes a generated video broadcast as `name` on `live`.
 fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::LocalBroadcast {
-    let broadcast =
-        iroh_live::LocalBroadcast::new(moq_net::broadcast::Info::new().produce()).expect("create");
+    use iroh_live_media::{VideoEncoding, VideoRendition, VideoSource, video};
+    let broadcast = iroh_live::LocalBroadcast::new();
+    let source = VideoSource::test_pattern(
+        video::Size::new(320, 240),
+        video::Rate::new(30, 1).expect("a valid rate"),
+    );
     broadcast
-        .video()
-        .set(iroh_live_media::test_source::video(
-            iroh_live_media::video::Size::new(320, 240),
-            30,
-        ))
+        .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
         .expect("set video");
-    live.publish(name, broadcast.consume()).expect("publish");
+    live.publish(name, &broadcast).expect("publish");
     broadcast
 }
 
@@ -339,25 +340,23 @@ async fn iroh_publish_iroh_subscribe() {
     let sub = tokio::time::timeout(TIMEOUT, async {
         let session = subscriber.moq().connect(relay_id).await?;
         let subscription = session.subscribe(path).await?;
-        subscriber.remote_broadcast(&subscription).await
+        Ok::<_, iroh_live::moq::Error>(subscriber.remote_broadcast(&subscription))
     })
     .await
     .expect("timeout")
     .expect("subscribe");
 
-    assert!(sub.has_video());
-    let video = tokio::time::timeout(TIMEOUT, sub.video())
-        .await
-        .expect("timeout")
-        .expect("video track");
-    let frame = tokio::time::timeout(Duration::from_secs(10), video.frames().recv())
+    let player = sub
+        .play(iroh_live_media::PlayerConfig::default())
+        .expect("play");
+    let frame = tokio::time::timeout(TIMEOUT, player.video().next())
         .await
         .expect("timeout")
         .expect("closed");
     let size = frame.size();
     assert!(size.width > 0 && size.height > 0);
 
-    drop(video);
+    drop(player);
     drop(sub);
     drop(_pub_session);
     drop(broadcast);
@@ -430,18 +429,39 @@ async fn noq_publish_iroh_subscribe() {
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             let session = subscriber.moq().connect(relay_id).await?;
             let subscription = session.subscribe("browser-stream").await?;
-            subscriber.remote_broadcast(&subscription).await
+            Ok::<_, iroh_live::moq::Error>(subscriber.remote_broadcast(&subscription))
         })
         .await;
 
         match result {
             Ok(Ok(sub)) => {
-                tracing::info!(
-                    attempt,
-                    has_video = sub.has_video(),
-                    has_audio = sub.has_audio(),
-                    "subscribed to browser-stream via iroh"
-                );
+                // Subscribing proves the route; the catalog arriving and
+                // parsing proves the bridge carried the broadcast itself.
+                let mut catalog = sub.catalog();
+                let parsed = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Some(parsed) = catalog.get() {
+                            return Some(parsed);
+                        }
+                        if catalog.updated().await.is_err() {
+                            return None;
+                        }
+                    }
+                })
+                .await;
+                let Ok(Some(parsed)) = parsed else {
+                    tracing::warn!(attempt, "subscribed, but no catalog arrived; retrying");
+                    last_err = Some("no catalog arrived".to_string());
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                };
+                // The one rendition the noq side wrote, parsed on the far
+                // side of the bridge.
+                let video = parsed.video();
+                assert_eq!(video.len(), 1, "the bridged catalog: {video:?}");
+                assert_eq!(video[0].name, "video/h264");
+                assert_eq!(video[0].height(), Some(240));
+                tracing::info!(attempt, "subscribed to browser-stream via iroh");
                 // Success: clean up and return.
                 drop(sub);
                 drop(_pub_session);
@@ -565,6 +585,7 @@ async fn iroh_publish_noq_subscribe() {
 /// enough to keep them quick, long enough to survive a slow CI scheduler.
 const PULL_LINGER: Duration = Duration::from_millis(200);
 
+/// Publishes a generated 320x240 pattern on `broadcast`, as one rendition.
 /// Starts a standalone iroh publisher (not connected to the relay) with a video
 /// track, and returns it with a ticket naming its broadcast.
 async fn start_publisher(
@@ -572,7 +593,7 @@ async fn start_publisher(
 ) -> (
     iroh::Endpoint,
     iroh_live::Live,
-    iroh_live_media::publish::LocalBroadcast,
+    iroh_live_media::LocalBroadcast,
     iroh_live::BroadcastTicket,
 ) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)

@@ -24,7 +24,7 @@
 | [Transport](architecture/transport.md) | `iroh-moq`: the node origin, session lifetime, and ALPN negotiation |
 | [Publishing](architecture/publish.md) | `LocalBroadcast`, sources, the simulcast ladder, and demand-gated encoders |
 | [Subscribing](architecture/subscribe.md) | `RemoteBroadcast`, the decode supervisor, and the rendition swap |
-| [Adaptive rendition switching](architecture/adaptive.md) | The selection algorithm, its thresholds, and what is not wired up |
-| [Playout and A/V sync](architecture/playout.md) | The shared playout clock and the playback policy |
+| [Adaptive rendition switching](architecture/adaptive.md) | The selection algorithm, its thresholds, and how a player follows the link |
+| [Playout and A/V sync](architecture/playout.md) | The per-player playout clock and latency |
 | [Peer-to-peer and the relay](architecture/p2p-relay.md) | Direct connectivity, and the relay that bridges to browsers |
 | [Instrumentation and tests](architecture/devtools.md) | Metrics, the debug overlay, and the test suites |

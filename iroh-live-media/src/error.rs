@@ -1,0 +1,192 @@
+//! The crate's error types.
+//!
+//! One [`Error`] for everything the crate does, with variants by what a caller
+//! can act on rather than by which half of the crate raised them. Sources are
+//! boxed as [`AnyError`], so no dependency's error type is part of ours and a
+//! dependency's major release is not a breaking change here.
+
+use std::sync::Arc;
+
+use n0_error::{AnyError, stack_error};
+
+/// Errors raised by `iroh-live-media`.
+///
+/// Stored as `Arc<Error>` where a watched status has to hold one: see
+/// [`SlotState::Failed`](crate::SlotState::Failed).
+#[stack_error(derive, add_meta)]
+#[non_exhaustive]
+pub enum Error {
+    /// A capture or playback device would not open, or failed while running.
+    #[error("device failed")]
+    Device {
+        /// What the device reported.
+        #[error(source)]
+        source: AnyError,
+    },
+    /// A configuration cannot be used as given.
+    #[error("invalid configuration: {reason}")]
+    InvalidConfig {
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// No encoder compiled into this build can produce the codec asked for.
+    #[error("no encoder for {codec} is available in this build")]
+    NoEncoder {
+        /// The codec that was asked for.
+        codec: String,
+    },
+    /// No decoder compiled into this build can read the codec.
+    #[error("no decoder for {codec} is available in this build")]
+    NoDecoder {
+        /// The codec the broadcast carries.
+        codec: String,
+    },
+    /// An encoder failed to open or to encode.
+    #[error("encoder failed")]
+    Encoder {
+        /// What the encoder reported.
+        #[error(source)]
+        source: AnyError,
+    },
+    /// A decoder failed to open or to decode.
+    #[error("decoder failed")]
+    Decoder {
+        /// What the decoder reported.
+        #[error(source)]
+        source: AnyError,
+    },
+    /// The broadcast's catalog has no rendition of that name.
+    #[error("no rendition named {name}")]
+    UnknownRendition {
+        /// The name that was asked for.
+        name: String,
+    },
+    /// The catalog could not be read or written.
+    #[error("catalog failed")]
+    Catalog {
+        /// What went wrong with it.
+        #[error(source)]
+        source: AnyError,
+    },
+    /// The transport refused a track or broadcast operation, or reset a track
+    /// being read.
+    #[error("transport failed")]
+    Transport {
+        /// What the transport reported.
+        #[error(source)]
+        source: AnyError,
+    },
+    /// The broadcast, source or player was closed.
+    #[error("closed")]
+    Closed,
+    /// Reading or writing a file or pipe failed.
+    #[error("I/O failed")]
+    Io {
+        /// What the operating system reported.
+        #[error(source, std_err)]
+        source: std::io::Error,
+    },
+}
+
+impl Error {
+    /// Creates an [`Error::InvalidConfig`] with `reason`.
+    pub(crate) fn invalid(reason: impl Into<String>) -> Self {
+        n0_error::e!(Self::InvalidConfig {
+            reason: reason.into()
+        })
+    }
+
+    /// Creates an [`Error::Device`] from an upstream error.
+    pub(crate) fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Device {
+            source: AnyError::from_std(source)
+        })
+    }
+
+    /// Creates an [`Error::Device`] from a message.
+    pub(crate) fn device_msg(message: impl std::fmt::Display) -> Self {
+        n0_error::e!(Self::Device {
+            source: AnyError::from_display(message)
+        })
+    }
+
+    /// Creates an [`Error::Encoder`] from an upstream error.
+    pub(crate) fn encoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Encoder {
+            source: AnyError::from_std(source)
+        })
+    }
+
+    /// Creates an [`Error::Decoder`] from an upstream error.
+    pub(crate) fn decoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Decoder {
+            source: AnyError::from_std(source)
+        })
+    }
+
+    /// Creates an [`Error::Catalog`] from an upstream error.
+    pub(crate) fn catalog(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Catalog {
+            source: AnyError::from_std(source)
+        })
+    }
+
+    /// Creates an [`Error::Transport`] from an upstream error.
+    pub(crate) fn transport(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Transport {
+            source: AnyError::from_std(source)
+        })
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(source: std::io::Error) -> Self {
+        n0_error::e!(Self::Io { source })
+    }
+}
+
+/// Why a rendition switch did not land.
+///
+/// Returned by [`Player::wait_for_rendition`](crate::Player::wait_for_rendition).
+#[stack_error(derive, add_meta)]
+#[non_exhaustive]
+pub enum SwitchError {
+    /// A newer request replaced it before it landed.
+    #[error("the switch to {rendition} was superseded")]
+    Superseded {
+        /// The rendition the switch was for.
+        rendition: String,
+    },
+    /// The request was withdrawn before it landed.
+    #[error("the switch to {rendition} was withdrawn")]
+    Withdrawn {
+        /// The rendition the switch was for.
+        rendition: String,
+    },
+    /// Its decoder did not open, its track ended, or it did not take over in
+    /// time.
+    #[error("the switch to {rendition} failed")]
+    Failed {
+        /// The rendition the switch was for.
+        rendition: String,
+        /// Why it failed.
+        #[error(source, std_err)]
+        source: Arc<Error>,
+    },
+    /// The broadcast's catalog has no video rendition of that name.
+    #[error("the broadcast has no video rendition named {rendition}")]
+    UnknownRendition {
+        /// The name that was asked for.
+        rendition: String,
+    },
+    /// The player's video ended or was turned off.
+    #[error("the video ended")]
+    Ended,
+}
+
+/// The source a [`FrameSender`](crate::FrameSender) feeds has gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
+#[display("the source has closed")]
+pub struct Closed;
+
+impl std::error::Error for Closed {}

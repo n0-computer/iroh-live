@@ -4434,7 +4434,6 @@ dependencies = [
  "iroh-live-media",
  "iroh-live-media-android",
  "jni 0.21.1",
- "moq-audio",
  "moq-net",
  "moq-video",
  "n0-error",
@@ -4530,6 +4529,7 @@ dependencies = [
  "moq-video",
  "n0-error",
  "n0-future",
+ "n0-watcher",
  "tracing",
 ]
 
@@ -7520,6 +7520,7 @@ dependencies = [
  "moq-video",
  "n0-error",
  "n0-future",
+ "n0-watcher",
  "qrcode",
  "raw-window-handle",
  "tokio",

@@ -102,14 +102,12 @@ mod app {
     /// Renders a generated test pattern directly to HDMI - no network, no
     /// window system, no camera needed.
     async fn cmd_fb_demo() -> n0_error::Result {
-        use iroh_live_media::{publish::VideoSource, test_source};
-        use moq_video::Size;
+        use iroh_live_media::VideoSource;
+        use moq_video::{Rate, Size};
 
-        let VideoSource::Frames(frames) = test_source::video(Size::new(640, 480), 30) else {
-            unreachable!("test_source::video always returns VideoSource::Frames")
-        };
-
-        watch::run_fb_demo(frames).await?;
+        let source =
+            VideoSource::test_pattern(Size::new(640, 480), Rate::new(30, 1).expect("a valid rate"));
+        watch::run_fb_demo(source.frames()).await?;
         Ok(())
     }
 
@@ -134,21 +132,57 @@ mod app {
             .moq()
             .subscribe(ticket.path(), live.moq().reach())
             .await?;
-        let remote = live.remote_broadcast(&sub).await?;
+        let remote = live.remote_broadcast(&sub);
         let session = sub
             .session()
             .ok_or_else(|| n0_error::anyerr!("the broadcast is not served by a direct session"))?;
         println!("connected!");
 
-        let tracks = remote.media().await;
-        let video_track = tracks.video.expect("no video track in broadcast");
-        video_track.enable_adaptation(iroh_live::network::signals(&sub, remote.shutdown_token()));
+        // Waited for, so a publisher that never describes its broadcast, or
+        // describes it in a way this build cannot read, is an error here
+        // rather than a black screen.
+        // Waited for until it lists video: audio or metadata can land first.
+        let broadcast = &remote;
+        let mut catalog = broadcast.catalog();
+        let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if let Some(known) = n0_watcher::Watcher::get(&mut catalog)
+                    && !known.video().is_empty()
+                {
+                    return Ok(known);
+                }
+                // A broadcast that closes sends no update to wake on.
+                tokio::select! {
+                    updated = n0_watcher::Watcher::updated(&mut catalog) => {
+                        if updated.is_err() {
+                            return Err(n0_error::anyerr!("the broadcast closed"));
+                        }
+                    }
+                    () = broadcast.closed() => {
+                        return Err(n0_error::anyerr!("the broadcast closed"));
+                    }
+                }
+            }
+        })
+        .await;
+        let _described = match described {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(n0_error::anyerr!(
+                    "the broadcast listed no video this build could read within 15s"
+                ));
+            }
+        };
+
+        // `remote_broadcast` attached the serving link's signals, so the
+        // player adapts the rendition on its own.
+        let player = remote.play(iroh_live_media::PlayerConfig::default())?;
 
         if opts.fb {
-            watch::run_drm(video_track, session).await?;
+            watch::run_drm(player, session).await?;
         } else {
             #[cfg(feature = "windowed")]
-            watch::run_windowed(video_track, session, opts.fullscreen)?;
+            watch::run_windowed(player, session, opts.fullscreen)?;
             #[cfg(not(feature = "windowed"))]
             {
                 eprintln!(

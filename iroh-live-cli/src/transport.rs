@@ -6,11 +6,9 @@ use iroh::{EndpointId, SecretKey};
 use iroh_live::{
     BroadcastTicket, EndpointOptions, Live, LiveBuilder, Mdns, RemoteBroadcast, Session,
     Subscription,
-    media::{net::NetworkSignals, subscribe::MediaTracks},
     moq::{RelayConfig, RelayLink},
 };
 use n0_error::{Result, StdResultExt, anyerr};
-use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::args::TransportArgs;
@@ -172,49 +170,32 @@ pub async fn with_live<T>(
     }
 }
 
-/// A subscribed broadcast, with its signals for adaptation.
+/// A subscribed broadcast.
 ///
-/// The path resolved in the route table, the media broadcast read through it,
-/// and the serving link's signals.
+/// The path resolved in the route table, and the media broadcast read through
+/// it, which carries the serving link's signals for adaptation.
 #[derive(Debug, Clone)]
 pub struct Subscribed {
     subscription: Subscription,
     broadcast: RemoteBroadcast,
-    #[cfg_attr(
-        not(feature = "render"),
-        allow(dead_code, reason = "only the player windows adapt")
-    )]
-    signals: watch::Receiver<NetworkSignals>,
 }
 
 impl Subscribed {
-    /// Reads the catalog of `subscription`'s broadcast and follows its link.
+    /// Starts reading `subscription`'s broadcast.
     ///
-    /// # Errors
-    ///
-    /// Fails if the catalog cannot be read.
-    pub async fn open(live: &Live, subscription: Subscription) -> Result<Self> {
-        let broadcast = live.remote_broadcast(&subscription).await?;
-        let signals = iroh_live::network::signals(&subscription, broadcast.shutdown_token());
-        Ok(Self {
+    /// The catalog arrives on its own; [`crate::playback::catalog`] waits for
+    /// it.
+    pub fn open(live: &Live, subscription: Subscription) -> Self {
+        let broadcast = live.remote_broadcast(&subscription);
+        Self {
             subscription,
             broadcast,
-            signals,
-        })
+        }
     }
 
     /// Returns the media broadcast.
     pub fn broadcast(&self) -> &RemoteBroadcast {
         &self.broadcast
-    }
-
-    /// Returns the serving link's signals, for rendition adaptation.
-    #[cfg_attr(
-        not(feature = "render"),
-        allow(dead_code, reason = "only the player windows adapt")
-    )]
-    pub fn signals(&self) -> &watch::Receiver<NetworkSignals> {
-        &self.signals
     }
 
     /// Returns the resolved path.
@@ -227,19 +208,14 @@ impl Subscribed {
         self.subscription.session()
     }
 
-    /// Opens whichever of video and audio the broadcast carries.
-    pub async fn media(&self) -> MediaTracks {
-        self.broadcast.media().await
-    }
-
-    /// Stops decoding, and closes the session that served the broadcast.
+    /// Closes the session that served the broadcast.
     ///
     /// For a viewer that is done with its peer: the session is shared with
     /// anything else this node has open to the same peer. `irl watch`, `record`
-    /// and `run` own theirs outright; a room tile must shut down only its
-    /// broadcast, since the room's chat rides the same session.
+    /// and `run` own theirs outright; a room tile drops only its player, since
+    /// the room's chat rides the same session. The players stop when they are
+    /// dropped.
     pub fn close(&self) {
-        self.broadcast.shutdown();
         if let Some(session) = self.session() {
             session.close("stopped watching");
         }
@@ -248,14 +224,13 @@ impl Subscribed {
 
 /// Subscribes to `ticket`, saying so on the way in and out.
 ///
-/// The catalog is what a subscription waits for, and a publisher that has not
-/// started yet never sends one, so a subscription that is taking a long time
-/// says which broadcast it is still waiting for.
+/// A publisher that has not started yet announces nothing, so a subscription
+/// that is taking a long time says which broadcast it is still waiting for.
+/// Returns once a route is found; the catalog arrives afterwards.
 ///
 /// # Errors
 ///
-/// Fails if the peer cannot be reached, or if it closes the broadcast without
-/// ever publishing a catalog.
+/// Fails if the peer cannot be reached.
 pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscribed> {
     println!("connecting to {ticket} ...");
     let mut subscribing = std::pin::pin!(async {
@@ -263,7 +238,7 @@ pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscrib
             .moq()
             .subscribe(ticket.path(), live.moq().reach())
             .await?;
-        Subscribed::open(live, subscription).await
+        n0_error::Ok(Subscribed::open(live, subscription))
     });
 
     let sub = match tokio::time::timeout(QUIET_SUBSCRIBE, subscribing.as_mut()).await {

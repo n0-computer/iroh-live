@@ -1,27 +1,23 @@
 //! `irl record`: subscribe to a remote broadcast and write it to a file.
 //!
-//! Recording is a remux rather than a transcode: `moq_mux`'s container
-//! exporter reads encoded frames off the wire and writes them into fragmented
-//! MP4 or Matroska with no decoder anywhere in the path. The exporter also
-//! builds the container's decoder configuration from the catalog, turning an
-//! `avc3` track with inline parameter sets into the `avc1` shape a player
-//! expects, so nothing here has to understand H.264 framing.
+//! Recording is a remux rather than a transcode, and the media crate does it:
+//! [`RemoteBroadcast::record`] reads encoded frames off the wire and writes
+//! them into fragmented MP4 or Matroska with no decoder anywhere in the path.
+//! What this adds is the command line: which file, which container, for how
+//! long, and a progress line while it runs.
 
 use std::{
     future::Future,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use bytes::Bytes;
-use iroh_live::{BroadcastTicket, Live, media::subscribe::RemoteBroadcast, moq::net::origin};
-use moq_mux::{
-    catalog::{CatalogFormat, Stream as _},
-    container::{fmp4, mkv},
-    select,
+use iroh_live::{
+    BroadcastTicket, Live,
+    media::{self, Catalog, RecordConfig, Recording, RemoteBroadcast},
 };
-use n0_error::{Result, StdResultExt, anyerr};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use n0_error::{Result, anyerr};
+use tokio::io::BufWriter;
 use tracing::{info, warn};
 
 use crate::{
@@ -58,7 +54,7 @@ async fn record(args: RecordArgs) -> Result {
 async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
     let sub = transport::subscribe(live, ticket).await?;
 
-    let catalog = sub.broadcast().catalog();
+    let catalog = crate::playback::catalog(sub.broadcast()).await?;
     println!(
         "catalog: {} video, {} audio renditions",
         catalog.video().len(),
@@ -71,12 +67,14 @@ async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOption
         ));
     }
 
-    let recorder = Recorder::open(sub.subscription().as_origin(), sub.broadcast(), options).await?;
+    // The broadcast follows its path in the route table, which is also where a
+    // catalog rendition naming a sibling broadcast resolves.
+    let recording = start(sub.broadcast(), &catalog, options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
         None => println!("recording, press Ctrl+C to stop"),
     }
-    let written = recorder.run(stop_after(options.duration)).await?;
+    let written = finish(recording, stop_after(options.duration)).await?;
     println!(
         "wrote {} to {}",
         format_bytes(written),
@@ -102,11 +100,6 @@ pub struct RecordOptions {
     pub duration: Option<Duration>,
 }
 
-/// How long a stalled group is waited for before the exporter skips it, when
-/// no caller says otherwise. Generous next to what a player allows: a recording
-/// would rather buffer a late group than drop it.
-const DEFAULT_LATENCY: Duration = Duration::from_secs(2);
-
 impl RecordOptions {
     /// Records `path` in `format`, or in the container `path`'s extension
     /// names, keeping every rendition until the broadcast ends.
@@ -124,146 +117,86 @@ impl RecordOptions {
             path,
             format,
             rendition: None,
-            latency: DEFAULT_LATENCY,
+            latency: RecordConfig::default().max_age,
             duration: None,
         })
     }
-}
 
-/// The catalog stream that drives an exporter: the broadcast's own catalog,
-/// narrowed to the renditions this recording keeps.
-type CatalogStream = moq_mux::catalog::Select<moq_mux::catalog::Consumer>;
-
-/// The container exporter, one variant per [`RecordFormat`].
-///
-/// Both are large enough that clippy objects to an unboxed enum, and both are
-/// built once per recording, so the indirection costs nothing that matters.
-enum Export {
-    Fmp4(Box<fmp4::Export<CatalogStream>>),
-    Mkv(Box<mkv::Export<CatalogStream>>),
-}
-
-impl Export {
-    /// Returns the next container chunk, or `None` once every track has ended.
-    async fn next(&mut self) -> Result<Option<Bytes>> {
-        match self {
-            Self::Fmp4(export) => export.next().await.anyerr(),
-            Self::Mkv(export) => export.next().await.anyerr(),
-        }
-    }
-}
-
-/// A recording that has subscribed to its tracks and opened its output file.
-pub struct Recorder {
-    export: Export,
-    file: BufWriter<tokio::fs::File>,
-    path: PathBuf,
-}
-
-impl std::fmt::Debug for Recorder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Recorder")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Recorder {
-    /// Subscribes to the tracks `options` keeps and creates the output file.
-    ///
-    /// The exporter takes the route table rather than the broadcast we
-    /// already hold, because a catalog rendition may name a sibling broadcast
-    /// and only the origin can resolve that reference.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the requested rendition is not in the catalog, if the catalog
-    /// track cannot be subscribed to, or if the output file cannot be created.
-    pub async fn open(
-        origin: origin::Consumer,
-        broadcast: &RemoteBroadcast,
-        options: &RecordOptions,
-    ) -> Result<Self> {
-        if let Some(name) = &options.rendition {
-            check_rendition(broadcast, name)?;
-        }
-        let source = moq_mux::Source::new(origin, broadcast.name());
-        // A second subscription to the catalog track: `moq_mux` drives its
-        // exporters from a `catalog::Stream`, and `RemoteBroadcast` publishes
-        // its snapshots through an `n0_watcher` instead, which no adapter
-        // bridges. The track carries only the JSON manifest.
-        let catalog =
-            moq_mux::catalog::Consumer::<()>::new(broadcast.consumer(), CatalogFormat::default())
-                .await
-                .anyerr()?
-                .select(selection(options.rendition.as_deref()));
-
-        let export = match options.format {
-            RecordFormat::Fmp4 => Export::Fmp4(Box::new(
-                fmp4::Export::new(source, catalog).with_max_age(options.latency),
-            )),
-            RecordFormat::Mkv => Export::Mkv(Box::new(
-                mkv::Export::new(source, catalog).with_max_age(options.latency),
-            )),
+    /// The media crate's config for these options.
+    fn config(&self) -> RecordConfig {
+        let format = match self.format {
+            RecordFormat::Fmp4 => media::RecordFormat::Fmp4,
+            RecordFormat::Mkv => media::RecordFormat::Mkv,
         };
-
-        let file = tokio::fs::File::create(&options.path)
-            .await
-            .map_err(|err| anyerr!("failed to create {}: {err}", options.path.display()))?;
-
-        Ok(Self {
-            export,
-            file: BufWriter::new(file),
-            path: options.path.clone(),
-        })
-    }
-
-    /// The file this recording writes.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Writes container chunks until the broadcast ends or `stop` resolves,
-    /// and returns the number of bytes written.
-    ///
-    /// The file is flushed either way, so an interrupted recording is still a
-    /// playable file: fragmented containers are complete at every chunk
-    /// boundary.
-    ///
-    /// # Errors
-    ///
-    /// Fails on an export or a write error, having flushed nothing further.
-    pub async fn run(mut self, stop: impl Future<Output = ()>) -> Result<u64> {
-        info!(path = %self.path.display(), "recording started");
-        let started = Instant::now();
-        let mut reported = started;
-        let mut written = 0u64;
-        let mut stop = std::pin::pin!(stop);
-
-        loop {
-            let chunk = tokio::select! {
-                chunk = self.export.next() => chunk?,
-                () = &mut stop => None,
-            };
-            let Some(chunk) = chunk else { break };
-
-            self.file.write_all(&chunk).await?;
-            written += chunk.len() as u64;
-
-            if reported.elapsed() >= REPORT_INTERVAL {
-                reported = Instant::now();
-                println!(
-                    "[{:.0}s] {}",
-                    started.elapsed().as_secs_f64(),
-                    format_bytes(written)
-                );
-            }
+        let mut config = RecordConfig::default()
+            .with_format(format)
+            .with_max_age(self.latency);
+        if let Some(name) = &self.rendition {
+            config = config.with_rendition(name.clone());
         }
-
-        self.file.flush().await?;
-        info!(path = %self.path.display(), bytes = written, "recording finished");
-        Ok(written)
+        config
     }
+}
+
+/// Creates the output file and starts recording `broadcast` into it.
+///
+/// # Errors
+///
+/// Fails if the requested rendition is not in `catalog`, or if the output file
+/// cannot be created.
+pub async fn start(
+    broadcast: &RemoteBroadcast,
+    catalog: &Catalog,
+    options: &RecordOptions,
+) -> Result<Recording> {
+    if let Some(name) = &options.rendition {
+        check_rendition(catalog, name)?;
+    }
+    let file = tokio::fs::File::create(&options.path)
+        .await
+        .map_err(|err| anyerr!("failed to create {}: {err}", options.path.display()))?;
+    info!(path = %options.path.display(), "recording started");
+    Ok(broadcast.record(BufWriter::new(file), options.config())?)
+}
+
+/// Waits for `recording` to end, or finishes it once `stop` resolves, printing
+/// progress as it goes; returns the bytes written.
+///
+/// The file is flushed either way, so an interrupted recording is still a
+/// playable file: fragmented containers are complete at every chunk boundary.
+///
+/// # Errors
+///
+/// Fails on an export or a write error.
+pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) -> Result<u64> {
+    /// What ended one wait.
+    enum Next {
+        Ended(Result<u64, media::Error>),
+        Stop,
+        Report,
+    }
+
+    let started = tokio::time::Instant::now();
+    let mut report = tokio::time::interval_at(started + REPORT_INTERVAL, REPORT_INTERVAL);
+    let mut stop = std::pin::pin!(stop);
+    let written = loop {
+        let next = tokio::select! {
+            result = recording.wait() => Next::Ended(result),
+            () = &mut stop => Next::Stop,
+            _ = report.tick() => Next::Report,
+        };
+        match next {
+            Next::Ended(result) => break result?,
+            Next::Stop => break recording.stop().await?,
+            Next::Report => println!(
+                "[{:.0}s] {}",
+                started.elapsed().as_secs_f64(),
+                format_bytes(recording.written())
+            ),
+        }
+    };
+    info!(bytes = written, "recording finished");
+    Ok(written)
 }
 
 /// The options `args` describes.
@@ -281,9 +214,10 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
 
 /// The container `path`'s extension names, if it names one.
 fn format_from_extension(path: &Path) -> Option<RecordFormat> {
-    match path.extension()?.to_str()?.to_lowercase().as_str() {
-        "mp4" | "m4v" | "m4s" => Some(RecordFormat::Fmp4),
-        "mkv" | "webm" => Some(RecordFormat::Mkv),
+    match media::RecordFormat::from_path(path)? {
+        media::RecordFormat::Fmp4 => Some(RecordFormat::Fmp4),
+        media::RecordFormat::Mkv => Some(RecordFormat::Mkv),
+        // A container the media crate learned and this flag has not.
         _ => None,
     }
 }
@@ -306,12 +240,15 @@ fn unknown_extension(path: &Path) -> n0_error::AnyError {
 ///
 /// Fails if the catalog has no video rendition of that name, listing the ones
 /// it does have.
-fn check_rendition(broadcast: &RemoteBroadcast, name: &str) -> Result<()> {
-    let catalog = broadcast.catalog();
-    if catalog.video().contains_key(name) {
+fn check_rendition(catalog: &Catalog, name: &str) -> Result<()> {
+    if catalog.video_rendition(name).is_some() {
         return Ok(());
     }
-    let offered: Vec<&str> = catalog.video().keys().map(String::as_str).collect();
+    let offered: Vec<&str> = catalog
+        .video()
+        .iter()
+        .map(|info| info.name.as_str())
+        .collect();
     Err(anyerr!(
         "the broadcast has no video rendition named '{name}'; it offers {}",
         match offered.is_empty() {
@@ -319,18 +256,6 @@ fn check_rendition(broadcast: &RemoteBroadcast, name: &str) -> Result<()> {
             false => offered.join(", "),
         }
     ))
-}
-
-/// Keeps every audio rendition, and either every video rendition or only the
-/// one `rendition` names.
-fn selection(rendition: Option<&str>) -> select::Broadcast {
-    let mut video = select::Video::default();
-    if let Some(name) = rendition {
-        video = video.name(name);
-    }
-    select::Broadcast::default()
-        .video(video)
-        .audio(select::Audio::default())
 }
 
 /// Resolves when the user interrupts, or once `duration` has elapsed.

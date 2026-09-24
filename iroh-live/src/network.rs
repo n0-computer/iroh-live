@@ -1,133 +1,130 @@
 //! A subscription's link, in the media crate's terms.
 //!
 //! The transport keeps one connection monitor per session and reports it as a
-//! [`LinkSample`]. The media crate reads network conditions as
-//! [`NetworkSignals`] for its rendition choice and draws [`NetStats`] in a user
-//! interface. This module turns the one into the other two, following whichever
+//! [`LinkSample`]. A player adapts on [`NetworkSignals`], which it samples on its
+//! own schedule. [`signals`] turns the one into the other, following whichever
 //! session serves a [`Subscription`] as its route changes.
 
-use std::time::{Duration, Instant};
+use std::{fmt, sync::Mutex};
 
-use iroh_live_media::{net::NetworkSignals, stats::NetStats};
-use iroh_moq::{LinkSample, Subscription};
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug_span};
-
-/// How often a subscription's link is read.
-const INTERVAL: Duration = Duration::from_millis(200);
+use iroh_live_media::{Bitrate, NetworkSample, NetworkSignals};
+use iroh_moq::{LinkId, LinkSample, Subscription};
+use tracing::debug;
 
 /// Returns the network signals of the link serving `subscription`.
 ///
-/// For the media crate's rendition adaptation.
-///
-/// Follows the serving session as the route changes. The feed runs until
-/// `shutdown` is cancelled (pass the broadcast's shutdown token), the path has
-/// no route left, or every receiver is dropped.
-pub fn signals(
-    subscription: &Subscription,
-    shutdown: CancellationToken,
-) -> watch::Receiver<NetworkSignals> {
-    let (tx, rx) = watch::channel(NetworkSignals::default());
-    let subscription = subscription.clone();
-    let span = debug_span!("network_signals", path = %subscription.path());
-    tokio::spawn(
-        async move {
-            let mut interval = tokio::time::interval(INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let closed = subscription.closed();
-            tokio::pin!(closed);
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {}
-                    _ = shutdown.cancelled() => break,
-                    _ = &mut closed => break,
-                    _ = tx.closed() => break,
-                }
-                let Some(session) = subscription.session() else {
-                    continue;
-                };
-                tx.send_replace(to_signals(&session.link()));
-            }
+/// Each sample reads the session serving the subscription at that moment, so
+/// the signals follow the route as it changes. A change of serving session
+/// counts as a new path: the sample's path generation moves past every value it
+/// took before, so adaptation never compares one session's history with
+/// another's. While a relay serves the path, or nothing does yet, the sample
+/// carries no measurements.
+pub(crate) fn signals(subscription: Subscription) -> impl NetworkSignals {
+    let serving = Mutex::new(Serving::<LinkId>::default());
+    move || {
+        let session = subscription.session();
+        let link = session.as_ref().map(|session| session.link());
+        let mut serving = serving.lock().expect("poisoned");
+        let generation = serving.generation(
+            session.as_ref().map(|session| session.link_id()),
+            link.as_ref().map_or(0, |link| link.path_generation),
+        );
+        match link {
+            Some(link) => to_sample(&link, generation),
+            None => NetworkSample::default().with_path_generation(generation),
         }
-        .instrument(span),
-    );
-    rx
+    }
 }
 
-/// Records the link serving `subscription` into `net`, for a user interface.
+/// Which session served the subscription at the last sample, and the path
+/// generation numbering across sessions.
 ///
-/// Until `shutdown` is cancelled or the path has no route left.
-pub(crate) fn record_stats(
-    subscription: &Subscription,
-    net: NetStats,
-    shutdown: CancellationToken,
-) {
-    let subscription = subscription.clone();
-    let span = debug_span!("network_stats", path = %subscription.path());
-    tokio::spawn(
-        async move {
-            let mut interval = tokio::time::interval(INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let closed = subscription.closed();
-            tokio::pin!(closed);
-            let mut previous: Option<(Instant, u64, u64, u64)> = None;
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {}
-                    _ = shutdown.cancelled() => break,
-                    _ = &mut closed => break,
-                }
-                let Some(session) = subscription.session() else {
-                    net.path_type.set("relay link");
-                    continue;
-                };
-                let link = session.link();
-                net.peer.set(session.remote_id().fmt_short().to_string());
-                net.rtt_ms.record(link.rtt.as_secs_f64() * 1000.0);
-                net.path_type
-                    .set(if link.relayed { "relayed" } else { "direct" });
-                if let Some(addr) = &link.remote_addr {
-                    net.path_addr.set(addr.clone());
-                }
-                net.paths_active.record(link.paths as f64);
-                net.loss_pct.record(link.loss_rate * 100.0);
-                let now = Instant::now();
-                // Throughput from the counters, restarted when the path changes
-                // so two paths' counters are never differenced.
-                if let Some((at, generation, received, sent)) = previous
-                    && generation == link.path_generation
-                {
-                    let seconds = now.duration_since(at).as_secs_f64();
-                    if seconds > 0.0 {
-                        let mbps = |bytes: u64| bytes as f64 * 8.0 / seconds / 1_000_000.0;
-                        net.bw_down_mbps
-                            .record(mbps(link.bytes_received.saturating_sub(received)));
-                        net.bw_up_mbps
-                            .record(mbps(link.bytes_sent.saturating_sub(sent)));
-                    }
-                }
-                previous = Some((
-                    now,
-                    link.path_generation,
-                    link.bytes_received,
-                    link.bytes_sent,
-                ));
-            }
-        }
-        .instrument(span),
-    );
+/// Generic over the link's key only so a test can name links.
+#[derive(Debug)]
+struct Serving<K> {
+    /// The serving session's link, `None` for a relay or no route.
+    link: Option<K>,
+    /// What the serving session's own path generations are offset by.
+    base: u64,
+    /// The serving session's own path generation at the last sample.
+    last: u64,
 }
 
-/// Converts a link sample into the signals the media crate adapts on.
-pub fn to_signals(link: &LinkSample) -> NetworkSignals {
-    NetworkSignals {
-        rtt: link.rtt,
-        rtt_samples: link.rtt_samples,
-        min_rtt: link.min_rtt,
-        loss_rate: link.loss_rate,
-        goodput_bps: link.goodput_bps,
-        delivery_bps: link.delivery_bps,
-        congestion_events: link.congestion_events,
+impl<K> Default for Serving<K> {
+    fn default() -> Self {
+        Self {
+            link: None,
+            base: 0,
+            last: 0,
+        }
+    }
+}
+
+impl<K: PartialEq + fmt::Debug> Serving<K> {
+    /// Returns the path generation for a sample of `link` at its own
+    /// `generation`, moving past every earlier value when the link changed.
+    fn generation(&mut self, link: Option<K>, generation: u64) -> u64 {
+        if link != self.link {
+            debug!(from = ?self.link, to = ?link, "the serving session changed");
+            self.base += self.last + 1;
+            self.link = link;
+        }
+        self.last = generation;
+        self.base + generation
+    }
+}
+
+/// Converts a link sample into what a player adapts on.
+///
+/// A round trip of zero is one not measured yet, so it is left out rather than
+/// read as an instant path.
+fn to_sample(link: &LinkSample, path_generation: u64) -> NetworkSample {
+    let mut sample = NetworkSample::default()
+        .with_loss(link.loss_rate as f32)
+        .with_path_generation(path_generation);
+    if !link.rtt.is_zero() {
+        sample = sample.with_rtt(link.rtt);
+    }
+    if !link.min_rtt.is_zero() {
+        sample = sample.with_min_rtt(link.min_rtt);
+    }
+    if let Some(delivery) = link.delivery_bps {
+        sample = sample.with_delivery(Bitrate::from_bps(delivery));
+    }
+    sample
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_session_moves_past_every_earlier_generation() {
+        let mut serving = Serving::<u64>::default();
+        let first = serving.generation(Some(1), 0);
+        let moved = serving.generation(Some(1), 3);
+        assert_eq!(
+            moved,
+            first + 3,
+            "one session's own path changes carry over"
+        );
+
+        // The next session starts its own count at zero, which must not read
+        // as a path the player has seen.
+        let next = serving.generation(Some(2), 0);
+        assert!(next > moved, "{next} does not move past {moved}");
+        let relay = serving.generation(None, 0);
+        assert!(relay > next);
+        let back = serving.generation(Some(1), 3);
+        assert!(back > relay, "returning to a session is a new path too");
+    }
+
+    #[test]
+    fn an_unmeasured_round_trip_is_left_out() {
+        let sample = to_sample(&LinkSample::default(), 4);
+        assert_eq!(sample.rtt, None);
+        assert_eq!(sample.min_rtt, None);
+        assert_eq!(sample.delivery, None);
+        assert_eq!(sample.path_generation, 4);
     }
 }

@@ -57,39 +57,50 @@ The full flag reference is in [the CLI page](../cli.md).
 
 ## Using the library
 
-A publisher binds an endpoint, creates a broadcast, and points it at a device:
+A publisher binds an endpoint, creates a broadcast, opens its sources, and
+hands them to the broadcast with an encoding:
 
 ```rust
 use iroh_live::{
     EndpointOptions, Live, LocalBroadcast,
-    media::{audio, video},
-    moq::net::broadcast,
+    media::{
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
+        video,
+    },
 };
 
 let live = Live::builder(EndpointOptions::default().bind().await?)
     .with_router()
     .spawn();
-let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
-broadcast.video().set(video::capture::Config::default())?;
-broadcast.audio().set(audio::capture::Config::default());
+let broadcast = LocalBroadcast::new();
 
-let publication = live.publish("hello", broadcast.consume())?;
+let camera = VideoSource::capture(video::capture::Config::default()).await?;
+broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
+let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
+broadcast.set_audio(microphone, AudioEncoding::voice())?;
+
+let publication = live.publish("hello", &broadcast)?;
 println!("{}", publication.ticket().expect("a live path"));
 ```
 
-A subscriber connects with the ticket and reads decoded frames:
+A subscriber connects with the ticket, starts a player, and reads decoded frames:
 
 ```rust
+use iroh_live::media::PlayerConfig;
+
 let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
 let remote = live.subscribe(&ticket).await?;
-let tracks = remote.media().await;
+let player = remote.play(PlayerConfig::default())?;
 
-if let Some(video) = tracks.video {
-    while let Some(frame) = video.recv().await {
-        // hand `frame` to a renderer
-    }
+let mut frames = player.video();
+while let Some(frame) = frames.next().await {
+    // hand `frame` to a renderer
 }
 ```
+
+Opening a source fails where the application asked for it, so a missing camera
+is an error from `VideoSource::capture` rather than a log line later. To hear the
+audio, open an `AudioOutput` and pass it with `PlayerConfig::with_audio`.
 
 `iroh-live/examples/publish.rs` is the compilable version of the first snippet,
 including a two-rung simulcast ladder behind `--simulcast`.

@@ -56,9 +56,9 @@ A user interface that wants "joined" and "left" lines diffs two states.
 ## Publishing and subscribing
 
 ```rust
-room.publish("cam", broadcast.consume())?;
+room.publish("cam", &broadcast)?;
 let subscription = room.subscribe(peer, "cam").await?;
-let remote = live.remote_broadcast(&subscription).await?;
+let player = live.remote_broadcast(&subscription).play(PlayerConfig::default())?;
 ```
 
 `publish` places the broadcast at `rooms/<topic>/<this member>/<name>` with the

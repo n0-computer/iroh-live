@@ -13,10 +13,12 @@ Android Rust project.
 
 ## `camera`
 
-`camera(size)` returns a `CameraSink` and a `iroh_live_media::publish::VideoSource`.
-Kotlin pushes frames into the sink through JNI, and the publisher reads them out
-the other end. `CameraSink::push_rgba` takes tightly packed RGBA; `push` takes a
-`moq_video::Frame` for a caller that built one itself.
+`camera(size, rate)` returns a `CameraSink` and an `iroh_live_media::VideoSource`,
+built on `VideoSource::push`. Kotlin pushes frames into the sink through JNI, and
+the source goes to `LocalBroadcast::set_video`. `CameraSink::push_rgba` takes
+tightly packed RGBA; `push` takes a `moq_video::Frame` for a caller that built
+one itself. `CameraSink::demand()` watches whether any rendition is encoding, so
+the camera session can stop capturing while nobody watches.
 
 The slot is latest-wins: a newer frame replaces one the publisher has not read
 yet. That is the right policy for a camera, where a stale picture is worth less

@@ -9,13 +9,11 @@ use clap::Parser;
 use iroh_live::{
     EndpointOptions, Live, LocalBroadcast,
     media::{
-        audio,
-        publish::{VideoRendition, VideoSource},
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
         video,
     },
-    moq::net::broadcast,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(about = "Publishes the default camera and microphone over iroh-live")]
@@ -46,27 +44,27 @@ async fn main() -> n0_error::Result {
     let live = Live::builder(options.bind().await?).with_router().spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
 
-    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
+    let broadcast = LocalBroadcast::new();
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
-    let source = VideoSource::Capture(capture);
-    match args.simulcast {
-        false => broadcast.video().set(source)?,
-        true => broadcast.video().set_renditions(
-            source,
-            vec![
-                VideoRendition::new("high"),
-                VideoRendition::new("low").with_size(video::Size::new(320, 180)),
-            ],
-        )?,
+    let source = VideoSource::capture(capture).await?;
+    let encoding = match args.simulcast {
+        false => VideoEncoding::single(VideoRendition::new("video")),
+        true => VideoEncoding::ladder([
+            VideoRendition::new("high"),
+            VideoRendition::new("low").with_size(video::Size::new(320, 180)),
+        ]),
+    };
+    broadcast.set_video(source, encoding)?;
+
+    // A machine with no microphone still publishes video.
+    match AudioSource::microphone(MicrophoneConfig::default()).await {
+        Ok(microphone) => broadcast.set_audio(microphone, AudioEncoding::voice())?,
+        Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    // A machine with no microphone still publishes video: the device opens
-    // inside the publish task, which logs and ends the audio track on failure.
-    broadcast.audio().set(audio::capture::Config::default());
-
-    let publication = live.publish(&args.name, broadcast.consume())?;
+    let publication = live.publish(&args.name, &broadcast)?;
     println!("{}", publication.ticket().expect("published under live/"));
     info!(name = %args.name, "publishing");
 

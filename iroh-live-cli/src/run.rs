@@ -13,18 +13,17 @@ use std::path::Path;
 use iroh::SecretKey;
 use iroh_live::{
     BroadcastTicket, Live,
-    media::{publish::LocalBroadcast, subscribe::AudioTrack},
-    moq::net::broadcast,
+    media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
-use tokio::task::JoinSet;
+use tokio::{sync::watch, task::JoinSet};
 use tracing::{info, warn};
 
 use crate::{
     args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
     backend::EncoderArg,
-    record::{RecordOptions, Recorder},
+    record::RecordOptions,
     source,
     transport::{self, Subscribed},
 };
@@ -239,16 +238,27 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     // Every handle is kept until shutdown, because dropping one is what stops
     // it: a broadcast stops publishing when its handle goes, and a
     // subscription cancels every task it started.
-    let mut broadcasts: Vec<LocalBroadcast> = Vec::new();
+    let mut broadcasts: Vec<(LocalBroadcast, source::Opened)> = Vec::new();
     let mut receivers: Vec<Receiver> = Vec::new();
     let mut recordings: JoinSet<Result<()>> = JoinSet::new();
+    // Flipped once, on the way out, to finish every recording.
+    let (stop_recording, recording_stops) = watch::channel(false);
+    // One speaker for every block that plays audio.
+    let output = match config
+        .recv
+        .iter()
+        .any(|recv| recv.audio_output == AudioOutput::Default)
+    {
+        true => Some(crate::playback::output(None).await?),
+        false => None,
+    };
 
     for send in &config.send {
-        match setup_send(live, send) {
-            Ok(broadcast) => {
+        match setup_send(live, send).await {
+            Ok(published) => {
                 let ticket = BroadcastTicket::new(live.endpoint().id(), &send.name);
                 println!("[send] {}: {ticket}", send.name);
-                broadcasts.push(broadcast);
+                broadcasts.push(published);
             }
             Err(err) => {
                 warn!(name = %send.name, error = %err, "publish failed");
@@ -260,21 +270,25 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     // Concurrently, because a subscription waits for the peer's first catalog
     // and a peer that has not started publishing yet would otherwise hold up
     // every block behind it.
-    let setups = config
-        .recv
-        .iter()
-        .map(|recv| async move { (recv, setup_recv(live, recv).await) });
+    let setups = config.recv.iter().map(|recv| {
+        let output = output.as_ref();
+        async move { (recv, setup_recv(live, recv, output).await) }
+    });
     for (recv, result) in n0_future::join_all(setups).await {
         match result {
-            Ok((receiver, recorder)) => {
+            Ok((receiver, recording)) => {
                 println!("[recv] {}: subscribed to {}", recv.name, recv.ticket);
-                if let Some(recorder) = recorder {
-                    let path = recorder.path().display().to_string();
+                if let Some((recording, path)) = recording {
+                    let path = path.display().to_string();
                     println!("[recv] {}: recording to {path}", recv.name);
-                    let stop = receiver.sub.broadcast().shutdown_token().cancelled_owned();
+                    let mut stop = recording_stops.clone();
+                    let stop = async move {
+                        // An error means the sender went, which is a stop too.
+                        let _ = stop.wait_for(|stop| *stop).await;
+                    };
                     let name = recv.name.clone();
                     recordings.spawn(async move {
-                        let written = recorder.run(stop).await?;
+                        let written = crate::record::finish(recording, stop).await?;
                         info!(name, bytes = written, path, "recording finished");
                         Ok(())
                     });
@@ -302,12 +316,9 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     tokio::signal::ctrl_c().await?;
     println!("stopping ...");
 
-    // Cancelling each subscription is what ends its recording: the recorder
-    // stops on the broadcast's shutdown token, and only then is the file
-    // flushed, so the recordings are awaited before anything else closes.
-    for receiver in &receivers {
-        receiver.sub.broadcast().shutdown();
-    }
+    // The recordings are finished before anything else closes, so each file
+    // is flushed while its broadcast is still there to read from.
+    stop_recording.send_replace(true);
     while let Some(finished) = recordings.join_next().await {
         match finished {
             Ok(Ok(())) => {}
@@ -316,8 +327,9 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
         }
     }
 
-    for broadcast in broadcasts {
-        broadcast.finish().await;
+    for (broadcast, _sources) in broadcasts {
+        broadcast.close();
+        broadcast.closed().await;
     }
     for receiver in &receivers {
         receiver.sub.close();
@@ -327,40 +339,42 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
 
 /// One live `[[recv]]` block.
 ///
-/// The audio track is held rather than used: opening it starts playback, and
-/// dropping it stops it.
+/// The player is held rather than used: it plays the audio, and dropping it
+/// stops it.
 struct Receiver {
     sub: Subscribed,
-    _audio: Option<AudioTrack>,
+    _player: Option<Player>,
 }
 
 /// Publishes one `[[send]]` block.
 ///
 /// # Errors
 ///
-/// Fails if the broadcast path is taken, or the block's sources or ladder do
-/// not parse. A device that will not open surfaces in the log and ends its
-/// track, not here.
-fn setup_send(live: &Live, config: &SendConfig) -> Result<LocalBroadcast> {
-    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
-    source::configure(&broadcast, &config.capture())?;
-    live.publish(&config.name, broadcast.consume())?;
-    Ok(broadcast)
+/// Fails if the broadcast path is taken, the block's sources or ladder do not
+/// parse, or a device will not open.
+async fn setup_send(live: &Live, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
+    let broadcast = LocalBroadcast::new();
+    let sources = source::configure(&broadcast, &config.capture(), None).await?;
+    live.publish(&config.name, &broadcast)?;
+    Ok((broadcast, sources))
 }
 
-/// Subscribes to one `[[recv]]` block, opening its audio and its recording if
-/// it asked for either.
+/// Subscribes to one `[[recv]]` block, playing its audio through `output` and
+/// recording it if it asked for either.
 ///
-/// The recorder comes back rather than running here: the caller owns the tasks,
-/// and starting one before every block has been set up would record a stretch
-/// of nothing while the rest are still connecting.
+/// The recording comes back with its path; the caller owns the task that
+/// finishes it.
 ///
 /// # Errors
 ///
 /// Fails if the ticket does not parse, the peer cannot be reached, or the
 /// recording file cannot be created. Audio that will not open is reported and
 /// the subscription continues without it.
-async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Option<Recorder>)> {
+async fn setup_recv(
+    live: &Live,
+    config: &RecvConfig,
+    output: Option<&media::AudioOutput>,
+) -> Result<(Receiver, Option<(Recording, std::path::PathBuf)>)> {
     let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
             "invalid ticket: {err}; it should be the string `irl publish` \
@@ -368,51 +382,49 @@ async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Optio
         )
     })?;
     let sub = transport::subscribe(live, &ticket).await?;
+    let catalog = crate::playback::catalog(sub.broadcast()).await?;
 
-    let recorder = match &config.record {
+    let recording = match &config.record {
         None => None,
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
             options.rendition = config.rendition.clone();
-            Some(Recorder::open(sub.subscription().as_origin(), sub.broadcast(), &options).await?)
+            let recording = crate::record::start(sub.broadcast(), &catalog, &options).await?;
+            Some((recording, std::path::PathBuf::from(path)))
         }
     };
 
-    let audio = match config.audio_output {
-        AudioOutput::None => None,
-        AudioOutput::Default => play_audio(&sub, &config.name).await,
+    let player = match (config.audio_output, output) {
+        (AudioOutput::Default, Some(output)) => play_audio(&sub, &catalog, &config.name, output),
+        _ => None,
     };
-    Ok((Receiver { sub, _audio: audio }, recorder))
+    Ok((
+        Receiver {
+            sub,
+            _player: player,
+        },
+        recording,
+    ))
 }
 
-/// Opens the broadcast's audio track, which starts playing it.
-// A build without `playback` has no sink to open, so nothing in that arm awaits.
-#[allow(
-    clippy::unused_async,
-    reason = "one arm of a feature-gated body awaits"
-)]
-async fn play_audio(sub: &Subscribed, name: &str) -> Option<AudioTrack> {
-    #[cfg(feature = "playback")]
-    {
-        if !sub.broadcast().has_audio() {
-            info!(name, "the broadcast carries no audio");
-            return None;
-        }
-        sub.broadcast()
-            .audio()
-            .await
-            .inspect_err(|err| warn!(name, error = %err, "audio track failed to open"))
-            .ok()
+/// Plays the broadcast's audio through `output`, with no video.
+fn play_audio(
+    sub: &Subscribed,
+    catalog: &media::Catalog,
+    name: &str,
+    output: &media::AudioOutput,
+) -> Option<Player> {
+    if catalog.audio().is_empty() {
+        info!(name, "the broadcast carries no audio");
+        return None;
     }
-    #[cfg(not(feature = "playback"))]
-    {
-        let _ = sub;
-        warn!(
-            name,
-            "audio_output asks for playback, which this build was compiled without"
-        );
-        None
-    }
+    let config = PlayerConfig::default()
+        .with_rendition(RenditionMode::Off)
+        .with_audio(output);
+    sub.broadcast()
+        .play(config)
+        .inspect_err(|err| warn!(name, error = %err, "audio failed to play"))
+        .ok()
 }
 
 /// Checks that `name` names a file inside the key directory rather than a path

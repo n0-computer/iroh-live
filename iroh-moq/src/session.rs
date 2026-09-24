@@ -18,8 +18,8 @@ use n0_error::{AnyError, e};
 use tracing::{debug, info, warn};
 
 use crate::{
-    ALPN, ConnectOptions, Error, Grant, LinkKind, LinkSample, OfferGuard, Publication, Reject,
-    SessionRequest, Subscription, alpns, link::LinkState, node::Shared, path::hop_for,
+    ALPN, ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication,
+    Reject, SessionRequest, Subscription, alpns, link::LinkState, node::Shared, path::hop_for,
 };
 
 /// The transport a MoQ session runs over.
@@ -87,6 +87,15 @@ impl Session {
     /// Returns the peer's endpoint id.
     pub fn remote_id(&self) -> EndpointId {
         self.inner.remote
+    }
+
+    /// Returns the id of the link this session is.
+    ///
+    /// The [`RouteInfo::via`](crate::RouteInfo::via) of every route that
+    /// arrived over it, so a route can be matched to its session. Two sessions
+    /// with one peer, one after the other, have different ids.
+    pub fn link_id(&self) -> LinkId {
+        LinkId(self.inner.link)
     }
 
     /// Returns what kind of link the session is.

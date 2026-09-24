@@ -1,8 +1,8 @@
 # Desktop rendering
 
-The subscribe side hands you `moq_video::Frame` values and does not care what you
-do with them. There is one rendering path on the desktop, and it goes through
-wgpu.
+A player hands you `moq_video::Frame` values through `VideoFrames` and does not
+care what you do with them. There is one rendering path on the desktop, and it
+goes through wgpu.
 
 ## The wgpu renderer
 
@@ -33,17 +33,23 @@ draws should not pull a graphics stack.
 
 `iroh-live-egui` is the ready-made integration. Two types matter.
 
-`VideoTrackView` wraps a `VideoTrack` and polls it. Call `render(ctx, size)` in
-your draw loop and it takes the newest frame, uploads it, requests a repaint if
-something arrived, and returns an `egui::Image` plus the frame's timestamp.
+`VideoView` draws a `VideoFrames` stream, which is what a player's `video()`,
+a source's `frames()`, and the QR scanner all hand out. Construct it with
+`VideoView::new(ctx, name, player.video(), Some(render_state))`; it wakes the
+window when a picture arrives rather than repainting on a timer. Call
+`render(size)` in your draw loop and it takes the newest frame, uploads it, and
+returns an `egui::Image` plus the frame's timestamp. `set_frames` points it at
+another stream and keeps the last picture up until the new one has one.
 
-`FrameView` is the same upload machinery without the track, for an application
-that gets frames from somewhere else. `irl publish --preview` uses it to draw the
-local preview, which is raw camera frames rather than a decoded track.
+`FrameView` is the same upload machinery without the stream, for an
+application that hands it frames itself through `render_frame`. `irl publish
+--preview` uses it to draw the local preview from `VideoSource::frames()`, which
+is raw camera frames rather than a decoded track.
 
-Both need a wgpu render state. Construct them with `new_wgpu(ctx, name,
-Some(render_state))`; a view built without one logs a warning and draws a
-placeholder, because upstream only exposes pixels through the wgpu pipeline.
+Both need a wgpu render state: `VideoView::new` takes one, and `FrameView` is
+built with `new_wgpu(ctx, name, Some(render_state))`. A view built without one
+logs a warning and draws a placeholder, because upstream only exposes pixels
+through the wgpu pipeline.
 
 `create_egui_wgpu_config()` builds the `egui_wgpu::WgpuConfiguration` to hand
 eframe. On Linux it selects the Vulkan backend and enables

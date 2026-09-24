@@ -11,11 +11,13 @@
 //! can still be pointed somewhere else, and every screen without a picture
 //! keeps a button back to whatever was playing before it. See [`crate::scan`].
 
-use iroh_live::{BroadcastTicket, Live, media::subscribe::MediaTracks};
+use std::time::Duration;
+
+use iroh_live::{
+    BroadcastTicket, Live,
+    media::{AudioOutput, Player, RenditionMode},
+};
 use n0_error::{Result, anyerr};
-#[cfg(feature = "playback")]
-use tracing::info;
-use tracing::warn;
 
 use crate::{
     args::WatchArgs,
@@ -50,7 +52,7 @@ enum TrackSelection {
 
 /// The parts of [`WatchArgs`] a subscription needs, owned so the window can
 /// carry them into a task that outlives any borrow of the flags.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct Options {
     /// The rendition `--rendition` pinned, if any.
     rendition: Option<String>,
@@ -61,6 +63,8 @@ struct Options {
     /// How the video is decoded.
     #[cfg(feature = "render")]
     playback: crate::args::PlaybackArgs,
+    /// Where the audio plays.
+    output: AudioOutput,
 }
 
 impl From<&WatchArgs> for Options {
@@ -77,6 +81,8 @@ impl From<&WatchArgs> for Options {
             },
             #[cfg(feature = "render")]
             playback: args.playback,
+            // Opened by `setup`, which is async; a conversion cannot be.
+            output: AudioOutput::null(),
         }
     }
 }
@@ -95,17 +101,14 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         ));
     }
 
-    #[cfg_attr(
-        not(feature = "render"),
-        expect(unused_mut, reason = "the scanner is gated")
-    )]
     let mut options = Options::from(&args);
     #[cfg(feature = "render")]
     {
         options.scan_camera = crate::scan::camera_spec(args.scan_camera.as_deref())
             .map_err(|err| anyerr!("{err}"))?;
     }
-    let live = rt.block_on(setup(&args))?;
+    let (live, output) = rt.block_on(setup(&args))?;
+    options.output = output;
 
     // Two of the three arms are gated on `render`, so a build without it leaves
     // one and the lint reads the match as pointless. It is not; it is the shape
@@ -137,12 +140,12 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         Start::Ticket(ticket) => ticket,
     };
 
-    let (live, (sub, tracks)) = rt.block_on(transport::with_live(live, async |live| {
-        connect(live, &ticket, &options).await
+    let (live, (sub, player)) = rt.block_on(transport::with_live(live, async |live| {
+        connect(live, &ticket, &options, None).await
     }))?;
 
     if args.no_video {
-        return wait_for_ctrl_c(rt, live, sub, tracks);
+        return wait_for_ctrl_c(rt, live, sub, player);
     }
 
     #[cfg(feature = "render")]
@@ -151,7 +154,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         let connected = window::Connected {
             ticket,
             sub,
-            tracks,
+            player,
         };
         let opening = window::Opening::Watching(Box::new(connected));
         window::run(live, opening, options, args.fullscreen)
@@ -200,73 +203,89 @@ fn start(args: &WatchArgs) -> Result<Start> {
 ///
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
-async fn setup(args: &WatchArgs) -> Result<Live> {
-    // Opening the engine before the first sink is what makes `--audio-output`
-    // take effect: a sink built against the default device would already be
-    // playing there by the time a switch could move it.
+async fn setup(args: &WatchArgs) -> Result<(Live, AudioOutput)> {
     #[cfg(feature = "playback")]
-    if let Some(device) = args.audio_output.clone() {
-        let mut config = iroh_live::media::audio::playback::Config::default();
-        config.device = Some(device.clone());
-        iroh_live::media::playback::open(config)
-            .await
-            .map_err(|err| {
-                anyerr!(
-                    "cannot open audio output '{device}': {err}. \
-                     Run `irl devices` for the ids this machine accepts"
-                )
-            })?;
-        info!(device = %device, "audio output selected");
-    }
+    let device = args.audio_output.clone();
     #[cfg(not(feature = "playback"))]
-    let _ = args;
-
-    transport::setup_live(false).await
+    let device = {
+        let _ = args;
+        None
+    };
+    let output = crate::playback::output(device).await?;
+    Ok((transport::setup_live(false).await?, output))
 }
 
-/// Connects to `ticket` and opens the tracks this run will actually play.
+/// Connects to `ticket` and starts playing what this run asked for.
+///
+/// `dial_deadline` bounds reaching the peer, and only that: the catalog has its
+/// own patience once the peer answered, so a slow catalog is not reported as a
+/// publisher that is not running.
 ///
 /// # Errors
 ///
-/// Fails if the peer cannot be reached, or if the pinned rendition is not one
-/// the broadcast offers.
+/// Fails if the peer cannot be reached in time, if its catalog does not
+/// arrive, or if the pinned rendition is not one the broadcast offers.
 async fn connect(
     live: &Live,
     ticket: &BroadcastTicket,
     options: &Options,
-) -> Result<(Subscribed, MediaTracks)> {
-    let sub = transport::subscribe(live, ticket).await?;
+    dial_deadline: Option<Duration>,
+) -> Result<(Subscribed, Player)> {
+    let subscribing = transport::subscribe(live, ticket);
+    let sub = match dial_deadline {
+        Some(deadline) => tokio::time::timeout(deadline, subscribing)
+            .await
+            .map_err(|_| {
+                anyerr!(
+                    "no answer from {} within {}s: is the publisher running?",
+                    ticket.peer().fmt_short(),
+                    deadline.as_secs()
+                )
+            })??,
+        None => subscribing.await?,
+    };
+    // Waited for before anything plays, so a broadcast that never describes
+    // itself is an error here rather than a black window.
+    let catalog = crate::playback::catalog(sub.broadcast()).await?;
     if let Some(name) = &options.rendition {
-        check_rendition(&sub, name)?;
+        check_rendition(&catalog, name)?;
     }
 
-    // Without a renderer nothing draws, so downloading is what a frame is for,
-    // and there is no video decoder to choose either.
     #[cfg(feature = "render")]
-    crate::ui::prepare_playback(sub.broadcast(), &options.playback);
-
-    let tracks = match options.tracks {
-        TrackSelection::AudioOnly => audio_only(&sub).await,
-        TrackSelection::Both => sub.media().await,
+    let config = crate::ui::player_config(&options.playback, Some(&options.output));
+    #[cfg(not(feature = "render"))]
+    let config = iroh_live::media::PlayerConfig::default().with_audio(&options.output);
+    let config = match (options.tracks, &options.rendition) {
+        // Opening the video and discarding its frames would still cost a core
+        // to a decoder nobody draws from.
+        (TrackSelection::AudioOnly, _) => config.with_rendition(RenditionMode::Off),
+        (TrackSelection::Both, Some(name)) => {
+            config.with_rendition(RenditionMode::pinned(name.clone()))
+        }
+        (TrackSelection::Both, None) => config,
     };
-    Ok((sub, tracks))
+    let player = sub.broadcast().play(config)?;
+    Ok((sub, player))
 }
 
 /// Checks `--rendition` against what the broadcast actually offers.
 ///
-/// A name nothing matches would otherwise pin the video track to a rendition
-/// that never arrives, which looks exactly like a stalled link.
+/// A name nothing matches would otherwise play something else while saying it
+/// could not play what was asked for, which on a terminal nobody reads.
 ///
 /// # Errors
 ///
 /// Fails if the catalog has no video rendition of that name, listing the ones
 /// it does have.
-fn check_rendition(sub: &Subscribed, name: &str) -> Result<()> {
-    let catalog = sub.broadcast().catalog();
-    if catalog.video().contains_key(name) {
+fn check_rendition(catalog: &iroh_live::media::Catalog, name: &str) -> Result<()> {
+    if catalog.video_rendition(name).is_some() {
         return Ok(());
     }
-    let offered: Vec<&str> = catalog.video().keys().map(String::as_str).collect();
+    let offered: Vec<&str> = catalog
+        .video()
+        .iter()
+        .map(|info| info.name.as_str())
+        .collect();
     Err(anyerr!(
         "the broadcast has no video rendition named '{name}'; it offers {}",
         match offered.is_empty() {
@@ -276,46 +295,17 @@ fn check_rendition(sub: &Subscribed, name: &str) -> Result<()> {
     ))
 }
 
-/// Opens the audio track alone, for `--no-video`.
-// A build without `playback` has no sink to open, so nothing here awaits.
-#[allow(
-    clippy::unused_async,
-    reason = "one arm of a feature-gated body awaits"
-)]
-async fn audio_only(sub: &Subscribed) -> MediaTracks {
-    #[cfg(feature = "playback")]
-    {
-        let broadcast = sub.broadcast();
-        if !broadcast.has_audio() {
-            warn!("the broadcast carries no audio, so --no-video plays nothing");
-            return MediaTracks::default();
-        }
-        let audio = broadcast
-            .audio()
-            .await
-            .inspect_err(|err| warn!(error = %err, "audio track failed to open"))
-            .ok();
-        MediaTracks { video: None, audio }
-    }
-    #[cfg(not(feature = "playback"))]
-    {
-        let _ = sub;
-        warn!("this build has no playback support, so --no-video plays nothing");
-        MediaTracks::default()
-    }
-}
-
 /// Plays until the user interrupts, with no window.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
     live: Live,
     sub: Subscribed,
-    tracks: MediaTracks,
+    player: Player,
 ) -> Result {
     println!("playing, press Ctrl+C to stop");
     rt.block_on(async move {
         tokio::signal::ctrl_c().await?;
-        drop(tracks);
+        drop(player);
         sub.close();
         live.shutdown().await;
         Ok(())
@@ -332,7 +322,10 @@ mod window {
     use std::time::{Duration, Instant};
 
     use eframe::egui;
-    use iroh_live::{BroadcastTicket, Live, media::subscribe::MediaTracks};
+    use iroh_live::{
+        BroadcastTicket, Live,
+        media::{Player, RenditionMode},
+    };
     use iroh_live_egui::egui_wgpu::RenderState;
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
@@ -343,7 +336,7 @@ mod window {
     use crate::{
         scan::{ScanView, Skip},
         transport::Subscribed,
-        ui::{CursorIdle, RemoteView, RenditionChoice},
+        ui::{CursorIdle, RemoteView},
     };
 
     /// What the top bar says on the screens where nothing is playing.
@@ -527,13 +520,13 @@ mod window {
         Failed(String),
     }
 
-    /// A subscription whose tracks are already open.
+    /// A subscription that is already playing.
     pub(super) struct Connected {
         /// What was dialed to reach it, kept so that the window can dial it
         /// again after a trip to the scan screen.
         pub(super) ticket: BroadcastTicket,
         pub(super) sub: Subscribed,
-        pub(super) tracks: MediaTracks,
+        pub(super) player: Player,
     }
 
     impl Connected {
@@ -543,8 +536,8 @@ mod window {
         /// a set of decoders that no screen will ever hold, and dropping those
         /// leaves the peer to time the session out instead of being told.
         fn discard(self) {
-            let Self { sub, tracks, .. } = self;
-            drop(tracks);
+            let Self { sub, player, .. } = self;
+            drop(player);
             sub.close();
         }
     }
@@ -615,19 +608,14 @@ mod window {
             // spinner until somebody finds the Cancel button. Failing sends the
             // window back to the scan screen, where the ticket that just
             // failed is held off and a different code connects at once.
-            let dial = tokio::time::timeout(DIAL_DEADLINE, connect(&live, &dialing, &options));
+            let dial = connect(&live, &dialing, &options, Some(DIAL_DEADLINE));
             let attempt = match dial.await {
-                Ok(Ok((sub, tracks))) => Attempt::Connected(Box::new(Connected {
+                Ok((sub, player)) => Attempt::Connected(Box::new(Connected {
                     ticket: dialing,
                     sub,
-                    tracks,
+                    player,
                 })),
-                Ok(Err(err)) => Attempt::Failed(format!("{err:#}")),
-                Err(_) => Attempt::Failed(format!(
-                    "no answer from {} within {}s: is the publisher running?",
-                    dialing.peer().fmt_short(),
-                    DIAL_DEADLINE.as_secs()
-                )),
+                Err(err) => Attempt::Failed(format!("{err:#}")),
             };
             if let Err(Attempt::Connected(connected)) = tx.send(attempt) {
                 info!("the connection landed after it was cancelled, closing it");
@@ -653,20 +641,14 @@ mod window {
         let Connected {
             ticket,
             sub,
-            tracks,
+            player,
         } = connected;
-        let broadcast = sub.broadcast().clone();
-        let title = broadcast.name().to_string();
-        let mut remote = RemoteView::new(
-            ctx,
-            "video",
-            broadcast,
-            tracks,
-            sub.signals().clone(),
-            render_state,
-        );
+        let title = ticket.name().to_owned();
+        let mut remote =
+            RemoteView::new(ctx, "video", player, options.playback.decoder, render_state)
+                .with_link(sub.subscription().clone());
         if let Some(name) = options.rendition.clone() {
-            remote.set_rendition(RenditionChoice::Pinned(name));
+            remote.set_rendition(RenditionMode::pinned(name));
         }
         info!(broadcast = %title, "playing");
         Mode::Watching(Box::new(Watching {
@@ -696,7 +678,7 @@ mod window {
     impl eframe::App for WatchApp {
         /// Drives the state machine.
         ///
-        /// Here rather than in [`ui`](Self::ui) because eframe runs no egui
+        /// Here rather than in `ui` because eframe runs no egui
         /// pass while the window is minimized or occluded, and a dial that
         /// finishes off screen still has to be picked up.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -848,8 +830,8 @@ mod window {
         /// closing the window, so this leaves the old one in place.
         fn close_mode(&mut self) {
             match &mut self.mode {
+                // The player stops with the broadcast the closed session ends.
                 Mode::Watching(watching) => {
-                    watching.remote.shutdown();
                     watching.sub.close();
                 }
                 Mode::Connecting(pending) => {

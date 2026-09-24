@@ -27,7 +27,10 @@ fn main() {
 }
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::{EndpointOptions, Live, LocalBroadcast, media::rpicam, moq::net::broadcast};
+use iroh_live::{
+    EndpointOptions, Live, LocalBroadcast,
+    media::{EncodedVideoSource, RpicamConfig, video::Size},
+};
 
 /// The path the camera publishes on. Viewers subscribe to the same one.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -43,20 +46,13 @@ async fn main() -> anyhow::Result<()> {
         options = options.with_secret_key(key.parse()?);
     }
     let live = Live::builder(options.bind().await?).with_router().spawn();
-    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
-    broadcast.video().set(rpicam::open(rpicam::Config::new(
-        640,
-        360,
-        30,
-        rpicam::Output::H264 {
-            bitrate: rpicam::DEFAULT_BITRATE,
-            // A keyframe a second, which is how long a viewer waits for a first
-            // picture after scanning the ticket.
-            keyframe_interval: 30,
-        },
-    ))?)?;
+    let broadcast = LocalBroadcast::new();
+    // A keyframe a second, which is how long a viewer waits for a first
+    // picture after scanning the ticket.
+    let config = RpicamConfig::new(Size::new(640, 360), 30).with_keyframe_interval(30);
+    broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
 
-    let publication = live.publish(BROADCAST, broadcast.consume())?;
+    let publication = live.publish(BROADCAST, &broadcast)?;
     println!("{}", publication.ticket().expect("published under live/"));
 
     tracing::info!("publishing, press Ctrl-C to stop");

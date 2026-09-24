@@ -1,4 +1,4 @@
-//! The shared playout clock that keeps audio and video aligned.
+//! A player's playout clock, which keeps its audio and video aligned.
 //!
 //! Ported from `moq/js` at commit `53fe78d8`, `js/watch/src/sync.ts`, and the
 //! arithmetic is kept identical to the JS source: milliseconds as `i64`, so
@@ -6,7 +6,8 @@
 //!
 //! Neither `moq-video` nor `moq-audio` has a counterpart, which is why this is
 //! here. Two independent decode paths would otherwise drift apart, because
-//! nothing else knows what the other one is holding.
+//! nothing else knows what the other one is holding. Each player owns one, so
+//! two players of one broadcast never hold each other's frames back.
 //!
 //! ## The model
 //!
@@ -16,16 +17,15 @@
 //!   wall time at media time zero rather than a running average.
 //! - **`jitter`** is the network jitter allowance, 100 ms by default.
 //! - **`audio`** is how much audio is queued at the speaker, reported by the
-//!   audio path on every decoded frame (see [`Sync::set_audio_buffered`]).
-//! - **`video`** is the video path's own decode latency, if a caller sets one.
-//! - **`latency`** is `max(audio, video) + jitter`.
+//!   audio path on every decoded frame through its [`AudioLatency`] guard.
+//! - **`latency`** is `audio + jitter`.
 //!
 //! A frame stamped `T` is due at `reference + T + latency`.
 //!
 //! ## How the two paths use it
 //!
-//! The video path calls [`Sync::received`] as each frame is decoded and
-//! [`Sync::wait_async`] before handing it to the renderer. Only video moves the
+//! The video path calls [`PlayoutClock::received`] as each frame is decoded
+//! and [`PlayoutClock::wait_async`] before handing it to the renderer. Only video moves the
 //! reference; audio is paced by its own device.
 //!
 //! The audio path reports its buffer depth, which is the only latency either
@@ -38,13 +38,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// How far a timestamp may fall behind the newest one before it counts as a
+/// new timeline rather than a late frame.
+///
+/// Well past any reordering a live stream shows, and well short of the gap a
+/// restarted publisher leaves, whose clock starts again at zero.
+const TIMELINE_JUMP: Duration = Duration::from_secs(5);
+
 // --- Public API ------------------------------------------------------
 
 /// How long a frame still has to wait before it is due.
 ///
-/// Returned by [`Sync::delay`].
+/// Returned by [`PlayoutClock::delay`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delay {
+pub(crate) enum Delay {
     /// The frame is due now.
     Now,
     /// The frame is due after this long.
@@ -55,13 +62,12 @@ pub enum Delay {
 
 /// Shared playout clock for A/V synchronization.
 ///
-/// Cheaply cloneable (wraps an `Arc`). Create one per
-/// [`RemoteBroadcast`](crate::subscribe::RemoteBroadcast) and share it
-/// between the video and audio decode pipelines.
+/// Cheaply cloneable (wraps an `Arc`). One per player, shared between its
+/// video and audio decode paths.
 ///
 /// Ported from `moq/js` commit `53fe78d8`, `js/watch/src/sync.ts`.
 #[derive(Clone, Debug)]
-pub struct Sync {
+pub(crate) struct PlayoutClock {
     inner: Arc<SyncInner>,
 }
 
@@ -74,7 +80,7 @@ struct SyncInner {
 
     state: Mutex<SyncState>,
 
-    /// Wakes a [`Sync::wait_async`] when the reference, the latency, or the
+    /// Wakes a [`PlayoutClock::wait_async`] when the reference, the latency, or the
     /// closed flag moves. Serves the same role as the JS
     /// `PromiseWithResolvers` racing against a `setTimeout`.
     changed: tokio::sync::Notify,
@@ -85,9 +91,13 @@ struct SyncInner {
 /// saturation, no precision loss from `Duration` rounding).
 #[derive(Debug)]
 struct SyncState {
-    /// Earliest `(now_ms - pts_ms)` ever observed. `None` until the
-    /// first call to [`Sync::received`].
+    /// Earliest `(now_ms - pts_ms)` observed on the current timeline. `None`
+    /// until the first call to [`PlayoutClock::received`].
     reference: Option<i64>,
+
+    /// The newest timestamp received, in ms, to tell a new timeline from a
+    /// late frame.
+    last_pts_ms: Option<i64>,
 
     /// Network jitter buffer in ms (default 100).
     jitter_ms: i64,
@@ -97,36 +107,32 @@ struct SyncState {
     /// together.
     audio_ms: Option<i64>,
 
-    /// The video path's own decode latency, if a caller measured one. Nothing
-    /// in this crate does, so it is unset in practice.
-    video_ms: Option<i64>,
-
-    /// Total latency: `max(audio, video) + jitter`. Recomputed eagerly
+    /// Total latency: `audio + jitter`. Recomputed eagerly
     /// by every setter (the JS source uses a reactive `Effect`; here
     /// we compute inline since setters are infrequent).
     latency_ms: i64,
 
-    /// Set by [`Sync::close`], which makes every wait return immediately.
+    /// Set by [`PlayoutClock::close`], which makes every wait return immediately.
     closed: bool,
 }
 
-impl Sync {
+impl PlayoutClock {
     /// Creates a new playout clock with the default 100 ms jitter buffer.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_jitter(Duration::from_millis(100))
     }
 
     /// Creates a new playout clock with a custom jitter buffer.
-    pub fn with_jitter(jitter: Duration) -> Self {
+    pub(crate) fn with_jitter(jitter: Duration) -> Self {
         let jitter_ms = jitter.as_millis() as i64;
         Self {
             inner: Arc::new(SyncInner {
                 base: Instant::now(),
                 state: Mutex::new(SyncState {
                     reference: None,
+                    last_pts_ms: None,
                     jitter_ms,
                     audio_ms: None,
-                    video_ms: None,
                     latency_ms: jitter_ms,
                     closed: false,
                 }),
@@ -142,18 +148,54 @@ impl Sync {
     /// Computes `ref = now_ms - pts_ms` and stores it as the new
     /// reference if it is strictly smaller (earlier) than the current
     /// one. Only the video receive path calls this.
-    pub fn received(&self, timestamp: Duration) {
+    ///
+    /// A timestamp more than [`TIMELINE_JUMP`] behind the newest one is a new
+    /// timeline, as a publisher that restarted starts its clock at zero again,
+    /// and starts the reference over: held against the old one, every later
+    /// frame would be overdue and nothing would be paced again.
+    pub(crate) fn received(&self, timestamp: Duration) {
         let now_ms = self.now_ms();
         let timestamp_ms = timestamp.as_millis() as i64;
         let ref_val = now_ms - timestamp_ms;
 
         let mut state = self.inner.state.lock().expect("poisoned");
 
+        let jumped_back = state
+            .last_pts_ms
+            .is_some_and(|last| timestamp_ms < last - TIMELINE_JUMP.as_millis() as i64);
+        if jumped_back {
+            tracing::debug!(
+                from_ms = state.last_pts_ms,
+                to_ms = timestamp_ms,
+                "the timeline started over, resetting the playout reference"
+            );
+            state.reference = None;
+            state.last_pts_ms = None;
+        }
+        state.last_pts_ms = Some(
+            state
+                .last_pts_ms
+                .map_or(timestamp_ms, |last| last.max(timestamp_ms)),
+        );
+
         if state.reference.is_some_and(|current| ref_val >= current) {
             return;
         }
 
         state.reference = Some(ref_val);
+        self.inner.changed.notify_waiters();
+    }
+
+    /// Starts the reference over, as the broadcast came back on a new route.
+    ///
+    /// A publisher behind the new route may have restarted, and its clock with
+    /// it. The backwards jump [`received`](Self::received) watches for only
+    /// shows a restart after [`TIMELINE_JUMP`] of media; one that had run for
+    /// less would leave every later frame overdue and nothing paced.
+    pub(crate) fn restart(&self) {
+        let mut state = self.inner.state.lock().expect("poisoned");
+        state.reference = None;
+        state.last_pts_ms = None;
         self.inner.changed.notify_waiters();
     }
 
@@ -166,7 +208,7 @@ impl Sync {
     ///
     /// Returns `true` when the frame should be rendered, and `false` if the
     /// clock was closed.
-    pub async fn wait_async(&self, timestamp: Duration) -> bool {
+    pub(crate) async fn wait_async(&self, timestamp: Duration) -> bool {
         loop {
             // Register before reading the delay, so a `close` or a reference
             // update between the two is not missed.
@@ -194,7 +236,7 @@ impl Sync {
     ///
     /// The arithmetic behind [`wait_async`](Self::wait_async), exposed so a caller
     /// can drive its own timer.
-    pub fn delay(&self, timestamp: Duration) -> Delay {
+    pub(crate) fn delay(&self, timestamp: Duration) -> Delay {
         let timestamp_ms = timestamp.as_millis() as i64;
         let state = self.inner.state.lock().expect("poisoned");
 
@@ -215,15 +257,15 @@ impl Sync {
 
     // --- Latency configuration ---------------------------------------
 
-    /// Returns the current total latency: `max(audio, video) + jitter`.
-    pub fn latency(&self) -> Duration {
+    /// Returns the current total latency: `audio + jitter`.
+    pub(crate) fn latency(&self) -> Duration {
         let state = self.inner.state.lock().expect("poisoned");
         Duration::from_millis(state.latency_ms.max(0) as u64)
     }
 
     /// Sets the network jitter buffer. Wakes any blocked `wait()` call
     /// so it can recalculate with the new latency.
-    pub fn set_jitter(&self, jitter: Duration) {
+    pub(crate) fn set_jitter(&self, jitter: Duration) {
         let mut state = self.inner.state.lock().expect("poisoned");
         state.jitter_ms = jitter.as_millis() as i64;
         Self::recompute_latency(&mut state);
@@ -232,27 +274,25 @@ impl Sync {
 
     /// Sets how much audio is queued ahead of the speaker.
     ///
-    /// Called by the audio decode path on every frame it writes to its sink.
-    /// This is the only latency either side can actually measure, and video is
-    /// held back by it so the two land together.
-    pub fn set_audio_buffered(&self, latency: Option<Duration>) {
+    /// Written through an [`AudioLatency`] guard, so the value cannot outlive
+    /// the audio path that reported it.
+    fn set_audio_buffered(&self, latency: Option<Duration>) {
         let mut state = self.inner.state.lock().expect("poisoned");
         state.audio_ms = latency.map(|d| d.as_millis() as i64);
         Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
     }
 
-    /// Sets the video path's own decode latency.
+    /// Registers an audio path's contribution to the latency.
     ///
-    /// The counterpart of [`set_audio_buffered`](Self::set_audio_buffered) for
-    /// a caller that can measure how long its decoder holds a frame. Nothing
-    /// in this crate measures one, so the video term stays zero unless a caller
-    /// supplies it.
-    pub fn set_video_latency(&self, latency: Option<Duration>) {
-        let mut state = self.inner.state.lock().expect("poisoned");
-        state.video_ms = latency.map(|d| d.as_millis() as i64);
-        Self::recompute_latency(&mut state);
-        self.inner.changed.notify_waiters();
+    /// The audio path reports how much it has buffered through the returned
+    /// guard, and dropping the guard clears the contribution. That is the one
+    /// way the audio term can be set, so an audio track that stops, whether it
+    /// ended, failed or was dropped, stops holding video back with it.
+    pub(crate) fn register_audio(&self) -> AudioLatency {
+        AudioLatency {
+            clock: self.clone(),
+        }
     }
 
     /// Closes the clock, so every wait returns at once and later ones return
@@ -260,7 +300,7 @@ impl Sync {
     ///
     /// The JS source has no counterpart: it leans on effect cleanup, where a
     /// Rust pipeline has to be told to stop.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         let mut state = self.inner.state.lock().expect("poisoned");
         state.closed = true;
         self.inner.changed.notify_waiters();
@@ -274,17 +314,40 @@ impl Sync {
         self.inner.base.elapsed().as_millis() as i64
     }
 
-    /// Recomputes `latency = max(audio, video) + jitter`.
+    /// Recomputes `latency = audio + jitter`.
     fn recompute_latency(state: &mut SyncState) {
-        let video = state.video_ms.unwrap_or(0);
-        let audio = state.audio_ms.unwrap_or(0);
-        state.latency_ms = video.max(audio) + state.jitter_ms;
+        state.latency_ms = state.audio_ms.unwrap_or(0) + state.jitter_ms;
     }
 }
 
-impl Default for Sync {
+impl Default for PlayoutClock {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// An audio path's registration with a playout clock.
+///
+/// From [`PlayoutClock::register_audio`]. Reports how much audio is queued ahead of the
+/// speaker, which is the only latency either side can actually measure, and
+/// video is held back by it so the two land together. Dropping it clears the
+/// report on every exit of the audio path, so a stopped track stops holding
+/// video back.
+#[derive(Debug)]
+pub(crate) struct AudioLatency {
+    clock: PlayoutClock,
+}
+
+impl AudioLatency {
+    /// Reports how much audio is queued ahead of the speaker now.
+    pub(crate) fn set(&self, buffered: Duration) {
+        self.clock.set_audio_buffered(Some(buffered));
+    }
+}
+
+impl Drop for AudioLatency {
+    fn drop(&mut self) {
+        self.clock.set_audio_buffered(None);
     }
 }
 
@@ -296,7 +359,7 @@ mod tests {
 
     #[test]
     fn received_tracks_minimum_reference() {
-        let sync = Sync::new();
+        let sync = PlayoutClock::new();
 
         // Wait a moment so base.elapsed() > 0.
         thread::sleep(Duration::from_millis(5));
@@ -322,13 +385,13 @@ mod tests {
 
     #[tokio::test]
     async fn wait_returns_immediately_when_no_reference() {
-        let sync = Sync::new();
+        let sync = PlayoutClock::new();
         assert!(sync.wait_async(Duration::from_millis(0)).await);
     }
 
     #[tokio::test]
     async fn wait_returns_false_when_closed() {
-        let sync = Sync::new();
+        let sync = PlayoutClock::new();
         sync.received(Duration::from_millis(0));
         sync.close();
         assert!(!sync.wait_async(Duration::from_millis(0)).await);
@@ -336,22 +399,66 @@ mod tests {
 
     #[test]
     fn latency_computation() {
-        let sync = Sync::with_jitter(Duration::from_millis(50));
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
         assert_eq!(sync.latency(), Duration::from_millis(50));
 
-        sync.set_video_latency(Some(Duration::from_millis(30)));
-        assert_eq!(sync.latency(), Duration::from_millis(80));
-
-        sync.set_audio_buffered(Some(Duration::from_millis(60)));
+        let audio = sync.register_audio();
+        audio.set(Duration::from_millis(60));
         assert_eq!(sync.latency(), Duration::from_millis(110));
 
-        sync.set_audio_buffered(None);
-        assert_eq!(sync.latency(), Duration::from_millis(80));
+        drop(audio);
+        assert_eq!(sync.latency(), Duration::from_millis(50));
+    }
+
+    /// S8: a publisher that restarts starts its timestamps at zero again. The
+    /// reference only ever moved earlier, so every later frame read as
+    /// overdue and nothing was paced for the rest of the player's life.
+    #[test]
+    fn a_restarted_timeline_is_paced_again() {
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        sync.received(Duration::from_secs(600));
+        // A fresh timeline: the frame at zero arrives now.
+        sync.received(Duration::ZERO);
+        assert!(
+            matches!(sync.delay(Duration::ZERO), Delay::After(_)),
+            "the new timeline's first frame is not held for the jitter allowance"
+        );
+    }
+
+    /// S8: a publisher that restarted after less than [`TIMELINE_JUMP`] of
+    /// media shows no backwards jump big enough to notice; the new route it
+    /// comes back on starts the reference over.
+    #[test]
+    fn a_new_route_starts_the_timeline_over() {
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        sync.received(Duration::from_secs(2));
+        sync.restart();
+        sync.received(Duration::ZERO);
+        assert!(
+            matches!(sync.delay(Duration::ZERO), Delay::After(_)),
+            "the new timeline's first frame is not held for the jitter allowance"
+        );
+    }
+
+    /// Regression (R12): the audio path set its buffer depth on every frame and
+    /// never cleared it, so a stopped audio track held video back by its last
+    /// reading for the rest of the playback.
+    #[test]
+    fn a_dropped_audio_registration_stops_holding_video_back() {
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        {
+            let audio = sync.register_audio();
+            audio.set(Duration::from_millis(400));
+            assert_eq!(sync.latency(), Duration::from_millis(450));
+            // Leaves the scope the way an audio task leaves its loop: on an
+            // error, an end of track, or an abort, all of which drop it.
+        }
+        assert_eq!(sync.latency(), Duration::from_millis(50));
     }
 
     #[tokio::test]
     async fn wait_holds_a_frame_for_the_latency() {
-        let sync = Sync::with_jitter(Duration::from_millis(50));
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
         sync.received(Duration::from_millis(0));
 
         // Right after `received`, the reference is about now, so the wait is
@@ -378,7 +485,7 @@ mod tests {
     /// schedule the waiter promptly. Either way it is far below 2s.
     #[tokio::test]
     async fn wait_wakes_on_reference_update() {
-        let sync = Sync::with_jitter(Duration::from_millis(2000));
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(2000));
         sync.received(Duration::from_millis(0));
 
         let waiter = sync.clone();
@@ -403,7 +510,7 @@ mod tests {
     /// the playout latency before the decode task notices.
     #[tokio::test]
     async fn wait_wakes_on_close() {
-        let sync = Sync::with_jitter(Duration::from_millis(2000));
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(2000));
         sync.received(Duration::from_millis(0));
 
         let waiter = sync.clone();

@@ -16,7 +16,8 @@ never delays audio.
 Capture, encoding, decoding, and GPU rendering come from
 [moq-video and moq-audio](https://doc.moq.dev/lib/rs/) upstream. What this
 repository adds is an iroh transport, simulcast and adaptive rendition switching,
-a shared playout clock, and the application layer over all of it.
+a playout clock per player that keeps audio and video in step, and the
+application layer over all of it.
 
 ## Quick start
 
@@ -51,42 +52,56 @@ block from [Cargo.toml](Cargo.toml).
 Publish a camera and a microphone:
 
 ```rust
-use iroh_live::{EndpointOptions, Live, LocalBroadcast, media::{audio, video}, moq::net::broadcast};
+use iroh_live::{
+    EndpointOptions, Live, LocalBroadcast,
+    media::{
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
+        video,
+    },
+};
 
 let live = Live::builder(EndpointOptions::default().bind().await?).with_router().spawn();
-let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
-broadcast.video().set(video::capture::Config::default())?;
-broadcast.audio().set(audio::capture::Config::default());
+let broadcast = LocalBroadcast::new();
 
-let publication = live.publish("hello", broadcast.consume())?;
+let camera = VideoSource::capture(video::capture::Config::default()).await?;
+broadcast.set_video(
+    camera,
+    VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
+)?;
+let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
+broadcast.set_audio(microphone, AudioEncoding::voice())?;
+
+let publication = live.publish("hello", &broadcast)?;
 println!("{}", publication.ticket().expect("a live path"));
 ```
 
-Subscribe and read decoded frames:
+Subscribe, play, and read decoded frames:
 
 ```rust
+use iroh_live::media::PlayerConfig;
+
 let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
 let remote = live.subscribe(&ticket).await?;
-let tracks = remote.media().await;
+let player = remote.play(PlayerConfig::default())?;
 
-if let Some(video) = tracks.video {
-    while let Some(frame) = video.recv().await {
-        // hand `frame` to a renderer
-    }
+let mut frames = player.video();
+while let Some(frame) = frames.next().await {
+    // hand `frame` to a renderer
 }
 ```
 
-`iroh-live/examples/publish.rs` is the compilable version of the first, including
-a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
+The player picks a rendition from the ladder as the link allows and switches
+without the picture going blank. `iroh-live/examples/publish.rs` is the
+compilable version of the first. More in [docs/guide/index.md](docs/guide/index.md).
 
 ## Workspace
 
 | Crate | Description |
 |---|---|
-| [`iroh-live`](iroh-live) | `Live`, `Call`, `Subscription`, and tickets |
+| [`iroh-live`](iroh-live) | `Live`: publish, subscribe, and the re-exports of the crates below |
 | [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
 | [`iroh-rooms`](iroh-rooms) | Rooms: gossip membership, members-only broadcasts, and room chat. Media-free |
-| [`iroh-live-media`](iroh-live-media) | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
+| [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | [`iroh-live-egui`](iroh-live-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |
 | [`iroh-live-media-android`](iroh-live-media-android) | The Camera2 push bridge and the EGL renderer for Android |
 | [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
@@ -154,8 +169,8 @@ them and the other crates pass them through.
 | `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs. Encoder and decoder both exercised on a Raspberry Pi 4 |
 | `rpicam` | no | The Raspberry Pi camera, through `rpicam-vid`. Linux only |
 
-`iroh-live-media` adds one of its own, `test-source`, for generated video and audio.
-`iroh-live-cli` turns on `playback` as well.
+The generated test pattern and tones need no flag. `iroh-live-cli` turns on
+`playback` as well.
 
 ### Cross-compiling for aarch64
 

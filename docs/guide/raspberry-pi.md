@@ -17,12 +17,13 @@ without the ISP. `rpicam-vid` drives that pipeline and the Pi's hardware H.264
 encoder, so the cheapest thing a Pi Zero can do is read the Annex-B bytes it
 writes to stdout and publish them unchanged.
 
-`iroh_live_media::rpicam::open(config)` does exactly that. It spawns the process, reads
-its stdout, and returns a `VideoSource::AnnexB` that the publisher hands to
-`moq_mux::codec::h264`, which derives the catalog entry from the stream's own SPS.
-The child is killed when the source drops, so the camera stops with the
-broadcast. This avoids both the raw YUV pipe, about 10 MB/s at 640x360, and a
-second encode. The Pi never software-encodes.
+`EncodedVideoSource::rpicam(config)` does exactly that. It spawns the process,
+reads its stdout, and returns a pre-encoded source that
+`LocalBroadcast::set_encoded_video` publishes as the one rendition `video`,
+deriving the catalog entry from the stream's own SPS. The child is killed when
+the source drops, so the camera stops with the broadcast. This avoids both the
+raw YUV pipe, about 10 MB/s at 640x360, and a second encode. The Pi never
+software-encodes.
 
 The feature is `rpicam`, Linux only, and `rpicam-vid` has to be on `PATH` at
 runtime. It ships with Raspberry Pi OS.
@@ -47,7 +48,9 @@ reason a file source is, that no raw picture ever reaches us.
 
 Raw libcamera capture, which opened the camera as a frame source rather than a
 subprocess, went with the in-house codec stack and has no upstream replacement.
-Publishing does not need it, because `rpicam-vid` covers it.
+Publishing does not need it, because `rpicam-vid` covers it: for raw pictures,
+`VideoSource::rpicam` reads them from the same subprocess, and that is what
+`--video rpicam:raw` uses.
 
 ## The V4L2 hardware codecs
 

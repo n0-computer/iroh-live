@@ -8,21 +8,25 @@ registers that texture with egui and draws it.
 
 ## Two levels
 
-`VideoTrackView` wraps a decoded `VideoTrack` and polls it. Call `render` in the
-draw loop and it takes the newest frame, uploads it, requests a repaint if one
-arrived, and returns an `egui::Image` plus the frame's timestamp.
+`VideoView` reads a `VideoFrames` stream, the one frame type every source of
+pictures hands out: a `Player`'s decoded video, a `VideoSource`'s own frames for
+a local preview, or a scanner's camera. Call `render` in the draw loop and it
+takes the newest frame, uploads it, and returns an `egui::Image` plus the
+frame's timestamp. The stream wakes the window when a frame arrives, so nothing
+has to poll.
 
 ```rust
-use iroh_live_egui::VideoTrackView;
+use iroh_live_egui::VideoView;
 
-let mut view = VideoTrackView::new_wgpu(&ctx, "remote", track, Some(render_state));
+let mut view = VideoView::new(&ctx, "remote", player.video(), Some(&render_state));
 
-let (image, timestamp) = view.render(&ctx, available_size);
+let (image, timestamp) = view.render(available_size);
 ui.add(image);
 ```
 
-`FrameView` is the same upload machinery without a track, for frames that come
-from somewhere else. `irl publish --preview` uses it to draw raw camera frames.
+`FrameView` is the same upload machinery without a stream, for a caller that
+has a frame in hand. `irl publish --preview` uses it to draw the camera's own
+frames.
 
 Both need a wgpu render state. A view built without one logs a warning and draws
 a placeholder, because upstream exposes pixels only through the wgpu pipeline.
@@ -38,10 +42,12 @@ ask for it. Elsewhere it returns the default.
 ## Debug overlay
 
 `overlay::DebugOverlay` draws a translucent bar along the bottom of a video tile
-with one clickable section per `StatCategory`: `Net`, `Capture`, `Render`, and
-`Time`. Clicking opens a detail panel with values, threshold colours, and
-sparklines. The `Time` category also draws a ten-second timeline of frame
-arrivals, A/V offset, buffer depth, and round-trip time.
+with one clickable section per `StatCategory`: `Net`, `Capture`, `Render`,
+`Audio`, and `Time`. `show_playback` draws a `Player`'s `PlaybackStats`,
+`PlayerStatus` and frame timeline,
+and `show_publish` a `LocalBroadcast`'s `PublishStats` and `PublishStatus`.
+Clicking a section opens a detail panel with values and sparklines, whose
+history the overlay keeps itself, bounded to the last few seconds.
 
 ## Feature flags
 

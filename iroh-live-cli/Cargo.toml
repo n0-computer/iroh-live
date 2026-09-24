@@ -21,7 +21,7 @@ iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture", "relay-links"] }
 iroh-rooms = { workspace = true }
 moq-net = { workspace = true }
-iroh-live-media = { workspace = true, features = ["test-source", "capture"] }
+iroh-live-media = { workspace = true, features = ["capture"] }
 iroh-live-egui = { workspace = true, optional = true }
 moq-mux = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
@@ -58,7 +58,10 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 [features]
 # Capture is not a feature here: `irl devices` and `irl publish` are most of the
 # CLI and neither compiles without it, so the dependencies ask for it directly.
-default = ["playback", "render", "sound-server"]
+# Echo cancellation is on by default: `irl call` and `irl room` play the other
+# side while publishing a microphone, and without it a laptop sends the peer
+# back to itself.
+default = ["aec", "playback", "render", "sound-server"]
 playback = ["iroh-live/playback", "iroh-live-media/playback"]
 sound-server = ["iroh-live/sound-server", "iroh-live-media/sound-server"]
 aec = ["iroh-live/aec", "iroh-live-media/aec"]

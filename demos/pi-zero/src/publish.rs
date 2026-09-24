@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, Live, LocalBroadcast, moq::net::broadcast};
-use iroh_live_media::rpicam;
+use iroh_live::{BroadcastTicket, Live, LocalBroadcast};
+use iroh_live_media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size};
 
 use crate::epaper;
 
@@ -60,15 +60,13 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         .spawn();
 
     // --- media broadcast ---
-    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
+    let broadcast = LocalBroadcast::new();
 
-    let output = rpicam::Output::H264 {
-        bitrate: opts.bitrate,
-        // A keyframe a second, which is how long a subscriber waits before the
-        // picture starts.
-        keyframe_interval: opts.fps,
-    };
-    let config = rpicam::Config::new(opts.width, opts.height, opts.fps, output);
+    // A keyframe a second, which is how long a subscriber waits before the
+    // picture starts.
+    let config = RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
+        .with_bitrate(Bitrate::from_bps(u64::from(opts.bitrate)))
+        .with_keyframe_interval(opts.fps);
     tracing::info!(
         width = opts.width,
         height = opts.height,
@@ -76,8 +74,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         bitrate = opts.bitrate,
         "using pre-encoded H.264 from rpicam-vid"
     );
-    broadcast.video().set(rpicam::open(config)?)?;
-    live.publish(opts.name.as_str(), broadcast.consume())?;
+    broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
+    live.publish(opts.name.as_str(), &broadcast)?;
 
     // --- relay (optional) ---
     if let Some(relay_id) = opts.relay {
@@ -144,7 +142,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         }
     }
 
-    broadcast.finish().await;
+    broadcast.close();
+    broadcast.closed().await;
     live.shutdown().await;
 
     Ok(())

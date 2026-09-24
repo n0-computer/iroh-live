@@ -10,12 +10,15 @@
 //! runtime to sit in, which is what moq's own documentation asks for. Nothing
 //! that touches the device leaves that thread; only the frames it produces do,
 //! and those are `Send`.
+//!
+//! The runtime is built on the calling thread and moved in, so a runtime or a
+//! thread that will not start is an error the caller sees rather than a log
+//! line from a thread that never ran.
 
 use std::future::Future;
 
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
-use tracing::error;
 
 /// A handle that stops its task when dropped.
 ///
@@ -23,7 +26,7 @@ use tracing::error;
 /// task can be aborted where it stands, but a thread has to be asked, so this
 /// cancels a token the task selects on and lets it unwind.
 #[derive(Debug)]
-pub struct LocalTask {
+pub(crate) struct LocalTask {
     shutdown: CancellationToken,
     joined: Option<oneshot::Receiver<()>>,
 }
@@ -41,7 +44,11 @@ impl Drop for LocalTask {
 
 impl LocalTask {
     /// Requests shutdown, then waits until the task has released its device.
-    pub async fn shutdown(mut self) {
+    #[allow(
+        dead_code,
+        reason = "kept for callers that need the device back before carrying on"
+    )]
+    pub(crate) async fn shutdown(mut self) {
         self.shutdown.cancel();
         self.joined().await;
     }
@@ -53,7 +60,7 @@ impl LocalTask {
     /// the receiver up front meant a cancelled wait was indistinguishable from
     /// a completed one, and the next caller was told the device was free while
     /// the thread still held it.
-    pub async fn joined(&mut self) {
+    pub(crate) async fn joined(&mut self) {
         let Some(rx) = self.joined.as_mut() else {
             return;
         };
@@ -69,44 +76,36 @@ impl LocalTask {
 ///
 /// `make` is called on that thread, so it may build values that are not `Send`;
 /// only the closure itself has to cross, and it is `Send` because it captures
-/// only the arguments needed to open the device.
-pub fn spawn<F, Fut>(name: &str, make: F) -> LocalTask
+/// only the arguments needed to open the device. `stop` is what the returned
+/// handle cancels, and what `make` is handed to watch.
+///
+/// # Errors
+///
+/// Fails if the runtime cannot be built or the thread cannot be started.
+pub(crate) fn spawn<F, Fut>(
+    name: &str,
+    stop: CancellationToken,
+    make: F,
+) -> std::io::Result<LocalTask>
 where
     F: FnOnce(CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()>,
 {
-    let shutdown = CancellationToken::new();
-    let token = shutdown.clone();
+    let token = stop.clone();
     let (tx, rx) = oneshot::channel();
-
-    let spawned = std::thread::Builder::new()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    std::thread::Builder::new()
         .name(name.to_string())
         .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(err) => {
-                    error!(error = %err, "could not start the publish runtime");
-                    return;
-                }
-            };
             runtime.block_on(make(token));
             let _ = tx.send(());
-        });
-
-    if let Err(err) = spawned {
-        // A thread that will not start is not something a publish can recover
-        // from, but it is not worth a panic either: the track simply never
-        // produces, which is what the caller sees when a device fails to open.
-        error!(error = %err, "could not start the publish thread");
-    }
-
-    LocalTask {
-        shutdown,
+        })?;
+    Ok(LocalTask {
+        shutdown: stop,
         joined: Some(rx),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -122,10 +121,15 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_join_still_waits_the_next_time() {
         let (release, released) = std::sync::mpsc::channel::<()>();
-        let mut task = spawn("test-late-release", move |_shutdown| async move {
-            // Holds the "device" until the test says otherwise.
-            let _ = released.recv();
-        });
+        let mut task = spawn(
+            "test-late-release",
+            CancellationToken::new(),
+            move |_shutdown| async move {
+                // Holds the "device" until the test says otherwise.
+                let _ = released.recv();
+            },
+        )
+        .expect("the thread starts");
 
         assert!(
             tokio::time::timeout(Duration::from_millis(50), task.joined())

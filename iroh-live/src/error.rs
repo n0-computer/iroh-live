@@ -1,6 +1,5 @@
 //! The facade's error type.
 
-use iroh_live_media::{publish::PublishError, subscribe::SubscribeError};
 use n0_error::stack_error;
 
 /// What can go wrong in the facade: the transport, or the media on top of it.
@@ -13,10 +12,10 @@ pub enum Error {
     /// published.
     #[error(transparent)]
     Transport(iroh_moq::Error),
-    /// A broadcast could not be set up for publishing.
+    /// The media on top of it failed.
+    ///
+    /// A source could not be opened, a broadcast set up, or a broadcast
+    /// played or recorded.
     #[error(transparent)]
-    Publish(PublishError),
-    /// A broadcast's catalog could not be read.
-    #[error(transparent)]
-    Subscribe(SubscribeError),
+    Media(iroh_live_media::Error),
 }

@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
             let attempt_result = async {
                 let session = live.moq().connect(id).await?;
                 let subscription = session.subscribe(cli.name.as_str()).await?;
-                live.remote_broadcast(&subscription).await
+                Ok::<_, iroh_live::moq::Error>(live.remote_broadcast(&subscription))
             }
             .await;
             match attempt_result {
@@ -48,14 +48,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!("subscribed, waiting for video");
-    let track = broadcast
-        .video()
-        .await
+    let player = broadcast
+        .play(iroh_live::PlayerConfig::default())
         .map_err(|err| anyhow::anyhow!("{err:#}"))?;
+    let mut frames = player.video();
 
     let mut received = 0u32;
     while received < cli.frames {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), track.recv()).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), frames.next()).await {
             Ok(Some(frame)) => {
                 received += 1;
                 let size = frame.size();

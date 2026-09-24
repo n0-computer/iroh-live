@@ -14,17 +14,13 @@ crate-type = ["cdylib"]
 [target.'cfg(target_os = "android")'.dependencies]
 iroh = { workspace = true }
 iroh-live = { workspace = true }
-# The session watcher the answering screen waits on for a caller.
-n0-watcher = "1"
-# The microphone config handed to the audio publisher.
-moq-audio = { workspace = true }
 # `capture` for the microphone source, `playback` for the speaker. Video capture
 # comes from Kotlin's Camera2, not from a device this crate opens.
 # `aec` implies `capture` and `playback`: a handset on speakerphone has to
 # subtract its own output from the microphone or it publishes itself back.
 iroh-live-media = { workspace = true, features = ["aec"] }
 iroh-live-media-android = { workspace = true }
-# The broadcast model behind the offline demo pipelines, and `Timestamp`.
+# `Timestamp`, which camera frames are stamped with.
 moq-net = { workspace = true }
 # `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
 # `mediacodec` is what gates `Surface::HardwareBuffer` and the `ndk` re-export
@@ -39,6 +35,9 @@ moq-video = { workspace = true, features = ["mediacodec"] }
 # a device, rather than blind.
 jni = "0.21"
 n0-error = "1"
+# `Watcher`, for reading the player's status and the broadcast's catalog, and
+# the session watcher the answering screen waits on for a caller.
+n0-watcher = "1"
 # `ANativeWindow_fromSurface`, for handing the Android surface to EGL. The
 # hardware-buffer types come from `moq_video::ndk` instead, so a version bump
 # upstream is a build error here rather than two incompatible `ndk` crates.

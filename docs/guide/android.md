@@ -12,16 +12,16 @@ They were ported out of this repository during the v2 rewrite. Backend selection
 finds them automatically, and `moq_video::encode::Kind::Named("mediacodec")` asks
 for one by name. Nothing in this repository implements a codec.
 
-`iroh-live-media-android` carries the two things that are not a moq-video concern.
-`camera(size)` returns a `CameraSink` and a `VideoSource::Frames`: Kotlin pushes
-NV12 or RGBA into the sink and the publisher reads frames out. It is a
-latest-wins slot, so a newer frame replaces an unconsumed older one, which is
-what a camera wants. `AndroidRenderer` owns the whole EGL lifecycle (display,
-context, surface) and draws either an `AHardwareBuffer` through
-`GL_TEXTURE_EXTERNAL_OES`, which is the zero-copy path out of MediaCodec's
-`ImageReader`, or an NV12 buffer through two `sampler2D` units. Both apply sensor
-rotation in the shader. Kotlin hands over an `android.view.Surface` and nothing
-else.
+`iroh-live-media-android` carries the two things that are not a moq-video
+concern. `camera(size, rate)` returns a `CameraSink` and a `VideoSource` built
+on `VideoSource::push`: Kotlin pushes NV12 or RGBA into the sink and the
+broadcast the source is handed to reads frames out. It is a latest-wins slot, so
+a newer frame replaces an unconsumed older one, which is what a camera wants.
+`AndroidRenderer` owns the whole EGL lifecycle (display, context, surface) and
+draws either an `AHardwareBuffer` through `GL_TEXTURE_EXTERNAL_OES`, which is
+the zero-copy path out of MediaCodec's `ImageReader`, or an NV12 buffer through
+two `sampler2D` units. Both apply sensor rotation in the shader. Kotlin hands
+over an `android.view.Surface` and nothing else.
 
 `demos/android/rust` is the JNI bridge on top: one tokio runtime, one
 `SessionHandle` per session passed to Kotlin as a `jlong`, and a logcat layer for
@@ -90,8 +90,11 @@ cancellation publishes its own output back to the peer, which is the one audio
 failure everybody notices.
 
 Video is pushed from Kotlin, so the camera never goes through `moq_video::capture`.
-Audio is not: the Rust side opens the microphone itself through
-`moq_audio::capture`.
+Audio is not: the Rust side opens the microphone itself with
+`AudioSource::microphone`. It opens one `AudioOutput` for the speaker, passes it
+to every player it starts, and passes the same output to
+`MicrophoneConfig::with_echo_cancellation`, which is how the canceller learns
+what to subtract.
 
 ## Debugging
 

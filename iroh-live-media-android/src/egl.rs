@@ -36,15 +36,12 @@ fn load_egl_get_proc_address() -> Option<EglGetProcAddressFn> {
         // libEGL.so is already loaded (it always is on Android, since the
         // Java side loads it). dlsym resolves from that library.
         unsafe {
-            let lib = libc::dlopen(
-                b"libEGL.so\0".as_ptr().cast(),
-                libc::RTLD_NOLOAD | libc::RTLD_LAZY,
-            );
+            let lib = libc::dlopen(c"libEGL.so".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY);
             if lib.is_null() {
                 tracing::error!("dlopen(libEGL.so) failed");
                 return None;
             }
-            let sym = libc::dlsym(lib, b"eglGetProcAddress\0".as_ptr().cast());
+            let sym = libc::dlsym(lib, c"eglGetProcAddress".as_ptr());
             if sym.is_null() {
                 tracing::error!("dlsym(eglGetProcAddress) failed");
                 return None;

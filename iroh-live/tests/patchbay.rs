@@ -1,8 +1,8 @@
 //! Network-simulation tests: the media pipeline over a link that is really impaired.
 //!
 //! [`e2e`](../e2e.rs) proves the pipeline works when nothing is wrong with the
-//! transport, and drives adaptation by pushing made-up
-//! [`NetworkSignals`](iroh_live_media::net::NetworkSignals) into a watch channel.
+//! transport, and drives adaptation by attaching made-up
+//! [`NetworkSample`](iroh_live_media::NetworkSample)s to the broadcast.
 //! Neither says anything about the chain those signals come from. These tests
 //! put a publisher and a subscriber in separate network namespaces with a router
 //! between them, apply netem latency, jitter and loss to the links,
@@ -19,17 +19,15 @@
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, endpoint::presets};
-use iroh_live::{
-    BroadcastTicket, Live, LocalBroadcast, RemoteBroadcast, Subscription,
-    media::net::NetworkSignals, moq::net::broadcast::Info,
-};
+use iroh_live::{BroadcastTicket, Live, Reach, RemoteBroadcast, Subscription, moq::LinkSample};
 use iroh_live_media::{
-    adaptive::AdaptiveConfig, publish::VideoRendition, subscribe::VideoTrack, test_source,
-    video::Size,
+    Bitrate, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding, VideoFormat,
+    VideoFrames, VideoRendition, VideoSource,
+    video::{Frame, Rate, Size, Surface},
 };
 use n0_tracing_test::traced_test;
+use n0_watcher::Watcher as _;
 use patchbay::{Lab, LinkCondition, NodeId};
-use tokio::sync::watch;
 use tracing::info;
 
 /// Sets up the user namespace the lab needs.
@@ -55,6 +53,18 @@ const FRAMERATE: u32 = 15;
 /// The frame interval implied by [`FRAMERATE`], as the gap thresholds' unit.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / FRAMERATE as u64);
 
+/// How long the adaptation holds a downgrade before acting on it, as the
+/// player's defaults have it.
+const DOWNGRADE_HOLD: Duration = Duration::from_millis(500);
+
+/// The loss fraction at which the adaptation steps down, as the player's
+/// defaults have it.
+const LOSS_STEP_DOWN: f64 = 0.10;
+
+/// Distinct round trip readings a queue has to show before this file counts it
+/// as corroborated.
+const QUEUEING_SAMPLES: u32 = 2;
+
 /// The gap a frame may fall behind by and still count as smooth delivery.
 ///
 /// Three frame intervals, which absorbs a scheduling hiccup and one dropped
@@ -72,11 +82,8 @@ struct Fixture {
     /// Held because dropping it stops the publish task.
     _broadcast: LocalBroadcast,
     subscriber: Live,
-    /// Held so the path stays resolved; the broadcast reads through it.
-    _subscription: Subscription,
+    subscription: Subscription,
     broadcast: RemoteBroadcast,
-    /// The serving link's signals, as the facade feeds them to adaptation.
-    signals: watch::Receiver<NetworkSignals>,
 }
 
 impl Fixture {
@@ -123,13 +130,12 @@ impl Fixture {
             .expect("failed to bind the subscriber endpoint");
 
         let publisher = Live::builder(publisher_endpoint).with_router().spawn();
-        let broadcast = LocalBroadcast::new(Info::new().produce()).expect("failed to create");
+        let broadcast = LocalBroadcast::new();
         publisher
-            .publish("patchbay", broadcast.consume())
+            .publish("patchbay", &broadcast)
             .expect("failed to publish");
         broadcast
-            .video()
-            .set_renditions(test_source::video(size, FRAMERATE), renditions)
+            .set_video(gradient(size), VideoEncoding::ladder(renditions))
             .expect("failed to set video");
 
         // No address lookup: the lab gives each device a fixed address, so the
@@ -144,14 +150,10 @@ impl Fixture {
         let ticket = BroadcastTicket::new(publisher.endpoint().id(), "patchbay");
         let subscription = subscriber
             .moq()
-            .subscribe(ticket.path(), iroh_live::Reach::Direct)
+            .subscribe(ticket.path(), Reach::Direct)
             .await
             .expect("failed to subscribe");
-        let remote = subscriber
-            .remote_broadcast(&subscription)
-            .await
-            .expect("failed to read the catalog");
-        let signals = iroh_live::network::signals(&subscription, remote.shutdown_token());
+        let remote = subscriber.remote_broadcast(&subscription);
 
         Self {
             lab,
@@ -161,10 +163,14 @@ impl Fixture {
             publisher,
             _broadcast: broadcast,
             subscriber,
-            _subscription: subscription,
+            subscription,
             broadcast: remote,
-            signals,
         }
+    }
+
+    /// Returns the serving session's link, as its connection monitor reads it.
+    fn link(&self) -> Link {
+        Link(self.subscription.clone())
     }
 
     /// Applies `limits` to both the publisher's and the subscriber's link.
@@ -192,22 +198,41 @@ impl Fixture {
         }
     }
 
-    /// Opens the video track, waiting for the catalog to carry `renditions` of
-    /// them first.
-    async fn video(&self, renditions: usize) -> VideoTrack {
+    /// Plays the broadcast held on `rendition`, waiting for the catalog to
+    /// carry `renditions` video renditions first.
+    ///
+    /// Held rather than adapting, for a test that switches by hand.
+    async fn play(&self, renditions: usize, rendition: &str) -> Viewer {
+        self.play_with(renditions, RenditionMode::pinned(rendition))
+            .await
+    }
+
+    /// Plays the broadcast adapting from the start, waiting for the catalog to
+    /// carry `renditions` video renditions first, so where it starts is the
+    /// adaptation's own choice.
+    async fn play_auto(&self, renditions: usize) -> Viewer {
+        self.play_with(renditions, RenditionMode::auto()).await
+    }
+
+    async fn play_with(&self, renditions: usize, mode: RenditionMode) -> Viewer {
         let broadcast = &self.broadcast;
+        let mut catalog = broadcast.catalog();
         tokio::time::timeout(TIMEOUT, async {
-            while broadcast.catalog().video().len() < renditions {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            while catalog
+                .get()
+                .is_none_or(|catalog| catalog.video().len() < renditions)
+            {
+                catalog.updated().await.expect("the broadcast is alive");
             }
         })
         .await
         .expect("timed out waiting for the video catalog");
 
-        broadcast
-            .video()
-            .await
-            .expect("failed to open the video track")
+        let player = broadcast
+            .play(PlayerConfig::default().with_rendition(mode))
+            .expect("failed to play");
+        let frames = player.video();
+        Viewer { player, frames }
     }
 
     async fn shutdown(self) {
@@ -216,15 +241,102 @@ impl Fixture {
     }
 }
 
+/// A diagonal gradient at [`FRAMERATE`], shifting every frame.
+///
+/// Every figure in this file about what a rendition actually sends was
+/// measured on this picture, which is why it is drawn here rather than taken
+/// from the test pattern: a different picture encodes to a different rate.
+fn gradient(size: Size) -> VideoSource {
+    let format = VideoFormat::new(size, Rate::new(FRAMERATE, 1).expect("a valid rate"));
+    VideoSource::spawn("gradient", format, move |sender| {
+        let started = Instant::now();
+        let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
+        let mut next = Instant::now();
+        for tick in 0u32.. {
+            let phase = tick.wrapping_mul(3) as u8;
+            for (offset, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let x = (offset as u32 % size.width) as u8;
+                let y = (offset as u32 / size.width) as u8;
+                *pixel = [x.wrapping_add(phase), y.wrapping_add(phase), phase, 0xff];
+            }
+            let surface = Surface::rgba(&rgba, size).expect("the buffer fits the size");
+            let timestamp = moq_net::Timestamp::from_micros(started.elapsed().as_micros() as u64)
+                .expect("in range");
+            if sender.push(Frame::new(surface, timestamp)).is_err() {
+                break;
+            }
+            next += FRAME_INTERVAL;
+            std::thread::sleep(next.saturating_duration_since(Instant::now()));
+        }
+        Ok(())
+    })
+    .expect("the gradient thread starts")
+}
+
+/// The link serving a subscription, read afresh on every call.
+struct Link(Subscription);
+
+impl Link {
+    /// Returns the latest reading of the serving session's link, or an empty
+    /// one while no session serves the subscription.
+    fn read(&self) -> LinkSample {
+        self.0
+            .session()
+            .map(|session| session.link())
+            .unwrap_or_default()
+    }
+}
+
+/// A player and the frames a test reads from it.
+struct Viewer {
+    player: Player,
+    frames: VideoFrames,
+}
+
+impl Viewer {
+    /// The rendition on screen, or an empty string before the first lands.
+    fn rendition(&self) -> String {
+        self.player.status().get().rendition.unwrap_or_default()
+    }
+
+    /// Waits for the next frame.
+    async fn next(&mut self) -> Option<std::sync::Arc<Frame>> {
+        self.frames.next().await
+    }
+}
+
+/// Waits until `rendition` is on screen, through whatever the player decides
+/// on the way.
+async fn switched_to(player: &Player, rendition: &str) {
+    let mut status = player.status();
+    while status.get().rendition.as_deref() != Some(rendition) {
+        status.updated().await.expect("the player is alive");
+    }
+}
+
+/// Waits until the player is switching to `rendition`, or has.
+async fn requested(player: &Player, rendition: &str) {
+    let mut status = player.status();
+    loop {
+        let current = status.get();
+        if current.switching_to.as_deref() == Some(rendition)
+            || current.rendition.as_deref() == Some(rendition)
+        {
+            return;
+        }
+        status.updated().await.expect("the player is alive");
+    }
+}
+
 /// Reads frames for `duration`, returning the instant each one arrived.
 ///
 /// Reads rather than polls: the frame slot keeps only the newest frame, so a
 /// poll loop measures its own cadence as much as the pipeline's.
-async fn drain(track: &VideoTrack, duration: Duration) -> Vec<Instant> {
+async fn drain(frames: &mut VideoFrames, duration: Duration) -> Vec<Instant> {
     let deadline = Instant::now() + duration;
     let mut arrivals = Vec::new();
     while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-        match tokio::time::timeout(remaining, track.recv()).await {
+        match tokio::time::timeout(remaining, frames.next()).await {
             Ok(Some(_frame)) => arrivals.push(Instant::now()),
             // The track ended, so waiting out the rest of the window would only
             // delay the assertion that is about to fail.
@@ -260,15 +372,15 @@ struct Handover {
 /// something, and there is no width that is both. Following the switch itself
 /// removes the choice: the window ends when the thing being measured has
 /// happened.
-async fn drain_across_switch(track: &VideoTrack, rendition: &str, settle: Duration) -> Handover {
+async fn drain_across_switch(viewer: &mut Viewer, rendition: &str, settle: Duration) -> Handover {
     let asked = Instant::now();
     let mut across = Vec::new();
     {
-        let switched = track.switched_to(rendition);
+        let switched = switched_to(&viewer.player, rendition);
         tokio::pin!(switched);
         loop {
             tokio::select! {
-                frame = track.recv() => match frame {
+                frame = viewer.frames.next() => match frame {
                     Some(_frame) => across.push(Instant::now()),
                     // The track ended, so there is nothing left to measure.
                     None => return Handover { across, after: Vec::new(), took: asked.elapsed() },
@@ -278,11 +390,12 @@ async fn drain_across_switch(track: &VideoTrack, rendition: &str, settle: Durati
         }
     }
     let took = asked.elapsed();
-    let mut after = drain(track, settle).await;
-    // The replacement's first frame is what flips the rendition, so it is read
-    // out just after the switch has landed rather than before. It closes the one
-    // gap the whole test is about, the one between the incumbent's last frame
-    // and the replacement's first, so it belongs on the near side of the line.
+    let mut after = drain(&mut viewer.frames, settle).await;
+    // The replacement's first picture on screen is what flips the rendition, so
+    // it is read out just after the switch has landed rather than before. It
+    // closes the one gap the whole test is about, the one between the
+    // incumbent's last frame and the replacement's first, so it belongs on the
+    // near side of the line.
     if !after.is_empty() {
         across.push(after.remove(0));
     }
@@ -339,10 +452,10 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
 /// tighter than the ladder suggests before it binds on anything.
 fn ladder() -> Vec<VideoRendition> {
     vec![
-        VideoRendition::new("high").with_bitrate(800_000),
+        VideoRendition::new("high").with_bitrate(Bitrate::from_bps(800_000)),
         VideoRendition::new("low")
             .with_size(Size::new(320, 240))
-            .with_bitrate(200_000),
+            .with_bitrate(Bitrate::from_bps(200_000)),
     ]
 }
 
@@ -366,23 +479,6 @@ const SIGNAL_LAG: Duration = Duration::from_secs(15);
 /// than elapsed time, and this is the room it needs to collect them.
 const RTT_CORROBORATION: Duration = Duration::from_secs(30);
 
-/// Timers short enough for a switch to happen inside the test's own budget.
-///
-/// Only the timers are shortened. The thresholds are left at their defaults,
-/// because those are the part being tested: a test that also moved the loss and
-/// bandwidth limits would be checking arithmetic it had just written.
-fn quick_adaptation() -> AdaptiveConfig {
-    AdaptiveConfig {
-        downgrade_hold: Duration::from_millis(300),
-        upgrade_hold: Duration::from_millis(500),
-        probe_duration: Duration::from_millis(500),
-        probe_cooldown: Duration::from_secs(1),
-        post_downgrade_cooldown: Duration::from_secs(1),
-        check_interval: Duration::from_millis(100),
-        ..AdaptiveConfig::default()
-    }
-}
-
 /// Raising the latency must not stop frames arriving, and dropping it back must
 /// return delivery to the cadence it had before.
 ///
@@ -394,19 +490,19 @@ fn quick_adaptation() -> AdaptiveConfig {
 async fn frames_survive_a_latency_ramp() {
     let fixture = Fixture::start(
         Size::new(320, 240),
-        vec![VideoRendition::new("video").with_bitrate(500_000)],
+        vec![VideoRendition::new("video").with_bitrate(Bitrate::from_bps(500_000))],
     )
     .await;
-    let track = fixture.video(1).await;
+    let mut viewer = fixture.play(1, "video").await;
 
     // Encoder and decoder startup, the QUIC handshake tail, and namespace
     // setup all land in the first couple of seconds and none of them are what
     // is being measured.
-    let warmup = drain(&track, Duration::from_secs(2)).await;
+    let warmup = drain(&mut viewer.frames, Duration::from_secs(2)).await;
     info!(frames = warmup.len(), "warmed up");
 
     let window = Duration::from_secs(3);
-    let baseline = drain(&track, window).await;
+    let baseline = drain(&mut viewer.frames, window).await;
     report("baseline", &baseline, window);
     assert!(
         baseline.len() >= 10,
@@ -417,7 +513,7 @@ async fn frames_survive_a_latency_ramp() {
     fixture
         .impair(LinkCondition::new().latency_ms(300).jitter_ms(60))
         .await;
-    let ramp = drain(&track, Duration::from_secs(5)).await;
+    let ramp = drain(&mut viewer.frames, Duration::from_secs(5)).await;
     report("latency 300ms", &ramp, Duration::from_secs(5));
     // Deliberately loose: 600ms of added round trip pushes frames late, and the
     // claim is that they still come, not that they come on time.
@@ -430,10 +526,10 @@ async fn frames_survive_a_latency_ramp() {
     fixture.clear().await;
     // In-flight packets are still traversing the old delay, and the congestion
     // controller has a round trip's worth of stale estimate to work off.
-    let settle = drain(&track, Duration::from_secs(3)).await;
+    let settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
     info!(frames = settle.len(), "settled");
 
-    let recovery = drain(&track, window).await;
+    let recovery = drain(&mut viewer.frames, window).await;
     report("recovery", &recovery, window);
     let recovery_gaps = gaps(&recovery);
     assert!(
@@ -464,14 +560,14 @@ async fn frames_survive_a_latency_ramp() {
 async fn frames_survive_a_loss_spike() {
     let fixture = Fixture::start(
         Size::new(320, 240),
-        vec![VideoRendition::new("video").with_bitrate(500_000)],
+        vec![VideoRendition::new("video").with_bitrate(Bitrate::from_bps(500_000))],
     )
     .await;
-    let track = fixture.video(1).await;
+    let mut viewer = fixture.play(1, "video").await;
 
-    let _warmup = drain(&track, Duration::from_secs(2)).await;
+    let _warmup = drain(&mut viewer.frames, Duration::from_secs(2)).await;
     let window = Duration::from_secs(2);
-    let baseline = drain(&track, window).await;
+    let baseline = drain(&mut viewer.frames, window).await;
     report("baseline", &baseline, window);
     assert!(
         baseline.len() >= 8,
@@ -480,7 +576,7 @@ async fn frames_survive_a_loss_spike() {
     );
 
     fixture.impair(LinkCondition::new().random_loss(20.0)).await;
-    let lossy = drain(&track, Duration::from_secs(3)).await;
+    let lossy = drain(&mut viewer.frames, Duration::from_secs(3)).await;
     report("20% loss", &lossy, Duration::from_secs(3));
     assert!(
         lossy.len() >= 10,
@@ -489,10 +585,10 @@ async fn frames_survive_a_loss_spike() {
     );
 
     fixture.clear().await;
-    let _settle = drain(&track, Duration::from_secs(3)).await;
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
 
     let window = Duration::from_secs(3);
-    let recovery = drain(&track, window).await;
+    let recovery = drain(&mut viewer.frames, window).await;
     report("recovery", &recovery, window);
     let recovery_gaps = gaps(&recovery);
     assert!(
@@ -525,22 +621,20 @@ async fn frames_survive_a_loss_spike() {
 #[traced_test]
 async fn adaptation_follows_a_real_link() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let track = fixture.video(2).await;
+    // Adapting from the start: a clear link has to settle on the top rung by
+    // itself before the impairment goes on.
+    let mut viewer = fixture.play_auto(2).await;
 
-    assert_eq!(
-        track.rendition(),
-        "high",
-        "a fresh subscription should start at the top of the ladder",
-    );
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
+        .await
+        .expect("a clear link should start at the top of the ladder");
 
     // Wait for a frame before impairing anything, so the downgrade is measured
     // against a link that was carrying video rather than one still opening.
-    tokio::time::timeout(TIMEOUT, track.recv())
+    tokio::time::timeout(TIMEOUT, viewer.next())
         .await
         .expect("timed out waiting for the first frame")
-        .expect("the video track closed before its first frame");
-
-    track.enable_adaptation_with(fixture.signals.clone(), quick_adaptation());
+        .expect("the video ended before its first frame");
 
     // Loss on both legs, so it reaches the subscriber's own transmissions:
     // acknowledgements are dropped in proportion to the impairment like
@@ -558,7 +652,7 @@ async fn adaptation_follows_a_real_link() {
     fixture.impair(LinkCondition::new().random_loss(12.0)).await;
 
     let downgraded = Instant::now();
-    tokio::time::timeout(TIMEOUT, track.switched_to("low"))
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "low"))
         .await
         .expect("timed out waiting for a downgrade to `low`");
     info!(
@@ -569,7 +663,7 @@ async fn adaptation_follows_a_real_link() {
     fixture.clear().await;
 
     let upgraded = Instant::now();
-    tokio::time::timeout(TIMEOUT, track.switched_to("high"))
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
         .expect("timed out waiting for an upgrade back to `high`");
     info!(after_ms = upgraded.elapsed().as_millis() as u64, "upgraded");
@@ -602,37 +696,27 @@ async fn adaptation_follows_a_real_link() {
 #[traced_test]
 async fn adaptation_follows_a_rate_limit() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let track = fixture.video(2).await;
-    let signals = fixture.signals.clone();
+    let mut viewer = fixture.play_auto(2).await;
+    let signals = fixture.link();
 
-    assert_eq!(
-        track.rendition(),
-        "high",
-        "a fresh subscription should start at the top of the ladder",
-    );
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
+        .await
+        .expect("a clear link should start at the top of the ladder");
 
     // Frames first, so the cap lands on a link that was carrying video and the
     // producer has a round trip and a goodput window off a healthy path to
     // compare against.
-    tokio::time::timeout(TIMEOUT, track.recv())
+    tokio::time::timeout(TIMEOUT, viewer.next())
         .await
         .expect("timed out waiting for the first frame")
-        .expect("the video track closed before its first frame");
+        .expect("the video ended before its first frame");
 
-    let config = AdaptiveConfig {
-        // The cap is lifted the moment the downgrade is due, so conditions turn
-        // good while the replacement decoder is still opening. The default
-        // cooldown would let the loop decide to come back up inside that gap,
-        // and `low` would never reach the screen for the assertion below to see.
-        post_downgrade_cooldown: Duration::from_secs(10),
-        ..quick_adaptation()
-    };
-    // Enabled before the settling drain rather than after it, so the fallback
-    // rule has seconds of clear-link goodput behind it should the estimate be
-    // absent. With the estimate present the loop needs no history at all, and
-    // that is the case this test now exercises: a publisher on BBR3 whose
-    // estimate reads the cap.
-    track.enable_adaptation_with(signals.clone(), config.clone());
+    // Adapting since the start, so the loop has seconds of clear-link delivery
+    // behind it. With the estimate present the loop needs no history at all,
+    // and that is the case this test exercises: a publisher on BBR3 whose
+    // estimate reads the cap. The cooldown after a downgrade runs from its
+    // landing, so the loop does not come back up while the replacement decoder
+    // is still opening, and `low` reaches the screen.
 
     // Waited for rather than timed. This is the test's own evidence that the
     // cap about to go on is a real shortfall, independent of what the loop
@@ -648,7 +732,7 @@ async fn adaptation_follows_a_rate_limit() {
     tokio::time::timeout(SIGNAL_LAG, async {
         loop {
             if signals
-                .borrow()
+                .read()
                 .goodput_bps
                 .is_some_and(|bps| bps >= clear_enough)
             {
@@ -676,7 +760,7 @@ async fn adaptation_follows_a_rate_limit() {
     // trip readings counted below are the fallback rule's evidence; the loop
     // acts on the estimate before they add up, and they are kept here so the
     // test still proves the cap reached the signals in every form.
-    let held = config.downgrade_hold * 3;
+    let held = DOWNGRADE_HOLD * 3;
     let mut worst_loss: f64 = 0.0;
     let impaired = Instant::now();
     let (saw_the_cap, readings) = tokio::time::timeout(SIGNAL_LAG + RTT_CORROBORATION, async {
@@ -684,14 +768,13 @@ async fn adaptation_follows_a_rate_limit() {
         // Distinct values of `rtt_samples` seen while the cap has been visible
         // without a break. The loop below lifts the cap once its evidence is in,
         // and the loop's evidence is not elapsed time: a queueing round trip
-        // only counts towards a downgrade when QUIC measures it again (see
-        // `iroh_live_media::adaptive`, `queueing_samples`). Waiting out `held` on a
-        // path that handed out one reading throughout satisfies this test and
-        // nothing in the adaptation loop, which is what used to make it flake.
+        // only counts as corroboration when QUIC measures it again. Waiting out
+        // `held` on a path that handed out one reading throughout proves less
+        // than it seems, which is what used to make this flake.
         let mut readings = 0u32;
         let mut last_sample = None;
         loop {
-            let signals = *signals.borrow();
+            let signals = signals.read();
             worst_loss = worst_loss.max(signals.loss_rate);
             let pinned = signals.goodput_bps.is_some_and(|bps| bps < 250_000);
             let queued = signals.rtt > signals.min_rtt * 10;
@@ -705,9 +788,7 @@ async fn adaptation_follows_a_rate_limit() {
                 // a tick after this one does and latches whatever reading is
                 // current then, so the first of these may be the one it started
                 // from rather than one it counted.
-                if Instant::now().duration_since(start) >= held
-                    && readings > config.queueing_samples
-                {
+                if Instant::now().duration_since(start) >= held && readings > QUEUEING_SAMPLES {
                     return (signals, readings);
                 }
             } else {
@@ -723,7 +804,7 @@ async fn adaptation_follows_a_rate_limit() {
         panic!(
             "the signals did not show the rate limit, corroborated by {} distinct round trip \
              readings, inside {:?}",
-            config.queueing_samples + 1,
+            QUEUEING_SAMPLES + 1,
             SIGNAL_LAG + RTT_CORROBORATION,
         )
     });
@@ -742,7 +823,7 @@ async fn adaptation_follows_a_rate_limit() {
     // loop actually uses rather than against zero, since a retransmission for
     // some other reason is always possible.
     assert!(
-        worst_loss < config.loss_downgrade,
+        worst_loss < LOSS_STEP_DOWN,
         "loss reached {worst_loss}, so the downgrade cannot be credited to the bandwidth signal",
     );
 
@@ -753,7 +834,7 @@ async fn adaptation_follows_a_rate_limit() {
     // readings can land inside one of its ticks and it counts one where this
     // counts two. Its evidence was then still short when the cap came off, its
     // window reset, and the downgrade never happened.
-    tokio::time::timeout(TIMEOUT, track.requested("low"))
+    tokio::time::timeout(TIMEOUT, requested(&viewer.player, "low"))
         .await
         .expect("timed out waiting for the loop to ask for `low`");
 
@@ -767,7 +848,7 @@ async fn adaptation_follows_a_rate_limit() {
     fixture.clear().await;
 
     let downgraded = Instant::now();
-    tokio::time::timeout(TIMEOUT, track.switched_to("low"))
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "low"))
         .await
         .expect("timed out waiting for a downgrade to `low`");
     info!(
@@ -776,7 +857,7 @@ async fn adaptation_follows_a_rate_limit() {
     );
 
     let upgraded = Instant::now();
-    tokio::time::timeout(TIMEOUT, track.switched_to("high"))
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
         .expect("timed out waiting for an upgrade back to `high`");
     info!(after_ms = upgraded.elapsed().as_millis() as u64, "upgraded");
@@ -787,10 +868,11 @@ async fn adaptation_follows_a_rate_limit() {
 /// A rendition switch must not blank the picture.
 ///
 /// The decode supervisor opens the replacement alongside the incumbent and hands
-/// over on the replacement's first frame, so delivery should carry on through
-/// the switch at roughly its usual cadence. If that overlap regressed, the gap
-/// would be the whole cost of opening a decoder and waiting for a keyframe over
-/// the impaired link, which is seconds rather than frames.
+/// over once the replacement's pictures have caught up with the incumbent's, so
+/// delivery should carry on through the switch at roughly its usual cadence. If
+/// that overlap regressed, the gap would be the whole cost of opening a decoder
+/// and waiting for a keyframe over the impaired link, which is seconds rather
+/// than frames.
 ///
 /// Driven by an explicit switch rather than by adaptation: the assertion is
 /// about the handover, and waiting for the algorithm to ask for one would only
@@ -799,7 +881,7 @@ async fn adaptation_follows_a_rate_limit() {
 #[traced_test]
 async fn a_switch_does_not_blank_the_picture() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let track = fixture.video(2).await;
+    let mut viewer = fixture.play(2, "high").await;
 
     // Enough latency that the switch has to cross a link with real delay on it,
     // not so much that the baseline cadence is itself in question.
@@ -807,9 +889,9 @@ async fn a_switch_does_not_blank_the_picture() {
         .impair(LinkCondition::new().latency_ms(50).jitter_ms(10))
         .await;
 
-    let _warmup = drain(&track, Duration::from_secs(3)).await;
+    let _warmup = drain(&mut viewer.frames, Duration::from_secs(3)).await;
     let window = Duration::from_secs(2);
-    let baseline = drain(&track, window).await;
+    let baseline = drain(&mut viewer.frames, window).await;
     report("baseline", &baseline, window);
     assert!(
         baseline.len() >= 8,
@@ -817,23 +899,31 @@ async fn a_switch_does_not_blank_the_picture() {
         baseline.len(),
     );
 
-    track.set_rendition("low");
+    viewer.player.set_rendition(RenditionMode::pinned("low"));
 
     // Measured across the handover itself rather than across a fixed window:
     // the replacement decoder has to open and wait for a keyframe over the
     // impaired link, and how long that takes is the machine's business, not the
     // claim's. The claim is about what delivery does while it happens.
     let settle = Duration::from_secs(2);
-    let handover = tokio::time::timeout(TIMEOUT, drain_across_switch(&track, "low", settle))
+    let handover = tokio::time::timeout(TIMEOUT, drain_across_switch(&mut viewer, "low", settle))
         .await
-        .unwrap_or_else(|_| {
-            panic!(
-                "the switch to `low` did not land inside {TIMEOUT:?}, still on `{}`",
-                track.rendition(),
-            )
-        });
+        .unwrap_or_else(|_| panic!("the switch to `low` did not land inside {TIMEOUT:?}"));
     report("across the switch", &handover.across, handover.took);
     report("after the switch", &handover.after, settle);
+    let kept_running =
+        baseline.len() as u32 * handover.took.as_millis() as u32 / (2 * window.as_millis() as u32);
+    // One line with every figure the assertions below judge, for a script
+    // that runs this many times and compares.
+    info!(
+        took_ms = handover.took.as_millis() as u64,
+        across = handover.across.len(),
+        baseline = baseline.len(),
+        kept_running,
+        longest_gap_ms = longest(&gaps(&handover.across)).as_millis() as u64,
+        after = handover.after.len(),
+        "handover measured",
+    );
 
     // The incumbent carries the picture for as long as the replacement takes to
     // open, so the handover window delivers frames at the cadence the baseline
@@ -843,8 +933,6 @@ async fn a_switch_does_not_blank_the_picture() {
     // fixed count. Half of it, because both renditions are subscribed at once
     // while the switch is in flight and the incumbent gives up part of the link
     // to the replacement's keyframe.
-    let kept_running =
-        baseline.len() as u32 * handover.took.as_millis() as u32 / (2 * window.as_millis() as u32);
     assert!(
         handover.across.len() as u32 >= kept_running,
         "only {} frames arrived in the {}ms the switch took, against the {kept_running} that half \
@@ -921,14 +1009,14 @@ async fn a_switch_does_not_blank_the_picture() {
 #[ignore = "the replacement track's first group is starved behind the incumbent's higher-numbered ones; passes about five runs in six"]
 async fn a_switch_lands_while_the_link_stays_capped() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let track = fixture.video(2).await;
-    let signals = fixture.signals.clone();
+    let mut viewer = fixture.play(2, "high").await;
+    let signals = fixture.link();
 
-    tokio::time::timeout(TIMEOUT, track.recv())
+    tokio::time::timeout(TIMEOUT, viewer.next())
         .await
         .expect("timed out waiting for the first frame")
-        .expect("the video track closed before its first frame");
-    let _settle = drain(&track, Duration::from_secs(2)).await;
+        .expect("the video ended before its first frame");
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(2)).await;
 
     // Two thirds of what `high` actually sends, so the top rung cannot fit and
     // the send queue never drains.
@@ -938,7 +1026,7 @@ async fn a_switch_lands_while_the_link_stays_capped() {
     // on a link that is demonstrably saturated rather than one still filling.
     tokio::time::timeout(SIGNAL_LAG, async {
         loop {
-            let signals = *signals.borrow();
+            let signals = signals.read();
             if signals.goodput_bps.is_some_and(|bps| bps < 250_000)
                 && signals.rtt > signals.min_rtt * 10
             {
@@ -952,17 +1040,100 @@ async fn a_switch_lands_while_the_link_stays_capped() {
     info!("the link is saturated");
 
     let asked = Instant::now();
-    track.set_rendition("low");
-    tokio::time::timeout(TIMEOUT, track.switched_to("low"))
+    viewer.player.set_rendition(RenditionMode::pinned("low"));
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "low"))
         .await
         .unwrap_or_else(|_| {
             panic!(
                 "the switch to `low` did not land inside {TIMEOUT:?} while the cap was held, \
                  still on `{}`",
-                track.rendition(),
+                viewer.rendition(),
             )
         });
     info!(after_ms = asked.elapsed().as_millis() as u64, "switched");
+
+    fixture.shutdown().await;
+}
+
+/// A cap held near where the top rung stops fitting must not make the ladder
+/// oscillate.
+///
+/// The tests above impair and then clear, so each asks for one step down and
+/// one back up and says nothing about a link that stays marginal. Here the cap
+/// sits where the publisher's delivery estimate straddles the top rung's
+/// threshold (a BBR estimate reads a capped link at 1.1 to 1.6 times the cap,
+/// so 300 kbit/s reads either side of the 400 kbit/s that half of `high`'s
+/// 800 comes to), and stays for a minute. Every switch landed is counted, and
+/// so is every one asked for, which lands or not.
+///
+/// `IROH_LIVE_PATCHBAY_CAP_KBIT` moves the cap, so a sweep can look for the
+/// worst place to hold it.
+#[tokio::test]
+#[traced_test]
+async fn adaptation_holds_steady_under_a_marginal_cap() {
+    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let mut viewer = fixture.play_auto(2).await;
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
+        .await
+        .expect("a clear link should start at the top of the ladder");
+    tokio::time::timeout(TIMEOUT, viewer.next())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("the video ended before its first frame");
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
+
+    let cap_kbit: u32 = std::env::var("IROH_LIVE_PATCHBAY_CAP_KBIT")
+        .ok()
+        .and_then(|cap| cap.parse().ok())
+        .unwrap_or(300);
+    fixture
+        .impair(LinkCondition::new().rate_kbit(cap_kbit))
+        .await;
+
+    let watched = Duration::from_secs(60);
+    let until = Instant::now() + watched;
+    let mut status = viewer.player.status();
+    let mut last = status.get();
+    let (mut switches, mut requests) = (0u32, 0u32);
+    let mut frames = 0u32;
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        tokio::select! {
+            updated = status.updated() => {
+                let current = updated.expect("the player is alive");
+                if current.rendition != last.rendition && current.rendition.is_some() {
+                    info!(from = ?last.rendition, to = ?current.rendition, "rendition changed");
+                    switches += 1;
+                }
+                if current.switching_to != last.switching_to && current.switching_to.is_some() {
+                    info!(to = ?current.switching_to, "switch asked for");
+                    requests += 1;
+                }
+                last = current;
+            }
+            frame = viewer.frames.next() => {
+                if frame.is_some() {
+                    frames += 1;
+                }
+            }
+            () = tokio::time::sleep(left) => break,
+        }
+    }
+    info!(
+        cap_kbit,
+        switches,
+        requests,
+        frames,
+        rendition = ?last.rendition,
+        "marginal cap watched",
+    );
+    // One step down, or none, is the stable answer. One flap back up and
+    // down again is a tolerable probe of a link that might have room; more
+    // than that in a minute is the ladder oscillating.
+    assert!(
+        switches <= 3,
+        "the ladder switched {switches} times ({requests} asked for) in {watched:?} under a \
+         {cap_kbit} kbit/s cap",
+    );
 
     fixture.shutdown().await;
 }
@@ -989,26 +1160,23 @@ async fn a_switch_lands_while_the_link_stays_capped() {
 #[traced_test]
 async fn a_risen_baseline_round_trip_does_not_downgrade() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let track = fixture.video(2).await;
-    let signals = fixture.signals.clone();
+    let mut viewer = fixture.play_auto(2).await;
+    let signals = fixture.link();
 
-    assert_eq!(
-        track.rendition(),
-        "high",
-        "a fresh subscription should start at the top of the ladder",
-    );
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
+        .await
+        .expect("a clear link should start at the top of the ladder");
 
-    tokio::time::timeout(TIMEOUT, track.recv())
+    tokio::time::timeout(TIMEOUT, viewer.next())
         .await
         .expect("timed out waiting for the first frame")
-        .expect("the video track closed before its first frame");
+        .expect("the video ended before its first frame");
     // Frames over a clear link first. Both baselines the risen round trip is
     // judged against are established here: the path's minimum, and the goodput
     // this rendition delivers when there is nothing in its way.
-    let _settle = drain(&track, Duration::from_secs(3)).await;
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
 
-    track.enable_adaptation_with(signals.clone(), quick_adaptation());
-    let before = *signals.borrow();
+    let before = signals.read();
     info!(
         rtt_ms = before.rtt.as_millis() as u64,
         min_rtt_ms = before.min_rtt.as_millis() as u64,
@@ -1023,10 +1191,10 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     let watched = Duration::from_secs(40);
     let until = Instant::now() + watched;
-    let mut last = track.rendition();
+    let mut last = viewer.rendition();
     let mut switches = 0;
     while Instant::now() < until {
-        let current = track.rendition();
+        let current = viewer.rendition();
         if current != last {
             info!(from = %last, to = %current, "rendition changed");
             switches += 1;
@@ -1035,7 +1203,7 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let after = *signals.borrow();
+    let after = signals.read();
     info!(
         rtt_ms = after.rtt.as_millis() as u64,
         min_rtt_ms = after.min_rtt.as_millis() as u64,
