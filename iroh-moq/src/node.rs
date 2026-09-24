@@ -179,6 +179,11 @@ impl MoqConfig {
 #[derive(Clone)]
 pub struct Moq {
     pub(crate) shared: Arc<Shared>,
+    /// Held for its drop, which aborts the actor once the last handle goes.
+    #[cfg_attr(
+        not(feature = "relay-links"),
+        allow(dead_code, reason = "only relay links read it; every build holds it")
+    )]
     tasks: Arc<Tasks>,
 }
 
