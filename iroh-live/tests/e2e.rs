@@ -208,6 +208,12 @@ async fn adaptive_rendition_switching() {
         .play(PlayerConfig::default())
         .expect("failed to play");
     first_frame(&player).await;
+    // A healthy link starts at the top, so the drop below is a real move
+    // rather than a start that was already at the bottom.
+    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
+        .await
+        .expect("timed out waiting for the top rendition")
+        .expect("a healthy link starts at the top");
 
     // A quarter of the packets lost is an emergency drop, not a gradual one.
     *sample.lock().expect("poisoned") = NetworkSample::default()

@@ -18,9 +18,9 @@
 //! [`Tuning::upgrade_hold`], and no step up comes within
 //! [`Tuning::post_downgrade_cooldown`] of a step down.
 //!
-//! This replaces the probe-and-headroom rule in the parent module, whose upgrade
-//! gate asked the estimate to cover one and a half times the next rung's
-//! bitrate. Parked on a low rung, a publisher sends only that rung's bytes, so
+//! This replaces the probe-and-headroom rule of the old `adaptive` module,
+//! whose upgrade gate asked the estimate to cover one and a half times the next
+//! rung's bitrate. Parked on a low rung, a publisher sends only that rung's bytes, so
 //! its estimate is application-limited at a few times that rate and never
 //! reached the gate: `adaptation_follows_a_real_link` sat at 380 to 490 kbit/s
 //! against a 1.2 Mbit/s gate for a full minute with nothing wrong with the link.

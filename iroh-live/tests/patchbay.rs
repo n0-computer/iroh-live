@@ -587,7 +587,7 @@ async fn adaptation_follows_a_real_link() {
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
-        .expect("a fresh subscription should start at the top of the ladder");
+        .expect("the top rendition, pinned until adaptation starts, never played");
 
     // Wait for a frame before impairing anything, so the downgrade is measured
     // against a link that was carrying video rather than one still opening.
@@ -663,7 +663,7 @@ async fn adaptation_follows_a_rate_limit() {
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
-        .expect("a fresh subscription should start at the top of the ladder");
+        .expect("the top rendition, pinned until adaptation starts, never played");
 
     // Frames first, so the cap lands on a link that was carrying video and the
     // producer has a round trip and a goodput window off a healthy path to
@@ -1034,7 +1034,7 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
-        .expect("a fresh subscription should start at the top of the ladder");
+        .expect("the top rendition, pinned until adaptation starts, never played");
 
     tokio::time::timeout(TIMEOUT, viewer.next())
         .await
