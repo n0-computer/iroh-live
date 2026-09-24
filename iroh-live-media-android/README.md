@@ -1,46 +1,42 @@
 # iroh-live-media-android
 
-Android integration for [`iroh-live-media`](../iroh-live-media): a camera bridge, an EGL
-renderer, and the JNI helpers around them.
+Android support for [`iroh-live-media`](../iroh-live-media): a camera bridge, an
+EGL renderer, and JNI handle helpers. The [Android demo](../demos/android/) uses
+it, and any Android Rust project can use it too.
 
-Hardware H.264 through MediaCodec is not here. It is upstream in `moq-video`,
-behind `cfg(target_os = "android")`, and backend selection finds it without being
-asked. What this crate carries is the two things that are not a moq-video
-concern.
-
-Used by the [Android demo](../demos/android/), and usable on its own in any
-Android Rust project.
+Hardware H.264 through MediaCodec lives in `moq-video` behind
+`cfg(target_os = "android")`, and backend selection picks it up on its own. The
+`renderer` and `egl` modules only build on Android.
 
 ## `camera`
 
-`camera(size, rate)` returns a `CameraSink` and an `iroh_live_media::VideoSource`,
-built on `VideoSource::push`. Kotlin pushes frames into the sink through JNI, and
-the source goes to `LocalBroadcast::set_video`. `CameraSink::push_rgba` takes
-tightly packed RGBA; `push` takes a `moq_video::Frame` for a caller that built
-one itself. `CameraSink::demand()` watches whether any rendition is encoding, so
-the camera session can stop capturing while nobody watches.
+`camera(size, rate)` returns a `CameraSink` and a `VideoSource`. Pass the source
+to `LocalBroadcast::set_video`. Kotlin pushes frames into the sink through JNI,
+either as tightly packed RGBA with `push_rgba` or as a ready `moq_video::Frame`
+with `push`.
 
-The slot is latest-wins: a newer frame replaces one the publisher has not read
-yet. That is the right policy for a camera, where a stale picture is worth less
-than the current one.
+A newer frame replaces one the encoder has not taken yet, because a stale camera
+picture is worth less than the current one. `CameraSink::demand()` reports
+whether any rendition is encoding, so the app can stop the camera while nobody
+watches.
 
 ## `renderer`
 
-`AndroidRenderer` owns the whole EGL lifecycle. Kotlin hands over an
-`android.view.Surface` and nothing else. Two GLES2 programs draw:
-`render_hardware_buffer` imports an `AHardwareBuffer` as a
-`GL_TEXTURE_EXTERNAL_OES`, which is zero-copy out of MediaCodec's `ImageReader`,
-and `render_nv12` uploads two planes for a software-decoded or preview frame.
-Both apply sensor rotation in the shader.
+`AndroidRenderer` owns the EGL context and draws to an `android.view.Surface`
+with GLES2. `render_hardware_buffer` imports an `AHardwareBuffer` from
+MediaCodec's `ImageReader` as a `GL_TEXTURE_EXTERNAL_OES` texture, with no copy.
+`render_nv12` uploads the two planes of a software-decoded or preview frame and
+converts them to RGB in the shader. Both letterbox the frame and apply the
+sensor rotation.
 
 ## `egl`
 
-Safe wrappers over the EGL and GLES extension entry points the renderer needs:
-`eglGetNativeClientBufferANDROID`, `eglCreateImageKHR`, and
-`glEGLImageTargetTexture2DOES`. None is available at link time, so they are
-resolved at runtime through `dlopen` on `libEGL.so` and `eglGetProcAddress`.
+Wrappers for the EGL and GLES extension functions the renderer needs, such as
+`eglCreateImageKHR` and `glEGLImageTargetTexture2DOES`. They are not available
+at link time, so the module resolves them at runtime through
+`eglGetProcAddress`.
 
 ## `handle`
 
-Passing an `Arc<Mutex<T>>` across the JNI boundary as a `jlong`: `to_i64` leaks a
-reference, `from_i64` borrows one, and `take_i64` consumes it.
+Passes an `Arc<Mutex<T>>` across JNI as a `jlong`. `to_i64` leaks a reference,
+`from_i64` clones one, and `take_i64` takes it back.

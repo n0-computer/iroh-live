@@ -1,11 +1,8 @@
-//! Safe wrappers around EGL/GLES extension functions for HardwareBuffer rendering.
+//! EGL and GLES extension functions for rendering an `AHardwareBuffer`.
 //!
-//! Android's zero-copy video rendering pipeline requires EGL extension calls
-//! that are not exposed by the Java SDK. This module resolves them at runtime
-//! via `dlopen("libEGL.so")` -> `eglGetProcAddress` and caches the function
-//! pointers in `OnceLock` statics for zero-overhead repeat calls.
-//!
-//! # Rendering pipeline
+//! These functions are not available at link time. This module resolves them
+//! at runtime through `eglGetProcAddress` and caches each pointer after first
+//! use. A hardware buffer becomes a texture in three steps:
 //!
 //! ```text
 //! AHardwareBuffer
@@ -29,12 +26,12 @@ static FN_CREATE_IMAGE: OnceLock<Option<CreateImageFn>> = OnceLock::new();
 static FN_DESTROY_IMAGE: OnceLock<Option<DestroyImageFn>> = OnceLock::new();
 static FN_IMAGE_TARGET_TEXTURE: OnceLock<Option<ImageTargetTextureFn>> = OnceLock::new();
 
-/// Loads `eglGetProcAddress` from `libEGL.so` via dlopen + dlsym.
+/// Loads `eglGetProcAddress` from the already loaded `libEGL.so`.
 fn load_egl_get_proc_address() -> Option<EglGetProcAddressFn> {
     *FN_GET_PROC_ADDRESS.get_or_init(|| {
-        // SAFETY: dlopen with RTLD_NOLOAD only returns a handle if
-        // libEGL.so is already loaded (it always is on Android, since the
-        // Java side loads it). dlsym resolves from that library.
+        // SAFETY: With RTLD_NOLOAD, dlopen only returns a handle if libEGL.so
+        // is already loaded. On Android the Java side always loads it. dlsym
+        // then resolves the symbol from that library.
         unsafe {
             let lib = libc::dlopen(c"libEGL.so".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY);
             if lib.is_null() {
@@ -51,17 +48,15 @@ fn load_egl_get_proc_address() -> Option<EglGetProcAddressFn> {
     })
 }
 
-/// Resolves an EGL/GL extension function pointer via `eglGetProcAddress`.
+/// Resolves an EGL or GL extension function through `eglGetProcAddress`.
 ///
 /// # Safety
 ///
-/// The caller must ensure `T` matches the actual signature of the resolved
-/// symbol. The name must be a null-terminated byte string.
+/// `T` must match the signature of the symbol. `name` must be NUL-terminated.
 unsafe fn resolve_egl_proc<T: Copy>(name: &[u8]) -> Option<T> {
     let get_proc = load_egl_get_proc_address()?;
-    // SAFETY: eglGetProcAddress is the EGL-spec way to resolve extension
-    // functions. The caller guarantees name is null-terminated and T matches
-    // the symbol's actual signature.
+    // SAFETY: The caller guarantees that `name` is NUL-terminated and that `T`
+    // matches the signature of the symbol.
     unsafe {
         let sym = get_proc(name.as_ptr().cast());
         if sym.is_null() {
@@ -100,12 +95,11 @@ fn get_image_target_texture_fn() -> Option<ImageTargetTextureFn> {
     })
 }
 
-/// Creates a `glow::Context` by resolving GL functions from `eglGetProcAddress`.
-///
-/// Must be called while an EGL context is current on the calling thread.
+/// Creates a `glow::Context` that resolves GL functions through `eglGetProcAddress`.
 ///
 /// # Safety
-/// An EGL context must be current.
+///
+/// An EGL context must be current on the calling thread.
 pub unsafe fn create_glow_context() -> glow::Context {
     let get_proc = load_egl_get_proc_address();
     unsafe {
@@ -129,7 +123,7 @@ pub unsafe fn create_glow_context() -> glow::Context {
 
 /// Converts an `AHardwareBuffer` pointer into an `EGLClientBuffer`.
 ///
-/// Returns `None` if the extension is unavailable or the conversion fails.
+/// Returns `None` if the extension is missing or the conversion fails.
 ///
 /// # Safety
 ///
@@ -143,7 +137,7 @@ pub unsafe fn get_native_client_buffer(hardware_buffer: *const c_void) -> Option
 
 /// Creates an `EGLImage` from an `EGLClientBuffer`.
 ///
-/// Returns `None` if the extension is unavailable or creation fails.
+/// Returns `None` if the extension is missing or creation fails.
 ///
 /// # Safety
 ///
@@ -170,6 +164,8 @@ pub unsafe fn create_image(
 
 /// Destroys an `EGLImage`.
 ///
+/// Does nothing if the extension is missing.
+///
 /// # Safety
 ///
 /// `display` must be a valid `EGLDisplay`. `image` must be a valid `EGLImage`.
@@ -179,7 +175,9 @@ pub unsafe fn destroy_image(display: *mut c_void, image: *mut c_void) {
     }
 }
 
-/// Binds an `EGLImage` to the current GL texture target.
+/// Binds an `EGLImage` to the texture currently bound to `target`.
+///
+/// Returns `false` if the extension is missing.
 ///
 /// # Safety
 ///

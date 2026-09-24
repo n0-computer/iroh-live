@@ -1,43 +1,41 @@
 //! Push-based video source for Android camera frames.
 //!
-//! Android delivers camera frames through callbacks (CameraX `ImageAnalysis` or
-//! Camera2 `ImageReader`), while a broadcast reads a
-//! [`VideoSource`]. This bridges the two with
-//! [`VideoSource::push`](iroh_live_media::VideoSource::push): the app pushes a
-//! frame from whichever thread the callback runs on, and the broadcast encodes
-//! the newest one.
+//! Android delivers camera frames through callbacks, from CameraX
+//! `ImageAnalysis` or Camera2 `ImageReader`. A broadcast reads a
+//! [`VideoSource`]. This module connects the two with
+//! [`VideoSource::push`](iroh_live_media::VideoSource::push): the app pushes
+//! frames from the callback thread, and the broadcast encodes the newest one.
 //!
-//! Newer frames replace unconsumed older ones. That is the right policy for a
-//! camera, where a frame the encoder never got to is stale rather than owed.
+//! A new frame replaces an older one the encoder has not taken yet. For a
+//! camera, the current picture is worth more than a stale one.
 
 use iroh_live_media::{Closed, FrameSender, VideoFormat, VideoSource};
 use moq_video::{Frame, Rate, Size, Surface};
 use n0_error::stack_error;
 
-/// Errors raised while pushing a camera frame.
+/// Errors from pushing a camera frame.
 #[stack_error(derive, add_meta)]
 pub enum CameraError {
-    /// The pixel buffer did not match the declared size and format.
+    /// The pixel buffer does not match the declared size and format.
     #[error("invalid camera frame")]
     Frame {
-        /// What the surface rejected.
+        /// The error from building the surface.
         #[error(source, std_err)]
         source: moq_video::Error,
     },
-    /// The source the frames were for has gone.
+    /// The source has closed.
     #[error("the camera source has closed")]
     Closed {
-        /// What the sender reported.
+        /// The error from the frame sender.
         #[error(source, std_err)]
         source: Closed,
     },
 }
 
-/// The app side of the bridge: push frames here from the camera callback.
+/// The app side of a camera bridge.
 ///
-/// Cheap to clone, and safe to hold across threads, so the JNI layer can keep
-/// one alive for the lifetime of the camera session. The source ends once
-/// every clone is dropped.
+/// Push frames here from the camera callback. Clones are cheap and can move
+/// across threads. The [`VideoSource`] ends when every clone is dropped.
 #[derive(Debug, Clone)]
 pub struct CameraSink {
     frames: FrameSender<Frame>,
@@ -45,7 +43,7 @@ pub struct CameraSink {
 }
 
 impl CameraSink {
-    /// Pushes one RGBA frame, replacing any frame not yet consumed.
+    /// Pushes one RGBA frame, replacing any frame not yet taken.
     ///
     /// `rgba` is tightly packed, `width * height * 4` bytes.
     ///
@@ -59,8 +57,10 @@ impl CameraSink {
         self.push(Frame::new(surface, timestamp))
     }
 
-    /// Pushes a frame the caller already built, for a source that can hand over
-    /// something better than packed RGBA.
+    /// Pushes a frame the caller built.
+    ///
+    /// Use this when the camera can hand over something better than packed
+    /// RGBA.
     ///
     /// # Errors
     ///
@@ -71,8 +71,9 @@ impl CameraSink {
             .map_err(|source| n0_error::e!(CameraError::Closed { source }))
     }
 
-    /// Reports whether anything is encoding the frames, so a camera session can
-    /// stop capturing while nobody watches.
+    /// Returns a watcher for whether anything is encoding the frames.
+    ///
+    /// Use it to stop capturing while nobody watches.
     pub fn demand(&self) -> n0_watcher::Direct<bool> {
         self.frames.demand()
     }
@@ -85,9 +86,9 @@ impl CameraSink {
 
 /// Creates a camera bridge for a fixed capture size and rate.
 ///
-/// The returned [`VideoSource`] goes to
-/// [`LocalBroadcast::set_video`](iroh_live_media::LocalBroadcast::set_video);
-/// the [`CameraSink`] goes to whatever drives the camera.
+/// Pass the [`VideoSource`] to
+/// [`LocalBroadcast::set_video`](iroh_live_media::LocalBroadcast::set_video)
+/// and the [`CameraSink`] to the code that drives the camera.
 pub fn camera(size: Size, rate: Rate) -> (CameraSink, VideoSource) {
     let (frames, source) = VideoSource::push(VideoFormat { size, rate });
     (CameraSink { frames, size }, source)
