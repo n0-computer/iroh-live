@@ -314,6 +314,16 @@ pub(crate) async fn run(inputs: Inputs) {
 
             changed = desired.changed() => {
                 if changed.is_err() {
+                    // The selector stopped, which it does when the broadcast
+                    // closes: the video ended, whatever its tracks said yet.
+                    status.update(|status| {
+                        if matches!(status.video, SlotState::Running | SlotState::Starting) {
+                            status.video = SlotState::Ended;
+                        }
+                        status.rendition = None;
+                        status.switching_to = None;
+                        status.decoder = None;
+                    });
                     return;
                 }
                 let next = desired.borrow_and_update().clone();

@@ -493,6 +493,9 @@ async fn the_frames_end_when_the_broadcast_closes() {
     tokio::time::timeout(TIMEOUT, async { while frames.next().await.is_some() {} })
         .await
         .expect("the frames went on after the broadcast closed");
+    let status = player.status().get();
+    assert_eq!(status.video, SlotState::Ended, "{status:?}");
+    assert_eq!(status.rendition, None);
 }
 
 /// A recording remuxes what the broadcast carries into a container without
