@@ -97,22 +97,12 @@ impl LiveBuilder {
         self
     }
 
-    /// Uses a [`Moq`] the application created first.
+    /// Uses a [`Moq`] the application created first, on the builder's endpoint.
     ///
     /// So it can hand it to `Rooms` before the router is built. Create it with
     /// [`moq_config`], or a config whose grant keeps peers to their own paths
     /// as [`grant`] does.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `moq` runs on another endpoint than the builder's: the router
-    /// would then accept for one endpoint and publish from another.
     pub fn with_moq(mut self, moq: Moq) -> Self {
-        assert_eq!(
-            moq.endpoint().id(),
-            self.endpoint.id(),
-            "the Moq node runs on another endpoint than the Live builder"
-        );
         self.moq = Some(moq);
         self
     }
