@@ -186,6 +186,19 @@ impl PlayoutClock {
         self.inner.changed.notify_waiters();
     }
 
+    /// Starts the reference over, as the broadcast came back on a new route.
+    ///
+    /// A publisher behind the new route may have restarted, and its clock with
+    /// it. The backwards jump [`received`](Self::received) watches for only
+    /// shows a restart after [`TIMELINE_JUMP`] of media; one that had run for
+    /// less would leave every later frame overdue and nothing paced.
+    pub(crate) fn restart(&self) {
+        let mut state = self.inner.state.lock().expect("poisoned");
+        state.reference = None;
+        state.last_pts_ms = None;
+        self.inner.changed.notify_waiters();
+    }
+
     // --- Playout gating (video render path) --------------------------
 
     /// Waits until it is time to render the frame with the given PTS.
@@ -405,6 +418,21 @@ mod tests {
         let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
         sync.received(Duration::from_secs(600));
         // A fresh timeline: the frame at zero arrives now.
+        sync.received(Duration::ZERO);
+        assert!(
+            matches!(sync.delay(Duration::ZERO), Delay::After(_)),
+            "the new timeline's first frame is not held for the jitter allowance"
+        );
+    }
+
+    /// S8: a publisher that restarted after less than [`TIMELINE_JUMP`] of
+    /// media shows no backwards jump big enough to notice; the new route it
+    /// comes back on starts the reference over.
+    #[test]
+    fn a_new_route_starts_the_timeline_over() {
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        sync.received(Duration::from_secs(2));
+        sync.restart();
         sync.received(Duration::ZERO);
         assert!(
             matches!(sync.delay(Duration::ZERO), Delay::After(_)),

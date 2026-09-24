@@ -130,6 +130,8 @@ pub(crate) struct Inputs {
     /// The target on screen, as the supervisor reports it.
     pub playing: watch::Receiver<Option<Target>>,
     pub desired: watch::Sender<Option<Desired>>,
+    /// The player's playout clock, started over on a new route.
+    pub clock: super::PlayoutClock,
     pub shutdown: CancellationToken,
 }
 
@@ -214,6 +216,7 @@ pub(crate) async fn run(inputs: Inputs) {
         mut reports,
         mut playing,
         desired,
+        clock,
         shutdown,
     } = inputs;
     let mut mode = controls.mode.subscribe();
@@ -315,7 +318,12 @@ pub(crate) async fn run(inputs: Inputs) {
                         revive_at = None;
                     }
                 }
-                updated = epoch.updated() => if updated.is_err() { return },
+                updated = epoch.updated() => {
+                    if updated.is_err() {
+                        return;
+                    }
+                    clock.restart();
+                }
                 updated = player.updated() => if updated.is_err() { return },
                 () = async { tokio::time::sleep_until(revive_at.expect("guarded")).await },
                     if revive_at.is_some() =>
@@ -722,6 +730,7 @@ mod tests {
             reports,
             playing,
             desired,
+            clock: super::super::PlayoutClock::new(),
             shutdown: CancellationToken::new(),
         };
         let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));

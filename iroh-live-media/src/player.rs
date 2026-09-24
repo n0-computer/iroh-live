@@ -378,6 +378,7 @@ impl Player {
                 reports: reports_rx,
                 playing: playing_rx,
                 desired: desired_tx,
+                clock: clock.clone(),
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::debug_span!(parent: &span, "select")),
