@@ -205,9 +205,10 @@ async fn microphone(
     let (handle_tx, handle) = oneshot::channel();
     let broadcast = producer.clone();
     let catalog = catalog.clone();
-    let _driver = crate::local_task::spawn(
+    let driver_stop = stop.child_token();
+    let mut driver = crate::local_task::spawn(
         "audio-capture",
-        stop.child_token(),
+        driver_stop.clone(),
         move |stop| async move {
             let (publication, driver) =
                 match audio::encode::Publication::new(broadcast, catalog, options) {
@@ -231,6 +232,24 @@ async fn microphone(
             }
         },
     )?;
+    let result = follow(handle, reporter, &track, encoding, stop).await;
+    // The capture thread holds the echo canceller, which its output hands out
+    // to one microphone at a time: a publication replacing this one asks for
+    // it as soon as this returns, so the thread has let go first.
+    driver_stop.cancel();
+    driver.joined().await;
+    result
+}
+
+/// Reports the microphone publication's state changes until it ends or the
+/// slot stops.
+async fn follow(
+    handle: oneshot::Receiver<Result<audio::encode::Publication, Error>>,
+    reporter: &Reporter,
+    track: &str,
+    encoding: &AudioEncoding,
+    stop: &CancellationToken,
+) -> Result<(), Error> {
     let mut publication = handle
         .await
         .map_err(|_| Error::device_msg("the microphone thread stopped before it started"))??;
@@ -249,12 +268,12 @@ async fn microphone(
             audio::encode::Status::Starting => reporter.slot(SlotState::Starting),
             audio::encode::Status::Waiting | audio::encode::Status::Stopped => {
                 reporter.slot(SlotState::Running);
-                reporter.rendition(&track, RenditionState::Idle);
+                reporter.rendition(track, RenditionState::Idle);
             }
             audio::encode::Status::Live => {
                 reporter.slot(SlotState::Running);
                 reporter.rendition(
-                    &track,
+                    track,
                     RenditionState::Encoding {
                         encoder: encoding.codec.to_string(),
                     },
