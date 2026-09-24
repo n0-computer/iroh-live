@@ -421,9 +421,9 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> Mi
         {
             config = config.with_echo_cancellation(output);
         }
+        // A null output plays nothing, so there is no echo to warn about.
         #[cfg(not(feature = "aec"))]
-        {
-            let _ = output;
+        if !output.is_null() {
             tracing::warn!(
                 "this build has no echo cancellation, so the other side may hear itself; \
                  build with the `aec` feature to cancel it"

@@ -348,9 +348,27 @@ pub struct RemoteView {
 struct Link {
     session: iroh_live::moq::MoqSession,
     signals: tokio::sync::watch::Receiver<iroh_live::util::LinkSignals>,
+    /// When the lines were last read off the session.
+    refreshed: Option<Instant>,
 }
 
+/// How often the overlay's link lines are read off the session: they change
+/// with the path, not with every frame drawn.
+const LINK_REFRESH: Duration = Duration::from_millis(500);
+
 impl Link {
+    /// Returns the lines if they are due for a refresh.
+    fn refresh(&mut self, now: Instant) -> Option<Vec<String>> {
+        if self
+            .refreshed
+            .is_some_and(|at| now.duration_since(at) < LINK_REFRESH)
+        {
+            return None;
+        }
+        self.refreshed = Some(now);
+        Some(self.lines())
+    }
+
     /// The selected path's kind and address, the number of paths, and the
     /// bytes arriving, as the overlay's NET lines.
     fn lines(&self) -> Vec<String> {
@@ -411,7 +429,11 @@ impl RemoteView {
         session: iroh_live::moq::MoqSession,
         signals: tokio::sync::watch::Receiver<iroh_live::util::LinkSignals>,
     ) -> Self {
-        self.link = Some(Link { session, signals });
+        self.link = Some(Link {
+            session,
+            signals,
+            refreshed: None,
+        });
         self
     }
 
@@ -451,8 +473,12 @@ impl RemoteView {
     pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let stats = self.player.stats();
         let status = self.player.status().get();
-        if let Some(link) = &self.link {
-            self.overlay.set_link(link.lines());
+        if let Some(lines) = self
+            .link
+            .as_mut()
+            .and_then(|link| link.refresh(Instant::now()))
+        {
+            self.overlay.set_link(lines);
         }
         // Copied out only while the TIME panel is open to draw it.
         let timeline = match self.overlay.timeline_open() {

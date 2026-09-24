@@ -127,8 +127,9 @@ pub struct DebugOverlay {
     link: Vec<String>,
     /// How far back from now the timeline shows, in seconds, while paused.
     timeline_scroll: f32,
-    /// Whether the timeline follows the live edge.
-    timeline_live: bool,
+    /// When the timeline was paused, which its right edge is measured back
+    /// from; `None` while it follows the live edge.
+    timeline_paused: Option<Instant>,
     /// Salts every interactive id this overlay claims, so a grid of tiles does
     /// not share them. Two overlays under one id are one widget as far as egui
     /// is concerned, and hovering a section on one tile would light the same
@@ -148,7 +149,7 @@ impl DebugOverlay {
             history: History::default(),
             link: Vec::new(),
             timeline_scroll: 0.0,
-            timeline_live: true,
+            timeline_paused: None,
             salt: egui::Id::new((
                 "iroh-live-egui overlay",
                 OVERLAY_SALT.fetch_add(1, Ordering::Relaxed),
@@ -908,9 +909,15 @@ fn signed_ms(later: Instant, earlier: Instant) -> f32 {
 
 /// How much later a picture was presented than the audio with the closest
 /// timestamp, in milliseconds, or `None` without audio.
+///
+/// `audio` is sorted by timestamp, so the closest is found by a binary search
+/// rather than a scan per picture.
 fn av_offset(video: &FrameTiming, audio: &[&FrameTiming]) -> Option<f32> {
-    let closest = audio
-        .iter()
+    let at = audio.partition_point(|timing| timing.pts < video.pts);
+    let closest = [at.checked_sub(1), Some(at)]
+        .into_iter()
+        .flatten()
+        .filter_map(|index| audio.get(index))
         .min_by_key(|timing| video.pts.abs_diff(timing.pts))?;
     Some(signed_ms(video.presented, closest.presented))
 }
@@ -930,10 +937,11 @@ fn time_playback(timeline: &[FrameTiming]) -> Section {
         .iter()
         .rev()
         .find(|timing| timing.kind == MediaKind::Video);
-    let audio: Vec<&FrameTiming> = timeline
+    let mut audio: Vec<&FrameTiming> = timeline
         .iter()
         .filter(|timing| timing.kind == MediaKind::Audio)
         .collect();
+    audio.sort_by_key(|timing| timing.pts);
     let mut parts = Vec::new();
     let mut lines = Vec::new();
     if let Some(video) = video {
@@ -965,6 +973,10 @@ fn time_playback(timeline: &[FrameTiming]) -> Section {
 
 /// Seconds of history the timeline spans.
 const TIMELINE_WINDOW_SECS: f32 = 10.0;
+
+/// How far back the paused timeline scrolls, in seconds: about as far as the
+/// player's timeline and the overlay's own history reach.
+const TIMELINE_SCROLL_MAX: f32 = 12.0;
 const HOLD_LANE_H: f32 = 36.0;
 const VIDEO_LANE_H: f32 = 20.0;
 const AUDIO_LANE_H: f32 = 16.0;
@@ -1037,11 +1049,13 @@ impl DebugOverlay {
         let font = egui::FontId::monospace(9.0);
 
         let now = Instant::now();
-        let right = match self.timeline_live {
-            true => now,
-            false => now
+        // Paused, the right edge stays where it was put rather than sliding
+        // along with the clock.
+        let right = match self.timeline_paused {
+            None => now,
+            Some(at) => at
                 .checked_sub(Duration::from_secs_f32(self.timeline_scroll))
-                .unwrap_or(now),
+                .unwrap_or(at),
         };
         let left = right
             .checked_sub(Duration::from_secs_f32(TIMELINE_WINDOW_SECS))
@@ -1075,6 +1089,8 @@ impl DebugOverlay {
             .copied()
             .filter(|timing| timing.kind == MediaKind::Audio)
             .collect();
+        let mut audio_by_pts = audio.clone();
+        audio_by_pts.sort_by_key(|timing| timing.pts);
         let label = |rect: egui::Rect, text: &str, color: egui::Color32| {
             let galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
             painter.galley(rect.min + egui::vec2(4.0, 1.0), galley, color);
@@ -1193,7 +1209,9 @@ impl DebugOverlay {
         let half = av_rect.height() / 2.0 - 2.0;
         let offsets: Vec<(f32, f32)> = video
             .iter()
-            .filter_map(|timing| Some((lanes.x(timing.presented), av_offset(timing, &audio)?)))
+            .filter_map(|timing| {
+                Some((lanes.x(timing.presented), av_offset(timing, &audio_by_pts)?))
+            })
             .collect();
         for pair in offsets.windows(2) {
             let (x1, o1) = pair[0];
@@ -1249,19 +1267,16 @@ impl DebugOverlay {
         // The axis, in seconds before the right edge.
         let axis_y = rect.max.y - AXIS_H;
         let axis_color = egui::Color32::from_rgb(120, 120, 120);
-        let offset = match self.timeline_live {
-            true => 0.0,
-            false => self.timeline_scroll,
-        };
+        let offset = now.saturating_duration_since(right).as_secs_f32();
         for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
             let x = rect.min.x + sec as f32 * px_per_sec;
             let ago = TIMELINE_WINDOW_SECS - sec as f32 + offset;
             let galley = painter.layout_no_wrap(format!("-{ago:.0}s"), font.clone(), axis_color);
             painter.galley(egui::pos2(x + 2.0, axis_y), galley, axis_color);
         }
-        let (indicator, color) = match self.timeline_live {
-            true => ("LIVE", COLOR_GOOD),
-            false => ("PAUSED", COLOR_WARN),
+        let (indicator, color) = match self.timeline_paused {
+            None => ("LIVE", COLOR_GOOD),
+            Some(_) => ("PAUSED", COLOR_WARN),
         };
         let galley = painter.layout_no_wrap(indicator.to_string(), font.clone(), color);
         painter.galley(
@@ -1276,12 +1291,14 @@ impl DebugOverlay {
         if response.hovered() {
             let delta = ui.input(|input| input.smooth_scroll_delta.y);
             if delta.abs() > 0.1 {
-                self.timeline_live = false;
-                self.timeline_scroll = (self.timeline_scroll + delta * 0.5).max(0.0);
+                self.timeline_paused.get_or_insert(now);
+                // No further back than the timeline keeps.
+                self.timeline_scroll =
+                    (self.timeline_scroll + delta * 0.5).clamp(0.0, TIMELINE_SCROLL_MAX);
             }
         }
         if response.double_clicked() {
-            self.timeline_live = true;
+            self.timeline_paused = None;
             self.timeline_scroll = 0.0;
         }
     }
