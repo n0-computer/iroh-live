@@ -30,7 +30,7 @@ pub use self::{
 };
 use crate::{
     AudioSource, EncodedVideoSource, VideoSource,
-    catalog::{CatalogProducer, HangCatalog},
+    catalog::CatalogProducer,
     error::Error,
     stats::{PublishRecorder, PublishStats},
 };
@@ -185,7 +185,7 @@ impl LocalBroadcast {
         // clock the media is stamped from is the one it is built with.
         let clock = moq_mux::Clock::new();
         let config = moq_mux::catalog::Config::default()
-            .with_catalog(HangCatalog::default())
+            .with_catalog(hang::catalog::Catalog::default())
             .with_clock(clock);
         // Creating the catalog track on a producer can fail only if a track of
         // that name exists already, which it cannot on a broadcast nothing has

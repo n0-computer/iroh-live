@@ -901,7 +901,7 @@ mod tests {
     use n0_watcher::Watcher as _;
 
     use super::{super::PlaybackRecorder, *};
-    use crate::{RemoteBroadcast, catalog::HangCatalog};
+    use crate::RemoteBroadcast;
 
     /// The test stream's geometry. Small, so encoding thirty pictures in a unit
     /// test costs nothing.
@@ -1022,7 +1022,7 @@ mod tests {
         let consumer = broadcast.consume();
         let catalog = moq_mux::catalog::Producer::new(
             &mut broadcast,
-            moq_mux::catalog::Config::default().with_catalog(HangCatalog::default()),
+            moq_mux::catalog::Config::default().with_catalog(hang::catalog::Catalog::default()),
         )?;
         let track = broadcast.create_track(
             "video",
@@ -1057,7 +1057,7 @@ mod tests {
         let mut snapshots = remote.catalog();
         let config = loop {
             if let Some(known) = snapshots.get()
-                && let Some(config) = known.hang_video("video")
+                && let Some(config) = known.video.renditions.get("video")
             {
                 break config.clone();
             }

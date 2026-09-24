@@ -133,7 +133,7 @@ impl Recording {
     ) -> Result<Self, Error> {
         if let Some(name) = &config.rendition
             && let Some(catalog) = broadcast.catalog().get()
-            && catalog.video_rendition(name).is_none()
+            && !catalog.video.renditions.contains_key(name)
         {
             return Err(n0_error::e!(Error::UnknownRendition { name: name.clone() }));
         }

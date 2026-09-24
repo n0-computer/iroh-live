@@ -457,10 +457,9 @@ async fn noq_publish_iroh_subscribe() {
                 };
                 // The one rendition the noq side wrote, parsed on the far
                 // side of the bridge.
-                let video = parsed.video();
+                let video = &parsed.video.renditions;
                 assert_eq!(video.len(), 1, "the bridged catalog: {video:?}");
-                assert_eq!(video[0].name, "video/h264");
-                assert_eq!(video[0].height(), Some(240));
+                assert_eq!(video["video/h264"].coded_height, Some(240));
                 tracing::info!(attempt, "subscribed to browser-stream via iroh");
                 // Success: clean up and return.
                 drop(sub);

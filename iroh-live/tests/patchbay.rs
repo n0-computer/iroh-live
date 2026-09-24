@@ -255,7 +255,7 @@ impl Fixture {
         tokio::time::timeout(TIMEOUT, async {
             while catalog
                 .get()
-                .is_none_or(|catalog| catalog.video().len() < renditions)
+                .is_none_or(|catalog| catalog.video.renditions.len() < renditions)
             {
                 catalog.updated().await.expect("the broadcast is alive");
             }

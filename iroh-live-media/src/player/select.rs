@@ -474,14 +474,15 @@ pub(crate) async fn run(inputs: Inputs) {
         if why_changed {
             last_why = why;
         }
-        let rank = |name: &str| catalog.video().iter().position(|info| info.name == name);
+        let ranked = catalog.ranked_video();
+        let rank = |name: &str| ranked.iter().position(|(known, _)| *known == name);
         let step_down = matches!(mode, RenditionMode::Auto { .. })
             && match (choice.as_deref(), on_screen.as_deref()) {
                 (Some(choice), Some(playing)) => rank(choice) > rank(playing),
                 _ => false,
             };
         let next = choice.and_then(|name| {
-            let config = catalog.hang_video(&name)?.clone();
+            let config = catalog.video.renditions.get(&name)?.clone();
             Some(Desired {
                 target: Target::new(name, generation),
                 settings: settings.clone(),
@@ -550,13 +551,13 @@ fn choose(
     now: Instant,
 ) -> (Option<String>, Option<Arc<Error>>) {
     let rungs: Vec<Rung> = catalog
-        .video()
-        .iter()
-        .map(|info| Rung {
-            name: info.name.clone(),
-            bitrate: info.bitrate.map(crate::Bitrate::as_bps),
-            height: info.height(),
-            stalled: info.stalled,
+        .ranked_video()
+        .into_iter()
+        .map(|(name, config)| Rung {
+            name: name.to_string(),
+            bitrate: config.bitrate,
+            height: config.coded_height,
+            stalled: config.stalled.unwrap_or(false),
         })
         .collect();
     let (max_height, why) = match mode {
@@ -570,7 +571,7 @@ fn choose(
                          is retried"
                     ))))),
                 )
-            } else if catalog.video_rendition(name).is_none() {
+            } else if !catalog.video.renditions.contains_key(name) {
                 (
                     None,
                     Some(Arc::new(n0_error::e!(Error::UnknownRendition {
@@ -629,7 +630,7 @@ mod tests {
     use super::*;
 
     fn catalog() -> Catalog {
-        let mut hang = crate::catalog::HangCatalog::default();
+        let mut hang = hang::catalog::Catalog::default();
         for (name, height, bitrate) in [("1080p", 1080, 4_000_000), ("360p", 360, 500_000)] {
             let mut config = VideoConfig::new(VideoCodec::H264(H264 {
                 inline: true,
@@ -642,7 +643,7 @@ mod tests {
             config.bitrate = Some(bitrate);
             hang.video.renditions.insert(name.to_string(), config);
         }
-        Catalog::new(hang)
+        Catalog::from(hang)
     }
 
     fn pick(mode: &RenditionMode, excluded: &[&str]) -> (Option<String>, Option<Arc<Error>>) {

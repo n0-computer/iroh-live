@@ -60,9 +60,8 @@ pub(crate) async fn run(inputs: Inputs) {
             let known = catalog.peek().clone();
             let consumer = epoch.peek().consumer.clone();
             known.zip(consumer).and_then(|(known, consumer)| {
-                let info = known.audio().first()?.clone();
-                let config = known.hang_audio(&info.name)?.clone();
-                Some((info.name, config, consumer))
+                let (name, config) = known.audio.renditions.first_key_value()?;
+                Some((name.clone(), config.clone(), consumer))
             })
         };
         let mut reader = match opened {

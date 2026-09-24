@@ -414,7 +414,7 @@ fn play_audio(
     name: &str,
     output: &media::AudioOutput,
 ) -> Option<Player> {
-    if catalog.audio().is_empty() {
+    if catalog.audio.renditions.is_empty() {
         info!(name, "the broadcast carries no audio");
         return None;
     }

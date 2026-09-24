@@ -35,12 +35,10 @@ then closes the broadcast rather than leaving it waiting.
 `RemoteBroadcast::local(&broadcast)` reads a `LocalBroadcast` in-process, with
 no transport at all.
 
-`Catalog` wraps hang's catalog and is compared by snapshot identity: every
-update the publisher sends is a new snapshot, which is the honest comparison
-for a watcher, since hang's catalog carries floats and is only `PartialEq`.
-`video()` lists the renditions largest first as `VideoRenditionInfo`, `audio()`
-lists `AudioRenditionInfo`, and `metadata()` carries the publisher's display
-name. `as_hang()` reaches hang's own shape for a caller that needs it.
+`Catalog` is hang's catalog behind an `Arc`, and derefs to it. It is compared
+by snapshot identity: every update the publisher sends is a new snapshot, which
+is the honest comparison for a watcher, since hang's catalog carries floats and
+is only `PartialEq`. `ranked_video()` lists the video renditions largest first.
 
 In iroh-live, `Live::subscribe` resolves the path first and builds the
 `RemoteBroadcast` with `from_resolved` on the transport's route table, returning

@@ -93,7 +93,7 @@ connection that fell back to a relay does not read as a queue that never drains.
 
 ## Ranking
 
-`Catalog::video()` lists the renditions largest first, by pixel count, and
+`Catalog::ranked_video()` lists the renditions largest first, by pixel count, and
 between two of the same size by the higher advertised bitrate. The selector
 walks that list from the top, so the first rendition that passes every check
 wins.

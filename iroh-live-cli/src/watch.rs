@@ -278,13 +278,13 @@ async fn connect(
 /// Fails if the catalog has no video rendition of that name, listing the ones
 /// it does have.
 fn check_rendition(catalog: &iroh_live::media::Catalog, name: &str) -> Result<()> {
-    if catalog.video_rendition(name).is_some() {
+    if catalog.video.renditions.contains_key(name) {
         return Ok(());
     }
     let offered: Vec<&str> = catalog
-        .video()
-        .iter()
-        .map(|info| info.name.as_str())
+        .ranked_video()
+        .into_iter()
+        .map(|(name, _)| name)
         .collect();
     Err(anyerr!(
         "the broadcast has no video rendition named '{name}'; it offers {}",

@@ -523,7 +523,7 @@ impl RemoteView {
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
         let status = self.player.status().get();
         let catalog = self.player.broadcast().catalog().get();
-        let Some(catalog) = catalog.filter(|catalog| !catalog.video().is_empty()) else {
+        let Some(catalog) = catalog.filter(|catalog| !catalog.video.renditions.is_empty()) else {
             ui.label("no video");
             return;
         };
@@ -543,11 +543,11 @@ impl RemoteView {
                 if ui.selectable_label(auto, "Auto").clicked() {
                     chosen = Some(RenditionMode::auto());
                 }
-                for info in catalog.video() {
-                    let pinned = status.mode == RenditionMode::pinned(info.name.clone());
-                    let text = info.label.clone().unwrap_or_else(|| info.name.clone());
+                for (name, config) in catalog.ranked_video() {
+                    let pinned = status.mode == RenditionMode::pinned(name);
+                    let text = config.label.as_deref().unwrap_or(name);
                     if ui.selectable_label(pinned, text).clicked() {
-                        chosen = Some(RenditionMode::pinned(info.name.clone()));
+                        chosen = Some(RenditionMode::pinned(name));
                     }
                 }
             });

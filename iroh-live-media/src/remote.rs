@@ -17,7 +17,7 @@ use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::{
     Catalog, LocalBroadcast, NetworkSignals, Player, PlayerConfig, RecordConfig, Recording,
-    catalog::HangCatalog, error::Error, network::SharedSignals,
+    error::Error, network::SharedSignals,
 };
 
 /// How long a broadcast that ended is looked for again through the route
@@ -366,8 +366,7 @@ async fn read_catalog(
                 {
                     trace!(catalog = %json, "catalog");
                 }
-                let next: HangCatalog = next;
-                catalog.set(Some(Catalog::new(next))).ok();
+                catalog.set(Some(Catalog::from(next))).ok();
             }
             Ok(None) => {
                 debug!("catalog track ended");

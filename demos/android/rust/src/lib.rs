@@ -1177,10 +1177,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
         return 0;
     };
     catalog
-        .video_rendition(&rendition)
-        .and_then(|info| info.size)
-        .map_or(0, |size| {
-            (i64::from(size.width) << 32) | i64::from(size.height)
+        .video
+        .renditions
+        .get(&rendition)
+        .and_then(|config| config.coded_width.zip(config.coded_height))
+        .map_or(0, |(width, height)| {
+            (i64::from(width) << 32) | i64::from(height)
         })
 }
 
@@ -1202,9 +1204,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
         .catalog()
         .map(|catalog| {
             catalog
-                .video()
-                .iter()
-                .map(|info| info.name.as_str())
+                .ranked_video()
+                .into_iter()
+                .map(|(name, _)| name)
                 .collect::<Vec<_>>()
                 .join("\n")
         })

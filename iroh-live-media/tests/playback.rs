@@ -100,7 +100,7 @@ async fn a_player_started_after_the_catalog_plays() {
     tokio::time::timeout(TIMEOUT, async {
         while catalog
             .get()
-            .is_none_or(|catalog| catalog.video().len() < 2)
+            .is_none_or(|catalog| catalog.video.renditions.len() < 2)
         {
             catalog.updated().await.expect("the broadcast is alive");
         }

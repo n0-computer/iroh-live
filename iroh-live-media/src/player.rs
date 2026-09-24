@@ -573,7 +573,7 @@ impl Player {
                 _ => {}
             }
             if let Some(known) = catalog.get()
-                && known.video_rendition(name).is_none()
+                && !known.video.renditions.contains_key(name)
             {
                 return Err(n0_error::e!(SwitchError::UnknownRendition {
                     rendition: name.to_string()
