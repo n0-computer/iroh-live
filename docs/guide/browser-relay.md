@@ -52,8 +52,9 @@ The viewer needs a browser with WebTransport: Chromium works, Safari does not,
 and Firefox needs 153 or newer. `iroh-live-relay/README.md` says why, and what
 an older Firefox does instead.
 
-The relay parses the name as a `LiveTicket`, dials the endpoint inside it over
-iroh, subscribes, and mirrors that one broadcast into its cluster. A second
+The relay parses the name as a `BroadcastTicket`, resolves the ticket's
+broadcast over iroh, and mirrors that one broadcast into its cluster under the
+name the browser asked for. A second
 viewer of the same ticket shares the first one's upstream connection, and
 concurrent arrivals coalesce onto one connect rather than racing.
 
@@ -68,8 +69,10 @@ A publisher that subscribers cannot dial directly connects to the relay instead:
 irl publish --relay <RELAY_ENDPOINT_ID>
 ```
 
-Publishing is node-wide, so the announce follows the connection with nothing
-further to configure. The relay's endpoint id is on its startup line.
+The publisher stays attached to the relay and redials it if the session drops.
+Its broadcast appears there at `live/<publisher endpoint id>/<name>`, the path
+`irl publish` prints, and for one release also at the bare name. The relay's
+endpoint id is on its startup line.
 
 The relay also serves a publish page, which captures the browser's camera and
 microphone and publishes into the relay. Native clients subscribe to that

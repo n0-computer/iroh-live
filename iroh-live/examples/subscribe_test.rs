@@ -19,12 +19,20 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
-    // Retry subscribe: the publisher may not have announced the catalog yet.
-    let _sub = {
+    // The relay names broadcasts as its publishers did, so the name is resolved
+    // on the session with the relay rather than through the route table.
+    // Retried: the publisher may not have announced the catalog yet.
+    let broadcast = {
         let mut last_err = String::new();
         let mut result = None;
         for attempt in 0..5 {
-            match live.subscribe(id, &cli.name).await {
+            let attempt_result = async {
+                let session = live.moq().connect(id).await?;
+                let subscription = session.subscribe(cli.name.as_str()).await?;
+                live.remote_broadcast(&subscription).await
+            }
+            .await;
+            match attempt_result {
                 Ok(r) => {
                     result = Some(r);
                     break;
@@ -40,8 +48,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!("subscribed, waiting for video");
-    let track = _sub
-        .broadcast()
+    let track = broadcast
         .video()
         .await
         .map_err(|err| anyhow::anyhow!("{err:#}"))?;

@@ -12,7 +12,10 @@ publish = false
 crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
+iroh = { workspace = true }
 iroh-live = { workspace = true }
+# The session watcher the answering screen waits on for a caller.
+n0-watcher = "1"
 # The microphone config handed to the audio publisher.
 moq-audio = { workspace = true }
 # `capture` for the microphone source, `playback` for the speaker. Video capture

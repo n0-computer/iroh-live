@@ -26,12 +26,16 @@ pub struct NetworkSignals {
 }
 ```
 
-iroh-live-media does not depend on iroh, so it never produces these. `iroh-live`'s
-`util::spawn_signal_producer` polls the selected path's stats every 200 ms,
-reads the session's bandwidth consumer, and publishes into a
-`watch::Receiver<NetworkSignals>`, which `Live::subscribe` wires onto the
-`Subscription`. A caller using iroh-live-media without iroh either supplies its own
-signals or leaves the track on whichever rendition it opened.
+iroh-live-media does not depend on iroh, so it never produces these. Each
+`iroh-moq` session runs a connection monitor that reads the selected path's
+stats every 200 ms, along with the session's bandwidth consumer, and keeps the
+latest `LinkSample`; it starts the sample history over when the connection
+selects another path, and says so in `path_generation`.
+`iroh_live::network::signals(&subscription, token)` follows whichever session
+serves a subscription and turns its samples into a
+`watch::Receiver<NetworkSignals>`. A caller using iroh-live-media without iroh
+either supplies its own signals or leaves the track on whichever rendition it
+opened.
 
 `delivery_bps` is the one figure that describes capacity. The publisher sends
 it: moq-net's PROBE control message carries the sending side's own estimate of

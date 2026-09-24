@@ -42,7 +42,7 @@ path to every connection. Do not put one on a public address.
 ## Pull on demand
 
 The relay does not need to be told about a publisher in advance. When a client
-subscribes to a broadcast whose name parses as a `LiveTicket`, the relay dials the
+subscribes to a broadcast whose name parses as a `BroadcastTicket`, the relay dials the
 endpoint in the ticket over iroh, subscribes to the broadcast, and mirrors it into
 the cluster under the same name. Everything after that is ordinary relay fan-out:
 a second viewer of the same ticket shares the first one's upstream connection.

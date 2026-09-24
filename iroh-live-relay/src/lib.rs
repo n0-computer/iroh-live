@@ -16,7 +16,8 @@ use std::{
 use axum::{extract::State, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
-use iroh::{SecretKey, endpoint::presets};
+use iroh::SecretKey;
+use iroh_moq::{BroadcastTicket, EndpointOptions, Mdns};
 use moq_relay::{Connection, cluster::Cluster};
 use tokio_util::task::AbortOnDropHandle;
 use tower_http::cors::{Any, CorsLayer};
@@ -80,17 +81,16 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     // and a pull of a just-started local publisher failed with "No addressing
     // information available" until pkarr caught up.
     //
-    // `Announce` rather than `LookupOnly`: the relay accepts sessions, and a
+    // `Announce` rather than `Lookup`: the relay accepts sessions, and a
     // publisher reaches it by endpoint id, so it has an address worth publishing.
-    let builder = iroh::Endpoint::builder(presets::N0)
-        .transport_config(iroh_moq::endpoint::transport_config())
-        .secret_key(iroh_secret)
-        .alpns(alpns);
-    let iroh_endpoint =
-        iroh_moq::endpoint::with_mdns(builder, iroh_moq::endpoint::LanPresence::Announce)
-            .await
-            .bind()
-            .await?;
+    let iroh_endpoint = EndpointOptions::default()
+        .with_secret_key(iroh_secret)
+        .with_mdns(Mdns::Announce)
+        .builder()
+        .await
+        .alpns(alpns)
+        .bind()
+        .await?;
 
     // The backend is left to its default, which is noq. The iroh endpoint is
     // part of the configuration now rather than attached after `init`.
@@ -215,7 +215,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         let ticket = extract_name_from_url(&request).and_then(|name| {
             // The requested spelling travels with the ticket: it is the path the
             // subscriber will be announced under, and the two have to agree.
-            let ticket = name.parse::<iroh_moq::ticket::LiveTicket>().ok()?;
+            let ticket = name.parse::<BroadcastTicket>().ok()?;
             Some((name, ticket))
         });
         debug!(conn_id, %transport, pull = ticket.is_some(), "accepted connection");

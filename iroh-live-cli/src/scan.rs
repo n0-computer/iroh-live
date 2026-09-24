@@ -2,7 +2,7 @@
 //!
 //! `irl watch --scan` opens the camera instead of taking a ticket on the
 //! command line: the window shows what the lens sees and connects as soon as a
-//! frame carries a QR code that parses as a [`LiveTicket`]. It was built for a
+//! frame carries a QR code that parses as a [`BroadcastTicket`]. It was built for a
 //! Raspberry Pi with a touchscreen reading the code off another node's e-paper
 //! display, where there is no keyboard to paste a ticket into.
 //!
@@ -25,12 +25,12 @@ use eframe::egui;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::media::rpicam;
 use iroh_live::{
+    BroadcastTicket,
     media::{
         frame_channel::{FrameReceiver, FrameSender, frame_channel},
         local_task::{self, LocalTask},
         video::{self, Frame, Size, Surface, capture},
     },
-    ticket::LiveTicket,
 };
 use iroh_live_egui::FrameView;
 use moq_net::Timestamp;
@@ -95,7 +95,7 @@ const FIRST_FRAME_GRACE: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct Skip {
     /// The ticket not to report.
-    pub ticket: LiveTicket,
+    pub ticket: BroadcastTicket,
     /// When it may be reported again.
     pub until: Instant,
 }
@@ -290,7 +290,7 @@ enum ScanState {
     /// like pointing it at nothing.
     NotATicket,
     /// A ticket decoded. The camera has been released.
-    Found(Box<LiveTicket>),
+    Found(Box<BroadcastTicket>),
     /// The code in front of the camera is the one whose dial just failed, and
     /// the wait before offering it again has not run out. Carries what is left
     /// of that wait, so the screen can count it down.
@@ -351,7 +351,7 @@ impl ScanView {
 
     /// Returns the ticket, once the camera has read one it is willing to
     /// report.
-    pub fn ticket(&self) -> Option<LiveTicket> {
+    pub fn ticket(&self) -> Option<BroadcastTicket> {
         match &*self.state.borrow() {
             ScanState::Found(ticket) => Some((**ticket).clone()),
             _ => None,
@@ -377,7 +377,7 @@ impl ScanView {
         let note = match &*self.state.borrow() {
             ScanState::Looking => None,
             ScanState::NotATicket => Some("that QR code is not an iroh-live ticket".to_string()),
-            ScanState::Found(ticket) => Some(format!("connecting to {}", ticket.broadcast_name)),
+            ScanState::Found(ticket) => Some(format!("connecting to {}", ticket.name())),
             ScanState::Waiting(left) => Some(format!(
                 "that ticket did not connect, trying it again in {}s",
                 left.as_secs() + 1
@@ -429,8 +429,8 @@ async fn scan(
         let problem = match look(frames, state, ctx, skip, camera).await {
             Ok(ticket) => {
                 info!(
-                    remote = %ticket.endpoint.id.fmt_short(),
-                    broadcast = %ticket.broadcast_name,
+                    remote = %ticket.peer().fmt_short(),
+                    broadcast = %ticket.name(),
                     "ticket scanned"
                 );
                 report(state, ctx, ScanState::Found(Box::new(ticket)));
@@ -465,7 +465,7 @@ async fn look(
     ctx: &egui::Context,
     skip: Option<&Skip>,
     camera: Option<&VideoSourceSpec>,
-) -> Result<LiveTicket, String> {
+) -> Result<BroadcastTicket, String> {
     let mut stream = ScanCamera::open(camera).await?;
     let size = stream.size();
     info!(
@@ -581,7 +581,7 @@ struct Decoder {
     /// Planes go this way, at most one queued.
     planes: std::sync::mpsc::SyncSender<Luma>,
     /// The ticket comes back this way, once.
-    found: tokio::sync::mpsc::Receiver<LiveTicket>,
+    found: tokio::sync::mpsc::Receiver<BroadcastTicket>,
     /// Whether the worker has taken and finished the last plane.
     idle: Arc<AtomicBool>,
 }
@@ -591,7 +591,7 @@ impl Decoder {
     /// which happens when the [`Decoder`] is.
     fn spawn(state: watch::Sender<ScanState>, ctx: egui::Context, skip: Option<Skip>) -> Self {
         let (planes, incoming) = std::sync::mpsc::sync_channel::<Luma>(1);
-        let (report_found, found) = tokio::sync::mpsc::channel::<LiveTicket>(1);
+        let (report_found, found) = tokio::sync::mpsc::channel::<BroadcastTicket>(1);
         let idle = Arc::new(AtomicBool::new(true));
         let worker_idle = Arc::clone(&idle);
         std::thread::Builder::new()
@@ -611,7 +611,7 @@ impl Decoder {
                         "looked for a QR code"
                     );
                     if let Some(text) = found {
-                        match text.parse::<LiveTicket>() {
+                        match text.parse::<BroadcastTicket>() {
                             Ok(ticket) => {
                                 if let Some(left) = still_skipped(skip.as_ref(), &ticket) {
                                     report(&state, &ctx, ScanState::Waiting(left));
@@ -658,7 +658,7 @@ impl Decoder {
     ///
     /// Pending forever once the worker has gone, which only happens after it
     /// delivered a ticket or this [`Decoder`] was dropped.
-    async fn found(&mut self) -> LiveTicket {
+    async fn found(&mut self) -> BroadcastTicket {
         match self.found.recv().await {
             Some(ticket) => ticket,
             None => std::future::pending().await,
@@ -668,7 +668,7 @@ impl Decoder {
 
 /// Returns how much of `skip`'s wait is left, if `ticket` is the one it names
 /// and the wait has not run out.
-fn still_skipped(skip: Option<&Skip>, ticket: &LiveTicket) -> Option<Duration> {
+fn still_skipped(skip: Option<&Skip>, ticket: &BroadcastTicket) -> Option<Duration> {
     let skip = skip?;
     if skip.ticket != *ticket {
         return None;
@@ -945,16 +945,16 @@ mod tests {
     /// One ticket, the same every run. The QR bit pattern follows the text, so
     /// a random key would make the blur ceiling a lottery and the floor test
     /// below flaky on the boundary.
-    fn fixed_ticket() -> LiveTicket {
+    fn fixed_ticket() -> BroadcastTicket {
         let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
-        LiveTicket::new(secret.public(), "pi-zero")
+        BroadcastTicket::new(secret.public(), "pi-zero")
     }
 
     /// A ticket as a webcam sees the Pi Zero's e-paper: the code drawn at
     /// `module_pixels` per module in the middle of a scan-sized frame, white
     /// around it. Three pixels per module is the panel itself; a webcam at arm's
     /// length sees each module across a handful of its own pixels.
-    fn ticket_code(module_pixels: u32) -> (LiveTicket, Luma) {
+    fn ticket_code(module_pixels: u32) -> (BroadcastTicket, Luma) {
         let ticket = fixed_ticket();
         let code = qrcode::QrCode::new(ticket.to_string()).expect("a ticket fits in a QR code");
         let modules = u32::try_from(code.width()).expect("at most 177 modules");
@@ -1002,7 +1002,8 @@ mod tests {
         let reads = |tenths: u32| {
             let sigma = f64::from(tenths) / 10.0 * f64::from(module_pixels);
             let image = blur(&sharp, sigma);
-            decoder(&image).and_then(|text| text.parse::<LiveTicket>().ok()) == Some(ticket.clone())
+            decoder(&image).and_then(|text| text.parse::<BroadcastTicket>().ok())
+                == Some(ticket.clone())
         };
         if !reads(0) {
             return 0.0;
@@ -1038,7 +1039,7 @@ mod tests {
         for module_pixels in [4, 6, 8, 10] {
             let (ticket, sharp) = ticket_code(module_pixels);
             let image = blur(&sharp, FLOOR_MODULES * f64::from(module_pixels));
-            let read = decode(&image).and_then(|text| text.parse::<LiveTicket>().ok());
+            let read = decode(&image).and_then(|text| text.parse::<BroadcastTicket>().ok());
             assert_eq!(
                 read.as_ref(),
                 Some(&ticket),
@@ -1091,10 +1092,11 @@ mod tests {
 
     #[test]
     fn a_ticket_survives_the_round_trip_through_a_qr_code() {
-        let ticket = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let ticket = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
         let text = decode(&render(&ticket.to_string())).expect("the code is there to be found");
         assert_eq!(
-            text.parse::<LiveTicket>().expect("it decoded as printed"),
+            text.parse::<BroadcastTicket>()
+                .expect("it decoded as printed"),
             ticket
         );
     }
@@ -1103,7 +1105,7 @@ mod tests {
     fn a_qr_code_that_is_not_a_ticket_decodes_but_does_not_parse() {
         let text = decode(&render("https://example.com")).expect("the code is still a QR code");
         assert_eq!(text, "https://example.com");
-        assert!(text.parse::<LiveTicket>().is_err());
+        assert!(text.parse::<BroadcastTicket>().is_err());
     }
 
     /// The flag takes the grammar `--video` takes, so a device id that works
@@ -1149,7 +1151,7 @@ mod tests {
 
     #[test]
     fn a_held_off_ticket_is_skipped_until_its_wait_runs_out() {
-        let ticket = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let ticket = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
         let skip = Skip {
             ticket: ticket.clone(),
             until: Instant::now() + Duration::from_secs(60),
@@ -1166,8 +1168,8 @@ mod tests {
 
     #[test]
     fn a_different_ticket_is_never_held_off() {
-        let refused = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
-        let other = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let refused = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let other = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
         let skip = Skip {
             ticket: refused,
             until: Instant::now() + Duration::from_secs(60),

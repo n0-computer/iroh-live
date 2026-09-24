@@ -12,11 +12,16 @@ workspace = true
 
 [dependencies]
 data-encoding = "2.11.1"
-derive_more = { version = "2.1.1", features = ["display"] }
+derive_more = { version = "2.1.1", features = ["display", "debug"] }
 iroh = { workspace = true }
 # mDNS address lookup, so a ticket that names an endpoint id and no
 # addresses still resolves on a network with no route to the internet.
 iroh-mdns-peer-lookup = "0.1.2"
+# `BroadcastTicket` implements iroh's ticket trait, next to `RoomTicket`.
+iroh-tickets = { workspace = true }
+# `Grant::from_claims`, behind `auth`: one token format for our nodes and moq
+# relays.
+moq-auth = { version = "0.1.0", default-features = false, optional = true }
 moq-net = { workspace = true }
 # Only for `moq_tokio::transport::Session`, which adapts the async transport
 # interface web-transport-iroh implements to the poll one moq-net requires.
@@ -24,6 +29,7 @@ moq-net = { workspace = true }
 moq-tokio = { workspace = true, default-features = false }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.2"
+n0-watcher = "1"
 # BBR3, the congestion controller every endpoint binds with.
 noq-proto = { workspace = true }
 # Older tickets encode a postcard `EndpointAddr`, and they still parse.
@@ -32,7 +38,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 # `time` seeds each session driver's clock, and `macros` is for the `select!`
 # that runs it. Both used to arrive only through feature unification with the
 # rest of the workspace, which is not a thing a library can lean on.
-tokio = { version = "1.53.1", features = ["sync", "time", "macros"] }
+tokio = { version = "1.53.1", features = ["sync", "time", "macros", "rt"] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
 url = "2.5.8"
@@ -40,6 +46,15 @@ web-transport-iroh = { workspace = true }
 # The H3 CONNECT request and response types. web-transport-iroh surfaces them in
 # its API but does not re-export them, so the version has to be matched by hand.
 web-transport-proto = "0.6"
+
+[features]
+default = []
+# Relay links: `Moq::attach_relay` over moq-tokio's client, for `iroh://` and
+# `https://` relays. Off by default so a node that never talks to a relay does
+# not compile a second QUIC stack.
+relay-links = ["moq-tokio/iroh", "moq-tokio/noq", "moq-tokio/aws-lc-rs"]
+# `Grant::from_claims` over moq-auth's claims.
+auth = ["dep:moq-auth"]
 
 [dev-dependencies]
 futures-lite = "2"

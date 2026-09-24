@@ -3,19 +3,23 @@
 A ticket is everything a viewer needs to reach a broadcast, in one string. There
 are two kinds, in two crates.
 
-## LiveTicket
+## BroadcastTicket
 
-`iroh_live::ticket::LiveTicket` names a publisher's endpoint id and the path its
-broadcast is on. It carries no socket addresses.
+`iroh_live::BroadcastTicket` names a publisher's endpoint id and the name of one
+of its broadcasts, which it publishes at `live/<endpoint id>/<name>`. It carries
+no socket addresses.
 
 ```rust
-use iroh_live::ticket::LiveTicket;
+use iroh_live::BroadcastTicket;
 
-let ticket = LiveTicket::new(live.endpoint().id(), "hello");
+let ticket = BroadcastTicket::new(live.endpoint().id(), "hello");
 println!("{ticket}");
+assert_eq!(ticket.path().as_str(), format!("live/{}/hello", ticket.peer()));
 
-let parsed: LiveTicket = string.parse()?;
+let parsed: BroadcastTicket = string.parse()?;
 ```
+
+A publication hands out its own: `live.publish("hello", broadcast)?.ticket()`.
 
 `Display` produces a URI:
 
@@ -28,8 +32,9 @@ two older shapes: a base64url `postcard(EndpointAddr)` where the id now sits, an
 the legacy `name@BASE32(addr)` that the first builds produced. Both parse, minus
 their addresses. Nothing produces either any more.
 
-`to_bytes` and `from_bytes` are the postcard encoding of the whole ticket. Use
-them when the ticket travels inside another wire format rather than as text.
+Serde goes through the same string. The ticket also implements
+`iroh_tickets::Ticket` with kind `broadcast`, for applications that carry
+tickets in iroh's envelope.
 
 ### Why no addresses
 
@@ -50,11 +55,11 @@ read a ticket minted after it.
 
 ## Call tickets
 
-A call needs no ticket type of its own. Each side publishes under
-`calls/<its own endpoint id>` and subscribes to the other's, so a `LiveTicket`
-built with `Call::path(my_endpoint_id)` as its name is what you hand the person
-you want to call. The per-peer path replaced a fixed `call` name that two
-concurrent calls used to collide on.
+A call needs no ticket type of its own. `irl call` and the Android demo each
+publish under `calls/<their own endpoint id>` and subscribe to the other's on
+the session between them, so the callee only needs the caller's endpoint id. The
+ticket they hand out is a `BroadcastTicket` named `calls/<endpoint id>`, which
+is what earlier builds handed out too.
 
 ## RoomTicket
 
@@ -69,10 +74,6 @@ use iroh_rooms::RoomTicket;
 let ticket = RoomTicket::generate();          // fresh topic, no bootstrap
 let parsed: RoomTicket = string.parse()?;
 ```
-
-`RoomTicket::new_from_env` reads `IROH_LIVE_ROOM` for a full ticket, falls back
-to `IROH_LIVE_TOPIC` for a hex topic id, and otherwise generates one and logs the
-value to reuse.
 
 `Room::ticket()` returns a ticket that includes the calling peer as a bootstrap
 endpoint, which is what you pass to someone joining. See [rooms](rooms.md).

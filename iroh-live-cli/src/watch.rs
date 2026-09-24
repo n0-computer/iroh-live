@@ -11,24 +11,27 @@
 //! can still be pointed somewhere else, and every screen without a picture
 //! keeps a button back to whatever was playing before it. See [`crate::scan`].
 
-use iroh_live::{Live, Subscription, media::subscribe::MediaTracks, ticket::LiveTicket};
+use iroh_live::{BroadcastTicket, Live, media::subscribe::MediaTracks};
 use n0_error::{Result, anyerr};
 #[cfg(feature = "playback")]
 use tracing::info;
 use tracing::warn;
 
-use crate::{args::WatchArgs, transport};
+use crate::{
+    args::WatchArgs,
+    transport::{self, Subscribed},
+};
 
 /// Where this run's first ticket comes from, and who dials it.
 #[derive(Debug)]
 enum Start {
     /// The command line named one and the terminal dials it, before any window
     /// opens.
-    Ticket(LiveTicket),
+    Ticket(BroadcastTicket),
     /// The command line named one and the window dials it, because `--scan`
     /// leaves a camera screen to cancel into.
     #[cfg(feature = "render")]
-    TicketInWindow(LiveTicket),
+    TicketInWindow(BroadcastTicket),
     /// The camera will read one, because `--scan` was given without a ticket.
     #[cfg(feature = "render")]
     Scan,
@@ -229,9 +232,9 @@ async fn setup(args: &WatchArgs) -> Result<Live> {
 /// the broadcast offers.
 async fn connect(
     live: &Live,
-    ticket: &LiveTicket,
+    ticket: &BroadcastTicket,
     options: &Options,
-) -> Result<(Subscription, MediaTracks)> {
+) -> Result<(Subscribed, MediaTracks)> {
     let sub = transport::subscribe(live, ticket).await?;
     if let Some(name) = &options.rendition {
         check_rendition(&sub, name)?;
@@ -258,7 +261,7 @@ async fn connect(
 ///
 /// Fails if the catalog has no video rendition of that name, listing the ones
 /// it does have.
-fn check_rendition(sub: &Subscription, name: &str) -> Result<()> {
+fn check_rendition(sub: &Subscribed, name: &str) -> Result<()> {
     let catalog = sub.broadcast().catalog();
     if catalog.video().contains_key(name) {
         return Ok(());
@@ -279,7 +282,7 @@ fn check_rendition(sub: &Subscription, name: &str) -> Result<()> {
     clippy::unused_async,
     reason = "one arm of a feature-gated body awaits"
 )]
-async fn audio_only(sub: &Subscription) -> MediaTracks {
+async fn audio_only(sub: &Subscribed) -> MediaTracks {
     #[cfg(feature = "playback")]
     {
         let broadcast = sub.broadcast();
@@ -306,15 +309,14 @@ async fn audio_only(sub: &Subscription) -> MediaTracks {
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
     live: Live,
-    sub: Subscription,
+    sub: Subscribed,
     tracks: MediaTracks,
 ) -> Result {
     println!("playing, press Ctrl+C to stop");
     rt.block_on(async move {
         tokio::signal::ctrl_c().await?;
         drop(tracks);
-        sub.broadcast().shutdown();
-        sub.session().close(moq_net::Error::Cancel);
+        sub.close();
         live.shutdown().await;
         Ok(())
     })
@@ -330,7 +332,7 @@ mod window {
     use std::time::{Duration, Instant};
 
     use eframe::egui;
-    use iroh_live::{Live, Subscription, media::subscribe::MediaTracks, ticket::LiveTicket};
+    use iroh_live::{BroadcastTicket, Live, media::subscribe::MediaTracks};
     use iroh_live_egui::egui_wgpu::RenderState;
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
@@ -340,6 +342,7 @@ mod window {
     use super::{Options, connect};
     use crate::{
         scan::{ScanView, Skip},
+        transport::Subscribed,
         ui::{CursorIdle, RemoteView, RenditionChoice},
     };
 
@@ -373,7 +376,7 @@ mod window {
         Watching(Box<Connected>),
         /// A dial of the command line's ticket, run from inside the window so
         /// that it can be given up on without a keyboard.
-        Connecting(Box<LiveTicket>),
+        Connecting(Box<BroadcastTicket>),
         /// The scan screen, because `--scan` was given without a ticket.
         Scanning,
     }
@@ -438,7 +441,7 @@ mod window {
     /// subscription does not stay open instead.
     #[derive(Debug, Clone)]
     struct Previous {
-        ticket: LiveTicket,
+        ticket: BroadcastTicket,
         /// The broadcast's name as its catalog gave it, for the button label.
         name: String,
     }
@@ -483,7 +486,7 @@ mod window {
     /// or two and the window re-dials a peer that has just refused. Cleared by
     /// a dial that connects, so an outage that ends costs nothing afterwards.
     struct Refused {
-        ticket: LiveTicket,
+        ticket: BroadcastTicket,
         /// Consecutive failures, counting from zero for the first.
         strikes: u32,
     }
@@ -507,7 +510,7 @@ mod window {
     /// A subscription attempt in flight.
     struct Connecting {
         /// What is being dialed, named on the connecting screen.
-        ticket: LiveTicket,
+        ticket: BroadcastTicket,
         /// Carried through the attempt so that cancelling it still leads back
         /// to whatever was playing before.
         previous: Option<Previous>,
@@ -528,8 +531,8 @@ mod window {
     pub(super) struct Connected {
         /// What was dialed to reach it, kept so that the window can dial it
         /// again after a trip to the scan screen.
-        pub(super) ticket: LiveTicket,
-        pub(super) sub: Subscription,
+        pub(super) ticket: BroadcastTicket,
+        pub(super) sub: Subscribed,
         pub(super) tracks: MediaTracks,
     }
 
@@ -542,8 +545,7 @@ mod window {
         fn discard(self) {
             let Self { sub, tracks, .. } = self;
             drop(tracks);
-            sub.broadcast().shutdown();
-            sub.session().close(moq_net::Error::Cancel);
+            sub.close();
         }
     }
 
@@ -553,8 +555,8 @@ mod window {
         title: String,
         /// What was dialed to reach it, for the way back from the screens that
         /// replace this one.
-        ticket: LiveTicket,
-        sub: Subscription,
+        ticket: BroadcastTicket,
+        sub: Subscribed,
         remote: RemoteView,
     }
 
@@ -592,12 +594,12 @@ mod window {
         ctx: &egui::Context,
         live: &Live,
         options: &Options,
-        ticket: LiveTicket,
+        ticket: BroadcastTicket,
         previous: Option<Previous>,
     ) -> Connecting {
         info!(
-            remote = %ticket.endpoint.id.fmt_short(),
-            broadcast = %ticket.broadcast_name,
+            remote = %ticket.peer().fmt_short(),
+            broadcast = %ticket.name(),
             "dialing"
         );
         let (tx, rx) = oneshot::channel();
@@ -623,7 +625,7 @@ mod window {
                 Ok(Err(err)) => Attempt::Failed(format!("{err:#}")),
                 Err(_) => Attempt::Failed(format!(
                     "no answer from {} within {}s: is the publisher running?",
-                    dialing.endpoint.id.fmt_short(),
+                    dialing.peer().fmt_short(),
                     DIAL_DEADLINE.as_secs()
                 )),
             };
@@ -778,7 +780,12 @@ mod window {
         /// `previous` is what the connecting screen offers as a way back, which
         /// is the broadcast that was playing before this dial rather than the
         /// one being dialed.
-        fn dial(&mut self, ctx: &egui::Context, ticket: LiveTicket, previous: Option<Previous>) {
+        fn dial(
+            &mut self,
+            ctx: &egui::Context,
+            ticket: BroadcastTicket,
+            previous: Option<Previous>,
+        ) {
             self.close_mode();
             // The message belongs to the attempt that just ended, and this one
             // has its own screen to report on.
@@ -843,7 +850,7 @@ mod window {
             match &mut self.mode {
                 Mode::Watching(watching) => {
                     watching.remote.shutdown();
-                    watching.sub.session().close(moq_net::Error::Cancel);
+                    watching.sub.close();
                 }
                 Mode::Connecting(pending) => {
                     // Closing the channel before draining it means an attempt
@@ -947,7 +954,7 @@ mod window {
             let Mode::Connecting(pending) = &self.mode else {
                 return;
             };
-            let name = pending.ticket.broadcast_name.clone();
+            let name = pending.ticket.name().to_owned();
             let previous = pending.previous.clone();
 
             let mut cancel = false;
@@ -1002,13 +1009,13 @@ mod window {
 
     #[cfg(test)]
     mod tests {
-        use iroh_live::ticket::LiveTicket;
+        use iroh_live::BroadcastTicket;
 
         use super::{REDIAL_WAIT, REDIAL_WAIT_MAX, Refused, back_label};
 
         fn refused(strikes: u32) -> Refused {
             Refused {
-                ticket: LiveTicket::new(iroh::SecretKey::generate().public(), "hello"),
+                ticket: BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello"),
                 strikes,
             }
         }

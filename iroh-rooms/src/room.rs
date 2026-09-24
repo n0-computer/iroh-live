@@ -10,7 +10,7 @@ use std::{
 use bytes::Bytes;
 use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_gossip::{Gossip, TopicId};
-use iroh_moq::{Moq, MoqSession};
+use iroh_moq::{Audience, Moq, Reach, Subscription};
 use iroh_smol_kv::{
     ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
 };
@@ -330,8 +330,9 @@ pub enum RoomEvent {
         remote: EndpointId,
         /// The name the peer announced the broadcast under.
         name: String,
-        /// The MoQ session with the remote peer.
-        session: Box<MoqSession>,
+        /// The path resolved in the node's route table, which also says which
+        /// session serves it.
+        subscription: Box<Subscription>,
         /// The subscribed broadcast, ready for its tracks to be read.
         #[debug(skip)]
         broadcast: broadcast::Consumer,
@@ -407,7 +408,7 @@ struct PeerState {
     display_name: Option<String>,
 }
 
-type SubscribeResult = Result<(MoqSession, broadcast::Consumer), AnyError>;
+type SubscribeResult = Result<Subscription, AnyError>;
 type ConnectingFutures = FuturesUnordered<BoxFuture<(BroadcastId, SubscribeResult)>>;
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
@@ -600,8 +601,8 @@ impl Actor {
     /// Handles the outcome of a MoQ subscribe. Returns `false` if the actor should stop.
     async fn handle_subscribed(&mut self, id: BroadcastId, res: SubscribeResult) -> bool {
         let BroadcastId(remote, ref name) = id;
-        let (session, consumer) = match res {
-            Ok(parts) => parts,
+        let subscription = match res {
+            Ok(subscription) => subscription,
             Err(err) => {
                 self.active_subscribe.remove(&id);
                 warn!(broadcast=%id, "subscribing to broadcast failed: {err:#}");
@@ -610,12 +611,13 @@ impl Actor {
         };
         info!(broadcast=%id, "broadcast subscription ready, emitting event");
 
+        let consumer = subscription.as_moq();
         self.spawn_chat_task(remote, consumer.clone());
 
         let event = RoomEvent::BroadcastSubscribed {
             remote,
             name: name.clone(),
-            session: Box::new(session),
+            subscription: Box::new(subscription),
             broadcast: consumer.clone(),
         };
         if !self.send_event(event).await {
@@ -703,9 +705,17 @@ impl Actor {
     }
 
     async fn publish(&mut self, name: String) -> Result<broadcast::Producer, Error> {
-        let path = room_path(self.topic_id, &name);
+        let path = room_path(self.topic_id, self.me, &name);
         info!(%name, %path, "publishing broadcast to room");
-        let producer = self.moq.publish(&path)?;
+        let producer = moq_net::broadcast::Info::new().produce();
+        // Also answered at the older layout's path, for members on the release
+        // before paths named their publisher.
+        self.moq.publish_at_with_legacy(
+            &path,
+            legacy_room_path(self.topic_id, &name),
+            &producer,
+            Audience::Everyone,
+        )?;
         let consumer = producer.consume();
         self.active_publish.insert(name.clone());
         self.publish_closed.push(Box::pin(async move {
@@ -819,20 +829,41 @@ async fn put_peer_state(kv_writer: WriteScope, state: PeerState) {
     }
 }
 
+/// How long a subscribe waits for a member's publisher-named path before it
+/// also tries the older layout's path.
+const LEGACY_GRACE: Duration = Duration::from_secs(2);
+
 /// Connects to `remote` and subscribes to the broadcast it announced at `name`.
+///
+/// A member on the release before paths named their publisher publishes at the
+/// older layout's path, which only means something on the session with that
+/// member, so it is resolved there once the current path had its chance.
 async fn subscribe(moq: Moq, remote: EndpointId, topic: TopicId, name: &str) -> SubscribeResult {
     let session = moq.connect(remote).await?;
-    let broadcast = session.subscribe(room_path(topic, name)).await?;
-    Ok((session, broadcast))
+    let current = moq.subscribe(room_path(topic, remote, name), Reach::Direct);
+    let legacy = async {
+        tokio::time::sleep(LEGACY_GRACE).await;
+        session.subscribe(legacy_room_path(topic, name)).await
+    };
+    let subscription = tokio::select! {
+        current = current => current?,
+        legacy = legacy => legacy?,
+    };
+    Ok(subscription)
 }
 
-/// The origin path a room's broadcast lives at.
+/// Returns the path a room's broadcast lives at:
+/// `rooms/<topic>/<publisher>/<name>`.
 ///
-/// Publishing is node-wide, so a bare name would collide across rooms: a peer
-/// in two rooms that publishes "cam" in each would find the second rejected as
-/// a duplicate. The topic scopes it, and both sides derive the same path from
-/// the ticket they already share.
-fn room_path(topic: TopicId, name: &str) -> String {
+/// The topic scopes it, so a peer in two rooms can publish "cam" in each, and
+/// the publisher's id makes the same broadcast the same path over every link.
+fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> String {
+    format!("rooms/{topic}/{publisher}/{name}")
+}
+
+/// Returns the path the release before publisher-named paths used for a room
+/// broadcast: `rooms/<topic>/<name>`.
+fn legacy_room_path(topic: TopicId, name: &str) -> String {
     format!("rooms/{topic}/{name}")
 }
 
@@ -902,10 +933,18 @@ mod tests {
     #[test]
     fn a_room_path_is_scoped_by_topic() {
         let topic = TopicId::from_bytes([7; 32]);
+        let publisher = SecretKey::from_bytes(&[3; 32]).public();
+        let path = room_path(topic, publisher, "cam");
         assert_eq!(
-            room_path(topic, "cam"),
-            format!("rooms/{topic}/cam"),
+            path,
+            format!("rooms/{topic}/{publisher}/cam"),
             "both sides derive this from the ticket, so its shape is a wire format",
         );
+        assert_eq!(
+            iroh_moq::publisher_of(&moq_net::Path::new(&path)),
+            Some(publisher),
+            "the transport dials the publisher a room path names",
+        );
+        assert_eq!(legacy_room_path(topic, "cam"), format!("rooms/{topic}/cam"));
     }
 }

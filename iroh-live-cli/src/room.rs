@@ -19,7 +19,7 @@ use iroh_rooms::{
     Room, RoomTicket,
     chat::{CHAT_PRIORITY, CHAT_TRACK_NAME, ChatPublisher},
 };
-use n0_error::{Result, anyerr};
+use n0_error::Result;
 use tracing::info;
 
 use crate::{args::RoomArgs, source, transport};
@@ -51,9 +51,9 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// Joins the room, publishes this node's camera into it, and prints the ticket
 /// the next participant needs.
 async fn setup(args: &RoomArgs) -> Result<(Live, LocalBroadcast, Room, String, String)> {
-    let live = transport::setup_live_with_gossip().await?;
+    let (live, gossip) = transport::setup_live_with_gossip().await?;
     let (live, (broadcast, room, ticket, display_name)) =
-        transport::with_live(live, async |live| join(live, args).await).await?;
+        transport::with_live(live, async |live| join(live, &gossip, args).await).await?;
     Ok((live, broadcast, room, ticket, display_name))
 }
 
@@ -61,15 +61,14 @@ async fn setup(args: &RoomArgs) -> Result<(Live, LocalBroadcast, Room, String, S
 ///
 /// # Errors
 ///
-/// Fails if gossip is not running, if the room cannot be joined, or if the
-/// capture sources do not parse.
-async fn join(live: &Live, args: &RoomArgs) -> Result<(LocalBroadcast, Room, String, String)> {
-    let gossip = live
-        .gossip()
-        .ok_or_else(|| anyerr!("gossip is not running, which a room cannot do without"))?;
-
+/// Fails if the room cannot be joined, or if the capture sources do not parse.
+async fn join(
+    live: &Live,
+    gossip: &iroh_gossip::Gossip,
+    args: &RoomArgs,
+) -> Result<(LocalBroadcast, Room, String, String)> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
-    let room = Room::new(live.endpoint(), live.transport(), gossip, ticket).await?;
+    let room = Room::new(live.endpoint(), live.moq(), gossip, ticket).await?;
 
     let broadcast = LocalBroadcast::new(room.publish(BROADCAST_NAME).await?)?;
     source::configure(&broadcast, &args.capture)?;
@@ -110,11 +109,7 @@ mod window {
     use iroh::EndpointId;
     use iroh_live::{
         Live, Subscription,
-        media::{
-            publish::LocalBroadcast,
-            subscribe::{MediaTracks, RemoteBroadcast},
-        },
-        moq::MoqSession,
+        media::{publish::LocalBroadcast, subscribe::MediaTracks},
     };
     use iroh_live_egui::egui_wgpu::RenderState;
     use iroh_rooms::{Room, RoomEvent, RoomEvents, RoomHandle};
@@ -125,7 +120,7 @@ mod window {
 
     use crate::{
         args::PlaybackArgs,
-        transport::PEER_TIMEOUT,
+        transport::{PEER_TIMEOUT, Subscribed},
         ui::{LocalPreview, RemoteView},
     };
 
@@ -229,15 +224,16 @@ mod window {
         /// tells two of a peer's tiles apart.
         name: String,
         view: RemoteView,
-        /// Held so the session stays open and can be asked whether it closed.
-        sub: Subscription,
+        /// Held so the subscription stays open and its session can be asked
+        /// whether it closed.
+        sub: Subscribed,
     }
 
     /// A peer's broadcast, subscribed and decoding, on its way to the grid.
     struct Opened {
         remote: EndpointId,
         name: String,
-        sub: Subscription,
+        sub: Subscribed,
         tracks: MediaTracks,
     }
 
@@ -272,7 +268,7 @@ mod window {
             info!("exit");
             for peer in &mut self.peers {
                 peer.view.shutdown();
-                peer.sub.session().close(moq_net::Error::Cancel);
+                peer.sub.close();
             }
             crate::ui::shutdown_publish_blocking(&self.live, &mut self.broadcast);
         }
@@ -300,12 +296,17 @@ mod window {
                     RoomEvent::BroadcastSubscribed {
                         remote,
                         name,
-                        session,
-                        broadcast,
+                        subscription,
+                        ..
                     } => {
                         info!(remote = %short(remote), %name, "subscribing to a peer");
-                        self.opening
-                            .spawn(open(remote, name, *session, broadcast, self.playback));
+                        self.opening.spawn(open(
+                            self.live.clone(),
+                            remote,
+                            name,
+                            *subscription,
+                            self.playback,
+                        ));
                     }
                     RoomEvent::ChatReceived { remote, message } => {
                         self.chat.push(self.label(remote), message.text);
@@ -361,7 +362,9 @@ mod window {
         /// checked too.
         fn drop_closed(&mut self) {
             self.close_tiles("the session closed", |peer| {
-                peer.sub.session().conn().close_reason().is_some()
+                peer.sub
+                    .session()
+                    .is_some_and(|session| session.connection().close_reason().is_some())
             });
         }
 
@@ -518,17 +521,17 @@ mod window {
     /// Returns `None` when the broadcast never produced a catalog, which is
     /// what a peer that announced a name it does not publish looks like.
     async fn open(
+        live: Live,
         remote: EndpointId,
         name: String,
-        session: MoqSession,
-        broadcast: moq_net::broadcast::Consumer,
+        subscription: Subscription,
         playback: PlaybackArgs,
     ) -> Option<Opened> {
         // A peer that announced a name it never published would otherwise
         // leave this task waiting forever.
-        let opened = tokio::time::timeout(PEER_TIMEOUT, RemoteBroadcast::new(&name, broadcast));
-        let broadcast = match opened.await {
-            Ok(Ok(broadcast)) => broadcast,
+        let opened = tokio::time::timeout(PEER_TIMEOUT, Subscribed::open(&live, subscription));
+        let sub = match opened.await {
+            Ok(Ok(sub)) => sub,
             Ok(Err(err)) => {
                 warn!(remote = %short(remote), %name, error = %err, "peer broadcast failed to open");
                 return None;
@@ -538,10 +541,6 @@ mod window {
                 return None;
             }
         };
-        // Room events hand back the session and the broadcast separately, so
-        // the wiring `Live::subscribe` does for a subscription of its own is
-        // done here instead.
-        let sub = Subscription::new(session, broadcast);
         crate::ui::prepare_playback(sub.broadcast(), &playback);
         let tracks = sub.broadcast().media().await;
         Some(Opened {

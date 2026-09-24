@@ -61,26 +61,28 @@ A publisher binds an endpoint, creates a broadcast, and points it at a device:
 
 ```rust
 use iroh_live::{
-    Live,
+    EndpointOptions, Live, LocalBroadcast,
     media::{audio, video},
-    ticket::LiveTicket,
+    moq::net::broadcast,
 };
 
-let live = Live::from_env().await?.with_router().spawn();
-let broadcast = live.publish("hello")?;
-
+let live = Live::builder(EndpointOptions::default().bind().await?)
+    .with_router()
+    .spawn();
+let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
 broadcast.video().set(video::capture::Config::default())?;
 broadcast.audio().set(audio::capture::Config::default());
 
-println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
+let publication = live.publish("hello", broadcast.consume())?;
+println!("{}", publication.ticket().expect("a live path"));
 ```
 
 A subscriber connects with the ticket and reads decoded frames:
 
 ```rust
-let live = Live::from_env().await?.spawn();
-let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
-let tracks = sub.media().await;
+let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
+let remote = live.subscribe(&ticket).await?;
+let tracks = remote.media().await;
 
 if let Some(video) = tracks.video {
     while let Some(frame) = video.recv().await {

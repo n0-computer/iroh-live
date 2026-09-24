@@ -654,7 +654,7 @@ impl QrPixels {
 
 #[cfg(test)]
 mod tests {
-    use iroh_live::{Call, ticket::LiveTicket};
+    use iroh_live::BroadcastTicket;
 
     use super::{QR_QUIET, QrPixels};
 
@@ -699,11 +699,12 @@ mod tests {
     #[test]
     fn a_call_ticket_survives_the_round_trip_through_the_rendered_code() {
         let id = iroh::SecretKey::generate().public();
-        let ticket = LiveTicket::new(id, Call::path(id));
+        let ticket = BroadcastTicket::new(id, format!("calls/{id}"));
         let pixels = QrPixels::render(&ticket.to_string()).expect("a ticket fits in a QR code");
         let text = decode(&upscale(&pixels)).expect("the code is there to be found");
         assert_eq!(
-            text.parse::<LiveTicket>().expect("it decoded as rendered"),
+            text.parse::<BroadcastTicket>()
+                .expect("it decoded as rendered"),
             ticket
         );
     }

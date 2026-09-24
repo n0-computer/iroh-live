@@ -7,7 +7,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
-use iroh_live::Live;
+use iroh_live::{BroadcastTicket, Live, LocalBroadcast, moq::net::broadcast::Info};
 use iroh_live_media::{
     adaptive::AdaptiveConfig,
     net::NetworkSignals,
@@ -35,6 +35,14 @@ async fn endpoint() -> Endpoint {
     endpoint
 }
 
+/// Publishes a new media broadcast as `name` on `live`.
+fn publish(live: &Live, name: &str) -> LocalBroadcast {
+    let broadcast = LocalBroadcast::new(Info::new().produce()).expect("failed to create");
+    live.publish(name, broadcast.consume())
+        .expect("failed to publish");
+    broadcast
+}
+
 /// Publishes video from one node and subscribes from another, checking that
 /// decoded frames arrive with sane dimensions and non-decreasing timestamps.
 #[tokio::test]
@@ -42,7 +50,7 @@ async fn endpoint() -> Endpoint {
 async fn publish_subscribe_video() {
     let (publisher, _broadcast) = async {
         let live = Live::builder(endpoint().await).with_router().spawn();
-        let broadcast = live.publish("test-stream").expect("failed to publish");
+        let broadcast = publish(&live, "test-stream");
         broadcast
             .video()
             .set(test_source::video(Size::new(320, 240), 30))
@@ -51,16 +59,13 @@ async fn publish_subscribe_video() {
     }
     .instrument(info_span!("publisher"))
     .await;
-    let publisher_addr = publisher.endpoint().addr();
+    let ticket = BroadcastTicket::new(publisher.endpoint().id(), "test-stream");
 
     let subscriber = async move {
         let live = Live::builder(endpoint().await).spawn();
-        let sub = live
-            .subscribe(publisher_addr, "test-stream")
-            .await
-            .expect("failed to subscribe");
+        let remote = live.subscribe(&ticket).await.expect("failed to subscribe");
 
-        let track = tokio::time::timeout(TIMEOUT, sub.broadcast().video())
+        let track = tokio::time::timeout(TIMEOUT, remote.video())
             .await
             .expect("timed out waiting for the video catalog")
             .expect("failed to open the video track");
@@ -105,7 +110,7 @@ async fn publish_subscribe_video() {
 #[traced_test]
 async fn publish_subscribe_audio() {
     let publisher = Live::builder(endpoint().await).with_router().spawn();
-    let broadcast = publisher.publish("av-stream").expect("failed to publish");
+    let broadcast = publish(&publisher, "av-stream");
     broadcast
         .video()
         .set(test_source::video(Size::new(320, 240), 30))
@@ -117,11 +122,13 @@ async fn publish_subscribe_audio() {
     ));
 
     let subscriber = Live::builder(endpoint().await).spawn();
-    let sub = subscriber
-        .subscribe(publisher.endpoint().addr(), "av-stream")
+    let remote = subscriber
+        .subscribe(&BroadcastTicket::new(
+            publisher.endpoint().id(),
+            "av-stream",
+        ))
         .await
         .expect("failed to subscribe");
-    let remote = sub.broadcast();
 
     // Wait for the publisher to advertise audio; the two tracks are registered
     // by independent tasks, so the first catalog may carry only one of them.
@@ -166,9 +173,7 @@ async fn publish_subscribe_audio() {
 #[traced_test]
 async fn adaptive_rendition_switching() {
     let publisher = Live::builder(endpoint().await).with_router().spawn();
-    let broadcast = publisher
-        .publish("adaptive-stream")
-        .expect("failed to publish");
+    let broadcast = publish(&publisher, "adaptive-stream");
     broadcast
         .video()
         .set_renditions(
@@ -183,11 +188,13 @@ async fn adaptive_rendition_switching() {
         .expect("failed to set video");
 
     let subscriber = Live::builder(endpoint().await).spawn();
-    let sub = subscriber
-        .subscribe(publisher.endpoint().addr(), "adaptive-stream")
+    let remote = subscriber
+        .subscribe(&BroadcastTicket::new(
+            publisher.endpoint().id(),
+            "adaptive-stream",
+        ))
         .await
         .expect("failed to subscribe");
-    let remote = sub.broadcast();
 
     tokio::time::timeout(TIMEOUT, async {
         while remote.catalog().video().len() < 2 {
@@ -269,20 +276,20 @@ async fn adaptive_rendition_switching() {
 #[traced_test]
 async fn changing_the_decoder_backend_rebuilds_it() {
     let publisher = Live::builder(endpoint().await).with_router().spawn();
-    let broadcast = publisher
-        .publish("decoder-stream")
-        .expect("failed to publish");
+    let broadcast = publish(&publisher, "decoder-stream");
     broadcast
         .video()
         .set(test_source::video(Size::new(320, 240), 30))
         .expect("failed to set video");
 
     let subscriber = Live::builder(endpoint().await).spawn();
-    let sub = subscriber
-        .subscribe(publisher.endpoint().addr(), "decoder-stream")
+    let remote = subscriber
+        .subscribe(&BroadcastTicket::new(
+            publisher.endpoint().id(),
+            "decoder-stream",
+        ))
         .await
         .expect("failed to subscribe");
-    let remote = sub.broadcast();
 
     let track = tokio::time::timeout(TIMEOUT, remote.video())
         .await

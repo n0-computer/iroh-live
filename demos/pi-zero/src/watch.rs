@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use glow::HasContext;
-use iroh_live::{media::subscribe::VideoTrack, moq::MoqSession};
+use iroh_live::{Session, media::subscribe::VideoTrack};
 use moq_video::Frame;
 use n0_future::{StreamExt, boxed::BoxStream};
 
@@ -42,7 +42,7 @@ fn try_upload_frame(
 /// Prints FPS and RTT stats every second.
 #[allow(dead_code, reason = "useful for debugging but not called in release")]
 fn print_stats(
-    session: &MoqSession,
+    session: &Session,
     track: &VideoTrack,
     frame_count: &mut u64,
     fps_last: &mut Instant,
@@ -55,13 +55,7 @@ fn print_stats(
     *frame_count = 0;
     *fps_last = Instant::now();
 
-    let conn = session.conn();
-    let path_list = conn.paths();
-    let rtt = path_list
-        .iter()
-        .find(|p| p.is_selected())
-        .map(|p| p.rtt())
-        .unwrap_or_default();
+    let rtt = session.link().rtt;
     println!(
         "fps: {fps:.0}  rtt: {}ms  rendition: {}",
         rtt.as_millis(),
@@ -387,7 +381,7 @@ impl DrmDisplay {
 ///
 /// Spawns a dedicated render thread so the tokio runtime stays free for
 /// packet ingestion and decode. Frames are forwarded via a bounded channel.
-pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Result<()> {
+pub(crate) async fn run_drm(video_track: VideoTrack, _session: Session) -> Result<()> {
     use tokio::sync::mpsc as tokio_mpsc;
 
     // Channel from async world (frame producer) to render thread (consumer).
@@ -484,7 +478,7 @@ pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
 #[cfg(feature = "windowed")]
 pub(crate) fn run_windowed(
     video_track: VideoTrack,
-    session: MoqSession,
+    session: Session,
     fullscreen: bool,
 ) -> Result<()> {
     use std::num::NonZeroU32;
@@ -511,7 +505,7 @@ pub(crate) fn run_windowed(
         context: Option<glutin::context::PossiblyCurrentContext>,
         window: Option<Window>,
         video_track: VideoTrack,
-        session: MoqSession,
+        session: Session,
         fullscreen: bool,
         frame_count: u64,
         fps_last: Instant,

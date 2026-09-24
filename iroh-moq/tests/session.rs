@@ -1,65 +1,18 @@
-//! Session lifecycle over a real QUIC connection between two iroh endpoints.
+//! Session lifecycle over real QUIC connections between two iroh endpoints.
 //!
 //! What the transport promises and this covers: one session per peer however
 //! many callers ask for it, a session the accepting side can reach as well as
-//! the dialling one, and a shutdown that closes both and opens no more.
+//! the dialing one, and a shutdown that closes both and opens no more.
 
-use std::{sync::OnceLock, time::Duration};
+mod common;
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_moq::Moq;
+use common::{Node, TIMEOUT, step};
+use iroh_moq::Error;
 use n0_tracing_test::traced_test;
-
-/// Generous, because the suite shares a machine with whatever else is running.
-const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Binds an endpoint against a shared in-memory address lookup, so peers in one
-/// test process reach each other without a discovery service.
-async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("failed to bind endpoint");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
-
-/// A node that accepts MoQ, with the router that makes it do so.
-struct Node {
-    endpoint: Endpoint,
-    moq: Moq,
-    router: Router,
-}
-
-impl Node {
-    async fn spawn() -> Self {
-        let endpoint = endpoint().await;
-        let moq = Moq::new(endpoint.clone());
-        let mut router = Router::builder(endpoint.clone());
-        // Every ALPN this build speaks, which is what `Live::register_protocols`
-        // mounts, so the tests negotiate the way an application does.
-        for alpn in iroh_moq::alpns() {
-            router = router.accept(alpn, moq.protocol_handler());
-        }
-        Self {
-            endpoint,
-            moq,
-            router: router.spawn(),
-        }
-    }
-
-    async fn shutdown(self) {
-        self.moq.shutdown().await;
-        self.router.shutdown().await.expect("router task panicked");
-        self.endpoint.close().await;
-    }
-}
+use n0_watcher::Watcher;
 
 /// Two calls for one peer share a session rather than opening a second
-/// connection, which is what keeps a node from accumulating one connection per
+/// connection, which keeps a node from accumulating one connection per
 /// broadcast it subscribes to.
 #[tokio::test]
 #[traced_test]
@@ -67,28 +20,24 @@ async fn connecting_twice_to_a_peer_reuses_the_session() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
 
-    let first = tokio::time::timeout(TIMEOUT, alice.moq.connect(bob.endpoint.addr()))
+    let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
         .await
-        .expect("timed out dialling")
         .expect("failed to dial");
-    let second = tokio::time::timeout(TIMEOUT, alice.moq.connect(bob.endpoint.addr()))
+    let second = step("second dial", alice.moq.connect(bob.endpoint.addr()))
         .await
-        .expect("timed out on the second dial")
         .expect("the second dial failed");
 
+    assert_eq!(first, second, "the second connect opened a second session");
     assert_eq!(
-        first.conn().stable_id(),
-        second.conn().stable_id(),
-        "the second connect opened a second connection",
+        first.connection().stable_id(),
+        second.connection().stable_id()
     );
 
     alice.shutdown().await;
     bob.shutdown().await;
 }
 
-/// Concurrent calls for one peer coalesce onto a single dial, which the reuse
-/// above cannot cover: neither caller can find a session to reuse, because
-/// neither has finished opening one.
+/// Concurrent calls for one peer coalesce onto a single dial.
 #[tokio::test]
 #[traced_test]
 async fn concurrent_connects_to_a_peer_share_one_dial() {
@@ -96,18 +45,16 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
     let bob = Node::spawn().await;
 
     let addr = bob.endpoint.addr();
-    let (first, second) = tokio::time::timeout(
-        TIMEOUT,
+    let (first, second) = step(
+        "concurrent dials",
         futures_lite::future::zip(alice.moq.connect(addr.clone()), alice.moq.connect(addr)),
     )
-    .await
-    .expect("timed out dialling");
-
+    .await;
     let first = first.expect("failed to dial");
     let second = second.expect("the concurrent dial failed");
     assert_eq!(
-        first.conn().stable_id(),
-        second.conn().stable_id(),
+        first.connection().stable_id(),
+        second.connection().stable_id(),
         "two concurrent connects opened two connections",
     );
 
@@ -115,38 +62,47 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
     bob.shutdown().await;
 }
 
-/// The accepting side reaches its session too, which is what a node answering a
-/// call needs: it never dialled, so `connect` is not how it gets there.
+/// The accepting side sees its session in `sessions()`, which is how a node
+/// answering a call learns who called: it never dialed.
 #[tokio::test]
 #[traced_test]
-async fn an_accepted_session_reaches_the_incoming_stream() {
+async fn an_accepted_session_appears_in_sessions() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
 
-    let mut incoming = bob.moq.incoming_sessions();
-    let dialed = tokio::time::timeout(TIMEOUT, alice.moq.connect(bob.endpoint.addr()))
+    let mut sessions = bob.moq.sessions();
+    let dialed = step("dial", alice.moq.connect(bob.endpoint.addr()))
         .await
-        .expect("timed out dialling")
         .expect("failed to dial");
 
-    let accepted = tokio::time::timeout(TIMEOUT, incoming.next())
-        .await
-        .expect("timed out waiting for the incoming session")
-        .expect("the incoming session stream ended");
+    let accepted = step("the accepted session", async {
+        loop {
+            if let Some(session) = sessions.get().into_iter().next() {
+                return session;
+            }
+            sessions.updated().await.expect("node gone");
+        }
+    })
+    .await;
 
-    assert_eq!(accepted.remote_id(), alice.endpoint.id());
-    assert!(dialed.dialed(), "the dialling side should report dialled");
-    assert!(
-        !accepted.dialed(),
-        "the accepting side should not report dialled",
-    );
+    assert_eq!(accepted.remote_id(), alice.id());
+    assert!(dialed.dialed(), "the dialing side should report dialed");
+    assert!(!accepted.dialed(), "the accepting side should not");
+
+    // Closing it removes it again.
+    accepted.close("test");
+    step("the session leaves the list", async {
+        while !sessions.get().is_empty() {
+            sessions.updated().await.expect("node gone");
+        }
+    })
+    .await;
 
     alice.shutdown().await;
     bob.shutdown().await;
 }
 
-/// Shutting the transport down closes the sessions it holds and opens no more,
-/// rather than handing out a session on a connection that is going away.
+/// Shutting the transport down closes its sessions and opens no more.
 #[tokio::test]
 #[traced_test]
 async fn shutdown_closes_sessions_and_refuses_new_ones() {
@@ -154,9 +110,8 @@ async fn shutdown_closes_sessions_and_refuses_new_ones() {
     let bob = Node::spawn().await;
     let bob_addr = bob.endpoint.addr();
 
-    let session = tokio::time::timeout(TIMEOUT, alice.moq.connect(bob_addr.clone()))
+    let session = step("dial", alice.moq.connect(bob_addr.clone()))
         .await
-        .expect("timed out dialling")
         .expect("failed to dial");
 
     alice.moq.shutdown().await;
@@ -165,15 +120,31 @@ async fn shutdown_closes_sessions_and_refuses_new_ones() {
         .await
         .expect("the session did not close when the transport shut down");
 
-    let err = tokio::time::timeout(TIMEOUT, alice.moq.connect(bob_addr))
+    let err = step("connecting after shutdown", alice.moq.connect(bob_addr))
         .await
-        .expect("connecting after shutdown hung")
         .expect_err("connecting after shutdown should fail");
+    assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
     assert!(
-        matches!(err, iroh_moq::Error::ShutDown { .. }),
-        "expected a shutdown error, got {err:#}",
+        alice.moq.sessions().get().is_empty(),
+        "no session survives shutdown"
     );
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// `accept` returns `None` once the node shuts down, even while a clone of it
+/// is still held, rather than waiting forever.
+#[tokio::test]
+#[traced_test]
+async fn accept_ends_at_shutdown() {
+    let alice = Node::spawn().await;
+    let moq = alice.moq.clone();
+    let waiting = tokio::spawn(async move { moq.accept().await.is_none() });
+    alice.moq.shutdown().await;
+    assert!(
+        step("accept", waiting).await.expect("task"),
+        "accept should end at shutdown"
+    );
+    alice.shutdown().await;
 }

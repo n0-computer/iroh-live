@@ -7,13 +7,13 @@
 
 use clap::Parser;
 use iroh_live::{
-    Live,
+    EndpointOptions, Live, LocalBroadcast,
     media::{
         audio,
         publish::{VideoRendition, VideoSource},
         video,
     },
-    ticket::LiveTicket,
+    moq::net::broadcast,
 };
 use tracing::info;
 
@@ -38,10 +38,15 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    let live = Live::from_env().await?.with_router().spawn();
+    // A stable identity from `IROH_SECRET`, so the ticket survives a restart.
+    let mut options = EndpointOptions::default();
+    if let Ok(key) = std::env::var("IROH_SECRET") {
+        options = options.with_secret_key(key.parse()?);
+    }
+    let live = Live::builder(options.bind().await?).with_router().spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
 
-    let broadcast = live.publish(&args.name)?;
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
@@ -61,8 +66,8 @@ async fn main() -> n0_error::Result {
     // inside the publish task, which logs and ends the audio track on failure.
     broadcast.audio().set(audio::capture::Config::default());
 
-    let ticket = LiveTicket::new(live.endpoint().id(), &args.name);
-    println!("{ticket}");
+    let publication = live.publish(&args.name, broadcast.consume())?;
+    println!("{}", publication.ticket().expect("published under live/"));
     info!(name = %args.name, "publishing");
 
     tokio::signal::ctrl_c().await?;

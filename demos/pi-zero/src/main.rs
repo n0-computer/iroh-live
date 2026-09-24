@@ -21,7 +21,7 @@ mod watch;
 mod app {
     use clap::{Parser, Subcommand};
     use iroh::EndpointId;
-    use iroh_live::{Live, ticket::LiveTicket};
+    use iroh_live::{BroadcastTicket, Live};
 
     use crate::{epaper, publish, watch};
 
@@ -50,7 +50,7 @@ mod app {
     struct WatchOpts {
         /// Connection ticket (alternative to --endpoint-id + --name).
         #[clap(conflicts_with = "endpoint_id")]
-        ticket: Option<LiveTicket>,
+        ticket: Option<BroadcastTicket>,
         /// Remote endpoint ID (requires --name).
         #[clap(long, conflicts_with = "ticket", requires = "name")]
         endpoint_id: Option<EndpointId>,
@@ -117,7 +117,7 @@ mod app {
     async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
         let ticket = match (&opts.ticket, &opts.endpoint_id, &opts.name) {
             (Some(t), None, None) => t.clone(),
-            (None, Some(id), Some(name)) => LiveTicket::new(*id, name.clone()),
+            (None, Some(id), Some(name)) => BroadcastTicket::new(*id, name.clone()),
             _ => {
                 eprintln!("Usage: watch --ticket <TICKET> or --endpoint-id <ID> --name <NAME>");
                 std::process::exit(1);
@@ -126,19 +126,23 @@ mod app {
 
         println!("connecting to {ticket} ...");
         // A ticket names an endpoint id and no addresses, so the viewer needs
-        // the same lookup services the publisher announces to: `from_env` adds
-        // mDNS to the n0 preset, which is what resolves the id on a network
-        // with no route to the internet.
-        let live = Live::from_env().await?.spawn();
+        // the same lookup services the publisher announces to: the media
+        // preset's pkarr and DNS, and mDNS for a network with no route to the
+        // internet.
+        let live = Live::builder(crate::endpoint_options()?.bind().await?).spawn();
         let sub = live
-            .subscribe(ticket.endpoint, &ticket.broadcast_name)
+            .moq()
+            .subscribe(ticket.path(), live.moq().reach())
             .await?;
+        let remote = live.remote_broadcast(&sub).await?;
+        let session = sub
+            .session()
+            .ok_or_else(|| n0_error::anyerr!("the broadcast is not served by a direct session"))?;
         println!("connected!");
 
-        let tracks = sub.media().await;
+        let tracks = remote.media().await;
         let video_track = tracks.video.expect("no video track in broadcast");
-        video_track.enable_adaptation(sub.signals().clone());
-        let session = sub.session().clone();
+        video_track.enable_adaptation(iroh_live::network::signals(&sub, remote.shutdown_token()));
 
         if opts.fb {
             watch::run_drm(video_track, session).await?;
@@ -164,4 +168,22 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let cli = <app::Cli as clap::Parser>::parse();
     app::run(cli).await
+}
+
+/// Returns the endpoint options both commands bind with: the identity in
+/// `IROH_SECRET`, or a fresh one, and mDNS announcing this device.
+///
+/// # Errors
+///
+/// Fails if `IROH_SECRET` holds something that is not a secret key.
+#[cfg(target_os = "linux")]
+fn endpoint_options() -> n0_error::Result<iroh_live::EndpointOptions> {
+    let mut options = iroh_live::EndpointOptions::default();
+    if let Ok(key) = std::env::var("IROH_SECRET") {
+        let key = key
+            .parse()
+            .map_err(|err| n0_error::anyerr!("IROH_SECRET is not a secret key: {err}"))?;
+        options = options.with_secret_key(key);
+    }
+    Ok(options)
 }

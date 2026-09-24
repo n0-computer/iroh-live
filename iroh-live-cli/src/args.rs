@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
 use iroh::EndpointId;
-use iroh_live::ticket::LiveTicket;
+use iroh_live::BroadcastTicket;
 #[cfg(feature = "render")]
 use iroh_rooms::RoomTicket;
 use n0_error::{Result, anyerr};
@@ -357,7 +357,7 @@ impl LatencyArg {
 pub struct CallArgs {
     /// Ticket of the peer to call, as its `irl call` printed it. Omit to wait
     /// for somebody to call this node.
-    pub ticket: Option<LiveTicket>,
+    pub ticket: Option<BroadcastTicket>,
 
     #[command(flatten)]
     pub capture: CaptureArgs,
@@ -416,7 +416,7 @@ pub struct RoomArgs {
 pub struct RemoteArgs {
     /// Connection ticket, as `irl publish` printed it.
     #[arg(conflicts_with_all = ["endpoint_id", "broadcast_name"])]
-    pub ticket: Option<LiveTicket>,
+    pub ticket: Option<BroadcastTicket>,
 
     /// Remote endpoint id. Needs `--name`.
     #[arg(long, conflicts_with = "ticket", requires = "broadcast_name")]
@@ -440,10 +440,10 @@ impl RemoteArgs {
     /// Fails if neither a positional ticket nor the
     /// `--endpoint-id` / `--name` pair was given. clap already rejects both at
     /// once.
-    pub fn ticket(&self) -> Result<LiveTicket> {
+    pub fn ticket(&self) -> Result<BroadcastTicket> {
         match (&self.ticket, self.endpoint_id, &self.broadcast_name) {
             (Some(ticket), None, None) => Ok(ticket.clone()),
-            (None, Some(id), Some(name)) => Ok(LiveTicket::new(id, name.clone())),
+            (None, Some(id), Some(name)) => Ok(BroadcastTicket::new(id, name.clone())),
             _ => Err(anyerr!(
                 "provide either <TICKET> or --endpoint-id and --name"
             )),

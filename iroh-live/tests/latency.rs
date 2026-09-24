@@ -20,7 +20,7 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
-use iroh_live::Live;
+use iroh_live::{BroadcastTicket, Live, LocalBroadcast, moq::net::broadcast::Info};
 use iroh_live_media::{
     playout::PlaybackPolicy,
     publish::VideoSource,
@@ -74,21 +74,24 @@ async fn measure(policy: PlaybackPolicy) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
     let publisher = Live::builder(endpoint().await).with_router().spawn();
-    let broadcast = publisher.publish("latency").expect("failed to publish");
+    let broadcast = LocalBroadcast::new(Info::new().produce()).expect("failed to create");
+    publisher
+        .publish("latency", broadcast.consume())
+        .expect("failed to publish");
     broadcast
         .video()
         .set(stamped_source(handed.clone()))
         .expect("failed to set video");
-    let publisher_addr = publisher.endpoint().addr();
+    let ticket = BroadcastTicket::new(publisher.endpoint().id(), "latency");
 
     let subscriber = Live::builder(endpoint().await).spawn();
     let subscribed_at = Instant::now();
-    let sub = subscriber
-        .subscribe(publisher_addr, "latency")
+    let remote = subscriber
+        .subscribe(&ticket)
         .await
         .expect("failed to subscribe");
-    sub.broadcast().set_playback_policy(policy);
-    let track = tokio::time::timeout(TIMEOUT, sub.broadcast().video())
+    remote.set_playback_policy(policy);
+    let track = tokio::time::timeout(TIMEOUT, remote.video())
         .await
         .expect("timed out waiting for the video catalog")
         .expect("failed to open the video track");
@@ -117,7 +120,7 @@ async fn measure(policy: PlaybackPolicy) -> (Duration, Vec<Duration>) {
     }
 
     drop(track);
-    drop(sub);
+    drop(remote);
     subscriber.shutdown().await;
     drop(broadcast);
     publisher.shutdown().await;

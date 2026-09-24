@@ -19,16 +19,17 @@
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, endpoint::presets};
-use iroh_live::Live;
+use iroh_live::{
+    BroadcastTicket, Live, LocalBroadcast, RemoteBroadcast, Subscription,
+    media::net::NetworkSignals, moq::net::broadcast::Info,
+};
 use iroh_live_media::{
-    adaptive::AdaptiveConfig,
-    publish::{LocalBroadcast, VideoRendition},
-    subscribe::VideoTrack,
-    test_source,
+    adaptive::AdaptiveConfig, publish::VideoRendition, subscribe::VideoTrack, test_source,
     video::Size,
 };
 use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, NodeId};
+use tokio::sync::watch;
 use tracing::info;
 
 /// Sets up the user namespace the lab needs.
@@ -71,7 +72,11 @@ struct Fixture {
     /// Held because dropping it stops the publish task.
     _broadcast: LocalBroadcast,
     subscriber: Live,
-    subscription: iroh_live::Subscription,
+    /// Held so the path stays resolved; the broadcast reads through it.
+    _subscription: Subscription,
+    broadcast: RemoteBroadcast,
+    /// The serving link's signals, as the facade feeds them to adaptation.
+    signals: watch::Receiver<NetworkSignals>,
 }
 
 impl Fixture {
@@ -118,7 +123,10 @@ impl Fixture {
             .expect("failed to bind the subscriber endpoint");
 
         let publisher = Live::builder(publisher_endpoint).with_router().spawn();
-        let broadcast = publisher.publish("patchbay").expect("failed to publish");
+        let broadcast = LocalBroadcast::new(Info::new().produce()).expect("failed to create");
+        publisher
+            .publish("patchbay", broadcast.consume())
+            .expect("failed to publish");
         broadcast
             .video()
             .set_renditions(test_source::video(size, FRAMERATE), renditions)
@@ -128,10 +136,22 @@ impl Fixture {
         // publisher's is handed over directly.
         let publisher_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(subscriber_endpoint).spawn();
+        subscriber
+            .moq()
+            .connect(publisher_addr)
+            .await
+            .expect("failed to connect");
+        let ticket = BroadcastTicket::new(publisher.endpoint().id(), "patchbay");
         let subscription = subscriber
-            .subscribe(publisher_addr, "patchbay")
+            .moq()
+            .subscribe(ticket.path(), iroh_live::Reach::Direct)
             .await
             .expect("failed to subscribe");
+        let remote = subscriber
+            .remote_broadcast(&subscription)
+            .await
+            .expect("failed to read the catalog");
+        let signals = iroh_live::network::signals(&subscription, remote.shutdown_token());
 
         Self {
             lab,
@@ -141,7 +161,9 @@ impl Fixture {
             publisher,
             _broadcast: broadcast,
             subscriber,
-            subscription,
+            _subscription: subscription,
+            broadcast: remote,
+            signals,
         }
     }
 
@@ -173,7 +195,7 @@ impl Fixture {
     /// Opens the video track, waiting for the catalog to carry `renditions` of
     /// them first.
     async fn video(&self, renditions: usize) -> VideoTrack {
-        let broadcast = self.subscription.broadcast();
+        let broadcast = &self.broadcast;
         tokio::time::timeout(TIMEOUT, async {
             while broadcast.catalog().video().len() < renditions {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -518,7 +540,7 @@ async fn adaptation_follows_a_real_link() {
         .expect("timed out waiting for the first frame")
         .expect("the video track closed before its first frame");
 
-    track.enable_adaptation_with(fixture.subscription.signals().clone(), quick_adaptation());
+    track.enable_adaptation_with(fixture.signals.clone(), quick_adaptation());
 
     // Loss on both legs, so it reaches the subscriber's own transmissions:
     // acknowledgements are dropped in proportion to the impairment like
@@ -581,7 +603,7 @@ async fn adaptation_follows_a_real_link() {
 async fn adaptation_follows_a_rate_limit() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
     let track = fixture.video(2).await;
-    let signals = fixture.subscription.signals().clone();
+    let signals = fixture.signals.clone();
 
     assert_eq!(
         track.rendition(),
@@ -900,7 +922,7 @@ async fn a_switch_does_not_blank_the_picture() {
 async fn a_switch_lands_while_the_link_stays_capped() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
     let track = fixture.video(2).await;
-    let signals = fixture.subscription.signals().clone();
+    let signals = fixture.signals.clone();
 
     tokio::time::timeout(TIMEOUT, track.recv())
         .await
@@ -968,7 +990,7 @@ async fn a_switch_lands_while_the_link_stays_capped() {
 async fn a_risen_baseline_round_trip_does_not_downgrade() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
     let track = fixture.video(2).await;
-    let signals = fixture.subscription.signals().clone();
+    let signals = fixture.signals.clone();
 
     assert_eq!(
         track.rendition(),

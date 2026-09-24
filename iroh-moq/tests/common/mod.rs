@@ -1,0 +1,136 @@
+//! Shared harness for the node tests: endpoints on an in-memory address lookup,
+//! and nodes that accept MoQ.
+
+#![allow(dead_code, reason = "each test file uses a subset of the harness")]
+#![allow(
+    clippy::mod_module_files,
+    reason = "a `tests/common.rs` would become a test binary of its own"
+)]
+
+use std::{sync::OnceLock, time::Duration};
+
+use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh_moq::{Moq, MoqConfig};
+use moq_net::{Timestamp, broadcast, bytes::Bytes, track};
+use n0_future::task::AbortOnDropHandle;
+
+/// Generous, because the suite shares a machine with whatever else is running.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a test track keeps its groups, on both ends.
+pub(crate) const MAX_AGE: Duration = Duration::from_secs(5);
+
+/// Binds an endpoint against a shared in-memory address lookup, so peers in one
+/// test process reach each other without a discovery service.
+pub(crate) async fn endpoint() -> Endpoint {
+    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
+    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .address_lookup(lookup.clone())
+        .bind()
+        .await
+        .expect("failed to bind endpoint");
+    lookup.add_endpoint_info(endpoint.addr());
+    endpoint
+}
+
+/// A node that accepts MoQ, with the router that makes it do so.
+pub(crate) struct Node {
+    pub(crate) endpoint: Endpoint,
+    pub(crate) moq: Moq,
+    router: Router,
+}
+
+impl Node {
+    pub(crate) async fn spawn() -> Self {
+        Self::with_config(MoqConfig::default()).await
+    }
+
+    pub(crate) async fn with_config(config: MoqConfig) -> Self {
+        let endpoint = endpoint().await;
+        let moq = Moq::new(endpoint.clone(), config);
+        let mut router = Router::builder(endpoint.clone());
+        for alpn in iroh_moq::alpns() {
+            router = router.accept(alpn, moq.clone());
+        }
+        Self {
+            endpoint,
+            moq,
+            router: router.spawn(),
+        }
+    }
+
+    pub(crate) fn id(&self) -> iroh::EndpointId {
+        self.endpoint.id()
+    }
+
+    pub(crate) async fn shutdown(self) {
+        self.moq.shutdown().await;
+        self.router.shutdown().await.expect("router task panicked");
+        self.endpoint.close().await;
+    }
+}
+
+/// A standalone broadcast with one track that writes a counter every few
+/// milliseconds.
+pub(crate) struct TestBroadcast {
+    pub(crate) producer: broadcast::Producer,
+    _writer: AbortOnDropHandle<()>,
+}
+
+impl TestBroadcast {
+    pub(crate) fn start() -> Self {
+        let producer = broadcast::Info::new().produce();
+        let mut track = producer
+            .create_track("video", track::Info::default().with_max_age(MAX_AGE))
+            .expect("create track");
+        let writer = tokio::spawn(async move {
+            for n in 0u64.. {
+                if track
+                    .write_frame(Timestamp::now(), Bytes::from(n.to_be_bytes().to_vec()))
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        Self {
+            producer,
+            _writer: AbortOnDropHandle::new(writer),
+        }
+    }
+}
+
+/// Reads frames from the test track until one arrives, and returns its counter.
+pub(crate) async fn read_counter(broadcast: &broadcast::Consumer) -> u64 {
+    tokio::time::timeout(TIMEOUT, async {
+        let mut subscriber = broadcast
+            .track("video")
+            .expect("track")
+            .subscribe(track::Subscription::default().with_max_age(MAX_AGE))
+            .await
+            .expect("subscribe to track");
+        loop {
+            let mut group = subscriber
+                .recv_group()
+                .await
+                .expect("track failed")
+                .expect("track ended");
+            if let Some(frame) = group.read_frame().await.expect("group failed") {
+                let bytes: [u8; 8] = frame.payload[..].try_into().expect("a u64");
+                return u64::from_be_bytes(bytes);
+            }
+        }
+    })
+    .await
+    .expect("timed out reading a frame")
+}
+
+/// Awaits `future`, failing the test with `what` if it takes longer than
+/// [`TIMEOUT`].
+pub(crate) async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(TIMEOUT, future)
+        .await
+        .unwrap_or_else(|_| panic!("timed out: {what}"))
+}

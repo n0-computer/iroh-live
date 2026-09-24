@@ -27,7 +27,7 @@ fn main() {
 }
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::{Live, media::rpicam, ticket::LiveTicket};
+use iroh_live::{EndpointOptions, Live, LocalBroadcast, media::rpicam, moq::net::broadcast};
 
 /// The path the camera publishes on. Viewers subscribe to the same one.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -38,8 +38,12 @@ const BROADCAST: &str = "pi-cam";
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let live = Live::from_env().await?.with_router().spawn();
-    let broadcast = live.publish(BROADCAST)?;
+    let mut options = EndpointOptions::default();
+    if let Ok(key) = std::env::var("IROH_SECRET") {
+        options = options.with_secret_key(key.parse()?);
+    }
+    let live = Live::builder(options.bind().await?).with_router().spawn();
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
     broadcast.video().set(rpicam::open(rpicam::Config::new(
         640,
         360,
@@ -52,8 +56,8 @@ async fn main() -> anyhow::Result<()> {
         },
     ))?)?;
 
-    let ticket = LiveTicket::new(live.endpoint().id(), BROADCAST);
-    println!("{ticket}");
+    let publication = live.publish(BROADCAST, broadcast.consume())?;
+    println!("{}", publication.ticket().expect("published under live/"));
 
     tracing::info!("publishing, press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;

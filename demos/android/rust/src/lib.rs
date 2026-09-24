@@ -18,7 +18,10 @@ use std::{
     time::Instant,
 };
 
-use iroh_live::{Call, Live, Subscription, ticket::LiveTicket};
+use iroh::EndpointId;
+use iroh_live::{
+    Audience, BroadcastTicket, EndpointOptions, Live, Session, Subscription, moq::net::broadcast,
+};
 use iroh_live_media::{
     frame_channel::FrameReceiver,
     publish::LocalBroadcast,
@@ -37,6 +40,7 @@ use jni::{
 use moq_net::Timestamp;
 use moq_video::{Frame, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
+use n0_watcher::Watcher;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -123,6 +127,78 @@ impl FrameSource {
             Self::Track(track) => Some(track.rendition()),
             Self::Empty | Self::Preview(_) => None,
         }
+    }
+}
+
+/// Binds the endpoint every screen runs on, under `IROH_SECRET` when it is
+/// set.
+///
+/// An app keeps its identity in its own storage; the demo has none, so it
+/// takes a fresh one unless the environment says otherwise.
+async fn bind_live() -> Result<Live> {
+    let mut options = EndpointOptions::default();
+    if let Ok(key) = std::env::var("IROH_SECRET") {
+        options = options.with_secret_key(key.parse().context("IROH_SECRET is not a key")?);
+    }
+    Ok(Live::builder(options.bind().await?).with_router().spawn())
+}
+
+/// Returns the path a peer publishes its side of a call at:
+/// `calls/<endpoint id>`, the convention `irl call` shares.
+fn call_path(publisher: EndpointId) -> String {
+    format!("calls/{publisher}")
+}
+
+/// Publishes a fresh broadcast at `path` to everyone.
+fn publish_at(live: &Live, path: &str) -> Result<LocalBroadcast> {
+    let local = LocalBroadcast::new(broadcast::Info::new().produce())?;
+    live.moq()
+        .publish_at(path, local.consume(), Audience::Everyone)?;
+    Ok(local)
+}
+
+/// A call: the session with the peer, and the peer's side read over it.
+#[derive(Debug)]
+struct Call {
+    session: Session,
+    remote: RemoteBroadcast,
+    /// Held so the path stays resolved while the call runs.
+    _subscription: Subscription,
+}
+
+impl Call {
+    /// Dials `peer` and subscribes to its side of the call.
+    async fn dial(live: &Live, peer: EndpointId) -> Result<Self> {
+        let session = live.moq().connect(peer).await?;
+        Self::accept(live, session).await
+    }
+
+    /// Subscribes to the side of the call the peer of `session` publishes.
+    async fn accept(live: &Live, session: Session) -> Result<Self> {
+        let subscription = session.subscribe(call_path(session.remote_id())).await?;
+        let remote = live.remote_broadcast(&subscription).await?;
+        Ok(Self {
+            session,
+            remote,
+            _subscription: subscription,
+        })
+    }
+
+    fn remote(&self) -> &RemoteBroadcast {
+        &self.remote
+    }
+
+    fn remote_id(&self) -> EndpointId {
+        self.session.remote_id()
+    }
+
+    fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Hangs up: closes the session, which the peer sees as the call ending.
+    fn close(&self) {
+        self.session.close("hung up");
     }
 }
 
@@ -216,12 +292,12 @@ impl SessionHandle {
     /// The round-trip time on the selected path, if this session has a
     /// connection at all.
     fn rtt(&self) -> Option<std::time::Duration> {
-        let conn = self
+        let session = self
             .subscription
             .as_ref()
-            .map(|sub| sub.session().conn())
-            .or_else(|| self.call.as_ref().map(|call| call.session().conn()))?;
-        Some(conn.paths().iter().find(|path| path.is_selected())?.rtt())
+            .and_then(Subscription::session)
+            .or_else(|| self.call.as_ref().map(|call| call.session().clone()))?;
+        Some(session.link().rtt)
     }
 
     /// The timestamp to stamp the next camera frame with.
@@ -307,15 +383,17 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
 }
 
 async fn connect_impl(ticket: String) -> Result<jlong> {
-    let ticket: LiveTicket = ticket.parse().context("failed to parse ticket")?;
+    let ticket: BroadcastTicket = ticket.parse().context("failed to parse ticket")?;
 
-    let live = Live::from_env().await?.with_router().spawn();
-    info!(broadcast = %ticket.broadcast_name, "connecting to broadcast");
+    let live = bind_live().await?;
+    info!(broadcast = %ticket.name(), "connecting to broadcast");
 
     let subscription = live
-        .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
+        .moq()
+        .subscribe(ticket.path(), live.moq().reach())
         .await?;
-    let tracks = subscription.media().await;
+    let remote = live.remote_broadcast(&subscription).await?;
+    let tracks = remote.media().await;
     info!(
         video = tracks.video.is_some(),
         audio = tracks.audio.is_some(),
@@ -323,7 +401,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     );
 
     let mut session = SessionHandle::new();
-    session.remote = Some(subscription.broadcast().clone());
+    session.remote = Some(remote);
     session.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
     session.audio = tracks.audio;
     session.subscription = Some(subscription);
@@ -359,18 +437,18 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_dial(
 
 async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(%ticket, %size, "parsing call ticket");
-    let ticket: LiveTicket = ticket.parse().context("failed to parse call ticket")?;
+    let ticket: BroadcastTicket = ticket.parse().context("failed to parse call ticket")?;
 
-    let live = Live::from_env().await?.with_router().spawn();
+    let live = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     // Each peer publishes its own side of the call under its own endpoint id,
     // and subscribes to the other's.
-    let broadcast = live.publish(Call::path(live.endpoint().id()))?;
+    let broadcast = publish_at(&live, &call_path(live.endpoint().id()))?;
     let camera = set_camera(&broadcast, size)?;
     set_microphone(&broadcast);
 
-    let call = Call::dial(&live, ticket.endpoint).await?;
+    let call = Call::dial(&live, ticket.peer()).await?;
     info!(remote = %call.remote_id().fmt_short(), "call connected");
 
     let tracks = call.remote().media().await;
@@ -418,7 +496,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
 
 async fn answer_impl(size: Size) -> Result<jlong> {
     info!(%size, "waiting for a call");
-    let live = Live::from_env().await?.with_router().spawn();
+    let live = bind_live().await?;
     let id = live.endpoint().id();
     info!(id = %id.fmt_short(), "endpoint ready");
 
@@ -427,8 +505,8 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // camera starts here rather than when a peer arrives, so the preview is
     // live while the code is on screen and the first frame the peer sees does
     // not wait for a device to open.
-    let path = Call::path(id);
-    let broadcast = live.publish(&path)?;
+    let path = call_path(id);
+    let broadcast = publish_at(&live, &path)?;
     let camera = set_camera(&broadcast, size)?;
     set_microphone(&broadcast);
 
@@ -437,7 +515,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
         .preview()
         .map_or(FrameSource::Empty, FrameSource::Preview);
     session.camera = Some(camera);
-    session.ticket = Some(LiveTicket::new(id, path.as_str()).to_string());
+    session.ticket = Some(BroadcastTicket::new(id, path.as_str()).to_string());
     session.broadcast = Some(broadcast);
     session.live = Some(live.clone());
     let shared = session.into_shared();
@@ -465,17 +543,31 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 /// Sessions this node dialed are skipped: everything that speaks MoQ arrives
 /// the same way, and only an inbound one can be a caller.
 async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<()> {
-    let mut incoming = live.transport().incoming_sessions();
-    while let Some(moq) = incoming.next().await {
-        if moq.dialed() {
+    let mut sessions = live.moq().sessions();
+    let mut seen: Vec<Session> = Vec::new();
+    loop {
+        let current = sessions.get();
+        let arrived: Vec<Session> = current
+            .iter()
+            .filter(|moq| !moq.dialed() && !seen.contains(moq))
+            .cloned()
+            .collect();
+        seen = current;
+        if arrived.is_empty() {
+            if sessions.updated().await.is_err() {
+                return Ok(());
+            }
             continue;
         }
+        let Some(moq) = arrived.into_iter().next() else {
+            continue;
+        };
         let remote_id = moq.remote_id();
         info!(remote = %remote_id.fmt_short(), "incoming session");
         // A plain subscriber arrives here too and never publishes the call path
         // this waits for, so a failure is an ordinary outcome rather than an
         // error: keep listening for somebody who does.
-        let call = match Call::accept(moq).await {
+        let call = match Call::accept(&live, moq).await {
             Ok(call) => call,
             Err(err) => {
                 info!(remote = %remote_id.fmt_short(), error = %err, "not a caller");
@@ -506,7 +598,6 @@ async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<(
         held.call = Some(call);
         return Ok(());
     }
-    Ok(())
 }
 
 /// Whether an answered call has a peer on it yet.
@@ -552,14 +643,15 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
 
 async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     info!(%name, %size, "publishing broadcast");
-    let live = Live::from_env().await?.with_router().spawn();
+    let live = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
-    let broadcast = live.publish(&name)?;
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
     let camera = set_camera(&broadcast, size)?;
     set_microphone(&broadcast);
+    live.publish(&name, broadcast.consume())?;
 
-    let ticket = LiveTicket::new(live.endpoint().id(), name.as_str()).to_string();
+    let ticket = BroadcastTicket::new(live.endpoint().id(), name.as_str()).to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();

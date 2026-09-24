@@ -9,9 +9,9 @@ the layer between them, plus the pieces neither side has a home for.
 
 | Crate | What it is |
 |---|---|
-| `iroh-moq` | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
+| `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links, tickets and endpoint setup |
 | `iroh-rooms` | Gossip rooms. Media-free: it moves broadcast names and hands back consumers |
-| `iroh-live` | `Live`, `Call`, `Subscription`, and tickets |
+| `iroh-live` | `Live`, the facade that joins media and transport, and the re-exports |
 | `iroh-live-media` | Publish and subscribe plumbing over moq-video and moq-audio |
 | `iroh-live-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
 | `iroh-live-media-android` | The Camera2 push bridge and the EGL renderer for Android |
@@ -42,35 +42,30 @@ deleted.
 
 ## iroh-live
 
-`Live` binds an iroh `Endpoint` to a MoQ transport. It is built through a
-builder, because whether it owns a router and whether it runs gossip are separate
-decisions:
+`Live` is a node ready for live media. It wraps an endpoint the application
+binds, which is usually `EndpointOptions::default().bind()` (iroh's N0 preset
+with a media-tuned transport, a key and mDNS):
 
 ```rust
-let live = Live::from_env().await?.with_router().with_gossip().spawn();
+let live = Live::builder(endpoint).with_router().spawn();
 ```
 
-`from_env()` reads `IROH_SECRET` and binds an endpoint with the N0 preset, then
-hands back the builder. `with_router()` spawns a `Router` and mounts every ALPN
-this build speaks; an application that already has a router calls
-`Live::register_protocols` on its own `RouterBuilder` instead. `with_gossip()`
-creates a `Gossip` instance, which is the one thing `iroh-rooms` needs from here.
+`with_router()` spawns a `Router` that mounts the transport under every ALPN
+this build speaks, and `accept(alpn, handler)` mounts another protocol on it, as
+rooms mount their gossip. `with_moq(moq)` uses a transport the application
+created first.
 
-`Live::publish(path)` creates a broadcast on the node origin and returns a
-`iroh_live_media::publish::LocalBroadcast`. It is announced to every peer with a
-session, so publishing is a property of the node rather than of a connection.
-`Live::publish_raw` gives the bare producer for a caller writing its own tracks.
+`Live::publish(name, broadcast)` publishes a broadcast at `live/<our id>/<name>`
+to everyone, and the publication's ticket is what to share.
+`Live::subscribe(&ticket)` resolves the ticket's path over whichever link serves
+it and returns a `RemoteBroadcast`; `Live::remote_broadcast(&subscription)`
+does the same for a subscription from a room or from `Moq::subscribe`. The
+transport's own concepts (audiences, admission, relays, routes) live in
+[`iroh-moq`](transport.md) and are reached through `live.moq()`.
 
-`Live::subscribe(remote, path)` dials, subscribes, and returns a `Subscription`
-bundling the `MoqSession`, the `RemoteBroadcast`, and a
-`watch::Receiver<NetworkSignals>` with the stats recorder and signal producer
-already wired up. `Subscription::media()` opens whichever tracks the broadcast
-carries.
-
-`Call` is 1:1 sugar over the two. Each side publishes under
-`calls/<its own endpoint id>` and subscribes to the other's, which is what
-`Call::path(endpoint_id)` computes. The per-peer path replaced a fixed name that
-two concurrent calls used to collide on.
+A one-to-one call is publish plus subscribe: `irl call` and the Android demo each
+publish under `calls/<their own endpoint id>` and subscribe to the other's on
+the session between them.
 
 ## Conventions
 
@@ -84,8 +79,9 @@ drops the decoder. `CancellationToken` coordinates a broadcast-wide shutdown and
 
 Continuous state is `n0_watcher::Watchable` and `Direct<T>`, which always has a
 current value and can be awaited for changes. The catalog, the active rendition,
-and the decoder backend all work this way. Discrete events are streams and
-channels: room events, incoming sessions.
+the decoder backend, the open sessions and the routes to a path all work this
+way. Discrete events are streams and channels: room events, sessions waiting
+for admission.
 
 Bounded channels only. Frames between the decoder and the renderer go through a
 single-slot latest-wins channel rather than a queue, so a renderer that falls

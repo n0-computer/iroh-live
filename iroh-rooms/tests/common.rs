@@ -11,7 +11,7 @@ use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
-use iroh_moq::Moq;
+use iroh_moq::{Moq, MoqConfig};
 use iroh_rooms::{Room, RoomEvent, RoomTicket};
 
 /// Generous timeout: must survive CPU contention when the full workspace test
@@ -50,12 +50,13 @@ impl Peer {
     /// Binds a fresh endpoint and wires up MoQ and gossip on top of it.
     pub(crate) async fn spawn() -> Self {
         let endpoint = endpoint().await;
-        let moq = Moq::new(endpoint.clone());
+        let moq = Moq::new(endpoint.clone(), MoqConfig::default());
         let gossip = Gossip::builder().spawn(endpoint.clone());
-        let router = Router::builder(endpoint.clone())
-            .accept(iroh_moq::ALPN, moq.protocol_handler())
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .spawn();
+        let mut router = Router::builder(endpoint.clone());
+        for alpn in iroh_moq::alpns() {
+            router = router.accept(alpn, moq.clone());
+        }
+        let router = router.accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         Self {
             endpoint,
             moq,

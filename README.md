@@ -51,23 +51,23 @@ block from [Cargo.toml](Cargo.toml).
 Publish a camera and a microphone:
 
 ```rust
-use iroh_live::{Live, media::{audio, video}, ticket::LiveTicket};
+use iroh_live::{EndpointOptions, Live, LocalBroadcast, media::{audio, video}, moq::net::broadcast};
 
-let live = Live::from_env().await?.with_router().spawn();
-let broadcast = live.publish("hello")?;
-
+let live = Live::builder(EndpointOptions::default().bind().await?).with_router().spawn();
+let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
 broadcast.video().set(video::capture::Config::default())?;
 broadcast.audio().set(audio::capture::Config::default());
 
-println!("{}", LiveTicket::new(live.endpoint().id(), "hello"));
+let publication = live.publish("hello", broadcast.consume())?;
+println!("{}", publication.ticket().expect("a live path"));
 ```
 
 Subscribe and read decoded frames:
 
 ```rust
-let live = Live::from_env().await?.spawn();
-let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
-let tracks = sub.media().await;
+let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
+let remote = live.subscribe(&ticket).await?;
+let tracks = remote.media().await;
 
 if let Some(video) = tracks.video {
     while let Some(frame) = video.recv().await {

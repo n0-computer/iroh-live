@@ -12,9 +12,9 @@ use std::path::Path;
 
 use iroh::SecretKey;
 use iroh_live::{
-    Live, Subscription,
+    BroadcastTicket, Live,
     media::{publish::LocalBroadcast, subscribe::AudioTrack},
-    ticket::LiveTicket,
+    moq::net::broadcast,
 };
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
@@ -25,7 +25,8 @@ use crate::{
     args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
     backend::EncoderArg,
     record::{RecordOptions, Recorder},
-    source, transport,
+    source,
+    transport::{self, Subscribed},
 };
 
 /// Runs the `run` command.
@@ -218,7 +219,7 @@ async fn run_session(config: RunConfig) -> Result {
     let serve = !config.send.is_empty();
     let secret_key = match &config.secret_key_name {
         Some(name) => load_or_create_secret_key(name)?,
-        None => iroh_live::util::secret_key_from_env()?,
+        None => transport::secret_key_from_env()?,
     };
     let live = transport::setup_live_with_key(secret_key, serve).await?;
     let result = run_streams(&live, &config).await;
@@ -245,7 +246,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     for send in &config.send {
         match setup_send(live, send) {
             Ok(broadcast) => {
-                let ticket = LiveTicket::new(live.endpoint().id(), &send.name);
+                let ticket = BroadcastTicket::new(live.endpoint().id(), &send.name);
                 println!("[send] {}: {ticket}", send.name);
                 broadcasts.push(broadcast);
             }
@@ -319,7 +320,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
         broadcast.finish().await;
     }
     for receiver in &receivers {
-        receiver.sub.session().close(moq_net::Error::Cancel);
+        receiver.sub.close();
     }
     Ok(())
 }
@@ -329,7 +330,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
 /// The audio track is held rather than used: opening it starts playback, and
 /// dropping it stops it.
 struct Receiver {
-    sub: Subscription,
+    sub: Subscribed,
     _audio: Option<AudioTrack>,
 }
 
@@ -341,8 +342,9 @@ struct Receiver {
 /// not parse. A device that will not open surfaces in the log and ends its
 /// track, not here.
 fn setup_send(live: &Live, config: &SendConfig) -> Result<LocalBroadcast> {
-    let broadcast = live.publish(&config.name)?;
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
     source::configure(&broadcast, &config.capture())?;
+    live.publish(&config.name, broadcast.consume())?;
     Ok(broadcast)
 }
 
@@ -359,7 +361,7 @@ fn setup_send(live: &Live, config: &SendConfig) -> Result<LocalBroadcast> {
 /// recording file cannot be created. Audio that will not open is reported and
 /// the subscription continues without it.
 async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Option<Recorder>)> {
-    let ticket: LiveTicket = config.ticket.parse().map_err(|err| {
+    let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
             "invalid ticket: {err}; it should be the string `irl publish` \
              printed, starting with `iroh-live:`"
@@ -372,7 +374,7 @@ async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Optio
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
             options.rendition = config.rendition.clone();
-            Some(Recorder::open(sub.session(), sub.broadcast(), &options).await?)
+            Some(Recorder::open(sub.subscription().as_origin(), sub.broadcast(), &options).await?)
         }
     };
 
@@ -389,7 +391,7 @@ async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Optio
     clippy::unused_async,
     reason = "one arm of a feature-gated body awaits"
 )]
-async fn play_audio(sub: &Subscription, name: &str) -> Option<AudioTrack> {
+async fn play_audio(sub: &Subscribed, name: &str) -> Option<AudioTrack> {
     #[cfg(feature = "playback")]
     {
         if !sub.broadcast().has_audio() {

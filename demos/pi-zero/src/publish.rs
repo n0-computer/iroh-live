@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::{Live, ticket::LiveTicket};
+use iroh_live::{BroadcastTicket, Live, LocalBroadcast, moq::net::broadcast};
 use iroh_live_media::rpicam;
 
 use crate::epaper;
@@ -51,14 +51,16 @@ pub(crate) struct PublishOpts {
 /// Publishes the camera stream and shows the ticket QR on e-paper.
 pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // --- iroh endpoint ---
-    // `from_env` binds under `IROH_SECRET` with the n0 preset and mDNS on top
-    // of it. The Pi's ticket carries an endpoint id and nothing else, so a
-    // viewer on the same network resolves it over mDNS with no internet at all,
-    // and a viewer elsewhere resolves it over pkarr and DNS.
-    let live = Live::from_env().await?.with_router().spawn();
+    // Bound under `IROH_SECRET` with the media preset and mDNS. The Pi's ticket
+    // carries an endpoint id and nothing else, so a viewer on the same network
+    // resolves it over mDNS with no internet at all, and a viewer elsewhere
+    // resolves it over pkarr and DNS.
+    let live = Live::builder(crate::endpoint_options()?.bind().await?)
+        .with_router()
+        .spawn();
 
     // --- media broadcast ---
-    let broadcast = live.publish(opts.name.as_str())?;
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
 
     let output = rpicam::Output::H264 {
         bitrate: opts.bitrate,
@@ -75,15 +77,16 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         "using pre-encoded H.264 from rpicam-vid"
     );
     broadcast.video().set(rpicam::open(config)?)?;
+    live.publish(opts.name.as_str(), broadcast.consume())?;
 
     // --- relay (optional) ---
     if let Some(relay_id) = opts.relay {
-        live.transport().connect(relay_id).await?;
+        live.moq().connect(relay_id).await?;
         tracing::info!(%relay_id, "connected to relay");
     }
 
     // --- ticket (always printed, regardless of e-paper) ---
-    let ticket = LiveTicket::new(live.endpoint().id(), &opts.name);
+    let ticket = BroadcastTicket::new(live.endpoint().id(), &opts.name);
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 

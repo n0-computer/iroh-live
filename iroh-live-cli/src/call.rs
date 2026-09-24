@@ -1,8 +1,9 @@
 //! `irl call`: a 1:1 bidirectional video call.
 //!
 //! Both peers publish their own side at `calls/<their endpoint id>` and
-//! subscribe to the other's, which is all [`Call`] is: [`Live::publish`] and a
-//! subscription pointed at each other. Everything here is the window over that,
+//! subscribe to the other's on the session between them, which is all a
+//! [`Call`] is. The path is a convention this command shares with the Android
+//! demo, so the two can call each other. Everything here is the window over that,
 //! plus the small state machine that decides whether this node is dialing,
 //! answering, or already talking.
 //!
@@ -13,16 +14,75 @@
 //! call. That is the whole exchange on a machine with no keyboard to paste a
 //! ticket into. See [`crate::scan`] for the reader.
 
-use iroh_live::{Call, Live, media::publish::LocalBroadcast};
+use iroh::EndpointId;
+use iroh_live::{
+    Audience, Live, RemoteBroadcast, Session,
+    media::{net::NetworkSignals, publish::LocalBroadcast},
+    moq::net::broadcast,
+};
 use n0_error::Result;
+use tokio::sync::watch;
 use tracing::info;
 
 use crate::{
     args::{CallArgs, CaptureArgs},
     source,
     source_spec::VideoSourceSpec as Spec,
-    transport,
+    transport::{self, Subscribed},
 };
+
+/// The path a peer publishes its side of a call at: `calls/<endpoint id>`.
+///
+/// Named by the publisher, so two calls on one node never collide, and shared
+/// with the Android demo, which is what lets the two call each other.
+fn call_path(publisher: EndpointId) -> String {
+    format!("calls/{publisher}")
+}
+
+/// A call in progress: the session with the peer, and the peer's side read
+/// over it.
+#[derive(Debug)]
+struct Call {
+    session: Session,
+    remote: Subscribed,
+}
+
+impl Call {
+    /// Dials `peer` and subscribes to its side of the call.
+    async fn dial(live: &Live, peer: EndpointId) -> Result<Self> {
+        let session = live.moq().connect(peer).await?;
+        Self::accept(live, session).await
+    }
+
+    /// Subscribes to the side of the call the peer at the other end of
+    /// `session` publishes.
+    async fn accept(live: &Live, session: Session) -> Result<Self> {
+        let subscription = session.subscribe(call_path(session.remote_id())).await?;
+        let remote = Subscribed::open(live, subscription).await?;
+        Ok(Self { session, remote })
+    }
+
+    fn remote(&self) -> &RemoteBroadcast {
+        self.remote.broadcast()
+    }
+
+    fn signals(&self) -> &watch::Receiver<NetworkSignals> {
+        self.remote.signals()
+    }
+
+    fn remote_id(&self) -> EndpointId {
+        self.session.remote_id()
+    }
+
+    fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Hangs up: closes the session, which the peer sees as the call ending.
+    fn close(&self) {
+        self.session.close("hung up");
+    }
+}
 
 /// Runs the `call` command.
 pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
@@ -40,7 +100,7 @@ async fn setup(args: &CallArgs) -> Result<(Live, LocalBroadcast, String)> {
     let live = transport::setup_live(true).await?;
     let (live, (broadcast, ticket)) = transport::with_live(live, async |live| {
         let broadcast = publish_local(live, &args.capture)?;
-        let ticket = transport::ticket(live, &Call::path(live.endpoint().id()));
+        let ticket = transport::ticket(live, &call_path(live.endpoint().id()));
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
@@ -56,8 +116,13 @@ async fn setup(args: &CallArgs) -> Result<(Live, LocalBroadcast, String)> {
 /// so this broadcast is announced on every session, and a call neither creates
 /// nor consumes it: peers that come and go all read the same one.
 fn publish_local(live: &Live, args: &CaptureArgs) -> Result<LocalBroadcast> {
-    let broadcast = live.publish(Call::path(live.endpoint().id()))?;
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
     source::configure(&broadcast, args)?;
+    live.moq().publish_at(
+        call_path(live.endpoint().id()),
+        broadcast.consume(),
+        Audience::Everyone,
+    )?;
     Ok(broadcast)
 }
 
@@ -107,18 +172,17 @@ mod window {
 
     use eframe::egui;
     use iroh_live::{
-        Call, CallError, Live,
+        BroadcastTicket, Live, Session,
         media::{publish::LocalBroadcast, subscribe::MediaTracks},
-        moq::MoqSession,
-        ticket::LiveTicket,
     };
     use iroh_live_egui::{egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
+    use n0_watcher::Watcher;
     use tokio::sync::{mpsc, oneshot};
     use tracing::{debug, info, warn};
 
-    use super::Camera;
+    use super::{Call, Camera};
     use crate::{
         args::{CallArgs, CaptureArgs, PlaybackArgs},
         scan::ScanView,
@@ -238,7 +302,7 @@ mod window {
         /// Whether the publisher owes itself a camera, because the scan screen
         /// borrowed it.
         restore: bool,
-        incoming: mpsc::Receiver<MoqSession>,
+        incoming: mpsc::Receiver<Session>,
         _forwarder: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
@@ -505,7 +569,7 @@ mod window {
             let Screen::InCall(session) = &self.screen else {
                 return;
             };
-            if session.call.session().conn().close_reason().is_none() {
+            if session.call.session().connection().close_reason().is_none() {
                 return;
             }
             info!("call ended");
@@ -547,13 +611,13 @@ mod window {
             // and went is not a caller holding the line.
             let session = loop {
                 match self.incoming.try_recv() {
-                    Ok(session) if session.conn().close_reason().is_none() => break session,
+                    Ok(session) if session.connection().close_reason().is_none() => break session,
                     Ok(_) => continue,
                     Err(_) => return,
                 }
             };
             let peer = session.remote_id().fmt_short().to_string();
-            let attempt = answer_call(session, self.playback);
+            let attempt = answer_call(self.live.clone(), session, self.playback);
             self.start(ctx, Direction::Incoming { peer }, attempt);
         }
 
@@ -561,8 +625,8 @@ mod window {
         ///
         /// Leaves the scan screen first, so a ticket read off the camera hands
         /// the device back to the publisher while the dial is in flight.
-        fn dial(&mut self, ctx: &egui::Context, ticket: LiveTicket) {
-            let peer = ticket.endpoint.id.fmt_short().to_string();
+        fn dial(&mut self, ctx: &egui::Context, ticket: BroadcastTicket) {
+            let peer = ticket.peer().fmt_short().to_string();
             self.leave_scan();
             if let Some(pending) = self.pending.take() {
                 pending.discard();
@@ -722,7 +786,7 @@ mod window {
 
             match action {
                 Some(Action::Scan) => self.enter_scan(ctx),
-                Some(Action::Dial(text)) => match text.parse::<LiveTicket>() {
+                Some(Action::Dial(text)) => match text.parse::<BroadcastTicket>() {
                     Ok(ticket) => self.dial(ctx, ticket),
                     Err(err) => self.report(format!("that is not a ticket: {err}")),
                 },
@@ -859,33 +923,41 @@ mod window {
 
     /// Forwards the sessions peers open to this node.
     ///
-    /// Runs for the window's whole life rather than for one attempt: a stream
+    /// Runs for the window's whole life rather than for one attempt: a watcher
     /// read only between attempts would miss a caller that dialed during one.
-    /// Sessions this node dialed arrive here too and are skipped, since they
-    /// are the outgoing half of a call already under way.
-    async fn forward_incoming(live: Live, tx: mpsc::Sender<MoqSession>) {
-        let mut incoming = live.transport().incoming_sessions();
-        while let Some(session) = incoming.next().await {
-            if session.dialed() {
-                continue;
+    /// Sessions this node dialed are skipped, since they are the outgoing half
+    /// of a call already under way.
+    async fn forward_incoming(live: Live, tx: mpsc::Sender<Session>) {
+        let mut sessions = live.moq().sessions();
+        let mut seen: Vec<Session> = Vec::new();
+        loop {
+            let current = sessions.get();
+            for session in &current {
+                if session.dialed() || seen.contains(session) {
+                    continue;
+                }
+                debug!(remote = %session.remote_id().fmt_short(), "incoming session");
+                if tx.send(session.clone()).await.is_err() {
+                    return;
+                }
             }
-            debug!(remote = %session.remote_id().fmt_short(), "incoming session");
-            if tx.send(session).await.is_err() {
-                break;
+            seen = current;
+            if sessions.updated().await.is_err() {
+                return;
             }
         }
     }
 
     /// Dials the peer named by `ticket` and opens its tracks.
-    async fn dial_call(live: Live, ticket: LiveTicket, playback: PlaybackArgs) -> Answer {
-        info!(remote = %ticket.endpoint.id.fmt_short(), "dialing");
-        settle(Call::dial(&live, ticket.endpoint), playback).await
+    async fn dial_call(live: Live, ticket: BroadcastTicket, playback: PlaybackArgs) -> Answer {
+        info!(remote = %ticket.peer().fmt_short(), "dialing");
+        settle(Call::dial(&live, ticket.peer()), playback).await
     }
 
     /// Answers `session` and opens the caller's tracks.
-    async fn answer_call(session: MoqSession, playback: PlaybackArgs) -> Answer {
+    async fn answer_call(live: Live, session: Session, playback: PlaybackArgs) -> Answer {
         info!(remote = %session.remote_id().fmt_short(), "answering");
-        settle(Call::accept(session), playback).await
+        settle(Call::accept(&live, session), playback).await
     }
 
     /// Waits for a call to establish, then opens whichever tracks the peer
@@ -895,10 +967,7 @@ mod window {
     /// incoming session is not necessarily a caller, since everything that
     /// speaks MoQ to this node arrives the same way and a plain subscriber
     /// never publishes the call path an answer waits for.
-    async fn settle(
-        setup: impl Future<Output = Result<Call, CallError>>,
-        playback: PlaybackArgs,
-    ) -> Answer {
+    async fn settle(setup: impl Future<Output = Result<Call>>, playback: PlaybackArgs) -> Answer {
         let call = match tokio::time::timeout(PEER_TIMEOUT, setup).await {
             Ok(Ok(call)) => call,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),

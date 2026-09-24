@@ -4,7 +4,7 @@
 //! out to the simulcast ladder `--renditions` describes. A `file:` source takes
 //! the import path instead: its tracks are republished as they already are.
 
-use iroh_live::{Live, media::publish::LocalBroadcast};
+use iroh_live::{Live, media::publish::LocalBroadcast, moq::net::broadcast};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -46,9 +46,10 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 async fn setup_capture(args: &PublishArgs) -> Result<(Live, LocalBroadcast, String)> {
     let live = setup_live(!args.transport.no_serve).await?;
     let (live, (broadcast, ticket)) = transport::with_live(live, async |live| {
-        let broadcast = live.publish(&args.transport.name)?;
+        let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
         source::configure(&broadcast, &args.capture)?;
-        let ticket = transport::advertise(live, &args.transport).await?;
+        live.publish(&args.transport.name, broadcast.consume())?;
+        let ticket = transport::advertise(live, &args.transport)?;
         // `--test-source` overrides both flags, so logging what was typed would
         // name a camera that was never opened.
         let (video, audio) = match args.capture.test_source {
@@ -121,9 +122,12 @@ async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
 
 /// Publishes the file onto `live`, which the caller closes either way.
 async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> Result {
-    let producer = live.publish_raw(&args.transport.name)?;
-    let import = FileImport::open(producer, source).await?;
-    transport::advertise(live, &args.transport).await?;
+    let producer = broadcast::Info::new().produce();
+    let import = FileImport::open(producer.clone(), source).await?;
+    // Published once the import has created the tracks it republishes, so a
+    // subscriber never sees the broadcast without them.
+    live.publish(&args.transport.name, producer.consume())?;
+    transport::advertise(live, &args.transport)?;
     info!(name = %args.transport.name, "publishing a file");
 
     println!("press Ctrl+C to stop");

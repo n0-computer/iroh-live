@@ -115,14 +115,14 @@ mod tests {
         let Command::Watch(args) = cli.command else {
             panic!("expected watch");
         };
-        assert_eq!(args.remote.ticket().expect("resolves").broadcast_name, name);
+        assert_eq!(args.remote.ticket().expect("resolves").name(), name);
 
         let cli = Cli::try_parse_from(["irl", "record", "--endpoint-id", &id, "--name", &name])
             .expect("record accepts exactly what watch does");
         let Command::Record(args) = cli.command else {
             panic!("expected record");
         };
-        assert_eq!(args.remote.ticket().expect("resolves").broadcast_name, name);
+        assert_eq!(args.remote.ticket().expect("resolves").name(), name);
     }
 
     #[test]

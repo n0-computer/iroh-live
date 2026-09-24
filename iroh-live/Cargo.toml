@@ -12,18 +12,16 @@ anyhow = "1.0.104"
 derive_more = { version = "2.1.1", features = ["display", "debug", "eq"] }
 hang = { workspace = true }
 iroh = { workspace = true }
-# Rooms live in `iroh-rooms`, but `Live` still mounts the gossip protocol and
-# hands the instance out, since that is what a room needs from this crate.
-iroh-gossip = { workspace = true }
 iroh-moq = { workspace = true }
+# Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
+# knows nothing about rooms.
+iroh-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 iroh-live-media = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.2"
 n0-watcher = "1"
-rand = "0.10"
-strum = { version = "0.28", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["sync"] }
+tokio = { version = "1.53.1", features = ["sync", "time", "macros", "rt"] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
 bytes = "1.12.1"
@@ -52,6 +50,12 @@ workspace = true
 
 [features]
 default = ["capture", "render", "sound-server"]
+# Re-exports `iroh-rooms` as `iroh_live::rooms`.
+rooms = ["dep:iroh-rooms"]
+# Relay links: `Moq::attach_relay`.
+relay-links = ["iroh-moq/relay-links"]
+# `Grant::from_claims` over moq-auth tokens.
+auth = ["iroh-moq/auth"]
 # Camera, screen, and microphone capture.
 capture = ["iroh-live-media/capture"]
 # Speaker output.

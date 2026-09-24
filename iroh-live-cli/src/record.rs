@@ -14,7 +14,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use iroh_live::{Live, media::subscribe::RemoteBroadcast, moq::MoqSession, ticket::LiveTicket};
+use iroh_live::{BroadcastTicket, Live, media::subscribe::RemoteBroadcast, moq::net::origin};
 use moq_mux::{
     catalog::{CatalogFormat, Stream as _},
     container::{fmp4, mkv},
@@ -55,7 +55,7 @@ async fn record(args: RecordArgs) -> Result {
 ///
 /// Fails if the broadcast cannot be subscribed to, carries nothing to record,
 /// or the file cannot be written.
-async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) -> Result {
+async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
     let sub = transport::subscribe(live, ticket).await?;
 
     let catalog = sub.broadcast().catalog();
@@ -71,7 +71,7 @@ async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) ->
         ));
     }
 
-    let recorder = Recorder::open(sub.session(), sub.broadcast(), options).await?;
+    let recorder = Recorder::open(sub.subscription().as_origin(), sub.broadcast(), options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
         None => println!("recording, press Ctrl+C to stop"),
@@ -83,8 +83,7 @@ async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) ->
         options.path.display()
     );
 
-    sub.broadcast().shutdown();
-    sub.session().close(moq_net::Error::Cancel);
+    sub.close();
     Ok(())
 }
 
@@ -172,7 +171,7 @@ impl std::fmt::Debug for Recorder {
 impl Recorder {
     /// Subscribes to the tracks `options` keeps and creates the output file.
     ///
-    /// The exporter takes the session's origin rather than the broadcast we
+    /// The exporter takes the route table rather than the broadcast we
     /// already hold, because a catalog rendition may name a sibling broadcast
     /// and only the origin can resolve that reference.
     ///
@@ -181,14 +180,14 @@ impl Recorder {
     /// Fails if the requested rendition is not in the catalog, if the catalog
     /// track cannot be subscribed to, or if the output file cannot be created.
     pub async fn open(
-        session: &MoqSession,
+        origin: origin::Consumer,
         broadcast: &RemoteBroadcast,
         options: &RecordOptions,
     ) -> Result<Self> {
         if let Some(name) = &options.rendition {
             check_rendition(broadcast, name)?;
         }
-        let source = moq_mux::Source::new(session.announced().clone(), broadcast.name());
+        let source = moq_mux::Source::new(origin, broadcast.name());
         // A second subscription to the catalog track: `moq_mux` drives its
         // exporters from a `catalog::Stream`, and `RemoteBroadcast` publishes
         // its snapshots through an `n0_watcher` instead, which no adapter
