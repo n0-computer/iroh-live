@@ -30,10 +30,7 @@ publication at any other path, such as a room's, has no ticket.
 iroh-live:<BASE64URL_NOPAD(endpoint id)>/<broadcast-name>
 ```
 
-`FromStr` accepts that form, the same thing without the `iroh-live:` prefix, and
-two older shapes: a base64url `postcard(EndpointAddr)` where the id now sits, and
-the legacy `name@BASE32(addr)` that the first builds produced. Both parse, minus
-their addresses. Nothing produces either any more.
+`FromStr` accepts that form, and the same thing without the `iroh-live:` prefix.
 
 Serde goes through the same string. The ticket also implements
 `iroh_tickets::Ticket` with kind `broadcast`, for applications that carry

@@ -13,7 +13,7 @@
 
 use std::{fmt, str::FromStr};
 
-use iroh::{EndpointAddr, EndpointId};
+use iroh::EndpointId;
 use moq_net::PathOwned;
 use n0_error::e;
 use serde::{Deserialize, Serialize};
@@ -23,19 +23,15 @@ use crate::{Error, path::live_path};
 /// URI scheme prefix of a broadcast ticket.
 const SCHEME: &str = "iroh-live:";
 
-/// The length of the raw endpoint id a current ticket encodes.
-///
-/// Also what tells a current ticket from an older one: a ticket minted before
-/// the format shrank encodes a postcard [`EndpointAddr`], which spends these
-/// same 32 bytes on the id and then at least one more on its address list.
+/// The length of the raw endpoint id a ticket encodes.
 const ENDPOINT_ID_LEN: usize = 32;
 
 /// A peer and the name of one of its broadcasts.
 ///
 /// Carries the endpoint id and no addresses; iroh's address lookup resolves
 /// them. The string form is `iroh-live:<base64url(endpoint id)>/<name>`, and
-/// parsing also accepts the two forms that came before it. Serde goes through
-/// the string form.
+/// parsing also accepts it without the scheme. Serde goes through the string
+/// form.
 ///
 /// # Examples
 ///
@@ -86,15 +82,10 @@ impl BroadcastTicket {
         let bytes = data_encoding::BASE64URL_NOPAD
             .decode(id.as_bytes())
             .map_err(|_| invalid("invalid base64url"))?;
-        Ok(Self::new(decode_endpoint_id(&bytes)?, name))
-    }
-
-    fn parse_legacy(s: &str) -> Result<Self, Error> {
-        let (name, addr) = s.split_once('@').ok_or_else(|| invalid("missing @"))?;
-        let bytes = data_encoding::BASE32_NOPAD_NOCASE
-            .decode(addr.as_bytes())
-            .map_err(|_| invalid("invalid base32"))?;
-        Ok(Self::new(decode_endpoint_id(&bytes)?, name))
+        let id = <&[u8; ENDPOINT_ID_LEN]>::try_from(bytes.as_slice())
+            .map_err(|_| invalid("not an endpoint id"))?;
+        let peer = EndpointId::from_bytes(id).map_err(|_| invalid("invalid endpoint id"))?;
+        Ok(Self::new(peer, name))
     }
 }
 
@@ -102,20 +93,6 @@ fn invalid(reason: &str) -> Error {
     e!(Error::InvalidTicket {
         reason: reason.to_owned()
     })
-}
-
-/// Reads the endpoint id out of the bytes a ticket encodes.
-///
-/// Current tickets hold the 32 raw bytes of the id. Tickets handed out before
-/// the format shrank hold a postcard [`EndpointAddr`] instead, and those still
-/// parse: their addresses are discarded, because address lookup finds live ones.
-fn decode_endpoint_id(bytes: &[u8]) -> Result<EndpointId, Error> {
-    if let Ok(id) = <&[u8; ENDPOINT_ID_LEN]>::try_from(bytes) {
-        return EndpointId::from_bytes(id).map_err(|_| invalid("invalid endpoint id"));
-    }
-    let addr: EndpointAddr =
-        postcard::from_bytes(bytes).map_err(|_| invalid("invalid endpoint address"))?;
-    Ok(addr.id)
 }
 
 impl fmt::Display for BroadcastTicket {
@@ -128,19 +105,10 @@ impl fmt::Display for BroadcastTicket {
 impl FromStr for BroadcastTicket {
     type Err = Error;
 
-    /// Parses the `iroh-live:` URI, and the forms that came before it.
-    ///
-    /// Those are a URI whose payload is a postcard `EndpointAddr`, and
-    /// `name@base32`.
+    /// Parses the `iroh-live:` URI, with or without its scheme.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
-        if let Some(rest) = s.strip_prefix(SCHEME) {
-            Self::parse_uri(rest)
-        } else if s.contains('@') {
-            Self::parse_legacy(s)
-        } else {
-            Self::parse_uri(s)
-        }
+        Self::parse_uri(s.strip_prefix(SCHEME).unwrap_or(s))
     }
 }
 
@@ -183,8 +151,6 @@ impl iroh_tickets::Ticket for BroadcastTicket {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use iroh::SecretKey;
     use iroh_tickets::Ticket;
 
@@ -192,16 +158,6 @@ mod tests {
 
     fn test_endpoint_id() -> EndpointId {
         SecretKey::generate().public()
-    }
-
-    /// An endpoint address as a publisher on a multi-homed host reports it.
-    fn test_endpoint_addr(id: EndpointId) -> EndpointAddr {
-        let mut addr = EndpointAddr::from(id);
-        for port in 0..10u16 {
-            let socket: SocketAddr = format!("172.17.{port}.1:51923").parse().expect("valid");
-            addr = addr.with_ip_addr(socket);
-        }
-        addr
     }
 
     #[test]
@@ -218,28 +174,6 @@ mod tests {
         let ticket = BroadcastTicket::new(test_endpoint_id(), "my-stream");
         // 10 for the scheme, 43 for a base64url endpoint id, one separator.
         assert_eq!(ticket.to_string().len(), 10 + 43 + 1 + "my-stream".len());
-    }
-
-    #[test]
-    fn a_ticket_that_still_lists_addresses_parses_without_them() {
-        let id = test_endpoint_id();
-        let encoded = data_encoding::BASE64URL_NOPAD
-            .encode(&postcard::to_stdvec(&test_endpoint_addr(id)).expect("encode"));
-        let old = format!("iroh-live:{encoded}/my-stream");
-        let parsed: BroadcastTicket = old.parse().expect("parse the older format");
-        assert_eq!(parsed.peer(), id);
-        assert!(parsed.to_string().len() < old.len() / 2);
-    }
-
-    #[test]
-    fn legacy_format_still_parses() {
-        let id = test_endpoint_id();
-        let encoded = data_encoding::BASE32_NOPAD
-            .encode(&postcard::to_stdvec(&test_endpoint_addr(id)).expect("encode"))
-            .to_ascii_lowercase();
-        let parsed: BroadcastTicket = format!("hello@{encoded}").parse().expect("parse legacy");
-        assert_eq!(parsed.name(), "hello");
-        assert_eq!(parsed.peer(), id);
     }
 
     #[test]
