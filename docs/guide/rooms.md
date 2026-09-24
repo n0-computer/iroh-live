@@ -94,9 +94,11 @@ off. `room.send_chat("hello")` writes to it, and `room.chat()` returns a
 `ChatError::Lagged(n)` and the room carries on. A message carries its sender and
 the sender's wall-clock time. A room's receivers carry other members' messages,
 not this member's own, from the moment of joining on: what a member said before
-is not replayed, and a message is delivered once even when the member's session
-drops and comes back. A message sent while that session was down for more than a
-few seconds can be lost.
+is not replayed, and a message is delivered once even when two arrive out of
+order or the member's session drops and comes back. "Before" is judged by the
+sender's clock only for the replay a new subscription starts with, so a member
+whose clock runs behind is still heard. A message sent while that session was
+down for more than a few seconds can be lost.
 
 Names starting with a dot are the room's own, and `publish` refuses them.
 

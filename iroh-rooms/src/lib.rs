@@ -25,9 +25,11 @@
 //! which also tells them the topic.
 //!
 //! Chat receivers carry what other members send from the moment of joining
-//! on, each message once, also when a member's session drops and comes back.
-//! A message sent while the session was down for more than a few seconds can
-//! be lost.
+//! on, each message once, also when two arrive out of order or a member's
+//! session drops and comes back. What a member said before is told apart by
+//! its sender's clock, but only in the replay a new subscription starts with,
+//! so a member whose clock runs behind is still heard. A message sent while
+//! the session was down for more than a few seconds can be lost.
 //!
 //! ```no_run
 //! # async fn example(moq: iroh_moq::Moq, broadcast: moq_net::broadcast::Producer)
