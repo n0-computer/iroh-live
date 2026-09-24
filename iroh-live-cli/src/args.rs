@@ -469,7 +469,7 @@ pub struct WatchArgs {
 
     /// Read the ticket from a QR code held up to the camera.
     ///
-    /// Supplies <TICKET>, so the window opens on the camera picture and
+    /// Supplies `<TICKET>`, so the window opens on the camera picture and
     /// connects as soon as a ticket decodes. Given alongside a ticket it
     /// starts on that one instead, and the scan screen stays a button away.
     #[cfg(feature = "render")]

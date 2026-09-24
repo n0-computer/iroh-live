@@ -853,9 +853,9 @@ fn nv12_to_i420(
         let src = &uv[row * uv_stride..row * uv_stride + chroma_width * 2];
         let u_row = &mut u_plane[row * chroma_width..(row + 1) * chroma_width];
         let v_row = &mut v_plane[row * chroma_width..(row + 1) * chroma_width];
-        for (col, pair) in src.chunks_exact(2).enumerate() {
-            u_row[col] = pair[0];
-            v_row[col] = pair[1];
+        for (col, [u, v]) in src.as_chunks::<2>().0.iter().enumerate() {
+            u_row[col] = *u;
+            v_row[col] = *v;
         }
     }
 

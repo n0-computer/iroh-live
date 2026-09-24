@@ -2,7 +2,7 @@
 //!
 //! Android delivers camera frames through callbacks (CameraX `ImageAnalysis` or
 //! Camera2 `ImageReader`), while a broadcast reads a
-//! [`VideoSource`](iroh_live_media::VideoSource). This bridges the two with
+//! [`VideoSource`]. This bridges the two with
 //! [`VideoSource::push`](iroh_live_media::VideoSource::push): the app pushes a
 //! frame from whichever thread the callback runs on, and the broadcast encodes
 //! the newest one.

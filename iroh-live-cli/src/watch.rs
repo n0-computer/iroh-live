@@ -662,7 +662,7 @@ mod window {
     impl eframe::App for WatchApp {
         /// Drives the state machine.
         ///
-        /// Here rather than in [`ui`](Self::ui) because eframe runs no egui
+        /// Here rather than in `ui` because eframe runs no egui
         /// pass while the window is minimized or occluded, and a dial that
         /// finishes off screen still has to be picked up.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

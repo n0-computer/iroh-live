@@ -277,7 +277,7 @@ mod window {
     impl eframe::App for RoomApp {
         /// Drains the room and collects finished subscriptions.
         ///
-        /// Here rather than in [`ui`](Self::ui) because eframe runs no egui
+        /// Here rather than in `ui` because eframe runs no egui
         /// pass while the window is minimized or occluded, and the room actor
         /// blocks on an event channel this is the only reader of.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

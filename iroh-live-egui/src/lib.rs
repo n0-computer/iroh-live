@@ -79,7 +79,7 @@ pub use iroh_live_media::video::render::wgpu;
 ///
 /// Bound to one `wgpu` device and queue for its lifetime; keep it alive
 /// across frames rather than rebuilding it. [`FrameView`] and
-/// [`VideoTrackView`] are the usual entry points: reach for this directly
+/// [`VideoView`] are the usual entry points: reach for this directly
 /// only when neither fits (drawing into a texture id you manage yourself).
 #[cfg(feature = "wgpu-render")]
 pub struct EguiVideoRenderer {
@@ -406,9 +406,9 @@ impl VideoView {
 /// [`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`] when the adapter
 /// supports it, which lets [`iroh_live_media::video::render::Renderer`] import
 /// PipeWire DMA-BUFs without a CPU round trip. Every other platform, and any
-/// Linux adapter that lacks the feature, gets [`adapter_limits_config`]: the
-/// renderer still draws every frame correctly through its CPU-upload
-/// fallback, just without the zero-copy path.
+/// Linux adapter that lacks the feature, gets a device with the adapter's own
+/// limits: the renderer still draws every frame correctly through its
+/// CPU-upload fallback, just without the zero-copy path.
 #[cfg(feature = "wgpu-render")]
 pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     #[cfg(target_os = "linux")]

@@ -450,7 +450,7 @@ mod window {
     impl eframe::App for CallApp {
         /// Drives the state machine.
         ///
-        /// Here rather than in [`ui`](Self::ui) because eframe runs no egui
+        /// Here rather than in `ui` because eframe runs no egui
         /// pass while the window is minimized or occluded, and a window nobody
         /// is looking at still has to answer the phone.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
