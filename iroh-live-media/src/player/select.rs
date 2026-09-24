@@ -146,62 +146,69 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // The first pass decides at once: a broadcast whose catalog arrived before
+    // the player started changes nothing the loop below waits on, so waiting
+    // first would leave such a player without video until something else
+    // moved, which with no audio and no network signals is never.
+    let mut first = true;
     loop {
         let auto = matches!(*mode.borrow(), RenditionMode::Auto { .. });
         let ticking = (auto && network.is_some()) || !excluded.is_empty();
-        tokio::select! {
-            () = shutdown.cancelled() => return,
-            // Returning drops the desired rendition's sender, which ends the
-            // video task and with it the player's frames: a reader waiting on
-            // `next()` sees the end rather than waiting forever.
-            () = broadcast.closed() => {
-                debug!("the broadcast closed");
-                return;
-            }
-            changed = mode.changed() => if changed.is_err() { return },
-            changed = latency.changed() => if changed.is_err() { return },
-            changed = decoder.changed() => if changed.is_err() { return },
-            updated = catalog.updated() => {
-                if updated.is_err() {
+        if !std::mem::take(&mut first) {
+            tokio::select! {
+                () = shutdown.cancelled() => return,
+                // Returning drops the desired rendition's sender, which ends the
+                // video task and with it the player's frames: a reader waiting on
+                // `next()` sees the end rather than waiting forever.
+                () = broadcast.closed() => {
+                    debug!("the broadcast closed");
                     return;
                 }
-                // A video that ended gets another go when the publisher
-                // republishes, which is what a new catalog says.
-                if ended_seen {
-                    restart += 1;
-                    ended_seen = false;
+                changed = mode.changed() => if changed.is_err() { return },
+                changed = latency.changed() => if changed.is_err() { return },
+                changed = decoder.changed() => if changed.is_err() { return },
+                updated = catalog.updated() => {
+                    if updated.is_err() {
+                        return;
+                    }
+                    // A video that ended gets another go when the publisher
+                    // republishes, which is what a new catalog says.
+                    if ended_seen {
+                        restart += 1;
+                        ended_seen = false;
+                    }
                 }
+                updated = epoch.updated() => if updated.is_err() { return },
+                updated = player.updated() => {
+                    if updated.is_err() {
+                        return;
+                    }
+                    if matches!(player.peek().video, SlotState::Ended) {
+                        ended_seen = true;
+                    }
+                }
+                failed_report = failures.recv() => {
+                    let Some(reported) = failed_report else { return };
+                    let rendition = &reported.target.rendition;
+                    if reported.config_only {
+                        info!(
+                            %rendition,
+                            "the new decoder configuration failed; the rendition keeps playing under the old one"
+                        );
+                    } else {
+                        let now = Instant::now();
+                        let entry = excluded.entry(rendition.clone()).or_insert(Excluded {
+                            until: now,
+                            backoff: BACKOFF_FIRST / 2,
+                        });
+                        entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
+                        entry.until = now + entry.backoff;
+                        info!(%rendition, backoff = ?entry.backoff, "leaving a failing rendition alone");
+                    }
+                    failed = Some(reported);
+                }
+                _ = ticker.tick(), if ticking => {}
             }
-            updated = epoch.updated() => if updated.is_err() { return },
-            updated = player.updated() => {
-                if updated.is_err() {
-                    return;
-                }
-                if matches!(player.peek().video, SlotState::Ended) {
-                    ended_seen = true;
-                }
-            }
-            failed_report = failures.recv() => {
-                let Some(reported) = failed_report else { return };
-                let rendition = &reported.target.rendition;
-                if reported.config_only {
-                    info!(
-                        %rendition,
-                        "the new decoder configuration failed; the rendition keeps playing under the old one"
-                    );
-                } else {
-                    let now = Instant::now();
-                    let entry = excluded.entry(rendition.clone()).or_insert(Excluded {
-                        until: now,
-                        backoff: BACKOFF_FIRST / 2,
-                    });
-                    entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
-                    entry.until = now + entry.backoff;
-                    info!(%rendition, backoff = ?entry.backoff, "leaving a failing rendition alone");
-                }
-                failed = Some(reported);
-            }
-            _ = ticker.tick(), if ticking => {}
         }
 
         let now = Instant::now();

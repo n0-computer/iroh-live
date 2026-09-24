@@ -85,6 +85,34 @@ async fn a_local_broadcast_plays_in_process() {
     );
 }
 
+/// A player started after the catalog arrived used to wait for something to
+/// change before it chose a rendition, which with no audio and no network
+/// signals never happened: `irl watch` and every patchbay test, which wait for
+/// the catalog before playing, got no picture.
+#[tokio::test]
+async fn a_player_started_after_the_catalog_plays() {
+    let (broadcast, _source) = ladder();
+    let remote = RemoteBroadcast::local(&broadcast);
+    let mut catalog = remote.catalog();
+    tokio::time::timeout(TIMEOUT, async {
+        while catalog
+            .get()
+            .is_none_or(|catalog| catalog.video().len() < 2)
+        {
+            catalog.updated().await.expect("the broadcast is alive");
+        }
+    })
+    .await
+    .expect("the catalog arrives");
+    let player = remote
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
+        .expect("valid");
+    tokio::time::timeout(TIMEOUT, player.video().next())
+        .await
+        .expect("a player of a described broadcast never chose a rendition")
+        .expect("the video plays");
+}
+
 /// R12: two players of one broadcast used to share one playout clock and
 /// one policy, so a second view overwrote the first. Each player now owns
 /// its own.
