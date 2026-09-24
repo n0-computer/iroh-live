@@ -7,16 +7,18 @@
 //!
 //! Every link has a publish origin of its own. A publication is offered on a
 //! link by adding a dynamic route at its path to that origin, answered by
-//! splicing the publication's broadcast (`Request::accept`), so the peer sees
-//! exactly the publications meant for it and moq keeps announcing and serving
-//! them natively.
+//! splicing the publication's broadcast (`Request::accept`) through a gate that
+//! withdrawing the offer tears down (see [`serve`]), so the peer sees exactly
+//! the publications meant for it, moq keeps announcing and serving them
+//! natively, and a withdrawn offer ends what the peer was reading.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use iroh::EndpointId;
 use moq_net::{Path, PathOwned, broadcast, origin};
-use n0_future::task::AbortOnDropHandle;
+use n0_future::task::{AbortOnDropHandle, JoinSet};
 use n0_watcher::Watchable;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::{
@@ -62,6 +64,15 @@ pub(crate) struct PubEntry {
     pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
     /// Withdraws the publication once its broadcast ends.
     pub(crate) _closed_task: Option<AbortOnDropHandle<()>>,
+    /// Cancelled when the entry goes, however it goes, for
+    /// [`Publication::withdrawn`](crate::Publication::withdrawn).
+    pub(crate) withdrawn: CancellationToken,
+}
+
+impl Drop for PubEntry {
+    fn drop(&mut self) {
+        self.withdrawn.cancel();
+    }
 }
 
 /// One link: a direct session or a relay.
@@ -135,11 +146,23 @@ impl State {
         Some(entry)
     }
 
-    /// Returns the publication at `path`, if any.
-    pub(crate) fn publication_at(&self, path: &Path<'_>) -> Option<u64> {
+    /// Returns the publication that already answers `path` or `legacy`, if any.
+    ///
+    /// At its path or at its alias: two publications answering one path would
+    /// put two routes at it on every link, and a subscriber would get either.
+    pub(crate) fn publication_answering(
+        &self,
+        path: &Path<'_>,
+        legacy: Option<&PathOwned>,
+    ) -> Option<u64> {
+        let taken = |candidate: &PathOwned| {
+            *candidate == *path || legacy.is_some_and(|legacy| candidate == legacy)
+        };
         self.publications
             .iter()
-            .find(|(_, publication)| publication.path == *path)
+            .find(|(_, publication)| {
+                taken(&publication.path) || publication.legacy.as_ref().is_some_and(taken)
+            })
             .map(|(id, _)| *id)
     }
 
@@ -308,37 +331,86 @@ fn visible(publication: &PubEntry, id: u64, link: &LinkEntry) -> bool {
     }
 }
 
-/// Offers `broadcast` at `path` on `origin`.
+/// Offers `broadcast` at `path` on `origin`, so that withdrawing the offer cuts
+/// off whoever reads it.
 ///
 /// The offer lasts until the broadcast ends or the returned handle drops.
 /// Returns `None` if the origin refuses the route, which it does only for a
 /// path no pattern can spell or once its driver is gone; either is logged.
+///
+/// Requests are not answered with `broadcast` itself. moq-net keeps serving a
+/// path through a front for as long as the source it was handed lives, even
+/// after the route retracts, and a new request for the path joins that front,
+/// so a peer that already subscribed would read on, and could subscribe again,
+/// after the offer was withdrawn. Each offer therefore answers through a gate:
+/// an origin of its own that serves the broadcast, whose fronts' broadcasts are
+/// what `origin`'s fronts splice. Dropping the handle tears the gate down,
+/// which closes those broadcasts, which ends `origin`'s fronts and every
+/// subscription through them.
 pub(crate) fn serve(
     origin: &origin::Producer,
     path: &Path<'_>,
     broadcast: &broadcast::Consumer,
 ) -> Option<Serve> {
-    let dynamic = match origin.dynamic(path, origin::Route::default()) {
+    let offered = match origin.dynamic(path, origin::Route::default()) {
         Ok(dynamic) => dynamic,
         Err(err) => {
             warn!(%path, %err, "could not offer the broadcast");
             return None;
         }
     };
+    let (gate, gate_driver) = origin::Producer::new(origin.config());
+    let gated = match gate.dynamic(path, origin::Route::default()) {
+        Ok(dynamic) => dynamic,
+        Err(err) => {
+            warn!(%path, %err, "could not gate the broadcast");
+            return None;
+        }
+    };
     let broadcast = broadcast.clone();
+    let path = path.to_owned();
+    let root = origin.root().to_owned();
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
+        let through_gate = gate.consume();
+        let run_gate = moq_net::time::run(gate_driver);
+        tokio::pin!(run_gate);
+        let mut requests = JoinSet::new();
         loop {
             tokio::select! {
                 // A route that outlived its broadcast would answer every new
                 // request with a closed broadcast, so it goes with it.
                 _ = broadcast.closed() => break,
-                request = dynamic.requested_broadcast() => match request {
+                _ = &mut run_gate => break,
+                request = gated.requested_broadcast() => match request {
                     Ok(request) => request.accept(&broadcast),
                     Err(_) => break,
                 },
+                request = offered.requested_broadcast() => match request {
+                    Ok(request) => {
+                        let through_gate = through_gate.clone();
+                        let exact = request
+                            .path()
+                            .strip_prefix(&root)
+                            .is_some_and(|requested| requested == path);
+                        let path = path.clone();
+                        // Resolving waits on the gate, whose driver this loop
+                        // runs, so it waits elsewhere.
+                        requests.spawn(async move {
+                            if !exact {
+                                request.reject(moq_net::Error::NotFound);
+                                return;
+                            }
+                            match through_gate.request_broadcast(&path).await {
+                                Ok(served) => request.accept(served),
+                                Err(err) => request.reject(err),
+                            }
+                        });
+                    }
+                    Err(_) => break,
+                },
+                Some(_) = requests.join_next(), if !requests.is_empty() => {}
             }
         }
-        drop(dynamic);
     })))
 }
 
@@ -356,3 +428,137 @@ pub(crate) fn audience_kind(audience: &Audience) -> AudienceKind {
 
 /// The set a `Peers` audience names right now.
 pub(crate) type PeerSet = BTreeSet<EndpointId>;
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use moq_net::{Hop, Timestamp, bytes::Bytes, track};
+
+    use super::*;
+
+    const MAX_AGE: Duration = Duration::from_secs(5);
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Runs an origin, as a session's publish origin runs.
+    fn origin() -> (origin::Producer, AbortOnDropHandle<()>) {
+        let (origin, driver) =
+            origin::Producer::new(origin::Config::new(Hop::new(7).expect("a valid hop")));
+        let task = tokio::spawn(async move {
+            moq_net::time::run(driver).await;
+        });
+        (origin, AbortOnDropHandle::new(task))
+    }
+
+    /// Writes a frame into a track every few milliseconds until it closes.
+    fn writing() -> (broadcast::Producer, AbortOnDropHandle<()>) {
+        let broadcast = broadcast::Info::new().produce();
+        let mut track = broadcast
+            .create_track("video", track::Info::default().with_max_age(MAX_AGE))
+            .expect("create track");
+        let task = tokio::spawn(async move {
+            while track
+                .write_frame(Timestamp::now(), Bytes::from_static(b"frame"))
+                .is_ok()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        (broadcast, AbortOnDropHandle::new(task))
+    }
+
+    /// Resolves `path` on `origin` and returns the broadcast and a subscriber
+    /// to its track that has read one group.
+    async fn read(
+        origin: &origin::Producer,
+        path: &Path<'_>,
+    ) -> (broadcast::Consumer, track::Subscriber) {
+        let served = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(path))
+            .await
+            .expect("timed out resolving")
+            .expect("the offered path resolves");
+        let mut subscriber = tokio::time::timeout(
+            TIMEOUT,
+            served
+                .track("video")
+                .expect("track")
+                .subscribe(track::Subscription::default().with_max_age(MAX_AGE)),
+        )
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+        tokio::time::timeout(TIMEOUT, subscriber.recv_group())
+            .await
+            .expect("timed out reading")
+            .expect("track failed")
+            .expect("a group");
+        (served, subscriber)
+    }
+
+    /// Pins down the moq-net behaviour the gate in [`serve`] exists for: a
+    /// route answered with a broadcast itself keeps serving a subscriber after
+    /// the route retracts, and a new request joins that front.
+    ///
+    /// If a moq-net release changes this, the gate is no longer needed.
+    #[tokio::test]
+    async fn a_retracted_splice_serves_on_without_a_gate() {
+        let (origin, _origin) = origin();
+        let (broadcast, _writer) = writing();
+        let path = Path::new("live/publisher/cam");
+        let route = origin
+            .dynamic(&path, origin::Route::default())
+            .expect("route");
+        let consumer = broadcast.consume();
+        let answer = AbortOnDropHandle::new(tokio::spawn(async move {
+            while let Ok(request) = route.requested_broadcast().await {
+                request.accept(&consumer);
+            }
+        }));
+        let (served, mut subscriber) = read(&origin, &path).await;
+
+        drop(answer);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for _ in 0..3 {
+            tokio::time::timeout(TIMEOUT, subscriber.recv_group())
+                .await
+                .expect("the subscription stalled")
+                .expect("track failed")
+                .expect("the subscription ended");
+        }
+        assert!(!served.is_closed());
+        let again = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(&path))
+            .await
+            .expect("timed out resolving again");
+        assert!(again.is_ok(), "a new request no longer joins the front");
+    }
+
+    /// Withdrawing an offer ends what a peer already reads through it, and a
+    /// new request for the path finds nothing.
+    ///
+    /// Read at the origin a session publishes from, so the peer's own
+    /// behaviour on seeing the route retract plays no part: a peer that
+    /// ignores the retraction must be cut off all the same.
+    #[tokio::test]
+    async fn a_withdrawn_offer_ends_its_subscriptions() {
+        let (origin, _origin) = origin();
+        let (broadcast, _writer) = writing();
+        let path = Path::new("live/publisher/cam");
+        let offer = serve(&origin, &path, &broadcast.consume()).expect("offer");
+        let (served, mut subscriber) = read(&origin, &path).await;
+
+        drop(offer);
+        tokio::time::timeout(TIMEOUT, async {
+            while let Ok(Some(_)) = subscriber.recv_group().await {}
+        })
+        .await
+        .expect("the subscription outlived the offer");
+        assert!(
+            served.is_closed(),
+            "the served broadcast outlived the offer"
+        );
+        let again = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(&path))
+            .await
+            .expect("timed out resolving again");
+        assert!(again.is_err(), "a withdrawn path resolved again");
+    }
+}

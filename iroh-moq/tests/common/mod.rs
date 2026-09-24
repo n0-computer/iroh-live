@@ -132,6 +132,47 @@ pub(crate) async fn read_counter(broadcast: &broadcast::Consumer) -> u64 {
     .expect("timed out reading a frame")
 }
 
+/// Subscribes to the test track and reads one group from it.
+pub(crate) async fn reading(broadcast: &broadcast::Consumer) -> track::Subscriber {
+    tokio::time::timeout(TIMEOUT, async {
+        let mut subscriber = broadcast
+            .track("video")
+            .expect("track")
+            .subscribe(track::Subscription::default().with_max_age(MAX_AGE))
+            .await
+            .expect("subscribe to track");
+        subscriber
+            .recv_group()
+            .await
+            .expect("track failed")
+            .expect("track ended");
+        subscriber
+    })
+    .await
+    .expect("timed out reading a group")
+}
+
+/// Waits until `subscriber`'s track ends, failing the test with `what` if it
+/// still delivers after [`TIMEOUT`].
+pub(crate) async fn ends(what: &str, subscriber: &mut track::Subscriber) {
+    let ended = tokio::time::timeout(TIMEOUT, async {
+        while let Ok(Some(_)) = subscriber.recv_group().await {}
+    })
+    .await;
+    assert!(ended.is_ok(), "still reading: {what}");
+}
+
+/// Asserts that `future` does not complete within `window`.
+pub(crate) async fn stays_pending<T: std::fmt::Debug>(
+    what: &str,
+    window: Duration,
+    future: impl std::future::Future<Output = T>,
+) {
+    if let Ok(done) = tokio::time::timeout(window, future).await {
+        panic!("{what}: {done:?}");
+    }
+}
+
 /// Awaits `future`, failing the test with `what` if it takes longer than
 /// [`TIMEOUT`].
 pub(crate) async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {

@@ -9,6 +9,7 @@ use iroh::EndpointId;
 use moq_net::{Path, PathOwned};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
@@ -30,7 +31,9 @@ pub enum Audience {
     /// These peers, as the set changes.
     ///
     /// A room passes its membership, an application its friend list. Never
-    /// offered to relays, which would forward it to anyone.
+    /// offered to relays, which would forward it to anyone. Once the set's
+    /// watchable is dropped the publication is offered to nobody, since no one
+    /// keeps the set current any more.
     Peers(n0_watcher::Direct<BTreeSet<EndpointId>>),
     /// No one, until offered explicitly per session.
     ///
@@ -52,9 +55,10 @@ pub(crate) enum AudienceKind {
 
 /// A published broadcast.
 ///
-/// Cheap to clone. The publication stays until [`unpublish`](Self::unpublish)
-/// withdraws it, its broadcast ends, or the node shuts down; dropping the
-/// handles leaves it in place.
+/// Cheap to clone; two handles are equal when they name the same publication.
+/// The publication stays until [`unpublish`](Self::unpublish) withdraws it,
+/// its broadcast ends, or the node shuts down; dropping the handles leaves it in
+/// place.
 #[derive(Debug, Clone)]
 pub struct Publication {
     inner: Arc<PublicationInner>,
@@ -66,12 +70,32 @@ struct PublicationInner {
     path: PathOwned,
     #[debug(skip)]
     shared: Weak<Shared>,
+    #[debug(skip)]
+    withdrawn: CancellationToken,
 }
 
+impl PartialEq for Publication {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.id == other.inner.id && Weak::ptr_eq(&self.inner.shared, &other.inner.shared)
+    }
+}
+
+impl Eq for Publication {}
+
 impl Publication {
-    pub(crate) fn new(id: u64, path: PathOwned, shared: Weak<Shared>) -> Self {
+    pub(crate) fn new(
+        id: u64,
+        path: PathOwned,
+        shared: Weak<Shared>,
+        withdrawn: CancellationToken,
+    ) -> Self {
         Self {
-            inner: Arc::new(PublicationInner { id, path, shared }),
+            inner: Arc::new(PublicationInner {
+                id,
+                path,
+                shared,
+                withdrawn,
+            }),
         }
     }
 
@@ -103,7 +127,8 @@ impl Publication {
     /// Replaces who may see the publication.
     ///
     /// Takes effect at once: links the new audience admits are offered it, and
-    /// links it no longer admits see it withdrawn.
+    /// links it no longer admits see it withdrawn, which ends what their peers
+    /// were reading.
     pub fn set_audience(&self, audience: Audience) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
@@ -125,9 +150,24 @@ impl Publication {
         state.reconcile_publication(self.inner.id);
     }
 
+    /// Waits until the publication is withdrawn.
+    ///
+    /// By [`unpublish`](Self::unpublish), by its broadcast ending, or by the
+    /// node shutting down. Cancellation safe.
+    pub async fn withdrawn(&self) {
+        self.inner.withdrawn.cancelled().await;
+    }
+
+    /// Reports whether the publication has been withdrawn.
+    pub fn is_withdrawn(&self) -> bool {
+        self.inner.withdrawn.is_cancelled()
+    }
+
     /// Withdraws the publication from every link and from the route table.
     ///
-    /// The broadcast itself keeps running; publish it again to offer it anew.
+    /// Peers already reading it are cut off: their subscriptions end, and they
+    /// cannot subscribe again. The broadcast itself keeps running; publish it
+    /// again to offer it anew.
     pub fn unpublish(&self) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
@@ -147,7 +187,8 @@ impl Publication {
 ///
 /// Returned by [`Session::offer`](crate::Session::offer) and
 /// [`RelayLink::offer`](crate::RelayLink::offer). Dropping it withdraws the
-/// offer again, unless the publication's audience admits the link on its own.
+/// offer again, unless the publication's audience admits the link on its own,
+/// and a withdrawn offer ends the subscriptions the peer made through it.
 #[derive(Debug)]
 #[must_use = "dropping the guard withdraws the offer"]
 pub struct OfferGuard {
@@ -206,8 +247,13 @@ pub(crate) fn peers_task(
     let mut peers = peers.clone();
     let shared = shared.clone();
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
-        // A watcher whose watchable is gone keeps the set it last had.
-        while let Ok(set) = peers.updated().await {
+        loop {
+            // Whoever owned the set dropped it, a room that was left say, and
+            // nobody will keep it current any more: fail closed.
+            let (set, disconnected) = match peers.updated().await {
+                Ok(set) => (set, false),
+                Err(_) => (PeerSet::new(), true),
+            };
             let Some(shared) = shared.upgrade() else {
                 return;
             };
@@ -215,9 +261,16 @@ pub(crate) fn peers_task(
             let Some(entry) = state.publications.get_mut(&id) else {
                 return;
             };
-            debug!(path = %entry.path, peers = set.len(), "audience peers changed");
+            if disconnected {
+                info!(path = %entry.path, "audience set dropped, offering to nobody");
+            } else {
+                debug!(path = %entry.path, peers = set.len(), "audience peers changed");
+            }
             entry.audience = AudienceKind::Peers(set);
             state.reconcile_publication(id);
+            if disconnected {
+                return;
+            }
         }
     })))
 }

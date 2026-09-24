@@ -6,7 +6,7 @@ mod common;
 
 use std::{collections::BTreeSet, time::Duration};
 
-use common::{Node, TIMEOUT, TestBroadcast, read_counter, step};
+use common::{Node, TIMEOUT, TestBroadcast, ends, read_counter, reading, stays_pending, step};
 use iroh::protocol::Router;
 use iroh_moq::{
     Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach,
@@ -101,20 +101,21 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
         .expect_err("a second publication at one path");
     assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
 
+    // The bare alias counts too: two publications answering `cam` would put
+    // two routes there on every direct session.
+    let err = alice
+        .moq
+        .publish_at("cam", &second.producer, Audience::Everyone)
+        .expect_err("a publication at another's alias");
+    assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
+
+    // A broadcast that ended frees its path at once, before the node has
+    // noticed on its own.
     first.producer.finish();
-    step("the path frees up", async {
-        loop {
-            if alice
-                .moq
-                .publish("cam", &second.producer, Audience::Everyone)
-                .is_ok()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    alice
+        .moq
+        .publish("cam", &second.producer, Audience::Everyone)
+        .expect("publish over an ended broadcast");
 
     let err = alice
         .moq
@@ -124,8 +125,12 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     alice.shutdown().await;
 }
 
-/// A publication for a set of peers reaches those peers only, and follows the
-/// set as it changes.
+/// Longer than a direct subscribe waits before it tries the older layout's
+/// bare name, so a negative check also covers the alias.
+const PAST_THE_GRACE: Duration = Duration::from_secs(3);
+
+/// A publication for a set of peers reaches those peers only, follows the set
+/// as it changes, and ends for a peer taken out of it.
 #[tokio::test]
 #[traced_test]
 async fn a_peers_audience_follows_its_set() {
@@ -143,30 +148,53 @@ async fn a_peers_audience_follows_its_set() {
     let for_bob = step("bob", bob.moq.subscribe(publication.path(), Reach::Direct))
         .await
         .expect("bob is a member");
+    let mut bob_reading = reading(&for_bob.as_moq()).await;
+
+    // Carol has a session, but nothing is offered on it: neither the path nor
+    // its bare alias.
+    let session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    tokio::join!(
+        stays_pending(
+            "carol resolved the path",
+            PAST_THE_GRACE,
+            session.subscribe(publication.path()),
+        ),
+        stays_pending(
+            "carol resolved the bare alias",
+            PAST_THE_GRACE,
+            session.subscribe("cam"),
+        ),
+    );
+    assert!(carol.moq.routes(publication.path()).get().is_empty());
+
+    // Adding her to the set offers it on her open session.
+    members.set(BTreeSet::from([bob.id(), carol.id()])).ok();
+    let for_carol = step(
+        "carol",
+        carol.moq.subscribe(publication.path(), Reach::Direct),
+    )
+    .await
+    .expect("carol after joining the set");
+    let mut carol_reading = reading(&for_carol.as_moq()).await;
+
+    // Taking her out again ends what she reads, and only for her.
+    members.set(BTreeSet::from([bob.id()])).ok();
+    ends("carol after leaving the set", &mut carol_reading).await;
     read_counter(&for_bob.as_moq()).await;
 
-    // Carol connects, but nothing is offered to her.
-    let mut carol_subscribe = Box::pin(carol.moq.subscribe(publication.path(), Reach::Direct));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(1), &mut carol_subscribe)
-            .await
-            .is_err(),
-        "carol resolved a broadcast whose audience does not name her"
-    );
-
-    // Adding her to the set offers it on her session, which is already open.
-    members.set(BTreeSet::from([bob.id(), carol.id()])).ok();
-    let for_carol = step("carol", carol_subscribe)
-        .await
-        .expect("carol after joining the set");
-    read_counter(&for_carol.as_moq()).await;
+    // A set nobody keeps any more offers to nobody.
+    drop(members);
+    ends("bob after the set was dropped", &mut bob_reading).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
     carol.shutdown().await;
 }
 
-/// A manual publication is offered per session, and withdrawn with the guard.
+/// A manual publication is offered per session, and withdrawing the offer ends
+/// what the peer reads through it.
 #[tokio::test]
 #[traced_test]
 async fn a_manual_audience_needs_an_offer() {
@@ -178,22 +206,16 @@ async fn a_manual_audience_needs_an_offer() {
         .moq
         .publish("cam", &broadcast.producer, Audience::Manual)
         .expect("publish");
-    step("connect", bob.moq.connect(alice.endpoint.addr()))
+    let bob_session = step("connect", bob.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    let session = step("alice sees bob", async {
-        let mut sessions = alice.moq.sessions();
-        loop {
-            if let Some(session) = sessions.get().into_iter().next() {
-                return session;
-            }
-            sessions.updated().await.expect("node gone");
-        }
-    })
+    let session = step("alice sees bob", session_with(&alice, bob.id())).await;
+    stays_pending(
+        "bob resolved it before the offer",
+        PAST_THE_GRACE,
+        bob_session.subscribe(publication.path()),
+    )
     .await;
-
-    let mut routes = bob.moq.routes(publication.path());
-    assert!(routes.get().is_empty(), "offered before the offer");
 
     let offer = session.offer(&publication).expect("offer");
     let subscription = step(
@@ -202,15 +224,51 @@ async fn a_manual_audience_needs_an_offer() {
     )
     .await
     .expect("subscribe after the offer");
-    read_counter(&subscription.as_moq()).await;
+    let mut bob_reading = reading(&subscription.as_moq()).await;
+    let mut routes = bob.moq.routes(publication.path());
 
     drop(offer);
+    ends("bob after the offer was withdrawn", &mut bob_reading).await;
     step("the route is withdrawn", async {
         while !routes.get().is_empty() {
             routes.updated().await.expect("node gone");
         }
     })
     .await;
+    stays_pending(
+        "bob resolved it again after the withdrawal",
+        Duration::from_secs(1),
+        bob_session.subscribe(publication.path()),
+    )
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Unpublishing ends what peers read, and says so on the publication.
+#[tokio::test]
+#[traced_test]
+async fn unpublishing_ends_what_peers_read() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+    let broadcast = TestBroadcast::start();
+    let publication = alice
+        .moq
+        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .expect("publish");
+    let subscription = step(
+        "subscribe",
+        bob.moq.subscribe(publication.path(), Reach::Direct),
+    )
+    .await
+    .expect("subscribe");
+    let mut bob_reading = reading(&subscription.as_moq()).await;
+    assert!(!publication.is_withdrawn());
+
+    publication.unpublish();
+    step("withdrawn", publication.withdrawn()).await;
+    ends("bob after the unpublish", &mut bob_reading).await;
 
     alice.shutdown().await;
     bob.shutdown().await;

@@ -284,12 +284,13 @@ impl Moq {
     ///
     /// For one release the broadcast is also offered to direct sessions at the
     /// bare `name`, which is where nodes on the older path layout look for it.
+    /// A name that itself spells another publisher's path gets no such alias.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Duplicate`] if something is already published at the
-    /// path, [`Error::InvalidPath`] for an empty name or one with a `*`
-    /// segment, and [`Error::ShutDown`] once the node has shut down.
+    /// Fails with [`Error::Duplicate`] if a live publication already answers the
+    /// path or the bare name, [`Error::InvalidPath`] for an empty name or one
+    /// with a `*` segment, and [`Error::ShutDown`] once the node has shut down.
     pub fn publish(
         &self,
         name: &str,
@@ -303,7 +304,8 @@ impl Moq {
             }));
         }
         let path = live_path(self.shared.id, name);
-        self.publish_inner(path, Some(legacy), broadcast.consume(), audience)
+        let legacy = publisher_of(&legacy).is_none().then_some(legacy);
+        self.publish_inner(path, legacy, broadcast.consume(), audience)
     }
 
     /// Publishes `broadcast` at an explicit path.
@@ -361,8 +363,13 @@ impl Moq {
         if state.closed {
             return Err(e!(Error::ShutDown));
         }
-        if state.publication_at(&path).is_some() {
-            return Err(e!(Error::Duplicate { path }));
+        if let Some(existing) = state.publication_answering(&path, legacy.as_ref()) {
+            // A broadcast that ended is withdrawn by its closed task, which may
+            // not have run yet; publishing anew at its path is not a clash.
+            if !state.publications[&existing].broadcast.is_closed() {
+                return Err(e!(Error::Duplicate { path }));
+            }
+            state.remove_publication(existing);
         }
         let id = state.next_id();
         let closed_task = {
@@ -387,6 +394,7 @@ impl Moq {
             .then(|| state::serve(&self.shared.table, &path, &broadcast))
             .flatten();
         info!(%path, ?audience, "published");
+        let withdrawn = CancellationToken::new();
         state.add_publication(
             id,
             PubEntry {
@@ -398,9 +406,10 @@ impl Moq {
                 local,
                 peers_task: peers_task(&audience, id, &weak),
                 _closed_task: Some(AbortOnDropHandle::new(closed_task)),
+                withdrawn: withdrawn.clone(),
             },
         );
-        Ok(Publication::new(id, path, weak))
+        Ok(Publication::new(id, path, weak, withdrawn))
     }
 
     /// Resolves `path` in the route table.

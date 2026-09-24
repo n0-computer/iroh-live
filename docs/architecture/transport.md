@@ -71,6 +71,16 @@ session when its audience admits the peer (`Everyone`, a watched set of `Peers`,
 or `Manual` with `Session::offer`) and the session's grant covers its path. The
 offers change while the session runs, as audiences and grants change.
 
+A withdrawn offer ends what the peer was reading through it. moq keeps serving a
+path through a front for as long as the source it was handed lives, even after
+the route retracts, and a new request joins that front, so retracting the route
+alone would leave a peer that ignores the retraction reading on. Each offer
+therefore answers through a gate, a small origin of its own that serves the
+publication. Withdrawing the offer (dropping the `OfferGuard`, shrinking a
+`Peers` set, `set_audience`, `unpublish`, or the session ending) tears the gate
+down, which ends the source of every front spliced from it, and with it the
+peer's subscriptions; a request after that finds no route.
+
 ## Sessions and admission
 
 `Moq::connect(peer)` dials a peer and returns a `Session`. The actor
