@@ -89,7 +89,10 @@ async fn join(
 mod window {
     //! The room window: a grid of everybody's pictures over a chat panel.
 
-    use std::collections::{BTreeSet, HashSet, VecDeque};
+    use std::{
+        collections::{BTreeSet, HashSet, VecDeque},
+        time::{Duration, Instant},
+    };
 
     use eframe::egui;
     use iroh::EndpointId;
@@ -128,6 +131,14 @@ mod window {
     /// Height of the chat input line, in points.
     const CHAT_INPUT_HEIGHT: f32 = 22.0;
 
+    /// How long the grid waits before it opens a member's broadcast again
+    /// after the tile's session closed or opening it failed.
+    ///
+    /// A member stays in the room for minutes after its session dropped, so
+    /// the grid keeps trying, but not in a tight loop against a peer that is
+    /// gone.
+    const REOPEN_DELAY: Duration = Duration::from_secs(2);
+
     /// Opens the room window and runs it until it closes.
     pub(super) fn run(
         live: Live,
@@ -156,6 +167,7 @@ mod window {
                     peers: Vec::new(),
                     opening_keys: HashSet::new(),
                     opening: JoinSet::new(),
+                    reconcile_at: None,
                     sending: JoinSet::new(),
                     chat: ChatState::default(),
                     preview: LocalPreview::new(
@@ -196,8 +208,13 @@ mod window {
         peers: Vec<PeerTile>,
         /// The broadcasts being opened, so each is opened once.
         opening_keys: HashSet<(EndpointId, String)>,
-        /// Subscriptions whose tracks are still opening.
-        opening: JoinSet<Option<Opened>>,
+        /// Subscriptions whose tracks are still opening, with the key each
+        /// was opened under.
+        opening: JoinSet<(EndpointId, String, Option<Opened>)>,
+        /// When to bring the grid in line with the membership again, although
+        /// the membership did not change: a tile dropped, or opening one
+        /// failed.
+        reconcile_at: Option<Instant>,
         /// Chat messages still on their way to the room actor.
         sending: JoinSet<()>,
         chat: ChatState,
@@ -221,8 +238,6 @@ mod window {
 
     /// A peer's broadcast, subscribed and decoding, on its way to the grid.
     struct Opened {
-        remote: EndpointId,
-        name: String,
         sub: Subscribed,
         tracks: MediaTracks,
     }
@@ -237,7 +252,7 @@ mod window {
             self.apply_state();
             self.drain_chat();
             self.collect_opened(ctx);
-            self.drop_closed();
+            self.drop_closed(ctx);
             while self.sending.try_join_next().is_some() {}
         }
 
@@ -268,24 +283,41 @@ mod window {
     impl RoomApp {
         /// Brings the grid and the join and leave lines in line with the
         /// room's membership.
+        ///
+        /// The lines follow changes of the membership only; the grid also
+        /// catches up when a reconcile is due, since a tile can go while the
+        /// membership stays the same.
         fn apply_state(&mut self) {
             let state = self.state.get();
-            if state == self.known {
+            let changed = state != self.known;
+            let due = self.reconcile_at.is_some_and(|at| Instant::now() >= at);
+            if !changed && !due {
                 return;
             }
-            for (remote, peer) in &state.peers {
-                if !self.known.peers.contains_key(remote) {
-                    let name = peer.display_name.clone().unwrap_or_else(|| short(*remote));
-                    self.chat.push_system(format!("{name} joined"));
+            if changed {
+                for (remote, peer) in &state.peers {
+                    if !self.known.peers.contains_key(remote) {
+                        let name = peer.display_name.clone().unwrap_or_else(|| short(*remote));
+                        self.chat.push_system(format!("{name} joined"));
+                    }
                 }
-            }
-            for remote in self.known.peers.keys() {
-                if !state.peers.contains_key(remote) {
-                    let name = self.label(*remote);
-                    self.chat.push_system(format!("{name} left"));
+                for remote in self.known.peers.keys() {
+                    if !state.peers.contains_key(remote) {
+                        let name = self.label(*remote);
+                        self.chat.push_system(format!("{name} left"));
+                    }
                 }
+                self.known = state;
             }
-            let wanted: BTreeSet<(EndpointId, String)> = state
+            self.reconcile_at = None;
+            self.reconcile_tiles();
+        }
+
+        /// Opens a tile for every broadcast the membership lists and the grid
+        /// lacks, and drops the tiles of broadcasts it no longer lists.
+        fn reconcile_tiles(&mut self) {
+            let wanted: BTreeSet<(EndpointId, String)> = self
+                .known
                 .peers
                 .iter()
                 .flat_map(|(remote, peer)| {
@@ -294,7 +326,6 @@ mod window {
                         .map(move |name| (*remote, name.clone()))
                 })
                 .collect();
-            self.known = state;
             self.close_tiles("no longer published", |peer| {
                 !wanted.contains(&(peer.remote, peer.name.clone()))
             });
@@ -318,6 +349,13 @@ mod window {
             }
         }
 
+        /// Brings the grid in line again after [`REOPEN_DELAY`].
+        fn reconcile_later(&mut self, ctx: &egui::Context) {
+            let at = Instant::now() + REOPEN_DELAY;
+            self.reconcile_at = Some(self.reconcile_at.map_or(at, |due| due.min(at)));
+            ctx.request_repaint_after(REOPEN_DELAY);
+        }
+
         /// Appends the chat lines the forwarder handed over.
         fn drain_chat(&mut self) {
             while let Ok(incoming) = self.chat_rx.try_recv() {
@@ -337,29 +375,30 @@ mod window {
         /// Moves finished subscriptions into the grid.
         fn collect_opened(&mut self, ctx: &egui::Context) {
             while let Some(result) = self.opening.try_join_next() {
-                let opened = match result {
-                    Ok(Some(opened)) => opened,
-                    Ok(None) => continue,
+                let (remote, name, opened) = match result {
+                    Ok(result) => result,
                     Err(err) => {
                         warn!(error = %err, "a peer subscription task panicked");
                         continue;
                     }
                 };
-                let Opened {
-                    remote,
-                    name,
-                    sub,
-                    tracks,
-                } = opened;
                 self.opening_keys.remove(&(remote, name.clone()));
+                let Some(Opened { sub, tracks }) = opened else {
+                    // Tried again after a pause, while the member still lists
+                    // the broadcast.
+                    self.reconcile_later(ctx);
+                    continue;
+                };
                 if !self
                     .known
                     .peers
                     .get(&remote)
                     .is_some_and(|peer| peer.broadcasts.contains(&name))
                 {
-                    // Withdrawn while it was opening.
-                    sub.close();
+                    // Withdrawn while it was opening. Only the broadcast goes:
+                    // the session also carries the room's chat and whatever
+                    // else this node has open with the member.
+                    sub.broadcast().shutdown();
                     continue;
                 }
                 let view = RemoteView::new(
@@ -379,25 +418,32 @@ mod window {
             }
         }
 
-        /// Drops the tiles whose sessions have gone.
+        /// Drops the tiles whose sessions have gone, and opens them again
+        /// after a pause if the member still lists them.
         ///
         /// The room's state drops a member that went away once its lease runs
-        /// out, which takes minutes; a session that failed says so at once.
-        fn drop_closed(&mut self) {
-            self.close_tiles("the session closed", |peer| {
+        /// out, which takes minutes; a session that failed says so at once,
+        /// and may come back well within the lease.
+        fn drop_closed(&mut self, ctx: &egui::Context) {
+            let dropped = self.close_tiles("the session closed", |peer| {
                 peer.sub
                     .session()
                     .is_some_and(|session| session.connection().close_reason().is_some())
             });
+            if dropped > 0 {
+                self.reconcile_later(ctx);
+            }
         }
 
-        /// Removes the tiles `drop_it` picks out, shutting each one down first.
+        /// Removes the tiles `drop_it` picks out, shutting each one down
+        /// first, and returns how many went.
         ///
         /// Dropping a tile alone would stop its decoders but leave the
         /// subscription running, so a peer that went away would keep being
         /// downloaded. The session is left alone: a peer may hold several
         /// broadcasts on one, and closing it would take the siblings with it.
-        fn close_tiles(&mut self, reason: &str, drop_it: impl Fn(&PeerTile) -> bool) {
+        fn close_tiles(&mut self, reason: &str, drop_it: impl Fn(&PeerTile) -> bool) -> usize {
+            let mut dropped = 0;
             let mut index = 0;
             while index < self.peers.len() {
                 if !drop_it(&self.peers[index]) {
@@ -412,7 +458,9 @@ mod window {
                     "dropping a peer tile"
                 );
                 peer.view.shutdown();
+                dropped += 1;
             }
+            dropped
         }
 
         /// The name to show for `remote`, falling back to its short endpoint
@@ -541,6 +589,9 @@ mod window {
 
     /// Wakes the window whenever the room's state changes, and forwards its
     /// chat into `chat` as it arrives.
+    ///
+    /// Never waits for the window: a window that stops draining its queue
+    /// loses chat lines, counted, rather than holding back its wake-ups.
     fn wake_on_room(
         ctx: &egui::Context,
         room: &Room,
@@ -549,6 +600,7 @@ mod window {
         let ctx = ctx.clone();
         let (mut state, mut messages) = (room.state(), room.chat());
         AbortOnDropHandle::new(tokio::spawn(async move {
+            let mut skipped = 0;
             loop {
                 let incoming = tokio::select! {
                     changed = state.updated() => match changed {
@@ -561,10 +613,18 @@ mod window {
                         Err(_) => return,
                     },
                 };
-                if let Some(incoming) = incoming
-                    && chat.send(incoming).await.is_err()
-                {
-                    return;
+                if let Some(incoming) = incoming {
+                    if skipped > 0 && chat.try_send(Incoming::Skipped(skipped)).is_ok() {
+                        skipped = 0;
+                    }
+                    match chat.try_send(incoming) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(Incoming::Skipped(more))) => {
+                            skipped += more;
+                        }
+                        Err(mpsc::error::TrySendError::Full(Incoming::Message(_))) => skipped += 1,
+                        Err(mpsc::error::TrySendError::Closed(_)) => return,
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -580,20 +640,31 @@ mod window {
 
     /// Subscribes to a member's broadcast and opens whichever tracks it carries.
     ///
-    /// Returns `None` when the broadcast cannot be reached or never produces a
-    /// catalog, which is what a member that announced a name it does not
-    /// publish looks like.
+    /// Returns `None` with the key when the broadcast cannot be reached or
+    /// never produces a catalog, which is what a member that announced a name
+    /// it does not publish looks like.
     async fn open(
         live: Live,
         room: Room,
         remote: EndpointId,
         name: String,
         playback: PlaybackArgs,
+    ) -> (EndpointId, String, Option<Opened>) {
+        let opened = open_inner(live, room, remote, &name, playback).await;
+        (remote, name, opened)
+    }
+
+    async fn open_inner(
+        live: Live,
+        room: Room,
+        remote: EndpointId,
+        name: &str,
+        playback: PlaybackArgs,
     ) -> Option<Opened> {
         // A member that announced a name it never published would otherwise
         // leave this task waiting forever.
         let opened = tokio::time::timeout(PEER_TIMEOUT, async {
-            let subscription = room.subscribe(remote, &name).await?;
+            let subscription = room.subscribe(remote, name).await?;
             Subscribed::open(&live, subscription).await
         });
         let sub = match opened.await {
@@ -609,12 +680,7 @@ mod window {
         };
         crate::ui::prepare_playback(sub.broadcast(), &playback);
         let tracks = sub.broadcast().media().await;
-        Some(Opened {
-            remote,
-            name,
-            sub,
-            tracks,
-        })
+        Some(Opened { sub, tracks })
     }
 
     /// Columns, rows, and cell size for `count` tiles in `available`.

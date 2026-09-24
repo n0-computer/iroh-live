@@ -235,8 +235,9 @@ impl Subscribed {
     /// Stops decoding, and closes the session that served the broadcast.
     ///
     /// For a viewer that is done with its peer: the session is shared with
-    /// anything else this node has open to the same peer, which in `irl` is
-    /// nothing.
+    /// anything else this node has open to the same peer. `irl watch`, `record`
+    /// and `run` own theirs outright; a room tile must shut down only its
+    /// broadcast, since the room's chat rides the same session.
     pub fn close(&self) {
         self.broadcast.shutdown();
         if let Some(session) = self.session() {
