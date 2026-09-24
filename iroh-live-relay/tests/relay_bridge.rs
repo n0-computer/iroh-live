@@ -1580,7 +1580,7 @@ async fn room_node() -> (
         .await
         .expect("bind node");
     shared_lookup().add_endpoint_info(endpoint.addr());
-    let moq = iroh_moq::Moq::new(endpoint.clone(), iroh_moq::MoqConfig::default());
+    let moq = iroh_moq::Moq::new(endpoint.clone(), iroh_live::moq_config());
     let rooms = iroh_rooms::Rooms::new(&moq);
     let mut router = iroh::protocol::Router::builder(endpoint.clone());
     for alpn in iroh_moq::alpns() {
@@ -1592,35 +1592,13 @@ async fn room_node() -> (
     (endpoint, moq, rooms, router)
 }
 
-/// Encodes a room chat message the way `chat.v2` carries it: postcard's
-/// length-prefixed text, then the send time and the writer id as varints.
-fn chat_frame(text: &str, writer: u64) -> Vec<u8> {
-    fn varint(out: &mut Vec<u8>, mut value: u64) {
-        while value >= 0x80 {
-            out.push((value as u8) | 0x80);
-            value >>= 7;
-        }
-        out.push(value as u8);
-    }
-    let sent_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_millis() as u64;
-    let mut out = Vec::new();
-    varint(&mut out, text.len() as u64);
-    out.extend_from_slice(text.as_bytes());
-    varint(&mut out, sent_at_ms);
-    varint(&mut out, writer);
-    out
-}
-
-/// A room reads a member's chat over the session with that member, so a
+/// A room reads a member's broadcast over the session with that member, so a
 /// forgery of it that a relay routes into the member's own path never
 /// reaches the room, even though the forged route sits in the route table
 /// before the member joins.
 #[tokio::test]
 #[serial]
-async fn a_relay_cannot_forge_a_room_members_chat() {
+async fn a_relay_cannot_forge_a_room_members_broadcast() {
     use iroh_moq::{LinkKind, RelayConfig, RelayOffer, RelayStatus};
     use n0_watcher::Watcher;
 
@@ -1636,27 +1614,21 @@ async fn a_relay_cannot_forge_a_room_members_chat() {
         .await
         .expect("join");
     let topic = room_a.ticket().topic_id();
-    let chat_path = format!("rooms/{topic}/{}/.chat", bob_endpoint.id());
+    let cam_path = format!("rooms/{topic}/{}/cam", bob_endpoint.id());
 
-    // Mallory publishes Bob's chat into the relay before Bob is there.
+    // Mallory publishes Bob's camera into the relay before Bob is there.
     let (mallory, _mallory_driver) = test_origin();
     let forged = mallory
-        .publish(chat_path.as_str(), origin::Route::default())
+        .publish(cam_path.as_str(), origin::Route::default())
         .expect("forged broadcast");
     let mut track = forged
         .create_track(
-            "chat.v2",
+            "data",
             moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
         )
         .expect("track");
     let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
-        loop {
-            if track
-                .write_frame(Timestamp::now(), chat_frame("forged", 1))
-                .is_err()
-            {
-                return;
-            }
+        while track.write_frame(Timestamp::now(), &b"forged"[..]).is_ok() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }));
@@ -1680,7 +1652,7 @@ async fn a_relay_cannot_forge_a_room_members_chat() {
     })
     .await
     .expect("the relay link never connected");
-    let mut routes = alice_moq.routes(chat_path.as_str());
+    let mut routes = alice_moq.routes(cam_path.as_str());
     tokio::time::timeout(TIMEOUT, async {
         while !routes
             .get()
@@ -1691,9 +1663,8 @@ async fn a_relay_cannot_forge_a_room_members_chat() {
         }
     })
     .await
-    .expect("the forged chat never reached alice's table");
+    .expect("the forged camera never reached alice's table");
 
-    let mut chat = room_a.chat();
     let room_b = bob_rooms
         .join(
             &room_a.ticket(),
@@ -1701,26 +1672,18 @@ async fn a_relay_cannot_forge_a_room_members_chat() {
         )
         .await
         .expect("join");
-    tokio::time::timeout(TIMEOUT, async {
-        loop {
-            room_b.send_chat("real").await.expect("send");
-            if let Ok(Ok(message)) =
-                tokio::time::timeout(Duration::from_millis(500), chat.recv()).await
-            {
-                assert_eq!(message.text, "real", "the relay's forgery reached the room");
-                return;
-            }
-        }
-    })
-    .await
-    .expect("bob's chat never arrived");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while let Ok(Ok(message)) = tokio::time::timeout_at(deadline, chat.recv()).await {
-        assert_ne!(
-            message.text, "forged",
-            "the relay's forgery reached the room"
-        );
-    }
+    let (cam, _writer) = counter("data");
+    room_b.publish("cam", &cam).expect("publish");
+    let subscription = tokio::time::timeout(TIMEOUT, room_a.subscribe(bob_endpoint.id(), "cam"))
+        .await
+        .expect("subscribe timeout")
+        .expect("subscribe");
+    let frame = first_frame(&subscription.as_moq(), "data").await;
+    assert_ne!(
+        &frame.payload[..],
+        b"forged",
+        "the relay's forgery reached the room"
+    );
 
     room_b.leave().await;
     room_a.leave().await;

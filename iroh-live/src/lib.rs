@@ -87,11 +87,10 @@
 //! | `Moq::accept` | yes | loses nothing: a queued session stays queued |
 //! | `Incoming::admit` | yes | before the handshake completes, rejects the session; after, it is admitted all the same |
 //! | `Rooms::join` | yes | leaves the topic, publishes nothing |
-//! | every `closed()`, `Publication::withdrawn`, `VideoFrames::next`, `ChatReceiver::recv`, every watcher's `updated()` | yes | loses nothing |
+//! | every `closed()`, `Publication::withdrawn`, `VideoFrames::next`, every watcher's `updated()` | yes | loses nothing |
 //! | `Player::wait_for_rendition` | yes | the switch continues |
 //! | `Recording::wait`, `Recording::stop` | yes, while the `Recording` is kept | the recording runs on its own task, `stop` signals before its first wait, and a later `wait` returns the result; dropping the `Recording` stops it without flushing |
 //! | `RelayLink::detach` | yes | the close was signalled before the first wait; the link's task finishes it |
-//! | `Room::send_chat` | no | the message may or may not have been sent |
 //! | [`Live::shutdown`], `Moq::shutdown`, `Room::leave` | no, idempotent | call again to finish |
 //!
 //! No public call takes a deadline; bound a wait with `tokio::time::timeout`.

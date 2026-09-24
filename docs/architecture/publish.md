@@ -156,8 +156,7 @@ The extension carries the one thing iroh-live uses and hang has no place for: a
 the display name into it, and a subscriber reads it back as
 `Catalog::metadata()`. A base hang consumer ignores the section, so the
 broadcast stays wire-compatible with any hang player. Chat is not part of a
-media broadcast: a room publishes it as a broadcast of its own (see
-[rooms](../guide/rooms.md)).
+media broadcast: `irl room` publishes it as a broadcast of its own.
 
 Extra tracks go through `as_moq()`, which returns the underlying producer.
 

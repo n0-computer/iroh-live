@@ -96,22 +96,11 @@ seconds after it actually ended.
 Rooms are private to whoever holds the ticket. Membership is self-declared:
 anyone who knows the topic id can join the gossip topic and announce itself.
 
-## Chat
+## Chat and other data
 
-Chat is the room's own. Every member publishes a small chat broadcast at
-`rooms/<topic>/<member>/.chat`, to members only, so chat works with the camera
-off. `room.send_chat("hello")` writes to it, and `room.chat()` returns a
-`ChatReceiver` with a buffer of its own: a receiver that falls behind gets
-`ChatError::Lagged(n)` and the room carries on. A message carries its sender and
-the sender's wall-clock time. A room's receivers carry other members' messages,
-not this member's own, from the moment of joining on: what a member said before
-is not replayed, and a message is delivered once even when two arrive out of
-order or the member's session drops and comes back. "Before" is judged by the
-sender's clock only for the replay a new subscription starts with, so a member
-whose clock runs behind is still heard. A message sent while that session was
-down for more than a few seconds can be lost.
-
-Names starting with a dot are the room's own, and `publish` refuses them.
+A room has no chat of its own. Anything members share besides media is one more
+broadcast published into the room: `irl room` publishes a broadcast named
+`chat`, with one message per group, and reads every other member's.
 
 ## Limitations
 

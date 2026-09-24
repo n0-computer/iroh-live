@@ -95,7 +95,7 @@ producing frames.
 and subscriber in one process, once with `Latency::IMMEDIATE` and once with the
 default, and prints the figures.
 
-`iroh-rooms/tests/room.rs` covers discovery, subscription, chat, and peer
+`iroh-rooms/tests/room.rs` covers discovery, subscription, privacy, and peer
 departure. Nothing there touches media: the broadcasts carry a plain data track
 with hand-written frames, since `iroh-rooms` has no media dependency.
 

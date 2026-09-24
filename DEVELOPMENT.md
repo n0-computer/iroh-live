@@ -10,7 +10,7 @@ guides.
 |---|---|
 | `iroh-live` | `Live`, the facade joining media and transport, and the re-exports. Depends on `iroh-live-media` and `iroh-moq` |
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links, ALPN negotiation, tickets, endpoint setup |
-| `iroh-rooms` | Rooms: gossip membership, members-only broadcasts, and room chat. No media dependency |
+| `iroh-rooms` | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | `iroh-live-media` | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | `iroh-live-egui` | egui widget and debug overlay |
 | `iroh-live-media-android` | Camera2 push bridge and EGL renderer |

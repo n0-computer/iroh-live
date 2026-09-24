@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -18,13 +18,10 @@ use n0_error::{e, stack_error};
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast as channel, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
-use crate::{
-    chat::{self, CHAT_BROADCAST, CHAT_BUFFER, ChatCursor, ChatMessage, ChatReceiver, ChatWriter},
-    ticket::RoomTicket,
-};
+use crate::ticket::RoomTicket;
 
 /// The ALPN rooms speak: iroh-gossip's. Mount [`Rooms::protocol_handler`]
 /// under it.
@@ -57,12 +54,6 @@ const STATE_REFRESH: Duration = Duration::from_secs(30);
 /// release that honours it.
 const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
-/// How often the room restarts chat readers that stopped.
-const CHAT_RETRY: Duration = Duration::from_secs(5);
-
-/// How many commands may wait for the room actor.
-const COMMAND_QUEUE: usize = 16;
-
 /// How long leaving waits for each step that needs the network.
 ///
 /// Telling the others and stopping the gossip map both wait on peers; a room
@@ -77,10 +68,6 @@ const LEAVE_STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// several times over, means the map itself is gone.
 const MAP_RESUBSCRIBES: u32 = 3;
 
-/// How far before joining a chat message may have been sent and still count as
-/// sent after it, for clocks that disagree a little.
-const CHAT_CLOCK_TOLERANCE: Duration = Duration::from_secs(2);
-
 /// Everything that can go wrong in a room.
 #[stack_error(derive, add_meta, from_sources)]
 #[non_exhaustive]
@@ -93,17 +80,9 @@ pub enum Error {
     /// The same `iroh_moq::Error` the facade's `Error::Transport` carries.
     #[error(transparent)]
     Transport(iroh_moq::Error),
-    /// The room's chat broadcast failed: it could not be created, or a
-    /// message could not be written to it.
-    #[error("the chat broadcast failed")]
-    Chat {
-        /// What moq-net reported.
-        #[error(source, std_err)]
-        source: moq_net::Error,
-    },
-    /// A broadcast name that a room does not accept: empty, starting with a
-    /// dot, which the room keeps for itself, or holding a slash, which would
-    /// reach into another member's part of the room's namespace.
+    /// A broadcast name that a room does not accept: empty, or holding a
+    /// slash, which would reach into another member's part of the room's
+    /// namespace.
     #[error("invalid broadcast name {name:?}")]
     InvalidName {
         /// The name as given.
@@ -148,14 +127,12 @@ impl Rooms {
 
     /// Joins the room `ticket` names.
     ///
-    /// Subscribes to the room's gossip topic, publishes this member's chat
-    /// broadcast, and starts announcing this member. Cancellation safe:
-    /// dropping the future leaves the topic and publishes nothing.
+    /// Subscribes to the room's gossip topic and starts announcing this
+    /// member. Cancellation safe: dropping the future leaves the topic.
     ///
     /// # Errors
     ///
-    /// Fails if the gossip topic cannot be joined or the chat broadcast cannot
-    /// be published.
+    /// Fails if the gossip topic cannot be joined.
     pub async fn join(&self, ticket: &RoomTicket, config: RoomConfig) -> Result<Room, Error> {
         let topic = ticket.topic_id();
         let me = self.moq.endpoint().id();
@@ -176,27 +153,17 @@ impl Rooms {
         );
         let writer = kv.write(self.moq.endpoint().secret_key().clone());
 
-        let members = Watchable::new(BTreeSet::new());
-        let chat = ChatWriter::new().map_err(|source| e!(Error::Chat { source }))?;
-        let chat_publication = self.moq.publish(
-            room_path(topic, me, CHAT_BROADCAST),
-            chat.consume(),
-            Audience::Peers(members.watch()),
-        )?;
-        let (chat_tx, _) = channel::channel(CHAT_BUFFER);
-        let (commands, inbox) = mpsc::channel(COMMAND_QUEUE);
+        let (leave, inbox) = mpsc::channel(1);
         let inner = Arc::new(Inner {
             me,
             ticket: ticket.clone(),
             moq: self.moq.clone(),
             state: Watchable::new(RoomState::default()),
-            members,
-            chat: Mutex::new(Some(chat_tx)),
-            commands,
+            members: Watchable::new(BTreeSet::new()),
+            leave,
             local: Mutex::new(BTreeMap::new()),
             local_changed: Watchable::new(0),
             display_name: Watchable::new(config.display_name),
-            chat_since: SystemTime::now() - CHAT_CLOCK_TOLERANCE,
             done: Watchable::new(false),
         });
         let actor = Actor {
@@ -204,8 +171,6 @@ impl Rooms {
             kv,
             writer,
             peers: BTreeMap::new(),
-            chat,
-            chat_publication,
             resync: None,
         };
         let span = info_span!("room", topic = %topic.fmt_short(), me = %me.fmt_short());
@@ -256,8 +221,7 @@ pub struct RoomPeer {
 ///
 /// Cheap to clone. The actor behind it runs while any clone exists, and
 /// [`leave`](Self::leave) ends it for all of them. Nothing a caller does with
-/// the state or chat receivers can stall it: the state is a watcher, and every
-/// chat receiver has its own buffer.
+/// the state can stall it: the state is a watcher.
 #[derive(Debug, Clone)]
 pub struct Room {
     inner: Arc<Inner>,
@@ -274,19 +238,15 @@ struct Inner {
     state: Watchable<RoomState>,
     /// The members' ids, which every publication into the room is offered to.
     members: Watchable<BTreeSet<EndpointId>>,
-    /// Taken when the room is left, which ends every receiver.
+    /// Asks the actor to leave, and hears back once it did.
     #[debug(skip)]
-    chat: Mutex<Option<channel::Sender<ChatMessage>>>,
-    #[debug(skip)]
-    commands: mpsc::Sender<Command>,
+    leave: mpsc::Sender<oneshot::Sender<()>>,
     /// This member's publications, by name.
     #[debug(skip)]
     local: Mutex<BTreeMap<String, Local>>,
     /// Bumped whenever [`Inner::local`] changes, so the actor re-announces.
     local_changed: Watchable<u64>,
     display_name: Watchable<Option<String>>,
-    /// Chat sent before this is history from before joining.
-    chat_since: SystemTime,
     done: Watchable<bool>,
 }
 
@@ -295,16 +255,6 @@ struct Local {
     publication: Publication,
     /// Forgets the entry once the publication is withdrawn, however it goes.
     _withdrawn: AbortOnDropHandle<()>,
-}
-
-enum Command {
-    Chat {
-        text: String,
-        reply: oneshot::Sender<Result<(), Error>>,
-    },
-    Leave {
-        reply: oneshot::Sender<()>,
-    },
 }
 
 impl Room {
@@ -329,15 +279,15 @@ impl Room {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::InvalidName`] for an empty name, one starting with a
-    /// dot, or one holding a slash, [`Error::Transport`] if the name is already
-    /// published, and [`Error::Left`] once the room was left.
+    /// Fails with [`Error::InvalidName`] for an empty name or one holding a
+    /// slash, [`Error::Transport`] if the name is already published, and
+    /// [`Error::Left`] once the room was left.
     pub fn publish(
         &self,
         name: &str,
         broadcast: impl Consume<broadcast::Consumer>,
     ) -> Result<Publication, Error> {
-        if name.is_empty() || name.starts_with('.') || name.contains('/') {
+        if name.is_empty() || name.contains('/') {
             return Err(e!(Error::InvalidName {
                 name: name.to_owned()
             }));
@@ -410,57 +360,17 @@ impl Room {
         self.inner.display_name.set(name).ok();
     }
 
-    /// Sends a chat message to the room.
-    ///
-    /// Returns once the message is written to this member's chat broadcast.
-    /// Not cancellation safe: a dropped call may or may not have sent it.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`Error::Left`] once the room was left.
-    pub async fn send_chat(&self, text: impl Into<String>) -> Result<(), Error> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.inner
-            .commands
-            .send(Command::Chat {
-                text: text.into(),
-                reply,
-            })
-            .await
-            .map_err(|_| e!(Error::Left))?;
-        reply_rx.await.map_err(|_| e!(Error::Left))?
-    }
-
-    /// Returns a receiver of the chat messages other members send from now on.
-    ///
-    /// Returns a receiver that ends at once if the room was left.
-    pub fn chat(&self) -> ChatReceiver {
-        let chat = self.inner.chat.lock().expect("poisoned");
-        let rx = match chat.as_ref() {
-            Some(chat) => chat.subscribe(),
-            // A sender dropped at once closes the receiver it made.
-            None => channel::channel(1).0.subscribe(),
-        };
-        ChatReceiver::new(rx)
-    }
-
     /// Leaves the room for every clone of this handle.
     ///
-    /// Tells the other members, withdraws this member's publications and chat,
-    /// and ends every chat receiver. The subscriptions this member made with
+    /// Tells the other members and withdraws this member's publications. The
+    /// subscriptions this member made with
     /// [`subscribe`](Self::subscribe) are the caller's and stay open; drop or
     /// close them as well. Steps that need the network are bounded, so this
     /// returns within seconds even with every other member gone. Idempotent;
     /// not cancellation safe, call it again to finish.
     pub async fn leave(&self) {
         let (reply, reply_rx) = oneshot::channel();
-        if self
-            .inner
-            .commands
-            .send(Command::Leave { reply })
-            .await
-            .is_ok()
-        {
+        if self.inner.leave.send(reply).await.is_ok() {
             reply_rx.await.ok();
         }
         let mut done = self.inner.done.watch();
@@ -529,56 +439,28 @@ struct PeerState {
 ///
 /// Removing the entry drops its tasks, which aborts them, so nothing a removed
 /// member started can come back and change the room.
-struct Peer {
-    announcement: PeerState,
-    chat: ChatReader,
-}
-
-/// One chat source of a member, and how far it was read.
-struct ChatReader {
-    /// `None` until started, and while the room cannot deliver chat.
-    task: Option<AbortOnDropHandle<()>>,
-    /// Kept when the task restarts, so a restart does not deliver again.
-    cursor: Arc<ChatCursor>,
-}
-
-impl Peer {
-    /// Reports whether this member's chat has no running reader.
-    fn chat_stalled(&self) -> bool {
-        self.chat
-            .task
-            .as_ref()
-            .is_none_or(|task| task.is_finished())
-    }
-}
-
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
 struct Actor {
     inner: Arc<Inner>,
     kv: iroh_smol_kv::Client,
     writer: WriteScope,
-    peers: BTreeMap<EndpointId, Peer>,
-    chat: ChatWriter,
-    chat_publication: Publication,
+    peers: BTreeMap<EndpointId, PeerState>,
     /// The members a replay of the gossip map has shown so far, while one runs
     /// after a resubscription.
     resync: Option<BTreeSet<EndpointId>>,
 }
 
 impl Drop for Actor {
-    /// Ends every chat receiver and lets [`Room::leave`] return, also when
-    /// the actor panicked or its last handle went without leaving.
+    /// Lets [`Room::leave`] return, also when the actor panicked or its last
+    /// handle went without leaving.
     fn drop(&mut self) {
-        if let Ok(mut chat) = self.inner.chat.lock() {
-            chat.take();
-        }
         self.inner.done.set(true).ok();
     }
 }
 
 impl Actor {
-    async fn run(mut self, mut inbox: mpsc::Receiver<Command>) {
+    async fn run(mut self, mut inbox: mpsc::Receiver<oneshot::Sender<()>>) {
         let mut updates = Self::subscribe_map(self.kv.clone());
 
         // One writer, so announcements go out in the order they were decided.
@@ -589,8 +471,6 @@ impl Actor {
         let mut local_changed = self.inner.local_changed.watch();
         let mut display_name = self.inner.display_name.watch();
         let mut resubscribes = 0;
-        let mut chat_retry = tokio::time::interval(CHAT_RETRY);
-        chat_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let leave = loop {
             let mut ended = false;
@@ -615,18 +495,7 @@ impl Actor {
                     }
                     desired.set(self.announcement(false)).ok();
                 }
-                _ = chat_retry.tick() => self.restart_stalled_chat(),
-                command = inbox.recv() => match command {
-                    None => break None,
-                    Some(Command::Chat { text, reply }) => {
-                        let sent = self
-                            .chat
-                            .send(&text)
-                            .map_err(|source| e!(Error::Chat { source }));
-                        reply.send(sent).ok();
-                    }
-                    Some(Command::Leave { reply }) => break Some(reply),
-                },
+                reply = inbox.recv() => break reply,
             }
             if ended {
                 if resubscribes == MAP_RESUBSCRIBES {
@@ -684,15 +553,12 @@ impl Actor {
                 );
             }
         }
-        self.inner.chat.lock().expect("poisoned").take();
         let local: Vec<Local> = std::mem::take(&mut *self.inner.local.lock().expect("poisoned"))
             .into_values()
             .collect();
         for entry in local {
             entry.publication.unpublish();
         }
-        self.chat_publication.unpublish();
-        self.chat.finish();
         self.peers.clear();
         self.publish_state();
         match tokio::time::timeout(LEAVE_STEP_TIMEOUT, self.kv.shutdown()).await {
@@ -775,83 +641,25 @@ impl Actor {
             seen.insert(remote);
         }
         // Every member rewrites its announcement to renew its lease, so most of
-        // these say nothing new. A repeat restarts chat readers that stopped,
-        // which is how a member whose session dropped is read again.
-        let known = self.peers.get(&remote);
-        let changed = known.is_none_or(|peer| peer.announcement != announcement);
-        if !changed && known.is_some_and(|peer| !peer.chat_stalled()) {
-            trace!(remote = %remote.fmt_short(), "announcement renewed");
-            return;
-        }
-        match known {
+        // these say nothing new.
+        match self.peers.get(&remote) {
+            Some(known) if *known == announcement => {
+                trace!(remote = %remote.fmt_short(), "announcement renewed");
+                return;
+            }
+            Some(_) => debug!(
+                remote = %remote.fmt_short(),
+                broadcasts = ?announcement.broadcasts,
+                "member announcement changed",
+            ),
             None => info!(
                 remote = %remote.fmt_short(),
                 display_name = ?announcement.display_name,
                 "member joined the room",
             ),
-            Some(_) if changed => debug!(
-                remote = %remote.fmt_short(),
-                broadcasts = ?announcement.broadcasts,
-                "member announcement changed",
-            ),
-            Some(_) => debug!(remote = %remote.fmt_short(), "restarting a stopped chat reader"),
         }
-        let mut peer = self.peers.remove(&remote).unwrap_or_else(|| Peer {
-            announcement: announcement.clone(),
-            chat: ChatReader {
-                task: None,
-                cursor: Arc::new(ChatCursor::new(self.inner.chat_since)),
-            },
-        });
-        peer.announcement = announcement;
-        self.sync_chat(remote, &mut peer);
-        self.peers.insert(remote, peer);
-        if changed {
-            self.publish_state();
-        }
-    }
-
-    /// Restarts the chat readers that stopped, of every member still here.
-    ///
-    /// A reader stops when its member's session drops, and the member is
-    /// usually back within seconds, well before its next announcement would
-    /// bring the reader back.
-    fn restart_stalled_chat(&mut self) {
-        let stalled: Vec<EndpointId> = self
-            .peers
-            .iter()
-            .filter(|(_, peer)| peer.chat_stalled())
-            .map(|(remote, _)| *remote)
-            .collect();
-        for remote in stalled {
-            if let Some(mut peer) = self.peers.remove(&remote) {
-                trace!(remote = %remote.fmt_short(), "restarting a stopped chat reader");
-                self.sync_chat(remote, &mut peer);
-                self.peers.insert(remote, peer);
-            }
-        }
-    }
-
-    /// Starts member `remote`'s chat reader over its cursor, unless it runs.
-    fn sync_chat(&self, remote: EndpointId, peer: &mut Peer) {
-        let reader = &mut peer.chat;
-        if reader.task.as_ref().is_some_and(|task| !task.is_finished()) {
-            return;
-        }
-        let Some(tx) = self.inner.chat.lock().expect("poisoned").clone() else {
-            return;
-        };
-        let path = room_path(self.inner.ticket.topic_id(), remote, CHAT_BROADCAST);
-        reader.task = Some(AbortOnDropHandle::new(tokio::spawn(
-            read_chat(
-                self.inner.moq.clone(),
-                remote,
-                path,
-                reader.cursor.clone(),
-                tx,
-            )
-            .in_current_span(),
-        )));
+        self.peers.insert(remote, announcement);
+        self.publish_state();
     }
 
     /// Publishes the membership to the state watcher and the audience set.
@@ -864,8 +672,8 @@ impl Actor {
                     (
                         *id,
                         RoomPeer {
-                            display_name: peer.announcement.display_name.clone(),
-                            broadcasts: peer.announcement.broadcasts.clone(),
+                            display_name: peer.display_name.clone(),
+                            broadcasts: peer.broadcasts.clone(),
                         },
                     )
                 })
@@ -874,31 +682,6 @@ impl Actor {
         let members: BTreeSet<EndpointId> = self.peers.keys().copied().collect();
         self.inner.members.set(members).ok();
         self.inner.state.set(state).ok();
-    }
-}
-
-/// Reads member `remote`'s chat into `tx`.
-///
-/// Over the session with the member, never the route table: what the member
-/// announces on its own session is its chat, and no other peer can put a
-/// broadcast there.
-async fn read_chat(
-    moq: Moq,
-    remote: EndpointId,
-    path: String,
-    cursor: Arc<ChatCursor>,
-    tx: channel::Sender<ChatMessage>,
-) {
-    let session = match moq.connect(remote).await {
-        Ok(session) => session,
-        Err(err) => {
-            debug!(remote = %remote.fmt_short(), %err, "member unreachable");
-            return;
-        }
-    };
-    match session.subscribe(path).await {
-        Ok(subscription) => chat::forward(remote, subscription.as_moq(), cursor, tx).await,
-        Err(err) => debug!(remote = %remote.fmt_short(), %err, "member chat unreachable"),
     }
 }
 

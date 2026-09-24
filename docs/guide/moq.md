@@ -44,8 +44,8 @@ iroh-live extends the catalog rather than replacing it.
 `video` and `audio`, so a plain hang player ignores it and still plays the
 media. Applications read the result as `iroh_live_media::Catalog`, whose
 `metadata()` carries the display name, which is how a publisher's display name
-travels with its stream. Chat is not in the media catalog: a room publishes it
-as a broadcast of its own.
+travels with its stream. Chat is not in the media catalog: `irl room`
+publishes it as a broadcast of its own.
 
 ## Where the boundary is
 

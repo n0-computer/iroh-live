@@ -10,7 +10,7 @@ the layer between them, plus the pieces neither side has a home for.
 | Crate | What it is |
 |---|---|
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links, tickets and endpoint setup |
-| `iroh-rooms` | Rooms: gossip membership as a watched state, members-only broadcasts subscribed on demand, and room chat. Media-free |
+| `iroh-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, and the re-exports |
 | `iroh-live-media` | Sources, broadcasts, and players over moq-video and moq-audio |
 | `iroh-live-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
@@ -92,7 +92,7 @@ current value and can be awaited for changes. The catalog, a broadcast's
 `PublishStatus`, a player's `PlayerStatus` with its rendition and decoder
 backend, the open sessions and the routes to a path all work this way;
 statistics are snapshots read on demand. Discrete events are streams and
-channels: room chat, sessions waiting for admission.
+channels: sessions waiting for admission.
 
 Bounded channels only. Frames between the decoder and the renderer go through
 `VideoFrames`, a single-slot latest-wins stream with a cursor per handle, rather

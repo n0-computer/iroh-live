@@ -213,7 +213,7 @@ impl Subscribed {
     /// For a viewer that is done with its peer: the session is shared with
     /// anything else this node has open to the same peer. `irl watch`, `record`
     /// and `run` own theirs outright; a room tile drops only its player, since
-    /// the room's chat rides the same session. The players stop when they are
+    /// the member's chat rides the same session. The players stop when they are
     /// dropped.
     pub fn close(&self) {
         if let Some(session) = self.session() {

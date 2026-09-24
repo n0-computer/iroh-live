@@ -1,16 +1,16 @@
 //! Integration tests for rooms over real QUIC connections: membership, on-demand
-//! subscription, chat, leaving, and the privacy of room broadcasts.
+//! subscription, leaving, and the privacy of room broadcasts.
 //!
 //! Nothing here touches media: broadcasts carry a plain data track with
 //! hand-written frames, since `iroh-rooms` does not depend on the media crate.
 
 mod common;
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
 use iroh_moq::Reach;
-use iroh_rooms::{ChatError, Error, RoomTicket};
+use iroh_rooms::{Error, RoomTicket};
 use moq_net::{Timestamp, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -121,39 +121,6 @@ async fn a_member_subscribes_on_demand() {
     peer_b.shutdown().await;
 }
 
-/// Chat reaches the other member with its sender and send time, and needs no
-/// broadcast at all.
-#[tokio::test]
-#[traced_test]
-async fn chat_reaches_the_other_member() {
-    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
-    let a = peer_a.id();
-    let mut chat_b = room_b.chat();
-    wait_for_state(&room_b, "b sees a", |state| state.peers.contains_key(&a)).await;
-
-    // The reader subscribes to A's chat once it sees A; a message sent before
-    // that is not replayed, so keep sending until one lands.
-    let before = SystemTime::now() - Duration::from_secs(1);
-    let message = tokio::time::timeout(TIMEOUT, async {
-        loop {
-            room_a.send_chat("hello from alice").await.expect("send");
-            if let Ok(Ok(message)) =
-                tokio::time::timeout(Duration::from_millis(500), chat_b.recv()).await
-            {
-                return message;
-            }
-        }
-    })
-    .await
-    .expect("no chat arrived");
-    assert_eq!(message.from, a);
-    assert_eq!(message.text, "hello from alice");
-    assert!(message.sent_at >= before, "{:?}", message.sent_at);
-
-    peer_a.shutdown().await;
-    peer_b.shutdown().await;
-}
-
 /// Ending a broadcast changes what a member publishes, not whether it is in the
 /// room.
 #[tokio::test]
@@ -206,11 +173,9 @@ async fn leaving_is_seen_at_once() {
     let a = peer_a.id();
     wait_for_state(&room_b, "b sees a", |state| state.peers.contains_key(&a)).await;
 
-    let mut chat_a = room_a.chat();
     room_a.leave().await;
     wait_for_state(&room_b, "a is gone", |state| !state.peers.contains_key(&a)).await;
 
-    assert_eq!(chat_a.recv().await, Err(ChatError::Closed));
     let (cam, _writer) = counter_broadcast();
     let err = room_a
         .publish("cam", &cam)
@@ -258,215 +223,34 @@ async fn room_broadcasts_are_private() {
     .await
     .expect("timed out")
     .expect("the public broadcast is there for anyone");
-    // Neither at its path nor the room's chat.
-    let session = tokio::time::timeout(TIMEOUT, outsider.moq.connect(a))
-        .await
-        .expect("timed out")
-        .expect("connect");
-    let topic = room_a.ticket().topic_id();
-    let window = Duration::from_secs(3);
-    let (private, chat) = tokio::join!(
-        tokio::time::timeout(
-            window,
-            outsider.moq.subscribe(publication.path(), Reach::Direct(a))
-        ),
-        tokio::time::timeout(
-            window,
-            session.subscribe(format!("rooms/{topic}/{a}/.chat"))
-        ),
-    );
+    let private = tokio::time::timeout(
+        Duration::from_secs(3),
+        outsider.moq.subscribe(publication.path(), Reach::Direct(a)),
+    )
+    .await;
     assert!(
         private.is_err(),
         "a peer outside the room resolved a room broadcast"
     );
-    assert!(chat.is_err(), "the room's chat leaked");
 
     outsider.shutdown().await;
     peer_a.shutdown().await;
     peer_b.shutdown().await;
 }
 
-/// Names starting with a dot are the room's own.
+/// A name must be one path segment, so it stays in the member's own part of
+/// the room.
 #[tokio::test]
 #[traced_test]
-async fn reserved_names_are_refused() {
+async fn invalid_names_are_refused() {
     let peer = Peer::spawn().await;
     let room = peer.join(&RoomTicket::generate(), "solo").await;
     let (cam, _writer) = counter_broadcast();
-    for name in ["", ".chat", ".x", "someone/cam"] {
+    for name in ["", "someone/cam"] {
         let err = room.publish(name, &cam).expect_err("a reserved name");
         assert!(matches!(err, Error::InvalidName { .. }), "{err:#}");
     }
     peer.shutdown().await;
-}
-
-/// A frame of the `chat.v2` track as the room writes it, for forging one.
-#[derive(serde::Serialize)]
-struct ChatFrame {
-    text: String,
-    sent_at_ms: u64,
-    writer: u64,
-}
-
-/// A member cannot put words in another member's mouth: chat is read over each
-/// member's own session, so a broadcast a third member places at another's
-/// chat path is never read as theirs, and the room refuses a name that would
-/// reach there.
-#[tokio::test]
-#[traced_test]
-async fn a_member_cannot_forge_anothers_chat() {
-    let alice = Peer::spawn().await;
-    let room_a = alice.join(&RoomTicket::generate(), "alice").await;
-    let mallory = Peer::spawn().await;
-    let room_m = mallory.join(&room_a.ticket(), "mallory").await;
-    let bob = Peer::spawn().await;
-    let topic = room_a.ticket().topic_id();
-
-    // Mallory writes a chat broadcast at the path of Bob's chat before Bob is
-    // even there, to everyone who connects.
-    let forged = broadcast::Info::new().produce();
-    let mut track = forged
-        .create_track(
-            "chat",
-            track::Info::default().with_max_age(Duration::from_secs(5)),
-        )
-        .expect("track");
-    let _writer = AbortOnDropHandle::new(tokio::spawn(async move {
-        loop {
-            let sent_at_ms = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("after the epoch")
-                .as_millis() as u64;
-            let frame = ChatFrame {
-                text: "forged".into(),
-                sent_at_ms,
-                writer: 1,
-            };
-            let bytes = postcard::to_stdvec(&frame).expect("encode");
-            if track.write_frame(Timestamp::now(), bytes).is_err() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }));
-    let _forged = mallory
-        .moq
-        .publish(
-            format!("rooms/{topic}/{}/.chat", bob.id()),
-            &forged,
-            iroh_moq::Audience::Everyone,
-        )
-        .expect("publish at bob's chat path");
-    let err = room_m
-        .publish(&format!("{}/.chat", bob.id()), &forged)
-        .expect_err("a name reaching into another member's path");
-    assert!(matches!(err, Error::InvalidName { .. }), "{err:#}");
-    wait_for_state(&room_a, "alice sees mallory", |state| {
-        state.peers.contains_key(&mallory.id())
-    })
-    .await;
-
-    let mut chat_a = room_a.chat();
-    let room_b = bob.join(&room_a.ticket(), "bob").await;
-    wait_for_state(&room_a, "alice sees bob", |state| {
-        state.peers.contains_key(&bob.id())
-    })
-    .await;
-    tokio::time::timeout(TIMEOUT, async {
-        loop {
-            room_b.send_chat("real").await.expect("send");
-            if let Ok(Ok(message)) =
-                tokio::time::timeout(Duration::from_millis(500), chat_a.recv()).await
-            {
-                assert_eq!(
-                    message.text, "real",
-                    "{} said {:?}",
-                    message.from, message.text
-                );
-                return;
-            }
-        }
-    })
-    .await
-    .expect("bob's chat never arrived");
-    // A while longer, for a reader that would have picked the forged one.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while let Ok(Ok(message)) = tokio::time::timeout_at(deadline, chat_a.recv()).await {
-        assert_ne!(
-            message.text, "forged",
-            "forged chat arrived as {}",
-            message.from
-        );
-    }
-
-    room_b.leave().await;
-    bob.shutdown().await;
-    mallory.shutdown().await;
-    alice.shutdown().await;
-}
-
-/// A chat message arrives once: a member changing what it publishes does not
-/// replay its last message, and a member joining does not get what was said
-/// before it joined.
-#[tokio::test]
-#[traced_test]
-async fn chat_is_not_replayed() {
-    let alice = Peer::spawn().await;
-    let room_a = alice.join(&RoomTicket::generate(), "alice").await;
-    room_a.send_chat("before bob joined").await.expect("send");
-    // Older than the room's allowance for clocks that disagree.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-
-    let bob = Peer::spawn().await;
-    let room_b = bob.join(&room_a.ticket(), "bob").await;
-    let mut chat_b = room_b.chat();
-    let a = alice.id();
-    wait_for_state(&room_b, "b sees a", |state| state.peers.contains_key(&a)).await;
-
-    let first = tokio::time::timeout(TIMEOUT, async {
-        loop {
-            room_a.send_chat("hello").await.expect("send");
-            if let Ok(Ok(message)) =
-                tokio::time::timeout(Duration::from_millis(500), chat_b.recv()).await
-            {
-                return message;
-            }
-        }
-    })
-    .await
-    .expect("no chat arrived");
-    assert_eq!(first.text, "hello", "a message from before joining arrived");
-    while let Ok(Ok(message)) =
-        tokio::time::timeout(Duration::from_millis(500), chat_b.recv()).await
-    {
-        assert_eq!(message.text, "hello");
-    }
-
-    // Publishing changes Alice's announcement; Bob must not hear her again.
-    let (cam, _writer) = counter_broadcast();
-    room_a.publish("cam", &cam).expect("publish");
-    wait_for_state(&room_b, "b sees a's cam", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(1500), chat_b.recv())
-            .await
-            .is_err(),
-        "the last message was delivered again"
-    );
-    room_a.send_chat("after").await.expect("send");
-    let message = tokio::time::timeout(TIMEOUT, chat_b.recv())
-        .await
-        .expect("timed out")
-        .expect("a message");
-    assert_eq!(message.text, "after");
-
-    alice.shutdown().await;
-    bob.shutdown().await;
 }
 
 /// A member renaming itself is seen by the others.
@@ -493,9 +277,7 @@ async fn a_new_display_name_is_seen() {
 async fn leaving_through_one_handle_leaves_for_all() {
     let (peer_a, room_a, peer_b, _room_b) = two_peers_in_room().await;
     let other = room_a.clone();
-    let mut chat = other.chat();
     room_a.leave().await;
-    assert_eq!(chat.recv().await, Err(ChatError::Closed));
     let (cam, _writer) = counter_broadcast();
     let err = other
         .publish("cam", &cam)

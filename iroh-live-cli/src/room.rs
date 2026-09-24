@@ -7,6 +7,8 @@
 //! broadcasts as it appears, wraps it in a
 //! [`RemoteBroadcast`](iroh_live::media::RemoteBroadcast), plays them, lays
 //! them out in a grid, and shows the room's chat in the panel at the bottom.
+//! Chat is one more broadcast every member publishes into the room, see
+//! [`chat`].
 //!
 //! Every participant subscribes to every other, so this is a small-group
 //! design. There is no selective forwarding.
@@ -20,6 +22,8 @@ use n0_error::Result;
 use tracing::info;
 
 use crate::{args::RoomArgs, source, transport};
+
+mod chat;
 
 /// The name this node publishes its camera under inside the room.
 ///
@@ -47,6 +51,7 @@ struct Joined {
     /// cancels.
     output: AudioOutput,
     room: Room,
+    chat: chat::Writer,
     ticket: String,
     display_name: String,
 }
@@ -57,17 +62,9 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     // Opened first, so the microphone can cancel what the room plays.
     let output = crate::playback::output(None).await?;
     let (live, rooms) = transport::setup_live_with_rooms().await?;
-    let (live, (broadcast, sources, room, ticket, display_name)) =
-        transport::with_live(live, async |live| join(live, &rooms, args, &output).await).await?;
-    Ok(Joined {
-        live,
-        broadcast,
-        sources,
-        output,
-        room,
-        ticket,
-        display_name,
-    })
+    let (live, joined) =
+        transport::with_live(live, async |live| join(live, &rooms, args, output).await).await?;
+    Ok(Joined { live, ..joined })
 }
 
 /// Joins the room over `live`, which the caller closes if this fails.
@@ -75,12 +72,7 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
 /// # Errors
 ///
 /// Fails if the room cannot be joined, or if the capture sources do not parse.
-async fn join(
-    live: &Live,
-    rooms: &Rooms,
-    args: &RoomArgs,
-    output: &AudioOutput,
-) -> Result<(LocalBroadcast, source::Opened, Room, String, String)> {
+async fn join(live: &Live, rooms: &Rooms, args: &RoomArgs, output: AudioOutput) -> Result<Joined> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
     let display_name = args
         .display_name
@@ -93,24 +85,34 @@ async fn join(
         )
         .await?;
 
-    // Chat is the room's own, so the camera broadcast carries only media.
     let broadcast = LocalBroadcast::new();
-    let sources = source::configure(&broadcast, &args.capture, Some(output)).await?;
+    let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
     room.publish(BROADCAST_NAME, &broadcast)?;
+    let chat = chat::Writer::new()?;
+    room.publish(chat::NAME, chat.broadcast())?;
 
     let ticket = room.ticket().to_string();
     println!("room ticket: {ticket}");
     transport::print_qr(&ticket, args.no_qr);
     info!(ticket, display_name, "joined the room");
 
-    Ok((broadcast, sources, room, ticket, display_name))
+    Ok(Joined {
+        live: live.clone(),
+        broadcast,
+        sources,
+        output,
+        room,
+        chat,
+        ticket,
+        display_name,
+    })
 }
 
 mod window {
     //! The room window: a grid of everybody's pictures over a chat panel.
 
     use std::{
-        collections::{BTreeSet, HashSet, VecDeque},
+        collections::{BTreeSet, HashMap, HashSet, VecDeque},
         time::{Duration, Instant},
     };
 
@@ -119,7 +121,7 @@ mod window {
     use iroh_live::{
         Live,
         media::{AudioOutput, LocalBroadcast, Player, VideoSource},
-        rooms::{ChatError, ChatMessage, Room, RoomState},
+        rooms::{Room, RoomState},
     };
     use iroh_live_egui::egui_wgpu::RenderState;
     use n0_error::{Result, anyerr};
@@ -128,15 +130,15 @@ mod window {
     use tokio::{sync::mpsc, task::JoinSet};
     use tracing::{info, warn};
 
-    use super::Joined;
+    use super::{Joined, chat};
     use crate::{
         args::PlaybackArgs,
         transport::{PEER_TIMEOUT, Subscribed},
         ui::{LocalPreview, RemoteView},
     };
 
-    /// How many chat messages wait for the window before the forwarder holds
-    /// back. The room keeps its own per-receiver buffer behind this one.
+    /// How many chat messages wait for the window before the readers hold
+    /// back.
     const CHAT_QUEUE: usize = 64;
 
     /// How many chat lines are kept in the scrollback.
@@ -171,6 +173,7 @@ mod window {
             sources,
             output,
             room,
+            chat,
             ticket,
             display_name,
         } = joined;
@@ -184,8 +187,12 @@ mod window {
                     live,
                     state: room.state(),
                     known: RoomState::default(),
-                    _wake: wake_on_room(&cc.egui_ctx, &room, chat_tx),
+                    _wake: wake_on_room(&cc.egui_ctx, &room),
+                    ctx: cc.egui_ctx.clone(),
+                    chat_tx,
                     chat_rx,
+                    chat_readers: HashMap::new(),
+                    chat_writer: chat,
                     room,
                     ticket,
                     display_name,
@@ -193,7 +200,6 @@ mod window {
                     opening_keys: HashSet::new(),
                     opening: JoinSet::new(),
                     reconcile_at: None,
-                    sending: JoinSet::new(),
                     chat: ChatState::default(),
                     preview: LocalPreview::new(
                         &cc.egui_ctx,
@@ -224,11 +230,18 @@ mod window {
         /// The membership the grid and the join and leave lines were last
         /// brought in line with.
         known: RoomState,
-        /// Chat messages the forwarder handed over, drained every pass.
-        chat_rx: mpsc::Receiver<Incoming>,
-        /// Wakes the window when the room changes or a message arrives, so a
-        /// window nobody is drawing still keeps up.
+        /// Where the chat readers hand messages over.
+        chat_tx: mpsc::Sender<chat::Message>,
+        /// Chat messages the readers handed over, drained every pass.
+        chat_rx: mpsc::Receiver<chat::Message>,
+        /// One chat reader per member that publishes chat.
+        chat_readers: HashMap<EndpointId, AbortOnDropHandle<()>>,
+        /// This member's chat broadcast.
+        chat_writer: chat::Writer,
+        /// Wakes the window when the room changes, so a window nobody is
+        /// drawing still keeps up.
         _wake: AbortOnDropHandle<()>,
+        ctx: egui::Context,
         /// The room's ticket, shown in the top bar.
         ticket: String,
         /// The name this node announced, used to label its own chat lines.
@@ -243,8 +256,6 @@ mod window {
         /// the membership did not change: a tile dropped, or opening one
         /// failed.
         reconcile_at: Option<Instant>,
-        /// Chat messages still on their way to the room actor.
-        sending: JoinSet<()>,
         chat: ChatState,
         preview: LocalPreview,
         /// The sources this node publishes, held for the window's life.
@@ -285,7 +296,6 @@ mod window {
             self.drain_chat();
             self.collect_opened(ctx);
             self.drop_closed(ctx);
-            while self.sending.try_join_next().is_some() {}
         }
 
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -342,6 +352,7 @@ mod window {
             }
             self.reconcile_at = None;
             self.reconcile_tiles();
+            self.reconcile_chat();
         }
 
         /// Opens a tile for every broadcast the membership lists and the grid
@@ -354,6 +365,7 @@ mod window {
                 .flat_map(|(remote, peer)| {
                     peer.broadcasts
                         .iter()
+                        .filter(|name| *name != chat::NAME)
                         .map(move |name| (*remote, name.clone()))
                 })
                 .collect();
@@ -381,6 +393,29 @@ mod window {
             }
         }
 
+        /// Reads the chat of every member that publishes one, and stops reading
+        /// the ones that left.
+        fn reconcile_chat(&mut self) {
+            let members = &self.known.peers;
+            self.chat_readers.retain(|remote, _| {
+                members
+                    .get(remote)
+                    .is_some_and(|peer| peer.broadcasts.contains(chat::NAME))
+            });
+            for (remote, peer) in members {
+                if peer.broadcasts.contains(chat::NAME) && !self.chat_readers.contains_key(remote) {
+                    let reader = chat::read(
+                        self.room.clone(),
+                        *remote,
+                        self.chat_tx.clone(),
+                        self.ctx.clone(),
+                    );
+                    self.chat_readers
+                        .insert(*remote, AbortOnDropHandle::new(tokio::spawn(reader)));
+                }
+            }
+        }
+
         /// Brings the grid in line again after [`REOPEN_DELAY`].
         fn reconcile_later(&mut self, ctx: &egui::Context) {
             let at = Instant::now() + REOPEN_DELAY;
@@ -388,19 +423,11 @@ mod window {
             ctx.request_repaint_after(REOPEN_DELAY);
         }
 
-        /// Appends the chat lines the forwarder handed over.
+        /// Appends the chat lines the readers handed over.
         fn drain_chat(&mut self) {
-            while let Ok(incoming) = self.chat_rx.try_recv() {
-                match incoming {
-                    Incoming::Message(message) => {
-                        let sender = self.label(message.from);
-                        self.chat.push(sender, message.text);
-                    }
-                    Incoming::Skipped(skipped) => {
-                        self.chat
-                            .push_system(format!("{skipped} chat messages skipped"));
-                    }
-                }
+            while let Ok(message) = self.chat_rx.try_recv() {
+                let sender = self.label(message.from);
+                self.chat.push(sender, message.text);
             }
         }
 
@@ -429,8 +456,8 @@ mod window {
                 {
                     // Withdrawn while it was opening. Only the player and the
                     // broadcast go, dropped here: the session also carries the
-                    // room's chat and whatever else this node has open with
-                    // the member.
+                    // member's chat and whatever else this node has open with
+                    // it.
                     continue;
                 }
                 let view = RemoteView::new(
@@ -612,73 +639,30 @@ mod window {
 
         /// Sends whatever is typed, and shows it locally.
         ///
-        /// A room's chat receivers carry other members' messages only, so the
-        /// local copy is the only one this window will ever see.
+        /// The readers read other members only, so the local copy is the only
+        /// one this window will ever see.
         fn send_chat(&mut self) {
             let text = self.chat.input.trim().to_string();
             if text.is_empty() {
                 return;
             }
             self.chat.input.clear();
-            self.chat.push(self.display_name.clone(), text.clone());
-            let room = self.room.clone();
-            self.sending.spawn(async move {
-                if let Err(err) = room.send_chat(text).await {
-                    warn!(error = %err, "failed to send the chat message");
-                }
-            });
+            if let Err(err) = self.chat_writer.send(&text) {
+                warn!(error = %err, "failed to send the chat message");
+            }
+            self.chat.push(self.display_name.clone(), text);
         }
     }
 
-    /// Wakes the window whenever the room's state changes, and forwards its
-    /// chat into `chat` as it arrives.
-    ///
-    /// Never waits for the window: a window that stops draining its queue
-    /// loses chat lines, counted, rather than holding back its wake-ups.
-    fn wake_on_room(
-        ctx: &egui::Context,
-        room: &Room,
-        chat: mpsc::Sender<Incoming>,
-    ) -> AbortOnDropHandle<()> {
+    /// Wakes the window whenever the room's state changes.
+    fn wake_on_room(ctx: &egui::Context, room: &Room) -> AbortOnDropHandle<()> {
         let ctx = ctx.clone();
-        let (mut state, mut messages) = (room.state(), room.chat());
+        let mut state = room.state();
         AbortOnDropHandle::new(tokio::spawn(async move {
-            let mut skipped = 0;
-            loop {
-                let incoming = tokio::select! {
-                    changed = state.updated() => match changed {
-                        Ok(_) => None,
-                        Err(_) => return,
-                    },
-                    message = messages.recv() => match message {
-                        Ok(message) => Some(Incoming::Message(message)),
-                        Err(ChatError::Lagged(skipped)) => Some(Incoming::Skipped(skipped)),
-                        Err(_) => return,
-                    },
-                };
-                if let Some(incoming) = incoming {
-                    if skipped > 0 && chat.try_send(Incoming::Skipped(skipped)).is_ok() {
-                        skipped = 0;
-                    }
-                    match chat.try_send(incoming) {
-                        Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(Incoming::Skipped(more))) => {
-                            skipped += more;
-                        }
-                        Err(mpsc::error::TrySendError::Full(Incoming::Message(_))) => skipped += 1,
-                        Err(mpsc::error::TrySendError::Closed(_)) => return,
-                    }
-                }
+            while state.updated().await.is_ok() {
                 ctx.request_repaint();
             }
         }))
-    }
-
-    /// What the chat forwarder hands the window.
-    enum Incoming {
-        Message(ChatMessage),
-        /// The window fell this many messages behind.
-        Skipped(u64),
     }
 
     /// Subscribes to a member's broadcast and plays it.
