@@ -37,7 +37,7 @@ http = "1"
 iroh = { workspace = true }
 iroh-live-media = { workspace = true }
 # Rooms whose members attach to a relay, for forging a member through one.
-iroh-rooms = { workspace = true }
+iroh-live-rooms = { workspace = true }
 n0-future = "0.3.2"
 n0-watcher = "1"
 rand = "0.10"

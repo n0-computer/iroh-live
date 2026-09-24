@@ -67,7 +67,7 @@
 //! - In a room, a member can end a broadcast and publish it again under the
 //!   same name without the room's state changing. A grid of tiles has to drop
 //!   the players whose [`RemoteBroadcast::is_closed`] and open them again, on a
-//!   timer as well as on state updates; `iroh_rooms` shows the pattern.
+//!   timer as well as on state updates; `iroh_live_rooms` shows the pattern.
 //!
 //! # Cancellation safety
 //!
@@ -101,13 +101,13 @@
 //! [`iroh_moq::Error`] (a peer unreachable, a path unresolved or unpublishable),
 //! and [`Error::Media`] an [`iroh_live_media::Error`] (a device, a codec, a
 //! broadcast's tracks). Rooms carry the transport's error the same way, as
-//! `iroh_rooms::Error::Transport`.
+//! `iroh_live_rooms::Error::Transport`.
 //!
 //! # Features
 //!
 //! `capture`, `render` and `sound-server` are on by default; `playback`,
 //! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
-//! codecs, and forward to [`media`]. `rooms` re-exports `iroh-rooms`, and
+//! codecs, and forward to [`media`]. `rooms` re-exports `iroh-live-rooms`, and
 //! `auth` enables `Grant::from_claims`. `test-util` exposes the player's
 //! adaptation timers for tests, as `media::test_util`; no application should
 //! enable it.
@@ -122,13 +122,13 @@ pub use iroh_live_media::{
     AudioOutput, AudioSource, Latency, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
     RenditionMode, VideoSource,
 };
+#[cfg(feature = "rooms")]
+pub use iroh_live_rooms as rooms;
 pub use iroh_moq as moq;
 pub use iroh_moq::{
     Audience, EndpointOptions, Mdns, MediaPreset, Moq, MoqConfig, Publication, Reach, Session,
     Subscription,
 };
-#[cfg(feature = "rooms")]
-pub use iroh_rooms as rooms;
 
 pub use self::{
     error::Error,

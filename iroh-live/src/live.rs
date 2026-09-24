@@ -37,7 +37,7 @@ pub fn grant(peer: EndpointId) -> Grant {
     )]
     let mut publish = Patterns::from(publish_scope(peer));
     #[cfg(feature = "rooms")]
-    publish.insert(iroh_rooms::publish_scope(peer));
+    publish.insert(iroh_live_rooms::publish_scope(peer));
     Grant::new(Patterns::from(Pattern::all()), publish)
 }
 

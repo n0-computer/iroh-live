@@ -155,7 +155,7 @@ impl Drop for Shared {
 /// Cheap to clone; [`close`](Self::close) ends it for every clone. Publish it
 /// by handing it to a transport: it implements
 /// `moq_net::Consume<broadcast::Consumer>`, which is what `iroh-live` and
-/// `iroh-rooms` take.
+/// `iroh-live-rooms` take.
 ///
 /// Setting a source spawns the task that encodes it, so the setters must be
 /// called from within a Tokio runtime.

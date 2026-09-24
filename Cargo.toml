@@ -4,7 +4,7 @@ members = [
     "iroh-live-cli",
     "iroh-live-relay",
     "iroh-moq",
-    "iroh-rooms",
+    "iroh-live-rooms",
     "iroh-live-media",
     "iroh-live-media-android",
     "iroh-live-egui",
@@ -52,7 +52,7 @@ wgpu = "30"
 iroh-live = { path = "iroh-live", default-features = false }
 iroh-live-relay = { path = "iroh-live-relay" }
 iroh-moq = { path = "iroh-moq" }
-iroh-rooms = { path = "iroh-rooms" }
+iroh-live-rooms = { path = "iroh-live-rooms" }
 iroh-live-media = { path = "iroh-live-media", default-features = false }
 iroh-live-media-android = { path = "iroh-live-media-android" }
 iroh-live-egui = { path = "iroh-live-egui" }

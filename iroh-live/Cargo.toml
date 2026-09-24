@@ -15,7 +15,7 @@ iroh-tickets = { workspace = true }
 iroh-moq = { workspace = true }
 # Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
 # knows nothing about rooms.
-iroh-rooms = { workspace = true, optional = true }
+iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 iroh-live-media = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
@@ -47,8 +47,8 @@ workspace = true
 
 [features]
 default = ["capture", "render", "sound-server"]
-# Re-exports `iroh-rooms` as `iroh_live::rooms`.
-rooms = ["dep:iroh-rooms"]
+# Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
+rooms = ["dep:iroh-live-rooms"]
 # Test knobs for the player's adaptation timers, re-exported as
 # `iroh_live::media::test_util`. Never for an application.
 test-util = ["iroh-live-media/test-util"]

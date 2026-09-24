@@ -1570,7 +1570,7 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
 async fn room_node() -> (
     iroh::Endpoint,
     iroh_moq::Moq,
-    iroh_rooms::Rooms,
+    iroh_live_rooms::Rooms,
     iroh::protocol::Router,
 ) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -1581,13 +1581,13 @@ async fn room_node() -> (
         .expect("bind node");
     shared_lookup().add_endpoint_info(endpoint.addr());
     let moq = iroh_moq::Moq::new(endpoint.clone(), iroh_live::moq_config());
-    let rooms = iroh_rooms::Rooms::new(&moq);
+    let rooms = iroh_live_rooms::Rooms::new(&moq);
     let mut router = iroh::protocol::Router::builder(endpoint.clone());
     for alpn in iroh_moq::alpns() {
         router = router.accept(alpn, moq.clone());
     }
     let router = router
-        .accept(iroh_rooms::ALPN, rooms.protocol_handler())
+        .accept(iroh_live_rooms::ALPN, rooms.protocol_handler())
         .spawn();
     (endpoint, moq, rooms, router)
 }
@@ -1608,8 +1608,8 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     let (bob_endpoint, bob_moq, bob_rooms, bob_router) = room_node().await;
     let room_a = alice_rooms
         .join(
-            &iroh_rooms::RoomTicket::generate(),
-            iroh_rooms::RoomConfig::default().with_display_name("alice"),
+            &iroh_live_rooms::RoomTicket::generate(),
+            iroh_live_rooms::RoomConfig::default().with_display_name("alice"),
         )
         .await
         .expect("join");
@@ -1668,7 +1668,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     let room_b = bob_rooms
         .join(
             &room_a.ticket(),
-            iroh_rooms::RoomConfig::default().with_display_name("bob"),
+            iroh_live_rooms::RoomConfig::default().with_display_name("bob"),
         )
         .await
         .expect("join");

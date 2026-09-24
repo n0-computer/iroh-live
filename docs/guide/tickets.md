@@ -60,13 +60,13 @@ hand out is a `BroadcastTicket` named `call`.
 
 ## RoomTicket
 
-`iroh_rooms::RoomTicket` identifies a room rather than a broadcast. It carries a
+`iroh_live_rooms::RoomTicket` identifies a room rather than a broadcast. It carries a
 gossip topic id and a list of bootstrap endpoints, and it uses the
 `iroh_tickets` envelope with kind `room`, so its string form starts with `room`
 rather than a URI scheme.
 
 ```rust
-use iroh_rooms::RoomTicket;
+use iroh_live_rooms::RoomTicket;
 
 let ticket = RoomTicket::generate();          // fresh topic, no bootstrap
 let parsed: RoomTicket = string.parse()?;

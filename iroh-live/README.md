@@ -65,7 +65,7 @@ Errors are `iroh_live::Error`, which is either `Transport` (an
 
 ## Rooms
 
-Rooms live in [`iroh-rooms`](../iroh-rooms), re-exported as `iroh_live::rooms`
+Rooms live in [`iroh-live-rooms`](../iroh-live-rooms), re-exported as `iroh_live::rooms`
 behind the `rooms` feature. Mount the room protocol on the router with
 `LiveBuilder::accept`.
 

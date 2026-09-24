@@ -107,7 +107,7 @@ compilable version of the first. More in [docs/guide/index.md](docs/guide/index.
 |---|---|
 | [`iroh-live`](iroh-live) | `Live`: publish, subscribe, and the re-exports of the crates below |
 | [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the route table, publications, sessions, relay links, tickets, and ALPN negotiation |
-| [`iroh-rooms`](iroh-rooms) | Rooms: gossip membership and members-only broadcasts. Media-free |
+| [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. Media-free |
 | [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | [`iroh-live-egui`](iroh-live-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |
 | [`iroh-live-media-android`](iroh-live-media-android) | The Camera2 push bridge and the EGL renderer for Android |

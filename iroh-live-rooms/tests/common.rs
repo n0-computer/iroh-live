@@ -1,4 +1,4 @@
-//! Shared harness for `iroh-rooms` integration tests.
+//! Shared harness for `iroh-live-rooms` integration tests.
 //!
 //! Builds a peer from scratch: an endpoint on an in-memory address lookup, a
 //! MoQ node, the room service, and a router mounting both. This file carries no
@@ -10,8 +10,8 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh_live_rooms::{Room, RoomConfig, RoomState, RoomTicket, Rooms};
 use iroh_moq::{Moq, MoqConfig};
-use iroh_rooms::{Room, RoomConfig, RoomState, RoomTicket, Rooms};
 use n0_watcher::Watcher;
 
 /// Generous: must survive CPU contention when the whole workspace suite runs.
@@ -50,7 +50,7 @@ impl Peer {
             router = router.accept(alpn, moq.clone());
         }
         let router = router
-            .accept(iroh_rooms::ALPN, rooms.protocol_handler())
+            .accept(iroh_live_rooms::ALPN, rooms.protocol_handler())
             .spawn();
         Self {
             endpoint,

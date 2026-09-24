@@ -1,7 +1,7 @@
 //! `irl room`: a multi-party room, publishing one broadcast and watching
 //! everyone else's.
 //!
-//! `iroh-rooms` does the discovery: members announce the names of their
+//! `iroh-live-rooms` does the discovery: members announce the names of their
 //! broadcasts on a shared gossip topic, and the room's watched state says who is
 //! here and what each publishes. This window subscribes to each of those
 //! broadcasts as it appears, wraps it in a
@@ -27,7 +27,7 @@ mod chat;
 
 /// The name this node publishes its camera under inside the room.
 ///
-/// Scoped to the room's gossip topic by `iroh-rooms`, so the same node can be
+/// Scoped to the room's gossip topic by `iroh-live-rooms`, so the same node can be
 /// in several rooms at once without the names colliding.
 const BROADCAST_NAME: &str = "cam";
 

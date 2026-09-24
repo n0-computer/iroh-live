@@ -10,7 +10,7 @@ the layer between them, plus the pieces neither side has a home for.
 | Crate | What it is |
 |---|---|
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links, tickets and endpoint setup |
-| `iroh-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
+| `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, and the re-exports |
 | `iroh-live-media` | Sources, broadcasts, and players over moq-video and moq-audio |
 | `iroh-live-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
@@ -20,7 +20,7 @@ the layer between them, plus the pieces neither side has a home for.
 
 `iroh-live-media` has no iroh dependency: a `LocalBroadcast` is read through
 `moq_net::Consume` and a `RemoteBroadcast` is built from a
-`moq_net::broadcast::Consumer`, whatever carried it. `iroh-rooms` has no media
+`moq_net::broadcast::Consumer`, whatever carried it. `iroh-live-rooms` has no media
 dependency. `iroh-live` depends on both and is the only crate that joins them.
 
 ## What iroh-live-media adds

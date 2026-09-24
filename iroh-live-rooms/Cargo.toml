@@ -1,5 +1,5 @@
 [package]
-name = "iroh-rooms"
+name = "iroh-live-rooms"
 version = "0.1.0"
 edition = "2024"
 description = "multi-party rooms over iroh gossip and MoQ"

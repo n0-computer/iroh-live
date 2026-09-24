@@ -2,15 +2,15 @@
 //! subscription, leaving, and the privacy of room broadcasts.
 //!
 //! Nothing here touches media: broadcasts carry a plain data track with
-//! hand-written frames, since `iroh-rooms` does not depend on the media crate.
+//! hand-written frames, since `iroh-live-rooms` does not depend on the media crate.
 
 mod common;
 
 use std::time::Duration;
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
+use iroh_live_rooms::{Error, RoomTicket};
 use iroh_moq::Reach;
-use iroh_rooms::{Error, RoomTicket};
 use moq_net::{Timestamp, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -300,7 +300,7 @@ async fn unpublishing_takes_the_name_out_of_the_room() {
     let a = peer_a.id();
     let (cam, _writer) = counter_broadcast();
     let publication = room_a.publish("cam", &cam).expect("publish");
-    let lists_cam = |state: &iroh_rooms::RoomState| {
+    let lists_cam = |state: &iroh_live_rooms::RoomState| {
         state
             .peers
             .get(&a)

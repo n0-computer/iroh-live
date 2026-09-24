@@ -1,10 +1,10 @@
 # Rooms
 
 A room is a gossip topic whose members announce themselves and the names of the
-broadcasts they publish into it. `iroh_rooms::Room` watches the membership and
+broadcasts they publish into it. `iroh_live_rooms::Room` watches the membership and
 subscribes to a member's broadcast when the application asks for it.
 
-Rooms know nothing about media. `iroh-rooms` does not depend on `iroh-live-media`
+Rooms know nothing about media. `iroh-live-rooms` does not depend on `iroh-live-media`
 or `hang`: a room publishes anything that implements moq-net's
 `Consume<broadcast::Consumer>` and hands back a transport `Subscription`. What
 the broadcast carries is the application's business.
@@ -13,19 +13,19 @@ the broadcast carries is the application's business.
 
 `Rooms` owns the one gossip instance rooms need. Create it on the node's `Moq`
 before the router, so the router can mount it. The node must let members
-publish their room broadcasts, under `iroh_rooms::publish_scope(member)`;
+publish their room broadcasts, under `iroh_live_rooms::publish_scope(member)`;
 `iroh_live::moq_config()` does with the `rooms` feature:
 
 ```rust
 use iroh_live::{Live, Moq};
-use iroh_rooms::{RoomConfig, RoomTicket, Rooms};
+use iroh_live_rooms::{RoomConfig, RoomTicket, Rooms};
 
 let moq = Moq::new(endpoint.clone(), iroh_live::moq_config());
 let rooms = Rooms::new(&moq);
 let live = Live::builder(endpoint)
     .with_moq(moq)
     .with_router()
-    .accept(iroh_rooms::ALPN, rooms.protocol_handler())
+    .accept(iroh_live_rooms::ALPN, rooms.protocol_handler())
     .spawn();
 
 let room = rooms
@@ -79,7 +79,7 @@ what the member itself announces on that session, so no other peer can stand in
 for the member. It waits until the member announces the name to this node,
 which a member that never published it does not do, so bound the wait.
 Subscriptions are the application's: leaving the room does not close them.
-Failures come back as `iroh_rooms::Error`, whose `Transport` variant carries
+Failures come back as `iroh_live_rooms::Error`, whose `Transport` variant carries
 the same `iroh_moq::Error` the facade's `Error::Transport` does.
 
 A grid cannot drive its tiles from the room state alone. A member can end a
