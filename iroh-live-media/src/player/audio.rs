@@ -15,13 +15,8 @@ use crate::{
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
-/// How long after audio ended or failed the catalog is looked at again,
-/// doubling up to [`RETRY_MAX`].
-const RETRY_FIRST: Duration = Duration::from_secs(1);
-
-/// The longest wait between two looks at the catalog while audio is not
-/// playing.
-const RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long after audio ended or failed the catalog is looked at again.
+const RETRY_AFTER: Duration = Duration::from_secs(2);
 
 /// The audio task's inputs.
 pub(crate) struct Inputs {
@@ -52,7 +47,6 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut catalog = broadcast.catalog();
     let mut epoch = broadcast.epoch();
     let mut volume = controls.volume.subscribe();
-    let mut backoff = RETRY_FIRST;
 
     loop {
         // What to play: the first audio rendition, over the current route.
@@ -87,7 +81,6 @@ pub(crate) async fn run(inputs: Inputs) {
                                     .instrument(info_span!("decode", rendition = %name)),
                             )),
                             control,
-                            tokio::time::Instant::now(),
                         ))
                     }
                     Err(err) => {
@@ -101,25 +94,19 @@ pub(crate) async fn run(inputs: Inputs) {
         };
 
         // Wait for the reader to end, or for a reason to reopen. Without a
-        // reader, the catalog is looked at again after a backoff as well as on
+        // reader, the catalog is looked at again after a pause as well as on
         // every update: a publisher that replaced its audio may have sent the
         // new catalog before the old track's end reached us, and no later
         // update is coming to say so.
-        let mut retry = std::pin::pin!(tokio::time::sleep(backoff));
+        let mut retry = std::pin::pin!(tokio::time::sleep(RETRY_AFTER));
         loop {
             let reading = reader.is_some();
             tokio::select! {
                 () = shutdown.cancelled() => return,
                 result = async { (&mut reader.as_mut().expect("guarded").0).await }, if reading => {
-                    let (_, _, started) = reader.take().expect("guarded");
+                    reader = None;
                     stats.audio.update(|audio| *audio = None);
-                    // A track that played for a while earns a quick retry; one
-                    // that ends as soon as it opens, as a listed but finished
-                    // track does, backs off rather than reopening every second.
-                    if started.elapsed() >= RETRY_MAX {
-                        backoff = RETRY_FIRST;
-                    }
-                    retry.as_mut().reset(tokio::time::Instant::now() + backoff);
+                    retry.as_mut().reset(tokio::time::Instant::now() + RETRY_AFTER);
                     match result {
                         Ok(Ok(())) => status.update(|status| status.audio = SlotState::Ended),
                         Ok(Err(err)) => {
@@ -146,15 +133,12 @@ pub(crate) async fn run(inputs: Inputs) {
                     debug!("the broadcast moved to a new route, reopening audio");
                     break;
                 }
-                () = &mut retry, if !reading => {
-                    backoff = (backoff * 2).min(RETRY_MAX);
-                    break;
-                }
+                () = &mut retry, if !reading => break,
                 changed = volume.changed() => {
                     if changed.is_err() {
                         return;
                     }
-                    if let Some((_, control, _)) = &reader {
+                    if let Some((_, control)) = &reader {
                         control.set_volume(*volume.borrow());
                     }
                 }
