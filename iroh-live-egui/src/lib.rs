@@ -31,16 +31,11 @@
 //! # ) {
 //! let mut view = VideoView::new(ctx, "video", player.video(), render_state);
 //! // in the update loop:
-//! let (image, frame_ts) = view.render(ui.available_size());
-//! ui.add(image);
-//! # let _ = frame_ts;
+//! ui.add(view.render());
 //! # }
 //! ```
 
 pub mod overlay;
-
-#[cfg(feature = "wgpu-render")]
-use std::time::Duration;
 
 #[cfg(feature = "wgpu-render")]
 pub use egui_wgpu;
@@ -87,8 +82,8 @@ pub struct EguiVideoRenderer {
     renderer: iroh_live_media::video::render::Renderer,
     #[debug(skip)]
     render_state: egui_wgpu::RenderState,
-    texture_id: Option<epaint::TextureId>,
-    last_size: Option<(u32, u32)>,
+    /// The registered texture and its size, once a frame is drawn.
+    texture: Option<(epaint::TextureId, (u32, u32))>,
 }
 
 #[cfg(feature = "wgpu-render")]
@@ -110,8 +105,7 @@ impl EguiVideoRenderer {
         Ok(Self {
             renderer,
             render_state: render_state.clone(),
-            texture_id: None,
-            last_size: None,
+            texture: None,
         })
     }
 
@@ -136,8 +130,8 @@ impl EguiVideoRenderer {
 
         let device = &self.render_state.device;
         let mut egui_renderer = self.render_state.renderer.write();
-        let id = match self.texture_id {
-            Some(id) => {
+        let id = match self.texture {
+            Some((id, _)) => {
                 egui_renderer.update_egui_texture_from_wgpu_texture(
                     device,
                     &view,
@@ -146,22 +140,16 @@ impl EguiVideoRenderer {
                 );
                 id
             }
-            None => {
-                let id =
-                    egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear);
-                self.texture_id = Some(id);
-                id
-            }
+            None => egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
         };
-
-        self.last_size = Some(dims);
+        self.texture = Some((id, dims));
         Ok((id, dims))
     }
 
     /// Returns the last rendered texture id and its pixel size, if a frame
     /// has been drawn yet.
     pub fn last_texture(&self) -> Option<(epaint::TextureId, (u32, u32))> {
-        self.texture_id.zip(self.last_size)
+        self.texture
     }
 }
 
@@ -176,7 +164,7 @@ impl Drop for EguiVideoRenderer {
     /// of the render state: a room whose tiles come and go accumulates one per
     /// tile it ever drew.
     fn drop(&mut self) {
-        if let Some(id) = self.texture_id.take() {
+        if let Some((id, _)) = self.texture.take() {
             self.render_state.renderer.write().free_texture(&id);
         }
     }
@@ -202,17 +190,8 @@ pub struct FrameView {
 
 #[cfg(feature = "wgpu-render")]
 impl FrameView {
-    /// Creates a view with no renderer. [`render_frame`](Self::render_frame)
-    /// only ever shows the placeholder: without a `wgpu` device there is no
-    /// way to read a frame's pixels, since
-    /// [`Surface`](iroh_live_media::video::Surface)'s conversions consume it and
-    /// [`Frame`](iroh_live_media::video::Frame) is not `Clone`.
-    pub fn new(ctx: &egui::Context, name: &str) -> Self {
-        Self::new_wgpu(ctx, name, None)
-    }
-
     /// Creates a view that draws through `render_state`, if given.
-    pub fn new_wgpu(
+    pub fn new(
         ctx: &egui::Context,
         name: &str,
         render_state: Option<&egui_wgpu::RenderState>,
@@ -231,12 +210,6 @@ impl FrameView {
             renderer,
             placeholder,
         }
-    }
-
-    /// Returns whether this view draws through `wgpu` (as opposed to only
-    /// ever showing the placeholder).
-    pub fn is_wgpu(&self) -> bool {
-        self.renderer.is_some()
     }
 
     /// Draws `frame`, replacing whatever this view previously showed.
@@ -333,14 +306,9 @@ impl VideoView {
         Self {
             _wake: wake_on_frame(ctx, &frames),
             frames,
-            frame_view: FrameView::new_wgpu(ctx, name, render_state),
+            frame_view: FrameView::new(ctx, name, render_state),
             ctx: ctx.clone(),
         }
-    }
-
-    /// Returns the frames this view draws.
-    pub fn frames(&self) -> &VideoFrames {
-        &self.frames
     }
 
     /// Replaces the frames this view draws, keeping the last picture up until
@@ -350,22 +318,13 @@ impl VideoView {
         self.frames = frames;
     }
 
-    /// Returns whether this view draws through `wgpu`.
-    pub fn is_wgpu(&self) -> bool {
-        self.frame_view.is_wgpu()
-    }
-
     /// Draws the newest frame if one arrived since the last call, and returns
-    /// `(image, frame_timestamp)`.
-    ///
-    /// The timestamp is the new frame's presentation time, or `None` when the
-    /// picture did not change.
-    pub fn render(&mut self, _available_size: egui::Vec2) -> (egui::Image<'_>, Option<Duration>) {
-        let frame_ts = self.frames.try_next().map(|frame| {
+    /// the image to show.
+    pub fn render(&mut self) -> egui::Image<'_> {
+        if let Some(frame) = self.frames.try_next() {
             self.frame_view.render_frame(&frame);
-            Duration::from_micros(frame.timestamp.as_micros() as u64)
-        });
-        (self.frame_view.image(), frame_ts)
+        }
+        self.frame_view.image()
     }
 
     /// Returns the image for whatever frame was drawn last.

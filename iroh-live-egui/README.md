@@ -11,8 +11,7 @@ registers that texture with egui and draws it.
 `VideoView` reads a `VideoFrames` stream, the one frame type every source of
 pictures hands out: a `Player`'s decoded video, a `VideoSource`'s own frames for
 a local preview, or a scanner's camera. Call `render` in the draw loop and it
-takes the newest frame, uploads it, and returns an `egui::Image` plus the
-frame's timestamp. The stream wakes the window when a frame arrives, so nothing
+takes the newest frame, uploads it, and returns an `egui::Image`. The stream wakes the window when a frame arrives, so nothing
 has to poll.
 
 ```rust
@@ -20,8 +19,7 @@ use iroh_live_egui::VideoView;
 
 let mut view = VideoView::new(&ctx, "remote", player.video(), Some(&render_state));
 
-let (image, timestamp) = view.render(available_size);
-ui.add(image);
+ui.add(view.render());
 ```
 
 `FrameView` is the same upload machinery without a stream, for a caller that

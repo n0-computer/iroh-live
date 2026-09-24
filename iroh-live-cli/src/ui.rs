@@ -297,7 +297,7 @@ impl LocalPreview {
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
         Self {
-            view: FrameView::new_wgpu(ctx, name, render_state),
+            view: FrameView::new(ctx, name, render_state),
             _wake: wake_on_frame(ctx, frames.as_ref()),
             frames,
             ctx: ctx.clone(),
@@ -491,8 +491,7 @@ impl RemoteView {
     /// Returns the response of whatever was drawn, whose rect is what
     /// [`draw_overlay`](Self::draw_overlay) wants.
     pub fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
-        let (image, _) = self.video.render(size);
-        ui.add_sized(size, image)
+        ui.add_sized(size, self.video.render())
     }
 
     /// Draws the stats overlay over `rect`.
