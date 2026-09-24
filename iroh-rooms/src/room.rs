@@ -60,6 +60,9 @@ const STATE_REFRESH: Duration = Duration::from_secs(30);
 /// release that honours it.
 const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
+/// How often the room restarts chat readers that stopped.
+const CHAT_RETRY: Duration = Duration::from_secs(5);
+
 /// How many commands may wait for the room actor.
 const COMMAND_QUEUE: usize = 16;
 
@@ -684,6 +687,8 @@ impl Actor {
         let mut local_changed = self.inner.local_changed.watch();
         let mut display_name = self.inner.display_name.watch();
         let mut resubscribes = 0;
+        let mut chat_retry = tokio::time::interval(CHAT_RETRY);
+        chat_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let leave = loop {
             let mut ended = false;
@@ -708,6 +713,7 @@ impl Actor {
                     }
                     desired.set(self.announcement(false)).ok();
                 }
+                _ = chat_retry.tick() => self.restart_stalled_chat(),
                 command = inbox.recv() => match command {
                     None => break None,
                     Some(Command::Chat { text, reply }) => {
@@ -904,6 +910,27 @@ impl Actor {
         self.peers.insert(remote, peer);
         if changed {
             self.publish_state();
+        }
+    }
+
+    /// Restarts the chat readers that stopped, of every member still here.
+    ///
+    /// A reader stops when its member's session drops, and the member is
+    /// usually back within seconds, well before its next announcement would
+    /// bring the reader back.
+    fn restart_stalled_chat(&mut self) {
+        let stalled: Vec<EndpointId> = self
+            .peers
+            .iter()
+            .filter(|(_, peer)| peer.chat_stalled())
+            .map(|(remote, _)| *remote)
+            .collect();
+        for remote in stalled {
+            if let Some(mut peer) = self.peers.remove(&remote) {
+                trace!(remote = %remote.fmt_short(), "restarting a stopped chat reader");
+                self.sync_chat(remote, &mut peer);
+                self.peers.insert(remote, peer);
+            }
         }
     }
 

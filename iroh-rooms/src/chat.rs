@@ -267,6 +267,9 @@ struct CursorState {
     writer: Option<u64>,
     /// One past the highest group sequence delivered.
     next: u64,
+    /// A hash of the payload of group `next - 1`, for the older format, whose
+    /// restart can otherwise look like the replay of that group.
+    last: Option<u64>,
     /// Whether a reading ran over this cursor before.
     read: bool,
 }
@@ -283,18 +286,32 @@ impl ChatCursor {
 
     /// Starts one subscription's reading over this cursor, once the
     /// subscription is established.
-    fn reading(&self) -> Reading<'_> {
+    fn reading(&self, legacy: bool) -> Reading<'_> {
         let mut state = self.state.lock().expect("poisoned");
         let first = !state.read;
         state.read = true;
+        let now = tokio::time::Instant::now();
         Reading {
             cursor: self,
             floor: state.next,
             seen: BTreeSet::new(),
-            received: false,
-            replay_until: first.then(|| tokio::time::Instant::now() + REPLAY_WINDOW),
+            replay_until: first.then_some(now + REPLAY_WINDOW),
+            pending: (legacy && state.next > 0).then(|| Pending {
+                until: now + REPLAY_WINDOW,
+                held: Vec::new(),
+            }),
         }
     }
+}
+
+/// One chat message as read off its group.
+struct Line {
+    sequence: u64,
+    /// The writer id, for the current format.
+    writer: Option<u64>,
+    /// A hash of the payload.
+    hash: u64,
+    message: ChatMessage,
 }
 
 /// One subscription's reading of a chat source.
@@ -307,40 +324,106 @@ struct Reading<'a> {
     floor: u64,
     /// Sequences delivered by this reading, the most recent [`SEEN`] of them.
     seen: BTreeSet<u64>,
-    /// Whether this reading received a group yet.
-    received: bool,
     /// On a cursor's first reading, until when groups are the replay moq
     /// hands a new subscription.
     replay_until: Option<tokio::time::Instant>,
+    /// For the older format, until this reading knows whether the member
+    /// restarted since the last one.
+    pending: Option<Pending>,
+}
+
+/// A reading of the older format that has not yet told a restarted member
+/// from one that carries on.
+///
+/// That format has no writer id, so only the replay can tell: moq always
+/// replays the newest group, which for a member that carried on sits at or
+/// past the last group delivered, with that group's payload if it is that
+/// group. A group below it is held until the replay says which it is.
+struct Pending {
+    /// When the replay is over. Nothing at or past the last group delivered
+    /// by then means the member restarted.
+    until: tokio::time::Instant,
+    held: Vec<Line>,
 }
 
 impl Reading<'_> {
-    /// Reports whether group `sequence` of `writer` is news, and marks it
-    /// delivered.
-    ///
-    /// `writer` is `None` for the older format, which carries no writer id. A
-    /// member on it that restarted begins its sequence again, which shows as
-    /// a first group well below what was delivered; the cursor starts over
-    /// then, since the replay of one that did not restart is never lower than
-    /// the last group delivered.
-    fn admit(&mut self, writer: Option<u64>, sequence: u64) -> bool {
-        let mut state = self.cursor.state.lock().expect("poisoned");
-        let restarted = match writer {
-            Some(writer) => state.writer.is_some_and(|known| known != writer),
-            None => !self.received && sequence.saturating_add(1) < self.floor,
+    /// Returns when the reading must decide on what it holds, if it holds
+    /// anything undecided.
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.pending.as_ref().map(|pending| pending.until)
+    }
+
+    /// Takes one line off the track, and returns what to deliver now.
+    fn take(&mut self, line: Line) -> Vec<ChatMessage> {
+        let Some(pending) = self.pending.as_mut() else {
+            return self.admit(line).into_iter().collect();
         };
-        if writer.is_some() {
-            state.writer = writer;
+        let last = self.floor - 1;
+        if line.sequence < last {
+            pending.held.push(line);
+            return Vec::new();
         }
-        if restarted {
-            debug!(sequence, "chat source restarted, reading it from its start");
-            state.next = 0;
-            self.floor = 0;
-            self.seen.clear();
+        let held = std::mem::take(&mut pending.held);
+        self.pending = None;
+        let known = self.cursor.state.lock().expect("poisoned").last;
+        if line.sequence == last && known != Some(line.hash) {
+            self.restart();
+            return held
+                .into_iter()
+                .chain([line])
+                .filter_map(|line| self.admit(line))
+                .collect();
         }
-        self.received = true;
-        if sequence < self.floor || !self.seen.insert(sequence) {
-            return false;
+        // The member carried on; what was held was delivered before.
+        self.admit(line).into_iter().collect()
+    }
+
+    /// Decides once the replay is over without a group at or past the last
+    /// one delivered: the member restarted, and what was held is news.
+    ///
+    /// An empty replay says the same, since a member that carried on always
+    /// replays its newest group. A replay slower than [`REPLAY_WINDOW`] then
+    /// costs one repeated message.
+    fn expire(&mut self) -> Vec<ChatMessage> {
+        let Some(pending) = self.pending.take() else {
+            return Vec::new();
+        };
+        self.restart();
+        pending
+            .held
+            .into_iter()
+            .filter_map(|line| self.admit(line))
+            .collect()
+    }
+
+    /// Starts the cursor over, for a member that restarted.
+    fn restart(&mut self) {
+        debug!("chat source restarted, reading it from its start");
+        let mut state = self.cursor.state.lock().expect("poisoned");
+        state.next = 0;
+        state.last = None;
+        self.floor = 0;
+        self.seen.clear();
+    }
+
+    /// Returns `line`'s message if it is news, and marks it delivered.
+    ///
+    /// A current-format line from another writer than the one counted means
+    /// the member restarted, and the cursor starts over.
+    fn admit(&mut self, line: Line) -> Option<ChatMessage> {
+        let mut state = self.cursor.state.lock().expect("poisoned");
+        if let Some(writer) = line.writer {
+            if state.writer.is_some_and(|known| known != writer) {
+                debug!("chat writer changed, reading it from its start");
+                state.next = 0;
+                self.floor = 0;
+                self.seen.clear();
+            }
+            state.writer = Some(writer);
+        }
+        if line.sequence < self.floor || !self.seen.insert(line.sequence) {
+            trace!(sequence = line.sequence, "chat message already delivered");
+            return None;
         }
         if self.seen.len() > SEEN
             && let Some(oldest) = self.seen.pop_first()
@@ -349,8 +432,16 @@ impl Reading<'_> {
             // that moq would have dropped it anyway.
             self.floor = self.floor.max(oldest + 1);
         }
-        state.next = state.next.max(sequence + 1);
-        true
+        if line.sequence + 1 >= state.next {
+            state.next = line.sequence + 1;
+            state.last = Some(line.hash);
+        }
+        drop(state);
+        // The older format carries no send time to judge.
+        if line.writer.is_some() && self.is_history(line.message.sent_at) {
+            return None;
+        }
+        Some(line.message)
     }
 
     /// Reports whether a message sent at `sent_at` is history from before
@@ -364,6 +455,71 @@ impl Reading<'_> {
         self.replay_until
             .is_some_and(|until| tokio::time::Instant::now() <= until)
             && sent_at < self.cursor.since
+    }
+}
+
+/// How long a reader keeps reading after its broadcast closed, for what is
+/// still in flight.
+const CLOSE_DRAIN: Duration = Duration::from_millis(500);
+
+/// Sleeps until `at`, or forever without one.
+async fn sleep_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Returns a hash of a chat payload, to tell two messages at one sequence
+/// apart.
+fn payload_hash(payload: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    payload.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Decodes the group `sequence` of member `from`'s chat, in either format.
+///
+/// `None` for an empty message, and for one that does not decode, which is
+/// logged.
+fn decode(from: EndpointId, legacy: bool, sequence: u64, payload: &[u8]) -> Option<Line> {
+    let hash = payload_hash(payload);
+    if legacy {
+        return match std::str::from_utf8(payload) {
+            Ok(text) if !text.is_empty() => Some(Line {
+                sequence,
+                writer: None,
+                hash,
+                message: ChatMessage {
+                    from,
+                    text: text.to_owned(),
+                    sent_at: SystemTime::now(),
+                },
+            }),
+            Ok(_) => None,
+            Err(err) => {
+                warn!(from = %from.fmt_short(), %err, "chat message is not UTF-8");
+                None
+            }
+        };
+    }
+    match postcard::from_bytes::<ChatFrame>(payload) {
+        Ok(chat) if !chat.text.is_empty() => Some(Line {
+            sequence,
+            writer: Some(chat.writer),
+            hash,
+            message: ChatMessage {
+                from,
+                sent_at: chat.sent_at(),
+                text: chat.text,
+            },
+        }),
+        Ok(_) => None,
+        Err(err) => {
+            warn!(from = %from.fmt_short(), %err, "chat frame does not decode");
+            None
+        }
     }
 }
 
@@ -393,9 +549,35 @@ pub(crate) async fn forward(
             return;
         }
     };
-    let mut reading = cursor.reading();
+    let mut reading = cursor.reading(legacy);
+    // A broadcast that ends does not always end its tracks: when the session
+    // it came over dies, moq-net tears the path down and leaves its tracks
+    // open, so the reader also watches the broadcast, and once it closes
+    // reads what is still in flight for a moment, then stops.
+    let mut closed = std::pin::pin!(broadcast.closed());
+    let mut draining: Option<tokio::time::Instant> = None;
     loop {
-        let (sequence, frame) = match reader.next().await {
+        let next = tokio::select! {
+            next = reader.next() => next,
+            () = sleep_until(reading.deadline()) => {
+                for message in reading.expire() {
+                    tx.send(message).ok();
+                }
+                continue;
+            }
+            _ = &mut closed, if draining.is_none() => {
+                draining = Some(tokio::time::Instant::now() + CLOSE_DRAIN);
+                continue;
+            }
+            () = sleep_until(draining) => {
+                debug!(from = %from.fmt_short(), "chat broadcast ended");
+                for message in reading.expire() {
+                    tx.send(message).ok();
+                }
+                return;
+            }
+        };
+        let (sequence, frame) = match next {
             Ok(Some(next)) => next,
             Ok(None) => return,
             Err(err) => {
@@ -403,45 +585,13 @@ pub(crate) async fn forward(
                 return;
             }
         };
-        let message = if legacy {
-            if !reading.admit(None, sequence) {
-                continue;
-            }
-            match String::from_utf8(frame.payload.to_vec()) {
-                Ok(text) if !text.is_empty() => ChatMessage {
-                    from,
-                    text,
-                    sent_at: SystemTime::now(),
-                },
-                Ok(_) => continue,
-                Err(err) => {
-                    warn!(from = %from.fmt_short(), %err, "chat message is not UTF-8");
-                    continue;
-                }
-            }
-        } else {
-            let chat = match postcard::from_bytes::<ChatFrame>(&frame.payload) {
-                Ok(chat) => chat,
-                Err(err) => {
-                    warn!(from = %from.fmt_short(), %err, "chat frame does not decode");
-                    continue;
-                }
-            };
-            if !reading.admit(Some(chat.writer), sequence) {
-                trace!(from = %from.fmt_short(), sequence, "chat message already delivered");
-                continue;
-            }
-            if chat.text.is_empty() || reading.is_history(chat.sent_at()) {
-                continue;
-            }
-            ChatMessage {
-                from,
-                sent_at: chat.sent_at(),
-                text: chat.text,
-            }
+        let Some(line) = decode(from, legacy, sequence, &frame.payload) else {
+            continue;
         };
-        // No receiver is not an error: nobody is reading chat right now.
-        tx.send(message).ok();
+        for message in reading.take(line) {
+            // No receiver is not an error: nobody is reading chat right now.
+            tx.send(message).ok();
+        }
     }
 }
 
@@ -691,7 +841,32 @@ mod tests {
         }
         reader.abort();
 
+        // The restarted member said two lines before this reader came back,
+        // so the first group it gets sits at the sequence last delivered.
         let after = RawChat::new(LEGACY_CHAT_TRACK);
+        after.write(0, b"back".to_vec());
+        after.write(1, b"again".to_vec());
+        after.write(2, b"and more".to_vec());
+        let reader = tokio::spawn(forward(
+            member(),
+            after.broadcast.consume(),
+            true,
+            cursor.clone(),
+            tx.clone(),
+        ));
+        let mut heard = BTreeSet::new();
+        for _ in 0..3 {
+            heard.insert(next(&mut rx).await.text);
+        }
+        assert_eq!(
+            heard,
+            BTreeSet::from(["back".into(), "again".into(), "and more".into()])
+        );
+        reader.abort();
+
+        // A reader that merely restarts over the same member hears nothing
+        // twice, whichever of the replayed groups it gets first, and hears
+        // what comes next.
         let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
             member(),
             after.broadcast.consume(),
@@ -699,9 +874,10 @@ mod tests {
             cursor,
             tx,
         )));
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        after.write(0, b"back".to_vec());
-        assert_eq!(next(&mut rx).await.text, "back");
+        tokio::time::sleep(REPLAY_WINDOW + Duration::from_millis(200)).await;
+        assert!(quiet(&mut rx).await, "a message was delivered twice");
+        after.write(3, b"news".to_vec());
+        assert_eq!(next(&mut rx).await.text, "news");
     }
 
     /// A receiver that falls behind is told how far, and the reader goes on
