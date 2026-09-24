@@ -1,20 +1,22 @@
 //! Publications: a broadcast placed at a path, before an audience.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, Weak},
 };
 
 use iroh::EndpointId;
-use moq_net::{Path, PathOwned};
+use moq_net::{Path, PathOwned, broadcast};
+use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
+    Error,
     node::Shared,
-    state::{self, PeerSet},
+    state::{self, PeerSet, PubEntry},
 };
 
 /// Who may see a publication.
@@ -255,4 +257,75 @@ pub(crate) fn peers_task(
             }
         }
     })))
+}
+
+/// Publishes `broadcast` at `path`, for [`Moq::publish`](crate::Moq::publish).
+pub(crate) fn publish(
+    shared: &Arc<Shared>,
+    path: PathOwned,
+    broadcast: broadcast::Consumer,
+    audience: Audience,
+) -> Result<Publication, Error> {
+    check_path(&path)?;
+    let weak = Arc::downgrade(shared);
+    let mut state = shared.state.lock().expect("poisoned");
+    if state.closed {
+        return Err(e!(Error::ShutDown));
+    }
+    if let Some(existing) = state.publication_at(&path) {
+        // A broadcast that ended is withdrawn by its closed task, which may
+        // not have run yet; publishing anew at its path is not a clash.
+        if !state.publications[&existing].broadcast.is_closed() {
+            return Err(e!(Error::Duplicate { path }));
+        }
+        state.remove_publication(existing);
+    }
+    let id = state.next_id();
+    let closed_task = {
+        let broadcast = broadcast.clone();
+        let weak = weak.clone();
+        let path = path.clone();
+        tokio::spawn(async move {
+            broadcast.closed().await;
+            let Some(shared) = weak.upgrade() else { return };
+            let removed = shared
+                .state
+                .lock()
+                .expect("poisoned")
+                .remove_publication(id);
+            if removed.is_some() {
+                info!(%path, "broadcast ended, unpublished");
+            }
+        })
+    };
+    let kind = state::audience_kind(&audience);
+    let local = matches!(audience, Audience::Everyone)
+        .then(|| state::serve(&shared.table, &path, &broadcast))
+        .flatten();
+    info!(%path, ?audience, "published");
+    let withdrawn = CancellationToken::new();
+    state.add_publication(
+        id,
+        PubEntry {
+            path: path.clone(),
+            broadcast,
+            audience: kind,
+            manual: HashMap::new(),
+            local,
+            peers_task: peers_task(&audience, id, &weak),
+            _closed_task: Some(AbortOnDropHandle::new(closed_task)),
+            withdrawn: withdrawn.clone(),
+        },
+    );
+    Ok(Publication::new(id, path, weak, withdrawn))
+}
+
+/// Refuses a path that is empty or holds a segment only a pattern can spell.
+pub(crate) fn check_path(path: &Path<'_>) -> Result<(), Error> {
+    if path.is_empty() || path.parts().any(|part| part == "*" || part == "**") {
+        return Err(e!(Error::InvalidPath {
+            path: path.as_str().to_owned()
+        }));
+    }
+    Ok(())
 }

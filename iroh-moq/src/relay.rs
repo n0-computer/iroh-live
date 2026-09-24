@@ -262,171 +262,159 @@ impl Tasks {
     }
 }
 
-impl Moq {
-    /// Stays attached to the moq relay at `config.url`, redialing with backoff.
-    ///
-    /// `iroh://` URLs go through this node's endpoint. Routes the relay
-    /// announces enter the route table at the link's cost, and what
-    /// `config.offer` names is published into the relay.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`Error::Relay`] if the client cannot be set up (an
-    /// unsupported URL scheme, say), and [`Error::ShutDown`] once the node has
-    /// shut down.
-    pub fn attach_relay(&self, config: RelayConfig) -> Result<RelayLink, Error> {
-        let shared = &self.shared;
-        if shared.shutdown.is_cancelled() {
+/// Attaches `moq` to a relay, for [`Moq::attach_relay`].
+pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error> {
+    let shared = &moq.shared;
+    if shared.shutdown.is_cancelled() {
+        return Err(e!(Error::ShutDown));
+    }
+    match config.url.scheme() {
+        "iroh" | "https" | "http" | "moqt" | "moql" => {}
+        scheme => {
+            return Err(e!(Error::Relay {
+                source: AnyError::from_string(format!(
+                    "unsupported relay URL scheme {scheme:?}; use iroh:// or https://"
+                )),
+            }));
+        }
+    }
+    let origins = Origins::new(shared);
+    let mut client = moq_tokio::client::Config::default()
+        .init()
+        .map_err(|err| {
+            e!(Error::Relay {
+                source: AnyError::from_std(err)
+            })
+        })?
+        .with_iroh(shared.endpoint.clone())
+        .with_publisher(origins.publish.consume())
+        .with_cost(config.cost);
+    if config.consume {
+        client = client.with_subscriber(origins.ingest.clone());
+    }
+
+    let link_state = LinkState::default();
+    let link = {
+        let mut state = shared.state.lock().expect("poisoned");
+        if state.closed {
             return Err(e!(Error::ShutDown));
         }
-        match config.url.scheme() {
-            "iroh" | "https" | "http" | "moqt" | "moql" => {}
-            scheme => {
-                return Err(e!(Error::Relay {
-                    source: AnyError::from_string(format!(
-                        "unsupported relay URL scheme {scheme:?}; use iroh:// or https://"
-                    )),
-                }));
-            }
-        }
-        let origins = Origins::new(shared);
-        let mut client = moq_tokio::client::Config::default()
-            .init()
-            .map_err(|err| {
-                e!(Error::Relay {
-                    source: AnyError::from_std(err)
-                })
-            })?
-            .with_iroh(shared.endpoint.clone())
-            .with_publisher(origins.publish.consume())
-            .with_cost(config.cost);
-        if config.consume {
-            client = client.with_subscriber(origins.ingest.clone());
-        }
-
-        let link_state = LinkState::default();
-        let link = {
-            let mut state = shared.state.lock().expect("poisoned");
-            if state.closed {
-                return Err(e!(Error::ShutDown));
-            }
-            let link = state.next_id();
-            state.add_link(
-                link,
-                LinkEntry {
-                    kind: LinkKind::Relay,
-                    remote: config
-                        .url
-                        .host_str()
-                        .filter(|_| config.url.scheme() == "iroh")
-                        .and_then(|host| host.parse().ok()),
-                    grant: Grant::everything(),
-                    publish: origins.publish.clone(),
-                    public: matches!(config.offer, RelayOffer::Public),
-                    consume: config.consume,
-                    offers: HashMap::new(),
-                    announced: Default::default(),
-                    session: None,
-                    link_state: link_state.clone(),
-                },
-            );
-            link
-        };
-        let guards: Vec<OfferGuard> = match &config.offer {
-            RelayOffer::Only(publications) => publications
-                .iter()
-                .map(|publication| OfferGuard::new(shared, publication.id(), link))
-                .collect(),
-            _ => Vec::new(),
-        };
-
-        let url = config.url.clone();
-        info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
-        let connection = client.connect(config.dial_url());
-        let status = Watchable::new(RelayStatus::Connecting);
-        let task = {
-            let shared = shared.clone();
-            let monitor = link::monitor_relay(
-                connection.monitor(),
-                connection.recv_bandwidth(),
-                link_state.clone(),
-                shared.shutdown.child_token(),
-            );
-            let mut watch = connection.clone();
-            // Aborts the connection for every clone when the task ends, so a
-            // `RelayLink` handle held past shutdown does not keep redialing.
-            let _stop = StopOnDrop(connection.clone());
-            let status = status.clone();
-            let crate::session::Origins {
-                publish_driver,
-                ingest,
-                ingest_driver,
-                ..
-            } = origins;
-            tokio::spawn(
-                async move {
-                    let _stop = _stop;
-                    let _guards = guards;
-                    let _publish = AbortOnDropHandle::new(tokio::spawn(async move {
-                        moq_net::time::run(publish_driver).await;
-                    }));
-                    let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
-                        moq_net::time::run(ingest_driver).await;
-                    }));
-                    let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
-                    let _bridge = config.consume.then(|| {
-                        AbortOnDropHandle::new(tokio::spawn(
-                            route::bridge(shared.clone(), link, ingest, true).in_current_span(),
-                        ))
-                    });
-                    loop {
-                        match watch.status().await {
-                            Ok(moq_tokio::Status::Connected | moq_tokio::Status::Migrating) => {
-                                info!("relay connected");
-                                status.set(RelayStatus::Connected).ok();
-                            }
-                            Ok(moq_tokio::Status::Disconnected) => {
-                                warn!("relay session dropped, redialing");
-                                status.set(RelayStatus::Reconnecting).ok();
-                            }
-                            Ok(other) => debug!(?other, "relay status"),
-                            Err(err) => {
-                                warn!(%err, "relay link ended");
-                                break;
-                            }
-                        }
-                    }
-                    status.set(RelayStatus::Detached).ok();
-                    shared.state.lock().expect("poisoned").remove_link(link);
-                }
-                .instrument(info_span!("relay", %url, link)),
-            )
-        };
-        self.tasks().insert_relay(
+        let link = state.next_id();
+        state.add_link(
             link,
-            RelayTask {
-                task: AbortOnDropHandle::new(task),
-                status: status.clone(),
+            LinkEntry {
+                kind: LinkKind::Relay,
+                remote: config
+                    .url
+                    .host_str()
+                    .filter(|_| config.url.scheme() == "iroh")
+                    .and_then(|host| host.parse().ok()),
+                grant: Grant::everything(),
+                publish: origins.publish.clone(),
+                public: matches!(config.offer, RelayOffer::Public),
+                consume: config.consume,
+                offers: HashMap::new(),
+                announced: Default::default(),
+                session: None,
+                link_state: link_state.clone(),
             },
         );
-        // A shutdown that ran between the check above and the insert found
-        // no task to stop; stop it here instead.
-        if shared.shutdown.is_cancelled() {
-            self.tasks().detach_relays();
-            return Err(e!(Error::ShutDown));
-        }
-        Ok(RelayLink {
-            inner: Arc::new(RelayInner {
-                link,
-                url,
-                link_state,
-                status,
-                connection,
-                shared: Arc::downgrade(shared),
-                tasks: Arc::downgrade(self.tasks()),
-            }),
-        })
+        link
+    };
+    let guards: Vec<OfferGuard> = match &config.offer {
+        RelayOffer::Only(publications) => publications
+            .iter()
+            .map(|publication| OfferGuard::new(shared, publication.id(), link))
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let url = config.url.clone();
+    info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
+    let connection = client.connect(config.dial_url());
+    let status = Watchable::new(RelayStatus::Connecting);
+    let task = {
+        let shared = shared.clone();
+        let monitor = link::monitor_relay(
+            connection.monitor(),
+            connection.recv_bandwidth(),
+            link_state.clone(),
+            shared.shutdown.child_token(),
+        );
+        let mut watch = connection.clone();
+        // Aborts the connection for every clone when the task ends, so a
+        // `RelayLink` handle held past shutdown does not keep redialing.
+        let _stop = StopOnDrop(connection.clone());
+        let status = status.clone();
+        let crate::session::Origins {
+            publish_driver,
+            ingest,
+            ingest_driver,
+            ..
+        } = origins;
+        tokio::spawn(
+            async move {
+                let _stop = _stop;
+                let _guards = guards;
+                let _publish = AbortOnDropHandle::new(tokio::spawn(async move {
+                    moq_net::time::run(publish_driver).await;
+                }));
+                let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
+                    moq_net::time::run(ingest_driver).await;
+                }));
+                let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
+                let _bridge = config.consume.then(|| {
+                    AbortOnDropHandle::new(tokio::spawn(
+                        route::bridge(shared.clone(), link, ingest, true).in_current_span(),
+                    ))
+                });
+                loop {
+                    match watch.status().await {
+                        Ok(moq_tokio::Status::Connected | moq_tokio::Status::Migrating) => {
+                            info!("relay connected");
+                            status.set(RelayStatus::Connected).ok();
+                        }
+                        Ok(moq_tokio::Status::Disconnected) => {
+                            warn!("relay session dropped, redialing");
+                            status.set(RelayStatus::Reconnecting).ok();
+                        }
+                        Ok(other) => debug!(?other, "relay status"),
+                        Err(err) => {
+                            warn!(%err, "relay link ended");
+                            break;
+                        }
+                    }
+                }
+                status.set(RelayStatus::Detached).ok();
+                shared.state.lock().expect("poisoned").remove_link(link);
+            }
+            .instrument(info_span!("relay", %url, link)),
+        )
+    };
+    moq.tasks().insert_relay(
+        link,
+        RelayTask {
+            task: AbortOnDropHandle::new(task),
+            status: status.clone(),
+        },
+    );
+    // A shutdown that ran between the check above and the insert found
+    // no task to stop; stop it here instead.
+    if shared.shutdown.is_cancelled() {
+        moq.tasks().detach_relays();
+        return Err(e!(Error::ShutDown));
     }
+    Ok(RelayLink {
+        inner: Arc::new(RelayInner {
+            link,
+            url,
+            link_state,
+            status,
+            connection,
+            shared: Arc::downgrade(shared),
+            tasks: Arc::downgrade(moq.tasks()),
+        }),
+    })
 }
 
 /// Aborts a moq-tokio connection when dropped.

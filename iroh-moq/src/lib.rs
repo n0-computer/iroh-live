@@ -62,9 +62,9 @@
 //! lose nothing. [`Moq::shutdown`] is not cancellation safe, and is
 //! idempotent: call it again to finish.
 
+mod admission;
 mod endpoint;
 mod error;
-mod grant;
 mod link;
 mod node;
 mod publish;
@@ -81,15 +81,17 @@ pub mod transport;
 pub use moq_net as net;
 
 pub use self::{
+    admission::{
+        Admission, ConnectOptions, Grant, GrantFn, Incoming, Reject, Role, SessionRequest,
+    },
     endpoint::{EndpointOptions, Mdns, MediaPreset},
     error::Error,
-    grant::{Admission, ConnectOptions, Grant, GrantFn, Reject, Role, SessionRequest},
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},
     publish::{Audience, OfferGuard, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::{LinkId, LinkKind, RouteInfo, Subscription},
-    session::{Incoming, Session},
+    session::Session,
 };
 
 /// The ALPN this node prefers, the newest MoQ version it speaks.

@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     fmt,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use iroh::{
@@ -12,54 +11,22 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
-use moq_net::{AsPath, Consume, Path, PathOwned, broadcast, origin};
+use moq_net::{AsPath, Consume, broadcast, origin};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinSet,
-};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error, info, info_span, warn};
+use tracing::{Instrument, debug, info, info_span};
 
 use crate::{
-    Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, LinkKind, Publication,
-    RouteInfo, Session, SessionRequest, Subscription,
-    link::{self, LinkState},
-    publish::peers_task,
-    route,
-    session::{SessionInner, SessionParts, Transport, dial_session, driver_now, hop_for},
-    state::{self, LinkEntry, PubEntry, State},
-    transport::accept_transport,
+    Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, Publication, RelayConfig,
+    RelayLink, RouteInfo, Session, Subscription,
+    admission::{self, INCOMING_QUEUE},
+    publish, relay, route,
+    session::{Actor, ActorMessage, SessionParts, hop_for},
+    state::State,
 };
-
-/// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
-///
-/// A close is one packet and needs no answer, so this is a round trip's grace
-/// and not a negotiation.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-
-/// How many incoming sessions may wait for [`Moq::accept`] at once.
-///
-/// Past this the protocol handler holds further ones back, for at most
-/// [`ADMISSION_TIMEOUT`].
-const INCOMING_QUEUE: usize = 16;
-
-/// How long an incoming connection may take to open its MoQ session.
-///
-/// A peer that connects and never sends its setup would otherwise hold a task
-/// and its connection for as long as QUIC keeps the connection alive.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// How long an incoming session waits for the application under
-/// [`Admission::Manual`].
-///
-/// A session waits this long for room in the queue, and one that sat in the
-/// queue longer is rejected rather than handed out, so an accept loop that
-/// stalls, or never runs, cannot pile up connections whose peers believe they
-/// are connected.
-const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How [`Moq::subscribe`] reaches a path the route table has no route to yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,11 +156,11 @@ pub(crate) struct Shared {
     pub(crate) table: origin::Producer,
     pub(crate) state: Mutex<State>,
     pub(crate) sessions: Watchable<Vec<Session>>,
-    actor: mpsc::Sender<ActorMessage>,
-    incoming_tx: mpsc::Sender<Incoming>,
-    incoming_rx: tokio::sync::Mutex<mpsc::Receiver<Incoming>>,
+    pub(crate) actor: mpsc::Sender<ActorMessage>,
+    pub(crate) incoming_tx: mpsc::Sender<Incoming>,
+    pub(crate) incoming_rx: tokio::sync::Mutex<mpsc::Receiver<Incoming>>,
     pub(crate) shutdown: CancellationToken,
-    done: Watchable<bool>,
+    pub(crate) done: Watchable<bool>,
 }
 
 /// The node's tasks, held apart from [`Shared`] so the tasks can hold it.
@@ -282,60 +249,12 @@ impl Moq {
         broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
-        let path = path.as_path().to_owned();
-        let broadcast = broadcast.consume();
-        check_path(&path)?;
-        let weak = Arc::downgrade(&self.shared);
-        let mut state = self.shared.state.lock().expect("poisoned");
-        if state.closed {
-            return Err(e!(Error::ShutDown));
-        }
-        if let Some(existing) = state.publication_at(&path) {
-            // A broadcast that ended is withdrawn by its closed task, which may
-            // not have run yet; publishing anew at its path is not a clash.
-            if !state.publications[&existing].broadcast.is_closed() {
-                return Err(e!(Error::Duplicate { path }));
-            }
-            state.remove_publication(existing);
-        }
-        let id = state.next_id();
-        let closed_task = {
-            let broadcast = broadcast.clone();
-            let weak = weak.clone();
-            let path = path.clone();
-            tokio::spawn(async move {
-                broadcast.closed().await;
-                let Some(shared) = weak.upgrade() else { return };
-                let removed = shared
-                    .state
-                    .lock()
-                    .expect("poisoned")
-                    .remove_publication(id);
-                if removed.is_some() {
-                    info!(%path, "broadcast ended, unpublished");
-                }
-            })
-        };
-        let kind = state::audience_kind(&audience);
-        let local = matches!(audience, Audience::Everyone)
-            .then(|| state::serve(&self.shared.table, &path, &broadcast))
-            .flatten();
-        info!(%path, ?audience, "published");
-        let withdrawn = CancellationToken::new();
-        state.add_publication(
-            id,
-            PubEntry {
-                path: path.clone(),
-                broadcast,
-                audience: kind,
-                manual: HashMap::new(),
-                local,
-                peers_task: peers_task(&audience, id, &weak),
-                _closed_task: Some(AbortOnDropHandle::new(closed_task)),
-                withdrawn: withdrawn.clone(),
-            },
-        );
-        Ok(Publication::new(id, path, weak, withdrawn))
+        publish::publish(
+            &self.shared,
+            path.as_path().to_owned(),
+            broadcast.consume(),
+            audience,
+        )
     }
 
     /// Resolves `path` in the route table.
@@ -362,86 +281,7 @@ impl Moq {
     /// before it announces the path, and [`Error::ShutDown`] once the node has
     /// shut down.
     pub async fn subscribe(&self, path: impl AsPath, reach: Reach) -> Result<Subscription, Error> {
-        let path = path.as_path().to_owned();
-        check_path(&path)?;
-        if self.shared.shutdown.is_cancelled() {
-            return Err(e!(Error::ShutDown));
-        }
-        let table = self.shared.table.consume();
-        // A route the table already knows answers at once.
-        if let Ok(broadcast) = table.request_broadcast(&path).await {
-            debug!(%path, "resolved through an existing route");
-            return Ok(self.subscription(path, table, broadcast));
-        }
-
-        let (dial, relays) = match reach {
-            Reach::Direct(peer) => (Some(peer), false),
-            Reach::Relays => (None, true),
-            Reach::Both(peer) => (Some(peer), true),
-        };
-        let relays = relays && self.has_relays();
-        // This node's own publications are in the table already.
-        let Some(peer) = dial.filter(|peer| *peer != self.shared.id) else {
-            if !relays {
-                return Err(e!(Error::NoRoute { path }));
-            }
-            debug!(%path, "waiting for a relay to route the path");
-            let resolved = table.routed_broadcast(&path).await;
-            return self.resolved(path, table, resolved);
-        };
-
-        debug!(%path, peer = %peer.fmt_short(), relays, "dialing the publisher");
-        let routed = {
-            let (table, path) = (table.clone(), path.clone());
-            async move { table.routed_broadcast(&path).await }
-        };
-        tokio::pin!(routed);
-        let session = tokio::select! {
-            resolved = &mut routed => return self.resolved(path, table, resolved),
-            connected = self.connect(peer) => match connected {
-                Ok(session) => session,
-                Err(err) if relays => {
-                    info!(%path, %err, "publisher unreachable, waiting for a relay");
-                    let resolved = routed.await;
-                    return self.resolved(path, table, resolved);
-                }
-                Err(err) => return Err(err),
-            },
-        };
-
-        // The session ending is the end of the wait unless a relay can still
-        // bring the path.
-        tokio::select! {
-            resolved = &mut routed => return self.resolved(path, table, resolved),
-            _ = session.closed() => {}
-        }
-        if !relays {
-            return Err(e!(Error::NotAnnounced { path }));
-        }
-        let resolved = routed.await;
-        self.resolved(path, table, resolved)
-    }
-
-    fn resolved(
-        &self,
-        path: PathOwned,
-        table: origin::Consumer,
-        resolved: Result<broadcast::Consumer, moq_net::Error>,
-    ) -> Result<Subscription, Error> {
-        match resolved {
-            Ok(broadcast) => Ok(self.subscription(path, table, broadcast)),
-            Err(moq_net::Error::Closed) => Err(e!(Error::ShutDown)),
-            Err(source) => Err(e!(Error::Unresolved { path, source })),
-        }
-    }
-
-    fn subscription(
-        &self,
-        path: PathOwned,
-        table: origin::Consumer,
-        broadcast: broadcast::Consumer,
-    ) -> Subscription {
-        Subscription::new(path, table, broadcast, None, Arc::downgrade(&self.shared))
+        route::subscribe(self, path.as_path().to_owned(), reach).await
     }
 
     /// Returns every route to `path`, and which one serves, as they change.
@@ -518,26 +358,7 @@ impl Moq {
     /// rejected rather than returned, since its peer has likely given up.
     /// Cancellation safe.
     pub async fn accept(&self) -> Option<Incoming> {
-        let mut queue = self.shared.incoming_rx.lock().await;
-        loop {
-            let incoming = tokio::select! {
-                // A session is never handed out after the shutdown, even one
-                // that was queued before it.
-                biased;
-                _ = self.shared.shutdown.cancelled() => {
-                    // The actor may have found the queue held by this call and
-                    // left it; whatever is queued is refused on the way out.
-                    refuse_queued(&mut queue);
-                    return None;
-                }
-                incoming = queue.recv() => incoming?,
-            };
-            if incoming.queued_at.elapsed() <= ADMISSION_TIMEOUT {
-                return Some(incoming);
-            }
-            info!(remote = %incoming.remote.fmt_short(), "admission timed out in the queue");
-            incoming.close(moq_net::Error::Timeout);
-        }
+        admission::next(&self.shared).await
     }
 
     /// Returns how many incoming sessions wait for [`accept`](Self::accept).
@@ -547,6 +368,21 @@ impl Moq {
     pub fn waiting_for_admission(&self) -> usize {
         let tx = &self.shared.incoming_tx;
         tx.max_capacity() - tx.capacity()
+    }
+
+    /// Stays attached to the moq relay at `config.url`, redialing with backoff.
+    ///
+    /// `iroh://` URLs go through this node's endpoint. Routes the relay
+    /// announces enter the route table at the link's cost, and what
+    /// `config.offer` names is published into the relay.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::Relay`] if the client cannot be set up (an
+    /// unsupported URL scheme, say), and [`Error::ShutDown`] once the node has
+    /// shut down.
+    pub fn attach_relay(&self, config: RelayConfig) -> Result<RelayLink, Error> {
+        relay::attach(self, config)
     }
 
     /// Shuts the node down for every clone.
@@ -572,103 +408,15 @@ impl Moq {
         }
     }
 
-    /// Reports whether a relay link feeds the route table.
-    ///
-    /// Only links that consume count: a relay the node only publishes into
-    /// will never route a path here.
-    fn has_relays(&self) -> bool {
-        self.shared
-            .state
-            .lock()
-            .expect("poisoned")
-            .links
-            .values()
-            .any(|link| link.kind == LinkKind::Relay && link.consume)
-    }
-
     /// Returns the node's tasks, for a handle that holds them weakly.
     pub(crate) fn tasks(&self) -> &Arc<Tasks> {
         &self.tasks
-    }
-
-    /// Admits or queues one incoming connection.
-    async fn handle_connection(&self, connection: Connection) -> Result<(), Error> {
-        if self.shared.shutdown.is_cancelled() {
-            return Err(e!(Error::ShutDown));
-        }
-        let remote = connection.remote_id();
-        let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-            let (transport, h3) = accept_transport(connection.clone()).await?;
-            let handshake = moq_net::Server::new()
-                .accept_request(driver_now(), Transport::new(transport))
-                .await
-                .map_err(|source| e!(Error::Moq { source }))?;
-            Ok::<_, Error>((h3, handshake))
-        })
-        .await;
-        let (h3, handshake) = match opened {
-            Ok(opened) => opened?,
-            Err(_) => {
-                debug!(remote = %remote.fmt_short(), "no session setup in time");
-                return Err(e!(Error::Moq {
-                    source: moq_net::Error::Timeout
-                }));
-            }
-        };
-        let request = match h3 {
-            Some((target, headers)) => SessionRequest::new(&target, headers, handshake.role()),
-            None => SessionRequest::new(handshake.path(), Vec::new(), handshake.role()),
-        };
-        debug!(remote = %remote.fmt_short(), path = request.path(), "session requested");
-        let incoming = Incoming {
-            remote,
-            request,
-            connection,
-            handshake,
-            shared: Arc::downgrade(&self.shared),
-            queued_at: tokio::time::Instant::now(),
-        };
-        match self.shared.admission {
-            Admission::Open => {
-                incoming.admit(self.shared.grant_for(remote)).await?;
-            }
-            Admission::Manual => {
-                let room = tokio::select! {
-                    room = tokio::time::timeout(
-                        ADMISSION_TIMEOUT,
-                        self.shared.incoming_tx.reserve(),
-                    ) => room,
-                    _ = self.shared.shutdown.cancelled() => Ok(Err(mpsc::error::SendError(()))),
-                };
-                match room {
-                    Ok(Ok(permit)) => {
-                        // Time in the queue is what `accept` judges, not the
-                        // wait for room in it.
-                        let mut incoming = incoming;
-                        incoming.queued_at = tokio::time::Instant::now();
-                        permit.send(incoming);
-                    }
-                    Ok(Err(_)) => {
-                        incoming.close(moq_net::Error::Cancel);
-                        return Err(e!(Error::ShutDown));
-                    }
-                    Err(_) => {
-                        info!(remote = %remote.fmt_short(), "admission queue full, rejecting");
-                        incoming.close(moq_net::Error::Timeout);
-                        return Err(e!(Error::Moq {
-                            source: moq_net::Error::Timeout
-                        }));
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 
 impl ProtocolHandler for Moq {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.handle_connection(connection)
+        admission::accept(&self.shared, connection)
             .await
             .map_err(AnyError::from)?;
         Ok(())
@@ -700,404 +448,5 @@ impl Shared {
             .await
             .map_err(|_| e!(Error::ShutDown))?;
         reply_rx.await.map_err(|_| e!(Error::ShutDown))?
-    }
-}
-
-/// Closes the admission queue and refuses every session still in it.
-fn refuse_queued(queue: &mut mpsc::Receiver<Incoming>) {
-    queue.close();
-    while let Ok(incoming) = queue.try_recv() {
-        debug!(remote = %incoming.remote.fmt_short(), "refusing a queued session at shutdown");
-        incoming.close(moq_net::Error::Cancel);
-    }
-}
-
-/// Refuses a path that is empty or holds a segment only a pattern can spell.
-fn check_path(path: &Path<'_>) -> Result<(), Error> {
-    if path.is_empty() || path.parts().any(|part| part == "*" || part == "**") {
-        return Err(e!(Error::InvalidPath {
-            path: path.as_str().to_owned()
-        }));
-    }
-    Ok(())
-}
-
-/// Returns a copy of `err` for one of several callers waiting on one dial.
-fn share(err: &Error) -> Error {
-    match err {
-        Error::Connect { source, .. } => e!(Error::Connect {
-            source: source.clone()
-        }),
-        Error::UnsupportedAlpn { alpn, .. } => e!(Error::UnsupportedAlpn { alpn: alpn.clone() }),
-        Error::Moq { source, .. } => e!(Error::Moq {
-            source: source.clone()
-        }),
-        Error::Refused { source, .. } => e!(Error::Refused {
-            source: source.clone()
-        }),
-        Error::ShutDown { .. } => e!(Error::ShutDown),
-        other => e!(Error::Connect {
-            source: Arc::new(AnyError::from_display(other))
-        }),
-    }
-}
-
-enum ActorMessage {
-    Connect {
-        remote: EndpointAddr,
-        options: ConnectOptions,
-        reply: oneshot::Sender<Result<Session, Error>>,
-    },
-    Register {
-        parts: Box<SessionParts>,
-        reply: oneshot::Sender<Result<Session, Error>>,
-    },
-}
-
-/// Owns session lifecycle: dials, coalesced connects, and the session tasks.
-struct Actor {
-    shared: Arc<Shared>,
-    /// Every live session per peer, oldest first.
-    ///
-    /// Normally one; a simultaneous dial leaves two, and the first is the one
-    /// `connect` hands out. Keeping the second rather than dropping it is what
-    /// lets it be promoted when the first ends.
-    peers: HashMap<EndpointId, Vec<Session>>,
-    sessions: JoinSet<moq_net::Error>,
-    /// What each session task runs, so a task that panics is still cleaned up.
-    session_ids: HashMap<tokio::task::Id, (u64, EndpointId)>,
-    pending: HashMap<EndpointId, Vec<oneshot::Sender<Result<Session, Error>>>>,
-    dials: JoinSet<Result<SessionParts, Error>>,
-    dial_ids: HashMap<tokio::task::Id, EndpointId>,
-}
-
-impl Drop for Actor {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
-
-impl Actor {
-    fn new(shared: Arc<Shared>) -> Self {
-        Self {
-            shared,
-            peers: HashMap::new(),
-            sessions: JoinSet::new(),
-            session_ids: HashMap::new(),
-            pending: HashMap::new(),
-            dials: JoinSet::new(),
-            dial_ids: HashMap::new(),
-        }
-    }
-
-    async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
-        let shutdown = self.shared.shutdown.clone();
-        loop {
-            tokio::select! {
-                () = shutdown.cancelled() => {
-                    info!(sessions = self.sessions.len(), "shutting down");
-                    break;
-                }
-                message = inbox.recv() => match message {
-                    Some(message) => self.handle(message),
-                    None => break,
-                },
-                Some(ended) = self.sessions.join_next_with_id(), if !self.sessions.is_empty() => {
-                    let (id, result) = match ended {
-                        Ok((id, err)) => (id, Ok(err)),
-                        Err(err) => (err.id(), Err(err)),
-                    };
-                    self.session_ended(id, result);
-                }
-                Some(dialed) = self.dials.join_next_with_id(), if !self.dials.is_empty() => {
-                    match dialed {
-                        Ok((id, result)) => self.dialed(id, result),
-                        Err(err) => {
-                            let id = err.id();
-                            error!(%err, "dial task failed");
-                            let failure = e!(Error::Connect {
-                                source: Arc::new(AnyError::from_display(&err))
-                            });
-                            self.dialed(id, Err(failure));
-                        }
-                    }
-                }
-            }
-        }
-        // Sessions still queued for admission are refused first, rather than
-        // left to their peers' idle timeout. Not waited for: an `accept` call
-        // holds the queue for as long as it runs, possibly in a future that
-        // is not being polled, and it refuses the queue itself when it next
-        // sees the shutdown.
-        match self.shared.incoming_rx.try_lock() {
-            Ok(mut queue) => refuse_queued(&mut queue),
-            Err(_) => {
-                debug!("an accept call holds the admission queue and refuses it on its way out")
-            }
-        }
-        self.drain().await;
-        // The rest happens in `Drop`, which also runs if this task panics.
-    }
-
-    /// Tears the node's state down and reports the shutdown done.
-    ///
-    /// In `Drop` so that it also runs when the actor panics: otherwise
-    /// [`Moq::shutdown`] would wait forever for `done`.
-    fn finish(&mut self) {
-        // A lock poisoned by the panic that brought us here must not turn this
-        // into a second panic during unwinding.
-        if let Ok(mut state) = self.shared.state.lock() {
-            state.closed = true;
-            state.publications.clear();
-            state.links.clear();
-        }
-        self.shared.sessions.set(Vec::new()).ok();
-        // Anyone still waiting on a dial learns it will not come.
-        for (_, replies) in self.pending.drain() {
-            for reply in replies {
-                reply.send(Err(e!(Error::ShutDown))).ok();
-            }
-        }
-        self.shared.done.set(true).ok();
-    }
-
-    /// Waits for every session to flush its close, within [`SHUTDOWN_GRACE`].
-    ///
-    /// Dropping the tasks instead would abort them mid-flush and leave peers to
-    /// notice by timing out. Sessions that outlive the wait are aborted, because
-    /// a peer that stopped reading must not hold the shutdown open.
-    async fn drain(&mut self) {
-        if self.sessions.is_empty() {
-            return;
-        }
-        let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
-            while self.sessions.join_next().await.is_some() {}
-        })
-        .await;
-        if drained.is_err() {
-            warn!(
-                remaining = self.sessions.len(),
-                grace = ?SHUTDOWN_GRACE,
-                "sessions did not close in time, aborting them",
-            );
-        }
-    }
-
-    fn handle(&mut self, message: ActorMessage) {
-        match message {
-            ActorMessage::Connect {
-                remote,
-                options,
-                reply,
-            } => self.connect(remote, options, reply),
-            ActorMessage::Register { parts, reply } => {
-                let session = self.register(*parts);
-                reply.send(Ok(session)).ok();
-            }
-        }
-    }
-
-    fn connect(
-        &mut self,
-        remote: EndpointAddr,
-        options: ConnectOptions,
-        reply: oneshot::Sender<Result<Session, Error>>,
-    ) {
-        let id = remote.id;
-        if self.shared.shutdown.is_cancelled() {
-            reply.send(Err(e!(Error::ShutDown))).ok();
-            return;
-        }
-        if let Some(session) = self.live_session(&id) {
-            reply.send(Ok(session)).ok();
-            return;
-        }
-        let waiting = self.pending.entry(id).or_default();
-        waiting.push(reply);
-        if waiting.len() > 1 {
-            return;
-        }
-        info!(remote = %id.fmt_short(), "dialing");
-        let handle = self.dials.spawn(
-            dial_session(self.shared.clone(), remote, options)
-                .instrument(info_span!("dial", remote = %id.fmt_short())),
-        );
-        self.dial_ids.insert(handle.id(), id);
-    }
-
-    /// Returns the oldest session with `peer` that is neither closed nor
-    /// closing.
-    ///
-    /// A session stays listed until its task lands, a scheduling hop after the
-    /// connection went, so the front of the list can be one on its way out.
-    fn live_session(&self, peer: &EndpointId) -> Option<Session> {
-        self.peers.get(peer).and_then(|sessions| {
-            sessions
-                .iter()
-                .find(|session| !session.is_closing())
-                .cloned()
-        })
-    }
-
-    fn dialed(&mut self, id: tokio::task::Id, result: Result<SessionParts, Error>) {
-        let Some(remote) = self.dial_ids.remove(&id) else {
-            return;
-        };
-        match result {
-            Ok(parts) => {
-                info!(remote = %remote.fmt_short(), "connected");
-                self.register(parts);
-            }
-            Err(err) => {
-                info!(remote = %remote.fmt_short(), %err, "dial failed");
-                for reply in self.pending.remove(&remote).into_iter().flatten() {
-                    reply.send(Err(share(&err))).ok();
-                }
-            }
-        }
-    }
-
-    /// Starts running an established session and makes it reachable.
-    fn register(&mut self, parts: SessionParts) -> Session {
-        let SessionParts {
-            remote,
-            connection,
-            dialed,
-            grant,
-            request,
-            moq,
-            driver,
-            origins,
-        } = parts;
-        let link_state = LinkState::default();
-        let mut state = self.shared.state.lock().expect("poisoned");
-        let link = state.next_id();
-        let session = Session {
-            inner: Arc::new(SessionInner {
-                link,
-                remote,
-                dialed,
-                grant: grant.clone(),
-                request,
-                connection: connection.clone(),
-                moq: moq.clone(),
-                ingest: origins.ingest.clone(),
-                link_state: link_state.clone(),
-                shared: Arc::downgrade(&self.shared),
-                closing: Default::default(),
-            }),
-        };
-        state.add_link(
-            link,
-            LinkEntry {
-                kind: LinkKind::Direct,
-                remote: Some(remote),
-                grant,
-                publish: origins.publish.clone(),
-                public: true,
-                consume: true,
-                offers: HashMap::new(),
-                announced: Default::default(),
-                session: Some(session.clone()),
-                link_state: link_state.clone(),
-            },
-        );
-        drop(state);
-
-        // Two peers that dial each other at once each end up with two
-        // sessions. Both are kept and driven; the oldest is the one `connect`
-        // hands out. Closing the loser is tempting and wrong: the two sides
-        // see the collision at different instants, so one may already have
-        // handed the other's loser to a caller.
-        let sessions = self.peers.entry(remote).or_default();
-        if !sessions.is_empty() {
-            debug!(remote = %remote.fmt_short(), "simultaneous connect; serving the first session");
-        }
-        sessions.push(session.clone());
-        self.publish_sessions();
-        if let Some(serving) = self.live_session(&remote) {
-            for reply in self.pending.remove(&remote).into_iter().flatten() {
-                reply.send(Ok(serving.clone())).ok();
-            }
-        }
-
-        info!(remote = %remote.fmt_short(), link, dialed, "session started");
-        let shared = self.shared.clone();
-        let cancel = self.shared.shutdown.child_token();
-        let task_session = session.clone();
-        let handle = self.sessions.spawn(
-            async move {
-                let delivery = moq.recv_bandwidth();
-                let crate::session::Origins {
-                    publish_driver,
-                    ingest,
-                    ingest_driver,
-                    ..
-                } = origins;
-                let _publish = AbortOnDropHandle::new(tokio::spawn(async move {
-                    moq_net::time::run(publish_driver).await;
-                }));
-                let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
-                    moq_net::time::run(ingest_driver).await;
-                }));
-                let _bridge = AbortOnDropHandle::new(tokio::spawn(
-                    route::bridge(shared, link, ingest, false).in_current_span(),
-                ));
-                let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
-                    connection,
-                    delivery,
-                    link_state,
-                    cancel.child_token(),
-                )));
-                let run = moq_net::time::run(driver);
-                tokio::pin!(run);
-                let err = tokio::select! {
-                    _ = cancel.cancelled() => {
-                        moq.abort(moq_net::Error::Cancel);
-                        (&mut run).await
-                    }
-                    err = &mut run => err,
-                };
-                drop(task_session);
-                err
-            }
-            .instrument(info_span!("session", remote = %remote.fmt_short(), link)),
-        );
-        self.session_ids.insert(handle.id(), (link, remote));
-        session
-    }
-
-    fn session_ended(
-        &mut self,
-        id: tokio::task::Id,
-        result: Result<moq_net::Error, tokio::task::JoinError>,
-    ) {
-        let Some((link, remote)) = self.session_ids.remove(&id) else {
-            return;
-        };
-        match result {
-            Ok(moq_net::Error::Closed | moq_net::Error::Cancel) => {
-                info!(remote = %remote.fmt_short(), link, "session closed");
-            }
-            Ok(err) => info!(remote = %remote.fmt_short(), link, %err, "session ended"),
-            Err(err) => error!(remote = %remote.fmt_short(), link, %err, "session task failed"),
-        }
-        if let Some(sessions) = self.peers.get_mut(&remote) {
-            sessions.retain(|session| session.inner.link != link);
-            if sessions.is_empty() {
-                self.peers.remove(&remote);
-            }
-        }
-        self.shared
-            .state
-            .lock()
-            .expect("poisoned")
-            .remove_link(link);
-        self.publish_sessions();
-    }
-
-    fn publish_sessions(&self) {
-        let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
-        self.shared.sessions.set(sessions).ok();
     }
 }

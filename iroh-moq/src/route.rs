@@ -20,10 +20,11 @@ use moq_net::{
     Hop, Hops, Path, PathOwned, announce, broadcast,
     origin::{self, Route},
 };
+use n0_error::e;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
-use crate::{ServingLink, Session, node::Shared};
+use crate::{Error, Moq, Reach, ServingLink, Session, node::Shared, publish::check_path};
 
 /// A broadcast that lived shorter than this before it ended counts as ending
 /// at once, for [`Subscription::closed`]'s pause.
@@ -211,6 +212,95 @@ impl Subscription {
             *self.inner.current.lock().expect("poisoned") = next;
         }
     }
+}
+
+/// Resolves `path` in the route table, for [`Moq::subscribe`](crate::Moq::subscribe).
+pub(crate) async fn subscribe(
+    moq: &Moq,
+    path: PathOwned,
+    reach: Reach,
+) -> Result<Subscription, Error> {
+    check_path(&path)?;
+    if moq.shared.shutdown.is_cancelled() {
+        return Err(e!(Error::ShutDown));
+    }
+    let table = moq.shared.table.consume();
+    // A route the table already knows answers at once.
+    if let Ok(broadcast) = table.request_broadcast(&path).await {
+        debug!(%path, "resolved through an existing route");
+        return Ok(subscription(&moq.shared, path, table, broadcast));
+    }
+
+    let (dial, relays) = match reach {
+        Reach::Direct(peer) => (Some(peer), false),
+        Reach::Relays => (None, true),
+        Reach::Both(peer) => (Some(peer), true),
+    };
+    let relays = relays && moq.shared.state.lock().expect("poisoned").has_relays();
+    // This node's own publications are in the table already.
+    let Some(peer) = dial.filter(|peer| *peer != moq.shared.id) else {
+        if !relays {
+            return Err(e!(Error::NoRoute { path }));
+        }
+        debug!(%path, "waiting for a relay to route the path");
+        let resolved = table.routed_broadcast(&path).await;
+        return outcome(&moq.shared, path, table, resolved);
+    };
+
+    debug!(%path, peer = %peer.fmt_short(), relays, "dialing the publisher");
+    let routed = {
+        let (table, path) = (table.clone(), path.clone());
+        async move { table.routed_broadcast(&path).await }
+    };
+    tokio::pin!(routed);
+    let session = tokio::select! {
+        resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
+        connected = moq.connect(peer) => match connected {
+            Ok(session) => session,
+            Err(err) if relays => {
+                info!(%path, %err, "publisher unreachable, waiting for a relay");
+                let resolved = routed.await;
+                return outcome(&moq.shared, path, table, resolved);
+            }
+            Err(err) => return Err(err),
+        },
+    };
+
+    // The session ending is the end of the wait unless a relay can still
+    // bring the path.
+    tokio::select! {
+        resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
+        _ = session.closed() => {}
+    }
+    if !relays {
+        return Err(e!(Error::NotAnnounced { path }));
+    }
+    let resolved = routed.await;
+    outcome(&moq.shared, path, table, resolved)
+}
+
+/// Returns the subscription `resolved` makes, or why there is none.
+fn outcome(
+    shared: &Arc<Shared>,
+    path: PathOwned,
+    table: origin::Consumer,
+    resolved: Result<broadcast::Consumer, moq_net::Error>,
+) -> Result<Subscription, Error> {
+    match resolved {
+        Ok(broadcast) => Ok(subscription(shared, path, table, broadcast)),
+        Err(moq_net::Error::Closed) => Err(e!(Error::ShutDown)),
+        Err(source) => Err(e!(Error::Unresolved { path, source })),
+    }
+}
+
+/// Returns a subscription to `path` that follows the route table.
+fn subscription(
+    shared: &Arc<Shared>,
+    path: PathOwned,
+    table: origin::Consumer,
+    broadcast: broadcast::Consumer,
+) -> Subscription {
+    Subscription::new(path, table, broadcast, None, Arc::downgrade(shared))
 }
 
 /// Mirrors the routes `ingest` holds into the node's route table.

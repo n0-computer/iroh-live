@@ -1,21 +1,34 @@
 //! Sessions with direct peers: dialing, admitting, and what a session offers.
 
 use std::{
+    collections::HashMap,
     fmt,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
-use moq_net::{AsPath, origin, server::Handshake};
-use n0_error::e;
-use tracing::{info, warn};
+use moq_net::{AsPath, origin};
+use n0_error::{AnyError, e};
+use n0_future::task::AbortOnDropHandle;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinSet,
+};
+use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication, Reject,
-    SessionRequest, Subscription, link::LinkState, node::Shared, transport,
+    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication,
+    SessionRequest, Subscription,
+    admission::refuse_queued,
+    link::{self, LinkState},
+    node::Shared,
+    route,
+    state::LinkEntry,
+    transport,
 };
 
 /// Returns the moq hop id of the node with endpoint id `id`.
@@ -231,98 +244,6 @@ impl Session {
     }
 }
 
-/// An incoming session waiting for admission.
-///
-/// Yielded by [`Moq::accept`](crate::Moq::accept) under
-/// [`Admission::Manual`](crate::Admission::Manual). Dropping it without
-/// admitting rejects the session.
-pub struct Incoming {
-    pub(crate) remote: EndpointId,
-    pub(crate) request: SessionRequest,
-    pub(crate) connection: Connection,
-    pub(crate) handshake: Handshake<Transport>,
-    pub(crate) shared: Weak<Shared>,
-    /// When the session was queued for admission, to reject stale ones.
-    pub(crate) queued_at: tokio::time::Instant,
-}
-
-impl fmt::Debug for Incoming {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Incoming")
-            .field("remote", &self.remote.fmt_short().to_string())
-            .field("request", &self.request)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Incoming {
-    /// Returns the peer's endpoint id, which iroh has authenticated.
-    pub fn remote_id(&self) -> EndpointId {
-        self.remote
-    }
-
-    /// Returns what the peer asked for.
-    pub fn request(&self) -> &SessionRequest {
-        &self.request
-    }
-
-    /// Admits the session with `grant`.
-    ///
-    /// Cancellation safe: dropping the future before the handshake completes
-    /// rejects the session; dropped after that, the session is admitted all
-    /// the same and shows up in [`Moq::sessions`](crate::Moq::sessions).
-    ///
-    /// # Errors
-    ///
-    /// Fails if the MoQ handshake does not complete, or the node has shut down,
-    /// in which case the peer is refused rather than admitted and closed.
-    pub async fn admit(self, grant: Grant) -> Result<Session, Error> {
-        let Some(shared) = self
-            .shared
-            .upgrade()
-            .filter(|shared| !shared.shutdown.is_cancelled())
-        else {
-            self.close(moq_net::Error::Cancel);
-            return Err(e!(Error::ShutDown));
-        };
-        info!(remote = %self.remote.fmt_short(), ?grant, "admitting session");
-        let origins = Origins::new(&shared);
-        let mut handshake = self
-            .handshake
-            .with_publisher(origins.publish.consume())
-            .with_peer_hop(hop_for(&self.remote));
-        if let Some(subscriber) = origins.subscriber(&grant) {
-            handshake = handshake.with_subscriber(subscriber);
-        }
-        let (moq, driver) = handshake
-            .ok()
-            .await
-            .map_err(|source| e!(Error::Moq { source }))?;
-        let parts = SessionParts {
-            remote: self.remote,
-            connection: self.connection,
-            dialed: false,
-            grant,
-            request: self.request,
-            moq,
-            driver,
-            origins,
-        };
-        shared.register(parts).await
-    }
-
-    /// Rejects the session.
-    pub fn reject(self, reason: Reject) {
-        info!(remote = %self.remote.fmt_short(), ?reason, "rejecting session");
-        self.handshake.close(reason.into());
-    }
-
-    /// Refuses the session with a moq error code.
-    pub(crate) fn close(self, err: moq_net::Error) {
-        self.handshake.close(err);
-    }
-}
-
 /// A session's two origins: what its peer is offered, and what it announces.
 pub(crate) struct Origins {
     pub(crate) publish: origin::Producer,
@@ -420,6 +341,393 @@ pub(crate) async fn dial_session(
         driver,
         origins,
     })
+}
+
+/// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
+///
+/// A close is one packet and needs no answer, so this is a round trip's grace
+/// and not a negotiation.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+/// Returns a copy of `err` for one of several callers waiting on one dial.
+fn share(err: &Error) -> Error {
+    match err {
+        Error::Connect { source, .. } => e!(Error::Connect {
+            source: source.clone()
+        }),
+        Error::UnsupportedAlpn { alpn, .. } => e!(Error::UnsupportedAlpn { alpn: alpn.clone() }),
+        Error::Moq { source, .. } => e!(Error::Moq {
+            source: source.clone()
+        }),
+        Error::Refused { source, .. } => e!(Error::Refused {
+            source: source.clone()
+        }),
+        Error::ShutDown { .. } => e!(Error::ShutDown),
+        other => e!(Error::Connect {
+            source: Arc::new(AnyError::from_display(other))
+        }),
+    }
+}
+
+/// What the node asks of its actor.
+pub(crate) enum ActorMessage {
+    Connect {
+        remote: EndpointAddr,
+        options: ConnectOptions,
+        reply: oneshot::Sender<Result<Session, Error>>,
+    },
+    Register {
+        parts: Box<SessionParts>,
+        reply: oneshot::Sender<Result<Session, Error>>,
+    },
+}
+
+/// Owns session lifecycle: dials, coalesced connects, and the session tasks.
+pub(crate) struct Actor {
+    shared: Arc<Shared>,
+    /// Every live session per peer, oldest first.
+    ///
+    /// Normally one; a simultaneous dial leaves two, and the first is the one
+    /// `connect` hands out. Keeping the second rather than dropping it is what
+    /// lets it be promoted when the first ends.
+    peers: HashMap<EndpointId, Vec<Session>>,
+    sessions: JoinSet<moq_net::Error>,
+    /// What each session task runs, so a task that panics is still cleaned up.
+    session_ids: HashMap<tokio::task::Id, (u64, EndpointId)>,
+    pending: HashMap<EndpointId, Vec<oneshot::Sender<Result<Session, Error>>>>,
+    dials: JoinSet<Result<SessionParts, Error>>,
+    dial_ids: HashMap<tokio::task::Id, EndpointId>,
+}
+
+impl Drop for Actor {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+impl Actor {
+    pub(crate) fn new(shared: Arc<Shared>) -> Self {
+        Self {
+            shared,
+            peers: HashMap::new(),
+            sessions: JoinSet::new(),
+            session_ids: HashMap::new(),
+            pending: HashMap::new(),
+            dials: JoinSet::new(),
+            dial_ids: HashMap::new(),
+        }
+    }
+
+    pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
+        let shutdown = self.shared.shutdown.clone();
+        loop {
+            tokio::select! {
+                () = shutdown.cancelled() => {
+                    info!(sessions = self.sessions.len(), "shutting down");
+                    break;
+                }
+                message = inbox.recv() => match message {
+                    Some(message) => self.handle(message),
+                    None => break,
+                },
+                Some(ended) = self.sessions.join_next_with_id(), if !self.sessions.is_empty() => {
+                    let (id, result) = match ended {
+                        Ok((id, err)) => (id, Ok(err)),
+                        Err(err) => (err.id(), Err(err)),
+                    };
+                    self.session_ended(id, result);
+                }
+                Some(dialed) = self.dials.join_next_with_id(), if !self.dials.is_empty() => {
+                    match dialed {
+                        Ok((id, result)) => self.dialed(id, result),
+                        Err(err) => {
+                            let id = err.id();
+                            error!(%err, "dial task failed");
+                            let failure = e!(Error::Connect {
+                                source: Arc::new(AnyError::from_display(&err))
+                            });
+                            self.dialed(id, Err(failure));
+                        }
+                    }
+                }
+            }
+        }
+        // Sessions still queued for admission are refused first, rather than
+        // left to their peers' idle timeout. Not waited for: an `accept` call
+        // holds the queue for as long as it runs, possibly in a future that
+        // is not being polled, and it refuses the queue itself when it next
+        // sees the shutdown.
+        match self.shared.incoming_rx.try_lock() {
+            Ok(mut queue) => refuse_queued(&mut queue),
+            Err(_) => {
+                debug!("an accept call holds the admission queue and refuses it on its way out")
+            }
+        }
+        self.drain().await;
+        // The rest happens in `Drop`, which also runs if this task panics.
+    }
+
+    /// Tears the node's state down and reports the shutdown done.
+    ///
+    /// In `Drop` so that it also runs when the actor panics: otherwise
+    /// [`Moq::shutdown`] would wait forever for `done`.
+    fn finish(&mut self) {
+        // A lock poisoned by the panic that brought us here must not turn this
+        // into a second panic during unwinding.
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.closed = true;
+            state.publications.clear();
+            state.links.clear();
+        }
+        self.shared.sessions.set(Vec::new()).ok();
+        // Anyone still waiting on a dial learns it will not come.
+        for (_, replies) in self.pending.drain() {
+            for reply in replies {
+                reply.send(Err(e!(Error::ShutDown))).ok();
+            }
+        }
+        self.shared.done.set(true).ok();
+    }
+
+    /// Waits for every session to flush its close, within [`SHUTDOWN_GRACE`].
+    ///
+    /// Dropping the tasks instead would abort them mid-flush and leave peers to
+    /// notice by timing out. Sessions that outlive the wait are aborted, because
+    /// a peer that stopped reading must not hold the shutdown open.
+    async fn drain(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
+            while self.sessions.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            warn!(
+                remaining = self.sessions.len(),
+                grace = ?SHUTDOWN_GRACE,
+                "sessions did not close in time, aborting them",
+            );
+        }
+    }
+
+    fn handle(&mut self, message: ActorMessage) {
+        match message {
+            ActorMessage::Connect {
+                remote,
+                options,
+                reply,
+            } => self.connect(remote, options, reply),
+            ActorMessage::Register { parts, reply } => {
+                let session = self.register(*parts);
+                reply.send(Ok(session)).ok();
+            }
+        }
+    }
+
+    fn connect(
+        &mut self,
+        remote: EndpointAddr,
+        options: ConnectOptions,
+        reply: oneshot::Sender<Result<Session, Error>>,
+    ) {
+        let id = remote.id;
+        if self.shared.shutdown.is_cancelled() {
+            reply.send(Err(e!(Error::ShutDown))).ok();
+            return;
+        }
+        if let Some(session) = self.live_session(&id) {
+            reply.send(Ok(session)).ok();
+            return;
+        }
+        let waiting = self.pending.entry(id).or_default();
+        waiting.push(reply);
+        if waiting.len() > 1 {
+            return;
+        }
+        info!(remote = %id.fmt_short(), "dialing");
+        let handle = self.dials.spawn(
+            dial_session(self.shared.clone(), remote, options)
+                .instrument(info_span!("dial", remote = %id.fmt_short())),
+        );
+        self.dial_ids.insert(handle.id(), id);
+    }
+
+    /// Returns the oldest session with `peer` that is neither closed nor
+    /// closing.
+    ///
+    /// A session stays listed until its task lands, a scheduling hop after the
+    /// connection went, so the front of the list can be one on its way out.
+    fn live_session(&self, peer: &EndpointId) -> Option<Session> {
+        self.peers.get(peer).and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|session| !session.is_closing())
+                .cloned()
+        })
+    }
+
+    fn dialed(&mut self, id: tokio::task::Id, result: Result<SessionParts, Error>) {
+        let Some(remote) = self.dial_ids.remove(&id) else {
+            return;
+        };
+        match result {
+            Ok(parts) => {
+                info!(remote = %remote.fmt_short(), "connected");
+                self.register(parts);
+            }
+            Err(err) => {
+                info!(remote = %remote.fmt_short(), %err, "dial failed");
+                for reply in self.pending.remove(&remote).into_iter().flatten() {
+                    reply.send(Err(share(&err))).ok();
+                }
+            }
+        }
+    }
+
+    /// Starts running an established session and makes it reachable.
+    fn register(&mut self, parts: SessionParts) -> Session {
+        let SessionParts {
+            remote,
+            connection,
+            dialed,
+            grant,
+            request,
+            moq,
+            driver,
+            origins,
+        } = parts;
+        let link_state = LinkState::default();
+        let mut state = self.shared.state.lock().expect("poisoned");
+        let link = state.next_id();
+        let session = Session {
+            inner: Arc::new(SessionInner {
+                link,
+                remote,
+                dialed,
+                grant: grant.clone(),
+                request,
+                connection: connection.clone(),
+                moq: moq.clone(),
+                ingest: origins.ingest.clone(),
+                link_state: link_state.clone(),
+                shared: Arc::downgrade(&self.shared),
+                closing: Default::default(),
+            }),
+        };
+        state.add_link(
+            link,
+            LinkEntry {
+                kind: LinkKind::Direct,
+                remote: Some(remote),
+                grant,
+                publish: origins.publish.clone(),
+                public: true,
+                consume: true,
+                offers: HashMap::new(),
+                announced: Default::default(),
+                session: Some(session.clone()),
+                link_state: link_state.clone(),
+            },
+        );
+        drop(state);
+
+        // Two peers that dial each other at once each end up with two
+        // sessions. Both are kept and driven; the oldest is the one `connect`
+        // hands out. Closing the loser is tempting and wrong: the two sides
+        // see the collision at different instants, so one may already have
+        // handed the other's loser to a caller.
+        let sessions = self.peers.entry(remote).or_default();
+        if !sessions.is_empty() {
+            debug!(remote = %remote.fmt_short(), "simultaneous connect; serving the first session");
+        }
+        sessions.push(session.clone());
+        self.publish_sessions();
+        if let Some(serving) = self.live_session(&remote) {
+            for reply in self.pending.remove(&remote).into_iter().flatten() {
+                reply.send(Ok(serving.clone())).ok();
+            }
+        }
+
+        info!(remote = %remote.fmt_short(), link, dialed, "session started");
+        let shared = self.shared.clone();
+        let cancel = self.shared.shutdown.child_token();
+        let task_session = session.clone();
+        let handle = self.sessions.spawn(
+            async move {
+                let delivery = moq.recv_bandwidth();
+                let crate::session::Origins {
+                    publish_driver,
+                    ingest,
+                    ingest_driver,
+                    ..
+                } = origins;
+                let _publish = AbortOnDropHandle::new(tokio::spawn(async move {
+                    moq_net::time::run(publish_driver).await;
+                }));
+                let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
+                    moq_net::time::run(ingest_driver).await;
+                }));
+                let _bridge = AbortOnDropHandle::new(tokio::spawn(
+                    route::bridge(shared, link, ingest, false).in_current_span(),
+                ));
+                let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
+                    connection,
+                    delivery,
+                    link_state,
+                    cancel.child_token(),
+                )));
+                let run = moq_net::time::run(driver);
+                tokio::pin!(run);
+                let err = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        moq.abort(moq_net::Error::Cancel);
+                        (&mut run).await
+                    }
+                    err = &mut run => err,
+                };
+                drop(task_session);
+                err
+            }
+            .instrument(info_span!("session", remote = %remote.fmt_short(), link)),
+        );
+        self.session_ids.insert(handle.id(), (link, remote));
+        session
+    }
+
+    fn session_ended(
+        &mut self,
+        id: tokio::task::Id,
+        result: Result<moq_net::Error, tokio::task::JoinError>,
+    ) {
+        let Some((link, remote)) = self.session_ids.remove(&id) else {
+            return;
+        };
+        match result {
+            Ok(moq_net::Error::Closed | moq_net::Error::Cancel) => {
+                info!(remote = %remote.fmt_short(), link, "session closed");
+            }
+            Ok(err) => info!(remote = %remote.fmt_short(), link, %err, "session ended"),
+            Err(err) => error!(remote = %remote.fmt_short(), link, %err, "session task failed"),
+        }
+        if let Some(sessions) = self.peers.get_mut(&remote) {
+            sessions.retain(|session| session.inner.link != link);
+            if sessions.is_empty() {
+                self.peers.remove(&remote);
+            }
+        }
+        self.shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .remove_link(link);
+        self.publish_sessions();
+    }
+
+    fn publish_sessions(&self) {
+        let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
+        self.shared.sessions.set(sessions).ok();
+    }
 }
 
 #[cfg(test)]

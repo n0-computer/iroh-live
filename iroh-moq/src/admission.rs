@@ -1,14 +1,49 @@
 //! Admission: who gets a session, and what it may do once it has one.
 
-use std::sync::Arc;
+use std::{
+    fmt,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
-use iroh::EndpointId;
-use moq_net::{Pattern, Patterns};
+use iroh::{EndpointId, endpoint::Connection};
+use moq_net::{Pattern, Patterns, server::Handshake};
+use n0_error::e;
+use tokio::sync::mpsc;
+use tracing::{debug, info};
+
+use crate::{
+    Error, Session,
+    node::Shared,
+    session::{Origins, SessionParts, Transport, driver_now, hop_for},
+    transport::accept_transport,
+};
 
 /// Returns the grant of a session with a peer, from its endpoint id.
 ///
 /// See [`MoqConfig::grant`](crate::MoqConfig::grant).
 pub type GrantFn = Arc<dyn Fn(EndpointId) -> Grant + Send + Sync>;
+
+/// How many incoming sessions may wait for [`Moq::accept`] at once.
+///
+/// Past this the protocol handler holds further ones back, for at most
+/// [`ADMISSION_TIMEOUT`].
+pub(crate) const INCOMING_QUEUE: usize = 16;
+
+/// How long an incoming connection may take to open its MoQ session.
+///
+/// A peer that connects and never sends its setup would otherwise hold a task
+/// and its connection for as long as QUIC keeps the connection alive.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long an incoming session waits for the application under
+/// [`Admission::Manual`].
+///
+/// A session waits this long for room in the queue, and one that sat in the
+/// queue longer is rejected rather than handed out, so an accept loop that
+/// stalls, or never runs, cannot pile up connections whose peers believe they
+/// are connected.
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a node treats incoming sessions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -239,6 +274,206 @@ impl ConnectOptions {
             .append_pair("jwt", token)
             .finish();
         Some(format!("/?{query}"))
+    }
+}
+
+/// An incoming session waiting for admission.
+///
+/// Yielded by [`Moq::accept`](crate::Moq::accept) under
+/// [`Admission::Manual`](crate::Admission::Manual). Dropping it without
+/// admitting rejects the session.
+pub struct Incoming {
+    pub(crate) remote: EndpointId,
+    pub(crate) request: SessionRequest,
+    pub(crate) connection: Connection,
+    pub(crate) handshake: Handshake<Transport>,
+    pub(crate) shared: Weak<Shared>,
+    /// When the session was queued for admission, to reject stale ones.
+    pub(crate) queued_at: tokio::time::Instant,
+}
+
+impl fmt::Debug for Incoming {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Incoming")
+            .field("remote", &self.remote.fmt_short().to_string())
+            .field("request", &self.request)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Incoming {
+    /// Returns the peer's endpoint id, which iroh has authenticated.
+    pub fn remote_id(&self) -> EndpointId {
+        self.remote
+    }
+
+    /// Returns what the peer asked for.
+    pub fn request(&self) -> &SessionRequest {
+        &self.request
+    }
+
+    /// Admits the session with `grant`.
+    ///
+    /// Cancellation safe: dropping the future before the handshake completes
+    /// rejects the session; dropped after that, the session is admitted all
+    /// the same and shows up in [`Moq::sessions`](crate::Moq::sessions).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the MoQ handshake does not complete, or the node has shut down,
+    /// in which case the peer is refused rather than admitted and closed.
+    pub async fn admit(self, grant: Grant) -> Result<Session, Error> {
+        let Some(shared) = self
+            .shared
+            .upgrade()
+            .filter(|shared| !shared.shutdown.is_cancelled())
+        else {
+            self.close(moq_net::Error::Cancel);
+            return Err(e!(Error::ShutDown));
+        };
+        info!(remote = %self.remote.fmt_short(), ?grant, "admitting session");
+        let origins = Origins::new(&shared);
+        let mut handshake = self
+            .handshake
+            .with_publisher(origins.publish.consume())
+            .with_peer_hop(hop_for(&self.remote));
+        if let Some(subscriber) = origins.subscriber(&grant) {
+            handshake = handshake.with_subscriber(subscriber);
+        }
+        let (moq, driver) = handshake
+            .ok()
+            .await
+            .map_err(|source| e!(Error::Moq { source }))?;
+        let parts = SessionParts {
+            remote: self.remote,
+            connection: self.connection,
+            dialed: false,
+            grant,
+            request: self.request,
+            moq,
+            driver,
+            origins,
+        };
+        shared.register(parts).await
+    }
+
+    /// Rejects the session.
+    pub fn reject(self, reason: Reject) {
+        info!(remote = %self.remote.fmt_short(), ?reason, "rejecting session");
+        self.handshake.close(reason.into());
+    }
+
+    /// Refuses the session with a moq error code.
+    pub(crate) fn close(self, err: moq_net::Error) {
+        self.handshake.close(err);
+    }
+}
+
+/// Admits or queues one incoming connection, for the protocol handler.
+pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Result<(), Error> {
+    if shared.shutdown.is_cancelled() {
+        return Err(e!(Error::ShutDown));
+    }
+    let remote = connection.remote_id();
+    let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let (transport, h3) = accept_transport(connection.clone()).await?;
+        let handshake = moq_net::Server::new()
+            .accept_request(driver_now(), Transport::new(transport))
+            .await
+            .map_err(|source| e!(Error::Moq { source }))?;
+        Ok::<_, Error>((h3, handshake))
+    })
+    .await;
+    let (h3, handshake) = match opened {
+        Ok(opened) => opened?,
+        Err(_) => {
+            debug!(remote = %remote.fmt_short(), "no session setup in time");
+            return Err(e!(Error::Moq {
+                source: moq_net::Error::Timeout
+            }));
+        }
+    };
+    let request = match h3 {
+        Some((target, headers)) => SessionRequest::new(&target, headers, handshake.role()),
+        None => SessionRequest::new(handshake.path(), Vec::new(), handshake.role()),
+    };
+    debug!(remote = %remote.fmt_short(), path = request.path(), "session requested");
+    let incoming = Incoming {
+        remote,
+        request,
+        connection,
+        handshake,
+        shared: Arc::downgrade(shared),
+        queued_at: tokio::time::Instant::now(),
+    };
+    match shared.admission {
+        Admission::Open => {
+            incoming.admit(shared.grant_for(remote)).await?;
+        }
+        Admission::Manual => {
+            let room = tokio::select! {
+                room = tokio::time::timeout(
+                    ADMISSION_TIMEOUT,
+                    shared.incoming_tx.reserve(),
+                ) => room,
+                _ = shared.shutdown.cancelled() => Ok(Err(mpsc::error::SendError(()))),
+            };
+            match room {
+                Ok(Ok(permit)) => {
+                    // Time in the queue is what `accept` judges, not the
+                    // wait for room in it.
+                    let mut incoming = incoming;
+                    incoming.queued_at = tokio::time::Instant::now();
+                    permit.send(incoming);
+                }
+                Ok(Err(_)) => {
+                    incoming.close(moq_net::Error::Cancel);
+                    return Err(e!(Error::ShutDown));
+                }
+                Err(_) => {
+                    info!(remote = %remote.fmt_short(), "admission queue full, rejecting");
+                    incoming.close(moq_net::Error::Timeout);
+                    return Err(e!(Error::Moq {
+                        source: moq_net::Error::Timeout
+                    }));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Waits for the next session waiting to be admitted, for
+/// [`Moq::accept`](crate::Moq::accept).
+pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
+    let mut queue = shared.incoming_rx.lock().await;
+    loop {
+        let incoming = tokio::select! {
+            // A session is never handed out after the shutdown, even one
+            // that was queued before it.
+            biased;
+            _ = shared.shutdown.cancelled() => {
+                // The actor may have found the queue held by this call and
+                // left it; whatever is queued is refused on the way out.
+                refuse_queued(&mut queue);
+                return None;
+            }
+            incoming = queue.recv() => incoming?,
+        };
+        if incoming.queued_at.elapsed() <= ADMISSION_TIMEOUT {
+            return Some(incoming);
+        }
+        info!(remote = %incoming.remote.fmt_short(), "admission timed out in the queue");
+        incoming.close(moq_net::Error::Timeout);
+    }
+}
+
+/// Closes the admission queue and refuses every session still in it.
+pub(crate) fn refuse_queued(queue: &mut mpsc::Receiver<Incoming>) {
+    queue.close();
+    while let Ok(incoming) = queue.try_recv() {
+        debug!(remote = %incoming.remote.fmt_short(), "refusing a queued session at shutdown");
+        incoming.close(moq_net::Error::Cancel);
     }
 }
 

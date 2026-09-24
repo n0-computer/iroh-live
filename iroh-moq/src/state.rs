@@ -277,6 +277,16 @@ impl State {
         routes
     }
 
+    /// Reports whether a relay link feeds the route table.
+    ///
+    /// Only links that consume count: a relay the node only publishes into
+    /// will never route a path here.
+    pub(crate) fn has_relays(&self) -> bool {
+        self.links
+            .values()
+            .any(|link| link.kind == LinkKind::Relay && link.consume)
+    }
+
     /// Recomputes the watched route lists and forgets the unwatched ones.
     fn notify(&mut self) {
         self.watchers
