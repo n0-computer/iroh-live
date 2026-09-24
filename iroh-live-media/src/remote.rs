@@ -33,20 +33,13 @@ const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 ///
 /// Compared by generation, which is what a watcher needs: a new consumer is a
 /// new generation even when it reaches the same broadcast.
-#[derive(derive_more::Debug, Clone, Default)]
+#[derive(derive_more::Debug, Clone, Default, derive_more::PartialEq, derive_more::Eq)]
 pub(crate) struct Epoch {
     pub(crate) generation: u64,
     #[debug(skip)]
+    #[eq(skip)]
     pub(crate) consumer: Option<moq_net::broadcast::Consumer>,
 }
-
-impl PartialEq for Epoch {
-    fn eq(&self, other: &Self) -> bool {
-        self.generation == other.generation
-    }
-}
-
-impl Eq for Epoch {}
 
 /// Where a remote broadcast comes from.
 #[derive(Clone)]

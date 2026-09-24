@@ -11,19 +11,10 @@ use crate::{audio, error::Closed, frames::FrameSlot, video};
 ///
 /// Counted rather than flagged: every encoder that runs holds a
 /// [`DemandGuard`], and the source is wanted while any guard lives.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Demand {
     count: Arc<Mutex<usize>>,
     wanted: Watchable<bool>,
-}
-
-impl Default for Demand {
-    fn default() -> Self {
-        Self {
-            count: Default::default(),
-            wanted: Watchable::new(false),
-        }
-    }
 }
 
 impl Demand {

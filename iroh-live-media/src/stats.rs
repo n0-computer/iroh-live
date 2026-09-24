@@ -164,20 +164,8 @@ impl Timeline {
 }
 
 /// A value one task writes and anyone snapshots.
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Cell<T>(Arc<Mutex<T>>);
-
-impl<T> Clone for Cell<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: Default> Default for Cell<T> {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(T::default())))
-    }
-}
 
 impl<T: Clone> Cell<T> {
     /// Changes the value in place.

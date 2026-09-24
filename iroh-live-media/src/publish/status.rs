@@ -137,19 +137,10 @@ impl Guarded {
 /// through a [`Reporter`] carrying the generation of the bundle it belongs to,
 /// and is dropped unless that generation is still the slot's, checked under the
 /// same lock the write takes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct StatusCell {
     guarded: Arc<Mutex<Guarded>>,
     watch: Watchable<PublishStatus>,
-}
-
-impl Default for StatusCell {
-    fn default() -> Self {
-        Self {
-            guarded: Default::default(),
-            watch: Watchable::new(PublishStatus::default()),
-        }
-    }
 }
 
 impl StatusCell {
