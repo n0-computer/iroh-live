@@ -143,6 +143,10 @@ struct SessionHandle {
     /// Aborted when this handle drops, which is what stops an unanswered wait
     /// outliving the screen that started it.
     waiting: Option<AbortOnDrop>,
+    /// Set by `disconnect` under the lock, so an answer that lands while the
+    /// handle is being torn down closes its call rather than installing it on
+    /// a handle nobody will close again.
+    closing: bool,
     cam_frames_pushed: u64,
     dec_frames_rendered: u64,
     created_at: Instant,
@@ -179,6 +183,7 @@ impl SessionHandle {
             renderer: Arc::new(Mutex::new(None)),
             frame_dims: None,
             waiting: None,
+            closing: false,
             cam_frames_pushed: 0,
             dec_frames_rendered: 0,
             created_at: Instant::now(),
@@ -514,6 +519,14 @@ async fn accept_one(
             return Ok(());
         };
         let mut held = session.lock().expect("poisoned");
+        if held.closing {
+            // Disconnected while this was settling: the fields were already
+            // taken for shutdown, so nothing would close this call later.
+            drop(held);
+            drop(player);
+            call.close();
+            return Ok(());
+        }
         // Replaces the local preview, so the screen switches from this node's
         // own camera to the peer's picture the moment there is one.
         held.frames = Some(player.video());
@@ -1197,7 +1210,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     // for as long as the router and endpoint take to close.
     let (waiting, player, call, subscription, broadcast, live) = match session.lock() {
         Ok(mut guard) => (
-            guard.waiting.take(),
+            {
+                guard.closing = true;
+                guard.waiting.take()
+            },
             guard.player.take(),
             guard.call.take(),
             guard.subscription.take(),
