@@ -40,7 +40,7 @@
 pub mod overlay;
 
 #[cfg(feature = "wgpu-render")]
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 #[cfg(feature = "wgpu-render")]
 pub use egui_wgpu;
@@ -81,21 +81,14 @@ pub use iroh_live_media::video::render::wgpu;
 /// [`VideoView`] are the usual entry points: reach for this directly
 /// only when neither fits (drawing into a texture id you manage yourself).
 #[cfg(feature = "wgpu-render")]
+#[derive(derive_more::Debug)]
 pub struct EguiVideoRenderer {
+    #[debug(skip)]
     renderer: iroh_live_media::video::render::Renderer,
+    #[debug(skip)]
     render_state: egui_wgpu::RenderState,
     texture_id: Option<epaint::TextureId>,
     last_size: Option<(u32, u32)>,
-}
-
-#[cfg(feature = "wgpu-render")]
-impl fmt::Debug for EguiVideoRenderer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EguiVideoRenderer")
-            .field("texture_id", &self.texture_id)
-            .field("last_size", &self.last_size)
-            .finish_non_exhaustive()
-    }
 }
 
 #[cfg(feature = "wgpu-render")]
@@ -200,18 +193,11 @@ impl Drop for EguiVideoRenderer {
 /// from, only how to draw the ones it is handed. [`VideoView`] adds the
 /// waking and the reading over a [`VideoFrames`] stream.
 #[cfg(feature = "wgpu-render")]
+#[derive(derive_more::Debug)]
 pub struct FrameView {
     renderer: Option<EguiVideoRenderer>,
+    #[debug(skip)]
     placeholder: egui::TextureHandle,
-}
-
-#[cfg(feature = "wgpu-render")]
-impl fmt::Debug for FrameView {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrameView")
-            .field("is_wgpu", &self.is_wgpu())
-            .finish_non_exhaustive()
-    }
 }
 
 #[cfg(feature = "wgpu-render")]
@@ -295,23 +281,16 @@ impl FrameView {
 /// next pass, whether the frames come from a player, a local preview, or a
 /// scanner.
 #[cfg(feature = "wgpu-render")]
+#[derive(derive_more::Debug)]
 pub struct VideoView {
     frames: VideoFrames,
     frame_view: FrameView,
     /// The window to wake, kept so [`set_frames`](Self::set_frames) can build
     /// a waker for the replacement.
+    #[debug(skip)]
     ctx: egui::Context,
     /// Wakes the window when a picture lands. Dropping it stops the waking.
     _wake: n0_future::task::AbortOnDropHandle<()>,
-}
-
-#[cfg(feature = "wgpu-render")]
-impl fmt::Debug for VideoView {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VideoView")
-            .field("frame_view", &self.frame_view)
-            .finish_non_exhaustive()
-    }
 }
 
 /// Asks the window to draw whenever a picture arrives.

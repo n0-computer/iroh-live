@@ -5,14 +5,14 @@
 //! it does with the media.
 
 use std::{
-    fmt,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::{Watchable, Watcher as _};
+use n0_watcher::Watchable;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::{
@@ -33,19 +33,11 @@ const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 ///
 /// Compared by generation, which is what a watcher needs: a new consumer is a
 /// new generation even when it reaches the same broadcast.
-#[derive(Clone, Default)]
+#[derive(derive_more::Debug, Clone, Default)]
 pub(crate) struct Epoch {
     pub(crate) generation: u64,
+    #[debug(skip)]
     pub(crate) consumer: Option<moq_net::broadcast::Consumer>,
-}
-
-impl fmt::Debug for Epoch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Epoch")
-            .field("generation", &self.generation)
-            .field("connected", &self.consumer.is_some())
-            .finish()
-    }
 }
 
 impl PartialEq for Epoch {
@@ -68,23 +60,20 @@ enum Origin {
     },
 }
 
+#[derive(derive_more::Debug)]
 struct Shared {
+    #[debug(skip)]
     origin: Origin,
+    #[debug("{:?}", epoch.get())]
     epoch: Watchable<Epoch>,
+    #[debug(skip)]
     catalog: Watchable<Option<Catalog>>,
-    closed: Watchable<bool>,
+    closed: CancellationToken,
+    #[debug(skip)]
     network: Mutex<Option<SharedSignals>>,
     span: tracing::Span,
+    #[debug(skip)]
     _task: AbortOnDropHandle<()>,
-}
-
-impl fmt::Debug for Shared {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RemoteBroadcast")
-            .field("epoch", &self.epoch.get())
-            .field("closed", &self.closed.get())
-            .finish_non_exhaustive()
-    }
 }
 
 /// A broadcast being read.
@@ -203,22 +192,14 @@ impl RemoteBroadcast {
     ///
     /// Cancellation safe.
     pub async fn closed(&self) {
-        let mut closed = self.shared.closed.watch();
-        loop {
-            if closed.get() {
-                return;
-            }
-            if closed.updated().await.is_err() {
-                return;
-            }
-        }
+        self.shared.closed.cancelled().await;
     }
 
     /// Reports whether the broadcast has closed.
     ///
     /// Subject to the same re-resolve window as [`closed`](Self::closed).
     pub fn is_closed(&self) -> bool {
-        self.shared.closed.get()
+        self.shared.closed.is_cancelled()
     }
 
     /// Returns a watcher over the consumer players read.
@@ -251,7 +232,7 @@ impl RemoteBroadcast {
     ) -> Self {
         let epoch = Watchable::new(Epoch::default());
         let catalog = Watchable::new(None);
-        let closed = Watchable::new(false);
+        let closed = CancellationToken::new();
         let task = {
             let origin = origin.clone();
             let epoch = epoch.clone();
@@ -282,7 +263,7 @@ async fn follow(
     first: Option<moq_net::broadcast::Consumer>,
     epoch: Watchable<Epoch>,
     catalog: Watchable<Option<Catalog>>,
-    closed: Watchable<bool>,
+    closed: CancellationToken,
 ) {
     let mut generation = 0u64;
     let mut next = first;
@@ -340,7 +321,7 @@ async fn follow(
             consumer: None,
         })
         .ok();
-    closed.set(true).ok();
+    closed.cancel();
 }
 
 /// Reads catalog updates into `catalog` until the catalog track ends.
@@ -382,6 +363,8 @@ async fn read_catalog(
 
 #[cfg(test)]
 mod tests {
+    use n0_watcher::Watcher as _;
+
     use super::*;
 
     #[tokio::test]

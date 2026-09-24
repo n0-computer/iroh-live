@@ -4476,6 +4476,7 @@ dependencies = [
 name = "iroh-live-egui"
 version = "0.1.0"
 dependencies = [
+ "derive_more",
  "egui",
  "egui-wgpu",
  "epaint",

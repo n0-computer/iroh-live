@@ -6,7 +6,7 @@
 //! that broadcast reads a [`NetworkSample`] from it a few times a second to
 //! choose a rendition. Nothing here names iroh or QUIC.
 
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use crate::Bitrate;
 
@@ -32,14 +32,9 @@ where
 }
 
 /// A shared [`NetworkSignals`], as a broadcast holds it.
-#[derive(Clone)]
+#[derive(derive_more::Debug, Clone)]
+#[debug("SharedSignals")]
 pub(crate) struct SharedSignals(pub(crate) std::sync::Arc<dyn NetworkSignals>);
-
-impl fmt::Debug for SharedSignals {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SharedSignals")
-    }
-}
 
 /// One reading of the link a broadcast arrives over.
 ///

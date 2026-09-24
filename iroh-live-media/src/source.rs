@@ -12,7 +12,7 @@
 //! [`LocalBroadcast`](crate::LocalBroadcast) holds, and any number of
 //! broadcasts and previews read it at once.
 
-use std::{fmt, path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -68,6 +68,7 @@ pub struct AudioFormat {
 }
 
 /// What keeps a source's producer running, dropped with the last handle.
+#[derive(Debug)]
 enum Driver {
     /// A thread that watches the stop token.
     Thread,
@@ -78,16 +79,6 @@ enum Driver {
     },
     /// Nothing: the application pushes.
     Pushed,
-}
-
-impl fmt::Debug for Driver {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Thread => "Thread",
-            Self::Local { .. } => "Local",
-            Self::Pushed => "Pushed",
-        })
-    }
 }
 
 /// The shared half of a [`VideoSource`].
@@ -323,16 +314,13 @@ impl VideoSource {
 /// The stream describes itself: the catalog rendition is derived from its
 /// first SPS, so nothing here has to describe an encode it did not perform.
 /// Not `Clone`, because a byte stream has one reader.
+#[derive(derive_more::Debug)]
 pub struct EncodedVideoSource {
+    #[debug(skip)]
     pub(crate) bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
     /// Keeps whatever produces the bytes alive, such as a subprocess.
+    #[debug(skip)]
     pub(crate) _guard: Option<Box<dyn std::any::Any + Send>>,
-}
-
-impl fmt::Debug for EncodedVideoSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EncodedVideoSource").finish_non_exhaustive()
-    }
 }
 
 impl EncodedVideoSource {

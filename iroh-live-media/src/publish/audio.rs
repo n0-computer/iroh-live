@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::{
-    FINISH_PATIENCE, SlotTask,
+    Job, Rebase,
     encoding::AudioEncoding,
     status::{RenditionState, Reporter, SlotState},
 };
@@ -16,38 +16,18 @@ use crate::{
     catalog::CatalogProducer,
     error::Error,
     source::AudioKind,
-    stats::{AudioEncodeStats, Cell, PublishRecorder},
+    stats::{AudioEncodeStats, Cell},
 };
-
-/// Everything an audio publish task needs, moved into it whole.
-pub(super) struct Job {
-    pub producer: moq_net::broadcast::Producer,
-    pub catalog: CatalogProducer,
-    pub clock: moq_mux::Clock,
-    /// Held while this task owns its track name.
-    pub tracks: Arc<tokio::sync::Mutex<()>>,
-    pub stats: PublishRecorder,
-    pub reporter: Reporter,
-    /// The task this one replaces, finished before its track name is taken.
-    pub predecessor: Option<SlotTask>,
-}
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
 pub(super) async fn run(
-    job: Job,
+    mut job: Job,
     source: AudioSource,
     encoding: AudioEncoding,
     stop: CancellationToken,
 ) {
-    if let Some(predecessor) = job.predecessor {
-        tokio::select! {
-            () = predecessor.finish(FINISH_PATIENCE) => {}
-            () = stop.cancelled() => return,
-        }
-    }
-    let _tracks = tokio::select! {
-        guard = job.tracks.clone().lock_owned() => guard,
-        () = stop.cancelled() => return,
+    let Some(_tracks) = job.take_over(&stop).await else {
+        return;
     };
     let stats = job.stats.audio();
     let codec = encoding.codec.to_string();
@@ -102,26 +82,6 @@ pub(super) async fn run(
             warn!(error = %err, "audio publish failed");
             job.reporter.slot(SlotState::Failed(Arc::new(err)));
         }
-    }
-}
-
-/// Maps a source's own timestamps onto the broadcast clock, anchored at its
-/// first frame, so PCM keeps its own contiguous cadence.
-#[derive(Debug, Clone, Copy)]
-struct Rebase {
-    delta: i128,
-}
-
-impl Rebase {
-    fn anchor(clock: moq_mux::Clock, first: moq_net::Timestamp) -> Self {
-        Self {
-            delta: clock.now().as_micros() as i128 - first.as_micros() as i128,
-        }
-    }
-
-    fn map(self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
-        let micros = (timestamp.as_micros() as i128 + self.delta).max(0) as u64;
-        moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp)
     }
 }
 
@@ -290,22 +250,5 @@ async fn follow(
             audio::encode::Status::Ended => return Ok(()),
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_rebase_keeps_the_cadence() {
-        let clock = moq_mux::Clock::new();
-        let first = moq_net::Timestamp::from_micros(5_000).expect("in range");
-        let rebase = Rebase::anchor(clock, first);
-        let next = moq_net::Timestamp::from_micros(25_000).expect("in range");
-        assert_eq!(
-            rebase.map(next).as_micros() - rebase.map(first).as_micros(),
-            20_000
-        );
     }
 }

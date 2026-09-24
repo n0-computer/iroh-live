@@ -7,7 +7,7 @@
 //! where a process-wide engine let whichever caller got there first choose the
 //! device for everyone.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use crate::{audio, error::Error};
 
@@ -16,7 +16,7 @@ use crate::{audio, error::Error};
 /// Every player writing to it is mixed into one device stream. Cheap to clone;
 /// the device closes when the last clone and the last player using it are
 /// gone.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AudioOutput {
     inner: Arc<Inner>,
     /// How many echo cancellers were asked of this output, shared by clones,
@@ -25,20 +25,11 @@ pub struct AudioOutput {
     cancellers: Arc<std::sync::atomic::AtomicU64>,
 }
 
+#[derive(derive_more::Debug)]
 enum Inner {
     #[cfg(feature = "playback")]
-    Device(audio::playback::Engine),
+    Device(#[debug(skip)] audio::playback::Engine),
     Null,
-}
-
-impl fmt::Debug for AudioOutput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match *self.inner {
-            #[cfg(feature = "playback")]
-            Inner::Device(_) => "AudioOutput(Device)",
-            Inner::Null => "AudioOutput(Null)",
-        })
-    }
 }
 
 impl AudioOutput {
@@ -194,20 +185,11 @@ pub(crate) struct SinkInput {
 }
 
 /// One player's stream into an output.
+#[derive(derive_more::Debug)]
 pub(crate) enum OutputSink {
     #[cfg(feature = "playback")]
-    Device(Box<audio::playback::Sink>),
+    Device(#[debug(skip)] Box<audio::playback::Sink>),
     Null,
-}
-
-impl fmt::Debug for OutputSink {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            #[cfg(feature = "playback")]
-            Self::Device(_) => "OutputSink(Device)",
-            Self::Null => "OutputSink(Null)",
-        })
-    }
 }
 
 impl OutputSink {
@@ -244,17 +226,11 @@ impl OutputSink {
 }
 
 /// Sets one stream's gain and reads its level, apart from the stream itself.
-#[derive(Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub(crate) enum OutputControl {
     #[cfg(feature = "playback")]
-    Device(audio::playback::Control),
+    Device(#[debug(skip)] audio::playback::Control),
     Null,
-}
-
-impl fmt::Debug for OutputControl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("OutputControl")
-    }
 }
 
 impl OutputControl {

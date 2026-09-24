@@ -42,23 +42,15 @@ const REVIVE_AFTER: Duration = Duration::from_secs(2);
 const VANISH_GRACE: Duration = Duration::from_secs(3);
 
 /// What the decoder of a target is built with.
-#[derive(Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub(crate) struct DecodeSettings {
     /// The broadcast to read.
+    #[debug(skip)]
     pub consumer: moq_net::broadcast::Consumer,
     /// The backend to open.
     pub decoder: video::decode::Kind,
     /// The oldest media still worth decoding.
     pub max_age: Duration,
-}
-
-impl std::fmt::Debug for DecodeSettings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DecodeSettings")
-            .field("decoder", &self.decoder)
-            .field("max_age", &self.max_age)
-            .finish_non_exhaustive()
-    }
 }
 
 /// What the video supervisor should play.

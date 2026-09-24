@@ -1,9 +1,6 @@
 //! The push end of a source, and the demand a source reports back to it.
 
-use std::{
-    fmt,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use n0_watcher::Watchable;
 use tokio_util::sync::CancellationToken;
@@ -96,7 +93,9 @@ impl Sink<audio::Frame> for PcmFanout {
 /// oldest samples, which the broadcast reading it counts in its stats.
 ///
 /// The source ends when every sender is dropped. Cheap to clone.
+#[derive(derive_more::Debug)]
 pub struct FrameSender<T> {
+    #[debug(skip)]
     sink: Arc<dyn Sink<T>>,
     /// Cancelled once the source is gone, so nothing reads what is pushed.
     closed: CancellationToken,
@@ -110,14 +109,6 @@ impl<T> Clone for FrameSender<T> {
             closed: self.closed.clone(),
             demand: self.demand.clone(),
         }
-    }
-}
-
-impl<T> fmt::Debug for FrameSender<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrameSender")
-            .field("closed", &self.closed.is_cancelled())
-            .finish_non_exhaustive()
     }
 }
 

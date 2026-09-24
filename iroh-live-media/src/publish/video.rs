@@ -20,97 +20,39 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
-    FINISH_PATIENCE, SlotTask,
+    Job, Rebase,
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter, SlotState},
 };
 use crate::{
     EncodedVideoSource, VideoSource,
-    catalog::CatalogProducer,
     error::Error,
     frames::VideoFrames,
-    stats::{Cell, EncodeStats, PublishRecorder, RateMeter, Smoothed},
+    stats::{Cell, EncodeStats, RateMeter, Smoothed},
     video::{self, encode},
 };
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
 
-/// Everything a video publish task needs, moved into it whole.
-pub(super) struct Job {
-    pub producer: moq_net::broadcast::Producer,
-    pub catalog: CatalogProducer,
-    pub clock: moq_mux::Clock,
-    /// Held while this task owns track names.
-    pub tracks: Arc<tokio::sync::Mutex<()>>,
-    pub stats: PublishRecorder,
-    pub reporter: Reporter,
-    /// The task this one replaces, finished before its track names are taken.
-    pub predecessor: Option<SlotTask>,
-}
-
-/// Maps a source's own timestamps onto the broadcast clock.
-///
-/// Anchored at the first frame the broadcast reads, and shared by every
-/// rendition, so two rungs of one ladder carry the same timestamp for the same
-/// picture and a subscriber switching between them sees no jump.
-#[derive(Debug, Clone, Copy)]
-struct Rebase {
-    /// Broadcast micros minus source micros.
-    delta: i128,
-}
-
-impl Rebase {
-    fn anchor(clock: moq_mux::Clock, first: moq_net::Timestamp) -> Self {
-        Self {
-            delta: clock.now().as_micros() as i128 - first.as_micros() as i128,
-        }
-    }
-
-    fn map(self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
-        let micros = (timestamp.as_micros() as i128 + self.delta).max(0) as u64;
-        moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp)
-    }
-}
-
-/// Finishes the predecessor, then waits for the track names, or returns `None`
-/// once stopped.
-async fn take_over(
-    predecessor: Option<SlotTask>,
-    tracks: Arc<tokio::sync::Mutex<()>>,
-    stop: &CancellationToken,
-) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-    if let Some(predecessor) = predecessor {
-        tokio::select! {
-            () = predecessor.finish(FINISH_PATIENCE) => {}
-            () = stop.cancelled() => return None,
-        }
-    }
-    tokio::select! {
-        guard = tracks.lock_owned() => Some(guard),
-        () = stop.cancelled() => None,
-    }
-}
-
 /// Encodes a raw source into every rendition of `encoding`.
 pub(super) async fn run_raw(
-    job: Job,
+    mut job: Job,
     source: VideoSource,
     encoding: VideoEncoding,
     stop: CancellationToken,
 ) {
+    let Some(tracks) = job.take_over(&stop).await else {
+        return;
+    };
     let Job {
         producer,
         catalog,
         clock,
-        tracks,
         stats,
         reporter,
-        predecessor,
+        ..
     } = job;
-    let Some(tracks) = take_over(predecessor, tracks, &stop).await else {
-        return;
-    };
     // Shared with every encoder task, so the names are released only once the
     // last of them is gone: tasks aborted along with this one finish being
     // dropped after it returns, and a replacement must not create its tracks
@@ -505,19 +447,17 @@ impl Encoder {
 /// `Split` cuts the byte stream into access units and `Import` publishes them,
 /// filling the catalog rendition in from the first SPS it sees, so this path
 /// needs no description from the caller.
-pub(super) async fn run_encoded(job: Job, source: EncodedVideoSource, stop: CancellationToken) {
+pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: CancellationToken) {
+    let Some(_tracks) = job.take_over(&stop).await else {
+        return;
+    };
     let Job {
         producer,
         catalog,
-        tracks,
         stats,
         reporter,
-        predecessor,
         ..
     } = job;
-    let Some(_tracks) = take_over(predecessor, tracks, &stop).await else {
-        return;
-    };
     stats.clear_video();
     let EncodedVideoSource { mut bytes, _guard } = source;
     let result = async {

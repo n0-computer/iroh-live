@@ -10,12 +10,9 @@
 //! one source, opened once, encoded into every rendition of a ladder, each
 //! rendition encoding only while someone watches it.
 
-use std::{
-    fmt,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 
 use moq_net::Consume;
@@ -91,6 +88,63 @@ impl Drop for SlotTask {
 /// How long a replaced or closed publish task gets to finish its tracks.
 const FINISH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Everything a slot task needs, moved into it whole.
+struct Job {
+    producer: moq_net::broadcast::Producer,
+    catalog: CatalogProducer,
+    clock: moq_mux::Clock,
+    /// Held while the task owns its track names.
+    tracks: Arc<tokio::sync::Mutex<()>>,
+    stats: PublishRecorder,
+    reporter: status::Reporter,
+    /// The task this one replaces, finished before its track names are taken.
+    predecessor: Option<SlotTask>,
+}
+
+impl Job {
+    /// Finishes the predecessor, then waits for the track names, or returns
+    /// `None` once stopped.
+    async fn take_over(
+        &mut self,
+        stop: &CancellationToken,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        if let Some(predecessor) = self.predecessor.take() {
+            tokio::select! {
+                () = predecessor.finish(FINISH_PATIENCE) => {}
+                () = stop.cancelled() => return None,
+            }
+        }
+        tokio::select! {
+            guard = self.tracks.clone().lock_owned() => Some(guard),
+            () = stop.cancelled() => None,
+        }
+    }
+}
+
+/// Maps a source's own timestamps onto the broadcast clock.
+///
+/// Anchored at the first frame, so the source keeps its own cadence. A video
+/// ladder shares one, so every rung carries the same timestamp for the same
+/// picture.
+#[derive(Debug, Clone, Copy)]
+struct Rebase {
+    /// Broadcast micros minus source micros.
+    delta: i128,
+}
+
+impl Rebase {
+    fn anchor(clock: moq_mux::Clock, first: moq_net::Timestamp) -> Self {
+        Self {
+            delta: clock.now().as_micros() as i128 - first.as_micros() as i128,
+        }
+    }
+
+    fn map(self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
+        let micros = (timestamp.as_micros() as i128 + self.delta).max(0) as u64;
+        moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp)
+    }
+}
+
 /// What one slot is running, replaced whole in one critical section.
 #[derive(Debug)]
 struct Slot {
@@ -98,6 +152,8 @@ struct Slot {
     task: SlotTask,
 }
 
+#[derive(derive_more::Debug)]
+#[debug("Shared {{ status: {status:?} }}")]
 struct Shared {
     producer: moq_net::broadcast::Producer,
     catalog: Mutex<CatalogProducer>,
@@ -114,21 +170,13 @@ struct Shared {
     stats: PublishRecorder,
     /// Cancelled by `close`; everything publishing watches it.
     closed: CancellationToken,
-    /// Set once `close` has finished every track and the broadcast.
-    finished: n0_watcher::Watchable<bool>,
+    /// Cancelled once `close` has finished every track and the broadcast.
+    finished: CancellationToken,
     /// The task `close` runs to finish everything, held so it is not detached.
     closer: Mutex<Option<AbortOnDropHandle<()>>>,
     /// Cleared slots finishing their tracks, held so they are not detached.
     retiring: Mutex<n0_future::task::JoinSet<()>>,
     span: tracing::Span,
-}
-
-impl fmt::Debug for Shared {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Shared")
-            .field("status", &self.status)
-            .finish_non_exhaustive()
-    }
 }
 
 impl Drop for Shared {
@@ -201,7 +249,7 @@ impl LocalBroadcast {
                 status: StatusCell::default(),
                 stats: PublishRecorder::default(),
                 closed: CancellationToken::new(),
-                finished: n0_watcher::Watchable::new(false),
+                finished: CancellationToken::new(),
                 closer: Mutex::new(None),
                 retiring: Mutex::new(n0_future::task::JoinSet::new()),
                 span,
@@ -231,20 +279,8 @@ impl LocalBroadcast {
             .map(|rendition| rendition.name.clone())
             .collect();
         info!(parent: &self.shared.span, source = source.kind(), renditions = ?names, "video set");
-        self.replace(Medium::Video, names, |shared, reporter, predecessor| {
-            let job = video::Job {
-                producer: shared.producer.clone(),
-                catalog: shared.catalog.lock().expect("poisoned").clone(),
-                clock: shared.clock,
-                tracks: shared.video_tracks.clone(),
-                stats: shared.stats.clone(),
-                reporter,
-                predecessor,
-            };
-            let span = tracing::info_span!(parent: &shared.span, "video");
-            SlotTask::spawn(span, &shared.closed, move |stop| {
-                video::run_raw(job, source, encoding, stop)
-            })
+        self.replace(Medium::Video, names, move |job, stop| {
+            video::run_raw(job, source, encoding, stop)
         });
         Ok(())
     }
@@ -264,21 +300,7 @@ impl LocalBroadcast {
         self.replace(
             Medium::Video,
             vec![video::ENCODED_RENDITION.to_string()],
-            |shared, reporter, predecessor| {
-                let job = video::Job {
-                    producer: shared.producer.clone(),
-                    catalog: shared.catalog.lock().expect("poisoned").clone(),
-                    clock: shared.clock,
-                    tracks: shared.video_tracks.clone(),
-                    stats: shared.stats.clone(),
-                    reporter,
-                    predecessor,
-                };
-                let span = tracing::info_span!(parent: &shared.span, "video");
-                SlotTask::spawn(span, &shared.closed, move |stop| {
-                    video::run_encoded(job, source, stop)
-                })
-            },
+            move |job, stop| video::run_encoded(job, source, stop),
         );
         Ok(())
     }
@@ -294,25 +316,9 @@ impl LocalBroadcast {
         encoding.validate()?;
         let name = encoding.track_name();
         info!(parent: &self.shared.span, source = source.kind_name(), track = %name, "audio set");
-        self.replace(
-            Medium::Audio,
-            vec![name],
-            |shared, reporter, predecessor| {
-                let job = audio::Job {
-                    producer: shared.producer.clone(),
-                    catalog: shared.catalog.lock().expect("poisoned").clone(),
-                    clock: shared.clock,
-                    tracks: shared.audio_tracks.clone(),
-                    stats: shared.stats.clone(),
-                    reporter,
-                    predecessor,
-                };
-                let span = tracing::info_span!(parent: &shared.span, "audio");
-                SlotTask::spawn(span, &shared.closed, move |stop| {
-                    audio::run(job, source, encoding, stop)
-                })
-            },
-        );
+        self.replace(Medium::Audio, vec![name], move |job, stop| {
+            audio::run(job, source, encoding, stop)
+        });
         Ok(())
     }
 
@@ -364,7 +370,7 @@ impl LocalBroadcast {
                 }
                 shared.producer.finish();
             }
-            finished.set(true).ok();
+            finished.cancel();
         });
         *self.shared.closer.lock().expect("poisoned") = Some(AbortOnDropHandle::new(task));
     }
@@ -373,16 +379,7 @@ impl LocalBroadcast {
     ///
     /// Cancellation safe.
     pub async fn closed(&self) {
-        let mut finished = self.shared.finished.watch();
-        use n0_watcher::Watcher as _;
-        loop {
-            if finished.get() {
-                return;
-            }
-            if finished.updated().await.is_err() {
-                return;
-            }
-        }
+        self.shared.finished.cancelled().await;
     }
 
     /// Returns the moq-net broadcast, for writing extra tracks or for a custom
@@ -406,21 +403,36 @@ impl LocalBroadcast {
     /// before taking the track names, and the status is handed to the new
     /// bundle's generation under the same lock, so a late report from the old
     /// task cannot land on the new slot.
-    fn replace(
-        &self,
-        medium: Medium,
-        names: Vec<String>,
-        spawn: impl FnOnce(&Shared, status::Reporter, Option<SlotTask>) -> SlotTask,
-    ) {
-        let lock = match medium {
-            Medium::Video => &self.shared.video,
-            Medium::Audio => &self.shared.audio,
+    fn replace<F, Fut>(&self, medium: Medium, names: Vec<String>, run: F)
+    where
+        F: FnOnce(Job, CancellationToken) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let shared = &self.shared;
+        let (lock, tracks, span) = match medium {
+            Medium::Video => (
+                &shared.video,
+                &shared.video_tracks,
+                tracing::info_span!(parent: &shared.span, "video"),
+            ),
+            Medium::Audio => (
+                &shared.audio,
+                &shared.audio_tracks,
+                tracing::info_span!(parent: &shared.span, "audio"),
+            ),
         };
         let mut slot = lock.lock().expect("poisoned");
-        let generation = self.shared.generations.fetch_add(1, Ordering::Relaxed) + 1;
-        let reporter = self.shared.status.begin(medium, generation, &names);
-        let predecessor = slot.take().map(|previous| previous.task);
-        let task = spawn(&self.shared, reporter, predecessor);
+        let generation = shared.generations.fetch_add(1, Ordering::Relaxed) + 1;
+        let job = Job {
+            producer: shared.producer.clone(),
+            catalog: shared.catalog.lock().expect("poisoned").clone(),
+            clock: shared.clock,
+            tracks: tracks.clone(),
+            stats: shared.stats.clone(),
+            reporter: shared.status.begin(medium, generation, &names),
+            predecessor: slot.take().map(|previous| previous.task),
+        };
+        let task = SlotTask::spawn(span, &shared.closed, |stop| run(job, stop));
         *slot = Some(Slot { generation, task });
     }
 

@@ -43,16 +43,6 @@ impl Drop for LocalTask {
 }
 
 impl LocalTask {
-    /// Requests shutdown, then waits until the task has released its device.
-    #[allow(
-        dead_code,
-        reason = "kept for callers that need the device back before carrying on"
-    )]
-    pub(crate) async fn shutdown(mut self) {
-        self.shutdown.cancel();
-        self.joined().await;
-    }
-
     /// Waits until the task has finished and released its device.
     ///
     /// Returns immediately once it has, and on every later call. Cancelling the
