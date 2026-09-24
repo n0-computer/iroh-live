@@ -361,7 +361,8 @@ mod tests {
         let catalog = Catalog::new(hang);
         let names: Vec<&str> = catalog.video().iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names, ["high", "720p-rich", "720p-cheap", "low"]);
-        assert_eq!(catalog.video()[0].codec, "avc1.64001f");
+        // Inline parameter sets make it `avc3`, as the rendition above says.
+        assert_eq!(catalog.video()[0].codec, "avc3.64001f");
         assert_eq!(catalog.video()[0].height(), Some(1080));
     }
 
