@@ -251,27 +251,24 @@ pub(crate) async fn subscribe(
         async move { table.routed_broadcast(&path).await }
     };
     tokio::pin!(routed);
-    let session = tokio::select! {
+    let connected = tokio::select! {
         resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
-        connected = moq.connect(peer) => match connected {
-            Ok(session) => session,
-            Err(err) if relays => {
-                info!(%path, %err, "publisher unreachable, waiting for a relay");
-                let resolved = routed.await;
-                return outcome(&moq.shared, path, table, resolved);
-            }
-            Err(err) => return Err(err),
-        },
+        connected = moq.connect(peer) => connected,
     };
-
-    // The session ending is the end of the wait unless a relay can still
-    // bring the path.
-    tokio::select! {
-        resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
-        _ = session.closed() => {}
-    }
-    if !relays {
-        return Err(e!(Error::NotAnnounced { path }));
+    match connected {
+        Ok(session) => {
+            // The session ending is the end of the wait unless a relay can
+            // still bring the path.
+            tokio::select! {
+                resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
+                _ = session.closed() => {}
+            }
+            if !relays {
+                return Err(e!(Error::NotAnnounced { path }));
+            }
+        }
+        Err(err) if relays => info!(%path, %err, "publisher unreachable, waiting for a relay"),
+        Err(err) => return Err(err),
     }
     let resolved = routed.await;
     outcome(&moq.shared, path, table, resolved)
