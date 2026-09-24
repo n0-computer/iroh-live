@@ -183,9 +183,20 @@ impl Fixture {
     /// Plays the broadcast held on `rendition`, waiting for the catalog to
     /// carry `renditions` video renditions first.
     ///
-    /// Held rather than adapting, so a test decides when adaptation starts:
-    /// [`RenditionMode::auto`] hands the choice to the link.
+    /// Held rather than adapting, for a test that switches by hand.
     async fn play(&self, renditions: usize, rendition: &str) -> Viewer {
+        self.play_with(renditions, RenditionMode::pinned(rendition))
+            .await
+    }
+
+    /// Plays the broadcast adapting from the start, waiting for the catalog to
+    /// carry `renditions` video renditions first, so where it starts is the
+    /// adaptation's own choice.
+    async fn play_auto(&self, renditions: usize) -> Viewer {
+        self.play_with(renditions, RenditionMode::auto()).await
+    }
+
+    async fn play_with(&self, renditions: usize, mode: RenditionMode) -> Viewer {
         let broadcast = self.subscription.broadcast();
         let mut catalog = broadcast.catalog();
         tokio::time::timeout(TIMEOUT, async {
@@ -200,7 +211,7 @@ impl Fixture {
         .expect("timed out waiting for the video catalog");
 
         let player = broadcast
-            .play(PlayerConfig::default().with_rendition(RenditionMode::pinned(rendition)))
+            .play(PlayerConfig::default().with_rendition(mode))
             .expect("failed to play");
         let frames = player.video();
         Viewer { player, frames }
@@ -259,11 +270,6 @@ impl Viewer {
     /// Waits for the next frame.
     async fn next(&mut self) -> Option<std::sync::Arc<Frame>> {
         self.frames.next().await
-    }
-
-    /// Hands the rendition choice to the link.
-    fn adapt(&self) {
-        self.player.set_rendition(RenditionMode::auto());
     }
 }
 
@@ -583,11 +589,13 @@ async fn frames_survive_a_loss_spike() {
 #[traced_test]
 async fn adaptation_follows_a_real_link() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let mut viewer = fixture.play(2, "high").await;
+    // Adapting from the start: a clear link has to settle on the top rung by
+    // itself before the impairment goes on.
+    let mut viewer = fixture.play_auto(2).await;
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
-        .expect("the top rendition, pinned until adaptation starts, never played");
+        .expect("a clear link should start at the top of the ladder");
 
     // Wait for a frame before impairing anything, so the downgrade is measured
     // against a link that was carrying video rather than one still opening.
@@ -595,8 +603,6 @@ async fn adaptation_follows_a_real_link() {
         .await
         .expect("timed out waiting for the first frame")
         .expect("the video ended before its first frame");
-
-    viewer.adapt();
 
     // Loss on both legs, so it reaches the subscriber's own transmissions:
     // acknowledgements are dropped in proportion to the impairment like
@@ -658,12 +664,12 @@ async fn adaptation_follows_a_real_link() {
 #[traced_test]
 async fn adaptation_follows_a_rate_limit() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let mut viewer = fixture.play(2, "high").await;
+    let mut viewer = fixture.play_auto(2).await;
     let signals = fixture.subscription.signals().clone();
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
-        .expect("the top rendition, pinned until adaptation starts, never played");
+        .expect("a clear link should start at the top of the ladder");
 
     // Frames first, so the cap lands on a link that was carrying video and the
     // producer has a round trip and a goodput window off a healthy path to
@@ -673,13 +679,12 @@ async fn adaptation_follows_a_rate_limit() {
         .expect("timed out waiting for the first frame")
         .expect("the video ended before its first frame");
 
-    // Enabled before the settling drain rather than after it, so the loop has
-    // seconds of clear-link delivery behind it. With the estimate present the
-    // loop needs no history at all, and that is the case this test exercises:
-    // a publisher on BBR3 whose estimate reads the cap. The cooldown after a
-    // downgrade keeps the loop from coming back up while the replacement
-    // decoder is still opening, so `low` reaches the screen.
-    viewer.adapt();
+    // Adapting since the start, so the loop has seconds of clear-link delivery
+    // behind it. With the estimate present the loop needs no history at all,
+    // and that is the case this test exercises: a publisher on BBR3 whose
+    // estimate reads the cap. The cooldown after a downgrade runs from its
+    // landing, so the loop does not come back up while the replacement decoder
+    // is still opening, and `low` reaches the screen.
 
     // Waited for rather than timed. This is the test's own evidence that the
     // cap about to go on is a real shortfall, independent of what the loop
@@ -874,6 +879,19 @@ async fn a_switch_does_not_blank_the_picture() {
         .unwrap_or_else(|_| panic!("the switch to `low` did not land inside {TIMEOUT:?}"));
     report("across the switch", &handover.across, handover.took);
     report("after the switch", &handover.after, settle);
+    let kept_running =
+        baseline.len() as u32 * handover.took.as_millis() as u32 / (2 * window.as_millis() as u32);
+    // One line with every figure the assertions below judge, for a script
+    // that runs this many times and compares.
+    info!(
+        took_ms = handover.took.as_millis() as u64,
+        across = handover.across.len(),
+        baseline = baseline.len(),
+        kept_running,
+        longest_gap_ms = longest(&gaps(&handover.across)).as_millis() as u64,
+        after = handover.after.len(),
+        "handover measured",
+    );
 
     // The incumbent carries the picture for as long as the replacement takes to
     // open, so the handover window delivers frames at the cadence the baseline
@@ -883,8 +901,6 @@ async fn a_switch_does_not_blank_the_picture() {
     // fixed count. Half of it, because both renditions are subscribed at once
     // while the switch is in flight and the incumbent gives up part of the link
     // to the replacement's keyframe.
-    let kept_running =
-        baseline.len() as u32 * handover.took.as_millis() as u32 / (2 * window.as_millis() as u32);
     assert!(
         handover.across.len() as u32 >= kept_running,
         "only {} frames arrived in the {}ms the switch took, against the {kept_running} that half \
@@ -1007,6 +1023,89 @@ async fn a_switch_lands_while_the_link_stays_capped() {
     fixture.shutdown().await;
 }
 
+/// A cap held near where the top rung stops fitting must not make the ladder
+/// oscillate.
+///
+/// The tests above impair and then clear, so each asks for one step down and
+/// one back up and says nothing about a link that stays marginal. Here the cap
+/// sits where the publisher's delivery estimate straddles the top rung's
+/// threshold (a BBR estimate reads a capped link at 1.1 to 1.6 times the cap,
+/// so 300 kbit/s reads either side of the 400 kbit/s that half of `high`'s
+/// 800 comes to), and stays for a minute. Every switch landed is counted, and
+/// so is every one asked for, which lands or not.
+///
+/// `IROH_LIVE_PATCHBAY_CAP_KBIT` moves the cap, so a sweep can look for the
+/// worst place to hold it.
+#[tokio::test]
+#[traced_test]
+async fn adaptation_holds_steady_under_a_marginal_cap() {
+    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let mut viewer = fixture.play_auto(2).await;
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
+        .await
+        .expect("a clear link should start at the top of the ladder");
+    tokio::time::timeout(TIMEOUT, viewer.next())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("the video ended before its first frame");
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
+
+    let cap_kbit: u32 = std::env::var("IROH_LIVE_PATCHBAY_CAP_KBIT")
+        .ok()
+        .and_then(|cap| cap.parse().ok())
+        .unwrap_or(300);
+    fixture
+        .impair(LinkCondition::new().rate_kbit(cap_kbit))
+        .await;
+
+    let watched = Duration::from_secs(60);
+    let until = Instant::now() + watched;
+    let mut status = viewer.player.status();
+    let mut last = status.get();
+    let (mut switches, mut requests) = (0u32, 0u32);
+    let mut frames = 0u32;
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        tokio::select! {
+            updated = status.updated() => {
+                let current = updated.expect("the player is alive");
+                if current.rendition != last.rendition && current.rendition.is_some() {
+                    info!(from = ?last.rendition, to = ?current.rendition, "rendition changed");
+                    switches += 1;
+                }
+                if current.switching_to != last.switching_to && current.switching_to.is_some() {
+                    info!(to = ?current.switching_to, "switch asked for");
+                    requests += 1;
+                }
+                last = current;
+            }
+            frame = viewer.frames.next() => {
+                if frame.is_some() {
+                    frames += 1;
+                }
+            }
+            () = tokio::time::sleep(left) => break,
+        }
+    }
+    info!(
+        cap_kbit,
+        switches,
+        requests,
+        frames,
+        rendition = ?last.rendition,
+        "marginal cap watched",
+    );
+    // One step down, or none, is the stable answer. One flap back up and
+    // down again is a tolerable probe of a link that might have room; more
+    // than that in a minute is the ladder oscillating.
+    assert!(
+        switches <= 3,
+        "the ladder switched {switches} times ({requests} asked for) in {watched:?} under a \
+         {cap_kbit} kbit/s cap",
+    );
+
+    fixture.shutdown().await;
+}
+
 /// A round trip whose baseline rises and stays risen must leave the ladder
 /// alone.
 ///
@@ -1029,12 +1128,12 @@ async fn a_switch_lands_while_the_link_stays_capped() {
 #[traced_test]
 async fn a_risen_baseline_round_trip_does_not_downgrade() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
-    let mut viewer = fixture.play(2, "high").await;
+    let mut viewer = fixture.play_auto(2).await;
     let signals = fixture.subscription.signals().clone();
 
     tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
         .await
-        .expect("the top rendition, pinned until adaptation starts, never played");
+        .expect("a clear link should start at the top of the ladder");
 
     tokio::time::timeout(TIMEOUT, viewer.next())
         .await
@@ -1045,7 +1144,6 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
     // this rendition delivers when there is nothing in its way.
     let _settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
 
-    viewer.adapt();
     let before = *signals.borrow();
     info!(
         rtt_ms = before.rtt.as_millis() as u64,
