@@ -139,7 +139,7 @@ impl Live {
     ///
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let endpoint = iroh::Endpoint::bind(iroh_live::MediaPreset).await?;
+    /// let endpoint = iroh::Endpoint::bind(iroh_live::MoqPreset).await?;
     /// let live = iroh_live::Live::builder(endpoint).with_router().spawn();
     /// # Ok(())
     /// # }

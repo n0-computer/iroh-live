@@ -15,10 +15,10 @@
 //!
 //! ```no_run
 //! use iroh::EndpointId;
-//! use iroh_moq::{Audience, MediaPreset, Moq, MoqConfig, Reach};
+//! use iroh_moq::{Audience, Moq, MoqConfig, MoqPreset, Reach};
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
-//! let endpoint = iroh::Endpoint::bind(MediaPreset).await?;
+//! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
 //! let moq = Moq::new(endpoint, MoqConfig::default());
 //!
 //! // Publish a broadcast this process writes.
@@ -82,7 +82,7 @@ pub use moq_net as net;
 
 pub use self::{
     admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
-    endpoint::{EndpointOptions, Mdns, MediaPreset},
+    endpoint::{EndpointOptions, Mdns, MoqPreset},
     error::Error,
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},

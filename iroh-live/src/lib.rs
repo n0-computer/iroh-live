@@ -14,12 +14,12 @@
 //!
 //! ```no_run
 //! use iroh_live::{
-//!     BroadcastTicket, Live, LocalBroadcast, MediaPreset, PlayerConfig, VideoSource,
+//!     BroadcastTicket, Live, LocalBroadcast, MoqPreset, PlayerConfig, VideoSource,
 //!     media::{VideoEncoding, VideoRendition, video},
 //! };
 //!
 //! # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
-//! let endpoint = iroh::Endpoint::bind(MediaPreset).await?;
+//! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
 //! let live = Live::builder(endpoint).with_router().spawn();
 //!
 //! let broadcast = LocalBroadcast::new();
@@ -125,7 +125,7 @@ pub use iroh_live_media::{
 pub use iroh_live_rooms as rooms;
 pub use iroh_moq as moq;
 pub use iroh_moq::{
-    Audience, EndpointOptions, Mdns, MediaPreset, Moq, MoqConfig, Publication, Reach, Session,
+    Audience, EndpointOptions, Mdns, Moq, MoqConfig, MoqPreset, Publication, Reach, Session,
     Subscription,
 };
 

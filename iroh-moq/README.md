@@ -10,9 +10,9 @@ in the table rather than asking one session. moq picks the best route (lowest
 cost, then fewest hops) and fails over when it dies.
 
 ```rust
-use iroh_moq::{Audience, MediaPreset, Moq, MoqConfig, Reach};
+use iroh_moq::{Audience, MoqPreset, Moq, MoqConfig, Reach};
 
-let endpoint = iroh::Endpoint::bind(MediaPreset).await?;
+let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
 let moq = Moq::new(endpoint.clone(), MoqConfig::default());
 
 // Accept incoming sessions on every MoQ version this build speaks.
@@ -75,12 +75,12 @@ client or server itself, as `iroh-live-relay` does, uses
 handling. They return a `web_transport_iroh::Session`, so their signatures
 follow web-transport-iroh's versioning rather than this crate's.
 
-## Endpoints and tickets
+## Endpoints
 
-`MediaPreset` is iroh's N0 preset with a BBR3 transport tuned for live media;
-`EndpointOptions` adds a secret key and mDNS. A `BroadcastTicket` names a
-publisher and a broadcast, `iroh-live:<endpoint id>/<name>`, and maps to the
-path `live/<endpoint id>/<name>`.
+`MoqPreset` is iroh's N0 preset with BBR3, so the send-rate estimate moq-net
+carries to subscribers tracks the link; `EndpointOptions` adds a secret key and
+mDNS. Paths, tickets and their layout belong to the application: `iroh-live`
+has `BroadcastTicket` and `live/<endpoint id>/<name>`.
 
 ## ALPN
 

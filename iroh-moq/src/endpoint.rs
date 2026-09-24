@@ -1,10 +1,8 @@
-//! Binding an endpoint for live media.
+//! Binding an endpoint for MoQ.
 //!
-//! [`MediaPreset`] is iroh's N0 preset with a QUIC transport tuned for live
-//! media, and [`EndpointOptions`] adds what a preset cannot: a secret key and
-//! mDNS, which starts asynchronously. Both live here rather than in the media
-//! crates so that a relay, which never touches a codec, binds its endpoint the
-//! same way a publisher does.
+//! [`MoqPreset`] is iroh's N0 preset with a QUIC transport tuned for MoQ, and
+//! [`EndpointOptions`] adds what a preset cannot: a secret key and mDNS, which
+//! starts asynchronously.
 
 use std::sync::Arc;
 
@@ -18,20 +16,20 @@ use tracing::{debug, info, warn};
 
 use crate::Error;
 
-/// iroh's [`N0`](presets::N0) preset with a QUIC transport tuned for live media.
+/// iroh's [`N0`](presets::N0) preset with BBR3 congestion control.
 ///
 /// Works anywhere iroh takes a preset:
 ///
 /// ```no_run
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let endpoint = iroh::Endpoint::bind(iroh_moq::MediaPreset).await?;
+/// let endpoint = iroh::Endpoint::bind(iroh_moq::MoqPreset).await?;
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// The transport runs BBR3 in place of iroh's default, CUBIC. A media publisher
-/// is application-limited: it sends the bitrate the encoder produces into a
-/// window sized for whatever the link would take. CUBIC grows that window
+/// The transport runs BBR3 in place of iroh's default, CUBIC. A live publisher
+/// is application-limited: it sends what its source produces into a window
+/// sized for whatever the link would take. CUBIC grows that window
 /// until something is lost, so on a publisher the window says nothing about
 /// the link, and the send-rate estimate moq-net carries to every subscriber
 /// (`cwnd / rtt`) reads as room to spare on a link that has none. BBR3 sizes its
@@ -39,9 +37,9 @@ use crate::Error;
 /// link. Installed on every endpoint because one endpoint publishes and
 /// subscribes at once in a call.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct MediaPreset;
+pub struct MoqPreset;
 
-impl presets::Preset for MediaPreset {
+impl presets::Preset for MoqPreset {
     fn apply(self, builder: Builder) -> Builder {
         presets::N0
             .apply(builder)
@@ -49,7 +47,7 @@ impl presets::Preset for MediaPreset {
     }
 }
 
-/// Returns the QUIC transport configuration [`MediaPreset`] installs.
+/// Returns the QUIC transport configuration [`MoqPreset`] installs.
 fn transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .congestion_controller_factory(Arc::new(Bbr3Config::default()))
@@ -78,7 +76,7 @@ pub enum Mdns {
     Off,
 }
 
-/// A media endpoint with a key and mDNS, for applications that want both.
+/// An endpoint with [`MoqPreset`], a key and mDNS.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointOptions {
     /// The endpoint's identity. `None` generates an ephemeral one.
@@ -88,7 +86,7 @@ pub struct EndpointOptions {
 }
 
 impl EndpointOptions {
-    /// Returns an endpoint builder with [`MediaPreset`], the key and mDNS applied.
+    /// Returns an endpoint builder with [`MoqPreset`], the key and mDNS applied.
     ///
     /// For a caller that sets more before binding: a relay adds its ALPNs.
     ///
@@ -98,7 +96,7 @@ impl EndpointOptions {
     /// logged and the builder goes without it. Cancellation safe: dropping the
     /// future drops the lookup it started.
     pub async fn builder(self) -> Builder {
-        let mut builder = Endpoint::builder(MediaPreset);
+        let mut builder = Endpoint::builder(MoqPreset);
         if let Some(key) = self.secret_key {
             builder = builder.secret_key(key);
         }
@@ -126,7 +124,7 @@ impl EndpointOptions {
         }
     }
 
-    /// Binds an endpoint with [`MediaPreset`] and these options.
+    /// Binds an endpoint with [`MoqPreset`] and these options.
     ///
     /// Cancellation safe: dropping the future binds nothing.
     ///

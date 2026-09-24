@@ -166,7 +166,7 @@ impl Subscription {
     /// A direct session's or a relay link's, whichever served the last request
     /// for the path; a subscription resolved through one session is served by
     /// that session only. `None` while no request has been served and once the
-    /// serving link is gone. What the media crate adapts a player on.
+    /// serving link is gone.
     pub fn link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
