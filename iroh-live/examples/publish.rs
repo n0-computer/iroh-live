@@ -3,7 +3,7 @@
 //! Captures the default camera and, when one is available, the default
 //! microphone, publishes both over iroh, and prints a ticket.
 //!
-//! Watch it with `irl play TICKET`.
+//! Watch it with `irl watch TICKET`.
 
 use clap::Parser;
 use iroh_live::{
@@ -64,8 +64,9 @@ async fn main() -> n0_error::Result {
         Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    let publication = live.publish(&args.name, &broadcast)?;
-    println!("{}", publication.ticket().expect("published under live/"));
+    // Held for as long as the broadcast should stay published.
+    let _publication = live.publish(&args.name, &broadcast)?;
+    println!("{}", live.ticket(&args.name));
     info!(name = %args.name, "publishing");
 
     tokio::signal::ctrl_c().await?;

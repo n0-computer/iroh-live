@@ -52,8 +52,9 @@ async fn main() -> anyhow::Result<()> {
     let config = RpicamConfig::new(Size::new(640, 360), 30).with_keyframe_interval(30);
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
 
-    let publication = live.publish(BROADCAST, &broadcast)?;
-    println!("{}", publication.ticket().expect("published under live/"));
+    // Held for as long as the broadcast should stay published.
+    let _publication = live.publish(BROADCAST, &broadcast)?;
+    println!("{}", live.ticket(BROADCAST));
 
     tracing::info!("publishing, press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;

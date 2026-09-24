@@ -1,8 +1,9 @@
-/// Raspberry Pi Zero 2 demo: publish a camera stream over iroh and display
-/// the connection ticket as a QR code on a Waveshare 2.13" e-paper HAT.
-/// Also supports watching a remote stream with EGL/GLES2 rendering.
-///
-/// This binary only builds and runs on Linux (ARM64 target).
+//! Raspberry Pi Zero 2 demo: publish a camera stream over iroh and display
+//! the connection ticket as a QR code on a Waveshare 2.13" e-paper HAT.
+//! Also supports watching a remote stream with EGL/GLES2 rendering.
+//!
+//! This binary only builds and runs on Linux (ARM64 target).
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("pi-zero-demo only supports Linux");
 

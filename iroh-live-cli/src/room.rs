@@ -447,26 +447,25 @@ mod window {
             }
         }
 
-        /// Drops the tiles whose broadcast or session has gone, and opens
-        /// them again after a pause if the member still lists them.
+        /// Drops the tiles whose broadcast has gone, and opens them again
+        /// after a pause if the member still lists them.
         ///
         /// The room's state drops a member that went away once its lease runs
-        /// out, which takes minutes; a session that failed says so at once,
-        /// and may come back well within the lease. A broadcast can also end
-        /// while its session stays: the member ended and republished it
-        /// faster than its announcement changed, or briefly stopped counting
-        /// this node as a member, which cuts off what this node reads. Either
-        /// way the membership does not change, so without this the tile would
-        /// freeze.
+        /// out, which takes minutes. A broadcast can also end while the
+        /// member stays: its session failed, the member ended and republished
+        /// the broadcast faster than its announcement changed, or it briefly
+        /// stopped counting this node as a member, which cuts off what this
+        /// node reads. Either way the membership does not change, so without
+        /// this the tile would freeze.
+        ///
+        /// The broadcast follows its path over the member's session, and
+        /// counts as closed three seconds after nothing serves the path there
+        /// any more, a failed session included: once the session is gone the
+        /// subscription has no session left to ask, so the broadcast is the
+        /// one signal worth reading.
         fn drop_closed(&mut self, ctx: &egui::Context) {
-            let dropped = self.close_tiles("the broadcast or its session ended", |peer| {
-                // The broadcast follows its path over the member's session, so
-                // it counts as closed only once nothing serves the path there.
+            let dropped = self.close_tiles("the broadcast ended", |peer| {
                 peer.sub.broadcast().is_closed()
-                    || peer
-                        .sub
-                        .session()
-                        .is_some_and(|session| session.connection().close_reason().is_some())
             });
             if dropped > 0 {
                 self.reconcile_later(ctx);

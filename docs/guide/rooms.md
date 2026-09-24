@@ -85,9 +85,9 @@ broadcast and publish it again faster than its announcement changes, and a
 member that briefly stops counting this node as a member cuts off what this
 node reads; in both cases the membership and the member's `broadcasts` stay
 as they were, and a tile that only follows the state freezes. So a grid also
-drops every tile whose `RemoteBroadcast::is_closed()` turned true, or whose
-session closed, and subscribes to the name again a moment later if the member
-still lists it. `iroh-live-cli/src/room.rs` does exactly this. Keep in mind
+drops every tile whose `RemoteBroadcast::is_closed()` turned true, a failed
+session included, and subscribes to the name again a moment later if the
+member still lists it. `iroh-live-cli/src/room.rs` does exactly this. Keep in mind
 that a broadcast following a route table reports closed only about three
 seconds after it actually ended.
 

@@ -469,7 +469,7 @@ mod window {
 
     /// A connected call: the session and the peer's picture and sound.
     struct InCall {
-        /// Owns the session and the signal task the player adapts on.
+        /// Owns the session the call runs over and the peer's broadcast.
         call: Call,
         remote: RemoteView,
     }
