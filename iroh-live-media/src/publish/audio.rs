@@ -2,14 +2,18 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
+#[cfg(feature = "capture")]
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "capture")]
+use super::status::Reporter;
 use super::{
     Job, Rebase,
     encoding::AudioEncoding,
-    status::{RenditionState, Reporter, SlotState},
+    status::{RenditionState, SlotState},
 };
 use crate::{
     AudioFormat, AudioSource, audio,
@@ -112,6 +116,7 @@ async fn pcm(
 }
 
 /// Captures and encodes a microphone through moq-audio's publication.
+#[cfg(feature = "capture")]
 ///
 /// The publication owns the device and opens it only while someone listens.
 /// Its driver future is not `Send` on macOS, so it runs on a thread of its
@@ -170,6 +175,7 @@ async fn microphone(
 
 /// Reports the microphone publication's state changes until it ends or the
 /// slot stops.
+#[cfg(feature = "capture")]
 async fn follow(
     handle: oneshot::Receiver<Result<audio::encode::Publication, Error>>,
     reporter: &Reporter,

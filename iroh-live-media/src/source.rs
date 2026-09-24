@@ -12,10 +12,12 @@
 //! [`LocalBroadcast`](crate::LocalBroadcast) holds, and any number of
 //! broadcasts and previews read it at once.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+#[cfg(feature = "capture")]
+use tracing::info;
+use tracing::{debug, warn};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
@@ -73,6 +75,7 @@ enum Driver {
     /// A thread that watches the stop token.
     Thread,
     /// A task on a thread of its own, for capture objects that cannot move.
+    #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
     Local {
         /// Stops the task when dropped.
         _task: crate::local_task::LocalTask,
@@ -660,10 +663,12 @@ impl AudioSource {
 
 /// How long an opened capture device may take over its first frame.
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
-pub(crate) const FIRST_FRAME_PATIENCE: Duration = Duration::from_secs(30);
+pub(crate) const FIRST_FRAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn rate(fps: u32) -> video::Rate {

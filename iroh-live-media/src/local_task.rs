@@ -28,6 +28,10 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 pub(crate) struct LocalTask {
     shutdown: CancellationToken,
+    #[cfg_attr(
+        not(any(feature = "capture", test)),
+        expect(dead_code, reason = "only a microphone waits for its thread")
+    )]
     joined: Option<oneshot::Receiver<()>>,
 }
 
@@ -50,6 +54,10 @@ impl LocalTask {
     /// the receiver up front meant a cancelled wait was indistinguishable from
     /// a completed one, and the next caller was told the device was free while
     /// the thread still held it.
+    #[cfg_attr(
+        not(any(feature = "capture", test)),
+        expect(dead_code, reason = "only a microphone waits for its thread")
+    )]
     pub(crate) async fn joined(&mut self) {
         let Some(rx) = self.joined.as_mut() else {
             return;

@@ -84,6 +84,7 @@
 mod catalog;
 mod error;
 mod frames;
+#[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
 mod local_task;
 mod network;
 mod output;
@@ -103,6 +104,8 @@ pub use moq_net::bandwidth::Rate as Bitrate;
 /// [`Frame`](moq_video::Frame) vocabulary every one of them speaks.
 pub use moq_video as video;
 
+#[cfg(feature = "capture")]
+pub use self::source::MicrophoneConfig;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::RpicamConfig;
 pub use self::{
@@ -118,10 +121,7 @@ pub use self::{
     },
     record::{RecordConfig, RecordFormat, Recording},
     remote::RemoteBroadcast,
-    source::{
-        AudioFormat, AudioSource, EncodedVideoSource, FrameSender, MicrophoneConfig, VideoFormat,
-        VideoSource,
-    },
+    source::{AudioFormat, AudioSource, EncodedVideoSource, FrameSender, VideoFormat, VideoSource},
     stats::{
         AudioEncodeStats, AudioPlaybackStats, EncodeStats, FrameTiming, MediaKind, PlaybackStats,
         PublishStats, VideoPlaybackStats,
