@@ -11,11 +11,11 @@ use std::{
 };
 
 use iroh_live_media::{
-    AudioEncoding, AudioOutput, AudioSource, Bitrate, Error, LocalBroadcast, NetworkSample,
-    PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast, RenditionMode, SlotState,
-    SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource, audio, video,
+    AudioEncoding, AudioOutput, AudioSource, Bitrate, Error, FrameSender, LocalBroadcast,
+    NetworkSample, PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast, RenditionMode,
+    SlotState, SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource, audio, video,
 };
-use n0_watcher::Watcher as _;
+use n0_watcher::Watcher;
 
 /// Generous: software encoding and decoding in a debug build share the
 /// machine with the rest of the suite.
@@ -25,6 +25,43 @@ fn fps(n: u32) -> video::Rate {
     video::Rate::new(n, 1).expect("a valid rate")
 }
 
+/// `encoding` on the software encoder, which every build has.
+fn software(encoding: VideoEncoding) -> VideoEncoding {
+    VideoEncoding {
+        prefer_hardware: false,
+        ..encoding
+    }
+}
+
+/// Waits until `watcher` holds a value `done` accepts, and returns it.
+async fn until<W: Watcher>(mut watcher: W, done: impl Fn(&W::Value) -> bool) -> W::Value {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let value = watcher.get();
+            if done(&value) {
+                return value;
+            }
+            watcher.updated().await.expect("the watched value is alive");
+        }
+    })
+    .await
+    .expect("the awaited value never came")
+}
+
+/// Pushes flat grey frames at 30 fps until the source is gone.
+async fn push_frames(sender: FrameSender<video::Frame>, format: VideoFormat) {
+    let rgba = vec![0x80u8; format.size.pixels() as usize * 4];
+    let mut tick = tokio::time::interval(Duration::from_millis(33));
+    for index in 0u64.. {
+        tick.tick().await;
+        let surface = video::Surface::rgba(&rgba, format.size).expect("valid");
+        let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
+        if sender.push(video::Frame::new(surface, timestamp)).is_err() {
+            return;
+        }
+    }
+}
+
 /// A two-rung ladder of the test pattern.
 fn ladder() -> (LocalBroadcast, VideoSource) {
     let source = VideoSource::test_pattern(video::Size::new(640, 360), fps(30));
@@ -32,19 +69,16 @@ fn ladder() -> (LocalBroadcast, VideoSource) {
     broadcast
         .set_video(
             source.clone(),
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::ladder([
-                    VideoRendition {
-                        size: Some(video::Size::new(640, 360)),
-                        ..VideoRendition::new("high")
-                    },
-                    VideoRendition {
-                        size: Some(video::Size::new(320, 180)),
-                        ..VideoRendition::new("low")
-                    },
-                ])
-            },
+            software(VideoEncoding::ladder([
+                VideoRendition {
+                    size: Some(video::Size::new(640, 360)),
+                    ..VideoRendition::new("high")
+                },
+                VideoRendition {
+                    size: Some(video::Size::new(320, 180)),
+                    ..VideoRendition::new("low")
+                },
+            ])),
         )
         .expect("a valid ladder");
     (broadcast, source)
@@ -107,17 +141,12 @@ async fn a_local_broadcast_plays_in_process() {
 async fn a_player_started_after_the_catalog_plays() {
     let (broadcast, _source) = ladder();
     let remote = RemoteBroadcast::local(&broadcast);
-    let mut catalog = remote.catalog();
-    tokio::time::timeout(TIMEOUT, async {
-        while catalog
-            .get()
-            .is_none_or(|catalog| catalog.video.renditions.len() < 2)
-        {
-            catalog.updated().await.expect("the broadcast is alive");
-        }
+    until(remote.catalog(), |catalog| {
+        catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.video.renditions.len() >= 2)
     })
-    .await
-    .expect("the catalog arrives");
+    .await;
     let player = remote
         .play(PlayerConfig {
             rendition: RenditionMode::pinned("low"),
@@ -142,21 +171,18 @@ async fn a_held_shortfall_moves_the_player_down() {
     broadcast
         .set_video(
             source,
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::ladder([
-                    VideoRendition {
-                        size: Some(video::Size::new(640, 360)),
-                        bitrate: Some(Bitrate::from_bps(2_000_000)),
-                        ..VideoRendition::new("high")
-                    },
-                    VideoRendition {
-                        size: Some(video::Size::new(320, 180)),
-                        bitrate: Some(Bitrate::from_bps(200_000)),
-                        ..VideoRendition::new("low")
-                    },
-                ])
-            },
+            software(VideoEncoding::ladder([
+                VideoRendition {
+                    size: Some(video::Size::new(640, 360)),
+                    bitrate: Some(Bitrate::from_bps(2_000_000)),
+                    ..VideoRendition::new("high")
+                },
+                VideoRendition {
+                    size: Some(video::Size::new(320, 180)),
+                    bitrate: Some(Bitrate::from_bps(200_000)),
+                    ..VideoRendition::new("low")
+                },
+            ])),
         )
         .expect("a valid ladder");
     let sample = Arc::new(Mutex::new(NetworkSample {
@@ -258,18 +284,10 @@ async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    let mut status = player.status();
-    let fell_back = tokio::time::timeout(TIMEOUT, async {
-        loop {
-            let current = status.get();
-            if current.rendition.is_some() && current.switch_error.is_some() {
-                return current;
-            }
-            status.updated().await.expect("the player keeps running");
-        }
+    let fell_back = until(player.status(), |status| {
+        status.rendition.is_some() && status.switch_error.is_some()
     })
-    .await
-    .expect("the player fell back");
+    .await;
     assert_eq!(fell_back.rendition.as_deref(), Some("high"));
 }
 
@@ -292,18 +310,10 @@ async fn a_decoder_that_will_not_open_fails_the_video() {
         matches!(result, Err(SwitchError::Failed { .. })),
         "{result:?}"
     );
-    let mut status = player.status();
-    let failed = tokio::time::timeout(TIMEOUT, async {
-        loop {
-            let current = status.get();
-            if matches!(current.video, SlotState::Failed(_)) {
-                return current;
-            }
-            status.updated().await.expect("the player keeps running");
-        }
+    let failed = until(player.status(), |status| {
+        matches!(status.video, SlotState::Failed(_))
     })
-    .await
-    .expect("the video shows the failure");
+    .await;
     assert!(failed.rendition.is_none());
     assert!(failed.switch_error.is_some());
 }
@@ -318,10 +328,7 @@ async fn a_failed_first_decoder_is_tried_again() {
     broadcast
         .set_video(
             source,
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::single(VideoRendition::new("video"))
-            },
+            software(VideoEncoding::single(VideoRendition::new("video"))),
         )
         .expect("valid");
     let player = RemoteBroadcast::local(&broadcast)
@@ -330,29 +337,17 @@ async fn a_failed_first_decoder_is_tried_again() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    let mut status = player.status();
-    let first = tokio::time::timeout(TIMEOUT, async {
-        loop {
-            if let Some(error) = status.get().switch_error {
-                return error;
-            }
-            status.updated().await.expect("the player keeps running");
-        }
+    let first = until(player.status(), |status| status.switch_error.is_some())
+        .await
+        .switch_error
+        .expect("the first open fails");
+    until(player.status(), |status| {
+        status
+            .switch_error
+            .as_ref()
+            .is_some_and(|error| !Arc::ptr_eq(error, &first))
     })
-    .await
-    .expect("the first open fails");
-    tokio::time::timeout(TIMEOUT, async {
-        loop {
-            if let Some(error) = status.get().switch_error
-                && !std::sync::Arc::ptr_eq(&error, &first)
-            {
-                return;
-            }
-            status.updated().await.expect("the player keeps running");
-        }
-    })
-    .await
-    .expect("the decoder was never tried again");
+    .await;
 }
 
 /// One rendition of the test pattern at `size`, called `video`.
@@ -361,13 +356,10 @@ fn single(size: video::Size) -> LocalBroadcast {
     broadcast
         .set_video(
             VideoSource::test_pattern(size, fps(30)),
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::single(VideoRendition {
-                    size: Some(size),
-                    ..VideoRendition::new("video")
-                })
-            },
+            software(VideoEncoding::single(VideoRendition {
+                size: Some(size),
+                ..VideoRendition::new("video")
+            })),
         )
         .expect("a valid encoding");
     broadcast
@@ -479,13 +471,10 @@ async fn video_comes_back_after_the_publisher_replaces_it() {
     broadcast
         .set_video(
             VideoSource::test_pattern(size, fps(30)),
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::single(VideoRendition {
-                    size: Some(size),
-                    ..VideoRendition::new("video")
-                })
-            },
+            software(VideoEncoding::single(VideoRendition {
+                size: Some(size),
+                ..VideoRendition::new("video")
+            })),
         )
         .expect("a valid encoding");
     wait_for_size(&mut frames, size).await;
@@ -502,18 +491,10 @@ async fn turning_video_off_leaves_nothing_decoding() {
     let mut frames = player.video();
     wait_for_size(&mut frames, video::Size::new(640, 360)).await;
     player.set_rendition(RenditionMode::Off);
-    let mut status = player.status();
-    tokio::time::timeout(TIMEOUT, async {
-        loop {
-            let current = status.get();
-            if current.video == SlotState::Off && current.rendition.is_none() {
-                return;
-            }
-            status.updated().await.expect("the player keeps running");
-        }
+    until(player.status(), |status| {
+        status.video == SlotState::Off && status.rendition.is_none()
     })
-    .await
-    .expect("video turned off");
+    .await;
     // And it comes back.
     player.set_rendition(RenditionMode::auto());
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
@@ -630,21 +611,18 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
 #[tokio::test]
 async fn the_publish_status_follows_the_video_slot() {
     let (broadcast, _source) = ladder();
-    let mut status = broadcast.status();
-    tokio::time::timeout(TIMEOUT, async {
-        while status.get().video != SlotState::Running {
-            status.updated().await.expect("the broadcast is alive");
-        }
+    let running = until(broadcast.status(), |status| {
+        status.video == SlotState::Running
     })
-    .await
-    .expect("the video slot started");
+    .await;
     assert_eq!(
-        status.get().renditions.keys().collect::<Vec<_>>(),
+        running.renditions.keys().collect::<Vec<_>>(),
         ["high", "low"]
     );
     broadcast.clear_video();
-    assert_eq!(status.get().video, SlotState::Off);
-    assert!(status.get().renditions.is_empty());
+    let cleared = broadcast.status().get();
+    assert_eq!(cleared.video, SlotState::Off);
+    assert!(cleared.renditions.is_empty());
 }
 
 /// A pushed source that fails says why in the broadcast's status, rather
@@ -665,17 +643,13 @@ async fn a_source_that_fails_shows_in_the_status() {
     broadcast
         .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
         .expect("valid");
-    let mut status = broadcast.status();
-    let failed = tokio::time::timeout(TIMEOUT, async {
-        loop {
-            if let SlotState::Failed(err) = status.get().video {
-                return err;
-            }
-            status.updated().await.expect("the broadcast is alive");
-        }
+    let status = until(broadcast.status(), |status| {
+        matches!(status.video, SlotState::Failed(_))
     })
-    .await
-    .expect("the failure was reported");
+    .await;
+    let SlotState::Failed(failed) = status.video else {
+        unreachable!("waited for a failure")
+    };
     assert!(format!("{failed:#}").contains("caught fire"), "{failed:#}");
 }
 
@@ -696,43 +670,19 @@ async fn a_pushed_source_sees_demand_while_played() {
         rate: fps(30),
     };
     let (sender, source) = VideoSource::push(format);
-    let feeder = tokio::spawn({
-        let sender = sender.clone();
-        async move {
-            let rgba = vec![0x80u8; format.size.pixels() as usize * 4];
-            let mut tick = tokio::time::interval(Duration::from_millis(33));
-            for index in 0u64.. {
-                tick.tick().await;
-                let surface = video::Surface::rgba(&rgba, format.size).expect("valid");
-                let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
-                if sender.push(video::Frame::new(surface, timestamp)).is_err() {
-                    return;
-                }
-            }
-        }
-    });
+    let feeder = tokio::spawn(push_frames(sender.clone(), format));
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_video(
             source,
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::single(VideoRendition::new("video"))
-            },
+            software(VideoEncoding::single(VideoRendition::new("video"))),
         )
         .expect("valid");
-    let mut demand = sender.demand();
-    assert!(!demand.get(), "nobody watches yet");
+    assert!(!sender.demand().get(), "nobody watches yet");
     let player = RemoteBroadcast::local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    tokio::time::timeout(TIMEOUT, async {
-        while !demand.get() {
-            demand.updated().await.expect("the source is alive");
-        }
-    })
-    .await
-    .expect("demand arrived with the player");
+    until(sender.demand(), |wanted| *wanted).await;
     drop(player);
     feeder.abort();
 }
@@ -751,32 +701,15 @@ async fn a_source_that_waits_for_demand_is_played() {
     let feeder = tokio::spawn({
         let sender = sender.clone();
         async move {
-            let mut demand = sender.demand();
-            while !demand.get() {
-                if demand.updated().await.is_err() {
-                    return;
-                }
-            }
-            let rgba = vec![0x80u8; format.size.pixels() as usize * 4];
-            let mut tick = tokio::time::interval(Duration::from_millis(33));
-            for index in 0u64.. {
-                tick.tick().await;
-                let surface = video::Surface::rgba(&rgba, format.size).expect("valid");
-                let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
-                if sender.push(video::Frame::new(surface, timestamp)).is_err() {
-                    return;
-                }
-            }
+            until(sender.demand(), |wanted| *wanted).await;
+            push_frames(sender, format).await;
         }
     });
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_video(
             source,
-            VideoEncoding {
-                prefer_hardware: false,
-                ..VideoEncoding::single(VideoRendition::new("video"))
-            },
+            software(VideoEncoding::single(VideoRendition::new("video"))),
         )
         .expect("valid");
     let player = RemoteBroadcast::local(&broadcast)
