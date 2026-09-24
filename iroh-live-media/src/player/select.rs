@@ -293,12 +293,12 @@ pub(crate) async fn run(inputs: Inputs) {
                         ended = Some(target);
                     }
                     Some(Report::Failed(reported)) => {
-                    let rendition = &reported.target.rendition;
-                    if reported.exclude && !reported.config_only {
-                        backoffs.fail(rendition, Instant::now());
-                        info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
-                    }
-                    failed = Some(reported);
+                        let rendition = &reported.target.rendition;
+                        if reported.exclude && !reported.config_only {
+                            backoffs.fail(rendition, Instant::now());
+                            info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
+                        }
+                        failed = Some(reported);
                     }
                 },
                 _ = ticker.tick(), if ticking => {}

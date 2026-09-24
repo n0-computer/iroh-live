@@ -292,7 +292,7 @@ impl<R, O> Switcher<R, O> {
             }
             Err(err) => {
                 let target = self.replacement.take().expect("matched above").target;
-                self.abandon(target, Abandoned::OpenFailed(err))
+                Outcome::Abandoned(target, Abandoned::OpenFailed(err))
             }
         }
     }
@@ -377,7 +377,7 @@ impl<R, O> Switcher<R, O> {
     /// Records that the replacement's track ended before it took over.
     pub(crate) fn replacement_ended<E>(&mut self) -> Outcome<E> {
         match self.replacement.take() {
-            Some(replacement) => self.abandon(replacement.target, Abandoned::Ended),
+            Some(replacement) => Outcome::Abandoned(replacement.target, Abandoned::Ended),
             None => Outcome::Idle,
         }
     }
@@ -387,7 +387,7 @@ impl<R, O> Switcher<R, O> {
         match &self.replacement {
             Some(replacement) if replacement.deadline <= now => {
                 let target = self.replacement.take().expect("matched above").target;
-                self.abandon(target, Abandoned::TimedOut)
+                Outcome::Abandoned(target, Abandoned::TimedOut)
             }
             _ => Outcome::Idle,
         }
@@ -409,19 +409,6 @@ impl<R, O> Switcher<R, O> {
             playhead: None,
         });
         Outcome::Promoted(target)
-    }
-
-    /// Reports an abandoned replacement.
-    ///
-    /// Reported the same way whether or not anything is playing: a first open
-    /// that fails is a failure to act on, not the end of the video, and the
-    /// caller reads [`current`](Self::current) to tell the two apart.
-    #[expect(
-        clippy::unused_self,
-        reason = "a transition like the others, kept as a method"
-    )]
-    fn abandon<E>(&mut self, target: Target, reason: Abandoned<E>) -> Outcome<E> {
-        Outcome::Abandoned(target, reason)
     }
 }
 

@@ -136,12 +136,13 @@ That figure is the only latency either side can actually measure.
 buffered duration and the most recent peak for a meter. There is no audio
 ladder, so the first audio rendition plays and there is nothing to switch
 between. The audio task reopens on a new route to the broadcast, and retries a
-track that ended or never opened when the catalog changes.
+track that ended or never opened when the catalog changes, and every two
+seconds.
 
 ## Player configuration
 
-`PlayerConfig` carries a `RenditionMode`, a `Latency`, the `AudioOutput`, and a
-decoder selection. `Latency { min, max }` is how far behind live to run: the
+`PlayerConfig` carries a `RenditionMode`, a `Latency`, the `AudioOutput`, a
+decoder selection, and the `Adaptation` thresholds and timers. `Latency { min, max }` is how far behind live to run: the
 playout clock holds each picture for `min`, and `max` becomes `max_age` on both
 `moq_video::decode::Options` and `moq_audio::decode::Options`, which is where
 upstream drops stale groups. The default holds for 100 ms and skips past

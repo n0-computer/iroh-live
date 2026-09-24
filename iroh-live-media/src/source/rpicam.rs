@@ -584,7 +584,6 @@ struct Process {
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     /// Held so the forwarding task stops with the stream rather than outliving
     /// it. `None` only if the child gave us no stderr pipe.
-    #[allow(dead_code, reason = "owned for its drop")]
     stderr_reader: Option<AbortOnDropHandle<()>>,
 }
 

@@ -13,7 +13,6 @@ use super::{
 };
 use crate::{
     AudioFormat, AudioSource, audio,
-    catalog::CatalogProducer,
     error::Error,
     source::AudioKind,
     stats::{AudioEncodeStats, Cell},
@@ -39,35 +38,13 @@ pub(super) async fn run(
             // this one replaces has finished, and with it the canceller it
             // held, which an output hands out one at a time.
             match config.resolve() {
-                Ok(capture) => {
-                    microphone(
-                        &job.producer,
-                        &job.catalog,
-                        job.clock,
-                        &job.reporter,
-                        capture,
-                        &encoding,
-                        &stop,
-                    )
-                    .await
-                }
+                Ok(capture) => microphone(&job, capture, &encoding, &stop).await,
                 Err(err) => Err(err),
             }
         }
         AudioKind::Pcm { format, fanout } => {
             let _wanted = source.want();
-            pcm(
-                &job.producer,
-                &job.catalog,
-                job.clock,
-                &job.reporter,
-                &stats,
-                *format,
-                fanout.subscribe(),
-                &encoding,
-                &stop,
-            )
-            .await
+            pcm(&job, &stats, *format, fanout.subscribe(), &encoding, &stop).await
         }
     };
     if stop.is_cancelled() {
@@ -86,15 +63,8 @@ pub(super) async fn run(
 }
 
 /// Encodes PCM from a fan-out receiver.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one call site, all of it the job's parts"
-)]
 async fn pcm(
-    producer: &moq_net::broadcast::Producer,
-    catalog: &CatalogProducer,
-    clock: moq_mux::Clock,
-    reporter: &Reporter,
+    job: &Job,
     stats: &Cell<AudioEncodeStats>,
     format: AudioFormat,
     mut frames: broadcast::Receiver<audio::Frame>,
@@ -105,13 +75,13 @@ async fn pcm(
     let mut options = audio::encode::Options::default();
     options.track = Some(encoding.track_name());
     options.settings = encoding.settings(Some(format));
-    let mut broadcast = producer.clone();
+    let mut broadcast = job.producer.clone();
     let mut encoder =
-        audio::encode::Producer::new(&mut broadcast, catalog.clone(), input, &options)
+        audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
             .map_err(Error::encoder)?;
     info!(track = %encoding.track_name(), rate = format.sample_rate, "publishing audio");
-    reporter.slot(SlotState::Running);
-    reporter.rendition(
+    job.reporter.slot(SlotState::Running);
+    job.reporter.rendition(
         &encoding.track_name(),
         RenditionState::Encoding {
             encoder: encoding.codec.to_string(),
@@ -133,7 +103,7 @@ async fn pcm(
             }
             Err(broadcast::error::RecvError::Closed) => break,
         };
-        let rebase = *rebase.get_or_insert_with(|| Rebase::anchor(clock, frame.timestamp));
+        let rebase = *rebase.get_or_insert_with(|| Rebase::anchor(job.clock, frame.timestamp));
         frame.timestamp = rebase.map(frame.timestamp);
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
@@ -147,10 +117,7 @@ async fn pcm(
 /// Its driver future is not `Send` on macOS, so it runs on a thread of its
 /// own, and its state changes come back here to be reported.
 async fn microphone(
-    producer: &moq_net::broadcast::Producer,
-    catalog: &CatalogProducer,
-    clock: moq_mux::Clock,
-    reporter: &Reporter,
+    job: &Job,
     capture: audio::capture::Config,
     encoding: &AudioEncoding,
     stop: &CancellationToken,
@@ -160,11 +127,11 @@ async fn microphone(
     options.capture = capture;
     options.encode.track = Some(track.clone());
     options.encode.settings = encoding.settings(None);
-    options.clock = clock;
+    options.clock = job.clock;
 
     let (handle_tx, handle) = oneshot::channel();
-    let broadcast = producer.clone();
-    let catalog = catalog.clone();
+    let broadcast = job.producer.clone();
+    let catalog = job.catalog.clone();
     let driver_stop = stop.child_token();
     let mut driver = crate::local_task::spawn(
         "audio-capture",
@@ -192,7 +159,7 @@ async fn microphone(
             }
         },
     )?;
-    let result = follow(handle, reporter, &track, encoding, stop).await;
+    let result = follow(handle, &job.reporter, &track, encoding, stop).await;
     // The capture thread holds the echo canceller, which its output hands out
     // to one microphone at a time: a publication replacing this one asks for
     // it as soon as this returns, so the thread has let go first.

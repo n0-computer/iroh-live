@@ -101,8 +101,7 @@ wins.
 Before any network reading counts, the caller's constraints rule renditions
 out: a `max_height` from `RenditionMode::Auto` (a grid tile has no use for
 1080p), a catalog `stalled` flag the publisher set, and any rendition whose
-decoder recently failed. A failed rendition is left alone for 5 s the first
-time, doubling to at most 60 s on repeated failures. When every rendition is
+decoder recently failed, which is left alone for 10 s. When every rendition is
 ruled out, the smallest still plays, so there is always an answer.
 
 ## The decision

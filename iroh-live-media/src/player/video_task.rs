@@ -70,44 +70,6 @@ const READ_AHEAD: usize = 2;
 /// within about ten seconds rather than reading a track forever.
 const MAX_CONSECUTIVE_DECODE_FAILURES: u32 = 300;
 
-/// What a failed read is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReadFailure {
-    /// One access unit the decoder would not take, which the next keyframe
-    /// makes good.
-    Picture,
-    /// The track itself rather than anything in it: the transport dropped it,
-    /// or the container will not parse. Reading again fails the same way.
-    Track,
-}
-
-impl From<&moq_video::Error> for ReadFailure {
-    fn from(err: &moq_video::Error) -> Self {
-        // `Codec` is what a decode backend returns, and the only variant that
-        // is about the bytes of one picture. Transport and container errors
-        // describe the track, and retrying one of those is a spin.
-        match err {
-            moq_video::Error::Codec(_) => Self::Picture,
-            _ => Self::Track,
-        }
-    }
-}
-
-/// What to do about an access unit the decoder would not take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AfterFailure {
-    /// Skip it and keep reading. The next keyframe restores the picture.
-    Skip,
-    /// Stop reading: no keyframe is going to arrive that this decoder can use.
-    GiveUp,
-}
-
-/// The run of decode failures since the last picture.
-#[derive(Debug, Default)]
-struct DecodeFailures {
-    run: u32,
-}
-
 /// How often the decode cadence is logged.
 ///
 /// A picture that is starving looks, from every log line above this one, like
@@ -116,29 +78,6 @@ struct DecodeFailures {
 /// frame rate that actually decoded is what lets a goodput reading in a trace
 /// be matched to what the viewer saw.
 const CADENCE_EVERY: Duration = Duration::from_secs(5);
-
-impl DecodeFailures {
-    /// Records a failure and says whether to carry on.
-    fn failed(&mut self) -> AfterFailure {
-        self.run += 1;
-        match self.run >= MAX_CONSECUTIVE_DECODE_FAILURES {
-            true => AfterFailure::GiveUp,
-            false => AfterFailure::Skip,
-        }
-    }
-
-    /// Records a picture, ending whatever run was going on.
-    ///
-    /// Returns how long the run was, so a recovery can report what it cost.
-    fn decoded(&mut self) -> u32 {
-        std::mem::take(&mut self.run)
-    }
-
-    /// The length of the run so far.
-    fn len(&self) -> u32 {
-        self.run
-    }
-}
 
 /// The task opening a replacement decoder.
 type OpenTask = AbortOnDropHandle<Result<Reader, Error>>;
@@ -660,16 +599,17 @@ async fn spawn_reader(
     let gave_up = failure.clone();
     let task = spawn(
         async move {
-            let mut failures = DecodeFailures::default();
+            // Access units refused since the last picture.
+            let mut failures = 0u32;
             let mut timing = Smoothed::default();
             let mut cadence = RateMeter::over(CADENCE_EVERY);
             loop {
                 let started = std::time::Instant::now();
                 match consumer.read().await {
                     Ok(Some(frame)) => {
-                        let skipped = failures.decoded();
-                        if skipped > 0 {
-                            info!(skipped, "video decoding recovered");
+                        if failures > 0 {
+                            info!(skipped = failures, "video decoding recovered");
+                            failures = 0;
                         }
                         if let Some((fps, _)) = cadence.tick(0) {
                             debug!(fps = format_args!("{fps:.1}"), "video decoding cadence");
@@ -694,7 +634,10 @@ async fn spawn_reader(
                         debug!("video track ended");
                         return;
                     }
-                    Err(err) if ReadFailure::from(&err) == ReadFailure::Track => {
+                    // `Codec` is the one error about the bytes of a single
+                    // picture, which the next keyframe makes good. The others
+                    // describe the track, and reading again fails the same way.
+                    Err(err) if !matches!(err, moq_video::Error::Codec(_)) => {
                         warn!(error = %err, "video track failed");
                         let _ = gave_up.set(Arc::new(decode_error(err)));
                         return;
@@ -707,32 +650,21 @@ async fn spawn_reader(
                                 }
                             });
                         }
-                        match failures.failed() {
-                        AfterFailure::Skip => {
-                            // Once per run rather than once per access unit: a
-                            // lost reference chain fails every picture until
-                            // the next keyframe, and the first of those says
-                            // everything the rest would.
-                            if failures.len() == 1 {
-                                warn!(error = %err, "video decode failed, skipping the access unit");
-                            } else {
-                                debug!(error = %err, skipped = failures.len(), "video decode failed");
-                            }
-                        }
-                        AfterFailure::GiveUp => {
-                            error!(
-                                error = %err,
-                                failures = failures.len(),
-                                "giving up on this rendition: no access unit has decoded for a long time",
-                            );
+                        failures += 1;
+                        if failures >= MAX_CONSECUTIVE_DECODE_FAILURES {
+                            error!(error = %err, failures, "no access unit decoded for a long time, giving up");
                             let _ = gave_up.set(Arc::new(Error::decoder(std::io::Error::other(
-                                format!(
-                                    "the decoder refused {} access units in a row: {err}",
-                                    failures.len()
-                                ),
+                                format!("the decoder refused {failures} access units in a row: {err}"),
                             ))));
                             return;
                         }
+                        // Once per run: a lost reference chain fails every
+                        // picture until the next keyframe, and the first of
+                        // those says everything the rest would.
+                        if failures == 1 {
+                            warn!(error = %err, "video decode failed, skipping the access unit");
+                        } else {
+                            debug!(error = %err, failures, "video decode failed");
                         }
                     }
                 }
@@ -1012,12 +944,9 @@ mod tests {
     ///
     /// What this covers is the reader carrying on through a break in the
     /// bitstream and delivering the pictures after the next keyframe. It does
-    /// not reach [`DecodeFailures`]: openh264 absorbs a truncated access unit
+    /// not reach the failure counter: openh264 absorbs a truncated access unit
     /// and the ones that lost their reference to it by producing no picture,
-    /// rather than by returning an error, so `read` never fails here. Filling
-    /// the same bytes with garbage instead is weaker still, because the decoder
-    /// conceals it and every picture arrives. The give-up threshold and the run
-    /// counter are covered by the unit tests below.
+    /// rather than by returning an error, so `read` never fails here.
     #[tokio::test]
     async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
         let (encoded, intact) = read_stream(None).await?;
@@ -1073,46 +1002,5 @@ mod tests {
             "an intact stream delivers every picture that was encoded",
         );
         Ok(())
-    }
-
-    #[test]
-    fn only_a_decode_failure_is_worth_reading_past() {
-        // A retry cannot fix a track the transport dropped, and the reader would
-        // spin through its whole allowance before saying so.
-        assert_eq!(
-            ReadFailure::from(&moq_video::Error::Net(moq_net::Error::Cancel)),
-            ReadFailure::Track,
-        );
-        assert_eq!(
-            ReadFailure::from(&moq_video::Error::Codec(
-                n0_error::anyerr!("bad picture").into()
-            )),
-            ReadFailure::Picture,
-        );
-    }
-
-    #[test]
-    fn a_run_of_failures_ends_the_reader_only_once_no_keyframe_can_help() {
-        let mut failures = DecodeFailures::default();
-        for _ in 1..MAX_CONSECUTIVE_DECODE_FAILURES {
-            assert_eq!(failures.failed(), AfterFailure::Skip);
-        }
-        assert_eq!(failures.failed(), AfterFailure::GiveUp);
-    }
-
-    #[test]
-    fn a_decoded_picture_ends_the_run() {
-        let mut failures = DecodeFailures::default();
-        for _ in 0..MAX_CONSECUTIVE_DECODE_FAILURES - 1 {
-            failures.failed();
-        }
-        assert_eq!(failures.decoded(), MAX_CONSECUTIVE_DECODE_FAILURES - 1);
-        assert_eq!(failures.len(), 0);
-        assert_eq!(
-            failures.failed(),
-            AfterFailure::Skip,
-            "the run has to start over, or a stream that recovers every keyframe \
-             still accumulates its way to a give-up",
-        );
     }
 }
