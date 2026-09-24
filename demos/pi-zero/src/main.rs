@@ -136,26 +136,38 @@ mod app {
         // Waited for, so a publisher that never describes its broadcast, or
         // describes it in a way this build cannot read, is an error here
         // rather than a black screen.
-        let mut catalog = sub.broadcast().catalog();
+        // Waited for until it lists video: audio or metadata can land first.
+        let broadcast = sub.broadcast();
+        let mut catalog = broadcast.catalog();
         let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
-                if let Some(known) = n0_watcher::Watcher::get(&mut catalog) {
-                    return Some(known);
+                if let Some(known) = n0_watcher::Watcher::get(&mut catalog)
+                    && !known.video().is_empty()
+                {
+                    return Ok(known);
                 }
-                if n0_watcher::Watcher::updated(&mut catalog).await.is_err() {
-                    return None;
+                // A broadcast that closes sends no update to wake on.
+                tokio::select! {
+                    updated = n0_watcher::Watcher::updated(&mut catalog) => {
+                        if updated.is_err() {
+                            return Err(n0_error::anyerr!("the broadcast closed"));
+                        }
+                    }
+                    () = broadcast.closed() => {
+                        return Err(n0_error::anyerr!("the broadcast closed"));
+                    }
                 }
             }
         })
         .await;
-        let Ok(Some(described)) = described else {
-            return Err(n0_error::anyerr!(
-                "the broadcast sent no catalog this build could read within 15s"
-            ));
+        let _described = match described {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(n0_error::anyerr!(
+                    "the broadcast listed no video this build could read within 15s"
+                ));
+            }
         };
-        if described.video().is_empty() {
-            return Err(n0_error::anyerr!("the broadcast carries no video"));
-        }
 
         // The subscription attached its link signals, so the player adapts
         // the rendition on its own.

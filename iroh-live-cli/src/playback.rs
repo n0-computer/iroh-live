@@ -17,13 +17,19 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 /// Fails if the broadcast closes before sending one, or sends none in time.
 pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
     let mut catalog = broadcast.catalog();
+    let closed = || anyerr!("the broadcast closed before it described itself");
     tokio::time::timeout(CATALOG_TIMEOUT, async {
         loop {
             if let Some(known) = catalog.get() {
                 return Ok(known);
             }
-            if catalog.updated().await.is_err() || broadcast.is_closed() {
-                return Err(anyerr!("the broadcast closed before it described itself"));
+            // The close is waited for beside the update: a broadcast that
+            // closes without a word sends no update to wake on.
+            tokio::select! {
+                updated = catalog.updated() => if updated.is_err() {
+                    return Err(closed());
+                },
+                () = broadcast.closed() => return Err(closed()),
             }
         }
     })

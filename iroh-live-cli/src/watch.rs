@@ -11,6 +11,8 @@
 //! can still be pointed somewhere else, and every screen without a picture
 //! keeps a button back to whatever was playing before it. See [`crate::scan`].
 
+use std::time::Duration;
+
 use iroh_live::{
     Live, Subscription,
     media::{AudioOutput, Player, RenditionMode},
@@ -137,7 +139,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     };
 
     let (live, (sub, player)) = rt.block_on(transport::with_live(live, async |live| {
-        connect(live, &ticket, &options).await
+        connect(live, &ticket, &options, None).await
     }))?;
 
     if args.no_video {
@@ -213,16 +215,33 @@ async fn setup(args: &WatchArgs) -> Result<(Live, AudioOutput)> {
 
 /// Connects to `ticket` and starts playing what this run asked for.
 ///
+/// `dial_deadline` bounds reaching the peer, and only that: the catalog has its
+/// own patience once the peer answered, so a slow catalog is not reported as a
+/// publisher that is not running.
+///
 /// # Errors
 ///
-/// Fails if the peer cannot be reached, if its catalog does not arrive, or if
-/// the pinned rendition is not one the broadcast offers.
+/// Fails if the peer cannot be reached in time, if its catalog does not
+/// arrive, or if the pinned rendition is not one the broadcast offers.
 async fn connect(
     live: &Live,
     ticket: &LiveTicket,
     options: &Options,
+    dial_deadline: Option<Duration>,
 ) -> Result<(Subscription, Player)> {
-    let sub = transport::subscribe(live, ticket).await?;
+    let subscribing = transport::subscribe(live, ticket);
+    let sub = match dial_deadline {
+        Some(deadline) => tokio::time::timeout(deadline, subscribing)
+            .await
+            .map_err(|_| {
+                anyerr!(
+                    "no answer from {} within {}s: is the publisher running?",
+                    ticket.endpoint.id.fmt_short(),
+                    deadline.as_secs()
+                )
+            })??,
+        None => subscribing.await?,
+    };
     // Waited for before anything plays, so a broadcast that never describes
     // itself is an error here rather than a black window.
     let catalog = crate::playback::catalog(sub.broadcast()).await?;
@@ -587,19 +606,14 @@ mod window {
             // spinner until somebody finds the Cancel button. Failing sends the
             // window back to the scan screen, where the ticket that just
             // failed is held off and a different code connects at once.
-            let dial = tokio::time::timeout(DIAL_DEADLINE, connect(&live, &dialing, &options));
+            let dial = connect(&live, &dialing, &options, Some(DIAL_DEADLINE));
             let attempt = match dial.await {
-                Ok(Ok((sub, player))) => Attempt::Connected(Box::new(Connected {
+                Ok((sub, player)) => Attempt::Connected(Box::new(Connected {
                     ticket: dialing,
                     sub,
                     player,
                 })),
-                Ok(Err(err)) => Attempt::Failed(format!("{err:#}")),
-                Err(_) => Attempt::Failed(format!(
-                    "no answer from {} within {}s: is the publisher running?",
-                    dialing.endpoint.id.fmt_short(),
-                    DIAL_DEADLINE.as_secs()
-                )),
+                Err(err) => Attempt::Failed(format!("{err:#}")),
             };
             if let Err(Attempt::Connected(connected)) = tx.send(attempt) {
                 info!("the connection landed after it was cancelled, closing it");
