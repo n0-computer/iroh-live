@@ -9,8 +9,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::Bitrate;
 
-/// Returns the link as it is now, as attached with
-/// [`with_network`](crate::RemoteBroadcast::with_network).
+/// A transport's view of the link, attached with [`crate::RemoteBroadcast::with_network`].
 pub(crate) type NetworkSignals = Arc<dyn Fn() -> NetworkSample + Send + Sync>;
 
 /// One reading of the link a broadcast arrives over.

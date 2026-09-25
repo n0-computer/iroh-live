@@ -82,11 +82,11 @@ const RAW_WIDTH_ALIGN: u32 = 64;
 ///
 /// 500 kbps keeps 640x360 from the Pi's encoder clean. On these machines the
 /// uplink is the limit long before the encoder.
-pub(crate) const DEFAULT_BITRATE: u32 = 500_000;
+const DEFAULT_BITRATE: u32 = 500_000;
 
 /// What `rpicam-vid` writes to its stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Output {
+enum Output {
     /// Annex-B H.264 from the Pi's hardware encoder.
     H264 {
         /// Target bitrate in bits per second.
@@ -101,8 +101,7 @@ pub(crate) enum Output {
     I420,
 }
 
-/// Returns the smallest raw capture size at or above `size` that libcamera does
-/// not pad.
+/// Returns the raw capture size nearest above `size` that libcamera does not pad.
 ///
 /// The width rounds up to [`RAW_WIDTH_ALIGN`] and the height to even. That lets
 /// [`frames`] split pictures by size alone. The encoder scales to the
@@ -400,8 +399,8 @@ impl Pictures {
 
     /// Returns the bytes that do not make a whole picture.
     ///
-    /// At the end of the stream, any means the camera wrote another row stride
-    /// and the pictures handed on were sheared.
+    /// Bytes left at the end of the stream mean the camera wrote another row
+    /// stride, and the pictures handed on were sheared.
     fn leftover(&self) -> usize {
         self.buffer.len()
     }

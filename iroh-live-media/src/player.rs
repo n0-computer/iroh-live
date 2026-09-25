@@ -152,7 +152,7 @@ pub struct PlayerConfig {
     pub adaptation: Adaptation,
     /// How long a replacement decoder has to take over before the switch is given up.
     ///
-    /// It covers a real handover, automatic, pinned or to another decoder. The
+    /// It bounds every handover: automatic, pinned, or to another decoder. The
     /// replacement subscribes to the other rendition, waits for its next
     /// keyframe, and decodes until it catches up with the picture on screen.
     /// On a two second GOP over an impaired link, the keyframe alone takes
