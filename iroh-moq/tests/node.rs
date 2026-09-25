@@ -4,7 +4,9 @@ mod common;
 
 use std::{collections::BTreeSet, time::Duration};
 
-use common::{Node, TIMEOUT, TestBroadcast, ends, read_counter, reading, stays_pending, step};
+use common::{
+    Node, TIMEOUT, TestBroadcast, announced, ends, read_counter, reading, stays_pending, step,
+};
 use iroh_moq::{Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach};
 use moq_net::{Hop, Pattern, Patterns, origin};
 use n0_future::task::AbortOnDropHandle;
@@ -176,6 +178,45 @@ async fn a_peers_audience_follows_its_set() {
     // A set nobody keeps any more offers to nobody.
     drop(members);
     ends("bob after the set was dropped", &mut bob_reading).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+/// A peer's offers appear in the route table and on the session, and leave again.
+#[tokio::test]
+#[traced_test]
+async fn offers_show_in_the_route_table() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+    let carol = Node::spawn().await;
+
+    let members = Watchable::new(BTreeSet::from([bob.id()]));
+    let broadcast = TestBroadcast::start();
+    let path = alice.path("cam");
+    let _publication = alice
+        .moq
+        .publish(&path, &broadcast.producer, Audience::Peers(members.watch()))
+        .expect("publish");
+    let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    announced(&session.origin(), &path, true).await;
+    announced(&bob.moq.origin(), &path, true).await;
+
+    step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    stays_pending(
+        "carol saw an offer to bob",
+        QUIET,
+        announced(&carol.moq.origin(), &path, true),
+    )
+    .await;
+
+    members.set(BTreeSet::new()).ok();
+    announced(&bob.moq.origin(), &path, false).await;
 
     alice.shutdown().await;
     bob.shutdown().await;

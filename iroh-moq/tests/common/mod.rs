@@ -15,7 +15,7 @@ use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
 use iroh_moq::{Grant, Moq, MoqConfig};
-use moq_net::{Pattern, Patterns, Timestamp, broadcast, bytes::Bytes, track};
+use moq_net::{Pattern, Patterns, Timestamp, broadcast, bytes::Bytes, origin, track};
 use n0_future::task::AbortOnDropHandle;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -196,4 +196,22 @@ pub(crate) async fn step<T>(what: &str, future: impl std::future::Future<Output 
     tokio::time::timeout(TIMEOUT, future)
         .await
         .unwrap_or_else(|_| panic!("timed out: {what}"))
+}
+
+/// Waits until `origin` announces `path` (`true`) or retracts it (`false`).
+pub(crate) async fn announced(origin: &origin::Consumer, path: &str, active: bool) {
+    let mut updates = origin.announced();
+    step(&format!("{path} announced: {active}"), async {
+        let mut current = false;
+        loop {
+            if current == active {
+                return;
+            }
+            let update = updates.next().await.expect("origin closed");
+            if update.prefix.as_str() == path {
+                current = update.kind.is_active();
+            }
+        }
+    })
+    .await
 }

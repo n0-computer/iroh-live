@@ -234,6 +234,17 @@ impl Moq {
         route::subscribe(self, path.as_path().to_owned(), reach).await
     }
 
+    /// Returns the route table.
+    ///
+    /// It holds what [`subscribe`](Self::subscribe) resolves in: what direct
+    /// peers announce within their grants, routes from attached relays, and
+    /// this node's [`Audience::Everyone`] publications. Its
+    /// [`announced`](origin::Consumer::announced) stream lists those paths as
+    /// they come and go.
+    pub fn origin(&self) -> origin::Consumer {
+        self.shared.table.consume()
+    }
+
     /// Returns every route to `path`, and which one serves, as they change.
     pub fn routes(&self, path: impl AsPath) -> n0_watcher::Direct<Vec<RouteInfo>> {
         self.shared

@@ -183,6 +183,11 @@ impl Session {
         ))
     }
 
+    /// Returns what the peer announces on this session, within its grant.
+    pub fn origin(&self) -> origin::Consumer {
+        self.inner.ingest.consume()
+    }
+
     /// Returns the connection monitor's latest reading of this session.
     pub fn link(&self) -> LinkSample {
         self.inner.link_state.get()
