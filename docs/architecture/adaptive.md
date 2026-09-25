@@ -1,23 +1,18 @@
 # Adaptive rendition switching
 
-A publisher that offers several renditions lets a subscriber follow its own
-downlink. Every `Player` in `RenditionMode::Auto` runs a selector task that
-reads the broadcast's network signals every 200 ms, computes which rendition
-should play, and hands that to the video supervisor whenever it changes. The
-decoder swap itself is the supervisor's job, described in
-[subscribing](subscribe.md).
-
-`moq_mux::select` fixes a rendition at construction and `moq_video::encode::rate`
-backs the sender's bitrate off, so neither covers a subscriber choosing for
-itself. That gap is why the selector exists. It lives in
-`iroh-live-media/src/player/select.rs`, and the rule it applies in
-`player/bound.rs`.
+A publisher that offers several renditions lets each subscriber follow its own
+downlink. Every `Player` in `RenditionMode::Auto` runs a selector task
+(`iroh-live-media/src/player/select.rs`). It reads the broadcast's network
+signals every 200 ms, computes which rendition should play, and hands that to
+the video supervisor when it changes. The rule itself is in `player/bound.rs`.
+The decoder swap is the supervisor's job, described in
+[subscribing](subscribe.md#switching-renditions).
 
 ## Signals
 
 `iroh_live_media::NetworkSignals` is the transport-agnostic input: a trait with
-one method, `sample()`, which returns a `NetworkSample`. A closure returning a
-sample implements it.
+one method, `sample()`, that returns a `NetworkSample`. A closure that returns
+a sample implements it.
 
 ```rust
 pub struct NetworkSample {
@@ -29,211 +24,156 @@ pub struct NetworkSample {
 }
 ```
 
-Every field is optional because every transport measures a different subset,
-and a field left `None` reads as unmeasured rather than as zero. A transport
-attaches its signals with `RemoteBroadcast::with_network`, and every player
-started from that broadcast afterwards reads them.
+Every field is optional because transports measure different things, and
+`None` means unmeasured. A transport attaches its signals with
+`RemoteBroadcast::with_network`, and every player started from that broadcast
+afterwards reads them. Without signals, the player holds the best rendition its
+constraints allow.
 
-iroh-live-media does not depend on iroh, so it never produces these. Every
-`iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that reads
-its MoQ session's statistics every 200 ms, the peer's bandwidth estimate
-included, and keeps the latest `LinkSample`. A direct session starts the sample
-history over when the connection selects another path, a relay link on every
-reconnect, and either says so in `path_generation`.
-`Live::subscribe` and `Live::remote_broadcast` attach a closure to the
-broadcast (`iroh-live/src/network.rs`) that reads `Subscription::link()`, the
-sample of whichever link serves the subscription at that moment, converts it
-into a `NetworkSample`, and counts a change of serving link as a new path too,
-so a caller does not wire anything. A relay-served subscription is measured
-like a direct one, only without the path details a relay link cannot see. A
-caller using iroh-live-media without iroh either attaches its own signals or
-none, in which case the player holds the best rendition its constraints allow.
+iroh-live-media does not depend on iroh, so it never produces these itself.
+Every `iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that
+reads its MoQ session's statistics every 200 ms and keeps the latest
+`LinkSample`. A direct session starts the history over when the connection
+selects another path, and a relay link on every reconnect. Both bump
+`path_generation`. `Live::subscribe` and `Live::remote_broadcast` attach a
+closure (`iroh-live/src/network.rs`) that reads `Subscription::link()` for
+whichever link serves the subscription at that moment. It converts the sample
+into a `NetworkSample` and counts a change of serving link as a new path too.
 
-`delivery` is the one figure that describes capacity. The publisher sends it:
-moq-net's PROBE control message carries the sending side's own estimate of what
-the path to this subscriber carries, refreshed every 100 ms from its congestion
-controller, and the subscriber reads it as
-`moq_net::Session::recv_bandwidth()`. It needs no baseline. An older publisher,
-on a MoQ version before PROBE, sends none, and the field reads `None`.
+`delivery` is the one figure that describes capacity. The publisher sends it in
+moq-net's PROBE control message: its own estimate of what the path to this
+subscriber carries, refreshed every 100 ms. iroh-moq reads it as
+`estimated_recv_rate` in moq-net's session statistics. A publisher on a MoQ
+version without PROBE sends none, and the field reads `None`.
 
-What the figure contains depends on the publisher's transport. On iroh it is
-the congestion window over the round trip. Under CUBIC, iroh's default, that
-is worthless on a publisher: the window of an application-limited sender grows
-until something is lost, so it reads the window and not the link. iroh-live
-therefore runs BBR3 on every endpoint `EndpointOptions` binds, whose window
-is sized from the delivery rate it measures. In the patchbay lab a 100 kbit/s
-cap then reads as 108 to 164 kbit/s, and a clear loopback path as tens of
-Mbit/s. The residual over-read is BBR's gain above the bandwidth-delay
-product, and the fit ratio below sits under it. A publisher whose transport
-reports the controller's own pacing rate, as `web-transport-quinn` does since
-moq-dev/web-transport#385, sends a tighter figure through the same field.
+On iroh the estimate is the congestion window over the round trip. Under
+CUBIC, iroh's default, an application-limited sender's window grows until
+something is lost, so the estimate overstates the link. `MoqPreset`, which
+`EndpointOptions` binds with, uses BBR3 instead, whose window follows the
+delivery rate it measures.
 
-Loss is the other figure the selector reads, and it has a caveat. QUIC reports
-a congestion window, a loss count and a congestion counter for the direction an
-endpoint sends in, and a subscriber sends little but acknowledgements: its loss
-rate is loss among acknowledgements, useful as a proxy for path loss only as far
-as both directions are impaired alike.
+Loss is the other figure the selector reads. A subscriber sends little but
+acknowledgements, so its loss rate is loss among acknowledgements. It stands in
+for path loss only as far as both directions are impaired alike. The rate is
+measured over two seconds and reads zero when the window holds fewer than 20
+packets, so one lost acknowledgement does not read as a large loss.
 
-The loss rate is measured across a two-second window and reads zero when the
-window holds fewer than twenty packets. A subscriber sends two to five packets
-per 200 ms tick, so a per-tick ratio was a fraction with a denominator of
-three: one lost acknowledgement read as a third of everything lost, and on a
-Pi 4 over Wi-Fi that dropped the player to its lowest rung every few seconds
-with nothing wrong with the picture. Twenty packets is what keeps a single loss
-under the step-down threshold; below that count the rate is unmeasured rather
-than clean, and reads as zero.
-
-The round trip and its minimum ride along in the sample, and the transport's
-`LinkSample` also carries a receiver-side goodput, but the selector reads none
-of them. They are there for diagnostics and for tests that check an impairment
-reached the transport. `min_rtt` is the minimum over the last 15 seconds rather
-than the smallest reading ever taken, so a baseline that moved does not read as
-a queue that never drains.
+The selector ignores the round trip and its minimum. They are there for
+diagnostics and for tests that check an impairment reached the transport.
+`min_rtt` is the minimum over the last 15 seconds, so a baseline that moved
+does not read as a queue that never drains.
 
 ## Ranking
 
-`Catalog::ranked_video()` lists the renditions largest first, by pixel count, and
-between two of the same size by the higher advertised bitrate. The selector
-walks that list from the top, so the first rendition that passes every check
-wins.
+`Catalog::ranked_video()` lists the renditions largest first by pixel count,
+and between two of the same size by the higher advertised bitrate. The
+selector walks that list from the top, and the first rendition that passes
+every check wins.
 
-Before any network reading counts, the caller's constraints rule renditions
-out: a `max_height` from `RenditionMode::Auto` (a grid tile has no use for
-1080p), a catalog `stalled` flag the publisher set, and any rendition whose
-decoder recently failed, which is left alone for 10 s. When every rendition is
-ruled out, the smallest still plays, so there is always an answer.
+The caller's constraints rule renditions out before any network reading
+counts: a `max_height` from `RenditionMode::Auto` (a grid tile has no use for
+1080p), a `stalled` flag the publisher set in the catalog, and any rendition
+whose decoder failed in the last 10 seconds. When every rendition is ruled out,
+the smallest still plays.
 
 ## The decision
 
 Each tick computes which renditions are allowed, and the best allowed one is
 the target. Two bounds apply.
 
-**The delivery estimate caps the bitrate.** The estimate is taken as a sliding
-maximum over the last second, because it is refreshed ten times a second and
-moves with every acknowledgement, so a single low reading is not a smaller
-link. A rendition fits while that maximum covers 1.25 times its advertised
-bitrate. More than the bitrate, because of how the two sides read: the encoders
-send close to what they are asked for once they know the source's frame rate
-(82% of it, openh264 and VA-API on the patchbay picture), and the iroh
-publisher's estimate, its congestion window over the round trip, reads a capped
-link at 0.8 to 1.6 times the cap, the sliding maximum keeping the top of that.
-So a rung fits while the maximum covers about one and a half times what the rung
-sends. A rendition that advertises no bitrate, or a publisher that sends no
-estimate, fits unconditionally.
+**The delivery estimate caps the bitrate.** The selector takes the maximum of
+the estimate over the last second, since the estimate moves with every
+acknowledgement and one low reading does not mean a smaller link. A rendition
+fits while that maximum covers 1.25 times its advertised bitrate. Encoders send
+about 82% of their target (openh264 and VA-API on the patchbay picture), and an
+iroh publisher's estimate reads a capped link at 0.8 to 1.6 times the cap. So a
+rung fits while the maximum covers about 1.5 times what it actually sends. A
+rendition without an advertised bitrate, or a publisher that sends no estimate,
+always fits.
 
-The ratio was 0.5 until the second review round, tuned on an encoder that sent
-40% of its bitrate because the publisher told it the wrong frame rate. Once
-sources carried their real rate, a rung that sent 650 kbit/s fitted a
-400 kbit/s cap by that ratio, was kept, and played at a frame a second.
+**Sustained loss lowers a ceiling.** Loss of 10% or more for 500 ms moves the
+ceiling one rung below the rendition playing, and loss that lasts walks down
+one rung per 500 ms. Loss of 20% or more is an emergency and drops the ceiling
+to the lowest eligible rendition at once. Once loss falls below 10%, every 4 s
+of it raises the ceiling one rung.
 
-**Sustained loss lowers a ceiling.** Loss at or above 10% for 500 ms moves the
-ceiling one rung below the rendition playing, and a loss that lasts walks the
-ladder down one rung per 500 ms rather than all at once. Loss at or above 20%
-is an emergency and drops the ceiling to the lowest eligible rendition at once.
-Once loss falls below 10%, every 4 s of it raises the ceiling one rung, until
-it is gone.
+The same fit ratio applies to staying on a rendition and to stepping up to one.
+Timers provide the asymmetry:
 
-The same fit ratio applies for staying on a rendition and for stepping up to
-one. The asymmetry lives in the timers instead:
+- A lower target has to hold for 500 ms before the switch. An emergency
+  switches at once.
+- A higher target has to hold for 4 s. Each step down from a rung multiplies
+  the next hold before stepping up to it by four, up to 120 s. A step up that
+  plays for 20 s clears the count.
+- No step up is taken within 4 s of a step down.
 
-- A lower target has to hold for 500 ms before the switch, except in an
-  emergency, which switches at once.
-- A higher target has to hold for 4 s, times four for every step down from that
-  rung since a step up to it last held for 20 s, up to 120 s.
-- No step up is taken within 4 s of a step down landing.
-
-The multiplied hold is what keeps a marginal link from oscillating. Parked on a
-lower rung, the estimate is read while the link carries only that rung, so it
-says the upper one fits even when the link just showed it does not: without the
-backoff, a cap between the two rungs sent the ladder up and back down every
-eight seconds. With it, the rung the link cannot carry is tried after 16 s, then
-after 64 s, then every two minutes.
+The growing hold keeps a marginal link from oscillating. On a lower rung the
+estimate is read while the link carries only that rung, so it says the upper
+one fits even when the link just showed it does not. With the backoff, the rung
+the link cannot carry is tried after 16 s, then after 64 s, then every two
+minutes. Such a step up is in effect the probe, so there is no separate one.
+`adaptation_follows_a_real_link` in the patchbay suite checks that the ladder
+climbs back on a clear link. `a_risen_baseline_round_trip_does_not_downgrade`
+checks that a longer path, such as a relay fallback, is not taken as a smaller
+one.
 
 An automatic step down from the rendition on screen does not overlap the two
-tracks the way other switches do: the link cannot carry the rendition on screen,
-which is why it steps down, and while both share it the lower rendition's
-groups age out before they arrive. The supervisor lets go of the rendition on
-screen, whose last picture stays up until the lower one's first.
-
-The asymmetry between the 500 ms downgrade hold and the 4 s upgrade hold is what
-keeps the ladder from oscillating: quality drops quickly when the link
-deteriorates and rises only on sustained evidence that it recovered.
+tracks. The link cannot carry the rendition on screen, and while both share it
+the lower rendition's groups age out before they arrive. The supervisor drops
+the incumbent, and its last picture stays up until the lower rendition's first.
 
 The holds are timed against the rendition the selector last asked for, not the
-one on screen. A switch takes a decoder open and a keyframe to land, and while
-it does the old rendition is still on screen; timed against that, the pass
-after a downgrade would see the lower target as new, restart its hold and ask
-for the old rendition back. The hold also runs for "any lower" and "any
-higher" target rather than for one rendition, so a target that wavers between
-two lower rungs under a noisy shortfall still reaches it, and the switch goes
-to whichever is the target when it does.
+one on screen. A switch takes a decoder open and a keyframe to land, and timing
+against the old rendition would restart the hold and ask for it back. The hold
+also runs for "any lower" and "any higher" target, not one rendition, so a
+target that wavers between two lower rungs still switches.
 
-A rendition that left the catalog, or is no longer eligible at all, is left at
-once, since there is nothing to wait for. A change of network path, which the
-sample reports as a new `path_generation`, forgets everything learned so far:
-the estimate history, the loss ceiling, and every timer. History from the old
-path says nothing about the new one.
-
-## Why there is no probe
-
-The previous rule stepped up only once the estimate covered one and a half
-times the next rung's advertised bitrate, and fell back to a timed probe of the
-higher rung without an estimate. Parked on a low rung, a publisher sends only
-that rung's bytes, so its estimate is application-limited at a few times that
-rate and never reached the gate: `adaptation_follows_a_real_link` in the
-patchbay suite sat at 380 to 490 kbit/s against a 1.2 Mbit/s gate for a full
-minute with nothing wrong with the link. One ratio for both directions, with
-the asymmetry moved into the timers, is what lets the ladder climb back on a
-clear link, and it removes the need to probe.
-
-The same suite's `a_risen_baseline_round_trip_does_not_downgrade` is why the
-round trip plays no part: a path that got longer, a relay fallback or a Wi-Fi to
-cellular handoff, is not a path that got smaller.
-
-A step up after a step down is in effect a probe, with the backoff above in
-place of the old rule's probe cooldown.
+A rendition that left the catalog or is no longer eligible is left at once. A
+new `path_generation` resets everything learned so far: the estimate history,
+the loss ceiling and every timer.
 
 ## Configuration
 
 The thresholds and timers are `PlayerConfig::adaptation`, an `Adaptation`
-value. Tests that cannot wait out the production timers shorten them there.
+value. Tests shorten the timers there.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `fit_ratio` | 1.25 | Share of a rung's advertised bitrate the estimate has to cover |
+| `fit_ratio` | 1.25 | Multiple of a rung's advertised bitrate the estimate has to cover |
 | `estimate_window` | 1 s | Span of the sliding maximum over the estimate |
 | `loss_step_down` | 0.10 | Loss that lowers the ceiling one rung, once held |
 | `loss_emergency` | 0.20 | Loss that drops the ceiling to the lowest rung at once |
 | `downgrade_hold` | 500 ms | How long a lower target, or step-down loss, has to hold |
 | `upgrade_hold` | 4 s | How long a higher target has to hold, and how long loss has to stay clear before the ceiling rises |
-| `post_downgrade_cooldown` | 4 s | Quiet period after a step down lands |
-| `trial` | 20 s | How long a step up has to hold before it clears its rung's step downs |
+| `post_downgrade_cooldown` | 4 s | Quiet period after a step down |
+| `trial` | 20 s | How long a step up has to play before it clears its rung's step downs |
 | `upgrade_hold_max` | 120 s | The longest hold before a step up |
+| `tick` | 200 ms | How often the network is read |
+| `switch_deadline` | 15 s | How long a replacement decoder has to take over |
 
-The end-to-end test in `iroh-live/tests/e2e.rs` drives a player with its own
-closure as the network signals and feeds it a 25% loss reading, which is an
-emergency and switches without waiting out a hold.
+`adaptive_rendition_switching` in `iroh-live/tests/e2e.rs` drives a player
+with its own closure as the network signals, and feeds it 25% loss, an
+emergency that switches without a hold.
 
-The link monitor in `iroh-moq/src/link.rs` logs every sample at TRACE as
-`link sample`, with the path generation, whether the path is relayed, the round trip, its
-minimum, the loss rate, goodput, and the publisher's estimate. What the player
-reads is that sample converted in `iroh-live/src/network.rs`.
-The selector logs the rendition it asks for at TRACE whenever it changes, a
-change of path at DEBUG, and a rendition it backs off from after a decoder
-failure at INFO. Read together, they tell a loop that holds because the link is
-fine from one that holds because it has nothing to judge against.
+## Logs
 
-## Requesting a switch by hand
+The link monitor logs every sample at TRACE as `link sample`, with the path
+generation, whether the path is relayed, the round trip and its minimum, the
+loss rate, goodput and the publisher's estimate. The selector logs the target
+it asks for at TRACE when it changes, and a rendition it backs off from after a
+decoder failure at INFO. The bound logs a change of path and a step down at
+DEBUG. Together they tell a loop that holds because the link is fine from one
+that holds because it has nothing to judge against.
+
+## Choosing by hand
 
 `Player::set_rendition` takes a `RenditionMode`. `Auto { max_height }` is the
-selector described here. `Pinned(name)` holds one rendition; if it cannot be
+selector described here. `Pinned(name)` holds one rendition. If it cannot be
 played, because it is not in the catalog or its decoder failed, the player
 plays as `Auto` would, says why in `PlayerStatus::switch_error`, and returns to
 the pinned rendition when it becomes available. `Off` unsubscribes video while
-audio keeps playing, which is what a tile scrolled off screen wants.
+audio keeps playing, for a tile scrolled off screen.
 
-`Player::wait_for_rendition(name)` waits until a rendition is on screen, and
-fails with a `SwitchError` once a switch to it was superseded, withdrawn or
-failed, or the catalog shows no such rendition. The selector keeps ticking while
-the catalog carries a single rendition, because a publisher can add renditions
-mid-broadcast.
+`Player::wait_for_rendition(name)` waits until a rendition is on screen. The
+selector keeps running while the catalog has a single rendition, since a
+publisher can add renditions mid-broadcast.

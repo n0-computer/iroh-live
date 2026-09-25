@@ -1,168 +1,155 @@
 # Subscribing
 
-`iroh_live_media::RemoteBroadcast` wraps a `moq_net::broadcast::Consumer`, reads
-the catalog, and holds the subscription. `RemoteBroadcast::play` starts a
-`Player` over it, which owns everything mutable about one playback: its
-decoders, its playout clock, its rendition choice, and its statistics. Two
-players of one broadcast are two playbacks and cannot interfere. Decoding is
-upstream: `moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a
-backend from the catalog entry and hand back frames. Two things have no
-upstream counterpart and live here.
-
-Rendition selection is the first. `moq_mux::select` is fixed at construction, so
-a subscriber that wants to follow its downlink has to choose for itself. The
-second is the playout clock, which keeps audio and video aligned across two
-independent decode paths.
+`iroh_live_media::RemoteBroadcast` reads a broadcast's catalog and holds the
+subscription. `RemoteBroadcast::play` starts a `Player`, which owns its
+decoders, its playout clock, its rendition choice and its statistics. Two
+players of one broadcast are two separate playbacks. Decoding is upstream:
+`moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a backend
+from the catalog entry and return frames. This crate adds rendition selection,
+the decoder swap, and the [playout clock](playout.md). The code is in
+`iroh-live-media/src/remote.rs` and `iroh-live-media/src/player/`.
 
 ## Opening a broadcast
 
 Every constructor starts reading the catalog and returns at once. `catalog()`
-is a watcher over an `Option<Catalog>` that reads `None` until the first catalog
-arrives, which keeps construction usable in a UI reconcile
-loop; a caller that needs the catalog waits on the watcher. A background task
-follows the catalog track and republishes each update.
+watches an `Option<Catalog>` that reads `None` until the first catalog arrives.
+A background task follows the catalog track and publishes each update.
 
 `RemoteBroadcast::from_origin(origin, path)` follows a path in a route table.
-When a change of route ends the broadcast, it is requested again
-through the next route, and players see a new generation of the broadcast
-rather than an end. The broadcast counts as closed only once no route serves the
-path for three seconds, so `closed()` resolves about three seconds after a
+When a change of route ends the broadcast, it is requested again through the
+next route, and players see a new generation of the broadcast instead of an
+end. The broadcast closes once no route has served the path for three seconds
+(`REROUTE_PATIENCE`), so `closed()` resolves about three seconds after a
 publisher ends its broadcast. `RemoteBroadcast::from_resolved(origin, path,
-consumer)` does the same starting from a consumer the caller already resolved in
-that table: nothing waits for a first route, and a publisher that is gone by
-then closes the broadcast rather than leaving it waiting.
-`RemoteBroadcast::local(&broadcast)` reads a `LocalBroadcast` in-process, with
-no transport at all.
+consumer)` does the same, starting from a consumer the caller already resolved
+in that table. Nothing waits for a first route, and a publisher that is already
+gone closes the broadcast. `RemoteBroadcast::local(&broadcast)` reads a
+`LocalBroadcast` in-process, without a transport.
 
-`Catalog` is hang's catalog behind an `Arc`, and derefs to it. It is compared
-by snapshot identity: every update the publisher sends is a new snapshot, which
-is the honest comparison for a watcher, since hang's catalog carries floats and
-is only `PartialEq`. `ranked_video()` lists the video renditions largest first.
+`Catalog` is hang's catalog behind an `Arc` and derefs to it. Two catalogs are
+equal only when they are the same snapshot, so a watcher can tell an update
+from a repeat. `ranked_video()` lists the video renditions largest first.
 
-In iroh-live, `Live::subscribe` resolves the path first and builds the
-`RemoteBroadcast` with `from_resolved` on the transport's route table, returning
-without waiting for the catalog, and attaches the link of whichever session or
-relay serves it, so every player of the broadcast adapts.
-`Live::remote_broadcast` does the same for a `Subscription` from a room or from
-`Moq::subscribe`. See [adaptive bitrate](adaptive.md).
+`Live::subscribe` resolves the path, builds the `RemoteBroadcast` with
+`from_resolved`, and attaches the serving link's measurements with
+`with_network`. `Live::remote_broadcast` does the same for a `Subscription`
+from a room or from `Moq::subscribe`. See [adaptive bitrate](adaptive.md).
 
 ## Video decoding
 
-A player runs three tasks. The selector turns the rendition mode, the catalog,
-and the network into the rendition that should play. The video supervisor keeps
-one decoder playing and at most one replacement warming up. The audio task
-decodes into the output.
+A player runs three tasks. The selector (`select.rs`) turns the rendition mode,
+the catalog and the network into the rendition that should play. The video
+supervisor (`video_task.rs`) keeps one decoder playing and at most one
+replacement warming up. The audio task (`audio.rs`) decodes into the output.
 
-Each decoder is read by its own task, calling `decode::Consumer::read()` in a
-plain loop and forwarding frames over a bounded channel two frames deep. The
-supervisor selects over that channel and the control signals.
+Each decoder is read by its own task, which calls `decode::Consumer::read()` in
+a plain loop and forwards frames over a bounded channel two frames deep
+(`READ_AHEAD`). The supervisor selects over that channel and its control
+signals. The read cannot be an arm of the supervisor's `select!`: dropping a
+`read` future poisons the decoder, and a `select!` drops every arm it does not
+pick.
 
-The split is structural rather than stylistic. `moq_video::decode::Consumer`
-reads through a `Sink`, which upstream documents as not cancel-safe: dropping a
-`read` future poisons the decoder and every later call fails. A `select!` cancels
-every arm it does not pick, so a supervisor that selected directly on `read()`
-would kill its own decoder on any control signal. The read has to live somewhere
-nothing cancels it, and reach the supervisor over a channel.
-
-The channel holds two frames because the supervisor only paces and forwards. A
-deeper backlog there would be latency rather than throughput.
-
-An access unit the decoder refuses is skipped rather than fatal. A live stream
-loses pictures to a skipped group or a truncated access unit, and a decoder
-without its reference chain refuses every picture until the next keyframe. The
-reader gives up only after 300 refusals in a row, which spans several keyframe
-intervals at any rate we publish, and counts what it skipped in the player's
-stats.
+An access unit the decoder refuses is skipped. After a skipped group or a
+truncated access unit, a decoder refuses every picture until the next keyframe.
+The reader gives up after 300 refusals in a row
+(`MAX_CONSECUTIVE_DECODE_FAILURES`), which spans several keyframe intervals,
+and counts what it skipped in the player's stats.
 
 ## Switching renditions
 
-A rendition switch and a decoder change are the same operation: the supervisor
-opens a replacement decoder beside the incumbent, keeps forwarding the
+A rendition switch and a decoder change are the same operation. The supervisor
+opens a replacement decoder beside the incumbent, keeps showing the
 incumbent's frames, and hands over once the replacement has caught up. The
-rules live in `player/switch.rs` as plain transitions, so a test drives them
-with no decoder and no network behind them.
+rules are plain transitions in `player/switch.rs`, so tests drive them without
+a decoder or a network.
 
-- There is at most one replacement. A new request supersedes it as a whole, so
-  a switch to C while B is warming never lands on B first.
-- A replacement takes over only once its playhead has caught up with the
-  incumbent's to within 100 ms, the same slack `@moq/watch` uses. The picture
-  neither goes blank nor steps backwards by more than that across a switch.
-- A replacement has 15 s from the request to taking over, covering the open,
-  the wait for that track's next keyframe, and the catch-up. Past that it is
-  abandoned and the incumbent keeps playing.
-- When the incumbent ends, a warm replacement takes over at once, since there
-  is no longer a picture to step back from.
+- There is at most one replacement. A new request replaces it, so a switch to
+  C while B is warming up never lands on B first.
+- A replacement takes over once its playhead is within 100 ms of the
+  incumbent's (`CATCH_UP_SLACK`, the slack `@moq/watch` uses). It waits for that
+  at most one second after its first picture (`CATCH_UP_PATIENCE`), then takes
+  over where it is.
+- A replacement takes over on a picture it decoded, never on opening alone.
+  With nothing playing, including after the incumbent ended, its first picture
+  is enough.
+- A replacement has `Adaptation::switch_deadline` (15 s by default) from the
+  request to taking over. That covers the open, the wait for the track's next
+  keyframe and the catch-up. Past it the replacement is given up and the
+  incumbent keeps playing.
 
-`Player::set_rendition(mode)` changes the `RenditionMode` and returns
-immediately. `Player::wait_for_rendition(name)` waits until a rendition is on
-screen and fails with a `SwitchError` once a switch to it was superseded,
-withdrawn or failed, the catalog shows no such rendition, or the video ended.
-Callers bound the wait with `tokio::time::timeout`.
+An automatic step down does not overlap the two decoders. See
+[adaptive bitrate](adaptive.md#the-decision).
 
-`Player::status()` is a watcher over `PlayerStatus`: the state of each slot, the
-mode asked for, the rendition on screen, the one warming up to replace it, why
-the last switch or pin could not be honoured, and which decoder backend is
-running. Which backend opened is the first thing worth knowing when playback
-looks wrong on a particular device, and it can change across a switch.
+`Player::set_rendition(mode)` changes the `RenditionMode` and returns at once.
+`Player::wait_for_rendition(name)` waits until the rendition is on screen. It
+fails with a `SwitchError` when a switch to it is superseded, withdrawn or
+fails, when the catalog has no such rendition, or when the video ended. Bound
+the wait with `tokio::time::timeout`.
+
+`Player::status()` watches a `PlayerStatus`: each slot's state, the mode, the
+rendition on screen, the one warming up (`switching_to`), why the last switch
+or pin failed (`switch_error`), and the decoder backend running.
 
 ## Frame delivery
 
-Decoded frames land in a latest-wins slot rather than a queue. `Player::video()`
-returns a `VideoFrames` handle onto it, and every call returns another handle
-onto the same stream, which survives rendition switches and decoder changes.
-Each handle keeps its own cursor, so two readers both see every picture that is
-current when they look rather than splitting the stream between them. A reader
-that falls behind skips to the newest picture instead of draining a backlog.
-`try_next()` polls without blocking, which is what a render loop wants, and
-`next().await` waits for a picture newer than the last one this handle read.
+Decoded frames land in a latest-wins slot. `Player::video()` returns a
+`VideoFrames` handle onto it. Every call returns another handle onto the same
+stream, which survives rendition switches and decoder changes. Each handle
+keeps its own cursor, so two readers both see the current picture. A reader
+that falls behind skips to the newest one. `try_next()` polls without blocking,
+for a render loop, and `next().await` waits for a picture newer than the last
+one the handle read.
 
 ## Audio playback
 
-`moq_audio::playback::Engine` owns the output device and mixes every sink into
-it. `iroh_live_media::AudioOutput` is one opened engine: the application opens
-it with `AudioOutput::open(device)` and passes it to every `PlayerConfig` that
-should play there, so device choice is explicit and several players share one
-device stream. `AudioOutput::devices()` lists outputs and `switch(device)` moves
-every player on the output to another device without interrupting them.
-`AudioOutput::null()` discards what it is given, for headless use and tests; the
-player still decodes, and the playout clock still runs off it. A `PlayerConfig`
-with no output does not subscribe to audio at all.
+`AudioOutput` is one opened `moq_audio::playback::Engine`. The application
+opens it with `AudioOutput::open(device)` and passes it to every `PlayerConfig`
+that should play there, so several players share one device stream.
+`AudioOutput::devices()` lists outputs, and `switch(device)` moves every player
+on the output to another device. `AudioOutput::null()` discards audio, for
+headless use and tests: the player still decodes, but nothing paces the audio.
+A `PlayerConfig` with `audio: None` does not subscribe to audio at all.
 
-The audio task writes frames straight to its sink and reports how much audio is
-still queued ahead of the speaker to the player's playout clock on every frame.
-That figure is the only latency either side can actually measure.
-
-`Player::set_volume` sets the level, and `PlaybackStats::audio` carries the
-buffered duration and the most recent peak for a meter. There is no audio
-ladder, so the first audio rendition plays and there is nothing to switch
-between. The audio task reopens on a new route to the broadcast, and retries a
-track that ended or never opened when the catalog changes, and every two
+The audio task plays the first audio rendition. It writes frames straight to
+its sink and reports how much audio is queued ahead of the speaker to the
+playout clock on every frame. `Player::set_volume` sets the level.
+`PlaybackStats::audio` carries the buffered duration and the latest peak for a
+meter. The task reopens when the broadcast moves to a new route. A track that
+ended or never opened is tried again when the catalog changes, and every two
 seconds.
 
 ## Player configuration
 
-`PlayerConfig` carries a `RenditionMode`, a `Latency`, the `AudioOutput`, a
-decoder selection, and the `Adaptation` thresholds and timers. `Latency { min, max }` is how far behind live to run: the
-playout clock holds each picture for `min`, and `max` becomes `max_age` on both
-`moq_video::decode::Options` and `moq_audio::decode::Options`, which is where
-upstream drops stale groups. The default holds for 100 ms and skips past
-150 ms. The decoder selection becomes the video options' decoder `kind`,
-choosing the backend.
+`PlayerConfig` is a struct literal with `Default`:
 
-`Player::set_latency` moves the hold at once. A changed `max` rebuilds the video
-decoder behind the picture, which takes over once it has caught up, the same
-way a switch does; an audio track already playing keeps the `max` it opened
-with until it next reopens. `Player::set_decoder` opens the replacement backend
-behind the picture too, and one that fails to open leaves the incumbent playing
-and says so in `PlayerStatus::switch_error`.
+```rust
+let config = PlayerConfig {
+    audio: Some(output),
+    ..Default::default()
+};
+```
+
+It carries the `rendition` mode, the `latency`, the `audio` output, the
+`decoder` backend and the `adaptation` thresholds and timers.
+`Latency { min, max }` sets how far behind live to run. The playout clock holds
+each picture for `min`, and `max` becomes `max_age` on the video and audio
+decode options, where upstream drops stale groups. The default holds for
+100 ms and skips past 150 ms. `decoder` becomes the video decode options'
+`kind`.
+
+`Player::set_latency` changes the hold at once. A changed `max` rebuilds the
+video decoder behind the picture, and the new one takes over once it has
+caught up, as in a switch. An audio track keeps its `max` until it next
+reopens. `Player::set_decoder` also opens the new backend behind the picture. A
+backend that fails to open leaves the incumbent playing and says why in
+`PlayerStatus::switch_error`.
 
 See [playout and sync](playout.md) for what the clock does with `min`.
 
 ## Shutdown
 
-Dropping the `Player` cancels the token its tasks watch, aborts them, and closes
-the playout clock, which wakes anything blocked waiting for a frame's playout
-time. Dropping a decoder's reader task drops the decoder with it. Each player
-holds a clone of its `RemoteBroadcast`, so the subscription lasts while the
-broadcast handle or any of its players does, and ends with the last of them.
-`RemoteBroadcast::closed()` waits until the broadcast itself has ended.
+Dropping the `Player` cancels its tasks and closes its playout clock, which
+wakes anything waiting for a frame's playout time. Dropping a reader task drops
+its decoder. Each player holds a clone of its `RemoteBroadcast`, so the
+subscription lasts until the last broadcast handle and the last player are
+gone. `RemoteBroadcast::closed()` waits until the broadcast itself has ended.

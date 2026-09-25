@@ -1,15 +1,12 @@
 # Getting started
 
-iroh-live is real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
-using [Media over QUIC](https://moq.dev/) as the wire protocol. Connections are
-peer-to-peer by default and no media server is involved. A relay is optional, and
-only browsers need one.
+iroh-live sends audio and video over [iroh](https://github.com/n0-computer/iroh),
+with [Media over QUIC](https://moq.dev/) as the wire protocol. Peers connect
+directly, without a media server. Browsers need a relay.
 
 ## System dependencies
 
-Codecs need nothing: openh264 is vendored and statically linked, and the audio
-codecs and DSP are Rust. What needs system libraries is device access and
-graphics.
+The codecs need no system libraries. Device access and graphics do:
 
 ```sh
 # Debian and Ubuntu
@@ -20,24 +17,21 @@ sudo apt install libasound2-dev libpipewire-0.3-dev libclang-dev \
 sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
 ```
 
-macOS needs `libtool` and `automake` from Homebrew and nothing else: CoreAudio,
-AVFoundation, ScreenCaptureKit, and VideoToolbox ship with the OS.
+macOS needs `libtool` and `automake` from Homebrew.
 
-A build with `--no-default-features` needs none of this. It still encodes and
-decodes, it just cannot open a device or draw.
+A build with `--no-default-features` needs none of these. It encodes and
+decodes, but it cannot open a device or draw.
 
 ## Building
 
 ```sh
 cargo build --workspace                  # default features
-cargo build --workspace --all-features   # everything, including VAAPI and NVIDIA
+cargo build --workspace --all-features   # every feature, VA-API and NVIDIA included
 ```
 
-The workspace patches the moq crates to `Frando/moq@iroh-live-5`, the commit
-the released versions were cut from plus one fix that lets `moq-video` build for
-Windows with the `capture` feature. The patch goes once a `moq-video` release
-carries the fix. A clean clone builds without further setup; `Cargo.lock` pins
-the revision.
+The workspace patches the moq crates to the `iroh-live-5` branch of
+`Frando/moq`, which adds one Windows build fix to the released versions.
+`Cargo.lock` pins the revision, so a clean clone builds as is.
 
 ## First stream
 
@@ -47,19 +41,16 @@ Install the CLI and publish your camera and microphone:
 cargo install --path iroh-live-cli
 
 irl publish              # prints a ticket and a QR code
-irl watch <TICKET>       # in another terminal, on another machine
+irl watch <TICKET>       # on another machine
 ```
 
-No camera on the machine? `irl publish --test-source` publishes a generated
-pattern and a tone instead, which is also the fastest way to check that the
-transport works.
-
-The full flag reference is in [the CLI page](../cli.md).
+Without a camera, `irl publish --test-source` publishes a test pattern and a
+tone. [The CLI reference](../cli.md) lists every flag.
 
 ## Using the library
 
 A publisher binds an endpoint, creates a broadcast, opens its sources, and
-hands them to the broadcast with an encoding:
+publishes the broadcast under a name:
 
 ```rust
 use iroh_live::{
@@ -84,14 +75,19 @@ live.publish("hello", &broadcast)?;
 println!("{}", live.ticket("hello"));
 ```
 
-A subscriber connects with the ticket, starts a player, and reads decoded frames:
+The broadcast is at `live/<endpoint id>/hello`, and the ticket names that path.
+A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
-use iroh_live::media::PlayerConfig;
+use iroh_live::{AudioOutput, PlayerConfig};
 
 let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
 let remote = live.subscribe(&ticket).await?;
-let player = remote.play(PlayerConfig::default())?;
+let output = AudioOutput::open(None).await?;
+let player = remote.play(PlayerConfig {
+    audio: Some(output),
+    ..Default::default()
+})?;
 
 let mut frames = player.video();
 while let Some(frame) = frames.next().await {
@@ -99,29 +95,28 @@ while let Some(frame) = frames.next().await {
 }
 ```
 
-Opening a source fails where the application asked for it, so a missing camera
-is an error from `VideoSource::capture` rather than a log line later. The
-microphone is a partial exception: `AudioSource::microphone` checks that the
-device exists, but moq-audio opens it only once the broadcast first has a
-listener, so a device that then fails to open shows up in
+`AudioOutput::open` needs the `playback` feature. A player with `audio: None`
+does not subscribe to the audio track.
+
+`VideoSource::capture` fails if the camera cannot be opened.
+`AudioSource::microphone` only checks that the device exists. The microphone
+opens when the broadcast first has a subscriber, and a failure then shows in
 `LocalBroadcast::status()`.
-To hear the audio, open an `AudioOutput` and pass it with
-`PlayerConfig::with_audio`.
 
-`Live::subscribe` returns as soon as a route to the broadcast is found, without
-waiting for its catalog, and `RemoteBroadcast::catalog()` is a watcher that
-turns `Some` when the catalog arrives. `RemoteBroadcast::closed()` resolves
-about three seconds after the publisher ends the broadcast, since the
-broadcast first asks the route table again in case the path only moved.
+`Live::subscribe` returns once a route to the broadcast is found. The catalog
+arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`
+when it does. After the publisher ends the broadcast,
+`RemoteBroadcast::closed()` resolves about three seconds later, because the
+broadcast first looks for another route.
 
-`iroh-live/examples/publish.rs` is the compilable version of the first snippet,
-including a two-rung simulcast ladder behind `--simulcast`.
+`iroh-live/examples/publish.rs` is a complete publisher, with a two-rung
+ladder behind `--simulcast`.
 
 ## Where to go next
 
-- [The CLI](../cli.md) for `irl publish` and `irl watch` in full.
+- [The CLI](../cli.md) for every `irl` command.
 - [Desktop rendering](desktop.md) for drawing frames in your own application.
-- [Tickets](tickets.md) for how connection information is shared.
+- [Tickets](tickets.md) for how a broadcast is named and shared.
 - [Architecture](../architecture/index.md) for how the crates fit together.
 - [Raspberry Pi](raspberry-pi.md), [Android](android.md), and [the browser
-  relay](browser-relay.md) for the platform-specific paths.
+  relay](browser-relay.md) for other platforms.

@@ -1,60 +1,47 @@
 # Android
 
-`demos/android` is a Kotlin application with a Rust core that makes two-way
-calls: Camera2 capture, hardware H.264 through MediaCodec, iroh transport, and
-zero-copy rendering of the decoded frames through EGL.
+`demos/android` is a Kotlin app with a Rust core. It captures with Camera2,
+encodes and decodes H.264 with MediaCodec, sends over iroh, and draws decoded
+frames through EGL without a copy.
 
 ## Where the pieces live
 
-The MediaCodec encoder and decoder are upstream in `moq-video`, behind
-`cfg(target_os = "android")` alongside the objc2 and Windows backend families.
-They were ported out of this repository during the v2 rewrite. Backend selection
-finds them automatically, and `moq_video::encode::Kind::Named("mediacodec")` asks
-for one by name. Nothing in this repository implements a codec.
+The MediaCodec encoder and decoder are in `moq-video`. Automatic backend
+selection finds them, and `moq_video::encode::Kind::Named("mediacodec")` asks
+for one by name.
 
-`iroh-live-media-android` carries the two things that are not a moq-video
-concern. `camera(size, rate)` returns a `CameraSink` and a `VideoSource` built
-on `VideoSource::push`: Kotlin pushes NV12 or RGBA into the sink and the
-broadcast the source is handed to reads frames out. It is a latest-wins slot, so
-a newer frame replaces an unconsumed older one, which is what a camera wants.
-`AndroidRenderer` owns the whole EGL lifecycle (display, context, surface) and
-draws either an `AHardwareBuffer` through `GL_TEXTURE_EXTERNAL_OES`, which is
-the zero-copy path out of MediaCodec's `ImageReader`, or an NV12 buffer through
-two `sampler2D` units. Both apply sensor rotation in the shader. Kotlin hands
-over an `android.view.Surface` and nothing else.
+`iroh-live-media-android` has the parts that are specific to the app side:
 
-`demos/android/rust` is the JNI bridge on top: one tokio runtime, one
-`SessionHandle` per session passed to Kotlin as a `jlong`, and a logcat layer for
-`tracing`. Its entry points cover connecting, dialling, answering, publishing,
-pushing camera frames, driving the surface, listing and switching renditions, and
-reading a status line. `IrohBridge.kt` declares the matching `external fun`s.
+- `camera::camera(size, rate)` returns a `CameraSink` and a `VideoSource`.
+  Kotlin pushes RGBA or NV12 frames into the sink, and a broadcast encodes the
+  source. A new frame replaces one the encoder has not taken yet.
+- `renderer::AndroidRenderer` owns the EGL display, context, and surface.
+  `render_hardware_buffer` draws an `AHardwareBuffer` through
+  `GL_TEXTURE_EXTERNAL_OES`, which is the zero-copy path out of MediaCodec.
+  `render_nv12` draws an NV12 buffer. Both apply the sensor rotation in the
+  shader.
 
-The app has three modes. **Watch** scans or pastes a ticket and plays it.
-**Publish** sends this camera and microphone and shows a ticket as a QR code.
-**Call** does both at once against one peer, and is the mode with two ways in:
-scan the other device's code to dial it, or show a code of your own and wait.
+`demos/android/rust` is the JNI bridge. It runs one tokio runtime, passes one
+`SessionHandle` per session to Kotlin as a `jlong`, and sends `tracing` output
+to logcat. `IrohBridge.kt` declares the matching `external fun`s.
 
-Two of them are offline: `startDirect` runs camera to preview with no encode and
-no network, and `startH264` runs camera to MediaCodec to a local loopback
-broadcast and back, which smoke-tests the codec on a device without needing a
-peer. Both exist because "is it the codec or is it the network" is the first
-question when a device misbehaves.
+## Modes
 
-A call is a small type in the bridge itself: each peer publishes a
-broadcast named `call` with `Live::publish`, and subscribes to the other's over
-the session between them with `Session::subscribe`, wrapping the result with
-`Live::remote_broadcast`. That name is the convention `irl call`
-uses too, so a phone and a desktop can call each other. Which side dialed stops
-mattering once the session is up.
+**Watch** plays a scanned or pasted ticket. **Publish** sends the camera and
+microphone and shows the ticket as a QR code. **Call** does both with one peer:
+scan the other device's code to dial it, or show your own and wait.
 
-`dial` blocks until the call is established, because the caller already has
-somewhere to connect to. `answer` cannot: the code has to be on screen before
-any peer exists, so it returns as soon as this node's own side is published and
-leaves a task on the handle waiting for the first inbound session that turns out
-to be a caller. `callConnected` is what the screen polls to know it happened.
-Every other session arrives the same way and an ordinary subscriber never
-publishes the call path, so one that does not is skipped rather than treated as
-a failure.
+Two entry points need no network. `startDirect` shows the camera without
+encoding. `startH264` sends the camera through MediaCodec to a local broadcast
+and back, which tests the codec without a peer.
+
+A call follows the same convention as `irl call`, so a phone and a desktop can
+call each other. Each side publishes `iroh_live::CALL` with `Live::publish`.
+`dial` connects with `Call::dial` and returns once the call is up. `answer`
+publishes this side and returns, so the QR code can go on screen. A task then
+waits for an inbound session and runs `Call::accept` on it. A session whose
+peer does not publish a call within a timeout is skipped. The screen polls
+`callConnected` to learn when a caller arrived.
 
 ## Prerequisites
 
@@ -64,13 +51,13 @@ a failure.
 - `cargo install cargo-ndk cargo-make`
 - JDK 17 or newer for Gradle
 
-The app is `minSdk 26`, `targetSdk 34`, `compileSdk 35`, and builds `arm64-v8a`
-only.
+The app is `minSdk 26`, `targetSdk 34`, `compileSdk 35`. It packages
+`arm64-v8a` and `x86_64` libraries, whichever were built.
 
 ## Building
 
-Run these from `demos/android`. The NDK path is detected from
-`$ANDROID_HOME/ndk/` and the highest installed version wins.
+Run these from `demos/android`. The highest NDK version under
+`$ANDROID_HOME/ndk/` is used.
 
 ```sh
 export ANDROID_HOME=~/Android/Sdk
@@ -78,26 +65,23 @@ cargo make install     # build everything and install the APK
 cargo make logcat      # filtered logs, in another terminal
 ```
 
-The full task list is in `demos/android/Makefile.toml`. The ones worth knowing:
-`ndk-build` builds only the Rust `.so`, `strip` removes its debug symbols, `apk`
-runs the whole pipeline through Gradle, `install` adds the install step,
-`run-on-device` launches it, and the `-release` variants of each do the same
-against the release profile. `logcat-pid` follows every log line from the running
-process rather than filtering by tag.
+The build is for `arm64-v8a`. Set `ABI=x86_64` to build for the emulator.
+`demos/android/Makefile.toml` lists every task. `ndk-build` builds only the
+Rust library, `apk` runs the whole build, `install` also installs it, and
+`run-on-device` launches it and follows the logs. The `-release` variants use
+the release Gradle build. `logcat-pid` shows every log line of the running
+process.
 
-## Feature configuration
+## Features and audio
 
-`demos/android/rust/Cargo.toml` selects `iroh-live-media` with the `aec` feature, which
-implies `capture` and `playback`. A handset on speakerphone without echo
-cancellation publishes its own output back to the peer, which is the one audio
-failure everybody notices.
+`demos/android/rust/Cargo.toml` enables the `aec` feature of
+`iroh-live-media`, which implies `capture` and `playback`. Without echo
+cancellation, a phone on speaker sends its own output back to the peer.
 
-Video is pushed from Kotlin, so the camera never goes through `moq_video::capture`.
-Audio is not: the Rust side opens the microphone itself with
-`AudioSource::microphone`. It opens one `AudioOutput` for the speaker, passes it
-to every player it starts, and passes the same output to
-`MicrophoneConfig::with_echo_cancellation`, which is how the canceller learns
-what to subtract.
+Video comes from Kotlin, but the Rust side opens the microphone with
+`AudioSource::microphone`. It opens one `AudioOutput` for the speaker and
+passes it to every player. In a call it also sets that output as
+`MicrophoneConfig::echo_reference`, so the canceller knows what to remove.
 
 ## Debugging
 
@@ -112,10 +96,9 @@ $ADB logcat --pid=$($ADB shell pidof -s com.n0.irohlive.demo)
 ```
 
 `iroh_live` is the Rust `tracing` output, `IrohBridge` is the Kotlin side, and
-`AndroidRuntime` carries Java and Kotlin stack traces. The Rust filter defaults
-to `warn`, with the iroh, moq, and audio crates at `debug`.
+`AndroidRuntime` has Java and Kotlin stack traces. The Rust filter defaults to
+`warn`, with the iroh, moq, media, and audio crates at `debug`.
 
 ## Status
 
-Tested on device with two-way video and audio between an Android handset and a
-Linux desktop.
+Tested on a handset with two-way audio and video to a Linux desktop.
