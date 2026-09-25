@@ -41,7 +41,8 @@ application admits or rejects them, for example after checking a token.
 ## Relays
 
 `Moq::attach_relay(RelayConfig::new(url))` stays attached to a moq relay at an
-`iroh://` or `https://` URL, and redials it with backoff. Public publications go
+`iroh://` or `https://` URL, and redials it with backoff. `RelayConfig::iroh(id)`
+builds the `iroh://` URL from an endpoint id. Public publications go
 to the relay, and the relay's routes join the route table at a higher cost than
 a direct route. A node that only publishes through the relay sets
 `RelayConfig::consume` to false.

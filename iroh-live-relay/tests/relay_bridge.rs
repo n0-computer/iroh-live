@@ -779,8 +779,9 @@ async fn a_relay_link_publishes_and_consumes() {
     let live = iroh_live::Live::builder(endpoint.clone()).spawn();
     let moq: &Moq = live.moq();
 
-    let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
-    let link = moq.attach_relay(RelayConfig::new(url)).expect("attach");
+    let link = moq
+        .attach_relay(RelayConfig::iroh(relay.iroh_id))
+        .expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
         while status.get() != RelayStatus::Connected {
@@ -875,12 +876,11 @@ async fn attached(
     offer: iroh_moq::RelayOffer,
 ) -> iroh_moq::RelayLink {
     use n0_watcher::Watcher;
-    let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
     let link = live
         .moq()
         .attach_relay(iroh_moq::RelayConfig {
             offer,
-            ..iroh_moq::RelayConfig::new(url)
+            ..iroh_moq::RelayConfig::iroh(relay.iroh_id)
         })
         .expect("attach");
     let mut status = link.status();
@@ -1539,11 +1539,10 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     .await;
 
     // Alice consumes through the relay, and the forged route is in her table.
-    let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
     let link = alice_moq
         .attach_relay(RelayConfig {
             offer: RelayOffer::Nothing,
-            ..RelayConfig::new(url)
+            ..RelayConfig::iroh(relay.iroh_id)
         })
         .expect("attach");
     let mut status = link.status();

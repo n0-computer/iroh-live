@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use iroh::EndpointId;
 use moq_net::origin;
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
@@ -63,6 +64,14 @@ impl RelayConfig {
             offer: RelayOffer::default(),
             consume: true,
         }
+    }
+
+    /// Returns a config for the relay with endpoint id `relay`, dialed over iroh.
+    pub fn iroh(relay: EndpointId) -> Self {
+        let url = format!("iroh://{relay}/")
+            .parse()
+            .expect("an endpoint id is a valid URL host");
+        Self::new(url)
     }
 
     /// Returns the URL to dial, with the token in its query.
