@@ -171,16 +171,17 @@ mod preview {
         Live,
         media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
     };
-    use iroh_live_egui::overlay::{DebugOverlay, StatCategory, fit_to_aspect};
+    use iroh_live_egui::{
+        VideoView,
+        overlay::{DebugOverlay, StatCategory, fit_to_aspect},
+    };
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
     use n0_watcher::Watcher as _;
     use tokio::sync::oneshot;
     use tracing::{info, warn};
 
-    use crate::{
-        args::PublishArgs, source::Opened, source_spec::VideoSourceSpec, ui::LocalPreview,
-    };
+    use crate::{args::PublishArgs, source::Opened, source_spec::VideoSourceSpec};
 
     /// Opens the preview window and runs it until it closes.
     ///
@@ -199,7 +200,7 @@ mod preview {
             crate::ui::native_options(args.fullscreen),
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
-                let view = LocalPreview::new(
+                let view = VideoView::new(
                     &cc.egui_ctx,
                     "preview",
                     sources.video.as_ref().map(VideoSource::frames),
@@ -222,7 +223,7 @@ mod preview {
         live: Live,
         broadcast: LocalBroadcast,
         ticket: String,
-        view: LocalPreview,
+        view: VideoView,
         picker: SourcePicker,
         overlay: DebugOverlay,
     }
@@ -236,7 +237,6 @@ mod preview {
             if let Some(frames) = self.picker.poll() {
                 self.view.set_frames(frames);
             }
-            self.view.update(&ctx);
 
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             crate::ui::top_bar(ui, &ctx, &self.ticket);
@@ -244,7 +244,7 @@ mod preview {
             let available = ui.available_size();
             let video_rect = egui::Rect::from_min_size(ui.cursor().min, available);
             let size = fit_to_aspect(available, 16.0 / 9.0);
-            let image = self.view.image();
+            let image = self.view.render();
             ui.centered_and_justified(|ui| ui.add_sized(size, image));
 
             let stats = self.broadcast.stats();

@@ -8,12 +8,10 @@ use clap::ValueEnum;
 use eframe::egui;
 use iroh_live::{
     Live,
-    media::{
-        AudioOutput, Latency, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoFrames,
-    },
+    media::{AudioOutput, Latency, LocalBroadcast, Player, PlayerConfig, RenditionMode},
 };
 use iroh_live_egui::{
-    FrameView, VideoView,
+    VideoView,
     overlay::{DebugOverlay, StatCategory},
 };
 use n0_future::task::{AbortOnDropHandle, spawn};
@@ -268,82 +266,6 @@ pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_fullscreen(fullscreen),
         ..Default::default()
     }
-}
-
-/// The publisher's own picture, drawn from the frames its source captures.
-///
-/// Costs no extra decode: the frames are the source's own, read through a
-/// handle of their own. A source switch hands the preview the new source's
-/// frames with [`set_frames`](Self::set_frames).
-#[derive(Debug)]
-pub struct LocalPreview {
-    view: FrameView,
-    frames: Option<VideoFrames>,
-    /// The window to wake, kept so [`set_frames`](Self::set_frames) can wake
-    /// it for the replacement.
-    ctx: egui::Context,
-    /// Wakes the window when a captured frame arrives, so the preview keeps
-    /// moving in a window that has nothing else to repaint for.
-    _wake: Option<AbortOnDropHandle<()>>,
-}
-
-impl LocalPreview {
-    /// Creates a preview of `frames` that draws through `render_state`, if one
-    /// is available.
-    pub fn new(
-        ctx: &egui::Context,
-        name: &str,
-        frames: Option<VideoFrames>,
-        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
-    ) -> Self {
-        Self {
-            view: FrameView::new(ctx, name, render_state),
-            _wake: wake_on_frame(ctx, frames.as_ref()),
-            frames,
-            ctx: ctx.clone(),
-        }
-    }
-
-    /// Points the preview at another source's frames, or at nothing.
-    pub fn set_frames(&mut self, frames: Option<VideoFrames>) {
-        self._wake = wake_on_frame(&self.ctx, frames.as_ref());
-        self.frames = frames;
-    }
-
-    /// Draws the newest captured frame, if one arrived since the last call.
-    ///
-    /// Requests a repaint when it did, so the picture advances without waiting
-    /// for the next input event.
-    pub fn update(&mut self, ctx: &egui::Context) {
-        if let Some(frames) = self.frames.as_mut()
-            && let Some(frame) = frames.try_next()
-        {
-            self.view.render_frame(&frame);
-            ctx.request_repaint();
-        }
-    }
-
-    /// Returns the image for whatever frame was drawn last.
-    pub fn image(&self) -> egui::Image<'_> {
-        self.view.image()
-    }
-}
-
-/// Asks the window to draw whenever `frames` has a new picture.
-///
-/// Reads through a handle of its own, so it never takes a picture from the
-/// drawing pass.
-fn wake_on_frame(
-    ctx: &egui::Context,
-    frames: Option<&VideoFrames>,
-) -> Option<AbortOnDropHandle<()>> {
-    let ctx = ctx.clone();
-    let mut frames = frames?.clone();
-    Some(AbortOnDropHandle::new(spawn(async move {
-        while frames.next().await.is_some() {
-            ctx.request_repaint();
-        }
-    })))
 }
 
 /// One remote broadcast on screen.

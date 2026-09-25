@@ -118,7 +118,7 @@ mod window {
         media::{AudioOutput, LocalBroadcast, Player, VideoSource},
         rooms::{Room, RoomState},
     };
-    use iroh_live_egui::egui_wgpu::RenderState;
+    use iroh_live_egui::{VideoView, egui_wgpu::RenderState};
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
     use n0_watcher::Watcher;
@@ -129,7 +129,7 @@ mod window {
     use crate::{
         args::PlaybackArgs,
         transport::{PEER_TIMEOUT, Subscribed},
-        ui::{LocalPreview, RemoteView},
+        ui::RemoteView,
     };
 
     /// How many chat messages wait for the window before the readers hold
@@ -196,7 +196,7 @@ mod window {
                     opening: JoinSet::new(),
                     reconcile_at: None,
                     chat: ChatState::default(),
-                    preview: LocalPreview::new(
+                    preview: VideoView::new(
                         &cc.egui_ctx,
                         "room-preview",
                         sources.video.as_ref().map(VideoSource::frames),
@@ -252,7 +252,7 @@ mod window {
         /// failed.
         reconcile_at: Option<Instant>,
         chat: ChatState,
-        preview: LocalPreview,
+        preview: VideoView,
         /// The sources this node publishes, held for the window's life.
         _sources: crate::source::Opened,
         /// The speaker every peer plays through.
@@ -296,7 +296,6 @@ mod window {
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
             crate::ui::escape_leaves_fullscreen(&ctx);
-            self.preview.update(&ctx);
 
             egui::Panel::top("room-bar").show(ui, |ui| self.bar_ui(ui, &ctx));
             egui::Panel::bottom("room-chat")
@@ -576,7 +575,7 @@ mod window {
 
         /// Draws this node's own picture as the first tile.
         fn draw_self(&mut self, ui: &mut egui::Ui, cell: egui::Vec2) {
-            let response = ui.add_sized(cell, self.preview.image());
+            let response = ui.add_sized(cell, self.preview.render());
             tile_label(ui, response.rect, &format!("{} (you)", self.display_name));
         }
 

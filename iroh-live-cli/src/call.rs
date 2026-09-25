@@ -223,7 +223,7 @@ mod window {
         BroadcastTicket, Live, Session,
         media::{AudioOutput, LocalBroadcast, Player, SlotState, VideoSource},
     };
-    use iroh_live_egui::{egui_wgpu::RenderState, overlay::fit_to_aspect};
+    use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
     use n0_watcher::Watcher as _;
@@ -235,7 +235,7 @@ mod window {
         args::{CallArgs, PlaybackArgs},
         scan::ScanView,
         transport::PEER_TIMEOUT,
-        ui::{CursorIdle, LocalPreview, RemoteView, TicketQr},
+        ui::{CursorIdle, RemoteView, TicketQr},
     };
 
     /// How many unanswered incoming sessions are held before the oldest one
@@ -306,7 +306,7 @@ mod window {
                 crate::ui::spawn_ctrl_c_handler(ctx);
                 let (tx, incoming) = mpsc::channel(INCOMING_QUEUE);
                 let forwarder = spawn(forward_incoming(live.clone(), tx));
-                let preview = LocalPreview::new(
+                let preview = VideoView::new(
                     ctx,
                     "call-preview",
                     sources.video.as_ref().map(VideoSource::frames),
@@ -389,7 +389,7 @@ mod window {
         /// The attempt in flight, of which there is at most one.
         pending: Option<Pending>,
         screen: Screen,
-        preview: LocalPreview,
+        preview: VideoView,
         render_state: Option<RenderState>,
         cursor: CursorIdle,
         /// The playback flags the peer's broadcast is opened under.
@@ -633,7 +633,6 @@ mod window {
             // Before the screen switch, so Escape leaves full screen from the
             // scan and calling screens too, not only during a call.
             crate::ui::escape_leaves_fullscreen(&ctx);
-            self.preview.update(&ctx);
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
             match self.screen {
@@ -977,10 +976,10 @@ mod window {
 
         /// Draws the local picture filling the window, which is what sits
         /// behind every screen with no remote video on it.
-        fn draw_backdrop(&self, ui: &mut egui::Ui) {
+        fn draw_backdrop(&mut self, ui: &mut egui::Ui) {
             let available = ui.available_size();
             let size = fit_to_aspect(available, ASPECT);
-            let image = self.preview.image();
+            let image = self.preview.render();
             ui.centered_and_justified(|ui| ui.add_sized(size, image));
         }
 
@@ -1113,7 +1112,7 @@ mod window {
                         .fill(egui::Color32::BLACK)
                         .corner_radius(4.0)
                         .inner_margin(2.0)
-                        .show(ui, |ui| ui.add_sized(pip, preview.image()));
+                        .show(ui, |ui| ui.add_sized(pip, preview.render()));
                 });
 
             if !show_overlay {

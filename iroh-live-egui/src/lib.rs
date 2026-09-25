@@ -230,14 +230,14 @@ impl FrameView {
 #[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 pub struct VideoView {
-    frames: VideoFrames,
+    frames: Option<VideoFrames>,
     frame_view: FrameView,
     /// Kept so [`set_frames`](Self::set_frames) can wake the window for the new
     /// stream.
     #[debug(skip)]
     ctx: egui::Context,
     /// Wakes the window on each frame. Dropping it stops the task.
-    _wake: n0_future::task::AbortOnDropHandle<()>,
+    _wake: Option<n0_future::task::AbortOnDropHandle<()>>,
 }
 
 /// Spawns a task that requests a repaint whenever a frame arrives.
@@ -249,49 +249,54 @@ pub struct VideoView {
 #[cfg(feature = "wgpu-render")]
 fn wake_on_frame(
     ctx: &egui::Context,
-    frames: &VideoFrames,
-) -> n0_future::task::AbortOnDropHandle<()> {
+    frames: Option<&VideoFrames>,
+) -> Option<n0_future::task::AbortOnDropHandle<()>> {
     let ctx = ctx.clone();
-    let mut frames = frames.clone();
-    n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(async move {
-        while frames.next().await.is_some() {
-            ctx.request_repaint();
-        }
-    }))
+    let mut frames = frames?.clone();
+    Some(n0_future::task::AbortOnDropHandle::new(
+        n0_future::task::spawn(async move {
+            while frames.next().await.is_some() {
+                ctx.request_repaint();
+            }
+        }),
+    ))
 }
 
 #[cfg(feature = "wgpu-render")]
 impl VideoView {
     /// Creates a view of `frames` that draws through `render_state`.
     ///
-    /// `name` names the placeholder texture. Must be called inside a Tokio
-    /// runtime, which runs the task that wakes the window.
+    /// `name` names the placeholder texture. A view without frames shows the
+    /// placeholder until [`set_frames`](Self::set_frames) gives it some. Must be
+    /// called inside a Tokio runtime, which runs the task that wakes the window.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
-        frames: VideoFrames,
+        frames: impl Into<Option<VideoFrames>>,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
+        let frames = frames.into();
         Self {
-            _wake: wake_on_frame(ctx, &frames),
+            _wake: wake_on_frame(ctx, frames.as_ref()),
             frames,
             frame_view: FrameView::new(ctx, name, render_state),
             ctx: ctx.clone(),
         }
     }
 
-    /// Replaces the stream this view draws.
+    /// Replaces the stream this view draws, or removes it with `None`.
     ///
     /// The last frame stays on screen until the new stream delivers one. Like
     /// [`new`](Self::new), this must be called inside a Tokio runtime.
-    pub fn set_frames(&mut self, frames: VideoFrames) {
-        self._wake = wake_on_frame(&self.ctx, &frames);
+    pub fn set_frames(&mut self, frames: impl Into<Option<VideoFrames>>) {
+        let frames = frames.into();
+        self._wake = wake_on_frame(&self.ctx, frames.as_ref());
         self.frames = frames;
     }
 
     /// Draws the newest frame, if a new one arrived, and returns the image.
     pub fn render(&mut self) -> egui::Image<'_> {
-        if let Some(frame) = self.frames.try_next() {
+        if let Some(frame) = self.frames.as_mut().and_then(VideoFrames::try_next) {
             self.frame_view.render_frame(&frame);
         }
         self.frame_view.image()
