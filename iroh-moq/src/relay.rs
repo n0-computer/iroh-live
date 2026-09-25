@@ -1,11 +1,9 @@
 //! Relay links: staying attached to a moq relay.
 //!
-//! A relay link is a moq-tokio client connection whose publisher is what the
-//! node offers the relay and whose subscriber feeds the node's route table, so
-//! redialing with backoff, carrying the token where the binding wants it, and
-//! pricing the link are moq-tokio's code rather than ours. `iroh://` relays are
-//! dialed through the node's own endpoint, sharing its identity and
-//! holepunching.
+//! A relay link is a moq-tokio client connection. It publishes what the node
+//! offers the relay, and feeds what the relay announces into the node's route
+//! table. moq-tokio redials with backoff. `iroh://` relays are dialed through
+//! the node's own endpoint.
 
 use std::{
     collections::HashMap,
@@ -29,8 +27,8 @@ use crate::{
 
 /// The cost a relay link adds to every route through it, unless configured.
 ///
-/// Higher than a direct link's one, so a direct route to the same broadcast
-/// wins while it exists.
+/// Higher than a direct link's cost of one, so a direct route wins while it
+/// exists.
 pub const DEFAULT_RELAY_COST: u64 = 10;
 
 /// How to attach to a relay.
@@ -46,13 +44,9 @@ pub struct RelayConfig {
     pub cost: u64,
     /// What the node publishes into the relay.
     pub offer: RelayOffer,
-    /// Whether the node subscribes through the relay.
+    /// Whether the relay's routes enter the node's route table.
     ///
-    /// On by default, which copies every route the relay announces into this
-    /// node's route table: every broadcast the relay knows becomes resolvable
-    /// here, priced at [`cost`](Self::cost). A node that only publishes
-    /// through the relay should turn it off, so it neither mirrors routes it
-    /// will never read nor answers requests for them.
+    /// A node that only publishes through the relay should turn this off.
     pub consume: bool,
 }
 
@@ -109,7 +103,7 @@ pub enum RelayStatus {
 /// A relay this node stays attached to.
 ///
 /// Cheap to clone. The link stays until [`detach`](Self::detach) or the node's
-/// shutdown; dropping the handles leaves it in place.
+/// shutdown. Dropping the handles leaves it in place.
 #[derive(Debug, Clone)]
 pub struct RelayLink {
     inner: Arc<RelayInner>,
@@ -140,18 +134,14 @@ impl RelayLink {
         &self.inner.url
     }
 
-    /// Returns the id of this link.
-    ///
-    /// The [`RouteInfo::via`](crate::RouteInfo::via) of every route the relay
-    /// forwards.
+    /// Returns this link's id, the [`RouteInfo::via`](crate::RouteInfo::via) of its routes.
     pub fn id(&self) -> LinkId {
         LinkId(self.inner.link)
     }
 
-    /// Returns the link as its connection monitor last read it.
+    /// Returns the connection monitor's latest reading of this link.
     ///
-    /// Read from the relay link's current MoQ session. Empty while the link is
-    /// between sessions, and each new session is a new path generation.
+    /// Empty between sessions. Each new session bumps the path generation.
     pub fn link(&self) -> LinkSample {
         self.inner.link_state.get()
     }
@@ -174,17 +164,12 @@ impl RelayLink {
 
     /// Detaches from the relay.
     ///
-    /// Closes the session, stops redialing, and withdraws every route learned
-    /// through it.
-    ///
-    /// Returns once the session has closed. Idempotent. Cancellation safe: the
-    /// session is told to close before the first wait, and dropping the future
-    /// leaves the rest to the link's task, which ends with the session.
+    /// Closes the session, stops redialing and withdraws the relay's routes.
+    /// Returns once the session has closed. Idempotent.
     pub async fn detach(&self) {
         info!(url = %self.inner.url, "detaching relay");
         self.inner.connection.abort(moq_net::Error::Cancel);
-        // A deliberate stop reports `Ok`, and an error here would only say the
-        // session was already gone, which is where this is headed anyway.
+        // An error only says the session was already gone.
         self.inner.connection.closed().await.ok();
         if let Some(tasks) = self.inner.tasks.upgrade() {
             tasks.remove_relay(self.inner.link);
@@ -210,8 +195,7 @@ impl Tasks {
     /// Keeps a relay link's task running until the link detaches.
     fn insert_relay(&self, link: u64, task: RelayTask) {
         let mut relays = self.relays.lock().expect("poisoned");
-        // A link whose task ended on its own (its client gave up) is gone
-        // already; its handle need not stay.
+        // Drop the handles of links whose client gave up.
         relays.retain(|_, relay| !relay.task.is_finished());
         relays.insert(link, task);
     }

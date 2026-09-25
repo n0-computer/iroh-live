@@ -13,8 +13,7 @@ workspace = true
 [dependencies]
 derive_more = { version = "2.1.1", features = ["display", "debug"] }
 iroh = { workspace = true }
-# mDNS address lookup, so a ticket that names an endpoint id and no
-# addresses still resolves on a network with no route to the internet.
+# mDNS address lookup, for networks without internet access.
 iroh-mdns-peer-lookup = "0.1.2"
 # `Grant::from_claims`, behind `auth`: one token format for our nodes and moq
 # relays.
@@ -28,16 +27,13 @@ n0-future = "0.3.2"
 n0-watcher = "1"
 # BBR3, the congestion controller every endpoint binds with.
 noq-proto = { workspace = true }
-# `time` seeds each session driver's clock, and `macros` is for the `select!`
-# that runs it. Both used to arrive only through feature unification with the
-# rest of the workspace, which is not a thing a library can lean on.
+# `time` seeds each session driver's clock, `macros` is for `select!`.
 tokio = { version = "1.53.1", features = ["sync", "time", "macros", "rt"] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
 url = "2.5.8"
 web-transport-iroh = { workspace = true }
-# The H3 CONNECT request and response types. web-transport-iroh surfaces them in
-# its API but does not re-export them, so the version has to be matched by hand.
+# The H3 CONNECT types, which web-transport-iroh uses but does not re-export.
 web-transport-proto = "0.6"
 
 [features]

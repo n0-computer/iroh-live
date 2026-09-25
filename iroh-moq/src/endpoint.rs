@@ -1,8 +1,7 @@
 //! Binding an endpoint for MoQ.
 //!
 //! [`MoqPreset`] is iroh's N0 preset with a QUIC transport tuned for MoQ, and
-//! [`EndpointOptions`] adds what a preset cannot: a secret key and mDNS, which
-//! starts asynchronously.
+//! [`EndpointOptions`] adds what a preset cannot: a secret key and mDNS.
 
 use std::sync::Arc;
 
@@ -27,15 +26,11 @@ use crate::Error;
 /// # }
 /// ```
 ///
-/// The transport runs BBR3 in place of iroh's default, CUBIC. A live publisher
-/// is application-limited: it sends what its source produces into a window
-/// sized for whatever the link would take. CUBIC grows that window
-/// until something is lost, so on a publisher the window says nothing about
-/// the link, and the send-rate estimate moq-net carries to every subscriber
-/// (`cwnd / rtt`) reads as room to spare on a link that has none. BBR3 sizes its
-/// window from the delivery rate it measures, so the same figure tracks the
-/// link. Installed on every endpoint because one endpoint publishes and
-/// subscribes at once in a call.
+/// moq-net sends every subscriber the publisher's send-rate estimate,
+/// `cwnd / rtt`. A live publisher sends less than the link could take, and
+/// under CUBIC, iroh's default, its window grows until something is lost, so
+/// the estimate shows room to spare on a full link. BBR3 sizes the window from
+/// the delivery rate it measures, so the estimate tracks the link.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MoqPreset;
 
@@ -56,10 +51,7 @@ fn transport_config() -> QuicTransportConfig {
 
 /// How an endpoint uses mDNS on the local network.
 ///
-/// mDNS is what lets a ticket, which names an endpoint id and no addresses,
-/// resolve on a network with no route to the internet: two laptops on a
-/// conference network still find each other, because the lookup never leaves
-/// the link.
+/// mDNS lets an endpoint id resolve on a network without internet access.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mdns {
     /// Publishes this endpoint's addresses and resolves others'.
@@ -69,8 +61,7 @@ pub enum Mdns {
     Announce,
     /// Resolves others without publishing this endpoint.
     ///
-    /// For a node nobody dials, which would otherwise advertise an endpoint
-    /// that refuses every connection.
+    /// For a node nobody dials.
     Lookup,
     /// Uses no mDNS at all.
     Off,
@@ -88,13 +79,9 @@ pub struct EndpointOptions {
 impl EndpointOptions {
     /// Returns an endpoint builder with [`MoqPreset`], the key and mDNS applied.
     ///
-    /// For a caller that sets more before binding: a relay adds its ALPNs.
-    ///
-    /// Async because starting mDNS is. Not fallible: mDNS wants a multicast
-    /// socket, and a sandbox or a phone without a multicast lock will not give
-    /// it one. That costs local-network lookup and nothing else, so a failure is
-    /// logged and the builder goes without it. Cancellation safe: dropping the
-    /// future drops the lookup it started.
+    /// For a caller that sets more before binding. If mDNS cannot start, as in
+    /// a sandbox or on a phone without a multicast lock, logs a warning and
+    /// goes without it.
     pub async fn builder(self) -> Builder {
         let mut builder = Endpoint::builder(MoqPreset);
         if let Some(key) = self.secret_key {
@@ -125,8 +112,6 @@ impl EndpointOptions {
     }
 
     /// Binds an endpoint with [`MoqPreset`] and these options.
-    ///
-    /// Cancellation safe: dropping the future binds nothing.
     ///
     /// # Errors
     ///

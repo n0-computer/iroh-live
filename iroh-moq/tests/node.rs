@@ -1,5 +1,4 @@
-//! Publishing and subscribing on a node, over real QUIC connections: paths
-//! that name their publisher, audiences, admission, and routes.
+//! Publishing and subscribing on a node, over real QUIC connections.
 
 mod common;
 
@@ -111,8 +110,7 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
 /// How long a negative check waits for something that must not happen.
 const QUIET: Duration = Duration::from_secs(2);
 
-/// A publication for a set of peers reaches those peers only, follows the set
-/// as it changes, and ends for a peer taken out of it.
+/// A `Peers` publication reaches only its set, and follows the set as it changes.
 #[tokio::test]
 #[traced_test]
 async fn a_peers_audience_follows_its_set() {
@@ -140,8 +138,7 @@ async fn a_peers_audience_follows_its_set() {
     .expect("bob is a member");
     let mut bob_reading = reading(&for_bob.as_moq()).await;
 
-    // Carol has a session, but nothing is offered on it: neither the path nor
-    // its bare alias.
+    // Carol has a session, but nothing is offered on it.
     let session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
@@ -185,8 +182,7 @@ async fn a_peers_audience_follows_its_set() {
     carol.shutdown().await;
 }
 
-/// A manual publication is offered per session, and withdrawing the offer ends
-/// what the peer reads through it.
+/// A manual publication needs an offer, and withdrawing it ends what the peer reads.
 #[tokio::test]
 #[traced_test]
 async fn a_manual_audience_needs_an_offer() {
@@ -268,8 +264,7 @@ async fn unpublishing_ends_what_peers_read() {
     bob.shutdown().await;
 }
 
-/// Under manual admission the application decides per session, here on a token
-/// in the setup path, and the grant bounds what can be offered.
+/// Manual admission checks a token, and the grant bounds what can be offered.
 #[tokio::test]
 #[traced_test]
 async fn manual_admission_checks_a_token_and_bounds_offers() {
@@ -355,9 +350,8 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
         .expect_err("an offer outside the grant");
     assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
 
-    // Without the token the session is refused. From moq-lite-05 on the dialer
-    // completes its half of the handshake before the other side decides, so the
-    // refusal arrives as the session closing with the reason.
+    // Without the token the session is refused. The dialer's half of the
+    // handshake completes first, so the refusal arrives as the session closing.
     match step(
         "mallory connects",
         mallory.moq.connect(alice.endpoint.addr()),
@@ -411,7 +405,7 @@ const FORGED: u64 = 1_000_000;
 /// A peer cannot route another publisher's path through this node's table.
 ///
 /// With a grant that keeps each peer to paths naming it, a path resolves to
-/// its publisher's broadcast, never to one a third peer announces there.
+/// its publisher's broadcast and never to a third peer's.
 #[tokio::test]
 #[traced_test]
 async fn a_peer_cannot_route_another_publishers_path() {
@@ -477,8 +471,7 @@ async fn a_peer_cannot_route_another_publishers_path() {
     mallory.shutdown().await;
 }
 
-/// A subscriber that starts before its publisher resolves the path once it
-/// is published.
+/// A subscriber that starts before its publisher resolves the path once published.
 #[tokio::test]
 #[traced_test]
 async fn a_subscriber_started_first_gets_the_named_path() {
@@ -510,9 +503,6 @@ async fn a_subscriber_started_first_gets_the_named_path() {
 }
 
 /// Dials `to` from `dialer` and waits for the session to be refused.
-///
-/// From moq-lite-05 on the dialer completes its half of the handshake before
-/// the other side decides, so a refusal usually arrives as the session closing.
 async fn refused(dialer: &Node, to: &Node, within: Duration) {
     match step("connect", dialer.moq.connect(to.endpoint.addr())).await {
         Err(_) => {}
@@ -553,8 +543,7 @@ async fn an_undecided_session_is_refused() {
     bob.shutdown().await;
 }
 
-/// An `accept` call that holds the admission queue in a future nobody polls
-/// does not hold up the shutdown, and hands out nothing after it.
+/// An `accept` parked in an unpolled future does not hold up the shutdown.
 #[tokio::test]
 #[traced_test]
 async fn a_parked_accept_does_not_hold_up_shutdown() {
@@ -578,8 +567,7 @@ async fn a_parked_accept_does_not_hold_up_shutdown() {
     alice.shutdown().await;
 }
 
-/// Shutting the router down shuts the node down with it, as for any iroh
-/// protocol.
+/// Shutting the router down shuts the node down.
 #[tokio::test]
 #[traced_test]
 async fn the_router_shuts_the_node_down() {
@@ -651,8 +639,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     bob.shutdown().await;
 }
 
-/// A node can share its route table with another server: its public
-/// publications are there, and nothing else of its own.
+/// A shared route table carries the node's public publications and nothing else.
 #[tokio::test]
 #[traced_test]
 async fn a_shared_route_table_carries_public_publications() {

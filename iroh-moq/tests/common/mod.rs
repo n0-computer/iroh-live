@@ -1,5 +1,4 @@
-//! Shared harness for the node tests: endpoints on an in-memory address lookup,
-//! and nodes that accept MoQ.
+//! Shared harness for the node tests.
 
 #![allow(dead_code, reason = "each test file uses a subset of the harness")]
 #![allow(
@@ -25,8 +24,7 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a test track keeps its groups, on both ends.
 pub(crate) const MAX_AGE: Duration = Duration::from_secs(5);
 
-/// Binds an endpoint against a shared in-memory address lookup, so peers in one
-/// test process reach each other without a discovery service.
+/// Binds an endpoint against a shared in-memory address lookup.
 pub(crate) async fn endpoint() -> Endpoint {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     let lookup = LOOKUP.get_or_init(MemoryLookup::new);
@@ -84,8 +82,7 @@ impl Node {
     }
 }
 
-/// Returns a grant that lets `peer` subscribe to anything and publish under
-/// `live/<peer>/` only.
+/// Returns a grant to subscribe anywhere and publish under `live/<peer>/` only.
 pub(crate) fn own_paths(peer: EndpointId) -> Grant {
     let own: Pattern = format!("live/{peer}/**").parse().expect("pattern");
     Grant {
@@ -94,8 +91,7 @@ pub(crate) fn own_paths(peer: EndpointId) -> Grant {
     }
 }
 
-/// A standalone broadcast with one track that writes a counter every few
-/// milliseconds.
+/// A broadcast whose one track writes a counter every few milliseconds.
 pub(crate) struct TestBroadcast {
     pub(crate) producer: broadcast::Producer,
     _writer: AbortOnDropHandle<()>,
@@ -175,8 +171,7 @@ pub(crate) async fn reading(broadcast: &broadcast::Consumer) -> track::Subscribe
     .expect("timed out reading a group")
 }
 
-/// Waits until `subscriber`'s track ends, failing the test with `what` if it
-/// still delivers after [`TIMEOUT`].
+/// Waits until `subscriber`'s track ends, failing with `what` after [`TIMEOUT`].
 pub(crate) async fn ends(what: &str, subscriber: &mut track::Subscriber) {
     let ended = tokio::time::timeout(TIMEOUT, async {
         while let Ok(Some(_)) = subscriber.recv_group().await {}
@@ -196,8 +191,7 @@ pub(crate) async fn stays_pending<T: std::fmt::Debug>(
     }
 }
 
-/// Awaits `future`, failing the test with `what` if it takes longer than
-/// [`TIMEOUT`].
+/// Awaits `future`, failing with `what` after [`TIMEOUT`].
 pub(crate) async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(TIMEOUT, future)
         .await

@@ -37,9 +37,7 @@ pub enum Reach {
     Direct(EndpointId),
     /// Waits for an attached relay to route the path.
     Relays,
-    /// Dials the publisher and waits on relays at once.
-    ///
-    /// The route table serves the cheaper route.
+    /// Dials the publisher and waits on relays at the same time.
     Both(EndpointId),
 }
 
@@ -50,27 +48,20 @@ pub struct MoqConfig {
     pub admission: Admission,
     /// Returns the grant of a session with a peer, from its endpoint id.
     ///
-    /// Used under [`Admission::Open`], and for a dial without
-    /// [`ConnectOptions::grant`]. `None` grants everything.
+    /// Used for sessions admitted under [`Admission::Open`], and for dials
+    /// without [`ConnectOptions::grant`]. `None` grants everything.
     ///
-    /// The grant's publish patterns decide which paths a peer may put into
-    /// the route table, which every subscriber on the node shares. A function
-    /// that lets each peer publish only under paths naming it keeps one peer
-    /// from standing in for another: `iroh-live` lets a peer publish under
-    /// `live/<its id>/` only.
+    /// A grant's publish patterns decide which paths the peer may put into the
+    /// route table. Let each peer publish only under paths that name it, or
+    /// one peer can stand in for another.
     pub grant: Option<GrantFn>,
     /// A route table to share with another server, instead of the node's own.
     ///
-    /// A relay binary shares its cluster's. The node's hop is then the
-    /// origin's, so every route it forwards carries one identity.
-    ///
-    /// Everything the table holds is then the other server's to serve, to
-    /// whoever it serves: the node's own `Everyone` publications, every route
-    /// an attached relay forwards, and every broadcast a direct peer announces
-    /// to this node under a path that names it, including ones the peer
-    /// offered to this node alone. The table cannot tell those apart, since a
-    /// peer's audience is the peer's business. Share a table only with a
-    /// server that serves no more widely than the peers of this node expect.
+    /// The other server then serves everything in the table: this node's
+    /// `Everyone` publications, routes from attached relays, and what direct
+    /// peers announce to this node, including broadcasts they offered to this
+    /// node alone. Share a table only with a server that serves no more widely
+    /// than this node's peers expect.
     pub origin: Option<origin::Producer>,
 }
 
@@ -84,11 +75,11 @@ impl fmt::Debug for MoqConfig {
     }
 }
 
-/// The node's moq endpoint.
+/// A MoQ node on an iroh endpoint.
 ///
-/// Owns one route table fed by every link, the node's publications, and its
-/// sessions. Cheap to clone; [`shutdown`](Self::shutdown) ends it for every
-/// clone. Implements [`ProtocolHandler`]: mount it under every ALPN in
+/// Holds the route table, the node's publications and its sessions. Cheap to
+/// clone, and [`shutdown`](Self::shutdown) ends it for every clone. Mount it
+/// on a [`Router`](iroh::protocol::Router) under every ALPN in
 /// [`alpns`](crate::alpns).
 ///
 /// # Examples
@@ -117,7 +108,7 @@ impl fmt::Debug for MoqConfig {
 #[derive(Clone)]
 pub struct Moq {
     pub(crate) shared: Arc<Shared>,
-    /// Held for its drop, which aborts the actor once the last handle goes.
+    /// Aborts the node's tasks when the last handle drops.
     pub(crate) tasks: Arc<Tasks>,
 }
 
@@ -148,10 +139,10 @@ pub(crate) struct Shared {
     pub(crate) done: Watchable<bool>,
 }
 
-/// The node's tasks, held apart from [`Shared`] so the tasks can hold it.
+/// The node's tasks, kept apart from [`Shared`] so the tasks can hold it.
 ///
-/// Without a cycle: dropping the last [`Moq`] drops these, which ends the
-/// tasks, which release the shared state.
+/// Dropping the last [`Moq`] drops these, which ends the tasks and releases
+/// the shared state.
 pub(crate) struct Tasks {
     _actor: AbortOnDropHandle<()>,
     _table: Option<AbortOnDropHandle<()>>,
@@ -160,11 +151,9 @@ pub(crate) struct Tasks {
 }
 
 impl Moq {
-    /// Creates the node for `endpoint`.
+    /// Creates a node on `endpoint`.
     ///
-    /// Must be called within a tokio runtime. Accepts nothing until mounted on
-    /// a [`Router`](iroh::protocol::Router) under every ALPN in
-    /// [`alpns`](crate::alpns).
+    /// Must be called within a tokio runtime.
     pub fn new(endpoint: Endpoint, config: MoqConfig) -> Self {
         let id = endpoint.id();
         let (table, table_task) = match config.origin {
@@ -225,9 +214,9 @@ impl Moq {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Duplicate`] if a live publication already has the
-    /// path, [`Error::InvalidPath`] for an empty path or one with a `*`
-    /// segment, and [`Error::ShutDown`] once the node has shut down.
+    /// Fails with [`Error::Duplicate`] if another publication has the path,
+    /// [`Error::InvalidPath`] for an empty path or one with a `*` segment, and
+    /// [`Error::ShutDown`] once the node has shut down.
     pub fn publish(
         &self,
         path: impl AsPath,
@@ -244,19 +233,15 @@ impl Moq {
 
     /// Resolves `path` in the route table.
     ///
-    /// If no route exists yet, it reaches out as `reach` says. Cancellation
-    /// safe: a dial it started continues for other callers.
+    /// If no route exists yet, reaches out as `reach` says.
     ///
-    /// The route table holds what direct peers announce within their grants,
-    /// routes an attached relay forwards, and this node's own publications for
-    /// [`Audience::Everyone`]. With grants that keep each peer to paths naming
-    /// it (see [`MoqConfig::grant`]), a path resolves to its publisher's
-    /// broadcast, directly or through a relay, and never to one a third peer
-    /// announced there. A relay is trusted with every path it forwards, so
-    /// attach only relays whose admission keeps each publisher to its own
-    /// paths (moq-relay's tokens do). This node's `Peers` and `Manual`
-    /// publications are not in the table, which may be shared with a cluster;
-    /// read those from the broadcast itself.
+    /// The table holds what direct peers announce within their grants, routes
+    /// from attached relays, and this node's [`Audience::Everyone`]
+    /// publications. With grants that keep each peer to paths that name it,
+    /// a path resolves to its publisher's broadcast and never to a third
+    /// peer's. A relay is trusted with every path it forwards, so attach only
+    /// relays that keep each publisher to its own paths, as moq-relay's tokens
+    /// do.
     ///
     /// # Errors
     ///
@@ -280,13 +265,10 @@ impl Moq {
 
     /// Returns the session with `peer`, dialing if there is none.
     ///
-    /// Concurrent calls share one dial. Cancellation safe: an abandoned dial
-    /// still completes for the callers that stayed.
-    ///
-    /// From moq-lite-05 on, the dialer's half of the handshake completes before
-    /// the peer has decided whether to admit it, so a peer that refuses the
-    /// session usually closes it right after this returns, and
-    /// [`Session::closed`] reports why.
+    /// Concurrent calls share one dial. The dialer's half of the handshake
+    /// completes before the peer decides whether to admit it, so a peer that
+    /// refuses usually closes the session right after this returns.
+    /// [`Session::closed`] then says why.
     ///
     /// # Errors
     ///
@@ -297,13 +279,10 @@ impl Moq {
         self.connect_with(peer, ConnectOptions::default()).await
     }
 
-    /// Dials `peer` with a token, a price, or a grant.
+    /// Dials `peer` with a token, a cost, or a grant.
     ///
-    /// For a peer that admits manually. An existing session with the peer is
-    /// returned as it is, whatever the options, and so is a dial already in
-    /// flight to it: a call made while another dials joins that dial, and its
-    /// own token, cost and grant go unused. Cancellation safe, as
-    /// [`connect`](Self::connect).
+    /// An existing session with the peer, or a dial in flight to it, is
+    /// returned as it is, and the options go unused.
     ///
     /// # Errors
     ///
@@ -329,48 +308,43 @@ impl Moq {
         reply_rx.await.map_err(|_| e!(Error::ShutDown))?
     }
 
-    /// Returns the open sessions, dialed and accepted alike, as they change.
-    ///
-    /// Direct sessions only; a relay link reports through its own status.
+    /// Returns the open direct sessions, dialed and accepted, as they change.
     pub fn sessions(&self) -> n0_watcher::Direct<Vec<Session>> {
         self.shared.sessions.watch()
     }
 
-    /// Waits for the next session waiting to be admitted.
+    /// Waits for the next session that needs admission.
     ///
     /// Yields only under [`Admission::Manual`]. Returns `None` once the node
-    /// shuts down. Cancellation safe.
+    /// shuts down.
     pub async fn accept(&self) -> Option<Incoming> {
         admission::next(&self.shared).await
     }
 
-    /// Stays attached to the moq relay at `config.url`, redialing with backoff.
+    /// Attaches to the moq relay at `config.url`, redialing it with backoff.
     ///
-    /// `iroh://` URLs go through this node's endpoint. Routes the relay
-    /// announces enter the route table at the link's cost, and what
-    /// `config.offer` names is published into the relay.
+    /// `iroh://` URLs are dialed through this node's endpoint.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Relay`] if the client cannot be set up (an
-    /// unsupported URL scheme, say), and [`Error::ShutDown`] once the node has
-    /// shut down.
+    /// Fails with [`Error::Relay`] if the client cannot be set up, for example
+    /// for an unsupported URL scheme, and [`Error::ShutDown`] once the node
+    /// has shut down.
     pub fn attach_relay(&self, config: RelayConfig) -> Result<RelayLink, Error> {
         relay::attach(self, config)
     }
 
     /// Shuts the node down for every clone.
     ///
-    /// Every session closes, relays detach, publications are withdrawn,
-    /// [`accept`](Self::accept) returns `None`, and
-    /// [`connect`](Self::connect), [`publish`](Self::publish) and
-    /// [`attach_relay`](Self::attach_relay) fail from here on. Waits for
-    /// sessions to tell their peers, within a short grace, so it is safe to
-    /// close the endpoint after this returns. Idempotent; not cancellation
-    /// safe, call it again to finish.
+    /// Closes every session, detaches relays and withdraws publications.
+    /// Afterwards [`connect`](Self::connect), [`publish`](Self::publish) and
+    /// [`attach_relay`](Self::attach_relay) fail, and
+    /// [`accept`](Self::accept) returns `None`. Gives sessions a short grace
+    /// to tell their peers, so the endpoint can be closed once this returns.
+    /// Idempotent. Not cancellation safe: call it again to finish.
     pub async fn shutdown(&self) {
-        // Closed before anything else, so a publication or a relay that races
-        // the shutdown fails rather than being added and then cleared.
+        // Set first, so a racing publish or attach fails instead of being
+        // added and then cleared.
         self.shared.state.lock().expect("poisoned").closed = true;
         self.shared.shutdown.cancel();
         self.tasks.detach_relays();
@@ -393,7 +367,7 @@ impl ProtocolHandler for Moq {
 
     /// Shuts the node down with the router, as [`Moq::shutdown`] does.
     async fn shutdown(&self) {
-        // The inherent method, which takes precedence over this one.
+        // Resolves to the inherent method.
         Self::shutdown(self).await;
     }
 }

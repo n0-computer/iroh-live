@@ -1,16 +1,8 @@
-//! The WebTransport layer under MoQ, for applications that drive moq-net
-//! themselves.
+//! The WebTransport layer under MoQ.
 //!
-//! A [`Moq`](crate::Moq) node dials and accepts on its own, and most
-//! applications never need this module. It exists for the ones that run
-//! moq-net's client or server directly, such as a relay that decides what each
-//! iroh peer may publish from its authenticated endpoint id: they need the same
-//! ALPN negotiation and HTTP/3 handling as the node, and should not hand-roll a
-//! second copy of it.
-//!
-//! An integration point: these functions return a
-//! [`web_transport_iroh::Session`], so their signatures follow
-//! web-transport-iroh's versioning, not this crate's.
+//! A [`Moq`](crate::Moq) node dials and accepts on its own. These functions
+//! are for applications that run moq-net's client or server directly, such as
+//! a relay, and need the same ALPN negotiation and HTTP/3 handling.
 
 use std::sync::Arc;
 
@@ -41,11 +33,8 @@ impl Dialed {
 
 /// Dials `remote` and completes the WebTransport handshake.
 ///
-/// Offers every version this build speaks rather than only the newest, so a
-/// peer built against an older moq release still finds one in common, and
-/// branches on what was actually negotiated: a raw QUIC session for a MoQ
-/// ALPN, or an HTTP/3 CONNECT for WebTransport over H3. Cancellation safe:
-/// dropping the future abandons the dial.
+/// Offers every ALPN in [`alpns`], and opens a raw QUIC session or an HTTP/3
+/// CONNECT, whichever the peer picks.
 ///
 /// # Errors
 ///
@@ -79,9 +68,8 @@ pub(crate) async fn dial_with(
     let connection = connecting.await.map_err(connect_error)?;
     debug!(%alpn, remote = %connection.remote_id().fmt_short(), "negotiated");
     if alpn == web_transport_iroh::ALPN_H3 {
-        // The CONNECT target only has to identify the endpoint; iroh already
-        // dialed a specific peer. A token rides the query, where an H3 server
-        // looks for it.
+        // iroh already dialed the peer, so the CONNECT URL only names it. The
+        // token goes in the query.
         let mut url: url::Url = format!("https://{}/", connection.remote_id())
             .parse()
             .expect("an endpoint id is a valid host");
@@ -108,9 +96,8 @@ pub(crate) async fn dial_with(
 
 /// Completes the server half of the WebTransport handshake on `connection`.
 ///
-/// The counterpart of [`dial`]. Returns the session and, for HTTP/3, the
-/// CONNECT target (path and query); a raw session carries its path in the MoQ
-/// setup instead. Cancellation safe: dropping the future drops the connection.
+/// Returns the session, and for HTTP/3 the CONNECT target with its query. A
+/// raw session carries its path in the MoQ setup instead.
 ///
 /// # Errors
 ///
@@ -125,9 +112,7 @@ pub async fn accept(
 
 /// Completes the server half of the WebTransport handshake.
 ///
-/// Returns the session and, for HTTP/3, the request target and headers. Raw
-/// QUIC carries the MoQ stream directly and the target arrives in the MoQ
-/// setup; H3 answers a CONNECT first, whose URL and headers are the request.
+/// As [`accept`], and also returns the CONNECT headers.
 pub(crate) async fn accept_transport(
     connection: Connection,
 ) -> Result<
@@ -161,8 +146,7 @@ pub(crate) async fn accept_transport(
         let session = request.respond(response).await.map_err(connect_error)?;
         return Ok((session, Some((target, headers))));
     }
-    // The handler is mountable on any ALPN, so an unknown one is a named error
-    // rather than a raw session that fails to parse a setup.
+    // The handler can be mounted on any ALPN.
     if !moq_net::ALPNS.contains(&alpn.as_str()) {
         return Err(e!(Error::UnsupportedAlpn { alpn }));
     }

@@ -1,16 +1,7 @@
-//! What the transport builds on in moq-net's origin model, checked over real
-//! iroh connections.
+//! The moq-net origin behaviour the transport builds on, over real iroh connections.
 //!
-//! These started as the two spikes phase 3 of the API refactor depended on and
-//! stay as regression tests, because a moq-net release that changes either
-//! behaviour breaks publishing in ways no unit test of ours would notice:
-//!
-//! - an existing broadcast can be published at several paths at once by
-//!   answering `origin::Dynamic` requests with `Request::accept`, which splices
-//!   the one broadcast rather than copying it;
-//! - a per-session publish origin can carry a different set of publications for
-//!   each peer, change while the session runs, and forward a route learned from
-//!   elsewhere with its hop chain intact.
+//! A moq-net release that changes any of it breaks publishing in ways our
+//! other tests would not notice.
 
 mod common;
 
@@ -54,8 +45,7 @@ impl ProtocolHandler for Forward {
     }
 }
 
-/// A node that accepts raw MoQ connections and lets the test decide, per
-/// connection, which origins the session gets.
+/// A node that lets the test choose each accepted session's origins.
 struct Server {
     endpoint: Endpoint,
     incoming: mpsc::Receiver<Connection>,
@@ -77,8 +67,7 @@ impl Server {
         }
     }
 
-    /// Accepts the next session, publishing `publisher` to it and writing what
-    /// it announces into `subscriber`.
+    /// Accepts the next session with `publisher` and `subscriber` as its origins.
     async fn accept(
         &mut self,
         publisher: origin::Consumer,
@@ -88,8 +77,6 @@ impl Server {
             .await
             .expect("timed out waiting for a connection")
             .expect("router gone");
-        // Whichever ALPN the two sides settled on: an H3 one answers a CONNECT
-        // first, a raw one carries MoQ directly.
         let transport = if connection.alpn() == web_transport_iroh::ALPN_H3.as_bytes() {
             let request = web_transport_iroh::H3Request::accept(connection)
                 .await
@@ -114,7 +101,7 @@ impl Server {
     }
 }
 
-/// A MoQ session and the task driving it.
+/// A MoQ session and its driver task.
 struct Session {
     _session: moq_net::Session,
     _driver: AbortOnDropHandle<()>,
@@ -132,8 +119,7 @@ impl Session {
     }
 }
 
-/// Dials `remote`, writing what it announces into `subscriber` and publishing
-/// `publisher`, if given.
+/// Dials `remote` with `subscriber` and `publisher` as the session's origins.
 async fn dial(
     endpoint: &Endpoint,
     remote: impl Into<EndpointAddr>,
@@ -154,12 +140,7 @@ async fn dial(
     Session::new(session, driver)
 }
 
-/// Answers every request under `dynamic` with `broadcast`, until the broadcast
-/// ends, and then retracts the route.
-///
-/// Retracting on close matters: a route that stays up after its broadcast ended
-/// sends every new request to a handler that can only hand back a closed
-/// broadcast.
+/// Answers requests under `dynamic` with `broadcast`, and retracts when it ends.
 fn serve(dynamic: origin::Dynamic, broadcast: broadcast::Consumer) -> AbortOnDropHandle<()> {
     AbortOnDropHandle::new(tokio::spawn(async move {
         loop {
@@ -228,9 +209,7 @@ async fn wait_for_paths(origin: &origin::Producer, expected: &[&str]) {
     }
 }
 
-/// Spike 1: one existing broadcast, published at two paths at once through
-/// dynamic routes answered with `Request::accept`, reaches a subscriber at both,
-/// and ends at both when it finishes.
+/// A broadcast spliced at two paths reaches a subscriber at both, and ends at both.
 #[tokio::test]
 async fn a_broadcast_is_spliced_at_two_paths() {
     const PUBLISHER_HOP: u64 = 11;
@@ -295,10 +274,10 @@ async fn a_broadcast_is_spliced_at_two_paths() {
     wait_for_paths(&ingest, &[]).await;
 }
 
-/// Spike 2: each session gets its own publish origin, so two peers see
-/// different publications, and what a session carries changes while it runs:
-/// an offer made later appears, a withdrawn one retracts, and a route learned
-/// from another peer is forwarded with its hop chain intact.
+/// Per-session publish origins show two peers different publications.
+///
+/// What a session carries changes while it runs: a later offer appears, a
+/// withdrawn one retracts, and a forwarded route keeps its hop chain.
 #[tokio::test]
 async fn per_session_origins_carry_different_offers() {
     const UPSTREAM_HOP: u64 = 100;
@@ -433,12 +412,7 @@ async fn per_session_origins_carry_different_offers() {
     wait_for_paths(&carol_ingest, &["live/node/everyone", "live/node/manual"]).await;
 }
 
-/// Mirrors every route `ingest` holds into `table`, answering requests there by
-/// resolving the path through `ingest`.
-///
-/// This is how a node keeps one route table while still knowing which link each
-/// route came over: every link writes into an origin of its own, and the table
-/// holds one dynamic route per link route, with the hop chain and cost copied.
+/// Mirrors every route in `ingest` into `table`, as the node's bridge does.
 fn bridge(ingest: origin::Producer, table: origin::Producer) -> AbortOnDropHandle<()> {
     AbortOnDropHandle::new(tokio::spawn(async move {
         let mut announced = ingest.consume().announced();
@@ -471,10 +445,9 @@ fn bridge(ingest: origin::Producer, table: origin::Producer) -> AbortOnDropHandl
     }))
 }
 
-/// Spike 3: two links to one broadcast, a direct one and one through a relay,
-/// each mirrored into one route table. The table serves the cheaper route, and
-/// when the direct link dies the subscription carries on through the relay,
-/// because both routes share their first hop (the publisher).
+/// A route table serves the cheaper of two routes, and moves to the other when it dies.
+///
+/// The move needs both routes to share their first hop, the publisher.
 #[tokio::test]
 #[n0_tracing_test::traced_test]
 async fn a_route_table_fails_over_between_links() {

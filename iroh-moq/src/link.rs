@@ -1,9 +1,4 @@
-//! What a link's connection says about the path under it.
-//!
-//! Every link runs one monitor that reads its MoQ session's statistics every
-//! [`SAMPLE_INTERVAL`] and keeps the latest [`LinkSample`], which
-//! [`Session::link`](crate::Session::link), [`RelayLink::link`](crate::RelayLink::link)
-//! and [`Subscription::link`](crate::Subscription::link) return.
+//! Link measurement, from each MoQ session's statistics.
 
 use std::{
     collections::VecDeque,
@@ -108,8 +103,7 @@ enum PathKey {
     Session(u64),
 }
 
-/// Reads `source` into `state` every [`SAMPLE_INTERVAL`] until `cancel` fires
-/// or a direct session's connection closes.
+/// Reads `source` into `state` every [`SAMPLE_INTERVAL`], until cancelled or closed.
 pub(crate) async fn monitor(source: Source, state: LinkState, cancel: CancellationToken) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -243,8 +237,7 @@ mod tests {
         stats
     }
 
-    /// Feeds `ticks` readings with `(sent, lost, received)` added per tick,
-    /// and returns the last sample.
+    /// Feeds `ticks` readings that grow by `per_tick`, and returns the last sample.
     fn run(
         sampler: &mut Sampler,
         t0: Instant,

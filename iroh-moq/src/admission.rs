@@ -19,28 +19,24 @@ use crate::{
     transport::accept_transport,
 };
 
-/// Returns the grant of a session with a peer, from its endpoint id.
-///
-/// See [`MoqConfig::grant`](crate::MoqConfig::grant).
+/// A function that gives a peer its grant, from its endpoint id.
 pub type GrantFn = Arc<dyn Fn(EndpointId) -> Grant + Send + Sync>;
 
 /// How many incoming sessions may wait for [`Moq::accept`] at once.
 ///
-/// Past this the protocol handler holds further ones back, for at most
-/// [`ADMISSION_TIMEOUT`].
+/// Past this, new sessions wait up to [`ADMISSION_TIMEOUT`] for room.
 pub(crate) const INCOMING_QUEUE: usize = 16;
 
 /// How long an incoming connection may take to open its MoQ session.
 ///
-/// A peer that connects and never sends its setup would otherwise hold a task
-/// and its connection for as long as QUIC keeps the connection alive.
+/// Without it, a peer that never sends its setup holds a task for as long as
+/// the connection lives.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long an incoming session waits for room in the admission queue under
-/// [`Admission::Manual`].
+/// How long an incoming session waits for room in the admission queue.
 ///
-/// An accept loop that stalls, or never runs, cannot pile up connections whose
-/// peers believe they are connected.
+/// Keeps a stalled accept loop from piling up connections whose peers think
+/// they are connected.
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a node treats incoming sessions.
@@ -51,10 +47,7 @@ pub enum Admission {
     /// [`MoqConfig::grant`]: crate::MoqConfig::grant
     #[default]
     Open,
-    /// Holds every incoming session until the application decides.
-    ///
-    /// Sessions wait in [`Moq::accept`](crate::Moq::accept) until the
-    /// application admits or rejects them.
+    /// Hands every incoming session to [`Moq::accept`](crate::Moq::accept) to decide.
     Manual,
 }
 
@@ -90,8 +83,9 @@ impl Grant {
 
     /// Returns the grant verified moq-auth claims describe.
     ///
-    /// Every pattern is rooted where the claims say. A claim pattern that cannot be rooted (the root and the pattern together
-    /// exceed moq's path depth) is dropped, which grants less rather than more.
+    /// Roots every pattern at the claims' root. A pattern that cannot be
+    /// rooted, because root and pattern together exceed moq's path depth, is
+    /// dropped.
     #[cfg(feature = "auth")]
     pub fn from_claims(claims: &moq_auth::Claims) -> Self {
         let root = |patterns: &Patterns| -> Patterns {
@@ -169,7 +163,7 @@ impl SessionRequest {
 
     /// Returns an HTTP/3 CONNECT header, matched case-insensitively.
     ///
-    /// Always `None` on raw iroh sessions, which carry no headers.
+    /// Always `None` on raw sessions.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -191,9 +185,9 @@ impl SessionRequest {
 pub struct ConnectOptions {
     /// A token to present, sent as `?jwt=` in the setup path or the CONNECT URL.
     pub token: Option<String>,
-    /// The price of this link, added to every route learned over it.
+    /// The cost added to every route learned over this link.
     ///
-    /// `None` leaves moq's default of one per hop.
+    /// `None` keeps moq's default of one.
     pub cost: Option<u64>,
     /// What the dialed peer may do on this node.
     ///
@@ -247,14 +241,12 @@ impl Incoming {
 
     /// Admits the session with `grant`.
     ///
-    /// Cancellation safe: dropping the future before the handshake completes
-    /// rejects the session; dropped after that, the session is admitted all
-    /// the same and shows up in [`Moq::sessions`](crate::Moq::sessions).
+    /// Dropping the future before the handshake completes rejects the session.
     ///
     /// # Errors
     ///
-    /// Fails if the MoQ handshake does not complete, or the node has shut down,
-    /// in which case the peer is refused rather than admitted and closed.
+    /// Fails if the MoQ handshake fails, and with [`Error::ShutDown`] once the
+    /// node has shut down, which refuses the peer.
     pub async fn admit(self, grant: Grant) -> Result<Session, Error> {
         let Some(shared) = self
             .shared
@@ -290,8 +282,7 @@ impl Incoming {
         shared.register(parts).await
     }
 
-    /// Rejects the session with `reason`, such as
-    /// [`moq_net::Error::Unauthorized`].
+    /// Rejects the session with `reason`, such as [`moq_net::Error::Unauthorized`].
     pub fn reject(self, reason: moq_net::Error) {
         info!(remote = %self.remote.fmt_short(), %reason, "rejecting session");
         self.handshake.close(reason);
@@ -365,13 +356,11 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     Ok(())
 }
 
-/// Waits for the next session waiting to be admitted, for
-/// [`Moq::accept`](crate::Moq::accept).
+/// Waits for the next session that needs admission.
 pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
     let mut queue = shared.incoming_rx.lock().await;
     tokio::select! {
-        // A session is never handed out after the shutdown, even one that
-        // was queued before it.
+        // Never hand out a session after the shutdown, even a queued one.
         biased;
         _ = shared.shutdown.cancelled() => None,
         incoming = queue.recv() => incoming,

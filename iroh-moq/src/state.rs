@@ -1,16 +1,10 @@
-//! The node's bookkeeping: publications, links, and who offers and serves what.
+//! The node's bookkeeping: publications, links, and what each link is offered.
 //!
-//! Everything here changes under one lock and never awaits, so the public calls
-//! that change it (`publish`, `set_audience`, `offer`, dropping an offer guard)
-//! are synchronous, and a publication appears on a link in the same critical
-//! section that decides it should.
+//! Everything here changes under one lock and never awaits, so `publish`,
+//! `set_audience` and `offer` are synchronous.
 //!
-//! Every link has a publish origin of its own. A publication is offered on a
-//! link by adding a dynamic route at its path to that origin, answered by
-//! splicing the publication's broadcast (`Request::accept`) through a gate that
-//! withdrawing the offer tears down (see [`serve`]), so the peer sees exactly
-//! the publications meant for it, moq keeps announcing and serving them
-//! natively, and a withdrawn offer ends what the peer was reading.
+//! Each link has its own publish origin. Offering a publication on a link adds
+//! a dynamic route at its path there, answered through a gate (see [`serve`]).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -59,8 +53,7 @@ pub(crate) struct PubEntry {
     pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
     /// Withdraws the publication once its broadcast ends.
     pub(crate) _closed_task: AbortOnDropHandle<()>,
-    /// Cancelled when the entry goes, however it goes, for
-    /// [`Publication::withdrawn`](crate::Publication::withdrawn).
+    /// Cancelled when the entry goes, for [`Publication::withdrawn`](crate::Publication::withdrawn).
     pub(crate) withdrawn: CancellationToken,
 }
 
@@ -160,10 +153,7 @@ impl State {
         }
     }
 
-    /// Offers or withdraws publication `publication` on link `link`.
-    ///
-    /// Whichever its audience, the link's grant and any explicit offer call
-    /// for.
+    /// Offers or withdraws `publication` on `link`, as [`visible`] decides.
     pub(crate) fn reconcile(&mut self, publication: u64, link: u64) {
         let Some(entry) = self.links.get_mut(&link) else {
             return;
@@ -274,9 +264,6 @@ impl State {
     }
 
     /// Reports whether a relay link feeds the route table.
-    ///
-    /// Only links that consume count: a relay the node only publishes into
-    /// will never route a path here.
     pub(crate) fn has_relays(&self) -> bool {
         self.links
             .values()
@@ -320,22 +307,16 @@ fn visible(publication: &PubEntry, id: u64, link: &LinkEntry) -> bool {
     }
 }
 
-/// Offers `broadcast` at `path` on `origin`, so that withdrawing the offer cuts
-/// off whoever reads it.
+/// Offers `broadcast` at `path` on `origin` until the handle drops.
 ///
-/// The offer lasts until the broadcast ends or the returned handle drops.
-/// Returns `None` if the origin refuses the route, which it does only for a
-/// path no pattern can spell or once its driver is gone; either is logged.
+/// The offer also ends with the broadcast. Returns `None`, and logs why, if
+/// the origin refuses the route.
 ///
-/// Requests are not answered with `broadcast` itself. moq-net keeps serving a
-/// path through a front for as long as the source it was handed lives, even
-/// after the route retracts, and a new request for the path joins that front,
-/// so a peer that already subscribed would read on, and could subscribe again,
-/// after the offer was withdrawn. Each offer therefore answers through a gate:
-/// an origin of its own that serves the broadcast, whose fronts' broadcasts are
-/// what `origin`'s fronts splice. Dropping the handle tears the gate down,
-/// which closes those broadcasts, which ends `origin`'s fronts and every
-/// subscription through them.
+/// Requests are answered through a gate, an origin of its own that serves the
+/// broadcast. moq-net keeps serving a spliced broadcast after its route
+/// retracts, and new requests join it, so without the gate a peer could read on
+/// after the offer was withdrawn. Dropping the handle tears the gate down,
+/// which ends every subscription through it.
 pub(crate) fn serve(
     origin: &origin::Producer,
     path: &Path<'_>,
@@ -366,8 +347,7 @@ pub(crate) fn serve(
         let mut requests = JoinSet::new();
         loop {
             tokio::select! {
-                // A route that outlived its broadcast would answer every new
-                // request with a closed broadcast, so it goes with it.
+                // A route must not outlive its broadcast.
                 _ = broadcast.closed() => break,
                 _ = &mut run_gate => break,
                 request = gated.requested_broadcast() => match request {
@@ -382,8 +362,8 @@ pub(crate) fn serve(
                             .strip_prefix(&root)
                             .is_some_and(|requested| requested == path);
                         let path = path.clone();
-                        // Resolving waits on the gate, whose driver this loop
-                        // runs, so it waits elsewhere.
+                        // Resolving waits on the gate's driver, which this
+                        // loop runs.
                         requests.spawn(async move {
                             if !exact {
                                 request.reject(moq_net::Error::NotFound);
@@ -436,8 +416,7 @@ mod tests {
         (broadcast, AbortOnDropHandle::new(task))
     }
 
-    /// Resolves `path` on `origin` and returns the broadcast and a subscriber
-    /// to its track that has read one group.
+    /// Resolves `path` on `origin`, and subscribes to its track until a group arrives.
     async fn read(
         origin: &origin::Producer,
         path: &Path<'_>,
@@ -464,11 +443,10 @@ mod tests {
         (served, subscriber)
     }
 
-    /// Pins down the moq-net behaviour the gate in [`serve`] exists for: a
-    /// route answered with a broadcast itself keeps serving a subscriber after
-    /// the route retracts, and a new request joins that front.
+    /// A spliced route keeps serving after it retracts, and new requests join it.
     ///
-    /// If a moq-net release changes this, the gate is no longer needed.
+    /// This is why [`serve`] has a gate. If a moq-net release changes it, the
+    /// gate can go.
     #[tokio::test]
     async fn a_retracted_splice_serves_on_without_a_gate() {
         let origin = origin();
@@ -501,10 +479,9 @@ mod tests {
         assert!(again.is_ok(), "a new request no longer joins the front");
     }
 
-    /// Measures what the gate in [`serve`] costs: setting offers up, and the
-    /// time a stream of small groups takes through an offer with and without
-    /// it. A measurement rather than a check, so it runs only when asked:
-    /// `cargo nextest run -p iroh-moq --run-ignored only gate_cost`.
+    /// Measures what the gate in [`serve`] costs, per offer and per group.
+    ///
+    /// Run it with `cargo nextest run -p iroh-moq --run-ignored only gate_cost`.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "a measurement, run by hand"]
     async fn gate_cost() {
@@ -545,8 +522,7 @@ mod tests {
                     }
                 }))
             };
-            // One group first, so the subscription is in place before the
-            // clock starts.
+            // One group first, so the subscription is in place before timing.
             track
                 .write_frame(Timestamp::now(), payload.clone())
                 .expect("write");
@@ -580,12 +556,10 @@ mod tests {
         }
     }
 
-    /// Withdrawing an offer ends what a peer already reads through it, and a
-    /// new request for the path finds nothing.
+    /// Withdrawing an offer ends what a peer reads, and the path stops resolving.
     ///
-    /// Read at the origin a session publishes from, so the peer's own
-    /// behaviour on seeing the route retract plays no part: a peer that
-    /// ignores the retraction must be cut off all the same.
+    /// Read at the session's publish origin, so a peer that ignores the
+    /// retraction is cut off all the same.
     #[tokio::test]
     async fn a_withdrawn_offer_ends_its_subscriptions() {
         let origin = origin();

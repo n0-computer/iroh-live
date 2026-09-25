@@ -1,12 +1,10 @@
 //! The route table, and the subscriptions that resolve paths in it.
 //!
-//! Every link writes what its peer announces into an ingest origin of its own,
-//! and a bridge mirrors each of those routes into the node's one route table,
-//! with its hop chain and cost. moq picks the best route in the table (lowest
-//! cost, then fewest hops) and fails over when it dies. Keeping the links'
-//! routes apart as well as merged is what lets the node say which link serves a
-//! path, and lets a direct session answer a path that means something on that
-//! session only.
+//! Each link writes what its peer announces into an ingest origin of its own,
+//! and a bridge mirrors those routes into the node's route table with their
+//! hops and cost. moq serves the cheapest route. Keeping each link's routes
+//! apart as well tells which link serves a path, and lets a session resolve a
+//! path on that session only.
 
 use std::{
     collections::HashMap,
@@ -32,12 +30,10 @@ use crate::{
     state::{LinkEntry, State},
 };
 
-/// A broadcast that lived shorter than this before it ended counts as ending
-/// at once, for [`Subscription::closed`]'s pause.
+/// A broadcast that lived shorter than this counts as ending at once.
 const REASK_WINDOW: Duration = Duration::from_secs(1);
 
-/// The pause before asking the table again, per broadcast in a row that ended
-/// at once.
+/// The pause before asking the table again, per quick end in a row.
 const REASK_PAUSE: Duration = Duration::from_millis(100);
 
 /// The pause stops growing after this many steps, at two seconds.
@@ -83,14 +79,10 @@ pub struct RouteInfo {
 
 /// A path resolved in a route table.
 ///
-/// Follows the best route to its path: moq re-splices the broadcast when the
-/// serving route changes within the same first hop, which routes through
-/// different relays to one source share and a direct and a relay route never
-/// do. A subscriber that sees the broadcast end can ask the table again
-/// through [`as_origin`], or wait on [`closed`](Self::closed). Cheap to clone;
-/// dropping it releases nothing the route table needs.
-///
-/// [`as_origin`]: Self::as_origin
+/// moq moves the broadcast to another route from the same source, for example
+/// between two relays. A move between a direct and a relay route ends the
+/// broadcast instead, and [`closed`](Self::closed) asks the table again then.
+/// Cheap to clone.
 #[derive(Clone)]
 pub struct Subscription {
     inner: Arc<SubscriptionInner>,
@@ -139,17 +131,11 @@ impl Subscription {
     }
 
     /// Returns the route table the path was resolved in.
-    ///
-    /// For a reader that re-resolves the path when its broadcast ends.
-    ///
-    /// Integration point: follows moq-net's versioning.
     pub fn as_origin(&self) -> origin::Consumer {
         self.inner.origin.clone()
     }
 
     /// Returns the broadcast the path resolves to now.
-    ///
-    /// Integration point: follows moq-net's versioning.
     pub fn as_moq(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
     }
@@ -166,10 +152,8 @@ impl Subscription {
 
     /// Returns the link serving the broadcast now, and its latest reading.
     ///
-    /// A direct session's or a relay link's, whichever served the last request
-    /// for the path; a subscription resolved through one session is served by
-    /// that session only. `None` while no request has been served and once the
-    /// serving link is gone.
+    /// `None` before the first request is served, and once the serving link is
+    /// gone.
     pub fn link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
@@ -181,8 +165,7 @@ impl Subscription {
         })
     }
 
-    /// Returns the link serving the broadcast now: the pinned one, or the one
-    /// that served the last request.
+    /// Returns the link serving the broadcast now: the pinned one, or the last to serve.
     fn serving<'a>(&self, state: &'a State) -> Option<(u64, &'a LinkEntry)> {
         let link = match self.inner.link {
             Some(link) => link,
@@ -193,11 +176,9 @@ impl Subscription {
 
     /// Waits until the path has no route left.
     ///
-    /// A change of route that moq cannot splice ends the broadcast; this asks
-    /// the route table again then, and resolves only once nothing serves the
-    /// path any more. A route that keeps answering with broadcasts that end at
-    /// once is asked again with a growing pause rather than in a tight loop.
-    /// Cancellation safe.
+    /// When a broadcast ends, asks the route table again, and returns only once
+    /// nothing serves the path. A route whose broadcasts keep ending at once is
+    /// asked again with a growing pause.
     pub async fn closed(&self) {
         let mut quick = 0u32;
         loop {
@@ -307,25 +288,17 @@ fn subscription(
     Subscription::new(path, table, broadcast, None, Arc::downgrade(shared))
 }
 
-/// Mirrors the routes `ingest` holds into the node's route table.
+/// Mirrors the routes in `ingest` into the node's route table.
 ///
-/// Runs until the link ends. Each route is re-announced in the table as a
-/// dynamic route with the same hop chain and cost, and a request for a path
-/// under it is resolved through `ingest`, which is the link's own view, and
-/// spliced. Recording which link served each request is what
-/// [`Subscription::session`] and [`Moq::routes`](crate::Moq::routes) read.
+/// Each route enters the table with the same hops and cost. A request under
+/// it resolves through `ingest`, and records which link served it. A direct
+/// session's ingest holds only what its grant lets the peer publish.
 ///
-/// A direct session's ingest holds only what its grant lets the peer publish,
-/// so the grant is what keeps a peer from routing someone else's path.
-///
-/// A relay's routes (`relay` set) enter the table under a first hop of their
-/// own (see [`relayed`]), so the table never takes a relay route for the same
-/// source as a direct one. moq re-splices a broadcast only between routes that share a
-/// first hop, and a first hop is only what a publisher declares: without this, a
-/// peer that publishes someone else's path into a relay under that publisher's
-/// hop would be spliced into a subscription the moment its direct session
-/// dropped. A subscription that loses its direct route therefore ends, and
-/// asking again resolves through the relay.
+/// A relay's routes (`relay` set) get a first hop of their own (see
+/// [`relayed`]). moq moves a broadcast only between routes that share a first
+/// hop, and a first hop is only what a publisher claims. Without this, a peer
+/// that publishes someone else's path into a relay under that publisher's hop
+/// would be spliced into a direct subscription once the direct session drops.
 pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Producer, relay: bool) {
     let mut announced = ingest.consume().announced();
     let mut mirrors: HashMap<PathOwned, (Arc<origin::Dynamic>, AbortOnDropHandle<()>)> =
@@ -385,14 +358,11 @@ pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Produ
     }
 }
 
-/// Returns `hops` with its first hop, the source it claims, replaced by a hop
-/// that stands for that source as reached through a relay.
+/// Returns `hops` with the claimed source replaced by its relayed stand-in.
 ///
-/// Derived from the claimed hop alone, so every relay's route to one source
-/// shares it and a subscription can still move between relays, while no relay
-/// route shares a first hop with a direct one. An anonymous chain is left as it
-/// is: moq never re-splices one. `None` if the new chain would repeat a hop,
-/// which a real chain cannot.
+/// The stand-in depends on the claimed hop alone, so routes through different
+/// relays to one source still share it. An anonymous chain stays as it is,
+/// since moq never moves one. `None` if the new chain would repeat a hop.
 fn relayed(hops: &Hops) -> Option<Hops> {
     let mut chain = hops.iter();
     let Some(first) = chain.next() else {
@@ -414,15 +384,13 @@ fn relayed(hops: &Hops) -> Option<Hops> {
     Some(out)
 }
 
-/// Mixed into a claimed hop for [`relayed`], so the relayed identity of a hop
-/// is not a hop some node derives for itself.
+/// Mixed into a claimed hop, so a relayed stand-in is no node's own hop.
 const RELAYED_SALT: u64 = 0x7265_6c61_7965_6421;
 
 /// Answers the requests one mirrored route receives.
 ///
-/// Each path resolves through the link's own ingest origin, in a task of its
-/// own: a path the peer is slow to serve must not hold up the others under the
-/// same prefix.
+/// Each request resolves through the link's ingest in its own task, so a slow
+/// path does not hold up the others under the prefix.
 async fn answer(
     shared: Weak<Shared>,
     link: u64,
@@ -474,8 +442,7 @@ mod tests {
         hops.iter().map(|hop| hop.id()).collect()
     }
 
-    /// A relayed chain keeps its length and the hops after the first, and
-    /// its first hop depends on the claimed source alone.
+    /// A relayed chain keeps all hops but the first, which the source decides.
     #[test]
     fn a_relayed_chain_names_its_source_apart() {
         let direct = chain(&[7, 11]);

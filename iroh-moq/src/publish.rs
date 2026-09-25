@@ -23,21 +23,14 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub enum Audience {
     /// Every admitted session, and every relay that takes public publications.
-    ///
-    /// The default.
     #[default]
     Everyone,
     /// These peers, as the set changes.
     ///
-    /// A room passes its membership, an application its friend list. Never
-    /// offered to relays, which would forward it to anyone. Once the set's
-    /// watchable is dropped the publication is offered to nobody, since no one
-    /// keeps the set current any more.
+    /// Never offered to relays. Once the set's watchable is dropped, the
+    /// publication is offered to nobody.
     Peers(n0_watcher::Direct<BTreeSet<EndpointId>>),
-    /// No one, until offered explicitly per session.
-    ///
-    /// Offered with [`Session::offer`] or [`RelayLink::offer`], for access
-    /// decided per session by application code.
+    /// No one, until offered with [`Session::offer`] or [`RelayLink::offer`].
     ///
     /// [`Session::offer`]: crate::Session::offer
     /// [`RelayLink::offer`]: crate::RelayLink::offer
@@ -64,10 +57,9 @@ impl From<&Audience> for AudienceKind {
 
 /// A published broadcast.
 ///
-/// Cheap to clone; two handles are equal when they name the same publication.
-/// The publication stays until [`unpublish`](Self::unpublish) withdraws it,
-/// its broadcast ends, or the node shuts down; dropping the handles leaves it in
-/// place.
+/// Cheap to clone. The publication stays until [`unpublish`](Self::unpublish),
+/// until its broadcast ends, or until the node shuts down. Dropping the handles
+/// leaves it in place.
 #[derive(Debug, Clone)]
 pub struct Publication {
     inner: Arc<PublicationInner>,
@@ -119,8 +111,7 @@ impl Publication {
 
     /// Replaces who may see the publication.
     ///
-    /// Takes effect at once: links the new audience admits are offered it, and
-    /// links it no longer admits see it withdrawn, which ends what their peers
+    /// Takes effect at once. Peers the new audience leaves out lose what they
     /// were reading.
     pub fn set_audience(&self, audience: Audience) {
         let Some(shared) = self.inner.shared.upgrade() else {
@@ -144,9 +135,6 @@ impl Publication {
     }
 
     /// Waits until the publication is withdrawn.
-    ///
-    /// By [`unpublish`](Self::unpublish), by its broadcast ending, or by the
-    /// node shutting down. Cancellation safe.
     pub async fn withdrawn(&self) {
         self.inner.withdrawn.cancelled().await;
     }
@@ -158,9 +146,8 @@ impl Publication {
 
     /// Withdraws the publication from every link and from the route table.
     ///
-    /// Peers already reading it are cut off: their subscriptions end, and they
-    /// cannot subscribe again. The broadcast itself keeps running; publish it
-    /// again to offer it anew.
+    /// Ends what peers read through it. The broadcast keeps running and can be
+    /// published again.
     pub fn unpublish(&self) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
@@ -178,10 +165,8 @@ impl Publication {
 
 /// Keeps a publication offered on one session or relay.
 ///
-/// Returned by [`Session::offer`](crate::Session::offer) and
-/// [`RelayLink::offer`](crate::RelayLink::offer). Dropping it withdraws the
-/// offer again, unless the publication's audience admits the link on its own,
-/// and a withdrawn offer ends the subscriptions the peer made through it.
+/// Dropping it withdraws the offer, unless the audience admits the link
+/// anyway, and ends what the peer read through it.
 #[derive(Debug)]
 #[must_use = "dropping the guard withdraws the offer"]
 pub struct OfferGuard {
@@ -226,9 +211,8 @@ impl Drop for OfferGuard {
 
 /// Returns a task that re-offers a `Peers` publication as its set changes.
 ///
-/// `None` for any other audience.
-///
-/// Holds the node weakly: the task lives inside the registry it updates.
+/// `None` for any other audience. Holds the node weakly, since the task lives
+/// in the state it updates.
 pub(crate) fn peers_task(
     audience: &Audience,
     id: u64,
@@ -241,8 +225,7 @@ pub(crate) fn peers_task(
     let shared = shared.clone();
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
         loop {
-            // Whoever owned the set dropped it, a room that was left say, and
-            // nobody will keep it current any more: fail closed.
+            // The set's owner dropped it: offer to nobody.
             let (set, disconnected) = match peers.updated().await {
                 Ok(set) => (set, false),
                 Err(_) => (BTreeSet::new(), true),
@@ -282,8 +265,7 @@ pub(crate) fn publish(
         return Err(e!(Error::ShutDown));
     }
     if let Some(existing) = state.publication_at(&path) {
-        // A broadcast that ended is withdrawn by its closed task, which may
-        // not have run yet; publishing anew at its path is not a clash.
+        // An ended broadcast's closed task may not have run yet. Not a clash.
         if !state.publications[&existing].broadcast.is_closed() {
             return Err(e!(Error::Duplicate { path }));
         }

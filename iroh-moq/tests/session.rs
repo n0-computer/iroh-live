@@ -1,8 +1,4 @@
 //! Session lifecycle over real QUIC connections between two iroh endpoints.
-//!
-//! What the transport promises and this covers: one session per peer however
-//! many callers ask for it, a session the accepting side can reach as well as
-//! the dialing one, and a shutdown that closes both and opens no more.
 
 mod common;
 
@@ -11,9 +7,7 @@ use iroh_moq::Error;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
-/// Two calls for one peer share a session rather than opening a second
-/// connection, which keeps a node from accumulating one connection per
-/// broadcast it subscribes to.
+/// Two connects to one peer share a session.
 #[tokio::test]
 #[traced_test]
 async fn connecting_twice_to_a_peer_reuses_the_session() {
@@ -37,8 +31,7 @@ async fn connecting_twice_to_a_peer_reuses_the_session() {
     bob.shutdown().await;
 }
 
-/// A connect right after a close dials anew rather than handing out the
-/// session that is closing.
+/// A connect right after a close dials anew.
 #[tokio::test]
 #[traced_test]
 async fn a_connect_after_a_close_dials_anew() {
@@ -84,8 +77,7 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
     bob.shutdown().await;
 }
 
-/// The accepting side sees its session in `sessions()`, which is how a node
-/// answering a call learns who called: it never dialed.
+/// The accepting side sees its session in `sessions()`.
 #[tokio::test]
 #[traced_test]
 async fn an_accepted_session_appears_in_sessions() {
@@ -155,8 +147,7 @@ async fn shutdown_closes_sessions_and_refuses_new_ones() {
     bob.shutdown().await;
 }
 
-/// `accept` returns `None` once the node shuts down, even while a clone of it
-/// is still held, rather than waiting forever.
+/// `accept` returns `None` at shutdown, even while a clone of the node is held.
 #[tokio::test]
 #[traced_test]
 async fn accept_ends_at_shutdown() {

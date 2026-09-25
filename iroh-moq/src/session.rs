@@ -1,4 +1,4 @@
-//! Sessions with direct peers: dialing, admitting, and what a session offers.
+//! Direct sessions with peers, and the actor that runs them.
 
 use std::{
     collections::HashMap,
@@ -32,12 +32,8 @@ use crate::{
 
 /// Returns the moq hop id of the node with endpoint id `id`.
 ///
-/// Derived rather than drawn at random per start, so a relay that saw this node
-/// before recognizes its routes after a restart. An endpoint id is an ed25519
-/// public key, whose bytes are already spread evenly, so the first eight are
-/// used as they are. Truncated below 2^53, the bound moq documents for the
-/// JavaScript clients, which read hop ids as numbers. Zero names nobody in moq,
-/// so it maps to one.
+/// Derived from the id, so a relay recognizes this node's routes after a
+/// restart. The first eight bytes of an ed25519 key are already uniform.
 pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
     let bytes: [u8; 8] = id.as_bytes()[..8]
         .try_into()
@@ -46,31 +42,30 @@ pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
 }
 
 /// Returns a hop from `value`, masked below 2^53 and never zero.
+///
+/// JavaScript clients read hop ids as numbers, and moq reserves zero.
 pub(crate) fn hop_from(value: u64) -> moq_net::Hop {
     moq_net::Hop::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero and below 2^62")
 }
 
 /// The transport a MoQ session runs over.
 ///
-/// web-transport-iroh implements the async transport interface, and moq-net
-/// accepts only the poll one, so every session goes through moq-tokio's
-/// adapter. It costs an allocation per operation and a copy per write; a
-/// native poll implementation in web-transport-iroh would remove both.
+/// web-transport-iroh through moq-tokio's poll adapter, which costs an
+/// allocation per operation and a copy per write.
 pub(crate) type Transport = moq_tokio::transport::Session<web_transport_iroh::Session>;
 
 /// Returns the instant a session's driver starts from.
 ///
-/// From tokio's clock rather than `std`'s, because `moq_net::time::run` polls
-/// the driver with tokio's, and a driver refuses time that moves backwards.
-/// Under `tokio::time::pause` the two diverge, and seeding from `std` puts the
-/// first poll behind the seed.
+/// Read from tokio's clock, which `moq_net::time::run` polls the driver with.
+/// Under `tokio::time::pause` std's clock runs ahead, and a driver refuses
+/// time that moves backwards.
 pub(crate) fn driver_now() -> std::time::Instant {
     tokio::time::Instant::now().into_std()
 }
 
-/// One session with one peer.
+/// A direct session with a peer.
 ///
-/// Cheap to clone; dropping the handles does not close it. It ends when either
+/// Cheap to clone. Dropping the handles does not close it: it ends when either
 /// side closes it, the connection fails, or the node shuts down.
 #[derive(Clone)]
 pub struct Session {
@@ -88,8 +83,7 @@ pub(crate) struct SessionInner {
     pub(crate) ingest: origin::Producer,
     pub(crate) link_state: LinkState,
     pub(crate) shared: Weak<Shared>,
-    /// Set by [`Session::close`], which closes asynchronously, so that a
-    /// connect right after it dials anew rather than getting this session.
+    /// Set by [`Session::close`], so a connect right after it dials anew.
     pub(crate) closing: AtomicBool,
 }
 
@@ -117,19 +111,16 @@ impl Session {
         self.inner.remote
     }
 
-    /// Returns the id of the link this session is.
+    /// Returns this session's link id.
     ///
-    /// The [`RouteInfo::via`](crate::RouteInfo::via) of every route that
-    /// arrived over it, so a route can be matched to its session. Two sessions
-    /// with one peer, one after the other, have different ids.
+    /// It is the [`RouteInfo::via`](crate::RouteInfo::via) of every route that
+    /// arrived over this session. A later session with the same peer gets a
+    /// new id.
     pub fn link_id(&self) -> LinkId {
         LinkId(self.inner.link)
     }
 
-    /// Reports whether this node dialed the session, rather than accepted it.
-    ///
-    /// Two peers that dial each other at once end up with one session of each
-    /// kind, so this is what tells two sessions with one peer apart.
+    /// Reports whether this node dialed the session.
     pub fn dialed(&self) -> bool {
         self.inner.dialed
     }
@@ -174,10 +165,9 @@ impl Session {
         Ok(OfferGuard::new(&shared, publication.id(), self.inner.link))
     }
 
-    /// Resolves `path` through this session only, whatever the route table holds.
+    /// Resolves `path` through this session only.
     ///
-    /// For a path that means something on this session alone. Waits for the
-    /// peer to announce the path; cancellation safe.
+    /// Waits for the peer to announce the path.
     ///
     /// # Errors
     ///
@@ -203,21 +193,19 @@ impl Session {
         ))
     }
 
-    /// Returns the link as this session's connection monitor last read it.
+    /// Returns the connection monitor's latest reading of this session.
     pub fn link(&self) -> LinkSample {
         self.inner.link_state.get()
     }
 
     /// Returns the QUIC connection under the session.
-    ///
-    /// Integration point: follows iroh's versioning.
     pub fn connection(&self) -> &Connection {
         &self.inner.connection
     }
 
     /// Closes the session, and every subscription over it, in both directions.
     ///
-    /// `reason` is logged here; the peer sees a clean close.
+    /// Logs `reason` locally. The peer sees a clean close.
     pub fn close(&self, reason: &str) {
         info!(remote = %self.inner.remote.fmt_short(), reason, "closing session");
         self.inner.closing.store(true, Ordering::Release);
@@ -260,8 +248,7 @@ impl Origins {
         }
     }
 
-    /// Runs both drivers for as long as the handles live, and returns the
-    /// ingest origin.
+    /// Runs both drivers while the handles live, and returns the ingest origin.
     pub(crate) fn run(self) -> (origin::Producer, [AbortOnDropHandle<()>; 2]) {
         let run = |driver| {
             AbortOnDropHandle::new(tokio::spawn(async move {
@@ -324,8 +311,7 @@ pub(crate) async fn dial_session(
     if let Some(cost) = options.cost {
         client = client.with_cost(cost);
     }
-    // Raw QUIC carries the token in the setup path; an H3 session already put
-    // it in its CONNECT URL and must not send one.
+    // An H3 session carries the token in its CONNECT URL already.
     if !transport.is_h3()
         && let Some(path) = options.setup_path()
     {
@@ -351,9 +337,6 @@ pub(crate) async fn dial_session(
 }
 
 /// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
-///
-/// A close is one packet and needs no answer, so this is a round trip's grace
-/// and not a negotiation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Returns a copy of `err` for one of several callers waiting on one dial.
@@ -389,14 +372,13 @@ pub(crate) enum ActorMessage {
     },
 }
 
-/// Owns session lifecycle: dials, coalesced connects, and the session tasks.
+/// Runs the node's sessions and dials, and coalesces connects.
 pub(crate) struct Actor {
     shared: Arc<Shared>,
     /// Every live session per peer, oldest first.
     ///
-    /// Normally one; a simultaneous dial leaves two, and the first is the one
-    /// `connect` hands out. Keeping the second rather than dropping it is what
-    /// lets it be promoted when the first ends.
+    /// A simultaneous dial leaves two. `connect` hands out the first, and the
+    /// second takes over when the first ends.
     peers: HashMap<EndpointId, Vec<Session>>,
     sessions: JoinSet<moq_net::Error>,
     /// What each session task runs, so a task that panics is still cleaned up.
@@ -465,11 +447,11 @@ impl Actor {
 
     /// Tears the node's state down and reports the shutdown done.
     ///
-    /// In `Drop` so that it also runs when the actor panics: otherwise
-    /// [`Moq::shutdown`] would wait forever for `done`.
+    /// Runs from `Drop`, so [`Moq::shutdown`] returns even if the actor
+    /// panicked.
     fn finish(&mut self) {
-        // A lock poisoned by the panic that brought us here must not turn this
-        // into a second panic during unwinding.
+        // A panic may have poisoned the lock. Do not panic again while
+        // unwinding.
         if let Ok(mut state) = self.shared.state.lock() {
             state.closed = true;
             state.publications.clear();
@@ -485,11 +467,9 @@ impl Actor {
         self.shared.done.set(true).ok();
     }
 
-    /// Waits for every session to flush its close, within [`SHUTDOWN_GRACE`].
+    /// Waits up to [`SHUTDOWN_GRACE`] for every session to flush its close.
     ///
-    /// Dropping the tasks instead would abort them mid-flush and leave peers to
-    /// notice by timing out. Sessions that outlive the wait are aborted, because
-    /// a peer that stopped reading must not hold the shutdown open.
+    /// Aborting the tasks at once would leave peers to notice by timing out.
     async fn drain(&mut self) {
         if self.sessions.is_empty() {
             return;
@@ -549,11 +529,10 @@ impl Actor {
         self.dial_ids.insert(handle.id(), id);
     }
 
-    /// Returns the oldest session with `peer` that is neither closed nor
-    /// closing.
+    /// Returns the oldest session with `peer` that is not closing.
     ///
-    /// A session stays listed until its task lands, a scheduling hop after the
-    /// connection went, so the front of the list can be one on its way out.
+    /// A session stays listed until its task ends, a little after its
+    /// connection, so the front of the list can be on its way out.
     fn live_session(&self, peer: &EndpointId) -> Option<Session> {
         self.peers.get(peer).and_then(|sessions| {
             sessions
@@ -628,11 +607,9 @@ impl Actor {
         );
         drop(state);
 
-        // Two peers that dial each other at once each end up with two
-        // sessions. Both are kept and driven; the oldest is the one `connect`
-        // hands out. Closing the loser is tempting and wrong: the two sides
-        // see the collision at different instants, so one may already have
-        // handed the other's loser to a caller.
+        // Two peers that dial each other at once end up with two sessions
+        // each. Both stay: the two sides see the collision at different
+        // instants, so either may already have handed out the other's second.
         let sessions = self.peers.entry(remote).or_default();
         if !sessions.is_empty() {
             debug!(remote = %remote.fmt_short(), "simultaneous connect; serving the first session");
