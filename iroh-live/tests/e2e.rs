@@ -10,7 +10,7 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
-use iroh_live::{BroadcastTicket, Live};
+use iroh_live::{BroadcastTicket, CALL, Call, Live};
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, NetworkSample, Player,
     PlayerConfig, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
@@ -118,6 +118,31 @@ async fn publish_subscribe_video() {
 
     publisher.shutdown().await;
     subscriber.shutdown().await;
+}
+
+/// Each side of a call reads the other's picture over the session one dialed.
+#[tokio::test]
+#[traced_test]
+async fn a_call_reads_the_other_side() {
+    let alice = Live::builder(endpoint().await).with_router().spawn();
+    let bob = Live::builder(endpoint().await).with_router().spawn();
+    let _alice_side = publish(&alice, CALL);
+    let bob_side = publish(&bob, CALL);
+    set_pattern(&bob_side, Size::new(320, 240));
+
+    let call = Call::dial(&alice, bob.endpoint().id())
+        .await
+        .expect("failed to dial");
+    assert_eq!(call.session().remote_id(), bob.endpoint().id());
+    let player = call
+        .remote()
+        .play(PlayerConfig::default())
+        .expect("failed to play");
+    first_frame(&player).await;
+
+    call.close();
+    alice.shutdown().await;
+    bob.shutdown().await;
 }
 
 /// Publishes audio alongside video and plays it into an output that discards.

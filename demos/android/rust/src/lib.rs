@@ -18,8 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, EndpointOptions, Live, Session, Subscription};
+use iroh_live::{BroadcastTicket, CALL, Call, EndpointOptions, Live, Session, Subscription};
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Catalog, LocalBroadcast, MicrophoneConfig, Player,
     PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFrames, VideoRendition,
@@ -125,55 +124,11 @@ async fn bind_live() -> Result<Live> {
 /// would hold up answering until its session closed.
 const CALLER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The broadcast a peer publishes its side of a call as, the convention
-/// `irl call` shares.
-const CALL: &str = "call";
-
 /// Publishes a fresh broadcast as `name` to everyone.
 fn publish(live: &Live, name: &str) -> Result<LocalBroadcast> {
     let local = LocalBroadcast::new();
     live.publish(name, &local)?;
     Ok(local)
-}
-
-/// A call: the session with the peer, and the peer's side read over it.
-#[derive(Debug)]
-struct Call {
-    session: Session,
-    remote: RemoteBroadcast,
-}
-
-impl Call {
-    /// Dials `peer` and subscribes to its side of the call.
-    async fn dial(live: &Live, peer: EndpointId) -> Result<Self> {
-        let session = live.moq().connect(peer).await?;
-        Self::accept(live, session).await
-    }
-
-    /// Subscribes to the side of the call the peer of `session` publishes.
-    async fn accept(live: &Live, session: Session) -> Result<Self> {
-        let path = BroadcastTicket::new(session.remote_id(), CALL).path();
-        let subscription = session.subscribe(path).await?;
-        let remote = live.remote_broadcast(&subscription);
-        Ok(Self { session, remote })
-    }
-
-    fn remote(&self) -> &RemoteBroadcast {
-        &self.remote
-    }
-
-    fn remote_id(&self) -> EndpointId {
-        self.session.remote_id()
-    }
-
-    fn session(&self) -> &Session {
-        &self.session
-    }
-
-    /// Hangs up: closes the session, which the peer sees as the call ending.
-    fn close(&self) {
-        self.session.close("hung up");
-    }
 }
 
 /// Opaque handle stored as a `jlong` on the Kotlin side.
@@ -460,7 +415,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     set_microphone(&broadcast, Some(&output)).await;
 
     let call = Call::dial(&live, ticket.peer()).await?;
-    info!(remote = %call.remote_id().fmt_short(), "call connected");
+    info!(remote = %call.session().remote_id().fmt_short(), "call connected");
 
     let player = play(call.remote(), &output)?;
 
@@ -588,7 +543,7 @@ async fn accept_one(
                 continue;
             }
         };
-        info!(remote = %call.remote_id().fmt_short(), "call answered");
+        info!(remote = %call.session().remote_id().fmt_short(), "call answered");
         let player = play(call.remote(), &output)?;
 
         let Some(session) = session.upgrade() else {

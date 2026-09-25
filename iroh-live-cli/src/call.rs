@@ -1,9 +1,9 @@
 //! `irl call`: a 1:1 bidirectional video call.
 //!
-//! Both peers publish their own side as the broadcast `call`, at
+//! Both peers publish their own side as the broadcast [`CALL`], at
 //! `live/<their endpoint id>/call`, and subscribe to the other's on the session
-//! between them, which is all a [`Call`] is. The name is a convention this command shares with the Android
-//! demo, so the two can call each other. Everything here is the window over that,
+//! between them, which is all an [`iroh_live::Call`] is. The Android demo
+//! does the same, so the two can call each other. Everything here is the window over that,
 //! plus the small state machine that decides whether this node is dialing,
 //! answering, or already talking.
 //!
@@ -14,9 +14,8 @@
 //! call. That is the whole exchange on a machine with no keyboard to paste a
 //! ticket into. See [`crate::scan`] for the reader.
 
-use iroh::EndpointId;
 use iroh_live::{
-    BroadcastTicket, Live, RemoteBroadcast, Session,
+    CALL, Live,
     media::{AudioOutput, LocalBroadcast},
 };
 use n0_error::Result;
@@ -26,61 +25,8 @@ use crate::{
     args::{CallArgs, CaptureArgs},
     source,
     source_spec::VideoSourceSpec as Spec,
-    transport::{self, Subscribed},
+    transport,
 };
-
-/// The broadcast a peer publishes its side of a call as.
-///
-/// Shared with the Android demo, which is what lets the two call each other.
-const CALL: &str = "call";
-
-/// A call in progress: the session with the peer, and the peer's side read
-/// over it.
-#[derive(Debug)]
-struct Call {
-    session: Session,
-    remote: Subscribed,
-}
-
-impl Call {
-    /// Dials `peer` and subscribes to its side of the call.
-    async fn dial(live: &Live, peer: EndpointId) -> Result<Self> {
-        let session = live.moq().connect(peer).await?;
-        Self::accept(live, session).await
-    }
-
-    /// Subscribes to the side of the call the peer at the other end of
-    /// `session` publishes.
-    ///
-    /// Waits for the peer to announce it; its catalog arrives afterwards.
-    async fn accept(live: &Live, session: Session) -> Result<Self> {
-        let path = BroadcastTicket::new(session.remote_id(), CALL).path();
-        let subscription = session.subscribe(path).await?;
-        let remote = Subscribed::open(live, subscription);
-        Ok(Self { session, remote })
-    }
-
-    fn remote(&self) -> &RemoteBroadcast {
-        self.remote.broadcast()
-    }
-
-    fn remote_id(&self) -> EndpointId {
-        self.session.remote_id()
-    }
-
-    fn session(&self) -> &Session {
-        &self.session
-    }
-
-    fn subscription(&self) -> &iroh_live::Subscription {
-        self.remote.subscription()
-    }
-
-    /// Hangs up: closes the session, which the peer sees as the call ending.
-    fn close(&self) {
-        self.session.close("hung up");
-    }
-}
 
 /// Runs the `call` command.
 pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
@@ -220,7 +166,7 @@ mod window {
 
     use eframe::egui;
     use iroh_live::{
-        BroadcastTicket, Live, Session,
+        BroadcastTicket, Call, Live, Session,
         media::{AudioOutput, LocalBroadcast, Player, SlotState, VideoSource},
     };
     use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
@@ -230,7 +176,7 @@ mod window {
     use tokio::sync::{mpsc, oneshot};
     use tracing::{debug, info, warn};
 
-    use super::{Call, Camera, Local};
+    use super::{Camera, Local};
     use crate::{
         args::{CallArgs, PlaybackArgs},
         scan::ScanView,
@@ -707,7 +653,7 @@ mod window {
         /// Moves to the in-call screen and opens the peer's video for drawing.
         fn enter_call(&mut self, ctx: &egui::Context, connected: Connected) {
             let Connected { call, player } = connected;
-            info!(remote = %call.remote_id().fmt_short(), "call connected");
+            info!(remote = %call.session().remote_id().fmt_short(), "call connected");
             let remote = RemoteView::new(
                 ctx,
                 "call-remote",
@@ -1224,7 +1170,7 @@ mod window {
     /// speaks MoQ to this node arrives the same way and a plain subscriber
     /// never publishes the call path an answer waits for.
     async fn settle(
-        setup: impl Future<Output = Result<Call>>,
+        setup: impl Future<Output = Result<Call, iroh_live::Error>>,
         playback: PlaybackArgs,
         output: AudioOutput,
     ) -> Answer {

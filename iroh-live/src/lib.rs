@@ -109,6 +109,7 @@
 //! codecs, and forward to [`media`]. `rooms` re-exports `iroh-live-rooms`, and
 //! `auth` enables `Grant::from_claims`.
 
+mod call;
 mod error;
 mod live;
 mod network;
@@ -128,6 +129,7 @@ pub use iroh_moq::{
 };
 
 pub use self::{
+    call::{CALL, Call},
     error::Error,
     live::{Live, LiveBuilder, grant, moq_config, publish_scope},
     ticket::BroadcastTicket,
