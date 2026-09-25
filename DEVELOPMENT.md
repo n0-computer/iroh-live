@@ -1,183 +1,150 @@
 # Development guide
 
-Working notes for contributors. [README.md](README.md) has the project overview
-and the quick start, and [docs/](docs/index.md) has the architecture and the
-guides.
+[README.md](README.md) lists the crates and has the quick start.
+[docs/](docs/index.md) has the architecture and the guides.
 
-## Workspace
-
-| Crate | Role |
-|---|---|
-| `iroh-live` | `Live`, the facade joining media and transport, and the re-exports. Depends on `iroh-live-media` and `iroh-moq` |
-| `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links, ALPN negotiation, tickets, endpoint setup |
-| `iroh-live-rooms` | Rooms: gossip membership and members-only broadcasts. No media dependency |
-| `iroh-live-media` | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
-| `iroh-live-egui` | egui widget and debug overlay |
-| `iroh-live-media-android` | Camera2 push bridge and EGL renderer |
-| `iroh-live-cli` | The `irl` binary |
-| `iroh-live-relay` | The browser bridge |
-
-Demos live in `demos/`: `android` and `pi-zero`. The shortest Pi publisher is
-an example instead, `iroh-live/examples/publish-pi.rs`.
-
-Codecs, capture, decoding, and the wgpu renderer are upstream in `moq-video` and
-`moq-audio`. Nothing here implements one. See
+Codecs, capture, decoding, and the wgpu renderer live upstream in `moq-video`
+and `moq-audio`. See
 [docs/architecture/media-stack.md](docs/architecture/media-stack.md).
-
-## The patch block
-
-`Cargo.toml` carries a `[patch.crates-io]` block pointing every moq crate the
-graph uses at `Frando/moq@iroh-live-5`. That branch is the exact commit the
-released versions were cut from (`moq-video` 0.0.26, `moq-net` 0.3.0 and their
-siblings) plus one fix: `moq-video` 0.0.26 does not compile for Windows with
-the `capture` feature. Every crate of the moq workspace is patched, not only
-`moq-video`, so no crate ever meets a git copy of one dependency and a
-crates.io copy of another; `moq-relay` and `moq-tokio` stay on crates.io and
-pick up the patched crates underneath them. Deleting the block is the whole
-revert once a `moq-video` release carries the fix. `Cargo.lock` pins the
-revision, so a clean clone and CI build the same tree; to work against a local
-checkout instead, point the block at `../moq/rs/<crate>` and leave it
-uncommitted.
 
 ## Build and test
 
 ```sh
 cargo build --workspace                 # default features
 cargo build --workspace --all-features  # everything
-
-cargo make check-all   # check and clippy across three feature sets, then fmt
-cargo make test        # cargo nextest across the workspace
-cargo make test-e2e    # Playwright browser suite, building the relay and CLI first
-cargo make test-full   # all three
 ```
 
-Run `cargo make check-all` before committing code. It covers default features,
-`--all-features`, and `--no-default-features`, which is where feature-gated
-mistakes show up. Markdown-only changes can skip it.
+The [cargo-make](https://crates.io/crates/cargo-make) tasks in
+[Makefile.toml](Makefile.toml) match CI:
 
-Tests that have to see a rendition switch inside their own timeout shorten the
+| Task | What it runs |
+|---|---|
+| `cargo make check-all` | `cargo check` and `cargo clippy -D warnings` with all features, no default features, and default features, then `format-check` |
+| `cargo make check` | Only the three `cargo check` runs |
+| `cargo make clippy` | Only the three clippy runs |
+| `cargo make format` | `cargo fmt` with the import grouping the project uses |
+| `cargo make test` | `cargo nextest run --workspace` |
+| `cargo make test-patchbay` | The patchbay network simulation tests in `iroh-live`, ignored ones included. Linux only |
+| `cargo make test-e2e` | The Playwright browser suite in `tests/e2e-browser`, after building the relay, the CLI, and the `subscribe_test` example |
+| `cargo make test-full` | `check-all`, `test`, and `test-e2e` |
+
+Run `cargo make check-all` before you commit code. The `--no-default-features`
+run is where feature-gated mistakes show up. The browser suite needs
+`npm ci` and `npx playwright install chromium` in `tests/e2e-browser` once.
+
+A test that has to see a rendition switch within its timeout shortens the
 timers in `PlayerConfig::adaptation`, as the patchbay suite does.
 
 Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 `cargo make cross-build-aarch64 -- <cargo args>`. See
 [cross/README.md](cross/README.md).
 
+## The patch block
+
+`Cargo.toml` has a `[patch.crates-io]` block that points every moq crate the
+build uses at `Frando/moq@iroh-live-5`. That branch is the commit the released
+versions (`moq-video` 0.0.26, `moq-net` 0.3.0, and their siblings) were cut
+from, plus one fix: `moq-video` 0.0.26 does not compile for Windows with
+`capture`. All crates of the moq workspace are patched together, so the build
+never mixes a git copy of one with a crates.io copy of another. Delete the block
+once a `moq-video` release has the fix.
+
+`Cargo.lock` pins the revision. To work against a local moq checkout, point the
+block at `../moq/rs/<crate>` and do not commit that change.
+
 ## Commits
 
-Conventional prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`, `ci:`,
-`docs:`, `chore:`. Lead with why, then the reasoning, then what changed. Keep
-commits small enough that each one leaves the workspace compiling. New behaviour
-needs a test.
+Use conventional prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`,
+`ci:`, `docs:`, `chore:`. The message says why first, then what changed. Keep
+each commit small, and leave the workspace compiling after every one. New
+behaviour needs a test.
 
 ## Key types
 
-Everything below is exported from the root of `iroh_live_media`.
+In `iroh_live_media`:
 
-Sources are values that are already open:
-
-- `VideoSource::capture(config).await` opens a camera or screen and returns once
-  it produced a frame; `test_pattern`, `push`, `spawn`, and `rpicam` cover
-  generated, application-made, thread-bound, and Raspberry Pi frames.
-  `EncodedVideoSource::annex_b` and `rpicam` carry pre-encoded H.264.
-- `AudioSource::microphone`, `file`, `tone`, `test_pattern`, and `push` do the
-  same for sound, except that `microphone` only checks the device exists:
-  moq-audio opens it when a broadcast first has a listener, and a failure then
-  shows in `LocalBroadcast::status()`.
-  `MicrophoneConfig::with_echo_cancellation(&output)` attaches the canceller
-  for one `AudioOutput`.
-- `VideoSource::frames()` is the local preview: a `VideoFrames` handle onto the
-  captured pictures that costs no encode.
-
-Publishing:
-
-- `LocalBroadcast` owns a `moq_net::broadcast::Producer`, the catalog, and a
-  media clock, with one video slot and one audio slot.
-- `set_video(source, VideoEncoding::ladder([...]))` encodes one source into
-  every rendition of a ladder, each rendition encoding only while somebody
-  watches it. `set_encoded_video` and `set_audio` fill the other slots, and
+- `VideoSource` is an open source of pictures: `capture`, `test_pattern`,
+  `push`, `spawn` (application code on a thread of its own), and `rpicam`.
+  `VideoSource::frames()` is a local preview that costs no encode.
+  `EncodedVideoSource` (`annex_b`, `rpicam`) carries H.264 that is already
+  encoded.
+- `AudioSource` is the same for sound: `microphone`, `file`, `tone`,
+  `test_pattern`, and `push`. `microphone` only checks that the device exists.
+  The device opens when a broadcast first has a listener, and a failure then
+  shows in `LocalBroadcast::status()`. `MicrophoneConfig::echo_reference`
+  names the `AudioOutput` to cancel from the microphone.
+- `LocalBroadcast` has a catalog, a media clock, one video slot, and one audio
+  slot. `set_video(source, VideoEncoding::ladder([...]))` encodes one source
+  into every rendition of a ladder, and a rendition only encodes while someone
+  watches it. `set_encoded_video` and `set_audio` fill the other slots.
   `status()` and `stats()` report per rendition.
+- `RemoteBroadcast` reads the catalog of a subscribed broadcast. `from_origin`
+  and `from_resolved` build one that follows a path in a route table, and
+  `with_network` attaches the `NetworkSignals` that adaptation reads.
+  `closed()` resolves about three seconds after the publisher ends the
+  broadcast, once the route table has no route left.
+- `RemoteBroadcast::play(PlayerConfig)` returns a `Player`. Each player has its
+  own decoders, playout clock, rendition choice, and stats.
+  `Player::set_rendition` takes a `RenditionMode`: `Auto`, `Pinned`, or `Off`.
+  Audio plays through `PlayerConfig::audio`. With `None`, the player does not
+  subscribe to audio.
+- `Player::video()` returns `VideoFrames`: `next().await` waits for a newer
+  picture, and `try_next()` polls. Every handle has its own cursor.
 
-Subscribing:
+In `iroh_moq`: `Moq::publish(path, broadcast, audience)` publishes any
+`Consume<broadcast::Consumer>` at a full path. `Moq::subscribe(path, reach)`
+resolves a path in the route table and returns a `Subscription`.
+`Session::subscribe(path)` resolves over one session only.
+`MoqConfig::grant` gives each peer a `Grant`, which says what it may subscribe
+to and publish. `Session::link()` and `RelayLink::link()` return the latest
+`LinkSample` of the link's monitor, and `Subscription::link()` returns the
+serving link with its sample.
 
-- `RemoteBroadcast` reads the catalog and holds the subscription;
-  `with_network` attaches the `NetworkSignals` adaptation reads. `from_origin`
-  follows a path in a route table,
-  and `from_resolved` does the same starting from a consumer the caller already
-  resolved. One that follows a route table reports `closed()` about three
-  seconds after the publisher ends it, since it asks the table again first.
-- `RemoteBroadcast::play(PlayerConfig)` returns a `Player`, which owns its
-  decoders, its playout clock, its rendition choice, and its stats. Two players
-  of one broadcast cannot interfere.
-- `Player::video()` returns a `VideoFrames` handle: `next().await` waits for a
-  newer picture and `try_next()` polls without blocking. Every handle keeps its
-  own cursor.
-- `Player::set_rendition(RenditionMode)` switches between `Auto`, `Pinned`, and
-  `Off`. Audio plays through the `AudioOutput` the config names, and a config
-  without one does not subscribe to audio at all.
-
-Transport, in `iroh_moq`: `Moq::publish(name, broadcast, audience)` places any
-`Consume<broadcast::Consumer>`, a `LocalBroadcast` among them, at
-`live/<our id>/<name>` for its audience, and `Moq::ticket(name)` (or
-`Live::ticket`) is the `BroadcastTicket` naming that path. `Moq::subscribe(path,
-reach)` resolves a path in the node's route table and returns a `Subscription`,
-which `Live::remote_broadcast` turns into a `RemoteBroadcast` following that
-path; `Live::subscribe(&ticket)` does both and returns without waiting for the
-catalog. `Session::subscribe(path)` resolves over one session only, and
-`Session::connection()` is the iroh `Connection` behind it.
-`Subscription::link()`, `Session::link()` and `RelayLink::link()` return the
-connection monitor's latest `LinkSample`. The facade's `iroh_live::Error` is
-`Transport(iroh_moq::Error)` or `Media(iroh_live_media::Error)`.
+In `iroh_live`: `Live::publish(name, broadcast)` publishes at
+`live/<endpoint id>/<name>` to everyone, and `Live::ticket(name)` is the
+`BroadcastTicket` for that path. `Live::subscribe(&ticket)` resolves the
+ticket and returns a `RemoteBroadcast` without waiting for the catalog.
+`Live::remote_broadcast` wraps a `Subscription` from a room or from
+`Moq::subscribe` the same way. `iroh_live::grant` is the grant a live node
+gives its peers. `iroh_live::Error` is `Transport(iroh_moq::Error)` or
+`Media(iroh_live_media::Error)`.
 
 ## Threading
 
 Codecs run on their own threads inside `moq_video::encode::Sink` and
-`moq_video::decode::Sink`. Sources are the threads this repository spawns: every
-source runs on a named thread of its own for its whole life, since some
-platform capture objects are not `Send`. A capture device gets a thread with a
-current-thread runtime (`local_task`), the test pattern and tones draw on plain
-threads, the audio file reader decodes with symphonia on one, and
-`VideoSource::spawn` hands the same arrangement to application code. Only
-frames cross, into a latest-wins slot for video and a bounded fan-out for PCM.
+`moq_video::decode::Sink`. Every source runs on a named thread of its own,
+since some platform capture objects are not `Send`. A capture device gets a
+thread with a current-thread runtime (`local_task`), and `VideoSource::spawn`
+gives application code the same. Only frames cross threads: video through a
+latest-wins slot, PCM through a bounded fan-out.
 
-`moq_video::decode::Consumer::read` is not cancel-safe. Never poll it from a
-`select!` arm. The video decode path gives each decoder a task that reads it in a
-plain loop and forwards over a bounded channel, and the supervisor selects only
-on cancel-safe things. See
+`moq_video::decode::Consumer::read` is not cancel safe. Never poll it from a
+`select!` arm. Each video decoder has a task that reads it in a plain loop and
+forwards over a bounded channel. See
 [docs/architecture/subscribe.md](docs/architecture/subscribe.md).
 
-Networking, adaptation, and the room actor are ordinary tokio tasks. Audio output
-is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
+Networking, adaptation, and rooms run as tokio tasks. Audio output is a cpal
+callback on a real-time thread that `moq_audio::playback::Engine` owns.
 
 ## Conventions
 
-- `n0_watcher::Watchable` and `Direct<T>` for continuous state, not `tokio::watch`.
-- `CancellationToken` for cooperative shutdown, `AbortOnDropHandle` to tie a task
-  to a handle.
-- Bounded channels only. Frames to a renderer go through `VideoFrames`, a
-  single-slot latest-wins stream with a cursor per handle, not a queue.
-- `tracing_subscriber::fmt::init()` for setup: it respects `RUST_LOG` with no
-  `EnvFilter` boilerplate. Use `throttled-tracing` for anything per-frame, and
-  structured fields rather than string interpolation.
-- Rust doc comments follow RFC 1574: third-person declarative sentences starting
-  with a verb, no headings in item docs, types linked with `[`Type`]`.
-- Prose follows the house style: full sentences, no em dashes, no emoji.
+- `n0_watcher::Watchable` and `Direct<T>` for state that changes, not
+  `tokio::sync::watch`.
+- `CancellationToken` for shutdown, `AbortOnDropHandle` to tie a task to a
+  handle.
+- Bounded channels only. Frames to a renderer go through `VideoFrames`, not a
+  queue.
+- `tracing` with structured fields. Use `throttled-tracing` for anything that
+  logs per frame.
+- Doc comments follow RFC 1574: third-person sentences that start with a verb,
+  no headings in item docs, and types linked as ``[`Type`]``.
+- Prose uses full sentences, no em dashes, and no emoji.
 
 ## Known gaps
 
-Adaptation compares the publisher's delivery estimate against each rung's
-*advertised* bitrate, which is a ceiling handed to the encoder rather than what
-it sends. The fit ratio of 1.25 accounts for that and for the overshoot of a
-BBR estimate together, but it is a figure measured against openh264, VA-API and
-one patchbay lab, not against other hardware encoders or a real mobile link. See
+Adaptation compares the delivery estimate against each rung's advertised
+bitrate, which is a ceiling for the encoder rather than what it sends.
+`Adaptation::fit_ratio` (1.25) covers that gap. It was measured with openh264,
+VA-API, and one patchbay lab only. Loss on a subscriber is measured over its
+own packets, which are mostly acknowledgements. See
 [docs/architecture/adaptive.md](docs/architecture/adaptive.md).
-
-Loss on a subscriber is measured over its own packets, which are mostly
-acknowledgements, so the loss thresholds see the media direction only as far
-as both directions are impaired alike.
-
-## Where testing happens
-
-Linux on Intel Meteor Lake is the day-to-day platform. macOS builds in CI and has
-been run by hand. Android and the Raspberry Pi have been tested on device.
-Windows and iOS have never been built here. See
-[docs/platforms.md](docs/platforms.md).
