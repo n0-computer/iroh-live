@@ -30,8 +30,8 @@ the next one when it dies.
 Because each link's routes are also kept apart, the node can say which link
 serves a path (`Subscription::session`, `Subscription::link`), and list what one
 link announces (`Session::origin`, `RelayLink::origin`).
-`Session::subscribe` resolves a path over one session only. `iroh_live::Call`
-reads the other side of a call this way.
+`Session::subscribe` resolves a path over one session only. Rooms read each
+member this way.
 
 A direct session's ingest holds only what the session's grant lets the peer
 publish. `MoqConfig::grant` computes that grant from the peer's endpoint id.

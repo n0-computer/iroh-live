@@ -1,8 +1,9 @@
 //! `irl call`: a 1:1 video call.
 //!
-//! Both peers publish their side as [`CALL`] and subscribe to the other's over
-//! the session between them, which is what an [`iroh_live::Call`] does. The
-//! Android demo does the same, so the two can call each other.
+//! Each side offers its broadcast as [`CALL`] to the other peer only, and
+//! subscribes to the other's. A node is called when a peer's `call` path
+//! appears in its route table, and a hang-up withdraws the offer. The Android
+//! demo does the same, so the two can call each other.
 //!
 //! Each window shows its own ticket as a QR code and can scan the peer's off
 //! the camera. Whoever scans places the call, so no keyboard is needed.
@@ -40,13 +41,14 @@ struct Local {
     ticket: String,
 }
 
-/// Binds the endpoint, publishes this node's side, and prints the ticket.
+/// Binds the endpoint, opens this node's side, and prints the ticket.
 async fn setup(args: &CallArgs) -> Result<Local> {
     // Opened first so the microphone can cancel its echo.
     let output = crate::playback::output(None).await?;
     let live = transport::setup_live(true).await?;
     let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
-        let (broadcast, sources) = publish_local(live, &args.capture, &output).await?;
+        let broadcast = LocalBroadcast::new();
+        let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
         let ticket = live.ticket(CALL).to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
@@ -61,21 +63,6 @@ async fn setup(args: &CallArgs) -> Result<Local> {
         output,
         ticket,
     })
-}
-
-/// Publishes this node's side of the call and opens the capture devices.
-///
-/// Publishing is node-wide: every session sees this broadcast, and calls come
-/// and go without touching it. The microphone cancels the echo of `output`.
-async fn publish_local(
-    live: &Live,
-    args: &CaptureArgs,
-    output: &AudioOutput,
-) -> Result<(LocalBroadcast, source::Opened)> {
-    let broadcast = LocalBroadcast::new();
-    let sources = source::configure(&broadcast, args, Some(output)).await?;
-    live.publish(CALL, &broadcast)?;
-    Ok((broadcast, sources))
 }
 
 /// Who holds the camera while nothing is being scanned.
@@ -136,30 +123,28 @@ fn same_device(left: &Spec, right: &Spec) -> bool {
 mod window {
     //! The call window, with the same chrome as `irl watch`.
 
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
     use eframe::egui;
+    use iroh::EndpointId;
     use iroh_live::{
-        BroadcastTicket, Call, Live, Session,
+        Audience, BroadcastTicket, CALL, Live, Publication, Reach,
         media::{AudioOutput, LocalBroadcast, Player, SlotState, VideoSource},
     };
     use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
-    use n0_watcher::Watcher as _;
-    use tokio::sync::{mpsc, oneshot};
+    use n0_watcher::{Watchable, Watcher as _};
+    use tokio::sync::oneshot;
     use tracing::{debug, info, warn};
 
     use super::{Camera, Local};
     use crate::{
         args::{CallArgs, PlaybackArgs},
         scan::ScanView,
-        transport::PEER_TIMEOUT,
+        transport::{PEER_TIMEOUT, Subscribed},
         ui::{CursorIdle, RemoteView, TicketQr},
     };
-
-    /// How many unanswered incoming sessions queue up before the forwarder waits.
-    const INCOMING_QUEUE: usize = 4;
 
     /// How often the state machine runs while nothing draws the window.
     const HEARTBEAT: Duration = Duration::from_millis(100);
@@ -211,8 +196,9 @@ mod window {
             Box::new(move |cc| {
                 let ctx = &cc.egui_ctx;
                 crate::ui::spawn_ctrl_c_handler(ctx);
-                let (tx, incoming) = mpsc::channel(INCOMING_QUEUE);
-                let forwarder = spawn(forward_incoming(live.clone(), tx));
+                let callers = Watchable::new(BTreeSet::new());
+                let ringing = callers.watch();
+                let watcher = spawn(watch_callers(live.clone(), callers));
                 let preview = VideoView::new(
                     ctx,
                     "call-preview",
@@ -236,10 +222,11 @@ mod window {
                     preview,
                     render_state: cc.wgpu_render_state.clone(),
                     _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
-                    _forwarder: AbortOnDropHandle::new(forwarder),
+                    _watcher: AbortOnDropHandle::new(watcher),
                     live,
                     broadcast,
-                    incoming,
+                    ringing,
+                    ended: BTreeSet::new(),
                     pending: None,
                     screen: Screen::waiting(),
                     cursor: CursorIdle::default(),
@@ -260,7 +247,7 @@ mod window {
         ticket: String,
         /// The ticket as a QR code, or `None` where it does not render.
         qr: Option<TicketQr>,
-        /// The local side. Every peer reads it and no call owns it.
+        /// The local side, offered to one peer per call.
         broadcast: LocalBroadcast,
         /// The local video, which the preview draws and the scan screen may read.
         local_video: Option<VideoSource>,
@@ -285,8 +272,13 @@ mod window {
         camera_epoch: Arc<std::sync::Mutex<u64>>,
         /// A message for the waiting screen that arrived while another was up.
         notice: Option<String>,
-        incoming: mpsc::Receiver<Session>,
-        _forwarder: AbortOnDropHandle<()>,
+        /// The peers offering this node their side of a call.
+        ringing: n0_watcher::Direct<BTreeSet<EndpointId>>,
+        /// Peers whose call ended here and who still offer their side.
+        ///
+        /// Skipped until they withdraw it, so a hang-up is not answered again.
+        ended: BTreeSet<EndpointId>,
+        _watcher: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
         /// The attempt in flight. There is at most one.
@@ -362,17 +354,51 @@ mod window {
         peer: String,
     }
 
-    /// A connected call: the session and the peer's picture and sound.
+    /// A connected call. Dropping it hangs up.
     struct InCall {
-        /// Owns the session and the peer's broadcast.
-        call: Call,
+        peer: EndpointId,
+        _offer: Offer,
+        sub: Subscribed,
         remote: RemoteView,
     }
 
     impl InCall {
-        /// Closes the call. The player is dropped with the screen.
-        fn shutdown(&mut self) {
-            self.call.close();
+        /// Reports whether the peer hung up or its session ended.
+        ///
+        /// The peer withdrawing its offer ends the broadcast at once.
+        fn ended(&self) -> bool {
+            self.sub.subscription().as_moq().is_closed() || self.sub.broadcast().is_closed()
+        }
+    }
+
+    /// This node's side of a call, offered to one peer until dropped.
+    ///
+    /// The peer sees the offer in its route table, which is how it learns it
+    /// is called, and dropping the offer is how it learns of a hang-up.
+    struct Offer {
+        publication: Publication,
+        /// The one peer the side is offered to. Dropping it offers to nobody.
+        _audience: Watchable<BTreeSet<EndpointId>>,
+    }
+
+    impl Offer {
+        fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
+            let audience = Watchable::new(BTreeSet::from([peer]));
+            let publication = live.moq().publish(
+                live.ticket(CALL).path(),
+                broadcast,
+                Audience::Peers(audience.watch()),
+            )?;
+            Ok(Self {
+                publication,
+                _audience: audience,
+            })
+        }
+    }
+
+    impl Drop for Offer {
+        fn drop(&mut self) {
+            self.publication.unpublish();
         }
     }
 
@@ -380,24 +406,12 @@ mod window {
     struct Pending {
         /// Which side started it.
         direction: Direction,
+        /// Held here, not in the task, so abandoning the attempt withdraws it
+        /// at once.
+        offer: Offer,
         rx: oneshot::Receiver<Answer>,
         /// Aborting this abandons the attempt.
-        task: AbortOnDropHandle<()>,
-    }
-
-    impl Pending {
-        /// Abandons the attempt and closes a call that landed meanwhile.
-        ///
-        /// Closing the channel first makes an attempt that has not answered
-        /// fail its send and close what it built. One that already answered is
-        /// closed here.
-        fn discard(mut self) {
-            self.rx.close();
-            if let Ok(Answer::Connected(connected)) = self.rx.try_recv() {
-                connected.discard();
-            }
-            self.task.abort();
-        }
+        _task: AbortOnDropHandle<()>,
     }
 
     /// The outcome of one attempt to reopen the publisher's camera.
@@ -455,16 +469,23 @@ mod window {
     }
 
     /// Which side started an attempt.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Copy)]
     enum Direction {
         /// This node dialed. The calling screen waits on it and can cancel it.
-        Outgoing { peer: String },
-        /// A peer opened a session and this node is answering it.
+        Outgoing(EndpointId),
+        /// A peer offered its side and this node is answering.
         ///
-        /// Any MoQ peer arrives this way, and a plain subscriber never
-        /// publishes the call broadcast. So this runs behind the current screen
-        /// and its failure only goes to the log.
-        Incoming { peer: String },
+        /// This runs behind the current screen, and its failure only goes to
+        /// the log.
+        Incoming(EndpointId),
+    }
+
+    impl Direction {
+        fn peer(self) -> EndpointId {
+            match self {
+                Self::Outgoing(peer) | Self::Incoming(peer) => peer,
+            }
+        }
     }
 
     /// The outcome of a dial or an answer.
@@ -475,21 +496,10 @@ mod window {
         Failed(String),
     }
 
-    /// An established call with the peer's side playing.
+    /// The peer's side of an established call, playing.
     struct Connected {
-        call: Call,
+        sub: Subscribed,
         player: Player,
-    }
-
-    impl Connected {
-        /// Closes a call that no screen will show.
-        ///
-        /// Dropping it instead would leave the peer to time the session out.
-        fn discard(self) {
-            let Self { call, player } = self;
-            drop(player);
-            call.close();
-        }
     }
 
     /// A waiting screen action, applied once the panel releases its borrow.
@@ -532,12 +542,8 @@ mod window {
 
         fn on_exit(&mut self) {
             info!("exit");
-            if let Screen::InCall(session) = &mut self.screen {
-                session.shutdown();
-            }
-            if let Some(pending) = self.pending.take() {
-                pending.discard();
-            }
+            self.screen = Screen::waiting();
+            self.pending = None;
             crate::ui::shutdown_publish_blocking(&self.live, &self.broadcast);
         }
     }
@@ -567,32 +573,40 @@ mod window {
                     Answer::Failed("the call attempt stopped".to_string())
                 }
             };
-            let direction = self
+            let Pending {
+                direction, offer, ..
+            } = self
                 .pending
                 .take()
-                .expect("the attempt was borrowed a moment ago")
-                .direction;
+                .expect("the attempt was borrowed a moment ago");
 
             let message = match answer {
-                Answer::Connected(connected) => return self.enter_call(ctx, *connected),
+                Answer::Connected(connected) => {
+                    return self.enter_call(ctx, direction.peer(), offer, *connected);
+                }
                 Answer::Failed(message) => message,
             };
+            self.ended.insert(direction.peer());
+            let peer = direction.peer().fmt_short();
             match direction {
-                Direction::Outgoing { peer } => {
+                Direction::Outgoing(_) => {
                     warn!(%peer, %message, "the call failed");
                     self.screen = Screen::reporting(message);
                 }
-                // Expected: the session was most likely a plain subscriber.
-                Direction::Incoming { peer } => {
-                    debug!(%peer, %message, "the session turned out not to be a caller");
-                }
+                Direction::Incoming(_) => debug!(%peer, %message, "answering failed"),
             }
         }
 
         /// Moves to the in-call screen and opens the peer's video for drawing.
-        fn enter_call(&mut self, ctx: &egui::Context, connected: Connected) {
-            let Connected { call, player } = connected;
-            info!(remote = %call.session().remote_id().fmt_short(), "call connected");
+        fn enter_call(
+            &mut self,
+            ctx: &egui::Context,
+            peer: EndpointId,
+            offer: Offer,
+            connected: Connected,
+        ) {
+            let Connected { sub, player } = connected;
+            info!(remote = %peer.fmt_short(), "call connected");
             let remote = RemoteView::new(
                 ctx,
                 "call-remote",
@@ -600,47 +614,47 @@ mod window {
                 self.playback.decoder,
                 self.render_state.as_ref(),
             )
-            .with_link(call.subscription().clone());
-            self.screen = Screen::InCall(Box::new(InCall { call, remote }));
+            .with_link(sub.subscription().clone());
+            self.screen = Screen::InCall(Box::new(InCall {
+                peer,
+                _offer: offer,
+                sub,
+                remote,
+            }));
         }
 
-        /// Returns to the waiting screen once the session closes.
+        /// Returns to the waiting screen once the peer hangs up.
         fn poll_hangup(&mut self) {
-            let Screen::InCall(session) = &self.screen else {
+            let Screen::InCall(call) = &self.screen else {
                 return;
             };
-            if session.call.session().connection().close_reason().is_none() {
+            if !call.ended() {
                 return;
             }
             info!("call ended");
-            let ended = std::mem::replace(
-                &mut self.screen,
-                Screen::reporting("the call ended".to_string()),
-            );
-            drop(ended);
+            self.hang_up("the call ended");
         }
 
-        /// Answers the next queued caller, if this node is idle.
+        /// Ends the call on screen, if any, and shows `message`.
+        fn hang_up(&mut self, message: &str) {
+            let screen = std::mem::replace(&mut self.screen, Screen::reporting(message.to_owned()));
+            if let Screen::InCall(call) = screen {
+                self.ended.insert(call.peer);
+            }
+        }
+
+        /// Answers a peer that offers its side, if this node is idle.
         fn answer_next(&mut self, ctx: &egui::Context) {
+            let ringing = self.ringing.get();
+            self.ended.retain(|peer| ringing.contains(peer));
             if self.pending.is_some() || matches!(self.screen, Screen::InCall(_)) {
                 return;
             }
-            // Skip sessions that closed while queued.
-            let session = loop {
-                match self.incoming.try_recv() {
-                    Ok(session) if session.connection().close_reason().is_none() => break session,
-                    Ok(_) => continue,
-                    Err(_) => return,
-                }
+            let Some(peer) = ringing.into_iter().find(|peer| !self.ended.contains(peer)) else {
+                return;
             };
-            let peer = session.remote_id().fmt_short().to_string();
-            let attempt = answer_call(
-                self.live.clone(),
-                session,
-                self.playback,
-                self.output.clone(),
-            );
-            self.start(ctx, Direction::Incoming { peer }, attempt);
+            info!(remote = %peer.fmt_short(), "answering");
+            self.start(ctx, Direction::Incoming(peer));
         }
 
         /// Calls `ticket`, replacing whatever the window was doing.
@@ -648,56 +662,58 @@ mod window {
         /// Leaves the scan screen first, so the publisher gets its camera back
         /// while the dial runs.
         fn dial(&mut self, ctx: &egui::Context, ticket: BroadcastTicket) {
-            let peer = ticket.peer().fmt_short().to_string();
+            let peer = ticket.peer();
+            info!(remote = %peer.fmt_short(), "dialing");
             self.leave_scan();
-            if let Some(pending) = self.pending.take() {
-                pending.discard();
-            }
-            self.screen = Screen::Calling(Calling { peer: peer.clone() });
-            let attempt = dial_call(
-                self.live.clone(),
-                ticket,
-                self.playback,
-                self.output.clone(),
-            );
-            self.start(ctx, Direction::Outgoing { peer }, attempt);
+            self.discard_pending();
+            self.screen = Screen::Calling(Calling {
+                peer: peer.fmt_short().to_string(),
+            });
+            self.start(ctx, Direction::Outgoing(peer));
         }
 
-        /// Runs `attempt` as the pending one.
-        ///
-        /// The task holds the only handle to what it builds until it answers.
-        /// If nobody receives the answer, the task closes the call.
-        fn start(
-            &mut self,
-            ctx: &egui::Context,
-            direction: Direction,
-            attempt: impl Future<Output = Answer> + Send + 'static,
-        ) {
+        /// Offers this node's side to the peer and waits for the peer's, as the pending attempt.
+        fn start(&mut self, ctx: &egui::Context, direction: Direction) {
+            let peer = direction.peer();
+            let offer = match Offer::new(&self.live, &self.broadcast, peer) {
+                Ok(offer) => offer,
+                Err(err) => {
+                    warn!(remote = %peer.fmt_short(), "cannot offer this side: {err:#}");
+                    self.ended.insert(peer);
+                    if let Direction::Outgoing(_) = direction {
+                        self.screen = Screen::reporting(format!("{err:#}"));
+                    }
+                    return;
+                }
+            };
+            let attempt = reach(self.live.clone(), peer, self.playback, self.output.clone());
             let (tx, rx) = oneshot::channel();
             let ctx = ctx.clone();
             let task = spawn(async move {
-                if let Err(Answer::Connected(connected)) = tx.send(attempt.await) {
-                    info!("the call landed after it was given up on, closing it");
-                    connected.discard();
+                if tx.send(attempt.await).is_err() {
+                    info!("the call landed after it was given up on, dropping it");
                 }
                 ctx.request_repaint();
             });
             self.pending = Some(Pending {
                 direction,
+                offer,
                 rx,
-                task: AbortOnDropHandle::new(task),
+                _task: AbortOnDropHandle::new(task),
             });
         }
 
+        /// Abandons the attempt in flight, withdrawing this node's offer.
+        fn discard_pending(&mut self) {
+            if let Some(pending) = self.pending.take() {
+                self.ended.insert(pending.direction.peer());
+            }
+        }
+
         /// Gives up on the dial in flight and returns to the waiting screen.
-        ///
-        /// The transport keeps one session per peer. A session the dial opened
-        /// anyway stays cached, and calling the same peer again reuses it.
         fn cancel(&mut self, peer: &str) {
             info!(%peer, "the call was cancelled");
-            if let Some(pending) = self.pending.take() {
-                pending.discard();
-            }
+            self.discard_pending();
             self.screen = Screen::reporting(format!("stopped calling {peer}"));
         }
 
@@ -989,10 +1005,7 @@ mod window {
             });
             if hang_up {
                 info!("hanging up");
-                if let Screen::InCall(session) = &mut self.screen {
-                    session.shutdown();
-                }
-                self.screen = Screen::reporting("you hung up".to_string());
+                self.hang_up("you hung up");
             }
         }
     }
@@ -1021,75 +1034,60 @@ mod window {
         (content.x.min(content.y) * QR_FRACTION).clamp(QR_MIN, QR_MAX)
     }
 
-    /// Forwards the sessions peers open to this node.
+    /// Tracks which peers offer this node their side of a call.
     ///
-    /// Runs for the window's life, so a caller that dials during another
-    /// attempt is not missed. Sessions this node dialed are skipped.
-    async fn forward_incoming(live: Live, tx: mpsc::Sender<Session>) {
-        let mut sessions = live.moq().sessions();
-        let mut seen: Vec<Session> = Vec::new();
-        loop {
-            let current = sessions.get();
-            for session in &current {
-                if session.dialed() || seen.contains(session) {
-                    continue;
-                }
-                debug!(remote = %session.remote_id().fmt_short(), "incoming session");
-                if tx.send(session.clone()).await.is_err() {
-                    return;
-                }
+    /// A caller offers `live/<its id>/call` to the callee only, so the path
+    /// appearing in the route table is the ring. Runs for the window's life.
+    async fn watch_callers(live: Live, callers: Watchable<BTreeSet<EndpointId>>) {
+        let me = live.endpoint().id();
+        let mut updates = live.moq().origin().announced();
+        while let Some(update) = updates.next().await {
+            let Some(caller) = BroadcastTicket::from_path(update.prefix.as_str())
+                .filter(|ticket| ticket.name() == CALL && ticket.peer() != me)
+                .map(|ticket| ticket.peer())
+            else {
+                continue;
+            };
+            let mut ringing = callers.get();
+            if update.kind.is_active() {
+                debug!(remote = %caller.fmt_short(), "ringing");
+                ringing.insert(caller);
+            } else {
+                ringing.remove(&caller);
             }
-            seen = current;
-            if sessions.updated().await.is_err() {
-                return;
-            }
+            callers.set(ringing).ok();
         }
     }
 
-    /// Dials the peer named by `ticket` and opens its tracks.
-    async fn dial_call(
-        live: Live,
-        ticket: BroadcastTicket,
-        playback: PlaybackArgs,
-        output: AudioOutput,
-    ) -> Answer {
-        info!(remote = %ticket.peer().fmt_short(), "dialing");
-        settle(Call::dial(&live, ticket.peer()), playback, output).await
-    }
-
-    /// Answers `session` and plays the caller's side.
-    async fn answer_call(
-        live: Live,
-        session: Session,
-        playback: PlaybackArgs,
-        output: AudioOutput,
-    ) -> Answer {
-        info!(remote = %session.remote_id().fmt_short(), "answering");
-        settle(Call::accept(&live, session), playback, output).await
-    }
-
-    /// Waits for the call to establish, then plays the peer's tracks.
+    /// Waits for `peer`'s side of the call, then plays it.
     ///
-    /// Answering gets [`PEER_TIMEOUT`] too: an incoming session may be a plain
-    /// subscriber that never publishes the call broadcast.
-    async fn settle(
-        setup: impl Future<Output = Result<Call, iroh_live::Error>>,
+    /// Gives up after [`PEER_TIMEOUT`], for a peer that is busy or away.
+    async fn reach(
+        live: Live,
+        peer: EndpointId,
         playback: PlaybackArgs,
         output: AudioOutput,
     ) -> Answer {
-        let call = match tokio::time::timeout(PEER_TIMEOUT, setup).await {
-            Ok(Ok(call)) => call,
+        let path = BroadcastTicket::new(peer, CALL).path();
+        let subscription = match tokio::time::timeout(
+            PEER_TIMEOUT,
+            live.moq().subscribe(path, Reach::Direct(peer)),
+        )
+        .await
+        {
+            Ok(Ok(subscription)) => subscription,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),
             Err(_) => {
                 return Answer::Failed(format!(
-                    "gave up after {}s: the peer never published its side",
+                    "gave up after {}s: the peer did not answer",
                     PEER_TIMEOUT.as_secs()
                 ));
             }
         };
+        let sub = Subscribed::open(&live, subscription);
         let config = crate::ui::player_config(&playback, Some(&output));
-        match call.remote().play(config) {
-            Ok(player) => Answer::Connected(Box::new(Connected { call, player })),
+        match sub.broadcast().play(config) {
+            Ok(player) => Answer::Connected(Box::new(Connected { sub, player })),
             Err(err) => Answer::Failed(format!("{err:#}")),
         }
     }

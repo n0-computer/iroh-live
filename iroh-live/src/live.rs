@@ -67,7 +67,7 @@ pub struct Live {
 #[must_use]
 pub struct LiveBuilder {
     endpoint: Endpoint,
-    moq: Option<Moq>,
+    moq: Moq,
     router: bool,
     #[debug(skip)]
     protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
@@ -93,21 +93,15 @@ impl LiveBuilder {
         self
     }
 
-    /// Uses a [`Moq`] the application created on the builder's endpoint.
-    ///
-    /// For handing it to `Rooms` before the router is built. Create it with
-    /// [`moq_config`], or with a grant that keeps peers to their own paths as
-    /// [`grant`] does.
-    pub fn with_moq(mut self, moq: Moq) -> Self {
-        self.moq = Some(moq);
-        self
+    /// Returns the node's MoQ transport, for handing to `Rooms` before the
+    /// router is built.
+    pub fn moq(&self) -> &Moq {
+        &self.moq
     }
 
     /// Creates the node, spawning its router if asked to.
     pub fn spawn(self) -> Live {
-        let moq = self
-            .moq
-            .unwrap_or_else(|| Moq::new(self.endpoint.clone(), moq_config()));
+        let moq = self.moq;
         let router = (self.router || !self.protocols.is_empty()).then(|| {
             let mut router = moq.mount(Router::builder(self.endpoint.clone()));
             for (alpn, handler) in self.protocols {
@@ -127,6 +121,9 @@ impl LiveBuilder {
 impl Live {
     /// Returns a builder for a node on `endpoint`.
     ///
+    /// Creates the node's [`Moq`] with [`moq_config`], so it must be called
+    /// within a tokio runtime.
+    ///
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// let endpoint = iroh::Endpoint::bind(iroh_live::MoqPreset).await?;
@@ -136,8 +133,8 @@ impl Live {
     /// ```
     pub fn builder(endpoint: Endpoint) -> LiveBuilder {
         LiveBuilder {
+            moq: Moq::new(endpoint.clone(), moq_config()),
             endpoint,
-            moq: None,
             router: false,
             protocols: Vec::new(),
         }
@@ -191,10 +188,9 @@ impl Live {
 
     /// Resolves the ticket's broadcast over whichever link serves it.
     ///
-    /// Returns once a route is found, before the catalog arrives: watch
-    /// [`RemoteBroadcast::catalog`] for it. The broadcast follows the path in
-    /// the route table, so a change of route does not end it. Its players
-    /// adapt to the link that serves it.
+    /// Dials the publisher, and waits on attached relays at the same time.
+    /// Returns once a route is found. Read the media with
+    /// [`remote_broadcast`](Self::remote_broadcast).
     ///
     /// Cancellation safe.
     ///
@@ -202,20 +198,20 @@ impl Live {
     ///
     /// Fails if no link reaches the broadcast.
     #[instrument("subscribe", skip_all, fields(ticket = %ticket))]
-    pub async fn subscribe(&self, ticket: &BroadcastTicket) -> Result<RemoteBroadcast, Error> {
-        let subscription = self
+    pub async fn subscribe(&self, ticket: &BroadcastTicket) -> Result<Subscription, Error> {
+        Ok(self
             .moq
             .subscribe(ticket.path(), Reach::Both(ticket.peer()))
-            .await?;
-        Ok(self.remote_broadcast(&subscription))
+            .await?)
     }
 
-    /// Wraps a subscription the way [`subscribe`](Self::subscribe) does.
+    /// Reads the media of a subscription.
     ///
-    /// For a subscription from a room, a session or [`Moq::subscribe`]. The
-    /// broadcast follows the subscription's path through the route table it
-    /// was resolved in, and its players adapt to the link that serves it. A
-    /// subscription on one session re-resolves through that session only.
+    /// The broadcast follows the subscription's path through the route table
+    /// it was resolved in, so a change of route does not end it, and its
+    /// players adapt to the link that serves it. A subscription on one session
+    /// re-resolves through that session only. The catalog arrives later:
+    /// watch [`RemoteBroadcast::catalog`] for it.
     pub fn remote_broadcast(&self, subscription: &Subscription) -> RemoteBroadcast {
         RemoteBroadcast::from_resolved(
             subscription.as_origin(),

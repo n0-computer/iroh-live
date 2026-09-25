@@ -82,9 +82,9 @@ A subscriber resolves the ticket, starts a player, and reads decoded frames:
 use iroh_live::{AudioOutput, PlayerConfig};
 
 let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
-let remote = live.subscribe(&ticket).await?;
+let subscription = live.subscribe(&ticket).await?;
 let output = AudioOutput::open(None).await?;
-let player = remote.play(PlayerConfig {
+let player = live.remote_broadcast(&subscription).play(PlayerConfig {
     audio: Some(output),
     ..Default::default()
 })?;

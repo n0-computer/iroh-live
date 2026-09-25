@@ -68,7 +68,7 @@ demos/android/
 
 Kotlin captures camera frames with CameraX and pushes them into Rust through
 `IrohBridge.pushCameraNv12`. The Rust side publishes them with `iroh-live`, and
-a call uses `iroh_live::Call`. The home screen also has two diagnostics that
+a call follows the same convention as `irl call`. The home screen also has two diagnostics that
 need no network: camera passthrough, and an H.264 encode and decode loop.
 
 Codecs come from `moq-video` and `moq-audio`, which choose a backend at

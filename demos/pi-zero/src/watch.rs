@@ -9,10 +9,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use glow::HasContext;
-use iroh_live::{
-    Session,
-    media::{Player, VideoFrames},
-};
+use iroh_live::media::{Player, VideoFrames};
 use moq_video::Frame;
 #[cfg(feature = "windowed")]
 use n0_watcher::Watcher as _;
@@ -46,7 +43,7 @@ fn try_upload_frame(
 
 /// Prints playback stats once a second.
 #[cfg(feature = "windowed")]
-fn print_stats(session: &Session, player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
+fn print_stats(player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
     let elapsed = fps_last.elapsed();
     if elapsed < Duration::from_secs(1) {
         return;
@@ -55,9 +52,10 @@ fn print_stats(session: &Session, player: &Player, frame_count: &mut u64, fps_la
     *frame_count = 0;
     *fps_last = Instant::now();
 
-    let rtt = session
-        .link()
-        .rtt
+    let rtt = player
+        .stats()
+        .network
+        .and_then(|network| network.rtt)
         .map_or_else(|| "-".to_string(), |rtt| rtt.as_millis().to_string());
     println!(
         "fps: {fps:.0}  rtt: {rtt}ms  rendition: {}",
@@ -371,7 +369,7 @@ impl DrmDisplay {
 /// Renders a remote broadcast to HDMI over DRM/KMS.
 ///
 /// Rendering runs on its own thread, so it does not block the tokio runtime.
-pub(crate) async fn run_drm(player: Player, _session: Session) -> Result<()> {
+pub(crate) async fn run_drm(player: Player) -> Result<()> {
     use tokio::sync::mpsc as tokio_mpsc;
 
     let (frame_tx, frame_rx) = tokio_mpsc::channel::<Arc<Frame>>(4);
@@ -459,7 +457,7 @@ pub(crate) async fn run_fb_demo(mut frames: VideoFrames) -> Result<()> {
 
 /// Renders video in a glutin and winit window.
 #[cfg(feature = "windowed")]
-pub(crate) fn run_windowed(player: Player, session: Session, fullscreen: bool) -> Result<()> {
+pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
     use std::num::NonZeroU32;
 
     use glutin::{
@@ -485,7 +483,6 @@ pub(crate) fn run_windowed(player: Player, session: Session, fullscreen: bool) -
         window: Option<Window>,
         frames: VideoFrames,
         player: Player,
-        session: Session,
         fullscreen: bool,
         frame_count: u64,
         fps_last: Instant,
@@ -606,12 +603,7 @@ pub(crate) fn run_windowed(player: Player, session: Session, fullscreen: bool) -
                     }
                     surface.swap_buffers(context).ok();
 
-                    print_stats(
-                        &self.session,
-                        &self.player,
-                        &mut self.frame_count,
-                        &mut self.fps_last,
-                    );
+                    print_stats(&self.player, &mut self.frame_count, &mut self.fps_last);
 
                     event_loop
                         .set_control_flow(ControlFlow::WaitUntil(Instant::now() + POLL_INTERVAL));
@@ -632,7 +624,6 @@ pub(crate) fn run_windowed(player: Player, session: Session, fullscreen: bool) -
         window: None,
         frames: player.video(),
         player,
-        session,
         fullscreen,
         frame_count: 0,
         fps_last: Instant::now(),

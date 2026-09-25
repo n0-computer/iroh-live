@@ -30,8 +30,10 @@
 //! live.publish("studio", &broadcast)?;
 //! println!("share {}", live.ticket("studio"));
 //!
-//! let remote = live.subscribe(&ticket).await?;
-//! let player = remote.play(PlayerConfig::default())?;
+//! let subscription = live.subscribe(&ticket).await?;
+//! let player = live
+//!     .remote_broadcast(&subscription)
+//!     .play(PlayerConfig::default())?;
 //! let mut frames = player.video();
 //! while let Some(frame) = frames.next().await {
 //!     // hand `frame` to a renderer
@@ -45,7 +47,6 @@
 //!
 //! - [`Live`]: the node. [`LiveBuilder`] mounts more protocols on its router.
 //! - [`BroadcastTicket`]: a publisher's endpoint id and a broadcast name.
-//! - [`Call`]: a one-to-one call, each side publishing [`CALL`].
 //! - [`LocalBroadcast`] and [`RemoteBroadcast`], from [`media`].
 //!
 //! # Cancellation safety
@@ -61,7 +62,7 @@
 //! | `AudioOutput::open`, `AudioOutput::devices` | yes | closes the device, or abandons the query |
 //! | `AudioOutput::switch` | yes | the switch completes, only its result is lost |
 //! | [`EndpointOptions::bind`] | yes | nothing is bound |
-//! | [`Live::subscribe`], [`Call::dial`], [`Call::accept`], `Moq::subscribe`, `Moq::connect`, `Moq::connect_with`, `Session::subscribe`, `Room::subscribe` | yes | abandons the wait; a dial it started continues for other callers |
+//! | [`Live::subscribe`], `Moq::subscribe`, `Moq::connect`, `Moq::connect_with`, `Session::subscribe`, `Room::subscribe` | yes | abandons the wait; a dial it started continues for other callers |
 //! | `moq::transport::dial`, `moq::transport::accept` | yes | drops the connection being set up |
 //! | `Moq::accept` | yes | a queued session stays queued |
 //! | `Incoming::admit` | yes | rejects the session before the handshake completes, admits it after |
@@ -80,7 +81,6 @@
 //! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
 //! codecs to [`media`]. `rooms` re-exports `iroh-live-rooms`.
 
-mod call;
 mod endpoint;
 mod error;
 mod live;
@@ -100,9 +100,8 @@ pub use iroh_moq::{
 };
 
 pub use self::{
-    call::{CALL, Call},
     endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
     live::{Live, LiveBuilder, grant, moq_config, publish_scope},
-    ticket::BroadcastTicket,
+    ticket::{BroadcastTicket, CALL},
 };

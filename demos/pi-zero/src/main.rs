@@ -126,14 +126,8 @@ mod app {
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
         // network without internet.
         let live = Live::builder(iroh_live::EndpointOptions::from_env()?.bind().await?).spawn();
-        let sub = live
-            .moq()
-            .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
-            .await?;
-        let remote = live.remote_broadcast(&sub);
-        let session = sub
-            .session()
-            .ok_or_else(|| n0_error::anyerr!("the broadcast is not served by a direct session"))?;
+        let subscription = live.subscribe(&ticket).await?;
+        let remote = live.remote_broadcast(&subscription);
         println!("connected!");
 
         // Wait for a readable catalog, so a bad publisher gives an error and
@@ -162,10 +156,10 @@ mod app {
         let player = remote.play(iroh_live_media::PlayerConfig::default())?;
 
         if opts.fb {
-            watch::run_drm(player, session).await?;
+            watch::run_drm(player).await?;
         } else {
             #[cfg(feature = "windowed")]
-            watch::run_windowed(player, session, opts.fullscreen)?;
+            watch::run_windowed(player, opts.fullscreen)?;
             #[cfg(not(feature = "windowed"))]
             return Err(n0_error::anyerr!(
                 "this build has no windowed mode: use --fb, or build with --features windowed"

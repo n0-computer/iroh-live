@@ -74,8 +74,10 @@ Subscribe and read decoded frames:
 use iroh_live::PlayerConfig;
 
 let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
-let remote = live.subscribe(&ticket).await?;
-let player = remote.play(PlayerConfig::default())?;
+let subscription = live.subscribe(&ticket).await?;
+let player = live
+    .remote_broadcast(&subscription)
+    .play(PlayerConfig::default())?;
 
 let mut frames = player.video();
 while let Some(frame) = frames.next().await {
@@ -96,7 +98,7 @@ downstream, copy the `[patch.crates-io]` block from [Cargo.toml](Cargo.toml).
 
 | Crate | Description |
 |---|---|
-| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, `Call`, and re-exports of the crates below |
+| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, and re-exports of the crates below |
 | [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, grants, and endpoint setup |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |

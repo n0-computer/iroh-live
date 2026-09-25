@@ -103,11 +103,9 @@ serving link with its sample.
 In `iroh_live`: `Live::publish(name, broadcast)` publishes at
 `live/<endpoint id>/<name>` to everyone, and `Live::ticket(name)` is the
 `BroadcastTicket` for that path. `Live::subscribe(&ticket)` resolves the
-ticket and returns a `RemoteBroadcast` without waiting for the catalog.
-`Live::remote_broadcast` wraps a `Subscription` from a room or from
-`Moq::subscribe` the same way. `iroh_live::grant` is the grant a live node
-gives its peers. `iroh_live::Error` is `Transport(iroh_moq::Error)` or
-`Media(iroh_live_media::Error)`.
+ticket to a `Subscription`, and `Live::remote_broadcast` reads the media of
+any `Subscription`, from a ticket, a room or `Moq::subscribe`.
+`iroh_live::grant` is the grant a live node gives its peers.
 
 ## Threading
 

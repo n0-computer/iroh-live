@@ -4,19 +4,20 @@
 //! speaker. The codecs and the transport are real.
 
 use std::{
+    collections::BTreeSet,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
-use iroh_live::{BroadcastTicket, CALL, Call, Live};
+use iroh::{Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets};
+use iroh_live::{Audience, BroadcastTicket, CALL, Live, Publication, Reach, Subscription};
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, NetworkSample, Player,
     PlayerConfig, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
     video::{Rate, Size, decode},
 };
 use n0_tracing_test::traced_test;
-use n0_watcher::Watcher as _;
+use n0_watcher::{Watchable, Watcher as _};
 use tracing::{Instrument, info_span};
 
 /// Generous, because tests run in parallel and openh264 encodes in software.
@@ -43,9 +44,11 @@ fn publish(live: &Live, name: &str) -> LocalBroadcast {
 
 /// Subscribes `live` to the broadcast `publisher` publishes as `name`.
 async fn subscribe(live: &Live, publisher: &Live, name: &str) -> RemoteBroadcast {
-    live.subscribe(&BroadcastTicket::new(publisher.endpoint().id(), name))
+    let subscription = live
+        .subscribe(&BroadcastTicket::new(publisher.endpoint().id(), name))
         .await
-        .expect("failed to subscribe")
+        .expect("failed to subscribe");
+    live.remote_broadcast(&subscription)
 }
 
 /// Sets a generated pattern of `size` on `broadcast`, as one rendition.
@@ -80,8 +83,9 @@ async fn publish_subscribe_video() {
 
     let subscriber = async move {
         let live = Live::builder(endpoint().await).spawn();
-        let remote = live.subscribe(&ticket).await.expect("failed to subscribe");
-        let player = remote
+        let subscription = live.subscribe(&ticket).await.expect("failed to subscribe");
+        let player = live
+            .remote_broadcast(&subscription)
             .play(PlayerConfig::default())
             .expect("failed to play");
         let mut frames = player.video();
@@ -117,27 +121,100 @@ async fn publish_subscribe_video() {
     subscriber.shutdown().await;
 }
 
-/// Each side of a call reads the other's picture over the session one dialed.
+/// Waits until `updates` announces `peer`'s `call` path (`active`) or retracts it.
+async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active: bool) {
+    let path = BroadcastTicket::new(peer.endpoint().id(), CALL).path();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let update = updates.next().await.expect("the route table closed");
+            if update.prefix == path && update.kind.is_active() == active {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the ring never turned {active}"));
+}
+
+/// Offers `side` as `live`'s call side to `peer` only.
+fn offer(
+    live: &Live,
+    side: &LocalBroadcast,
+    peer: &Live,
+) -> (Publication, Watchable<BTreeSet<EndpointId>>) {
+    let audience = Watchable::new(BTreeSet::from([peer.endpoint().id()]));
+    let publication = live
+        .moq()
+        .publish(
+            live.ticket(CALL).path(),
+            side,
+            Audience::Peers(audience.watch()),
+        )
+        .expect("failed to offer");
+    (publication, audience)
+}
+
+/// Subscribes `live` to `peer`'s call side.
+async fn answer(live: &Live, peer: &Live) -> Subscription {
+    let path = BroadcastTicket::new(peer.endpoint().id(), CALL).path();
+    tokio::time::timeout(
+        TIMEOUT,
+        live.moq()
+            .subscribe(path, Reach::Direct(peer.endpoint().id())),
+    )
+    .await
+    .expect("timed out reaching the other side")
+    .expect("failed to reach the other side")
+}
+
+/// The call convention: an offer rings, the answer plays, and a hang-up ends it.
+///
+/// The session stays open, so a second call over it rings again.
 #[tokio::test]
 #[traced_test]
-async fn a_call_reads_the_other_side() {
+async fn a_call_rings_answers_and_hangs_up() {
     let alice = Live::builder(endpoint().await).with_router().spawn();
     let bob = Live::builder(endpoint().await).with_router().spawn();
-    let _alice_side = publish(&alice, CALL);
-    let bob_side = publish(&bob, CALL);
+    let (alice_side, bob_side) = (LocalBroadcast::new(), LocalBroadcast::new());
+    set_pattern(&alice_side, Size::new(320, 240));
     set_pattern(&bob_side, Size::new(320, 240));
+    let mut bob_table = bob.moq().origin().announced();
 
-    let call = Call::dial(&alice, bob.endpoint().id())
+    for _ in 0..2 {
+        let alice_offer = offer(&alice, &alice_side, &bob);
+        let dialing = tokio::spawn({
+            let (alice, bob) = (alice.clone(), bob.clone());
+            async move { answer(&alice, &bob).await }
+        });
+        ringing(&mut bob_table, &alice, true).await;
+        let bob_offer = offer(&bob, &bob_side, &alice);
+        let at_bob = answer(&bob, &alice).await;
+        let at_alice = dialing.await.expect("the dial panicked");
+        let player = bob
+            .remote_broadcast(&at_bob)
+            .play(PlayerConfig::default())
+            .expect("failed to play");
+        first_frame(&player).await;
+
+        // Alice hangs up: Bob's read ends and the ring stops.
+        alice_offer.0.unpublish();
+        tokio::time::timeout(TIMEOUT, async {
+            while !at_bob.as_moq().is_closed() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
         .await
-        .expect("failed to dial");
-    assert_eq!(call.session().remote_id(), bob.endpoint().id());
-    let player = call
-        .remote()
-        .play(PlayerConfig::default())
-        .expect("failed to play");
-    first_frame(&player).await;
+        .expect("bob did not notice the hang-up");
+        ringing(&mut bob_table, &alice, false).await;
+        bob_offer.0.unpublish();
+        drop((at_alice, player));
+    }
+    assert_eq!(
+        alice.moq().sessions().get().len(),
+        1,
+        "the session was replaced"
+    );
 
-    call.close();
     alice.shutdown().await;
     bob.shutdown().await;
 }

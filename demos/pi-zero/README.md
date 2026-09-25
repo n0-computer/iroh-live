@@ -29,8 +29,7 @@ ticket. `--epaper` also draws the ticket as a QR code on the HAT. `--relay`
 opens a session to a relay as well, and the relay serves the broadcast to
 viewers that cannot reach the Pi, browsers included.
 
-`watch` subscribes and renders. It needs a direct session to the publisher.
-Without `--fb` it opens a window through glutin and winit, which needs the
+`watch` subscribes and renders. Without `--fb` it opens a window through glutin and winit, which needs the
 `windowed` feature (on by default). With `--fb` it renders through DRM/KMS,
 GBM, and EGL straight to HDMI, with no window system. `--endpoint-id` plus
 `--name` works in place of a ticket.

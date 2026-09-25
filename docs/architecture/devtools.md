@@ -72,7 +72,6 @@ needed, but the codecs are real.
 
 - `publish_subscribe_video` checks five frames for a non-zero size and
   non-decreasing timestamps.
-- `a_call_reads_the_other_side` dials a `Call` and plays the other side.
 - `publish_subscribe_audio` plays into `AudioOutput::null()` and waits for the
   player's stats to count decoded audio.
 - `adaptive_rendition_switching` replaces the network signals with a closure

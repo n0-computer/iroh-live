@@ -10,19 +10,17 @@ implements moq-net's `Consume<broadcast::Consumer>`, and returns an
 
 ## Joining
 
-`Rooms` owns the gossip instance. Create it on the node's `Moq` before the
+`Rooms` owns the gossip instance. Create it on the builder's `Moq` before the
 router, so that the router can mount it. The node's grant must let members
 publish under `iroh_live_rooms::publish_scope(member)`.
 `iroh_live::moq_config()` does that when `iroh-live` has the `rooms` feature:
 
 ```rust
-use iroh_live::{Live, Moq, rooms::{RoomTicket, Rooms}};
+use iroh_live::{Live, rooms::{RoomTicket, Rooms}};
 
-let moq = Moq::new(endpoint.clone(), iroh_live::moq_config());
-let rooms = Rooms::new(&moq);
-let live = Live::builder(endpoint)
-    .with_moq(moq)
-    .with_router()
+let builder = Live::builder(endpoint).with_router();
+let rooms = Rooms::new(builder.moq());
+let live = builder
     .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())
     .spawn();
 

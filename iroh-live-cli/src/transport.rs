@@ -46,11 +46,9 @@ pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Li
 #[cfg(feature = "render")]
 pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
     let endpoint = EndpointOptions::from_env()?.bind().await?;
-    let moq = iroh_live::Moq::new(endpoint.clone(), iroh_live::moq_config());
-    let rooms = iroh_live::rooms::Rooms::new(&moq);
-    let live = Live::builder(endpoint)
-        .with_moq(moq)
-        .with_router()
+    let builder = Live::builder(endpoint).with_router();
+    let rooms = iroh_live::rooms::Rooms::new(builder.moq());
+    let live = builder
         .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())
         .spawn();
     Ok((live, rooms))
@@ -124,8 +122,10 @@ impl Subscribed {
 
     /// Closes the session that served the broadcast.
     ///
-    /// The session is shared with everything else open to the same peer, so a
-    /// room tile must not call this: the member's chat uses the same session.
+    /// The session is shared with everything else open to the same peer, so
+    /// only a command that reads nothing else from the peer calls this. A room
+    /// tile or a call must not: other tiles, the chat or the next call use the
+    /// same session.
     pub fn close(&self) {
         if let Some(session) = self.session() {
             session.close("stopped watching");
@@ -140,10 +140,7 @@ impl Subscribed {
 pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscribed> {
     println!("connecting to {ticket} ...");
     let mut subscribing = std::pin::pin!(async {
-        let subscription = live
-            .moq()
-            .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
-            .await?;
+        let subscription = live.subscribe(ticket).await?;
         n0_error::Ok(Subscribed::open(live, subscription))
     });
 

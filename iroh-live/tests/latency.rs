@@ -139,10 +139,11 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
 
     let subscriber = Live::builder(endpoint().await).spawn();
     let subscribed_at = Instant::now();
-    let remote = subscriber
+    let subscription = subscriber
         .subscribe(&ticket)
         .await
         .expect("failed to subscribe");
+    let remote = subscriber.remote_broadcast(&subscription);
     let config = PlayerConfig {
         latency,
         decoder: decode::Kind::Software,

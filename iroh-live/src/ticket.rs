@@ -11,6 +11,13 @@ use iroh_tickets::ParseError;
 use moq_net::{Path, PathOwned};
 use serde::{Deserialize, Serialize};
 
+/// The broadcast name of a call, as `irl call` and the Android demo use it.
+///
+/// Each side publishes `live/<its id>/call` to the other peer only, and
+/// subscribes to the other's. A node learns it is called when a peer's `call`
+/// path appears in its route table.
+pub const CALL: &str = "call";
+
 /// URI scheme prefix of a broadcast ticket.
 const SCHEME: &str = "iroh-live:";
 
@@ -62,6 +69,17 @@ impl BroadcastTicket {
     /// Returns the path the broadcast is published at: `live/<peer>/<name>`.
     pub fn path(&self) -> PathOwned {
         Path::new(&format!("live/{}/{}", self.peer, self.name)).to_owned()
+    }
+
+    /// Returns the ticket of the broadcast at `path`, if it is a `live/<peer>/<name>` path.
+    pub fn from_path(path: &str) -> Option<Self> {
+        let mut parts = path.split('/');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some("live"), Some(peer), Some(name), None) if !name.is_empty() => {
+                Some(Self::new(peer.parse().ok()?, name))
+            }
+            _ => None,
+        }
     }
 
     fn parse_uri(rest: &str) -> Result<Self, ParseError> {
@@ -174,5 +192,18 @@ mod tests {
         let peer = test_endpoint_id();
         let ticket = BroadcastTicket::new(peer, "cam");
         assert_eq!(ticket.path().as_str(), format!("live/{peer}/cam"));
+        assert_eq!(
+            BroadcastTicket::from_path(ticket.path().as_str()),
+            Some(ticket)
+        );
+        assert_eq!(
+            BroadcastTicket::from_path(&format!("live/{peer}/cam/hd")),
+            None
+        );
+        assert_eq!(
+            BroadcastTicket::from_path(&format!("rooms/{peer}/cam")),
+            None
+        );
+        assert_eq!(BroadcastTicket::from_path("live/nobody/cam"), None);
     }
 }

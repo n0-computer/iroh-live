@@ -37,9 +37,9 @@ which matters on the Pi demo's small e-paper panel.
 ## Call tickets
 
 A call uses a `BroadcastTicket` named `call` (`iroh_live::CALL`). `irl call`
-and the Android demo each publish their side under that name and subscribe to
-the other's over the session between them. `iroh_live::Call` does the
-subscribing.
+and the Android demo each offer their side under that name to the other peer
+only, and subscribe to the other's. A peer's `call` path appearing in the route
+table is the ring.
 
 ## RoomTicket
 

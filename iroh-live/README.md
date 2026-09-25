@@ -34,8 +34,10 @@ On the other side, subscribe and play:
 ```rust
 use iroh_live::PlayerConfig;
 
-let remote = live.subscribe(&ticket).await?;
-let player = remote.play(PlayerConfig::default())?;
+let subscription = live.subscribe(&ticket).await?;
+let player = live
+    .remote_broadcast(&subscription)
+    .play(PlayerConfig::default())?;
 let mut frames = player.video();
 ```
 
@@ -50,16 +52,15 @@ let mut frames = player.video();
   for another audience, go through `live.moq()`.
 - `BroadcastTicket` names a node and a broadcast. `Live::ticket(name)` returns
   the ticket for one of this node's broadcasts.
-- `Live::subscribe(&ticket)` returns a `RemoteBroadcast` once a route is found,
-  without waiting for the catalog. The broadcast follows its path through the
-  route table, so a change of route is a switch, not an end. Its players adapt
-  to the link that serves it. `RemoteBroadcast::closed()` resolves about three
-  seconds after the publisher ends the broadcast.
-- `Live::remote_broadcast` wraps a `Subscription` from a room or from
-  `Moq::subscribe` the same way.
-- `Call` is a one-to-one call. Each side publishes its own broadcast under the
-  name `CALL`, at `live/<its id>/call`. `Call::dial` and `Call::accept` then
-  subscribe to the peer's side over the session between them.
+- `Live::subscribe(&ticket)` returns the `Subscription` once a route is found.
+- `Live::remote_broadcast(&subscription)` reads its media without waiting for
+  the catalog, for a subscription from a ticket, a room or `Moq::subscribe`.
+  The broadcast follows its path through the route table, so a change of route
+  is a switch, not an end. Its players adapt to the link that serves it.
+  `RemoteBroadcast::closed()` resolves about three seconds after the publisher
+  ends the broadcast.
+- `CALL` is the broadcast name of the call convention `irl call` and the
+  Android demo share.
 - `grant` is the grant a live node gives each peer: subscribe to anything,
   publish only under the peer's own id. `moq_config` is the `MoqConfig` that
   uses it.

@@ -11,12 +11,14 @@
 mod logcat;
 
 use std::{
+    collections::BTreeSet,
     ffi::c_void,
     sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
 };
 
-use iroh_live::{BroadcastTicket, CALL, Call, EndpointOptions, Live, Session, Subscription};
+use iroh::EndpointId;
+use iroh_live::{Audience, BroadcastTicket, CALL, EndpointOptions, Live, Publication, Reach};
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Catalog, LocalBroadcast, MicrophoneConfig, Player,
     PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFrames, VideoRendition,
@@ -106,17 +108,36 @@ async fn bind_live() -> Result<Live> {
     Ok(Live::builder(options.bind().await?).with_router().spawn())
 }
 
-/// How long an incoming session has to announce its side of a call.
+/// This node's side of a call, offered to one peer while held.
 ///
-/// A caller announces right after the session opens. A plain subscriber never
-/// does, and without a limit it would block answering until it disconnects.
-const CALLER_TIMEOUT: Duration = Duration::from_secs(10);
+/// The peer sees the offer in its route table, which is how it learns it is
+/// called, as `irl call` does.
+struct Offer {
+    _publication: Publication,
+    /// The one peer the side is offered to. Dropping it offers to nobody.
+    _audience: n0_watcher::Watchable<BTreeSet<EndpointId>>,
+}
 
-/// Publishes a fresh broadcast as `name` to everyone.
-fn publish(live: &Live, name: &str) -> Result<LocalBroadcast> {
-    let local = LocalBroadcast::new();
-    live.publish(name, &local)?;
-    Ok(local)
+impl Offer {
+    fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
+        let audience = n0_watcher::Watchable::new(BTreeSet::from([peer]));
+        let publication = live.moq().publish(
+            live.ticket(CALL).path(),
+            broadcast,
+            Audience::Peers(audience.watch()),
+        )?;
+        Ok(Self {
+            _publication: publication,
+            _audience: audience,
+        })
+    }
+}
+
+/// Subscribes to `peer`'s side of a call and plays it.
+async fn play_call(live: &Live, peer: EndpointId, output: &AudioOutput) -> Result<Player> {
+    let path = BroadcastTicket::new(peer, CALL).path();
+    let subscription = live.moq().subscribe(path, Reach::Direct(peer)).await?;
+    play(&live.remote_broadcast(&subscription), output)
 }
 
 /// The state behind the `jlong` handle Kotlin holds.
@@ -126,10 +147,8 @@ fn publish(live: &Live, name: &str) -> Result<LocalBroadcast> {
 struct SessionHandle {
     /// The endpoint and transport. `None` for the offline pipelines.
     live: Option<Live>,
-    /// A subscribe-only session, from `connect`. The overlay reads its RTT.
-    subscription: Option<Subscription>,
-    /// A two-way call, from `dial`. Owns its session and the peer's broadcast.
-    call: Option<Call>,
+    /// This node's side of a call, once the call is up.
+    offer: Option<Offer>,
     /// Playback of the watched broadcast. Dropping it stops decoding and audio.
     player: Option<Player>,
     /// The speaker, which is also the microphone's echo reference.
@@ -158,10 +177,7 @@ struct SessionHandle {
     ///
     /// Dropping the handle aborts it, so the wait ends with its screen.
     waiting: Option<AbortOnDropHandle<()>>,
-    /// Set by `disconnect`.
-    ///
-    /// A call answered during teardown sees this and closes itself, since
-    /// nothing would close it later.
+    /// Set by `disconnect`, so a call answered during teardown is not installed.
     closing: bool,
     cam_frames_pushed: u64,
     dec_frames_rendered: u64,
@@ -175,8 +191,7 @@ impl SessionHandle {
     fn new() -> Self {
         Self {
             live: None,
-            subscription: None,
-            call: None,
+            offer: None,
             player: None,
             output: None,
             broadcast: None,
@@ -197,12 +212,9 @@ impl SessionHandle {
         Arc::new(Mutex::new(self))
     }
 
-    /// Returns the round-trip time on the serving link, once measured.
+    /// Returns the round-trip time on the link the player reads, once measured.
     fn rtt(&self) -> Option<Duration> {
-        if let Some(serving) = self.subscription.as_ref().and_then(Subscription::link) {
-            return serving.sample.rtt;
-        }
-        self.call.as_ref()?.session().link().rtt
+        self.player.as_ref()?.stats().network?.rtt
     }
 
     /// Returns the timestamp for the next camera frame, counted from session start.
@@ -336,10 +348,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     let live = bind_live().await?;
     info!(broadcast = %ticket.name(), "connecting to broadcast");
 
-    let subscription = live
-        .moq()
-        .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
-        .await?;
+    let subscription = live.subscribe(&ticket).await?;
     info!("subscribed");
 
     // The player waits for the catalog on its own, so the handle is usable
@@ -352,7 +361,6 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     session.frames = Some(player.video());
     session.player = Some(player);
     session.output = Some(output);
-    session.subscription = Some(subscription);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
 }
@@ -391,14 +399,13 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     let output = open_output().await;
-    let broadcast = publish(&live, CALL)?;
+    let broadcast = LocalBroadcast::new();
     let (camera, _preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
-    let call = Call::dial(&live, ticket.peer()).await?;
-    info!(remote = %call.session().remote_id().fmt_short(), "call connected");
-
-    let player = play(call.remote(), &output)?;
+    let offer = Offer::new(&live, &broadcast, ticket.peer())?;
+    let player = play_call(&live, ticket.peer(), &output).await?;
+    info!(remote = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();
     session.frames = Some(player.video());
@@ -406,12 +413,12 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.output = Some(output);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    session.call = Some(call);
+    session.offer = Some(offer);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
 }
 
-/// Publishes this node's side of a call and waits for a peer to dial it.
+/// Opens this node's side of a call and waits for a peer to call.
 ///
 /// Returns a session handle at once, so the screen can show the ticket. A
 /// task on the handle waits for the caller, and
@@ -443,7 +450,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // Start the camera now, so the preview runs while the ticket is on screen
     // and the peer's first frame does not wait for the device to open.
     let output = open_output().await;
-    let broadcast = publish(&live, CALL)?;
+    let broadcast = LocalBroadcast::new();
     let (camera, preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
@@ -452,7 +459,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.output = Some(output.clone());
     session.camera = Some(camera);
     session.ticket = Some(live.ticket(CALL).to_string());
-    session.broadcast = Some(broadcast);
+    session.broadcast = Some(broadcast.clone());
     session.live = Some(live.clone());
     let shared = session.into_shared();
 
@@ -461,7 +468,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // owns the task through `waiting`, so dropping the last `Arc` aborts it.
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
-        if let Err(err) = accept_one(live, output, waiting).await {
+        if let Err(err) = accept_one(live, broadcast, output, waiting).await {
             error!("answering failed: {err:#}");
         }
     });
@@ -470,73 +477,45 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     Ok(handle::to_i64(shared))
 }
 
-/// Accepts the first peer that calls and installs a player for it on `session`.
+/// Answers the first peer that calls and installs a player for it on `session`.
 ///
-/// Only inbound sessions can be callers, so sessions this node dialed are
-/// skipped.
+/// A caller offers `live/<its id>/call` to this node only, so the first such
+/// path in the route table is the call.
 async fn accept_one(
     live: Live,
+    broadcast: LocalBroadcast,
     output: AudioOutput,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
-    let mut sessions = live.moq().sessions();
-    let mut seen: Vec<Session> = Vec::new();
-    loop {
-        let current = sessions.get();
-        let arrived: Vec<Session> = current
-            .iter()
-            .filter(|moq| !moq.dialed() && !seen.contains(moq))
-            .cloned()
-            .collect();
-        seen = current;
-        if arrived.is_empty() {
-            if sessions.updated().await.is_err() {
-                return Ok(());
-            }
-            continue;
+    let me = live.endpoint().id();
+    let mut updates = live.moq().origin().announced();
+    let peer = loop {
+        let Some(update) = updates.next().await else {
+            return Ok(());
+        };
+        let caller = BroadcastTicket::from_path(update.prefix.as_str())
+            .filter(|ticket| update.kind.is_active() && ticket.name() == CALL);
+        if let Some(ticket) = caller.filter(|ticket| ticket.peer() != me) {
+            break ticket.peer();
         }
-        let Some(moq) = arrived.into_iter().next() else {
-            continue;
-        };
-        let remote_id = moq.remote_id();
-        info!(remote = %remote_id.fmt_short(), "incoming session");
-        // A plain subscriber never publishes a call, so a failure here is
-        // normal. Keep listening.
-        let call = match tokio::time::timeout(CALLER_TIMEOUT, Call::accept(&live, moq)).await {
-            Ok(Ok(call)) => call,
-            Ok(Err(err)) => {
-                info!(remote = %remote_id.fmt_short(), error = %err, "not a caller");
-                continue;
-            }
-            Err(_) => {
-                info!(remote = %remote_id.fmt_short(), "not a caller: announced no call in time");
-                continue;
-            }
-        };
-        info!(remote = %call.session().remote_id().fmt_short(), "call answered");
-        let player = play(call.remote(), &output)?;
+    };
+    info!(remote = %peer.fmt_short(), "answering");
+    let offer = Offer::new(&live, &broadcast, peer)?;
+    let player = play_call(&live, peer, &output).await?;
+    info!(remote = %peer.fmt_short(), "call answered");
 
-        let Some(session) = session.upgrade() else {
-            // The screen is gone. Closing the call tells the peer, while a drop
-            // would leave them waiting for a timeout.
-            call.close();
-            return Ok(());
-        };
-        let mut held = session.lock().expect("poisoned");
-        if held.closing {
-            // `disconnect` already took the fields, so nothing would close this
-            // call later.
-            drop(held);
-            drop(player);
-            call.close();
-            return Ok(());
-        }
-        // Replace the local preview with the peer's video.
-        held.frames = Some(player.video());
-        held.player = Some(player);
-        held.call = Some(call);
+    let Some(session) = session.upgrade() else {
+        return Ok(());
+    };
+    let mut held = session.lock().expect("poisoned");
+    if held.closing {
         return Ok(());
     }
+    // Replace the local preview with the peer's video.
+    held.frames = Some(player.video());
+    held.player = Some(player);
+    held.offer = Some(offer);
+    Ok(())
 }
 
 /// Returns whether an answered call has a peer yet.
@@ -550,7 +529,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
         return 0;
     }
     let session = unsafe { borrow_handle(handle) };
-    let connected = session.lock().expect("poisoned").call.is_some();
+    let connected = session.lock().expect("poisoned").offer.is_some();
     jboolean::from(connected)
 }
 
@@ -1201,15 +1180,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     let session = unsafe { take_handle(handle) };
     // Release the lock before `block_on`. Holding it would stall every other
     // JNI call on this handle until the endpoint closes.
-    let (waiting, player, call, subscription, broadcast, live) = match session.lock() {
+    let (waiting, player, offer, broadcast, live) = match session.lock() {
         Ok(mut guard) => (
             {
                 guard.closing = true;
                 guard.waiting.take()
             },
             guard.player.take(),
-            guard.call.take(),
-            guard.subscription.take(),
+            guard.offer.take(),
             guard.broadcast.take(),
             guard.live.take(),
         ),
@@ -1222,12 +1200,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         // Stop waiting for a caller first, so none is accepted during shutdown.
         drop(waiting);
         drop(player);
-        if let Some(call) = call {
-            // Closing tells the peer. A drop would leave them waiting for a
-            // timeout.
-            call.close();
-        }
-        drop(subscription);
+        drop(offer);
         if let Some(broadcast) = broadcast {
             // Let the encoders finish, so subscribers see the broadcast end.
             broadcast.close();
