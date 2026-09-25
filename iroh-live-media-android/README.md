@@ -1,8 +1,9 @@
 # iroh-live-media-android
 
-Android support for [`iroh-live-media`](../iroh-live-media): an EGL renderer and
-JNI handle helpers. The [Android demo](../demos/android/) uses
-it, and any Android Rust project can use it too.
+Android helpers for iroh-live apps: an EGL renderer for NV12 frames and
+`AHardwareBuffer`s, and JNI handle helpers. The
+[Android demo](../demos/android/) uses it, and any Android Rust project can use
+it too.
 
 Hardware H.264 through MediaCodec lives in `moq-video` behind
 `cfg(target_os = "android")`, and backend selection picks it up on its own. The

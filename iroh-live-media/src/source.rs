@@ -429,8 +429,9 @@ impl Drop for AudioInner {
 
 /// A raw audio source.
 ///
-/// Runs while any clone exists. Cheap to clone. Every broadcast it feeds reads
-/// all of its samples.
+/// Runs while any clone exists, until its input ends: a file that does not
+/// loop, or a push source whose senders are gone. Cheap to clone. Every
+/// broadcast it feeds reads all of its samples.
 #[derive(Debug, Clone)]
 pub struct AudioSource {
     inner: Arc<AudioInner>,
@@ -588,10 +589,11 @@ impl AudioSource {
 
     /// Returns a source fed by the returned sender.
     ///
-    /// Frames carry interleaved 32-bit float samples in `format`. A broadcast
-    /// that falls more than a few seconds behind loses the oldest frames and
-    /// counts them in its stats. The sender's demand is true while a broadcast
-    /// publishes the source.
+    /// The source ends when every sender is dropped. Frames carry interleaved
+    /// 32-bit float samples in `format`. A broadcast that falls more than a
+    /// few seconds behind loses the oldest frames and counts them in its
+    /// stats. The sender's demand is true while a broadcast publishes the
+    /// source.
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();

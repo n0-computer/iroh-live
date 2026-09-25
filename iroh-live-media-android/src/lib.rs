@@ -1,4 +1,4 @@
-//! Android support for iroh-live-media: an EGL renderer and JNI handle helpers.
+//! Android helpers for iroh-live apps: an EGL renderer and JNI handle helpers.
 //!
 //! Hardware H.264 through MediaCodec lives in `moq-video`. This crate holds the
 //! other pieces an Android app needs:

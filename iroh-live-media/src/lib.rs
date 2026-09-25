@@ -62,10 +62,9 @@
 //! [`LocalBroadcast::status`].
 //!
 //! A [`RemoteBroadcast`] that follows a route table looks for another route
-//! when its broadcast ends, so it closes about three seconds after the
-//! publisher went. A player adapts only to the network signals a transport
-//! attached. Without them, [`RenditionMode::Auto`] plays the best rendition
-//! its limits allow.
+//! when its broadcast ends. A player adapts only to the network signals a
+//! transport attached. Without them, [`RenditionMode::Auto`] plays the best
+//! rendition its limits allow.
 //!
 //! # Cancellation safety
 //!
