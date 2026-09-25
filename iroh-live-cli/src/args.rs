@@ -54,7 +54,10 @@ pub const DEFAULT_VIDEO: &str = "cam";
 pub const DEFAULT_AUDIO: &str = "mic";
 
 /// What to capture and how to encode it.
-#[derive(Args, Debug, Clone)]
+///
+/// A `[[send]]` block of `irl run` takes the same keys.
+#[derive(Args, Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct CaptureArgs {
     /// Video source.
     ///
@@ -83,6 +86,7 @@ pub struct CaptureArgs {
 
     /// Encoder backend. A named backend has no fallback.
     #[arg(long, value_parser = Backend::encoder_parser(), default_value = "auto")]
+    #[serde(deserialize_with = "Backend::deserialize_encoder")]
     pub encoder: Backend,
 
     /// Simulcast ladder, comma-separated. Default: one unscaled rendition.
@@ -138,7 +142,7 @@ pub struct CaptureArgs {
 }
 
 impl Default for CaptureArgs {
-    /// Returns the defaults clap applies, for `irl run` session files.
+    /// Returns the defaults clap applies.
     fn default() -> Self {
         Self {
             video: DEFAULT_VIDEO.to_string(),

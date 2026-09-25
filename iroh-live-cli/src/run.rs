@@ -13,13 +13,12 @@ use iroh_live::{
     secret_key_file,
 };
 use n0_error::{Result, anyerr};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use tokio::{sync::watch, task::JoinSet};
 use tracing::{info, warn};
 
 use crate::{
-    args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
-    backend::Backend,
+    args::{CaptureArgs, RunArgs},
     record::RecordOptions,
     source,
     transport::{self, Subscribed},
@@ -56,82 +55,27 @@ pub struct RunConfig {
     pub recv: Vec<RecvConfig>,
 }
 
-/// One broadcast to publish.
+/// One broadcast to publish: `name` plus the `irl publish` capture flags.
 ///
-/// Every field but `name` matches the `irl publish` flag of that name and
-/// defaults the same way.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Hand-deserialized, since `#[serde(flatten)]` cannot reject unknown keys.
+#[derive(Debug)]
 pub struct SendConfig {
-    /// Broadcast path, also used as the label in output.
+    /// The broadcast name, also the label in output.
     pub name: String,
-
-    /// Video source, as for `--video`. `file:` sources need `irl publish`.
-    #[serde(default = "default_video")]
-    pub video: String,
-
-    /// Audio source, as for `--audio`.
-    #[serde(default = "default_audio")]
-    pub audio: String,
-
-    /// Video codec: `h264` or `h265`.
-    #[serde(default)]
-    pub codec: VideoCodecArg,
-
-    /// Encoder: `auto`, `hardware`, `software`, or a backend such as `vaapi`.
-    #[serde(default, deserialize_with = "Backend::deserialize_encoder")]
-    pub encoder: Backend,
-
-    /// Simulcast ladder, one entry per rung, as for `--renditions`.
-    ///
-    /// Empty publishes one unscaled rendition named `video`.
-    #[serde(default)]
-    pub renditions: Vec<String>,
-
-    /// Target video bitrate for the largest rung, in bits per second.
-    pub bitrate: Option<u64>,
-
-    /// Requested capture width.
-    pub width: Option<u32>,
-
-    /// Requested capture height.
-    pub height: Option<u32>,
-
-    /// Requested capture frame rate. Overrides the ladder's `@<fps>`.
-    ///
-    /// Default: 30, or the highest rate a rung asks for.
-    pub fps: Option<u32>,
-
-    /// Hide the mouse cursor in screen, window, and application capture.
-    #[serde(default)]
-    pub no_cursor: bool,
-
-    /// Audio codec: `opus` or `pcm`.
-    #[serde(default)]
-    pub audio_codec: AudioCodecArg,
-
-    /// Target audio bitrate in bits per second. Opus only.
-    pub audio_bitrate: Option<u32>,
+    /// The capture and encoding flags. `file:` sources need `irl publish`.
+    pub capture: CaptureArgs,
 }
 
-impl SendConfig {
-    /// Returns the capture flags for this block.
-    fn capture(&self) -> CaptureArgs {
-        CaptureArgs {
-            video: self.video.clone(),
-            audio: self.audio.clone(),
-            codec: self.codec,
-            encoder: self.encoder,
-            renditions: self.renditions.clone(),
-            bitrate: self.bitrate,
-            width: self.width,
-            height: self.height,
-            fps: self.fps,
-            no_cursor: self.no_cursor,
-            audio_codec: self.audio_codec,
-            audio_bitrate: self.audio_bitrate,
-            ..CaptureArgs::default()
-        }
+impl<'de> Deserialize<'de> for SendConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut table = toml::Table::deserialize(deserializer)?;
+        let name = table
+            .remove("name")
+            .ok_or_else(|| de::Error::missing_field("name"))?
+            .try_into()
+            .map_err(de::Error::custom)?;
+        let capture = table.try_into().map_err(de::Error::custom)?;
+        Ok(Self { name, capture })
     }
 }
 
@@ -167,16 +111,6 @@ pub struct RecvConfig {
 
     /// The only video rendition to record. Needs `record`.
     pub rendition: Option<String>,
-}
-
-/// Returns the `--video` default.
-fn default_video() -> String {
-    DEFAULT_VIDEO.to_string()
-}
-
-/// Returns the `--audio` default.
-fn default_audio() -> String {
-    DEFAULT_AUDIO.to_string()
 }
 
 /// Reads and validates the session file at `path`.
@@ -324,7 +258,7 @@ struct Receiver {
 /// Publishes one `[[send]]` block.
 async fn setup_send(live: &Live, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
     let broadcast = LocalBroadcast::new();
-    let sources = source::configure(&broadcast, &config.capture(), None).await?;
+    let sources = source::configure(&broadcast, &config.capture, None).await?;
     live.publish(&config.name, &broadcast)?;
     Ok((broadcast, sources))
 }
@@ -425,6 +359,10 @@ fn stored_secret_key(name: &str) -> Result<SecretKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        args::{AudioCodecArg, DEFAULT_AUDIO, DEFAULT_VIDEO, VideoCodecArg},
+        backend::Backend,
+    };
 
     #[test]
     fn a_send_block_takes_the_flag_defaults() {
@@ -435,7 +373,7 @@ mod tests {
             "#,
         )
         .expect("only `name` is required");
-        let send = &config.send[0];
+        let send = &config.send[0].capture;
         assert_eq!(send.video, DEFAULT_VIDEO);
         assert_eq!(send.audio, DEFAULT_AUDIO);
         assert_eq!(send.encoder, Backend::Auto);
@@ -462,7 +400,7 @@ mod tests {
             "#,
         )
         .expect("a full send block");
-        let capture = config.send[0].capture();
+        let capture = &config.send[0].capture;
         assert_eq!(capture.video, "screen");
         assert_eq!(capture.codec, VideoCodecArg::H265);
         assert_eq!(capture.encoder, Backend::Named("vaapi"));
