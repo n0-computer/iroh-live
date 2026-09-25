@@ -31,8 +31,7 @@
 //! # Cancellation safety
 //!
 //! [`run`] returns on ctrl-c, after closing its listeners. Dropping its future
-//! stops accepting, the cluster and the HTTP server, while accepted
-//! connections run on until they close.
+//! stops everything it started, accepted connections included.
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -49,7 +48,7 @@ use iroh_live::BroadcastTicket;
 use iroh_moq::{EndpointOptions, Mdns};
 use moq_relay::{Connection, cluster::Cluster};
 use moq_tokio::tls::Certificates;
-use tokio_util::task::AbortOnDropHandle;
+use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
 
@@ -185,6 +184,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
     let mut conn_id = 0u64;
+    let mut connections = JoinSet::new();
     loop {
         let request = tokio::select! {
             request = listener.accept() => match request {
@@ -195,6 +195,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
                 info!("interrupted, closing the listeners");
                 break;
             }
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
         };
         let transport = request.transport();
         // A name that parses as a ticket starts a pull.
@@ -203,14 +204,14 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
         let pull_state = pull_state.clone();
         let conn = Connection::new(request, cluster.clone(), auth.clone()).with_id(conn_id);
-        conn_id += 1;
-        tokio::spawn(async move {
+        connections.spawn(async move {
             // Held by the task, so it lives exactly as long as this connection.
             let _pull = name.and_then(|name| pull_for(pull_state, name));
             if let Err(err) = conn.run().await {
                 warn!(conn_id, %err, "connection closed");
             }
         });
+        conn_id += 1;
     }
 
     // Releases the listener's sockets before `run` returns.

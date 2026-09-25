@@ -28,9 +28,9 @@ pub(crate) const INCOMING_QUEUE: usize = 16;
 
 /// How long an incoming connection may take to open its MoQ session.
 ///
-/// Without it, a peer that never sends its setup holds a task for as long as
-/// the connection lives.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Without a bound, a peer that never sends its setup holds a task for as long
+/// as the connection lives.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long an incoming session waits for room in the admission queue.
 ///

@@ -74,7 +74,9 @@ pub mod transport;
 pub use moq_net as net;
 
 pub use self::{
-    admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
+    admission::{
+        Admission, ConnectOptions, Grant, GrantFn, HANDSHAKE_TIMEOUT, Incoming, SessionRequest,
+    },
     endpoint::{EndpointOptions, Mdns, MoqPreset, secret_key_file},
     error::Error,
     link::{LinkSample, ServingLink},

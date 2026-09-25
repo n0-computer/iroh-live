@@ -61,16 +61,22 @@ impl IrohSessions {
     /// Runs one session until it closes or the relay shuts down.
     async fn serve(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote = connection.remote_id();
-        let (transport, target) = iroh_moq::transport::accept(connection)
+        let opened = tokio::time::timeout(iroh_moq::HANDSHAKE_TIMEOUT, async {
+            let (transport, target) = iroh_moq::transport::accept(connection)
+                .await
+                .map_err(AcceptError::from_err)?;
+            let handshake = moq_net::Server::new()
+                .accept_request(
+                    tokio::time::Instant::now().into_std(),
+                    moq_tokio::transport::Session::new(transport),
+                )
+                .await
+                .map_err(AcceptError::from_err)?;
+            Ok::<_, AcceptError>((target, handshake))
+        });
+        let (target, handshake) = opened
             .await
-            .map_err(AcceptError::from_err)?;
-        let handshake = moq_net::Server::new()
-            .accept_request(
-                tokio::time::Instant::now().into_std(),
-                moq_tokio::transport::Session::new(transport),
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
+            .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))??;
         let path = target.unwrap_or_else(|| handshake.path().to_owned());
         let publish = self
             .cluster
