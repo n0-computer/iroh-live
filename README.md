@@ -30,11 +30,12 @@ irl watch <TICKET>
 Without a camera, `irl publish --test-source` publishes a generated pattern and
 a beeping tone.
 
-To reach subscribers that cannot dial this node, attach to a relay. The node
-redials the relay if the session drops, and the relay carries the broadcast on
-to everyone. Use a relay that keeps each publisher to its own paths, as
-`iroh-live-relay` does: on one where anyone may publish anywhere, a viewer can
-be served a forgery.
+To reach browsers, attach to a relay. The node redials the relay if the
+session drops. Browsers watch on the relay's page, and a Rust node reads
+through the relay by attaching to it as well (`Reach::Relays`); `irl watch`
+dials the publisher only. Use a relay that keeps each publisher to its own
+paths, as `iroh-live-relay` does: on one where anyone may publish anywhere, a
+viewer can be served a forgery.
 
 ```sh
 irl publish --relay <RELAY_ENDPOINT_ID>

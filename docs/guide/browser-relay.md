@@ -68,7 +68,9 @@ redials if the session drops. The broadcast appears on the relay at
 `live/<publisher endpoint id>/<name>`, and `irl publish` prints that path.
 
 The relay also serves a publish page, which publishes the browser's camera and
-microphone. Native clients subscribe to it like any other broadcast.
+microphone. A Rust node reads such a broadcast by attaching to the relay and
+subscribing with `Reach::Relays`, as `iroh-live/examples/subscribe_test.rs`
+does. `irl watch` cannot, since its tickets name a publisher, not a relay.
 
 Anyone may watch anything, but nobody may publish under another node's name.
 An iroh client may publish only at paths that contain its own endpoint id:
