@@ -78,8 +78,7 @@
 //!
 //! `capture`, `render` and `sound-server` are on by default. `playback`,
 //! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
-//! codecs to [`media`]. `rooms` re-exports `iroh-live-rooms`, and `auth`
-//! enables `Grant::from_claims`.
+//! codecs to [`media`]. `rooms` re-exports `iroh-live-rooms`.
 
 mod call;
 mod error;

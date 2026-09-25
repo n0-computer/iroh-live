@@ -72,25 +72,6 @@ impl Grant {
         }
     }
 
-    /// Returns the grant verified moq-auth claims describe.
-    ///
-    /// Roots every pattern at the claims' root. A pattern that cannot be
-    /// rooted, because root and pattern together exceed moq's path depth, is
-    /// dropped.
-    #[cfg(feature = "auth")]
-    pub fn from_claims(claims: &moq_auth::Claims) -> Self {
-        let root = |patterns: &Patterns| -> Patterns {
-            patterns
-                .iter()
-                .filter_map(|pattern| pattern.rooted(&claims.root).ok())
-                .collect()
-        };
-        Self {
-            subscribe: root(&claims.subscribe),
-            publish: root(&claims.publish),
-        }
-    }
-
     /// Reports whether the peer may subscribe to `path`.
     pub fn allows_subscribe(&self, path: &str) -> bool {
         self.subscribe.matches(path)
@@ -390,19 +371,5 @@ mod tests {
         assert!(scoped.allows_subscribe("live/x/cam"));
         assert!(!scoped.allows_subscribe("rooms/t/x/cam"));
         assert!(!scoped.allows_publish("live/x/cam"));
-    }
-
-    #[cfg(feature = "auth")]
-    #[test]
-    fn claims_are_rooted() {
-        let claims = moq_auth::Claims::default()
-            .with_root("rooms/topic")
-            .with_subscribe(["**".parse().expect("pattern")])
-            .with_publish(["alice/**".parse().expect("pattern")]);
-        let grant = Grant::from_claims(&claims);
-        assert!(grant.allows_subscribe("rooms/topic/bob/cam"));
-        assert!(!grant.allows_subscribe("rooms/other/bob/cam"));
-        assert!(grant.allows_publish("rooms/topic/alice/cam"));
-        assert!(!grant.allows_publish("rooms/topic/bob/cam"));
     }
 }

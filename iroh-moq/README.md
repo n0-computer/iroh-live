@@ -41,8 +41,6 @@ no peer can stand in for another.
 
 With `Admission::Manual`, incoming sessions wait in `Moq::accept` until the
 application admits or rejects them, for example after checking a token.
-`Grant::from_claims`, behind the `auth` feature, turns verified moq-auth claims
-into a grant.
 
 ## Relays
 

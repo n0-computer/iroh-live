@@ -4645,7 +4645,6 @@ dependencies = [
  "futures-lite",
  "iroh",
  "iroh-mdns-peer-lookup",
- "moq-auth",
  "moq-net",
  "moq-tokio",
  "n0-error",

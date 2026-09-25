@@ -73,8 +73,7 @@ let mut frames = player.video();
 All of these pass through to `iroh-live-media`.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
-`iroh_live::rooms`, and adds the room paths to `grant`. `auth` enables
-`Grant::from_claims`.
+`iroh_live::rooms`, and adds the room paths to `grant`.
 
 ## Examples
 

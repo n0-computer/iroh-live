@@ -47,8 +47,6 @@ workspace = true
 default = ["capture", "render", "sound-server"]
 # Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
-# `Grant::from_claims` over moq-auth tokens.
-auth = ["iroh-moq/auth"]
 # Camera, screen, and microphone capture.
 capture = ["iroh-live-media/capture"]
 # Speaker output.

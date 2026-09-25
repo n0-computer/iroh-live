@@ -15,9 +15,6 @@ derive_more = { version = "2.1.1", features = ["display", "debug"] }
 iroh = { workspace = true }
 # mDNS address lookup, for networks without internet access.
 iroh-mdns-peer-lookup = "0.1.2"
-# `Grant::from_claims`, behind `auth`: one token format for our nodes and moq
-# relays.
-moq-auth = { version = "0.1.0", default-features = false, optional = true }
 moq-net = { workspace = true }
 # The adapter from web-transport-iroh's async transport interface to the poll
 # one moq-net requires, and the client relay links run on.
@@ -35,11 +32,6 @@ url = "2.5.8"
 web-transport-iroh = { workspace = true }
 # The H3 CONNECT types, which web-transport-iroh uses but does not re-export.
 web-transport-proto = "0.6"
-
-[features]
-default = []
-# `Grant::from_claims` over moq-auth's claims.
-auth = ["dep:moq-auth"]
 
 [dev-dependencies]
 futures-lite = "2"
