@@ -55,15 +55,6 @@ pub struct MoqConfig {
     /// one peer can stand in for another.
     #[debug("{}", grant.is_some())]
     pub grant: Option<GrantFn>,
-    /// A route table to share with another server, instead of the node's own.
-    ///
-    /// The other server then serves everything in the table: this node's
-    /// `Everyone` publications, routes from attached relays, and what direct
-    /// peers announce to this node, including broadcasts they offered to this
-    /// node alone. Share a table only with a server that serves no more widely
-    /// than this node's peers expect.
-    #[debug("{}", origin.is_some())]
-    pub origin: Option<origin::Producer>,
 }
 
 /// A MoQ node on an iroh endpoint.
@@ -127,7 +118,7 @@ pub(crate) struct Shared {
 /// the shared state.
 pub(crate) struct Tasks {
     _actor: AbortOnDropHandle<()>,
-    _table: Option<AbortOnDropHandle<()>>,
+    _table: AbortOnDropHandle<()>,
     /// Relay links, by link id.
     pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
 }
@@ -138,20 +129,14 @@ impl Moq {
     /// Must be called within a tokio runtime.
     pub fn new(endpoint: Endpoint, config: MoqConfig) -> Self {
         let id = endpoint.id();
-        let (table, table_task) = match config.origin {
-            Some(origin) => (origin, None),
-            None => {
-                let (table, driver) = origin::Producer::new(origin::Config::new(hop_for(&id)));
-                let task = tokio::spawn(
-                    async move {
-                        let err = moq_net::time::run(driver).await;
-                        debug!(%err, "route table finished");
-                    }
-                    .instrument(info_span!("route_table")),
-                );
-                (table, Some(AbortOnDropHandle::new(task)))
+        let (table, driver) = origin::Producer::new(origin::Config::new(hop_for(&id)));
+        let table_task = tokio::spawn(
+            async move {
+                let err = moq_net::time::run(driver).await;
+                debug!(%err, "route table finished");
             }
-        };
+            .instrument(info_span!("route_table")),
+        );
         let (actor_tx, actor_rx) = mpsc::channel(16);
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         let shared = Arc::new(Shared {
@@ -179,7 +164,7 @@ impl Moq {
             shared,
             tasks: Arc::new(Tasks {
                 _actor: AbortOnDropHandle::new(actor_task),
-                _table: table_task,
+                _table: AbortOnDropHandle::new(table_task),
                 relays: Mutex::new(HashMap::new()),
             }),
         }

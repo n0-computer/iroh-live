@@ -9,7 +9,7 @@ use common::{
     step,
 };
 use iroh_moq::{Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach};
-use moq_net::{Hop, Pattern, Patterns, origin};
+use moq_net::{Pattern, Patterns};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher};
@@ -666,20 +666,12 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     bob.shutdown().await;
 }
 
-/// A shared route table carries the node's public publications and nothing else.
+/// The route table carries the node's public publications and no other.
 #[tokio::test]
 #[traced_test]
-async fn a_shared_route_table_carries_public_publications() {
-    let (origin, driver) =
-        origin::Producer::new(origin::Config::new(Hop::new(42).expect("a valid hop")));
-    let _driver = AbortOnDropHandle::new(tokio::spawn(async move {
-        moq_net::time::run(driver).await;
-    }));
-    let alice = Node::with_config(MoqConfig {
-        origin: Some(origin.clone()),
-        ..Default::default()
-    })
-    .await;
+async fn the_route_table_carries_public_publications_only() {
+    let alice = Node::spawn().await;
+    let origin = alice.moq.origin();
     let (public, secret) = (TestBroadcast::start(), TestBroadcast::start());
     let public = alice
         .moq
@@ -691,21 +683,18 @@ async fn a_shared_route_table_carries_public_publications() {
         .expect("publish");
 
     let served = step(
-        "the shared table serves the public one",
-        origin.consume().request_broadcast(public.path()),
+        "the table serves the public one",
+        origin.request_broadcast(public.path()),
     )
     .await
     .expect("resolve");
     read_counter(&served).await;
     let unrouted = step(
-        "the shared table does not serve the manual one",
-        origin.consume().request_broadcast(secret.path()),
+        "the table does not serve the manual one",
+        origin.request_broadcast(secret.path()),
     )
     .await;
-    assert!(
-        unrouted.is_err(),
-        "a manual publication reached the shared table"
-    );
+    assert!(unrouted.is_err(), "a manual publication reached the table");
 
     alice.shutdown().await;
 }
