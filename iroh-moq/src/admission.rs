@@ -89,16 +89,11 @@ pub struct SessionRequest {
     path: String,
     query: Vec<(String, String)>,
     headers: Vec<(String, String)>,
-    role: Option<moq_net::Role>,
 }
 
 impl SessionRequest {
     /// Parses a request target, `/<path>?<query>`, and its headers.
-    pub(crate) fn new(
-        target: &str,
-        headers: Vec<(String, String)>,
-        role: Option<moq_net::Role>,
-    ) -> Self {
+    pub(crate) fn new(target: &str, headers: Vec<(String, String)>) -> Self {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let query = url::form_urlencoded::parse(query.as_bytes())
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -107,7 +102,6 @@ impl SessionRequest {
             path: path.trim_matches('/').to_owned(),
             query,
             headers,
-            role,
         }
     }
 
@@ -134,14 +128,6 @@ impl SessionRequest {
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
-    }
-
-    /// Returns whether the peer said it only publishes or only subscribes.
-    ///
-    /// `None` for a peer that does both, and for one whose protocol version
-    /// cannot say.
-    pub fn role(&self) -> Option<moq_net::Role> {
-        self.role
     }
 }
 
@@ -275,8 +261,8 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         }
     };
     let request = match h3 {
-        Some((target, headers)) => SessionRequest::new(&target, headers, handshake.role()),
-        None => SessionRequest::new(handshake.path(), Vec::new(), handshake.role()),
+        Some((target, headers)) => SessionRequest::new(&target, headers),
+        None => SessionRequest::new(handshake.path(), Vec::new()),
     };
     debug!(remote = %remote.fmt_short(), path = request.path(), "session requested");
     let incoming = Incoming {
@@ -337,7 +323,6 @@ mod tests {
         let request = SessionRequest::new(
             "/studio?jwt=abc%2Bdef&x=1",
             vec![("Authorization".into(), "Bearer t".into())],
-            None,
         );
         assert_eq!(request.path(), "studio");
         assert_eq!(request.query("jwt"), Some("abc+def"));
@@ -353,7 +338,7 @@ mod tests {
             ..Default::default()
         };
         let path = options.setup_path().expect("a path");
-        let request = SessionRequest::new(&path, vec![], None);
+        let request = SessionRequest::new(&path, vec![]);
         assert_eq!(request.query("jwt"), Some("a+b"));
         assert_eq!(ConnectOptions::default().setup_path(), None);
     }
