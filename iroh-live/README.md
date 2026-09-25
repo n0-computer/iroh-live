@@ -69,9 +69,11 @@ let mut frames = player.video();
 
 ## Features
 
-`capture`, `render`, and `sound-server` are on by default. `playback`, `aec`,
-`pipewire`, `rpicam`, `vaapi`, `nvidia`, and `v4l2` add devices and codecs.
-All of these pass through to `iroh-live-media`.
+`media`, `capture`, `render`, and `sound-server` are on by default. `media` is
+the media stack. Without it the crate is the `live/` layout only (tickets, the
+grant, endpoint options), which is how the relay uses it. `playback`, `aec`,
+`pipewire`, `rpicam`, `vaapi`, `nvidia`, and `v4l2` add devices and codecs,
+imply `media`, and pass through to `iroh-live-media`.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`, and adds the room paths to `grant`.

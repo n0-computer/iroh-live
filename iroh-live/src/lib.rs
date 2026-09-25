@@ -77,17 +77,22 @@
 //!
 //! # Features
 //!
-//! `capture`, `render` and `sound-server` are on by default. `playback`,
-//! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
-//! codecs to [`media`]. `rooms` re-exports `iroh-live-rooms`.
+//! `media`, `capture`, `render` and `sound-server` are on by default. `media`
+//! is the media stack: `media` and [`Live::remote_broadcast`]. Without it the
+//! crate is the `live/` layout only, as the relay uses it. `playback`, `aec`,
+//! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
+//! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
 
 mod endpoint;
 mod error;
 mod live;
+#[cfg(feature = "media")]
 mod network;
 mod ticket;
 
+#[cfg(feature = "media")]
 pub use iroh_live_media as media;
+#[cfg(feature = "media")]
 pub use iroh_live_media::{
     AudioOutput, AudioSource, Latency, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
     RenditionMode, VideoSource,

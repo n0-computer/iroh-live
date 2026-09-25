@@ -9,6 +9,7 @@ pub enum Error {
     #[error(transparent)]
     Transport(iroh_moq::Error),
     /// A source, an encoder, a decoder or a recording failed.
+    #[cfg(feature = "media")]
     #[error(transparent)]
     Media(iroh_live_media::Error),
     /// `IROH_SECRET` does not hold a secret key.

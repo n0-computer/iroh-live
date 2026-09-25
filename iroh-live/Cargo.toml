@@ -19,7 +19,7 @@ iroh-moq = { workspace = true }
 # knows nothing about rooms.
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
-iroh-live-media = { workspace = true }
+iroh-live-media = { workspace = true, optional = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-watcher = "1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -46,30 +46,34 @@ patchbay = "0.7.0"
 workspace = true
 
 [features]
-default = ["capture", "render", "sound-server"]
+default = ["media", "capture", "render", "sound-server"]
+# The media stack: `iroh_live::media`, `Live::remote_broadcast`. Without it the
+# crate is the `live/` layout only (tickets, grant, endpoint options), as the
+# relay uses it.
+media = ["dep:iroh-live-media"]
 # Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.
-capture = ["iroh-live-media/capture"]
+capture = ["media", "iroh-live-media/capture"]
 # Speaker output.
-playback = ["iroh-live-media/playback"]
+playback = ["media", "iroh-live-media/playback"]
 # Reach audio devices through PipeWire or PulseAudio rather than through their
 # ALSA compatibility plugin.
-sound-server = ["iroh-live-media/sound-server"]
+sound-server = ["media", "iroh-live-media/sound-server"]
 # Acoustic echo cancellation, for a call on a handset or a laptop speaker.
-aec = ["iroh-live-media/aec"]
+aec = ["media", "iroh-live-media/aec"]
 # Linux screen capture through xdg-desktop-portal and PipeWire.
-pipewire = ["iroh-live-media/pipewire"]
+pipewire = ["media", "iroh-live-media/pipewire"]
 # GPU rendering of decoded frames.
-render = ["iroh-live-media/render"]
+render = ["media", "iroh-live-media/render"]
 # Raspberry Pi camera capture through `rpicam-vid`.
-rpicam = ["iroh-live-media/rpicam"]
+rpicam = ["media", "iroh-live-media/rpicam"]
 # Intel and AMD hardware H.264 encoding and decoding.
-vaapi = ["iroh-live-media/vaapi"]
+vaapi = ["media", "iroh-live-media/vaapi"]
 # NVIDIA hardware encode and decode.
-nvidia = ["iroh-live-media/nvidia"]
+nvidia = ["media", "iroh-live-media/nvidia"]
 # The V4L2 stateful memory-to-memory H.264 encoder and decoder on ARM SoCs.
-v4l2 = ["iroh-live-media/v4l2"]
+v4l2 = ["media", "iroh-live-media/v4l2"]
 
 # The example opens a camera and a microphone, so it needs the devices.
 [[example]]
@@ -83,3 +87,8 @@ required-features = ["capture"]
 name = "publish-pi"
 path = "examples/publish-pi.rs"
 required-features = ["rpicam"]
+
+[[example]]
+name = "subscribe_test"
+path = "examples/subscribe_test.rs"
+required-features = ["media"]

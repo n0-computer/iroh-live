@@ -3,6 +3,8 @@
 //! The sources are generated, so the tests need no camera, microphone or
 //! speaker. The codecs and the transport are real.
 
+#![cfg(feature = "media")]
+
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex, OnceLock},

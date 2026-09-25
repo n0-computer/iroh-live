@@ -8,7 +8,7 @@
 //! Linux only, built on unprivileged user namespaces. Run with
 //! `cargo make test-patchbay`, which includes the ignored tests.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "media"))]
 
 use std::time::{Duration, Instant};
 

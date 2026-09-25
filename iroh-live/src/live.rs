@@ -6,6 +6,7 @@ use iroh::{
     Endpoint, EndpointId,
     protocol::{DynProtocolHandler, ProtocolHandler, Router},
 };
+#[cfg(feature = "media")]
 use iroh_live_media::RemoteBroadcast;
 use iroh_moq::{
     Audience, Grant, Moq, MoqConfig, Publication, Reach, Subscription,
@@ -15,7 +16,9 @@ use moq_net::{Consume, broadcast};
 use n0_error::e;
 use tracing::{error, info, instrument};
 
-use crate::{BroadcastTicket, Error, network};
+#[cfg(feature = "media")]
+use crate::network;
+use crate::{BroadcastTicket, Error};
 
 /// Returns the paths `peer` publishes its own broadcasts under: `live/<peer>/**`.
 pub fn publish_scope(peer: EndpointId) -> Pattern {
@@ -155,8 +158,8 @@ impl Live {
     /// Publishes a broadcast as `live/<this node's id>/<name>` to everyone.
     ///
     /// Everyone includes attached relays. [`ticket`](Self::ticket) returns
-    /// what to share. Pass a [`LocalBroadcast`](iroh_live_media::LocalBroadcast)
-    /// by reference, so the application keeps changing its sources. For
+    /// what to share. Pass a media crate `LocalBroadcast` by reference, so the
+    /// application keeps changing its sources. For
     /// another audience, publish through [`moq`](Self::moq).
     ///
     /// # Errors
@@ -212,6 +215,7 @@ impl Live {
     /// players adapt to the link that serves it. A subscription on one session
     /// re-resolves through that session only. The catalog arrives later:
     /// watch [`RemoteBroadcast::catalog`] for it.
+    #[cfg(feature = "media")]
     pub fn remote_broadcast(&self, subscription: &Subscription) -> RemoteBroadcast {
         RemoteBroadcast::from_resolved(
             subscription.as_origin(),

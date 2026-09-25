@@ -12,6 +12,8 @@
 //! their figures is the playout hold. The assertions are loose sanity bounds.
 //! Run with `--nocapture` to see the figures.
 
+#![cfg(feature = "media")]
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},

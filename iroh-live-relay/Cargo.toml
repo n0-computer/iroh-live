@@ -14,7 +14,7 @@ moq-net = { workspace = true }
 iroh = { workspace = true }
 iroh-moq = { workspace = true }
 # The `live/` layout: tickets, and the grant that keeps a peer to its own
-# paths. `rooms` for the room layout's part of that grant.
+# paths. `rooms` for the room layout's part of that grant. No `media`.
 iroh-live = { workspace = true, features = ["rooms"] }
 n0-future = "0.3.2"
 # Watching the pull node's sessions, to close one whose last pull retired.
@@ -34,6 +34,8 @@ tower-http = { version = "0.7", features = ["cors"] }
 
 [dev-dependencies]
 iroh = { workspace = true }
+# The tests publish and play real media through the relay.
+iroh-live = { workspace = true, features = ["media", "rooms"] }
 iroh-live-media = { workspace = true }
 # Rooms whose members attach to a relay, for forging a member through one.
 iroh-live-rooms = { workspace = true }
