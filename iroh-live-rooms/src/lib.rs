@@ -18,7 +18,7 @@
 //! the ticket.
 //!
 //! The node's [`MoqConfig::grant`](iroh_moq::MoqConfig::grant) has to let each
-//! peer publish under [`publish_scope`], or room broadcasts never arrive.
+//! peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
 //! `iroh_live::moq_config` does that with the `rooms` feature.
 //!
 //! ```no_run

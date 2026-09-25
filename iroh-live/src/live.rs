@@ -158,9 +158,9 @@ impl Live {
     /// Publishes a broadcast as `live/<this node's id>/<name>` to everyone.
     ///
     /// Everyone includes attached relays. [`ticket`](Self::ticket) returns
-    /// what to share. Pass a media crate `LocalBroadcast` by reference, so the
-    /// application keeps changing its sources. For
-    /// another audience, publish through [`moq`](Self::moq).
+    /// what to share. Pass a `LocalBroadcast` by reference, so the application
+    /// keeps changing its sources. For another audience, publish through
+    /// [`moq`](Self::moq).
     ///
     /// # Errors
     ///
