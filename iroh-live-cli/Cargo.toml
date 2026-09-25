@@ -20,12 +20,11 @@ hang = { workspace = true }
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture", "render", "rooms"] }
 moq-net = { workspace = true }
-iroh-live-media = { workspace = true, features = ["capture"] }
 iroh-live-egui = { workspace = true }
 moq-mux = { workspace = true }
 # The room chat track: `moq-room`'s JSON window, which `@moq/room` reads too.
 moq-room = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
-n0-error = { version = "1", features = ["anyhow"] }
+n0-error = "1"
 n0-future = "0.3.2"
 n0-watcher = "1"
 qr2term = "0.3"
@@ -64,17 +63,16 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 # side while publishing a microphone, and without it a laptop sends the peer
 # back to itself.
 default = ["aec", "playback", "sound-server"]
-playback = ["iroh-live/playback", "iroh-live-media/playback"]
-sound-server = ["iroh-live/sound-server", "iroh-live-media/sound-server"]
-aec = ["iroh-live/aec", "iroh-live-media/aec"]
-pipewire = ["iroh-live/pipewire", "iroh-live-media/pipewire"]
+playback = ["iroh-live/playback"]
+sound-server = ["iroh-live/sound-server"]
+aec = ["iroh-live/aec"]
+pipewire = ["iroh-live/pipewire"]
 # `--video rpicam`, which publishes the H.264 `rpicam-vid` already encoded.
-rpicam = ["iroh-live/rpicam", "iroh-live-media/rpicam"]
-vaapi = ["iroh-live/vaapi", "iroh-live-media/vaapi"]
-nvidia = ["iroh-live/nvidia", "iroh-live-media/nvidia"]
+rpicam = ["iroh-live/rpicam"]
+vaapi = ["iroh-live/vaapi"]
+nvidia = ["iroh-live/nvidia"]
 # `--encoder v4l2` and the matching decoder, for an ARM SoC's M2M codec node.
-v4l2 = ["iroh-live/v4l2", "iroh-live-media/v4l2"]
-qlog = ["iroh/qlog"]
+v4l2 = ["iroh-live/v4l2"]
 
 [lints]
 workspace = true

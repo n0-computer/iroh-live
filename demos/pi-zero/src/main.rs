@@ -92,8 +92,10 @@ mod app {
 
     /// Renders a test pattern straight to HDMI, without network or camera.
     async fn cmd_fb_demo() -> n0_error::Result {
-        use iroh_live_media::VideoSource;
-        use moq_video::{Rate, Size};
+        use iroh_live::media::{
+            VideoSource,
+            video::{Rate, Size},
+        };
 
         let source =
             VideoSource::test_pattern(Size::new(640, 480), Rate::new(30, 1).expect("a valid rate"));
@@ -136,7 +138,7 @@ mod app {
 
         // `remote_broadcast` attached the link's signals, so the player picks
         // the rendition on its own.
-        let player = remote.play(iroh_live_media::PlayerConfig::default())?;
+        let player = remote.play(iroh_live::media::PlayerConfig::default())?;
 
         if opts.fb {
             watch::run_drm(player).await?;

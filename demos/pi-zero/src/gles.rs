@@ -1,13 +1,13 @@
 //! A GLES2 video renderer over `glow`.
 //!
-//! The Pi Zero has no Vulkan or wgpu, so `moq_video::render` cannot draw here.
+//! The Pi Zero has no Vulkan or wgpu, so `iroh_live::media::video::render` cannot draw here.
 //! I420 frames from openh264 go up as three `LUMINANCE` textures, and a shader
 //! converts the colour. This keeps the CPU free for decoding. Other surfaces
 //! go up as one RGBA texture. Works with any EGL/GLES2 context.
 
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
-use moq_video::{Frame, Surface};
+use iroh_live::media::video::{Frame, Surface};
 use tracing::warn;
 
 const VERT_SRC: &str = "\

@@ -40,17 +40,15 @@ moq-relay = { version = "0.15.0", default-features = false }
 moq-tokio = { version = "0.19.11", default-features = false }
 web-transport-iroh = "0.7.0"
 
-# UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
-# `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
-# major is a different type, so these two versions have to move together.
+# UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back
+# a `wgpu::Texture` from its own build of wgpu 30. A texture from a different
+# wgpu major is a different type, so egui and moq-video have to move together.
 eframe = { version = "0.36.2", default-features = false }
 egui = "0.36.2"
 egui-wgpu = "0.36.2"
-wgpu = "30"
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
-iroh-live-relay = { path = "iroh-live-relay" }
 iroh-moq = { path = "iroh-moq" }
 iroh-live-rooms = { path = "iroh-live-rooms" }
 iroh-live-media = { path = "iroh-live-media", default-features = false }

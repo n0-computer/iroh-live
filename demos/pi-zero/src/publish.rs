@@ -6,8 +6,11 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::{Live, LocalBroadcast, moq::RelayConfig};
-use iroh_live_media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size};
+use iroh_live::{
+    Live, LocalBroadcast,
+    media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size},
+    moq::RelayConfig,
+};
 use tracing::{debug, info, warn};
 
 use crate::epaper;

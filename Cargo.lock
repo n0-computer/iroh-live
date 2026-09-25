@@ -4396,7 +4396,6 @@ dependencies = [
  "n0-tracing-test",
  "n0-watcher",
  "patchbay",
- "postcard",
  "serde",
  "tokio",
  "tracing",
@@ -4437,7 +4436,6 @@ dependencies = [
  "iroh",
  "iroh-live",
  "iroh-live-egui",
- "iroh-live-media",
  "moq-mux",
  "moq-net",
  "moq-room",
@@ -5946,19 +5944,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "n0-qlog"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb1c2fc610d1facce51b0bf5d8245b309c91996a933defdf7742c92ac78a58cb"
-dependencies = [
- "humantime",
- "serde",
- "serde_json",
- "serde_with",
- "strum",
-]
-
-[[package]]
 name = "n0-tracing-test"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6394,7 +6379,6 @@ dependencies = [
  "getrandom 0.4.3",
  "identity-hash",
  "lru-slab",
- "n0-qlog",
  "rand 0.10.2",
  "rand_pcg",
  "ring",
@@ -7452,13 +7436,10 @@ dependencies = [
  "gpio-cdev",
  "iroh",
  "iroh-live",
- "iroh-live-media",
  "khronos-egl",
  "libc",
  "linux-embedded-hal",
- "moq-video",
  "n0-error",
- "n0-future",
  "n0-watcher",
  "qrcode",
  "raw-window-handle",
@@ -7885,9 +7866,6 @@ name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
-dependencies = [
- "image",
-]
 
 [[package]]
 name = "quick-error"
@@ -8850,7 +8828,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",

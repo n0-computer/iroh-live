@@ -177,19 +177,16 @@ mod tests {
     }
 
     #[test]
-    fn serde_goes_through_the_string() {
-        let ticket = BroadcastTicket::new(test_endpoint_id(), "cam");
-        let json = serde_json_like(&ticket);
-        assert_eq!(json, format!("\"{ticket}\""));
-    }
+    fn serde_reads_the_string_form() {
+        use serde::de::{IntoDeserializer, value::Error};
 
-    /// Round-trips `ticket` through postcard and returns its string form, quoted.
-    fn serde_json_like(ticket: &BroadcastTicket) -> String {
-        let bytes = postcard::to_stdvec(ticket).expect("serialize");
-        let decoded: String = postcard::from_bytes(&bytes).expect("a string");
-        let back: BroadcastTicket = postcard::from_bytes(&bytes).expect("deserialize");
-        assert_eq!(&back, ticket);
-        format!("\"{decoded}\"")
+        let ticket = BroadcastTicket::new(test_endpoint_id(), "cam");
+        let string = ticket.to_string();
+        let back = BroadcastTicket::deserialize(IntoDeserializer::<Error>::into_deserializer(
+            string.as_str(),
+        ))
+        .expect("deserialize");
+        assert_eq!(back, ticket);
     }
 
     #[test]

@@ -20,9 +20,8 @@ iroh-moq = { workspace = true }
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 iroh-live-media = { workspace = true, optional = true }
-n0-error = { version = "1", features = ["anyhow"] }
-n0-watcher = "1"
-serde = { version = "1.0.229", features = ["derive"] }
+n0-error = "1"
+serde = "1.0.229"
 tracing = "0.1.44"
 
 [dev-dependencies]
@@ -31,7 +30,7 @@ tracing = "0.1.44"
 anyhow = "1.0.104"
 clap = { version = "4.6", features = ["derive"] }
 n0-tracing-test = "0.3.0"
-postcard = { version = "1.1.3", features = ["use-std"] }
+n0-watcher = "1"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing-subscriber = "0.3.23"
 

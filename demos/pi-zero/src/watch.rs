@@ -9,8 +9,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use glow::HasContext;
-use iroh_live::media::{Player, VideoFrames};
-use moq_video::Frame;
+use iroh_live::media::{Player, VideoFrames, video::Frame};
 #[cfg(feature = "windowed")]
 use n0_watcher::Watcher as _;
 use tracing::{info, warn};
@@ -430,7 +429,7 @@ pub(crate) async fn run_drm(player: Player) -> Result<()> {
 
 /// Renders a local frame stream to HDMI.
 ///
-/// Used with [`VideoSource::test_pattern`](iroh_live_media::VideoSource::test_pattern).
+/// Used with [`VideoSource::test_pattern`](iroh_live::media::VideoSource::test_pattern).
 pub(crate) async fn run_fb_demo(mut frames: VideoFrames) -> Result<()> {
     let mut disp = DrmDisplay::init()?;
     let mut frame_count = 0u64;
