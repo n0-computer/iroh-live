@@ -72,14 +72,14 @@ impl BroadcastTicket {
     }
 
     /// Returns the ticket of the broadcast at `path`, if it is a `live/<peer>/<name>` path.
+    ///
+    /// The inverse of [`path`](Self::path).
     pub fn from_path(path: &str) -> Option<Self> {
-        let mut parts = path.split('/');
-        match (parts.next(), parts.next(), parts.next(), parts.next()) {
-            (Some("live"), Some(peer), Some(name), None) if !name.is_empty() => {
-                Some(Self::new(peer.parse().ok()?, name))
-            }
-            _ => None,
+        let (peer, name) = path.strip_prefix("live/")?.split_once('/')?;
+        if name.is_empty() {
+            return None;
         }
+        Some(Self::new(peer.parse().ok()?, name))
     }
 
     fn parse_uri(rest: &str) -> Result<Self, ParseError> {
@@ -190,10 +190,12 @@ mod tests {
             BroadcastTicket::from_path(ticket.path().as_str()),
             Some(ticket)
         );
+        let nested = BroadcastTicket::new(peer, "cam/hd");
         assert_eq!(
-            BroadcastTicket::from_path(&format!("live/{peer}/cam/hd")),
-            None
+            BroadcastTicket::from_path(nested.path().as_str()),
+            Some(nested)
         );
+        assert_eq!(BroadcastTicket::from_path(&format!("live/{peer}/")), None);
         assert_eq!(
             BroadcastTicket::from_path(&format!("rooms/{peer}/cam")),
             None
