@@ -26,10 +26,9 @@ pub fn publish_scope(peer: EndpointId) -> Pattern {
 
 /// Returns the grant a live node gives `peer`.
 ///
-/// The peer may subscribe to anything and publish only its own broadcasts,
-/// under [`publish_scope`], so no peer can stand in for another at a path that
-/// names it. With the `rooms` feature it may also publish into rooms, under
-/// `rooms::publish_scope`.
+/// The peer may subscribe to anything, and publish only under
+/// [`publish_scope`] and, with the `rooms` feature, `rooms::publish_scope`. So
+/// no peer can publish at a path that names another.
 pub fn grant(peer: EndpointId) -> Grant {
     #[cfg_attr(
         not(feature = "rooms"),
@@ -54,7 +53,7 @@ pub fn moq_config() -> MoqConfig {
 
 /// A node ready for live media.
 ///
-/// Cheap to clone; [`shutdown`](Self::shutdown) ends it for every clone, and
+/// Cheap to clone. [`shutdown`](Self::shutdown) ends it for every clone and
 /// closes the endpoint it was built on.
 #[derive(Debug, Clone)]
 pub struct Live {
@@ -63,10 +62,10 @@ pub struct Live {
     router: Option<Router>,
 }
 
-/// Builds a [`Live`] on an endpoint the application owns.
+/// Builds a [`Live`] on an endpoint.
 ///
-/// Obtained from [`Live::builder`]. [`Live::shutdown`] closes the endpoint, so
-/// build on one the node may own.
+/// Obtained from [`Live::builder`]. The node takes over the endpoint:
+/// [`Live::shutdown`] closes it.
 #[derive(derive_more::Debug)]
 #[must_use]
 pub struct LiveBuilder {
@@ -80,8 +79,8 @@ pub struct LiveBuilder {
 impl LiveBuilder {
     /// Accepts incoming sessions on a router this builder spawns.
     ///
-    /// Without it the node only dials: it can subscribe, and serve its
-    /// publications to the peers it dialed, but nobody can connect to it.
+    /// Without a router the node only dials. It can subscribe and serve the
+    /// peers it dialed, but nobody can connect to it.
     pub fn with_router(mut self) -> Self {
         self.router = true;
         self
@@ -89,19 +88,19 @@ impl LiveBuilder {
 
     /// Mounts `handler` under `alpn` on the router as well.
     ///
-    /// Implies [`with_router`](Self::with_router), since a handler needs a
-    /// router to accept anything; rooms mount their gossip this way.
+    /// Implies [`with_router`](Self::with_router). Rooms mount their gossip
+    /// this way.
     pub fn accept(mut self, alpn: impl AsRef<[u8]>, handler: impl ProtocolHandler) -> Self {
         self.protocols
             .push((alpn.as_ref().to_vec(), handler.into()));
         self
     }
 
-    /// Uses a [`Moq`] the application created first, on the builder's endpoint.
+    /// Uses a [`Moq`] the application created on the builder's endpoint.
     ///
-    /// So it can hand it to `Rooms` before the router is built. Create it with
-    /// [`moq_config`], or a config whose grant keeps peers to their own paths
-    /// as [`grant`] does.
+    /// For handing it to `Rooms` before the router is built. Create it with
+    /// [`moq_config`], or with a grant that keeps peers to their own paths as
+    /// [`grant`] does.
     pub fn with_moq(mut self, moq: Moq) -> Self {
         self.moq = Some(moq);
         self
@@ -114,9 +113,6 @@ impl LiveBuilder {
             .unwrap_or_else(|| Moq::new(self.endpoint.clone(), moq_config()));
         let router = (self.router || !self.protocols.is_empty()).then(|| {
             let mut router = Router::builder(self.endpoint.clone());
-            // Every MoQ version this build speaks, not only the newest, so a
-            // peer built against a different moq release still finds one in
-            // common.
             for alpn in iroh_moq::alpns() {
                 router = router.accept(alpn, moq.clone());
             }
@@ -160,21 +156,17 @@ impl Live {
 
     /// Returns the MoQ transport.
     ///
-    /// For publishing to another audience, admitting sessions, or attaching
-    /// relays.
+    /// For publishing to another audience or attaching relays.
     pub fn moq(&self) -> &Moq {
         &self.moq
     }
 
     /// Publishes a broadcast as `live/<this node's id>/<name>` to everyone.
     ///
-    /// Attached relays included. [`ticket`](Self::ticket) returns what to
-    /// share. Pass
-    /// a [`LocalBroadcast`](iroh_live_media::LocalBroadcast) by reference: the
-    /// publication reads it for as long as it exists, and the application keeps
-    /// changing its sources.
-    ///
-    /// For another audience, publish through [`moq`](Self::moq).
+    /// Everyone includes attached relays. [`ticket`](Self::ticket) returns
+    /// what to share. Pass a [`LocalBroadcast`](iroh_live_media::LocalBroadcast)
+    /// by reference, so the application keeps changing its sources. For
+    /// another audience, publish through [`moq`](Self::moq).
     ///
     /// # Errors
     ///
@@ -198,20 +190,17 @@ impl Live {
 
     /// Returns the ticket for this node's broadcast `name`.
     ///
-    /// Names `live/<this node's id>/<name>`, where [`publish`](Self::publish)
-    /// puts it, so it is what to share after publishing. The ticket is only a
-    /// name: it does not check that anything is published there.
+    /// Does not check that anything is published there.
     pub fn ticket(&self, name: &str) -> BroadcastTicket {
         BroadcastTicket::new(self.endpoint.id(), name)
     }
 
     /// Resolves the ticket's broadcast over whichever link serves it.
     ///
-    /// Returns once a route is found, without waiting for the catalog: watch
+    /// Returns once a route is found, before the catalog arrives: watch
     /// [`RemoteBroadcast::catalog`] for it. The broadcast follows the path in
-    /// the route table, so a change of route shows as a switch rather than an
-    /// end, and its players adapt on the serving link, a direct session or a
-    /// relay.
+    /// the route table, so a change of route does not end it. Its players
+    /// adapt to the link that serves it.
     ///
     /// Cancellation safe.
     ///
@@ -229,13 +218,10 @@ impl Live {
 
     /// Wraps a subscription the way [`subscribe`](Self::subscribe) does.
     ///
-    /// For a subscription from a room or from [`Moq::subscribe`]: the
-    /// broadcast starts from the one the subscription resolved, follows the
-    /// subscription's path through the route table it was resolved in, and
-    /// attaches the serving link so its players adapt. A subscription pinned
-    /// to one session, such as a room member's, re-resolves through that
-    /// session only. Synchronous and infallible: nothing here waits for the
-    /// catalog.
+    /// For a subscription from a room, a session or [`Moq::subscribe`]. The
+    /// broadcast follows the subscription's path through the route table it
+    /// was resolved in, and its players adapt to the link that serves it. A
+    /// subscription on one session re-resolves through that session only.
     pub fn remote_broadcast(&self, subscription: &Subscription) -> RemoteBroadcast {
         RemoteBroadcast::from_resolved(
             subscription.as_origin(),
@@ -252,14 +238,13 @@ impl Live {
 
     /// Shuts the node down, the router and the endpoint included.
     ///
-    /// Idempotent; not cancellation safe, call it again to finish.
+    /// Idempotent. Not cancellation safe: call it again to finish.
     pub async fn shutdown(&self) {
         self.moq.shutdown().await;
         if let Some(router) = self.router.as_ref()
             && let Err(err) = router.shutdown().await
         {
-            // Report it and close anyway: leaving the endpoint open because its
-            // router complained strands the socket.
+            // Close the endpoint anyway, or its socket stays open.
             error!(error = %err, "failed to shut down the iroh router");
         }
         self.endpoint.close().await;

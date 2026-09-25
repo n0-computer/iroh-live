@@ -1,5 +1,7 @@
-//! Test helper: connects to a relay, subscribes to a broadcast,
-//! receives N video frames, and exits 0 on success.
+//! Subscribes to a broadcast through a relay and exits after N decoded frames.
+//!
+//! The browser end-to-end tests in `tests/e2e-browser` run it. Build it with
+//! `cargo make e2e-prebuild`.
 
 use clap::Parser;
 use iroh::Endpoint;
@@ -20,10 +22,8 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
-    // The relay names broadcasts as its publishers did, so the name is resolved
-    // on the session with the relay rather than through the route table, and
-    // the relay may publish anything on it. Retried: the publisher may not have
-    // announced the catalog yet.
+    // Subscribes on the relay session directly, trusting the relay with any
+    // name. Retries because the publisher may not have announced yet.
     let broadcast = {
         let mut last_err = String::new();
         let mut result = None;
@@ -86,15 +86,15 @@ async fn main() -> anyhow::Result<()> {
 
 #[derive(Parser)]
 struct Cli {
-    /// Relay's iroh endpoint ID.
+    /// The relay's endpoint id.
     #[arg(long)]
     relay: String,
 
-    /// Broadcast name to subscribe to.
+    /// Broadcast name.
     #[arg(long)]
     name: String,
 
-    /// Number of video frames to receive before exiting.
+    /// Video frames to receive before exiting.
     #[arg(long, default_value_t = 3)]
     frames: u32,
 }

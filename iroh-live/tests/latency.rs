@@ -1,22 +1,16 @@
-//! Measures how long a picture takes to cross the pipeline, publisher to
-//! decoded frame, with both ends in one process.
+//! Measures the time from a frame handed to the publisher to the decoded frame.
 //!
-//! Both ends share a wall clock, so the number is honest to the microsecond
-//! and leaves out everything a two-machine measurement cannot separate: the
-//! player's compositor, the screenshot that reads it, and two clocks that only
-//! agree to a few milliseconds. What is left is capture-to-decode: the test
-//! pattern's frame handed to the encoder, openh264, the mux, a real QUIC
-//! connection over loopback, the demux, the decoder, and the playout policy.
+//! Both ends run in one process over a loopback QUIC connection and share one
+//! clock. The measurement covers encode, transport, decode and the playout
+//! policy, with no display in it.
 //!
-//! The publisher moves every source onto its own clock, so a frame's timestamp
-//! on the wire is the source's plus one unknown offset. The source here spaces
-//! its timestamps with a small irregular stagger, which makes the offset the
-//! one shift that lines every received frame up with a handed one.
+//! The publisher shifts source timestamps by an unknown offset. The source
+//! adds an irregular stagger to its timestamps, so only one offset lines the
+//! received frames up with the handed ones.
 //!
-//! Two runs, one per playout policy, so the hold the clock adds is read off as
-//! the difference rather than reasoned about. The assertions are sanity
-//! bounds wide enough never to flake; the figures are the point, and they are
-//! printed. Run with `--nocapture` to see them.
+//! The two tests differ only in playout policy, so the difference between
+//! their figures is the playout hold. The assertions are loose sanity bounds.
+//! Run with `--nocapture` to see the figures.
 
 use std::{
     collections::HashMap,
@@ -32,15 +26,13 @@ use iroh_live_media::{
 };
 use n0_tracing_test::traced_test;
 
-/// Generous, because the workspace test suite runs in parallel and openh264
-/// encodes in software.
+/// Generous, because tests run in parallel and openh264 encodes in software.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Frames measured after the first, which carries the join and is reported on
-/// its own.
+/// Frames measured after the first, which is reported apart as the join.
 const SAMPLES: usize = 60;
 
-/// The picture size of the stamped source.
+/// The stamped source's picture size.
 const SIZE: Size = Size {
     width: 640,
     height: 480,
@@ -61,18 +53,17 @@ async fn endpoint() -> Endpoint {
     endpoint
 }
 
-/// When each frame, by its source timestamp in microseconds, was handed to the
-/// publisher.
+/// Hand-over instants keyed by source timestamp in microseconds.
 type Handed = Arc<Mutex<HashMap<u64, Instant>>>;
 
-/// The stagger added to frame `index`'s timestamp, under a tenth of a frame
-/// and irregular enough that no two stretches of frames share a pattern.
+/// Returns the stagger added to frame `index`'s timestamp.
+///
+/// It stays under a third of a frame and has no short repeating pattern.
 fn stagger(index: u64) -> u64 {
     (index * 7_919 % 97) * 100
 }
 
-/// A moving gradient at 30 fps, with every frame's hand-over instant recorded
-/// under its source timestamp.
+/// Returns a moving gradient at 30 fps that records when each frame is handed over.
 fn stamped_source(handed: Handed) -> VideoSource {
     let format = VideoFormat {
         size: SIZE,
@@ -101,8 +92,7 @@ fn stamped_source(handed: Handed) -> VideoSource {
     .expect("the source thread starts")
 }
 
-/// Fills `rgba` with a diagonal gradient that shifts with `index`, so no two
-/// frames encode to nothing.
+/// Fills `rgba` with a diagonal gradient that shifts with `index`.
 fn paint(rgba: &mut [u8], index: u64) {
     let phase = (index % 256) as u8;
     for (offset, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -112,8 +102,7 @@ fn paint(rgba: &mut [u8], index: u64) {
     }
 }
 
-/// Finds the offset the publisher moved the timestamps by: the one shift that
-/// lands the most received timestamps on handed ones.
+/// Returns the shift that maps the most received timestamps onto handed ones.
 fn offset(received: &[(u64, Instant)], handed: &HashMap<u64, Instant>) -> i128 {
     let (first, _) = received[0];
     handed
@@ -131,8 +120,7 @@ fn offset(received: &[(u64, Instant)], handed: &HashMap<u64, Instant>) -> i128 {
         .expect("frames were handed")
 }
 
-/// Publishes the stamped source and plays it at `latency`, returning the join
-/// latency and the per-frame latencies after it.
+/// Plays the stamped source at `latency` and returns the join and frame latencies.
 async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
@@ -209,8 +197,7 @@ fn report(label: &str, join: Duration, latencies: &mut [Duration]) -> Duration {
     median
 }
 
-/// No playout hold: a frame goes to the caller the moment it decodes. This is
-/// the pipeline's own latency, encoder to decoder over a loopback connection.
+/// Measures latency with no playout hold, frames going out as they decode.
 #[tokio::test]
 #[traced_test]
 async fn pipeline_latency_without_a_playout_hold() {
@@ -223,10 +210,9 @@ async fn pipeline_latency_without_a_playout_hold() {
     );
 }
 
-/// The default latency: the playout clock holds each frame by its jitter
-/// buffer plus whatever audio is buffered. With no audio track that is the
-/// jitter figure alone, and the difference from the run above is what the
-/// hold costs.
+/// Measures latency under the default playout hold.
+///
+/// With no audio track, the hold is the jitter buffer alone.
 #[tokio::test]
 #[traced_test]
 async fn pipeline_latency_with_the_default_playout_hold() {

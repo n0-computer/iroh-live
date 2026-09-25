@@ -1,8 +1,7 @@
 //! End-to-end tests over a real QUIC connection between two iroh endpoints.
 //!
-//! Every source here is generated rather than captured, so the tests need no
-//! camera, microphone, or speaker. The codecs are real: openh264 encodes and
-//! decodes, Opus encodes and decodes, and the bytes cross an actual transport.
+//! The sources are generated, so the tests need no camera, microphone or
+//! speaker. The codecs and the transport are real.
 
 use std::{
     sync::{Arc, Mutex, OnceLock},
@@ -20,8 +19,7 @@ use n0_tracing_test::traced_test;
 use n0_watcher::Watcher as _;
 use tracing::{Instrument, info_span};
 
-/// Generous, because the whole workspace test suite may be running in parallel
-/// and openh264 is a software encoder.
+/// Generous, because tests run in parallel and openh264 encodes in software.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn endpoint() -> Endpoint {
@@ -66,8 +64,7 @@ async fn first_frame(player: &Player) {
         .expect("video ended");
 }
 
-/// Publishes video from one node and subscribes from another, checking that
-/// decoded frames arrive with sane dimensions and non-decreasing timestamps.
+/// Decoded frames arrive with non-zero dimensions and non-decreasing timestamps.
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_video() {
@@ -145,10 +142,9 @@ async fn a_call_reads_the_other_side() {
     bob.shutdown().await;
 }
 
-/// Publishes audio alongside video and plays it into an output that discards.
+/// Opus audio crosses the transport and decodes.
 ///
-/// The null output needs no device: what the test proves is that Opus packets
-/// crossed the transport and decoded, which is the part that can break.
+/// Plays into a null output, so the test needs no audio device.
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_audio() {
@@ -184,8 +180,9 @@ async fn publish_subscribe_audio() {
     subscriber.shutdown().await;
 }
 
-/// Publishes two renditions and drives the player's adaptation with generated
-/// network samples: heavy loss should move it down the ladder.
+/// Heavy loss in the network samples moves the player down the ladder.
+///
+/// The samples are made up and fed in through `with_network`.
 #[tokio::test]
 #[traced_test]
 async fn adaptive_rendition_switching() {
@@ -211,8 +208,7 @@ async fn adaptive_rendition_switching() {
     let subscriber = Live::builder(endpoint().await).spawn();
     let remote = subscribe(&subscriber, &publisher, "adaptive-stream").await;
 
-    // A healthy link to start with, replacing the one the subscription
-    // attached: the samples are what the test drives.
+    // Replaces the signals the subscription attached. Starts healthy.
     let sample = Arc::new(Mutex::new(NetworkSample {
         rtt: Some(Duration::from_millis(20)),
         min_rtt: Some(Duration::from_millis(20)),
@@ -239,14 +235,13 @@ async fn adaptive_rendition_switching() {
         .play(PlayerConfig::default())
         .expect("failed to play");
     first_frame(&player).await;
-    // A healthy link starts at the top, so the drop below is a real move
-    // rather than a start that was already at the bottom.
+    // Starting at the top makes the drop below a real move.
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
         .await
         .expect("timed out waiting for the top rendition")
         .expect("a healthy link starts at the top");
 
-    // A quarter of the packets lost is an emergency drop, not a gradual one.
+    // A quarter of the packets lost is past the emergency threshold.
     *sample.lock().expect("poisoned") = NetworkSample {
         rtt: Some(Duration::from_millis(200)),
         min_rtt: Some(Duration::from_millis(20)),
@@ -255,10 +250,8 @@ async fn adaptive_rendition_switching() {
         ..NetworkSample::default()
     };
 
-    // The replacement encoder only starts once someone subscribes to it, so the
-    // switch waits on an openh264 open plus a keyframe. That is fast alone and
-    // not fast under a full parallel test suite, hence the same generous bound
-    // the rest of the file uses.
+    // The `low` encoder starts only when subscribed, so the switch waits for
+    // an openh264 open and a keyframe. That is slow under a parallel test run.
     let mut status = player.status();
     tokio::time::timeout(TIMEOUT, async {
         while status.get().rendition.as_deref() != Some("low") {
@@ -272,11 +265,10 @@ async fn adaptive_rendition_switching() {
     subscriber.shutdown().await;
 }
 
-/// Changes the decoder backend under a player that is already playing.
+/// Changing the decoder backend while playing rebuilds the decoder.
 ///
-/// What the test pins is software, the one backend every host in CI has, and
-/// it asserts the rebuilt decoder is the one producing frames rather than
-/// merely the one that was asked for.
+/// Uses the software backend because every CI host has it. Checks that the new
+/// decoder produces frames, not only that it was asked for.
 #[tokio::test]
 #[traced_test]
 async fn changing_the_decoder_backend_rebuilds_it() {
@@ -293,8 +285,7 @@ async fn changing_the_decoder_backend_rebuilds_it() {
 
     player.set_decoder(decode::Kind::Software);
 
-    // The replacement takes over on its first frame, so a backend that reports
-    // itself here has already decoded one.
+    // A replacement takes over only on a decoded frame.
     let mut status = player.status();
     tokio::time::timeout(TIMEOUT, async {
         while status.get().decoder.as_deref() != Some("openh264") {

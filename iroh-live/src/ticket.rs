@@ -1,15 +1,8 @@
 //! Tickets that name a broadcast.
 //!
-//! A [`BroadcastTicket`] is a publisher's endpoint id and the name of one of its
-//! broadcasts, in a form that survives a chat message or a QR code. It maps to
-//! the path `live/<publisher>/<name>`.
-//!
-//! Socket addresses are deliberately absent. A publisher announces its
-//! addresses to pkarr and over mDNS, and a subscriber looks them up from the id
-//! alone, so a ticket that listed them as well repeated what two lookup services
-//! already do. On a host with several interfaces that list was most of the
-//! payload, and what it cost was a denser QR code, the kind that will not scan
-//! off a small screen.
+//! A ticket holds no socket addresses. Subscribers look them up from the
+//! endpoint id over pkarr and mDNS, which keeps the ticket short enough for a
+//! QR code on a small screen.
 
 use std::{fmt, str::FromStr};
 
@@ -24,12 +17,10 @@ const SCHEME: &str = "iroh-live:";
 /// The length of the raw endpoint id a ticket encodes.
 const ENDPOINT_ID_LEN: usize = 32;
 
-/// A peer and the name of one of its broadcasts.
+/// A publisher's endpoint id and the name of one of its broadcasts.
 ///
-/// Carries the endpoint id and no addresses; iroh's address lookup resolves
-/// them. The string form is `iroh-live:<base64url(endpoint id)>/<name>`, and
-/// parsing also accepts it without the scheme. Serde goes through the string
-/// form.
+/// The string form is `iroh-live:<base64url(endpoint id)>/<name>`. Parsing
+/// also accepts it without the scheme. Serde uses the string form.
 ///
 /// # Examples
 ///
@@ -180,9 +171,8 @@ mod tests {
 
     #[test]
     fn a_ticket_qr_stays_sparse() {
-        // A QR code holds 84 bytes in 37 modules at the default error
-        // correction level, three pixels each on the 122 px e-paper panel the
-        // Pi Zero demo draws on.
+        // 84 bytes fit a 37-module QR code, three pixels per module on the Pi
+        // Zero demo's 122 px e-paper panel.
         let ticket = BroadcastTicket::new(test_endpoint_id(), "my-stream-name");
         assert!(ticket.to_string().len() <= 84);
     }
@@ -195,8 +185,6 @@ mod tests {
     }
 
     /// Round-trips `ticket` through postcard and returns its string form, quoted.
-    ///
-    /// Postcard is where a derive would have leaked the struct shape.
     fn serde_json_like(ticket: &BroadcastTicket) -> String {
         let bytes = postcard::to_stdvec(ticket).expect("serialize");
         let decoded: String = postcard::from_bytes(&bytes).expect("a string");

@@ -1,9 +1,7 @@
-//! Publishes a camera and a microphone.
+//! Publishes the default camera and microphone, and prints a ticket.
 //!
-//! Captures the default camera and, when one is available, the default
-//! microphone, publishes both over iroh, and prints a ticket.
-//!
-//! Watch it with `irl watch TICKET`.
+//! Run it with `cargo run -p iroh-live --example publish` and watch with
+//! `irl watch TICKET`. Without a microphone it publishes video only.
 
 use clap::Parser;
 use iroh_live::{
@@ -36,7 +34,7 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // A stable identity from `IROH_SECRET`, so the ticket survives a restart.
+    // Set `IROH_SECRET` to keep the same ticket across restarts.
     let options = EndpointOptions::from_env()?;
     let live = Live::builder(options.bind().await?).with_router().spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
@@ -58,13 +56,12 @@ async fn main() -> n0_error::Result {
     };
     broadcast.set_video(source, encoding)?;
 
-    // A machine with no microphone still publishes video.
     match AudioSource::microphone(MicrophoneConfig::default()).await {
         Ok(microphone) => broadcast.set_audio(microphone, AudioEncoding::voice())?,
         Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    // Held for as long as the broadcast should stay published.
+    // The broadcast stays published while this is held.
     let _publication = live.publish(&args.name, &broadcast)?;
     println!("{}", live.ticket(&args.name));
     info!(name = %args.name, "publishing");

@@ -7,13 +7,12 @@ use iroh_moq::{LinkId, Subscription};
 
 /// Returns the network signals of the link serving `subscription`.
 ///
-/// Each sample reads whichever link serves the subscription at that moment,
-/// so the signals follow the route as it changes. The path generation counts
-/// changes of the serving link as well as of its path, so adaptation never
-/// compares one link's history with another's.
+/// Each sample reads whichever link serves the subscription at that moment.
+/// The path generation also counts changes of the serving link, so
+/// adaptation never compares one link's history with another's.
 pub(crate) fn signals(subscription: Subscription) -> impl NetworkSignals {
-    // The serving link and its path generation at the last sample, and how
-    // often that pair changed.
+    // The serving link and path generation at the last sample, and how often
+    // that pair changed.
     let last = Mutex::new((None::<(LinkId, u64)>, 0));
     move || {
         let link = subscription.link();
