@@ -14,7 +14,8 @@ use iroh_live::{
 };
 use n0_error::{Result, anyerr};
 use serde::{Deserialize, Deserializer, de};
-use tokio::{sync::watch, task::JoinSet};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
@@ -157,7 +158,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     let mut broadcasts: Vec<(LocalBroadcast, source::Opened)> = Vec::new();
     let mut receivers: Vec<Receiver> = Vec::new();
     let mut recordings: JoinSet<Result<()>> = JoinSet::new();
-    let (stop_recording, recording_stops) = watch::channel(false);
+    let stop_recording = CancellationToken::new();
     let output = match config
         .recv
         .iter()
@@ -194,11 +195,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
                 if let Some((recording, path)) = recording {
                     let path = path.display().to_string();
                     println!("[recv] {}: recording to {path}", recv.name);
-                    let mut stop = recording_stops.clone();
-                    let stop = async move {
-                        // An error means the sender is gone, which also stops.
-                        let _ = stop.wait_for(|stop| *stop).await;
-                    };
+                    let stop = stop_recording.clone().cancelled_owned();
                     let name = recv.name.clone();
                     recordings.spawn(async move {
                         let written = crate::record::finish(recording, stop).await?;
@@ -230,7 +227,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     println!("stopping ...");
 
     // Finish recordings first, while their broadcasts are still open.
-    stop_recording.send_replace(true);
+    stop_recording.cancel();
     while let Some(finished) = recordings.join_next().await {
         match finished {
             Ok(Ok(())) => {}
