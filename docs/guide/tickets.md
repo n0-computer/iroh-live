@@ -27,8 +27,7 @@ iroh-live:<base64url, no padding, of the endpoint id>/<name>
 ```
 
 Parsing also accepts it without the `iroh-live:` prefix. Serde uses the same
-string. The ticket also implements `iroh_tickets::Ticket` with kind
-`broadcast`.
+string.
 
 The ticket holds no addresses. iroh finds them from the endpoint id through
 pkarr and DNS, and `EndpointOptions` adds mDNS for local networks without

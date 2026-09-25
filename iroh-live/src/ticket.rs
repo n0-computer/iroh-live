@@ -112,33 +112,9 @@ impl<'de> Deserialize<'de> for BroadcastTicket {
     }
 }
 
-impl iroh_tickets::Ticket for BroadcastTicket {
-    const KIND: &'static str = "broadcast";
-
-    /// Encodes the 32 bytes of the endpoint id followed by the name.
-    fn encode_bytes(&self) -> Vec<u8> {
-        let mut bytes = self.peer.as_bytes().to_vec();
-        bytes.extend_from_slice(self.name.as_bytes());
-        bytes
-    }
-
-    fn decode_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
-        let too_short = || invalid("ticket too short");
-        let id: &[u8; ENDPOINT_ID_LEN] = bytes
-            .get(..ENDPOINT_ID_LEN)
-            .and_then(|id| id.try_into().ok())
-            .ok_or_else(too_short)?;
-        let peer = EndpointId::from_bytes(id).map_err(|_| invalid("invalid endpoint id"))?;
-        let name = std::str::from_utf8(&bytes[ENDPOINT_ID_LEN..])
-            .map_err(|_| invalid("name is not UTF-8"))?;
-        Ok(Self::new(peer, name))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
-    use iroh_tickets::Ticket;
 
     use super::*;
 
@@ -191,17 +167,6 @@ mod tests {
         let back: BroadcastTicket = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(&back, ticket);
         format!("\"{decoded}\"")
-    }
-
-    #[test]
-    fn the_iroh_ticket_form_round_trips() {
-        let ticket = BroadcastTicket::new(test_endpoint_id(), "studio/main");
-        let encoded = ticket.encode_string();
-        assert!(encoded.starts_with("broadcast"), "{encoded}");
-        assert_eq!(
-            BroadcastTicket::decode_string(&encoded).expect("decode"),
-            ticket
-        );
     }
 
     #[test]
