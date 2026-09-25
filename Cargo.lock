@@ -4506,14 +4506,10 @@ dependencies = [
  "n0-error",
  "n0-future",
  "n0-watcher",
- "serde_json",
- "strum",
  "symphonia",
- "throttled-tracing",
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -9922,17 +9918,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "throttled-tracing"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c8ec74140dfae112d4da4003f2cabdfd9b5efc84e8a4d610d87fc681280b642"
-dependencies = [
- "fastrand",
- "parking_lot",
- "tracing",
 ]
 
 [[package]]

@@ -322,11 +322,7 @@ async fn read_catalog(
     loop {
         match reader.next().await {
             Ok(Some(next)) => {
-                if tracing::enabled!(tracing::Level::TRACE)
-                    && let Ok(json) = serde_json::to_string(&next)
-                {
-                    trace!(catalog = %json, "catalog");
-                }
+                trace!(catalog = ?next, "catalog");
                 catalog.set(Some(Catalog::from(next))).ok();
             }
             Ok(None) => {
