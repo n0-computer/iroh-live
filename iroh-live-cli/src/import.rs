@@ -119,15 +119,12 @@ impl Importer {
 }
 
 /// A file publish that has parsed its header and is ready to run.
+#[derive(derive_more::Debug)]
 pub struct FileImport {
+    #[debug(skip)]
     importer: Importer,
+    #[debug(skip)]
     input: Input,
-}
-
-impl std::fmt::Debug for FileImport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FileImport").finish_non_exhaustive()
-    }
 }
 
 impl FileImport {

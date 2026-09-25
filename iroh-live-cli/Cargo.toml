@@ -13,7 +13,7 @@ path = "src/main.rs"
 bytes = "1.12.1"
 bytesize = "2.7"
 clap = { version = "4.6", features = ["derive"] }
-derive_more = { version = "2.1.1", features = ["display"] }
+derive_more = { version = "2.1.1", features = ["debug", "display"] }
 dirs = "7"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 hang = { workspace = true }

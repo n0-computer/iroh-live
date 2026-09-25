@@ -13,7 +13,6 @@
 //! twice.
 
 use std::{
-    fmt,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -254,6 +253,7 @@ enum Pictures {
 /// Dropping it stops the scan, which releases a camera it opened itself. Create
 /// one when the window enters scan mode and drop it when the window leaves,
 /// rather than holding an idle camera open behind a player.
+#[derive(Debug)]
 pub struct ScanView {
     view: FrameView,
     /// The frames being drawn, once a camera has opened.
@@ -262,14 +262,6 @@ pub struct ScanView {
     opened: watch::Receiver<Option<VideoFrames>>,
     state: watch::Receiver<ScanState>,
     _scan: AbortOnDropHandle<()>,
-}
-
-impl fmt::Debug for ScanView {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ScanView")
-            .field("state", &*self.state.borrow())
-            .finish_non_exhaustive()
-    }
 }
 
 impl ScanView {

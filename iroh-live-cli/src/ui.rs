@@ -516,16 +516,10 @@ const QR_QUIET: usize = 4;
 /// so the code has hard edges at whatever size it is drawn and resizing the
 /// window costs no re-render. Its pixels are opaque black and white rather than
 /// themed: a QR code reads dark on light and nothing else.
+#[derive(derive_more::Debug)]
 pub struct TicketQr {
+    #[debug(skip)]
     texture: egui::TextureHandle,
-}
-
-impl std::fmt::Debug for TicketQr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TicketQr")
-            .field("modules", &self.texture.size())
-            .finish()
-    }
 }
 
 impl TicketQr {
