@@ -226,9 +226,9 @@ pub(crate) async fn run(inputs: Inputs) {
                 Event::Opened(result) => {
                     let generation = switcher.replacement_generation().unwrap_or_default();
                     let result = result.unwrap_or_else(|err| {
-                        Err(Error::decoder(std::io::Error::other(format!(
+                        Err(Error::decoder_msg(format!(
                             "the decoder open task failed: {err}"
-                        ))))
+                        )))
                     });
                     switcher.opened(generation, result)
                 }
@@ -341,10 +341,10 @@ pub(crate) async fn run(inputs: Inputs) {
                         // With nothing on screen, a slow link is no reason to
                         // exclude the rendition, so it is asked for again.
                         exclude = playing.is_some();
-                        Abandon::Failed(Arc::new(Error::decoder(std::io::Error::other(format!(
+                        Abandon::Failed(Arc::new(Error::decoder_msg(format!(
                             "the decoder for {rendition} did not produce a picture within {}s",
                             switch_deadline.as_secs()
-                        )))))
+                        ))))
                     }
                 };
                 if let Abandon::Failed(err) = &abandon {
@@ -601,8 +601,8 @@ async fn spawn_reader(
                         failures += 1;
                         if failures >= MAX_CONSECUTIVE_DECODE_FAILURES {
                             error!(error = %err, failures, "no access unit decoded for a long time, giving up");
-                            let _ = gave_up.set(Arc::new(Error::decoder(std::io::Error::other(
-                                format!("the decoder refused {failures} access units in a row: {err}"),
+                            let _ = gave_up.set(Arc::new(Error::decoder_msg(format!(
+                                "the decoder refused {failures} access units in a row: {err}"
                             ))));
                             return;
                         }

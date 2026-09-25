@@ -451,10 +451,10 @@ fn choose(
             if excluded.contains(name) {
                 (
                     None,
-                    Some(Arc::new(Error::decoder(std::io::Error::other(format!(
+                    Some(Arc::new(Error::decoder_msg(format!(
                         "the decoder for {name} failed; playing another rendition until it \
                          is retried"
-                    ))))),
+                    )))),
                 )
             } else if let Err(err) = catalog.video_rendition(name) {
                 (None, Some(Arc::new(err)))

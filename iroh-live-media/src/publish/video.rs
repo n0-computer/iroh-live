@@ -197,9 +197,9 @@ fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Opt
         Ok(failure) => failure,
         Err(err) => {
             warn!(error = %err, "rendition encoder panicked");
-            Some(Arc::new(Error::encoder(std::io::Error::other(format!(
+            Some(Arc::new(Error::encoder_msg(format!(
                 "the encoder task panicked: {err}"
-            )))))
+            ))))
         }
     }
 }
