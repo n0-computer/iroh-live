@@ -27,9 +27,9 @@ pub enum Audience {
     Everyone,
     /// These peers, as the set changes.
     ///
-    /// Never offered to relays. Once the set's watchable is dropped, the
-    /// publication is offered to nobody.
-    Peers(n0_watcher::Direct<BTreeSet<EndpointId>>),
+    /// Never offered to relays. The publication holds the set: change it
+    /// through a clone of the watchable.
+    Peers(n0_watcher::Watchable<BTreeSet<EndpointId>>),
     /// No one, until offered with [`Session::offer`] or [`RelayLink::offer`].
     ///
     /// [`Session::offer`]: crate::Session::offer
@@ -49,7 +49,7 @@ impl From<&Audience> for AudienceKind {
     fn from(audience: &Audience) -> Self {
         match audience {
             Audience::Everyone => Self::Everyone,
-            Audience::Peers(peers) => Self::Peers(peers.clone().get()),
+            Audience::Peers(peers) => Self::Peers(peers.get()),
             Audience::Manual => Self::Manual,
         }
     }
@@ -218,35 +218,33 @@ pub(crate) fn peers_task(
     id: u64,
     shared: &Weak<Shared>,
 ) -> Option<AbortOnDropHandle<()>> {
-    let Audience::Peers(peers) = audience else {
+    let Audience::Peers(set) = audience else {
         return None;
     };
-    let mut peers = peers.clone();
+    let set = set.clone();
     let shared = shared.clone();
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
+        let mut peers = set.watch();
+        // Applied once up front too, for a change made while publishing.
+        let mut current = peers.get();
         loop {
-            // The set's owner dropped it: offer to nobody.
-            let (set, disconnected) = match peers.updated().await {
-                Ok(set) => (set, false),
-                Err(_) => (BTreeSet::new(), true),
-            };
-            let Some(shared) = shared.upgrade() else {
-                return;
-            };
-            let mut state = shared.state.lock().expect("poisoned");
-            let Some(entry) = state.publications.get_mut(&id) else {
-                return;
-            };
-            if disconnected {
-                info!(path = %entry.path, "audience set dropped, offering to nobody");
-            } else {
-                debug!(path = %entry.path, peers = set.len(), "audience peers changed");
+            {
+                let Some(shared) = shared.upgrade() else {
+                    return;
+                };
+                let mut state = shared.state.lock().expect("poisoned");
+                let Some(entry) = state.publications.get_mut(&id) else {
+                    return;
+                };
+                debug!(path = %entry.path, peers = current.len(), "audience peers set");
+                entry.audience = AudienceKind::Peers(current);
+                state.reconcile_publication(id);
             }
-            entry.audience = AudienceKind::Peers(set);
-            state.reconcile_publication(id);
-            if disconnected {
+            // This task holds `set`, so the watcher stays connected.
+            let Ok(next) = peers.updated().await else {
                 return;
-            }
+            };
+            current = next;
         }
     })))
 }

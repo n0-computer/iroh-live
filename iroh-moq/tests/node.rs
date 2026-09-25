@@ -118,7 +118,7 @@ async fn a_peers_audience_follows_its_set() {
         .publish(
             alice.path("cam"),
             &broadcast.producer,
-            Audience::Peers(members.watch()),
+            Audience::Peers(members.clone()),
         )
         .expect("publish");
 
@@ -159,9 +159,9 @@ async fn a_peers_audience_follows_its_set() {
     ends("carol after leaving the set", &mut carol_reading).await;
     read_counter(&for_bob.as_moq()).await;
 
-    // A set nobody keeps any more offers to nobody.
-    drop(members);
-    ends("bob after the set was dropped", &mut bob_reading).await;
+    // An empty set offers to nobody.
+    members.set(BTreeSet::new()).ok();
+    ends("bob after the set was emptied", &mut bob_reading).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -181,7 +181,7 @@ async fn offers_show_in_the_route_table() {
     let path = alice.path("cam");
     let _publication = alice
         .moq
-        .publish(&path, &broadcast.producer, Audience::Peers(members.watch()))
+        .publish(&path, &broadcast.producer, Audience::Peers(members.clone()))
         .expect("publish");
     let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await

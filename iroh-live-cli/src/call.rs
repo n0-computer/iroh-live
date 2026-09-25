@@ -376,30 +376,22 @@ mod window {
     ///
     /// The peer sees the offer in its route table, which is how it learns it
     /// is called, and dropping the offer is how it learns of a hang-up.
-    struct Offer {
-        publication: Publication,
-        /// The one peer the side is offered to. Dropping it offers to nobody.
-        _audience: Watchable<BTreeSet<EndpointId>>,
-    }
+    struct Offer(Publication);
 
     impl Offer {
         fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
-            let audience = Watchable::new(BTreeSet::from([peer]));
             let publication = live.moq().publish(
                 live.ticket(CALL).path(),
                 broadcast,
-                Audience::Peers(audience.watch()),
+                Audience::Peers(Watchable::new(BTreeSet::from([peer]))),
             )?;
-            Ok(Self {
-                publication,
-                _audience: audience,
-            })
+            Ok(Self(publication))
         }
     }
 
     impl Drop for Offer {
         fn drop(&mut self) {
-            self.publication.unpublish();
+            self.0.unpublish();
         }
     }
 

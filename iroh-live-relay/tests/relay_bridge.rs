@@ -1033,7 +1033,7 @@ async fn a_relay_gets_public_publications_only() {
         .publish(
             live.ticket("peers").path(),
             &peers,
-            Audience::Peers(members.watch()),
+            Audience::Peers(members.clone()),
         )
         .expect("publish");
     let manual = live

@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use iroh::{Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets};
+use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
 use iroh_live::{Audience, BroadcastTicket, CALL, Live, Publication, Reach, Subscription};
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, NetworkSample, Player,
@@ -139,21 +139,14 @@ async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active:
 }
 
 /// Offers `side` as `live`'s call side to `peer` only.
-fn offer(
-    live: &Live,
-    side: &LocalBroadcast,
-    peer: &Live,
-) -> (Publication, Watchable<BTreeSet<EndpointId>>) {
-    let audience = Watchable::new(BTreeSet::from([peer.endpoint().id()]));
-    let publication = live
-        .moq()
+fn offer(live: &Live, side: &LocalBroadcast, peer: &Live) -> Publication {
+    live.moq()
         .publish(
             live.ticket(CALL).path(),
             side,
-            Audience::Peers(audience.watch()),
+            Audience::Peers(Watchable::new(BTreeSet::from([peer.endpoint().id()]))),
         )
-        .expect("failed to offer");
-    (publication, audience)
+        .expect("failed to offer")
 }
 
 /// Subscribes `live` to `peer`'s call side.
@@ -199,7 +192,7 @@ async fn a_call_rings_answers_and_hangs_up() {
         first_frame(&player).await;
 
         // Alice hangs up: Bob's read ends and the ring stops.
-        alice_offer.0.unpublish();
+        alice_offer.unpublish();
         tokio::time::timeout(TIMEOUT, async {
             while !at_bob.as_moq().is_closed() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -208,7 +201,7 @@ async fn a_call_rings_answers_and_hangs_up() {
         .await
         .expect("bob did not notice the hang-up");
         ringing(&mut bob_table, &alice, false).await;
-        bob_offer.0.unpublish();
+        bob_offer.unpublish();
         drop((at_alice, player));
     }
     assert_eq!(

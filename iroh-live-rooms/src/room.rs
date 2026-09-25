@@ -261,7 +261,7 @@ impl Room {
         let publication = self.inner.moq.publish(
             room_path(topic, self.inner.me, name),
             broadcast,
-            Audience::Peers(self.inner.members.watch()),
+            Audience::Peers(self.inner.members.clone()),
         )?;
         info!(%name, path = %publication.path(), "published into the room");
         {

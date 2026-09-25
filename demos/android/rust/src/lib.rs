@@ -113,24 +113,22 @@ async fn bind_live() -> Result<Live> {
 ///
 /// The peer sees the offer in its route table, which is how it learns it is
 /// called, as `irl call` does.
-struct Offer {
-    _publication: Publication,
-    /// The one peer the side is offered to. Dropping it offers to nobody.
-    _audience: n0_watcher::Watchable<BTreeSet<EndpointId>>,
-}
+struct Offer(Publication);
 
 impl Offer {
     fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
-        let audience = n0_watcher::Watchable::new(BTreeSet::from([peer]));
         let publication = live.moq().publish(
             live.ticket(CALL).path(),
             broadcast,
-            Audience::Peers(audience.watch()),
+            Audience::Peers(n0_watcher::Watchable::new(BTreeSet::from([peer]))),
         )?;
-        Ok(Self {
-            _publication: publication,
-            _audience: audience,
-        })
+        Ok(Self(publication))
+    }
+}
+
+impl Drop for Offer {
+    fn drop(&mut self) {
+        self.0.unpublish();
     }
 }
 
