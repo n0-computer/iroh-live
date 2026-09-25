@@ -83,10 +83,7 @@ pub enum Error {
     /// slash, which would reach into another member's part of the room's
     /// namespace.
     #[error("invalid broadcast name {name:?}")]
-    InvalidName {
-        /// The name as given.
-        name: String,
-    },
+    InvalidName { name: String },
     /// The room was left.
     #[error("the room was left")]
     Left,
@@ -194,7 +191,7 @@ pub struct RoomState {
 }
 
 /// One member of a room.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomPeer {
     /// The name the member announced, if any.
     pub display_name: Option<String>,
@@ -401,27 +398,18 @@ impl Inner {
 
 /// A member's announcement in the room's gossip map.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct PeerState {
-    /// The broadcasts the member publishes into the room, by name.
-    broadcasts: BTreeSet<String>,
-    display_name: Option<String>,
+struct Announcement {
+    peer: RoomPeer,
     /// The member left; drop it without waiting for its lease to run out.
     left: bool,
 }
-
-/// Another member, as the actor tracks it.
-///
-/// Removing the entry drops its tasks, which aborts them, so nothing a removed
-/// member started can come back and change the room.
-type KvEntry = (EndpointId, Bytes, SignedValue);
 
 struct Actor {
     inner: Arc<Inner>,
     kv: iroh_smol_kv::Client,
     writer: WriteScope,
-    peers: BTreeMap<EndpointId, PeerState>,
-    /// The members a replay of the gossip map has shown so far, while one runs
-    /// after a resubscription.
+    peers: BTreeMap<EndpointId, RoomPeer>,
+    /// The members the replay after a resubscription has shown so far.
     resync: Option<BTreeSet<EndpointId>>,
 }
 
@@ -544,14 +532,17 @@ impl Actor {
     }
 
     /// Returns this member's announcement as it stands.
-    fn announcement(&self, left: bool) -> PeerState {
-        PeerState {
-            broadcasts: if left {
-                BTreeSet::new()
-            } else {
-                self.inner.local_names()
+    fn announcement(&self, left: bool) -> Announcement {
+        let broadcasts = if left {
+            BTreeSet::new()
+        } else {
+            self.inner.local_names()
+        };
+        Announcement {
+            peer: RoomPeer {
+                display_name: self.inner.display_name.get(),
+                broadcasts,
             },
-            display_name: self.inner.display_name.get(),
             left,
         }
     }
@@ -592,11 +583,11 @@ impl Actor {
         }
     }
 
-    fn handle_entry(&mut self, (remote, key, value): KvEntry) {
+    fn handle_entry(&mut self, (remote, key, value): (EndpointId, Bytes, SignedValue)) {
         if remote == self.inner.me || key != PEER_STATE_KEY {
             return;
         }
-        let Ok(announcement) = postcard::from_bytes::<PeerState>(&value.value) else {
+        let Ok(announcement) = postcard::from_bytes::<Announcement>(&value.value) else {
             warn!(
                 remote = %remote.fmt_short(),
                 len = value.value.len(),
@@ -616,52 +607,42 @@ impl Actor {
         }
         // Every member rewrites its announcement to renew its lease, so most of
         // these say nothing new.
+        let peer = announcement.peer;
         match self.peers.get(&remote) {
-            Some(known) if *known == announcement => {
+            Some(known) if *known == peer => {
                 trace!(remote = %remote.fmt_short(), "announcement renewed");
                 return;
             }
             Some(_) => debug!(
                 remote = %remote.fmt_short(),
-                broadcasts = ?announcement.broadcasts,
+                broadcasts = ?peer.broadcasts,
                 "member announcement changed",
             ),
             None => info!(
                 remote = %remote.fmt_short(),
-                display_name = ?announcement.display_name,
+                display_name = ?peer.display_name,
                 "member joined the room",
             ),
         }
-        self.peers.insert(remote, announcement);
+        self.peers.insert(remote, peer);
         self.publish_state();
     }
 
     /// Publishes the membership to the state watcher and the audience set.
     fn publish_state(&self) {
-        let state = RoomState {
-            peers: self
-                .peers
-                .iter()
-                .map(|(id, peer)| {
-                    (
-                        *id,
-                        RoomPeer {
-                            display_name: peer.display_name.clone(),
-                            broadcasts: peer.broadcasts.clone(),
-                        },
-                    )
-                })
-                .collect(),
-        };
         let members: BTreeSet<EndpointId> = self.peers.keys().copied().collect();
         self.inner.members.set(members).ok();
-        self.inner.state.set(state).ok();
+        self.inner
+            .state
+            .set(RoomState {
+                peers: self.peers.clone(),
+            })
+            .ok();
     }
 }
 
-/// Writes the announcement `desired` holds whenever it changes, and every
-/// [`STATE_REFRESH`] to renew this member's lease.
-async fn announce(writer: WriteScope, mut desired: n0_watcher::Direct<PeerState>) {
+/// Writes `desired` whenever it changes, and every [`STATE_REFRESH`].
+async fn announce(writer: WriteScope, mut desired: n0_watcher::Direct<Announcement>) {
     let mut refresh = tokio::time::interval(STATE_REFRESH);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -678,8 +659,8 @@ async fn announce(writer: WriteScope, mut desired: n0_watcher::Direct<PeerState>
 }
 
 /// Writes `state` under [`PEER_STATE_KEY`].
-async fn put(writer: &WriteScope, state: &PeerState) {
-    let bytes = postcard::to_stdvec(state).expect("an announcement serializes");
+async fn put(writer: &WriteScope, announcement: &Announcement) {
+    let bytes = postcard::to_stdvec(announcement).expect("an announcement serializes");
     if let Err(err) = writer.put(PEER_STATE_KEY, bytes).await {
         warn!(%err, "failed to write the announcement");
     }
@@ -723,13 +704,13 @@ mod tests {
     /// A member leaving says so, and the flag survives the wire.
     #[test]
     fn a_leaving_announcement_decodes_as_left() {
-        let state = PeerState {
+        let announcement = Announcement {
             left: true,
-            ..PeerState::default()
+            ..Announcement::default()
         };
-        let bytes = postcard::to_stdvec(&state).expect("encode");
-        let decoded: PeerState = postcard::from_bytes(&bytes).expect("decode");
-        assert_eq!(decoded, state);
+        let bytes = postcard::to_stdvec(&announcement).expect("encode");
+        let decoded: Announcement = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(decoded, announcement);
     }
 
     #[test]
