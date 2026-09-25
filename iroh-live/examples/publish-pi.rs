@@ -34,7 +34,7 @@ const BROADCAST: &str = "pi-cam";
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
 
     let live = Live::builder(EndpointOptions::from_env()?.bind().await?)

@@ -25,9 +25,7 @@ serde = "1.0.229"
 tracing = "0.1.44"
 
 [dev-dependencies]
-# The `subscribe_test` example, which the browser end-to-end suite drives, and
-# the `publish` example.
-anyhow = "1.0.104"
+# The examples.
 clap = { version = "4.6", features = ["derive"] }
 n0-tracing-test = "0.3.0"
 n0-watcher = "1"
