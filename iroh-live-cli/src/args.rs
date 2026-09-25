@@ -7,9 +7,7 @@ use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
 use iroh::EndpointId;
-use iroh_live::BroadcastTicket;
-#[cfg(feature = "render")]
-use iroh_live::rooms::RoomTicket;
+use iroh_live::{BroadcastTicket, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
@@ -260,7 +258,6 @@ pub enum ImportFormat {
 }
 
 /// How a subscriber decodes and plays the video in a window.
-#[cfg(feature = "render")]
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct PlaybackArgs {
     /// Decoder backend. A named backend has no fallback.
@@ -286,7 +283,6 @@ pub enum LatencyArg {
     Smooth,
 }
 
-#[cfg(feature = "render")]
 impl LatencyArg {
     /// Returns the player latency for this mode.
     ///
@@ -307,7 +303,6 @@ impl LatencyArg {
 }
 
 /// Arguments for `irl call`.
-#[cfg(feature = "render")]
 #[derive(Args, Debug)]
 pub struct CallArgs {
     /// Ticket the peer's `irl call` printed. Omit to wait for a call.
@@ -333,7 +328,6 @@ pub struct CallArgs {
 }
 
 /// Arguments for `irl room`.
-#[cfg(feature = "render")]
 #[derive(Args, Debug)]
 pub struct RoomArgs {
     /// Ticket another participant's `irl room` printed.
@@ -401,7 +395,6 @@ pub struct WatchArgs {
     pub remote: RemoteArgs,
 
     /// Video decoding. Unused under `--no-video`.
-    #[cfg(feature = "render")]
     #[command(flatten)]
     pub playback: PlaybackArgs,
 
@@ -413,7 +406,6 @@ pub struct WatchArgs {
     ///
     /// The window shows the camera and connects once a ticket decodes. With
     /// a ticket given, it plays that one and the scanner is one button away.
-    #[cfg(feature = "render")]
     #[arg(long, conflicts_with = "no_video")]
     pub scan: bool,
 
@@ -421,7 +413,6 @@ pub struct WatchArgs {
     ///
     /// Default: the Raspberry Pi camera where available, else the default
     /// camera. On a Pi with a USB webcam, pass `cam`.
-    #[cfg(feature = "render")]
     #[arg(long, value_name = "SPEC")]
     pub scan_camera: Option<String>,
 
@@ -486,7 +477,7 @@ pub enum RecordFormat {
     Mkv,
 }
 
-#[cfg(all(test, feature = "render"))]
+#[cfg(test)]
 mod tests {
     use clap::ValueEnum as _;
 

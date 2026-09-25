@@ -23,10 +23,8 @@ enum Start {
     /// A ticket the terminal dials before any window opens.
     Ticket(BroadcastTicket),
     /// A ticket the window dials, so `--scan` has a screen to cancel into.
-    #[cfg(feature = "render")]
     TicketInWindow(BroadcastTicket),
     /// No ticket: the camera reads one.
-    #[cfg(feature = "render")]
     Scan,
 }
 
@@ -46,11 +44,9 @@ struct Options {
     /// The rendition `--rendition` pinned.
     rendition: Option<String>,
     /// The camera the scan screen opens.
-    #[cfg(feature = "render")]
     scan_camera: Option<crate::source_spec::VideoSourceSpec>,
     tracks: TrackSelection,
     /// How the video is decoded.
-    #[cfg(feature = "render")]
     playback: crate::args::PlaybackArgs,
     /// Where the audio plays.
     output: AudioOutput,
@@ -61,13 +57,11 @@ impl From<&WatchArgs> for Options {
         Self {
             rendition: args.rendition.clone(),
             // Parsed by the caller, which can report a bad specifier.
-            #[cfg(feature = "render")]
             scan_camera: None,
             tracks: match args.no_video {
                 true => TrackSelection::AudioOnly,
                 false => TrackSelection::Both,
             },
-            #[cfg(feature = "render")]
             playback: args.playback,
             // Opened by the async `setup`.
             output: AudioOutput::null(),
@@ -79,39 +73,18 @@ impl From<&WatchArgs> for Options {
 pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     let start = start(&args)?;
 
-    // Checked before dialing, so a build that cannot draw fails fast.
-    #[cfg(not(feature = "render"))]
-    if !args.no_video {
-        return Err(anyerr!(
-            "watching video needs the 'render' feature, which this build was \
-             compiled without; pass --no-video to play the audio alone"
-        ));
-    }
-
     let mut options = Options::from(&args);
-    #[cfg(feature = "render")]
-    {
-        options.scan_camera = crate::scan::camera_spec(args.scan_camera.as_deref())
-            .map_err(|err| anyerr!("{err}"))?;
-    }
+    options.scan_camera =
+        crate::scan::camera_spec(args.scan_camera.as_deref()).map_err(|err| anyerr!("{err}"))?;
     let (live, output) = rt.block_on(setup(&args))?;
     options.output = output;
 
-    #[cfg_attr(
-        not(feature = "render"),
-        allow(
-            clippy::infallible_destructuring_match,
-            reason = "the other two arms are compiled out, not absent"
-        )
-    )]
     let ticket = match start {
         // eframe takes the main thread. The guard lets it spawn onto the runtime.
-        #[cfg(feature = "render")]
         Start::Scan => {
             let _guard = rt.enter();
             return window::run(live, window::Opening::Scanning, options, args.fullscreen);
         }
-        #[cfg(feature = "render")]
         Start::TicketInWindow(ticket) => {
             let _guard = rt.enter();
             let opening = window::Opening::Connecting(Box::new(ticket));
@@ -128,19 +101,14 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         return wait_for_ctrl_c(rt, live, sub, player);
     }
 
-    #[cfg(feature = "render")]
-    {
-        let _guard = rt.enter();
-        let connected = window::Connected {
-            ticket,
-            sub,
-            player,
-        };
-        let opening = window::Opening::Watching(Box::new(connected));
-        window::run(live, opening, options, args.fullscreen)
-    }
-    #[cfg(not(feature = "render"))]
-    unreachable!("video was rejected above in a build without the render feature")
+    let _guard = rt.enter();
+    let connected = window::Connected {
+        ticket,
+        sub,
+        player,
+    };
+    let opening = window::Opening::Watching(Box::new(connected));
+    window::run(live, opening, options, args.fullscreen)
 }
 
 /// Decides where the first ticket comes from and who dials it.
@@ -153,7 +121,6 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// Fails if nothing names a broadcast and `--scan` is not set.
 fn start(args: &WatchArgs) -> Result<Start> {
     // clap rejects `--scan` with `--no-video`, so both paths open a window.
-    #[cfg(feature = "render")]
     if args.scan {
         return Ok(args
             .remote
@@ -164,10 +131,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
     let ticket = args
         .remote
         .ticket()
-        .map_err(|err| match cfg!(feature = "render") {
-            true => anyerr!("{err}, or pass --scan to read one off a QR code"),
-            false => err,
-        })?;
+        .map_err(|err| anyerr!("{err}, or pass --scan to read one off a QR code"))?;
     Ok(Start::Ticket(ticket))
 }
 
@@ -222,13 +186,7 @@ async fn connect(
         catalog.video_rendition(name)?;
     }
 
-    #[cfg(feature = "render")]
     let config = crate::ui::player_config(&options.playback, Some(&options.output));
-    #[cfg(not(feature = "render"))]
-    let config = PlayerConfig {
-        audio: Some(options.output.clone()),
-        ..PlayerConfig::default()
-    };
     let rendition = match (options.tracks, &options.rendition) {
         // An unused video decoder would still cost a core.
         (TrackSelection::AudioOnly, _) => RenditionMode::Off,
@@ -260,7 +218,6 @@ fn wait_for_ctrl_c(
     })
 }
 
-#[cfg(feature = "render")]
 mod window {
     //! The player window, with its scan, connecting and stopped screens.
 
@@ -954,7 +911,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "render")]
     fn a_ticket_alongside_scan_is_dialed_from_inside_the_window() {
         let (id, name) = endpoint_and_name();
         let start = start(&watch_args(&[
@@ -968,7 +924,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "render")]
     fn scan_without_a_ticket_opens_the_camera() {
         assert!(matches!(start(&watch_args(&["--scan"])), Ok(Start::Scan)));
     }

@@ -69,32 +69,15 @@ async fn setup_capture(
 
 /// Publishes capture devices, optionally alongside a preview window.
 fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    // Fail before opening any device.
-    #[cfg(not(feature = "render"))]
-    if args.preview {
-        return Err(anyerr!(
-            "--preview needs the 'render' feature, which this build was \
-             compiled without; publish without it, or install a build that has it"
-        ));
-    }
-
     let (live, broadcast, sources, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
         return wait_for_ctrl_c(rt, live, broadcast, sources);
     }
 
-    #[cfg(feature = "render")]
-    {
-        // eframe takes the main thread. The guard keeps the runtime entered.
-        let _guard = rt.enter();
-        preview::run(live, broadcast, sources, ticket, args)
-    }
-    #[cfg(not(feature = "render"))]
-    {
-        let _ = ticket;
-        unreachable!("--preview is rejected above in a build without the render feature")
-    }
+    // eframe takes the main thread. The guard keeps the runtime entered.
+    let _guard = rt.enter();
+    preview::run(live, broadcast, sources, ticket, args)
 }
 
 /// Publishes a media file, republishing its tracks without decoding them.
@@ -153,7 +136,6 @@ fn wait_for_ctrl_c(
     })
 }
 
-#[cfg(feature = "render")]
 mod preview {
     //! The preview window, with the captured frames and a source picker.
     //!

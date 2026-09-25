@@ -3,10 +3,8 @@
 The `irl` binary is in the `iroh-live-cli` crate. It has seven commands:
 `devices`, `publish`, `watch`, `call`, `room`, `record`, and `run`.
 
-The default features are `aec`, `playback`, `render`, and `sound-server`.
-Without `render`, `call` and `room` do not exist, `watch` plays audio only
-with `--no-video`, and `publish --preview` fails. `record` and `run` never open
-a window.
+The default features are `aec`, `playback`, and `sound-server`. `record` and
+`run` never open a window.
 
 ## `irl devices`
 
@@ -89,7 +87,7 @@ Window and file source:
 
 | Flag | Description |
 |---|---|
-| `--preview` | Open a window that shows what is published. Needs `render` |
+| `--preview` | Open a window that shows what is published |
 | `--fullscreen` | Start the preview window in fullscreen |
 | `--format <FMT>` | Container of a `file:` video source: `fmp4` (default) or `avc3` |
 | `--transcode` | Re-mux or re-encode a `file:` video source through ffmpeg first. A plain MP4 and a looped file need it |
@@ -150,10 +148,10 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 | `--no-video` | Play audio only. No window opens |
 | `--rendition <NAME>` | Play this rendition only, instead of adapting to the link |
 | `--fullscreen` | Start in fullscreen |
-| `--scan` | Read the ticket from a QR code held up to the camera. Needs `render` |
-| `--scan-camera <SPEC>` | The camera `--scan` reads: `cam`, `cam:<id>`, or `rpicam`. Needs `render` |
-| `--decoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvdec`, `vaapi`, `v4l2`, `openh264`. Needs `render` |
-| `--latency <MODE>` | `realtime`, `balanced` (default), or `smooth`. Needs `render` |
+| `--scan` | Read the ticket from a QR code held up to the camera |
+| `--scan-camera <SPEC>` | The camera `--scan` reads: `cam`, `cam:<id>`, or `rpicam` |
+| `--decoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvdec`, `vaapi`, `v4l2`, `openh264` |
+| `--latency <MODE>` | `realtime`, `balanced` (default), or `smooth` |
 | `--audio-output <ID>` | Play through this device, by the id `irl devices` prints. Needs `playback` |
 
 With `--scan`, the window opens on the camera picture and connects as soon as

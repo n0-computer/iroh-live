@@ -10,7 +10,6 @@ use clap::{Parser, Subcommand};
 
 mod args;
 mod backend;
-#[cfg(feature = "render")]
 mod call;
 mod devices;
 mod import;
@@ -18,15 +17,12 @@ mod playback;
 mod publish;
 mod record;
 mod rendition;
-#[cfg(feature = "render")]
 mod room;
 mod run;
-#[cfg(feature = "render")]
 mod scan;
 mod source;
 mod source_spec;
 mod transport;
-#[cfg(feature = "render")]
 mod ui;
 mod watch;
 
@@ -41,7 +37,6 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Place or answer a 1:1 video call.
-    #[cfg(feature = "render")]
     Call(Box<args::CallArgs>),
     /// List cameras, displays, and audio devices.
     Devices,
@@ -50,7 +45,6 @@ enum Command {
     /// Record a remote broadcast to a file, without a window.
     Record(Box<args::RecordArgs>),
     /// Join a room: publish, and watch everyone else.
-    #[cfg(feature = "render")]
     Room(Box<args::RoomArgs>),
     /// Run a multi-stream session described by a TOML file.
     Run(args::RunArgs),
@@ -70,12 +64,10 @@ fn main() -> n0_error::Result {
         .build()?;
 
     match cli.command {
-        #[cfg(feature = "render")]
         Command::Call(args) => call::run(*args, &rt),
         Command::Devices => devices::run(&rt),
         Command::Publish(args) => publish::run(*args, &rt),
         Command::Record(args) => record::run(*args, &rt),
-        #[cfg(feature = "render")]
         Command::Room(args) => room::run(*args, &rt),
         Command::Run(args) => run::run(args, &rt),
         Command::Watch(args) => watch::run(*args, &rt),
@@ -142,7 +134,6 @@ mod tests {
 
     /// `--scan` names the broadcast, so no ticket is needed.
     #[test]
-    #[cfg(feature = "render")]
     fn scanning_stands_in_for_a_ticket() {
         let cli = Cli::try_parse_from(["irl", "watch", "--scan"])
             .expect("--scan supplies the ticket the camera is about to read");
@@ -155,7 +146,6 @@ mod tests {
 
     /// The scan screen is a window, and `--no-video` opens none.
     #[test]
-    #[cfg(feature = "render")]
     fn scanning_and_no_video_are_rejected_together() {
         Cli::try_parse_from(["irl", "watch", "--scan", "--no-video"])
             .expect_err("a scan needs a window to draw the camera in");

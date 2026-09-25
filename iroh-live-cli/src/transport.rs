@@ -18,7 +18,6 @@ use crate::args::TransportArgs;
 /// Covers a dial that never completes and a catalog that never arrives. A
 /// window cannot be interrupted like a terminal, so `irl call` and `irl room`
 /// stop waiting.
-#[cfg(feature = "render")]
 pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long a subscription waits before saying nothing arrived yet.
@@ -43,7 +42,6 @@ pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Li
 /// Binds an endpoint that also runs rooms, and starts the MoQ transport on it.
 ///
 /// Always serves, since other participants dial in.
-#[cfg(feature = "render")]
 pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
     let endpoint = EndpointOptions::from_env()?.bind().await?;
     let builder = Live::builder(endpoint).with_router();

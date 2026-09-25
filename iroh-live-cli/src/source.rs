@@ -45,13 +45,6 @@ const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
 
 /// The sources [`configure`] opened, for a preview or a QR scanner.
 #[derive(Debug, Default)]
-#[cfg_attr(
-    not(feature = "render"),
-    expect(
-        dead_code,
-        reason = "only the windows draw a preview or lend the camera"
-    )
-)]
 pub struct Opened {
     /// The raw video source. `None` for no video or pre-encoded video.
     pub video: Option<VideoSource>,
@@ -254,7 +247,6 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
 }
 
 /// Returns the test pattern at its default size and rate.
-#[cfg(feature = "render")]
 pub fn default_test_pattern() -> VideoSource {
     VideoSource::test_pattern(
         TEST_SIZE,

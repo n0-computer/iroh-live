@@ -76,5 +76,5 @@ forward them.
 | `rpicam` | no | The `rpicam-vid` sources. Linux only, needs the program on `PATH` |
 
 The generated sources need no feature. `iroh-live` defaults to `capture`,
-`render` and `sound-server`. `iroh-live-cli` defaults to `aec`, `playback`,
-`render` and `sound-server`.
+`render` and `sound-server`. `iroh-live-cli` always renders and
+defaults to `aec`, `playback` and `sound-server`.
