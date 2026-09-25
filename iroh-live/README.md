@@ -62,8 +62,9 @@ let mut frames = player.video();
 - `grant` is the grant a live node gives each peer: subscribe to anything,
   publish only under the peer's own id. `moq_config` is the `MoqConfig` that
   uses it.
-- `Error` is `Transport` (an `iroh_moq::Error`) or `Media` (an
-  `iroh_live_media::Error`).
+- `Error` wraps an `iroh_moq::Error` as `Transport` and, with `media`, an
+  `iroh_live_media::Error` as `Media`. Its other variants come from binding an
+  endpoint and parsing a ticket.
 
 ## Features
 

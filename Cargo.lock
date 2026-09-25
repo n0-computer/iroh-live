@@ -4389,7 +4389,6 @@ dependencies = [
  "iroh-live-rooms",
  "iroh-mdns-peer-lookup",
  "iroh-moq",
- "iroh-tickets",
  "moq-net",
  "n0-error",
  "n0-tracing-test",

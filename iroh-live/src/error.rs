@@ -2,7 +2,8 @@
 
 use n0_error::stack_error;
 
-/// An error from the transport, the media on top of it, or binding the endpoint.
+/// An error from the transport, the media on top of it, binding the endpoint, or
+/// parsing a ticket.
 #[stack_error(derive, add_meta, from_sources)]
 pub enum Error {
     /// A peer was unreachable, or a path could not be resolved or published.
@@ -18,4 +19,7 @@ pub enum Error {
     /// The endpoint could not be bound.
     #[error("failed to bind the endpoint")]
     Bind { source: iroh::endpoint::BindError },
+    /// A string is not a [`BroadcastTicket`](crate::BroadcastTicket).
+    #[error("invalid broadcast ticket: {reason}")]
+    InvalidTicket { reason: &'static str },
 }

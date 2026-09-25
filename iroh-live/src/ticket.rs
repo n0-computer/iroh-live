@@ -7,9 +7,11 @@
 use std::{fmt, str::FromStr};
 
 use iroh::EndpointId;
-use iroh_tickets::ParseError;
 use moq_net::{Path, PathOwned};
+use n0_error::e;
 use serde::{Deserialize, Serialize};
+
+use crate::Error;
 
 /// The broadcast name of a call, as `irl call` and the Android demo use it.
 ///
@@ -39,7 +41,7 @@ const ENDPOINT_ID_LEN: usize = 32;
 /// let parsed: BroadcastTicket = ticket.to_string().parse()?;
 /// assert_eq!(parsed, ticket);
 /// assert_eq!(ticket.path().as_str(), format!("live/{peer}/studio"));
-/// # Ok::<(), iroh_tickets::ParseError>(())
+/// # Ok::<(), iroh_live::Error>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BroadcastTicket {
@@ -82,7 +84,7 @@ impl BroadcastTicket {
         Some(Self::new(peer.parse().ok()?, name))
     }
 
-    fn parse_uri(rest: &str) -> Result<Self, ParseError> {
+    fn parse_uri(rest: &str) -> Result<Self, Error> {
         let (id, name) = rest
             .split_once('/')
             .ok_or_else(|| invalid("missing / separator"))?;
@@ -99,8 +101,8 @@ impl BroadcastTicket {
     }
 }
 
-fn invalid(reason: &'static str) -> ParseError {
-    ParseError::verification_failed(reason)
+fn invalid(reason: &'static str) -> Error {
+    e!(Error::InvalidTicket { reason })
 }
 
 impl fmt::Display for BroadcastTicket {
@@ -111,7 +113,7 @@ impl fmt::Display for BroadcastTicket {
 }
 
 impl FromStr for BroadcastTicket {
-    type Err = ParseError;
+    type Err = Error;
 
     /// Parses the `iroh-live:` URI, with or without its scheme.
     fn from_str(s: &str) -> Result<Self, Self::Err> {

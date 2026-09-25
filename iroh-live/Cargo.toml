@@ -13,7 +13,6 @@ derive_more = { version = "2.1.1", features = ["debug"] }
 iroh = { workspace = true }
 # mDNS address lookup, for networks without internet access.
 iroh-mdns-peer-lookup = "0.1.2"
-iroh-tickets = { workspace = true }
 iroh-moq = { workspace = true }
 # Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
 # knows nothing about rooms.
