@@ -8,7 +8,7 @@ use iroh::{
 };
 use iroh_live_media::RemoteBroadcast;
 use iroh_moq::{
-    Audience, Grant, Moq, MoqConfig, Publication, Reach, RouteInfo, Subscription,
+    Audience, Grant, Moq, MoqConfig, Publication, Reach, Subscription,
     net::{Pattern, Patterns},
 };
 use moq_net::{Consume, broadcast};
@@ -229,11 +229,6 @@ impl Live {
             subscription.as_moq(),
         )
         .with_network(network::signals(subscription.clone()))
-    }
-
-    /// Returns every route to the ticket's broadcast, as the routes change.
-    pub fn routes(&self, ticket: &BroadcastTicket) -> n0_watcher::Direct<Vec<RouteInfo>> {
-        self.moq.routes(ticket.path())
     }
 
     /// Shuts the node down, the router and the endpoint included.

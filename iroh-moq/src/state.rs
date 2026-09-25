@@ -11,11 +11,10 @@ use std::collections::{BTreeMap, HashMap};
 use iroh::EndpointId;
 use moq_net::{Path, PathOwned, broadcast, origin};
 use n0_future::task::{AbortOnDropHandle, JoinSet};
-use n0_watcher::Watchable;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::{Grant, LinkId, LinkKind, RouteInfo, Session, link::LinkState, publish::AudienceKind};
+use crate::{Grant, LinkKind, Session, link::LinkState, publish::AudienceKind};
 
 /// A running offer: the task answering requests for one path on one origin.
 pub(crate) type Serve = AbortOnDropHandle<()>;
@@ -28,8 +27,6 @@ pub(crate) struct State {
     pub(crate) links: BTreeMap<u64, LinkEntry>,
     /// Which link last served each path a subscriber asked for.
     served: HashMap<PathOwned, u64>,
-    /// The route lists [`Moq::routes`](crate::Moq::routes) handed out, by path.
-    watchers: HashMap<PathOwned, Watchable<Vec<RouteInfo>>>,
     /// Set once the node shuts down; nothing is added after that.
     pub(crate) closed: bool,
 }
@@ -79,8 +76,6 @@ pub(crate) struct LinkEntry {
     /// The running offers, by publication.
     #[debug(skip)]
     pub(crate) offers: HashMap<u64, Option<Serve>>,
-    /// What the peer announces, by prefix: cost and hop count.
-    pub(crate) announced: BTreeMap<PathOwned, (u64, usize)>,
     /// The session, for a direct link.
     pub(crate) session: Option<Session>,
     /// The latest reading of the link's connection monitor.
@@ -117,14 +112,12 @@ impl State {
             manual.remove(&id);
         }
         self.served.retain(|_, link| *link != id);
-        self.notify();
     }
 
     /// Adds a publication and offers it on every link it should reach.
     pub(crate) fn add_publication(&mut self, id: u64, publication: PubEntry) {
         self.publications.insert(id, publication);
         self.reconcile_publication(id);
-        self.notify();
     }
 
     /// Removes a publication from every link and from the route table.
@@ -133,7 +126,6 @@ impl State {
         for link in self.links.values_mut() {
             link.offers.remove(&id);
         }
-        self.notify();
         Some(entry)
     }
 
@@ -181,28 +173,9 @@ impl State {
         entry.offers.insert(publication, offer);
     }
 
-    /// Records what link `link` announces at `prefix`, or that it withdrew it.
-    pub(crate) fn set_announced(
-        &mut self,
-        link: u64,
-        prefix: PathOwned,
-        route: Option<(u64, usize)>,
-    ) {
-        let Some(entry) = self.links.get_mut(&link) else {
-            return;
-        };
-        match route {
-            Some(route) => entry.announced.insert(prefix, route),
-            None => entry.announced.remove(&prefix),
-        };
-        self.notify();
-    }
-
     /// Records that link `link` served a subscriber's request for `path`.
     pub(crate) fn set_served(&mut self, path: PathOwned, link: u64) {
-        if self.served.insert(path, link) != Some(link) {
-            self.notify();
-        }
+        self.served.insert(path, link);
     }
 
     /// Returns the link that last served `path`, if it still exists.
@@ -213,74 +186,11 @@ impl State {
             .filter(|link| self.links.contains_key(link))
     }
 
-    /// Returns a watcher over every route to `path`.
-    pub(crate) fn watch_routes(&mut self, path: PathOwned) -> n0_watcher::Direct<Vec<RouteInfo>> {
-        let routes = self.routes(&path);
-        self.watchers
-            .entry(path)
-            .or_insert_with(|| Watchable::new(routes))
-            .watch()
-    }
-
-    /// Returns every route to `path`.
-    ///
-    /// This node's own publication, and each link that announces a prefix
-    /// covering it.
-    pub(crate) fn routes(&self, path: &Path<'_>) -> Vec<RouteInfo> {
-        let served = self.served(path);
-        let local = self.publications.values().any(|publication| {
-            publication.path == *path && matches!(publication.audience, AudienceKind::Everyone)
-        });
-        let mut routes = Vec::new();
-        if local {
-            routes.push(RouteInfo {
-                via: LinkId::LOCAL,
-                kind: LinkKind::Local,
-                remote: None,
-                hops: 0,
-                cost: 0,
-                active: true,
-            });
-        }
-        for (id, link) in &self.links {
-            // The most specific prefix wins within one link, as it does in moq.
-            let covering = link
-                .announced
-                .iter()
-                .filter(|(prefix, _)| path.has_prefix(*prefix))
-                .max_by_key(|(prefix, _)| prefix.len());
-            if let Some((_, (cost, hops))) = covering {
-                routes.push(RouteInfo {
-                    via: LinkId(*id),
-                    kind: link.kind,
-                    remote: link.remote,
-                    hops: *hops,
-                    cost: *cost,
-                    active: !local && served == Some(*id),
-                });
-            }
-        }
-        routes
-    }
-
     /// Reports whether a relay link feeds the route table.
     pub(crate) fn has_relays(&self) -> bool {
         self.links
             .values()
             .any(|link| link.kind == LinkKind::Relay && link.consume)
-    }
-
-    /// Recomputes the watched route lists and forgets the unwatched ones.
-    fn notify(&mut self) {
-        self.watchers
-            .retain(|_, watchable| watchable.has_watchers());
-        let paths: Vec<PathOwned> = self.watchers.keys().cloned().collect();
-        for path in paths {
-            let routes = self.routes(&path);
-            if let Some(watchable) = self.watchers.get(&path) {
-                watchable.set(routes).ok();
-            }
-        }
     }
 }
 

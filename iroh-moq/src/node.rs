@@ -20,7 +20,7 @@ use tracing::{Instrument, debug, info, info_span};
 
 use crate::{
     Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, Publication, RelayConfig,
-    RelayLink, RouteInfo, Session, Subscription,
+    RelayLink, Session, Subscription,
     admission::{self, INCOMING_QUEUE},
     publish, relay, route,
     session::{Actor, ActorMessage, SessionParts, hop_for},
@@ -243,15 +243,6 @@ impl Moq {
     /// they come and go.
     pub fn origin(&self) -> origin::Consumer {
         self.shared.table.consume()
-    }
-
-    /// Returns every route to `path`, and which one serves, as they change.
-    pub fn routes(&self, path: impl AsPath) -> n0_watcher::Direct<Vec<RouteInfo>> {
-        self.shared
-            .state
-            .lock()
-            .expect("poisoned")
-            .watch_routes(path.as_path().to_owned())
     }
 
     /// Returns the session with `peer`, dialing if there is none.

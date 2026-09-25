@@ -103,9 +103,8 @@ impl Session {
 
     /// Returns this session's link id.
     ///
-    /// It is the [`RouteInfo::via`](crate::RouteInfo::via) of every route that
-    /// arrived over this session. A later session with the same peer gets a
-    /// new id.
+    /// It is the [`ServingLink::id`](crate::ServingLink::id) of what this
+    /// session serves. A later session with the same peer gets a new id.
     pub fn link_id(&self) -> LinkId {
         LinkId(self.inner.link)
     }
@@ -595,7 +594,6 @@ impl Actor {
                 public: true,
                 consume: true,
                 offers: HashMap::new(),
-                announced: Default::default(),
                 session: Some(session.clone()),
                 link_state: link_state.clone(),
             },

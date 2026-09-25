@@ -829,25 +829,24 @@ async fn a_relay_link_publishes_and_consumes() {
             .expect("subscribe through the relay");
     let frame = first_frame(&subscription.as_moq(), "data").await;
     assert_eq!(&frame.payload[..], b"from-the-browser");
-    let routes = moq.routes("browser-stream").get();
-    assert!(
-        routes.iter().any(
-            |route| route.kind == LinkKind::Relay && route.cost >= iroh_moq::DEFAULT_RELAY_COST
-        ),
-        "{routes:?}"
-    );
-
+    let serving = subscription.link().expect("a serving link");
+    assert_eq!(serving.kind, LinkKind::Relay);
     // Detaching withdraws what the relay taught the route table.
-    link.detach().await;
-    assert_eq!(link.status().get(), RelayStatus::Detached);
-    let mut routes = moq.routes("browser-stream");
-    tokio::time::timeout(TIMEOUT, async {
-        while !routes.get().is_empty() {
-            routes.updated().await.expect("node gone");
+    let mut updates = moq.origin().announced();
+    let route = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let update = updates.next().await.expect("origin closed");
+            if update.prefix.as_str() == "browser-stream" {
+                return update.route;
+            }
         }
     })
     .await
-    .expect("the relay's routes outlived the link");
+    .expect("the relay's route never reached the table");
+    assert!(route.cost.warm >= iroh_moq::DEFAULT_RELAY_COST, "{route:?}");
+    link.detach().await;
+    assert_eq!(link.status().get(), RelayStatus::Detached);
+    retracted(&mut updates, "browser-stream").await;
 
     drop(broadcast);
     live.shutdown().await;
@@ -916,6 +915,28 @@ fn counter(name: &str) -> (moq_net::broadcast::Producer, AbortOnDropHandle<()>) 
         }
     }));
     (broadcast, writer)
+}
+
+/// Waits until `origin` has a route to `path`.
+async fn routed(origin: &origin::Consumer, path: &str) {
+    tokio::time::timeout(TIMEOUT, origin.routed(path))
+        .await
+        .unwrap_or_else(|_| panic!("{path} was never routed"))
+        .expect("the origin closed");
+}
+
+/// Waits until `updates` retracts `path`.
+async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let update = updates.next().await.expect("origin closed");
+            if update.prefix.as_str() == path && !update.kind.is_active() {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{path} was never retracted"));
 }
 
 /// Reports whether `origin` routes `path` within a second.
@@ -1103,7 +1124,6 @@ async fn shutdown_detaches_relay_links() {
 #[serial]
 async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     use iroh_moq::{Audience, LinkKind, Reach, RelayOffer};
-    use n0_watcher::Watcher;
 
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1125,19 +1145,8 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     .expect("subscribe timeout")
     .expect("subscribe");
     let mut reader = subscribed(&subscription.as_moq()).await;
-    let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
-    let mut routes = bob.moq().routes(publication.path());
-    tokio::time::timeout(TIMEOUT, async {
-        while !routes
-            .get()
-            .iter()
-            .any(|route| route.kind == LinkKind::Relay)
-        {
-            routes.updated().await.expect("node gone");
-        }
-    })
-    .await
-    .expect("the relay never routed the publication");
+    let bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
+    routed(&bob_link.origin(), publication.path().as_str()).await;
 
     subscription
         .session()
@@ -1157,12 +1166,10 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     .expect("subscribe timeout")
     .expect("subscribe through the relay");
     subscribed(&again.as_moq()).await;
-    let routes = bob.moq().routes(publication.path()).get();
-    assert!(
-        routes
-            .iter()
-            .any(|route| route.kind == LinkKind::Relay && route.active),
-        "{routes:?}"
+    assert_eq!(
+        again.link().map(|link| link.kind),
+        Some(LinkKind::Relay),
+        "not served by the relay"
     );
 
     bob.shutdown().await;
@@ -1201,8 +1208,7 @@ fn hop_of(id: iroh::EndpointId) -> moq_net::Hop {
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
-    use iroh_moq::{Audience, LinkKind, Reach, RelayOffer};
-    use n0_watcher::Watcher;
+    use iroh_moq::{Audience, Reach, RelayOffer};
 
     const FORGED: u64 = 1_000_000;
 
@@ -1259,19 +1265,8 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     .expect("subscribe timeout")
     .expect("subscribe");
     let mut reader = subscribed(&subscription.as_moq()).await;
-    let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
-    let mut routes = bob.moq().routes(publication.path());
-    tokio::time::timeout(TIMEOUT, async {
-        while !routes
-            .get()
-            .iter()
-            .any(|route| route.kind == LinkKind::Relay)
-        {
-            routes.updated().await.expect("node gone");
-        }
-    })
-    .await
-    .expect("the relay never routed the forged path");
+    let bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
+    routed(&bob_link.origin(), publication.path().as_str()).await;
 
     subscription
         .session()
@@ -1506,7 +1501,7 @@ async fn room_node() -> (
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_forge_a_room_members_broadcast() {
-    use iroh_moq::{LinkKind, RelayConfig, RelayOffer, RelayStatus};
+    use iroh_moq::{RelayConfig, RelayOffer, RelayStatus};
     use n0_watcher::Watcher;
 
     let _ = tracing_subscriber::fmt::try_init();
@@ -1562,18 +1557,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     })
     .await
     .expect("the relay link never connected");
-    let mut routes = alice_moq.routes(cam_path.as_str());
-    tokio::time::timeout(TIMEOUT, async {
-        while !routes
-            .get()
-            .iter()
-            .any(|route| route.kind == LinkKind::Relay)
-        {
-            routes.updated().await.expect("node gone");
-        }
-    })
-    .await
-    .expect("the forged camera never reached alice's table");
+    routed(&alice_moq.origin(), cam_path.as_str()).await;
 
     let room_b = bob_rooms
         .join(&room_a.ticket(), Some("bob".into()))

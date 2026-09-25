@@ -12,7 +12,6 @@ use std::{
     time::Duration,
 };
 
-use iroh::EndpointId;
 use moq_net::{
     Hop, Hops, Path, PathOwned, announce, broadcast,
     origin::{self, Route},
@@ -43,37 +42,13 @@ const REASK_MAX_STEPS: u32 = 20;
 #[display("link-{_0}")]
 pub struct LinkId(pub(crate) u64);
 
-impl LinkId {
-    /// The node itself, for its own publications.
-    pub(crate) const LOCAL: Self = Self(0);
-}
-
-/// What kind of link a route or session runs over.
+/// What kind of link serves a subscription.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinkKind {
-    /// This node's own publication.
-    Local,
     /// A session with a peer, dialed or accepted.
     Direct,
     /// A moq relay this node is attached to.
     Relay,
-}
-
-/// One route to a path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RouteInfo {
-    /// The link the route arrived over.
-    pub via: LinkId,
-    /// What kind of link that is.
-    pub kind: LinkKind,
-    /// The peer at the other end of the link, for a direct session.
-    pub remote: Option<EndpointId>,
-    /// How many hops the route has crossed to reach this node.
-    pub hops: usize,
-    /// What the route costs, accumulated over every link it crossed.
-    pub cost: u64,
-    /// Whether this route is the one serving the path now.
-    pub active: bool,
 }
 
 /// A path resolved in a route table.
@@ -299,11 +274,6 @@ pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Produ
         if update.kind == announce::Kind::Retracted {
             trace!(link, %prefix, "route retracted");
             mirrors.remove(&prefix);
-            shared
-                .state
-                .lock()
-                .expect("poisoned")
-                .set_announced(link, prefix, None);
             continue;
         }
         let hops = if relay {
@@ -321,11 +291,6 @@ pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Produ
             .with_hops(hops)
             .with_cost(update.route.cost);
         trace!(link, %prefix, hops = route.hops.len(), cost = route.cost.warm, "route");
-        shared.state.lock().expect("poisoned").set_announced(
-            link,
-            prefix.clone(),
-            Some((route.cost.warm, route.hops.len())),
-        );
         if let Some((dynamic, _)) = mirrors.get(&prefix) {
             if let Err(err) = dynamic.update(route) {
                 warn!(link, %prefix, %err, "could not update a mirrored route");

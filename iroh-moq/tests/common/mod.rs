@@ -15,7 +15,7 @@ use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
 use iroh_moq::{Grant, Moq, MoqConfig};
-use moq_net::{Pattern, Patterns, Timestamp, broadcast, bytes::Bytes, origin, track};
+use moq_net::{Pattern, Patterns, Timestamp, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -198,18 +198,25 @@ pub(crate) async fn step<T>(what: &str, future: impl std::future::Future<Output 
         .unwrap_or_else(|_| panic!("timed out: {what}"))
 }
 
-/// Waits until `origin` announces `path` (`true`) or retracts it (`false`).
-pub(crate) async fn announced(origin: &origin::Consumer, path: &str, active: bool) {
-    let mut updates = origin.announced();
+/// Waits until `updates` announces `path`.
+///
+/// A cursor coalesces an announcement it has not handed out with its
+/// retraction, so wait for this before [`retracted`].
+pub(crate) async fn announced(updates: &mut announce::Consumer, path: &str) {
+    wait_for(updates, path, true).await
+}
+
+/// Waits until `updates` retracts `path`.
+pub(crate) async fn retracted(updates: &mut announce::Consumer, path: &str) {
+    wait_for(updates, path, false).await
+}
+
+async fn wait_for(updates: &mut announce::Consumer, path: &str, active: bool) {
     step(&format!("{path} announced: {active}"), async {
-        let mut current = false;
         loop {
-            if current == active {
-                return;
-            }
             let update = updates.next().await.expect("origin closed");
-            if update.prefix.as_str() == path {
-                current = update.kind.is_active();
+            if update.prefix.as_str() == path && update.kind.is_active() == active {
+                return;
             }
         }
     })

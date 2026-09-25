@@ -5,7 +5,8 @@ mod common;
 use std::{collections::BTreeSet, time::Duration};
 
 use common::{
-    Node, TIMEOUT, TestBroadcast, announced, ends, read_counter, reading, stays_pending, step,
+    Node, TIMEOUT, TestBroadcast, announced, ends, read_counter, reading, retracted, stays_pending,
+    step,
 };
 use iroh_moq::{Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach};
 use moq_net::{Hop, Pattern, Patterns, origin};
@@ -35,13 +36,8 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     read_counter(&subscription.as_moq()).await;
     let session = subscription.session().expect("served by a direct session");
     assert_eq!(session.remote_id(), alice.id());
-
-    let routes = bob.moq.routes(publication.path()).get();
-    assert_eq!(routes.len(), 1, "{routes:?}");
-    assert_eq!(routes[0].kind, LinkKind::Direct);
-    assert_eq!(routes[0].remote, Some(alice.id()));
-    assert_eq!(routes[0].hops, 1);
-    assert!(routes[0].active, "{routes:?}");
+    let link = subscription.link().expect("a serving link");
+    assert_eq!(link.kind, LinkKind::Direct);
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -66,13 +62,8 @@ async fn an_own_publication_resolves_locally() {
     .await
     .expect("subscribe");
     read_counter(&subscription.as_moq()).await;
-    let routes = alice.moq.routes(publication.path()).get();
-    assert!(
-        routes
-            .iter()
-            .any(|route| route.kind == LinkKind::Local && route.active),
-        "{routes:?}"
-    );
+    assert!(subscription.link().is_none(), "served over a link");
+    assert!(alice.moq.sessions().get().is_empty(), "dialed itself");
     alice.shutdown().await;
 }
 
@@ -156,7 +147,6 @@ async fn a_peers_audience_follows_its_set() {
             session.subscribe("cam"),
         ),
     );
-    assert!(carol.moq.routes(publication.path()).get().is_empty());
 
     // Adding her to the set offers it on her open session.
     members.set(BTreeSet::from([bob.id(), carol.id()])).ok();
@@ -202,8 +192,9 @@ async fn offers_show_in_the_route_table() {
     let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    announced(&session.origin(), &path, true).await;
-    announced(&bob.moq.origin(), &path, true).await;
+    announced(&mut session.origin().announced(), &path).await;
+    let mut updates = bob.moq.origin().announced();
+    announced(&mut updates, &path).await;
 
     step("carol connects", carol.moq.connect(alice.endpoint.addr()))
         .await
@@ -211,12 +202,12 @@ async fn offers_show_in_the_route_table() {
     stays_pending(
         "carol saw an offer to bob",
         QUIET,
-        announced(&carol.moq.origin(), &path, true),
+        announced(&mut carol.moq.origin().announced(), &path),
     )
     .await;
 
     members.set(BTreeSet::new()).ok();
-    announced(&bob.moq.origin(), &path, false).await;
+    retracted(&mut updates, &path).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -255,16 +246,12 @@ async fn a_manual_audience_needs_an_offer() {
     .await
     .expect("subscribe after the offer");
     let mut bob_reading = reading(&subscription.as_moq()).await;
-    let mut routes = bob.moq.routes(publication.path());
+    let mut updates = bob.moq.origin().announced();
+    announced(&mut updates, publication.path().as_str()).await;
 
     drop(offer);
     ends("bob after the offer was withdrawn", &mut bob_reading).await;
-    step("the route is withdrawn", async {
-        while !routes.get().is_empty() {
-            routes.updated().await.expect("node gone");
-        }
-    })
-    .await;
+    retracted(&mut updates, publication.path().as_str()).await;
     stays_pending(
         "bob resolved it again after the withdrawal",
         Duration::from_secs(1),
@@ -475,22 +462,21 @@ async fn a_peer_cannot_route_another_publishers_path() {
 
     // Her own path reaches bob's table, and the forged one does not even
     // reach her session: the grant refuses it.
-    let mut own_routes = bob.moq.routes(own.path());
-    step("bob routes mallory's own path", async {
-        while own_routes.get().is_empty() {
-            own_routes.updated().await.expect("node gone");
-        }
-    })
-    .await;
-    stays_pending(
-        "mallory announced alice's path",
-        QUIET,
-        session.subscribe(publication.path()),
-    )
-    .await;
-    assert!(
-        bob.moq.routes(publication.path()).get().is_empty(),
-        "mallory routed alice's path"
+    let mut table = bob.moq.origin().announced();
+    announced(&mut table, own.path().as_str()).await;
+    let mut from_mallory = session.origin().announced();
+    let path = publication.path().as_str();
+    tokio::join!(
+        stays_pending(
+            "mallory announced alice's path",
+            QUIET,
+            announced(&mut from_mallory, path),
+        ),
+        stays_pending(
+            "mallory routed alice's path",
+            QUIET,
+            announced(&mut table, path),
+        ),
     );
 
     let subscription = step(

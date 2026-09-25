@@ -28,7 +28,8 @@ the path through the link's ingest. moq serves the cheapest route and moves to
 the next one when it dies.
 
 Because each link's routes are also kept apart, the node can say which link
-serves a path (`Moq::routes`, `Subscription::session`, `Subscription::link`).
+serves a path (`Subscription::session`, `Subscription::link`), and list what one
+link announces (`Session::origin`, `RelayLink::origin`).
 `Session::subscribe` resolves a path over one session only. `iroh_live::Call`
 reads the other side of a call this way.
 

@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use moq_net::origin;
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watchable;
@@ -116,6 +117,8 @@ struct RelayInner {
     link_state: LinkState,
     status: Watchable<RelayStatus>,
     #[debug(skip)]
+    ingest: origin::Consumer,
+    #[debug(skip)]
     connection: moq_tokio::Connection,
     #[debug(skip)]
     shared: Weak<Shared>,
@@ -134,7 +137,7 @@ impl RelayLink {
         &self.inner.url
     }
 
-    /// Returns this link's id, the [`RouteInfo::via`](crate::RouteInfo::via) of its routes.
+    /// Returns this link's id, as [`ServingLink::id`](crate::ServingLink::id) names it.
     pub fn id(&self) -> LinkId {
         LinkId(self.inner.link)
     }
@@ -144,6 +147,13 @@ impl RelayLink {
     /// Empty between sessions. Each new session bumps the path generation.
     pub fn link(&self) -> LinkSample {
         self.inner.link_state.get()
+    }
+
+    /// Returns what the relay announces to this node.
+    ///
+    /// Empty for a link that does not consume.
+    pub fn origin(&self) -> origin::Consumer {
+        self.inner.ingest.clone()
     }
 
     /// Offers `publication` to the relay, whatever its audience.
@@ -269,7 +279,6 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
                 public: matches!(config.offer, RelayOffer::Public),
                 consume: config.consume,
                 offers: HashMap::new(),
-                announced: Default::default(),
                 session: None,
                 link_state: link_state.clone(),
             },
@@ -284,6 +293,7 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         _ => Vec::new(),
     };
 
+    let ingest = origins.ingest.consume();
     let url = config.url.clone();
     info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
     let connection = client.connect(config.dial_url());
@@ -353,6 +363,7 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
             url,
             link_state,
             status,
+            ingest,
             connection,
             shared: Arc::downgrade(shared),
             tasks: Arc::downgrade(&moq.tasks),

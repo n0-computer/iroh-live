@@ -83,7 +83,7 @@ pub use self::{
     node::{Moq, MoqConfig, Reach},
     publish::{Audience, OfferGuard, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
-    route::{LinkId, LinkKind, RouteInfo, Subscription},
+    route::{LinkId, LinkKind, Subscription},
     session::Session,
 };
 
