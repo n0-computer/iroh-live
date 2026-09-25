@@ -10,7 +10,6 @@ use std::{
     time::Duration,
 };
 
-use n0_watcher::Watcher as _;
 use tokio::{
     sync::{mpsc, watch},
     time::Instant,
@@ -236,8 +235,8 @@ pub(crate) async fn run(inputs: Inputs) {
                         revive_at = None;
                     }
                 }
-                updated = catalog.updated() => {
-                    if updated.is_err() {
+                changed = catalog.changed() => {
+                    if changed.is_err() {
                         return;
                     }
                     // A new catalog means the publisher republished, so a
@@ -247,8 +246,8 @@ pub(crate) async fn run(inputs: Inputs) {
                         revive_at = None;
                     }
                 }
-                updated = epoch.updated() => {
-                    if updated.is_err() {
+                changed = epoch.changed() => {
+                    if changed.is_err() {
                         return;
                     }
                     clock.restart();
@@ -292,10 +291,14 @@ pub(crate) async fn run(inputs: Inputs) {
         let now = Instant::now();
 
         let mode = mode.borrow().clone();
-        let Some(catalog) = catalog.peek().clone() else {
+        let Some(catalog) = catalog.borrow_and_update().clone() else {
             continue;
         };
-        let Some(consumer) = epoch.peek().consumer.clone() else {
+        let (route, consumer) = {
+            let epoch = epoch.borrow_and_update();
+            (epoch.generation, epoch.consumer.clone())
+        };
+        let Some(consumer) = consumer else {
             continue;
         };
 
@@ -303,7 +306,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let config = Config {
             decoder: decoder.borrow().clone(),
             max_age: latency.max,
-            epoch: epoch.peek().generation,
+            epoch: route,
             restart,
         };
         if last_config.as_ref() != Some(&config) {

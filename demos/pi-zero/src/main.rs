@@ -121,7 +121,7 @@ mod app {
         let mut catalog = remote.catalog();
         let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             tokio::select! {
-                catalog = n0_watcher::Watcher::initialized(&mut catalog) => Some(catalog),
+                catalog = catalog.wait_for(Option::is_some) => catalog.ok().map(|_| ()),
                 () = remote.closed() => None,
             }
         })

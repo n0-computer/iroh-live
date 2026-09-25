@@ -649,7 +649,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use moq_video::{Size, Surface, encode};
-    use n0_watcher::Watcher as _;
 
     use super::{super::PlaybackRecorder, *};
     use crate::RemoteBroadcast;
@@ -787,17 +786,17 @@ mod tests {
         // The catalog has its own track, so the first snapshot may not have
         // the rendition yet.
         let mut snapshots = remote.catalog();
-        let config = loop {
-            if let Some(known) = snapshots.get()
-                && let Some(config) = known.video.renditions.get("video")
-            {
-                break config.clone();
-            }
-            snapshots
-                .updated()
-                .await
-                .map_err(|_| "the catalog ended before it carried a video rendition")?;
-        };
+        let config = snapshots
+            .wait_for(|known| {
+                known
+                    .as_ref()
+                    .is_some_and(|known| known.video.renditions.contains_key("video"))
+            })
+            .await
+            .map_err(|_| "the catalog ended before it carried a video rendition")?
+            .as_ref()
+            .and_then(|known| known.video.renditions.get("video").cloned())
+            .expect("waited for it");
         let mut reader =
             spawn_reader(&settings, &config, "video", PlaybackRecorder::default()).await?;
 

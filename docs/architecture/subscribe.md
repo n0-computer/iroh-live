@@ -26,9 +26,8 @@ in that table. Nothing waits for a first route, and a publisher that is already
 gone closes the broadcast. `RemoteBroadcast::local(&broadcast)` reads a
 `LocalBroadcast` in-process, without a transport.
 
-`Catalog` is hang's catalog behind an `Arc` and derefs to it. Two catalogs are
-equal only when they are the same snapshot, so a watcher can tell an update
-from a repeat. `ranked_video()` lists the video renditions largest first.
+`Catalog` is hang's catalog behind an `Arc` and derefs to it.
+`ranked_video()` lists the video renditions largest first.
 
 `Live::subscribe` resolves the path, builds the `RemoteBroadcast` with
 `from_resolved`, and attaches the serving link's measurements with

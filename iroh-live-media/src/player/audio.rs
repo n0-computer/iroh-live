@@ -3,7 +3,6 @@
 use std::{sync::Arc, time::Duration};
 
 use n0_future::task::{AbortOnDropHandle, spawn};
-use n0_watcher::Watcher as _;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -52,8 +51,8 @@ pub(crate) async fn run(inputs: Inputs) {
     loop {
         // What to play: the first audio rendition, over the current route.
         let opened = {
-            let known = catalog.peek().clone();
-            let consumer = epoch.peek().consumer.clone();
+            let known = catalog.borrow_and_update().clone();
+            let consumer = epoch.borrow_and_update().consumer.clone();
             known.zip(consumer).and_then(|(known, consumer)| {
                 let (name, config) = known.audio.renditions.first_key_value()?;
                 Some((name.clone(), config.clone(), consumer))
@@ -118,8 +117,8 @@ pub(crate) async fn run(inputs: Inputs) {
                         Err(err) => warn!(error = %err, "the audio task panicked"),
                     }
                 }
-                updated = catalog.updated() => {
-                    if updated.is_err() {
+                changed = catalog.changed() => {
+                    if changed.is_err() {
                         return;
                     }
                     // A running track keeps playing across a catalog update.
@@ -128,8 +127,8 @@ pub(crate) async fn run(inputs: Inputs) {
                         break;
                     }
                 }
-                updated = epoch.updated() => {
-                    if updated.is_err() {
+                changed = epoch.changed() => {
+                    if changed.is_err() {
                         return;
                     }
                     debug!("the broadcast moved to a new route, reopening audio");

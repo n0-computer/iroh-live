@@ -14,7 +14,6 @@ use iroh_live_media::{
     NetworkSample, PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast, RenditionMode,
     SlotState, SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource, audio, video,
 };
-use n0_watcher::Watcher;
 use tokio::sync::watch;
 
 /// How long any one wait may take.
@@ -42,21 +41,6 @@ async fn until<T: Clone>(mut receiver: watch::Receiver<T>, done: impl FnMut(&T) 
         .expect("the awaited value never came")
         .expect("the watched value is alive")
         .clone()
-}
-
-/// Waits until `watcher` holds a value `done` accepts, and returns it.
-async fn until_watched<W: Watcher>(mut watcher: W, done: impl Fn(&W::Value) -> bool) -> W::Value {
-    tokio::time::timeout(TIMEOUT, async {
-        loop {
-            let value = watcher.get();
-            if done(&value) {
-                return value;
-            }
-            watcher.updated().await.expect("the watched value is alive");
-        }
-    })
-    .await
-    .expect("the awaited value never came")
 }
 
 /// Pushes flat grey frames at 30 fps until the source is gone.
@@ -151,7 +135,7 @@ async fn a_local_broadcast_plays_in_process() {
 async fn a_player_started_after_the_catalog_plays() {
     let (broadcast, _source) = ladder();
     let remote = RemoteBroadcast::local(&broadcast);
-    until_watched(remote.catalog(), |catalog| {
+    until(remote.catalog(), |catalog| {
         catalog
             .as_ref()
             .is_some_and(|catalog| catalog.video.renditions.len() >= 2)
@@ -693,11 +677,11 @@ async fn a_pushed_source_sees_demand_while_played() {
             software(VideoEncoding::single(VideoRendition::new("video"))),
         )
         .expect("valid");
-    assert!(!sender.demand().get(), "nobody watches yet");
+    assert!(!*sender.demand().borrow(), "nobody watches yet");
     let player = RemoteBroadcast::local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    until_watched(sender.demand(), |wanted| *wanted).await;
+    until(sender.demand(), |wanted| *wanted).await;
     drop(player);
     feeder.abort();
 }
@@ -715,7 +699,7 @@ async fn a_source_that_waits_for_demand_is_played() {
     let feeder = tokio::spawn({
         let sender = sender.clone();
         async move {
-            until_watched(sender.demand(), |wanted| *wanted).await;
+            until(sender.demand(), |wanted| *wanted).await;
             push_frames(sender, format).await;
         }
     });

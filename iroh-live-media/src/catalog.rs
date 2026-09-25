@@ -8,20 +8,10 @@ use crate::Error;
 
 /// A broadcast's catalog, as hang describes it.
 ///
-/// Cheap to clone, and derefs to [`hang::catalog::Catalog`]. Two catalogs are
-/// equal only when they are the same snapshot. This lets a watcher tell an
-/// update from a repeat.
+/// Cheap to clone, and derefs to [`hang::catalog::Catalog`].
 #[derive(Debug, Clone, derive_more::Deref)]
 #[deref(forward)]
 pub struct Catalog(Arc<hang::catalog::Catalog>);
-
-impl PartialEq for Catalog {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for Catalog {}
 
 impl From<hang::catalog::Catalog> for Catalog {
     fn from(catalog: hang::catalog::Catalog) -> Self {
@@ -104,13 +94,5 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert_eq!(names, ["high", "720p-rich", "720p-cheap", "low"]);
-    }
-
-    #[test]
-    fn catalogs_compare_by_snapshot() {
-        let first = Catalog::from(hang::catalog::Catalog::default());
-        let second = Catalog::from(hang::catalog::Catalog::default());
-        assert_eq!(first, first.clone());
-        assert_ne!(first, second);
     }
 }

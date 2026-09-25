@@ -14,7 +14,6 @@
 use std::{sync::Arc, time::Duration};
 
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watcher as _;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -512,7 +511,7 @@ impl Player {
                 }
                 _ => {}
             }
-            if let Some(known) = catalog.get()
+            if let Some(known) = catalog.borrow_and_update().clone()
                 && let Err(Error::UnknownRendition { offered, .. }) = known.video_rendition(name)
             {
                 return Err(n0_error::e!(SwitchError::UnknownRendition {
@@ -546,8 +545,8 @@ impl Player {
                         return Err(n0_error::e!(SwitchError::Ended));
                     }
                 }
-                updated = catalog.updated() => {
-                    if updated.is_err() {
+                changed = catalog.changed() => {
+                    if changed.is_err() {
                         return Err(n0_error::e!(SwitchError::Ended));
                     }
                 }

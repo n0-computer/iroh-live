@@ -679,13 +679,12 @@ mod tests {
             rate: rate(30),
         };
         let (sender, source) = VideoSource::push(format);
-        let mut demand = sender.demand();
-        use n0_watcher::Watcher as _;
-        assert!(!demand.get());
+        let demand = sender.demand();
+        assert!(!*demand.borrow());
         let wanted = source.want();
-        assert!(demand.get());
+        assert!(*demand.borrow());
         drop(wanted);
-        assert!(!demand.get());
+        assert!(!*demand.borrow());
         drop(source);
         assert!(sender.is_closed());
     }

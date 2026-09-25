@@ -87,10 +87,10 @@ task, and the supervisor's reader tasks drop their decoders with them.
 `AbortOnDropHandle` ties a task's life to a handle.
 
 Continuous state is watched: a watcher always has a current value and can be
-awaited for changes. A broadcast's `PublishStatus` and a player's
-`PlayerStatus` are tokio `watch` receivers. The catalog and the open sessions
-are `n0_watcher` watchers, as in iroh. Statistics are snapshots read on
-demand.
+awaited for changes. The media crate's catalog, `PublishStatus` and
+`PlayerStatus` are tokio `watch` receivers. The transport's watchers, such as
+the open sessions, are `n0_watcher` watchers, as in iroh. Statistics are
+snapshots read on demand.
 
 Channels are bounded. Frames between the decoder and the renderer go through
 `VideoFrames`, a single-slot latest-wins stream with a cursor per handle. A

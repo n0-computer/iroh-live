@@ -10,7 +10,7 @@ use std::{
 
 use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watchable;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, trace, warn};
 
@@ -27,14 +27,10 @@ use crate::{
 const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// The broadcast consumer a player reads, and how many times it has changed.
-///
-/// Equality compares the generation only, so a new consumer counts as a change
-/// even when it reaches the same broadcast.
-#[derive(derive_more::Debug, Clone, Default, derive_more::PartialEq, derive_more::Eq)]
+#[derive(derive_more::Debug, Clone, Default)]
 pub(crate) struct Epoch {
     pub(crate) generation: u64,
     #[debug(skip)]
-    #[eq(skip)]
     pub(crate) consumer: Option<moq_net::broadcast::Consumer>,
 }
 
@@ -54,10 +50,10 @@ enum Origin {
 struct Shared {
     #[debug(skip)]
     origin: Origin,
-    #[debug("{:?}", epoch.get())]
-    epoch: Watchable<Epoch>,
+    #[debug("{:?}", epoch.borrow())]
+    epoch: watch::Sender<Epoch>,
     #[debug(skip)]
-    catalog: Watchable<Option<Catalog>>,
+    catalog: watch::Sender<Option<Catalog>>,
     closed: CancellationToken,
     #[debug(skip)]
     network: Mutex<Option<NetworkSignals>>,
@@ -135,9 +131,12 @@ impl RemoteBroadcast {
         self
     }
 
-    /// Returns a watcher over the catalog, `None` until the first arrives.
-    pub fn catalog(&self) -> n0_watcher::Direct<Option<Catalog>> {
-        self.shared.catalog.watch()
+    /// Returns the catalog, `None` until the first arrives.
+    ///
+    /// A borrow of the receiver blocks the next catalog update, so keep it
+    /// short.
+    pub fn catalog(&self) -> watch::Receiver<Option<Catalog>> {
+        self.shared.catalog.subscribe()
     }
 
     /// Starts one playback of the broadcast.
@@ -186,9 +185,9 @@ impl RemoteBroadcast {
         self.shared.closed.is_cancelled()
     }
 
-    /// Returns a watcher over the consumer players read.
-    pub(crate) fn epoch(&self) -> n0_watcher::Direct<Epoch> {
-        self.shared.epoch.watch()
+    /// Returns the consumer players read.
+    pub(crate) fn epoch(&self) -> watch::Receiver<Epoch> {
+        self.shared.epoch.subscribe()
     }
 
     /// Returns the network signals, if a transport attached any.
@@ -214,8 +213,8 @@ impl RemoteBroadcast {
         first: Option<moq_net::broadcast::Consumer>,
         span: tracing::Span,
     ) -> Self {
-        let epoch = Watchable::new(Epoch::default());
-        let catalog = Watchable::new(None);
+        let epoch = watch::Sender::new(Epoch::default());
+        let catalog = watch::Sender::new(None);
         let closed = CancellationToken::new();
         let task = {
             let origin = origin.clone();
@@ -244,8 +243,8 @@ impl RemoteBroadcast {
 async fn follow(
     origin: Origin,
     first: Option<moq_net::broadcast::Consumer>,
-    epoch: Watchable<Epoch>,
-    catalog: Watchable<Option<Catalog>>,
+    epoch: watch::Sender<Epoch>,
+    catalog: watch::Sender<Option<Catalog>>,
     closed: CancellationToken,
 ) {
     let mut generation = 0u64;
@@ -287,29 +286,25 @@ async fn follow(
         if generation > 1 {
             info!(generation, "the broadcast came back through another route");
         }
-        epoch
-            .set(Epoch {
-                generation,
-                consumer: Some(consumer.clone()),
-            })
-            .ok();
+        epoch.send_replace(Epoch {
+            generation,
+            consumer: Some(consumer.clone()),
+        });
         read_catalog(&consumer, &catalog).await;
         consumer.closed().await;
         debug!("the broadcast ended");
     }
-    epoch
-        .set(Epoch {
-            generation: generation + 1,
-            consumer: None,
-        })
-        .ok();
+    epoch.send_replace(Epoch {
+        generation: generation + 1,
+        consumer: None,
+    });
     closed.cancel();
 }
 
 /// Reads catalog updates into `catalog` until the catalog track ends.
 async fn read_catalog(
     consumer: &moq_net::broadcast::Consumer,
-    catalog: &Watchable<Option<Catalog>>,
+    catalog: &watch::Sender<Option<Catalog>>,
 ) {
     let mut reader = match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await
     {
@@ -323,7 +318,7 @@ async fn read_catalog(
         match reader.next().await {
             Ok(Some(next)) => {
                 trace!(catalog = ?next, "catalog");
-                catalog.set(Some(Catalog::from(next))).ok();
+                catalog.send_replace(Some(Catalog::from(next)));
             }
             Ok(None) => {
                 debug!("catalog track ended");
@@ -339,8 +334,6 @@ async fn read_catalog(
 
 #[cfg(test)]
 mod tests {
-    use n0_watcher::Watcher as _;
-
     use super::*;
 
     #[tokio::test]
@@ -385,33 +378,28 @@ mod tests {
             .expect("published");
         let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
         let mut epoch = remote.epoch();
-        let seen = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if epoch.get().consumer.is_some() {
-                    return epoch.get().generation;
-                }
-                epoch.updated().await.expect("epochs keep coming");
-            }
-        })
+        let seen = tokio::time::timeout(
+            Duration::from_secs(5),
+            epoch.wait_for(|epoch| epoch.consumer.is_some()),
+        )
         .await
-        .expect("the broadcast resolved");
+        .expect("the broadcast resolved")
+        .expect("epochs keep coming")
+        .generation;
 
         // The first publication goes, and another takes the path.
         drop(first);
         let _second = origin
             .publish("live/cam", moq_net::origin::Route::default())
             .expect("published again");
-        let next = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let current = epoch.get();
-                if current.generation > seen && current.consumer.is_some() {
-                    return current.generation;
-                }
-                epoch.updated().await.expect("epochs keep coming");
-            }
-        })
+        let next = tokio::time::timeout(
+            Duration::from_secs(5),
+            epoch.wait_for(|epoch| epoch.generation > seen && epoch.consumer.is_some()),
+        )
         .await
-        .expect("the broadcast was requested again");
+        .expect("the broadcast was requested again")
+        .expect("epochs keep coming")
+        .generation;
         assert!(next > seen);
         assert!(!remote.is_closed());
     }

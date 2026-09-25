@@ -299,16 +299,17 @@ async fn adaptive_rendition_switching() {
     let remote = remote.with_network(move || *reader.lock().expect("poisoned"));
 
     let mut catalog = remote.catalog();
-    tokio::time::timeout(TIMEOUT, async {
-        while catalog
-            .get()
-            .is_none_or(|catalog| catalog.video.renditions.len() < 2)
-        {
-            catalog.updated().await.expect("the broadcast is alive");
-        }
-    })
+    tokio::time::timeout(
+        TIMEOUT,
+        catalog.wait_for(|catalog| {
+            catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.video.renditions.len() >= 2)
+        }),
+    )
     .await
-    .expect("timed out waiting for both renditions");
+    .expect("timed out waiting for both renditions")
+    .expect("the broadcast is alive");
 
     let player = remote
         .play(PlayerConfig::default())

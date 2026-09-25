@@ -9,7 +9,6 @@ use iroh::address_lookup::MemoryLookup;
 use moq_net::{Timestamp, origin};
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watcher as _;
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -398,14 +397,8 @@ async fn noq_publish_iroh_subscribe() {
                 // parsing proves the bridge carried the broadcast itself.
                 let mut catalog = sub.catalog();
                 let parsed = tokio::time::timeout(Duration::from_secs(5), async {
-                    loop {
-                        if let Some(parsed) = catalog.get() {
-                            return Some(parsed);
-                        }
-                        if catalog.updated().await.is_err() {
-                            return None;
-                        }
-                    }
+                    let parsed = catalog.wait_for(Option::is_some).await.ok()?;
+                    parsed.clone()
                 })
                 .await;
                 let Ok(Some(parsed)) = parsed else {

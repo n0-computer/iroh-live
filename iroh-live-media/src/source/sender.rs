@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use n0_watcher::Watchable;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::{audio, error::Closed, frames::FrameSlot, video};
@@ -14,7 +14,7 @@ use crate::{audio, error::Closed, frames::FrameSlot, video};
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Demand {
     count: Arc<Mutex<usize>>,
-    wanted: Watchable<bool>,
+    wanted: watch::Sender<bool>,
 }
 
 impl Demand {
@@ -22,15 +22,16 @@ impl Demand {
     pub(crate) fn acquire(&self) -> DemandGuard {
         let mut count = self.count.lock().expect("poisoned");
         *count += 1;
-        self.wanted.set(true).ok();
+        self.wanted
+            .send_if_modified(|wanted| !std::mem::replace(wanted, true));
         DemandGuard {
             demand: self.clone(),
         }
     }
 
-    /// Returns a watcher over whether anything wants frames.
-    pub(crate) fn watch(&self) -> n0_watcher::Direct<bool> {
-        self.wanted.watch()
+    /// Returns whether anything wants frames.
+    pub(crate) fn watch(&self) -> watch::Receiver<bool> {
+        self.wanted.subscribe()
     }
 }
 
@@ -45,7 +46,7 @@ impl Drop for DemandGuard {
         let mut count = self.demand.count.lock().expect("poisoned");
         *count = count.saturating_sub(1);
         if *count == 0 {
-            self.demand.wanted.set(false).ok();
+            self.demand.wanted.send_replace(false);
         }
     }
 }
@@ -132,12 +133,12 @@ impl<T: 'static> FrameSender<T> {
         Ok(())
     }
 
-    /// Returns a watcher over whether any broadcast wants frames.
+    /// Returns whether any broadcast wants frames.
     ///
     /// It is true while a broadcast this source feeds encodes it, which for
     /// video means while somebody watches. A camera the application drives
     /// itself can idle while it is false.
-    pub fn demand(&self) -> n0_watcher::Direct<bool> {
+    pub fn demand(&self) -> watch::Receiver<bool> {
         self.demand.watch()
     }
 
@@ -156,22 +157,20 @@ impl<T: 'static> FrameSender<T> {
 
 #[cfg(test)]
 mod tests {
-    use n0_watcher::Watcher as _;
-
     use super::*;
 
     #[test]
     fn demand_follows_the_guards() {
         let demand = Demand::default();
-        let mut watch = demand.watch();
-        assert!(!watch.get());
+        let wanted = demand.watch();
+        assert!(!*wanted.borrow());
         let first = demand.acquire();
         let second = demand.acquire();
-        assert!(watch.get());
+        assert!(*wanted.borrow());
         drop(first);
-        assert!(watch.get(), "one consumer still wants frames");
+        assert!(*wanted.borrow(), "one consumer still wants frames");
         drop(second);
-        assert!(!watch.get());
+        assert!(!*wanted.borrow());
     }
 
     #[test]

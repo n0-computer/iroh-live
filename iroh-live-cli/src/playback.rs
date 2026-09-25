@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use iroh_live::media::{AudioOutput, Catalog, RemoteBroadcast};
 use n0_error::{Result, anyerr};
-use n0_watcher::Watcher as _;
 use tracing::info;
 
 /// How long a broadcast's catalog may take to arrive once subscribed.
@@ -18,7 +17,7 @@ pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
     let first = async {
         // A broadcast that closes sends no catalog update to wake on.
         tokio::select! {
-            catalog = catalog.initialized() => Some(catalog),
+            catalog = catalog.wait_for(Option::is_some) => catalog.ok().and_then(|catalog| catalog.clone()),
             () = broadcast.closed() => None,
         }
     };

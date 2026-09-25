@@ -12,7 +12,6 @@ use iroh_live_egui::{
     overlay::{DebugOverlay, StatCategory},
 };
 use n0_future::task::{AbortOnDropHandle, spawn};
-use n0_watcher::Watcher as _;
 use tracing::{info, warn};
 
 use crate::{args::PlaybackArgs, backend::Backend};
@@ -386,7 +385,7 @@ impl RemoteView {
     /// `id` salts the widget ids, so each tile needs its own.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
         let status = self.player.status().borrow().clone();
-        let catalog = self.player.broadcast().catalog().get();
+        let catalog = self.player.broadcast().catalog().borrow().clone();
         let Some(catalog) = catalog.filter(|catalog| !catalog.video.renditions.is_empty()) else {
             ui.label("no video");
             return;

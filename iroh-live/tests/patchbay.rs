@@ -20,7 +20,6 @@ use iroh_live_media::{
     video::{Frame, Rate, Size, Surface},
 };
 use n0_tracing_test::traced_test;
-use n0_watcher::Watcher as _;
 use patchbay::{Lab, LinkCondition, NodeId};
 use tracing::info;
 
@@ -228,16 +227,17 @@ impl Fixture {
     ) -> Viewer {
         let broadcast = &self.broadcast;
         let mut catalog = broadcast.catalog();
-        tokio::time::timeout(TIMEOUT, async {
-            while catalog
-                .get()
-                .is_none_or(|catalog| catalog.video.renditions.len() < renditions)
-            {
-                catalog.updated().await.expect("the broadcast is alive");
-            }
-        })
+        tokio::time::timeout(
+            TIMEOUT,
+            catalog.wait_for(|catalog| {
+                catalog
+                    .as_ref()
+                    .is_some_and(|catalog| catalog.video.renditions.len() >= renditions)
+            }),
+        )
         .await
-        .expect("timed out waiting for the video catalog");
+        .expect("timed out waiting for the video catalog")
+        .expect("the broadcast is alive");
 
         let player = broadcast
             .play(PlayerConfig {

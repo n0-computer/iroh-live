@@ -25,7 +25,6 @@ use moq_mux::{
     select,
 };
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watcher as _;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info};
@@ -103,7 +102,7 @@ impl Recording {
         config: RecordConfig,
     ) -> Result<Self, Error> {
         if let Some(name) = &config.rendition
-            && let Some(catalog) = broadcast.catalog().get()
+            && let Some(catalog) = broadcast.catalog().borrow().clone()
         {
             catalog.video_rendition(name)?;
         }
@@ -271,18 +270,12 @@ async fn record(
 ) -> Result<u64, Error> {
     // A recording follows one route. A change of route ends the file.
     let mut epoch = broadcast.epoch();
-    let consumer = loop {
-        if let Some(consumer) = epoch.get().consumer {
-            break consumer;
-        }
-        tokio::select! {
-            updated = epoch.updated() => {
-                if updated.is_err() {
-                    return Err(n0_error::e!(Error::Closed));
-                }
-            }
-            () = stop.cancelled() => return Ok(0),
-        }
+    let consumer = tokio::select! {
+        epoch = epoch.wait_for(|epoch| epoch.consumer.is_some()) => match epoch {
+            Ok(epoch) => epoch.consumer.clone().expect("waited for it"),
+            Err(_) => return Err(n0_error::e!(Error::Closed)),
+        },
+        () = stop.cancelled() => return Ok(0),
     };
     let (_local, source) = match broadcast.routed() {
         Some((origin, path)) => (None, moq_mux::Source::new(origin, path)),

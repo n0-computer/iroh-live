@@ -36,7 +36,6 @@ use moq_net::Timestamp;
 use moq_video::{Frame, I420, Rate, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watcher as _;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -235,7 +234,7 @@ impl SessionHandle {
 
     /// Returns the newest catalog of the watched broadcast, if one arrived.
     fn catalog(&self) -> Option<Catalog> {
-        self.player.as_ref()?.broadcast().catalog().get()
+        self.player.as_ref()?.broadcast().catalog().borrow().clone()
     }
 }
 
