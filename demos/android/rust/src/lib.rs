@@ -96,6 +96,9 @@ fn runtime() -> &'static Runtime {
 
 // Session handle
 
+/// How long a dial waits for the peer to answer.
+const PEER_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Binds the endpoint for a screen, with the key from `IROH_SECRET` if set.
 ///
 /// The demo stores no key, so without `IROH_SECRET` every screen gets a new
@@ -401,7 +404,11 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     set_microphone(&broadcast, Some(&output)).await;
 
     let offer = Offer::new(&live, &broadcast, ticket.peer())?;
-    let player = play_call(&live, ticket.peer(), &output).await?;
+    // A busy callee answers only once its call ends, so give up as `irl call`
+    // does.
+    let player = tokio::time::timeout(PEER_TIMEOUT, play_call(&live, ticket.peer(), &output))
+        .await
+        .std_context("the peer did not answer")??;
     info!(remote = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();

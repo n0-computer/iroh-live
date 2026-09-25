@@ -40,7 +40,7 @@ n0-future = "0.3.2"
 # `Watchable`, for the peer a call is offered to.
 n0-watcher = "1"
 ndk-context = "0.1"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
