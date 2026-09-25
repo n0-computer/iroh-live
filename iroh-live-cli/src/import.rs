@@ -1,12 +1,8 @@
-//! Publishing a media file rather than a capture device.
+//! Publishes a media file.
 //!
-//! The file is republished verbatim: `moq_mux` demuxes it and writes its tracks
-//! and catalog straight onto the broadcast, so nothing is decoded or re-encoded
-//! on the way through. That is also why there is no preview for this path.
-//!
-//! `--transcode` puts ffmpeg in front, which is what a plain (non-fragmented)
-//! MP4 needs before it can be read as a stream, and what repeats the input for
-//! a `file:<path>:loop` source.
+//! `moq_mux` demuxes the file and writes its tracks and catalog onto the
+//! broadcast without decoding. `--transcode` runs the file through ffmpeg
+//! first. A plain (non-fragmented) MP4 needs this, and so does `:loop`.
 
 use std::{
     path::{Path, PathBuf},
@@ -21,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::args::{ImportFormat, PublishArgs};
 
-/// A `file:` video source, and the flags that say how to read it.
+/// A `file:` video source and the flags that say how to read it.
 #[derive(Debug, Clone)]
 pub struct FileSource {
     path: PathBuf,
@@ -31,14 +27,10 @@ pub struct FileSource {
 }
 
 impl FileSource {
-    /// Describes the file `--video file:<path>` named, as the other publish
-    /// flags qualify it.
+    /// Creates a source for `path` with the other publish flags applied.
     ///
-    /// # Errors
-    ///
-    /// Fails if `path` is not a readable file, or if `:loop` was asked for
-    /// without `--transcode`, which is the only thing here that can repeat an
-    /// input.
+    /// Fails if `path` is not a file, or if `looping` is set without
+    /// `--transcode`. Only ffmpeg can repeat the input.
     pub fn new(path: PathBuf, looping: bool, args: &PublishArgs) -> Result<Self> {
         if !path.is_file() {
             return Err(anyerr!(
@@ -68,9 +60,8 @@ type Input = Pin<Box<dyn AsyncRead + Send + 'static>>;
 
 /// The importer for one container format.
 ///
-/// Annex-B H.264 has no container at all, so it needs a splitter to recover
-/// access-unit boundaries before the codec importer can publish them; the real
-/// containers carry their own framing.
+/// Annex-B H.264 has no container framing, so a splitter recovers the
+/// access-unit boundaries first.
 enum Importer {
     Avc3 {
         split: Box<moq_mux::codec::h264::Split>,
@@ -94,8 +85,8 @@ impl Importer {
 
     /// Flushes the trailing frame and closes the tracks.
     ///
-    /// The Annex-B splitter holds the final access unit until the next start
-    /// code arrives, so end of input has to drain it explicitly.
+    /// The Annex-B splitter holds the last access unit until the next start
+    /// code, so end of input must flush it.
     fn finish(&mut self) -> Result<()> {
         match self {
             Self::Avc3 { split, import } => {
@@ -108,8 +99,7 @@ impl Importer {
         Ok(())
     }
 
-    /// Aborts the tracks with `err`, so a subscriber sees the real cause rather
-    /// than a bare dropped-broadcast error.
+    /// Aborts the tracks with `err`, so subscribers see the real cause.
     fn abort(self, err: moq_net::Error) {
         match self {
             Self::Avc3 { import, .. } => import.abort(err),
@@ -118,29 +108,21 @@ impl Importer {
     }
 }
 
-/// A file publish that has parsed its header and is ready to run.
+/// A file import that has parsed its header and is ready to run.
+#[derive(derive_more::Debug)]
 pub struct FileImport {
+    #[debug(skip)]
     importer: Importer,
+    #[debug(skip)]
     input: Input,
 }
 
-impl std::fmt::Debug for FileImport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FileImport").finish_non_exhaustive()
-    }
-}
-
 impl FileImport {
-    /// Opens `path` and publishes its tracks onto `broadcast`.
+    /// Opens the file and publishes its tracks onto `broadcast`.
     ///
-    /// Reads far enough into the file to publish the catalog before returning,
-    /// so a subscriber that connects immediately afterwards finds the tracks
-    /// rather than an empty broadcast.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the file cannot be opened, if ffmpeg is asked for and missing,
-    /// or if the header is not the format `--format` names.
+    /// Reads far enough to publish the catalog before returning, so an early
+    /// subscriber finds the tracks. Fails if the file cannot be opened, ffmpeg
+    /// is needed and missing, or the header does not match `--format`.
     pub async fn open(
         mut broadcast: moq_net::broadcast::Producer,
         source: FileSource,
@@ -175,8 +157,7 @@ impl FileImport {
         let read = match read_header(&mut importer, &mut input, &catalog, &source).await {
             Ok(read) => read,
             Err(err) => {
-                // The tracks are already advertised, so a subscriber that
-                // arrived in the meantime is told why they end.
+                // Tell subscribers that already arrived why the tracks end.
                 importer.abort(moq_net::Error::Transport(err.to_string()));
                 return Err(err);
             }
@@ -188,10 +169,7 @@ impl FileImport {
 
     /// Reads the rest of the file, publishing as it goes.
     ///
-    /// # Errors
-    ///
-    /// Fails on a read or demux error, having aborted the published tracks with
-    /// that error first.
+    /// On a read or demux error, aborts the tracks with it and returns it.
     pub async fn run(self) -> Result<()> {
         let Self {
             mut importer,
@@ -218,15 +196,10 @@ impl FileImport {
     }
 }
 
-/// Feeds the importer until it publishes a catalog, and returns how much of
-/// the file that took.
+/// Feeds the importer until it publishes a catalog, and returns the bytes read.
 ///
-/// fMP4 needs the moov box; Annex-B needs a keyframe carrying SPS and PPS.
-///
-/// # Errors
-///
-/// Fails if the file ends first, which is what a container the importer does
-/// not understand looks like from here.
+/// fMP4 needs the moov box. Annex-B needs a keyframe with SPS and PPS. Fails
+/// if the file ends first, which is how an unreadable container shows up.
 async fn read_header(
     importer: &mut Importer,
     input: &mut Input,
@@ -243,9 +216,10 @@ async fn read_header(
                 "reached the end of {} after {read} bytes without finding a {:?} header{}",
                 source.path.display(),
                 source.format,
-                match source.transcode {
-                    true => "",
-                    false => "; if this is a plain MP4, re-run with --transcode",
+                if source.transcode {
+                    ""
+                } else {
+                    "; if this is a plain MP4, re-run with --transcode"
                 }
             ));
         }
@@ -255,7 +229,7 @@ async fn read_header(
     Ok(read)
 }
 
-/// Reports whether the importer has published any rendition yet.
+/// Returns whether the catalog still has no rendition.
 fn catalog_is_empty(catalog: &moq_mux::catalog::Producer) -> bool {
     let catalog = catalog.snapshot();
     catalog.video.renditions.is_empty() && catalog.audio.renditions.is_empty()
@@ -272,10 +246,10 @@ async fn open_input(source: &FileSource) -> Result<Input> {
     Ok(Box::pin(file))
 }
 
-/// Spawns ffmpeg to re-mux (or re-encode) the source into its format on stdout.
+/// Spawns ffmpeg to remux or re-encode the source to stdout.
 ///
-/// A background task awaits the child: once our end of the pipe closes, ffmpeg
-/// exits on SIGPIPE and would otherwise linger as a zombie.
+/// A background task awaits the child. Otherwise ffmpeg lingers as a zombie
+/// after it exits on SIGPIPE.
 async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
     let input = source.path.clone();
     let copy_video = is_h264(&input).await?;
@@ -285,8 +259,7 @@ async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
     if source.looping {
         command.args(["-stream_loop", "-1"]);
     }
-    // Paced against the wall clock, so a file publishes at the rate a live
-    // subscriber can follow rather than as fast as the disk reads.
+    // `-re` paces the input at its own frame rate, like a live source.
     command.args(["-re", "-i"]);
     command.arg(input.as_os_str());
 
@@ -334,8 +307,7 @@ async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
     Ok(stdout)
 }
 
-/// Reports whether the file's first video stream is already H.264, which
-/// decides whether ffmpeg copies it or re-encodes it.
+/// Returns whether the first video stream of the file is H.264.
 async fn is_h264(input: &Path) -> Result<bool> {
     let output = tokio::process::Command::new("ffprobe")
         .args([

@@ -7,7 +7,7 @@
 # for the backends its own target can reach and leave the rest alone. The Linux
 # jobs turn on every hardware path (NVENC/NVDEC, VAAPI, the V4L2 memory-to-memory
 # codecs, rpicam, PipeWire screen capture) on top of the default
-# `playback,render,sound-server`; ALSA, PulseAudio, and PipeWire audio all arrive
+# `playback,sound-server`; ALSA, PulseAudio, and PipeWire audio all arrive
 # through `sound-server` and cpal picks between them at runtime. macOS and
 # Windows get VideoToolbox, ScreenCaptureKit, Media Foundation, and WASAPI from
 # `target_os` gating in moq-video and moq-audio, so no feature selects them, and

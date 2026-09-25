@@ -1,94 +1,98 @@
 # Rooms
 
-A room is a gossip topic plus the MoQ subscriptions that follow from it. Peers
-publish the *names* of their broadcasts into a replicated key-value map on the
-topic, and `iroh_rooms::Room` turns every name it sees into a subscription
-against that peer.
+A room is a gossip topic. Its members announce themselves and the names of the
+broadcasts they publish into the room. `iroh_live_rooms::Room` tracks the
+membership and subscribes to a member's broadcast when the application asks.
 
-Rooms know nothing about media. `iroh-rooms` does not depend on `moq-media` or
-`hang`, and a subscription arrives as a raw `moq_net::broadcast::Consumer`. What
-the broadcast carries is the application's business.
-
-This crate is a holding pattern. It was cut out of `iroh-live` during the v2
-rewrite so the media stack could be replaced without carrying rooms along, and
-the intent is to rebuild it on moq's own announce bus with moq-token path scoping,
-keeping gossip only for bootstrap. Expect the API to change.
+Rooms do not know about media. `iroh-live-rooms` publishes anything that
+implements moq-net's `Consume<broadcast::Consumer>`, and returns an
+`iroh_moq::Subscription`.
 
 ## Joining
 
-`Room::new` takes the three things it needs rather than an application type:
+`Rooms` owns the gossip instance. Create it on the builder's `Moq` before the
+router, so that the router can mount it. The node's grant must let members
+publish under `iroh_live_rooms::publish_scope(member)`.
+`iroh_live::moq_config()` does that when `iroh-live` has the `rooms` feature:
 
 ```rust
-use iroh_rooms::{Room, RoomEvent, RoomTicket};
+use iroh_live::{Live, rooms::{RoomTicket, Rooms}};
 
-let mut room = Room::new(&endpoint, &moq, &gossip, RoomTicket::generate()).await?;
+let builder = Live::builder(endpoint).with_router();
+let rooms = Rooms::new(builder.moq());
+let live = builder
+    .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())
+    .spawn();
+
+let room = rooms
+    .join(&RoomTicket::generate(), Some("ada".into()))
+    .await?;
 ```
 
-`iroh-live` supplies all three: `live.endpoint()`, `live.transport()`, and
-`live.gossip()`, the last of which needs `LiveBuilder::with_gossip()`.
+`Rooms::with_gossip` takes a gossip instance the application already runs.
 
-Share `room.ticket()` with the people joining. It includes the calling peer as a
-bootstrap endpoint, so a joiner can find the topic without a directory service.
+Share `room.ticket()` with the people who join. It lists this member as the
+bootstrap endpoint.
 
-## Publishing and receiving
+## Membership
+
+`room.state()` is a watcher over a `RoomState`: every other member, its display
+name, and the names of its broadcasts. A slow reader sees the latest state and
+no backlog.
+
+A member stays in the room while its gossip lease holds. Each member renews
+its announcement every 30 seconds. A member that stops renewing drops out two
+to two and a half minutes after its last renewal. A member that calls
+`room.leave()` drops out at once. Lease times use the member's own clock, so a
+member whose clock is more than two minutes behind is never seen.
+
+Ending a broadcast changes the member's `broadcasts`, not its membership. To
+show "joined" and "left", compare two states.
+
+## Publishing and subscribing
 
 ```rust
-let mut broadcast = room.publish("cam").await?;
+room.publish("cam", &broadcast)?;
+let subscription = room.subscribe(peer, "cam").await?;
+let player = live
+    .remote_broadcast(&subscription)
+    .play(PlayerConfig::default())?;
 ```
 
-`publish` creates a broadcast on the node origin and announces its name into the
-room's state map. It returns the bare `moq_net::broadcast::Producer`. To publish
-media, wrap it: `moq_media::publish::LocalBroadcast::new(producer)` is what
-`Live::publish` does. Dropping the producer un-announces the name.
+`publish` puts the broadcast at `rooms/<topic>/<this member>/<name>`, and only
+the room's members can read it. A member that leaves or expires loses the
+path, though tracks it already reads run on until its session closes. Unpublishing the returned `Publication` or ending the broadcast
+removes the name from this member's announcement. A name must not be empty or
+contain a slash.
 
-Events arrive on the room itself, or on the receiver half if you split it:
+`subscribe` dials the member if needed and reads the broadcast over the session
+with that member, so no other peer can stand in for it. It waits until the
+member announces the name, so bound the wait with a timeout. Leaving the room
+does not close subscriptions. Errors are `iroh_live_rooms::Error`, and its
+`Transport` variant holds an `iroh_moq::Error`.
 
-| Event | Meaning |
-|---|---|
-| `PeerJoined` | A peer appeared in the topic, with its display name if it set one |
-| `RemoteAnnounced` | A peer listed the broadcast names it publishes |
-| `BroadcastSubscribed` | We subscribed to one of them; carries the session and the consumer |
-| `ChatReceived` | A chat message from a peer |
-| `PeerLeft` | Every broadcast we held from a peer closed |
+A grid cannot follow the room state alone. A member can end a broadcast and
+publish it again before its announcement changes. A member can also drop this
+node from its membership for a moment, which retracts its paths from this node. In
+both cases the state stays the same and the tile freezes. So a grid also drops
+every tile whose `RemoteBroadcast::is_closed()` is true, on a timer, and
+subscribes again if the member still lists the name.
+`iroh-live-cli/src/room.rs` does this.
 
-`RemoteAnnounced` is followed by a `BroadcastSubscribed` for each name, because
-the room subscribes on your behalf.
+Anyone who knows the topic id can join the room and announce itself.
 
-`Room::split()` returns a `RoomEvents` receiver and a cloneable `RoomHandle`, for
-an application that reads events on one task and publishes from another. The
-actor stops when the room and every handle are dropped.
+## Chat and other data
 
-## Chat
-
-Chat lives on a well-known track named `chat`, at a priority below audio and
-video. Each message is one group holding one frame of UTF-8 text, so there is no
-framing beyond the string. The sender's identity comes from the broadcast
-carrying the track rather than the payload.
-
-`room.send_chat("hello")` writes through the publisher registered with
-`set_chat_publisher`, and incoming messages arrive as `RoomEvent::ChatReceived`.
-`ChatPublisher::finish` matters: dropping a publisher without it discards the
-cache and loses the last message.
-
-## Discovery
-
-Peer state is an `iroh-smol-kv` map on the gossip topic, holding each peer's
-broadcast names and optional display name. Anti-entropy runs every 60 seconds,
-with a one-second fast interval while things are changing and a two-minute expiry
-horizon.
-
-`PeerLeft` is derived from every subscribed consumer of that peer closing rather
-than from a gossip signal, so it reflects the transport rather than the
-membership map.
+A room carries only broadcasts. `irl room` sends chat as one more broadcast,
+named `chat`, which carries `moq-room`'s chat track.
 
 ## Limitations
 
-Every peer subscribes to every other peer's broadcasts. There is no selective
-forwarding and no topology optimisation, so this is a small-group design.
+Every member that shows every other member subscribes to all of them. There is
+no selective forwarding, so rooms suit small groups.
 
-If every bootstrap endpoint in a ticket is offline, joining waits until some peer
-turns up. Including several bootstrap endpoints helps.
+If every bootstrap endpoint in a ticket is offline, joining succeeds but the
+room stays empty until another member reaches this one.
 
-`irl room` shows a room as a grid of pictures with a chat panel, and is the
-quickest way to see all of this working. See [the CLI reference](../cli.md) for
-its flags.
+`irl room` is the quickest way to try a room. See [the CLI
+reference](../cli.md#irl-room).

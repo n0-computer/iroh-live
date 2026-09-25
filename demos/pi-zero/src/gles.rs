@@ -1,22 +1,14 @@
 //! A GLES2 video renderer over `glow`.
 //!
-//! The Pi Zero has no Vulkan and no wgpu, so `moq_video::render` cannot draw
-//! here. This is the GL-only path that replaces it: two upload routes, picked
-//! from the surface the decoder produced.
-//!
-//! - **I420**: the three planes go up as separate `LUMINANCE` textures and a
-//!   fragment shader does the colour conversion. This is the path openh264
-//!   takes, and doing the conversion on the GPU is what keeps a Pi Zero's CPU
-//!   free for decoding.
-//! - **RGBA**: one packed `GL_TEXTURE_2D` upload, for any other surface.
-//!
-//! Works with any EGL/GLES2 context: Linux DRM/KMS, glutin plus winit, Android.
+//! The Pi Zero has no Vulkan or wgpu, so `iroh_live::media::video::render` cannot draw here.
+//! I420 frames from openh264 go up as three `LUMINANCE` textures, and a shader
+//! converts the colour. This keeps the CPU free for decoding. Other surfaces
+//! go up as one RGBA texture. Works with any EGL/GLES2 context.
 
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
-use moq_video::{Frame, Surface};
-
-// ── GLES2 shaders ──────────────────────────────────────────────────
+use iroh_live::media::video::{Frame, Surface};
+use tracing::warn;
 
 const VERT_SRC: &str = "\
 #version 100
@@ -38,10 +30,8 @@ void main() {
 
 /// BT.601 limited-range I420 to RGBA conversion.
 ///
-/// Each plane arrives as its own `LUMINANCE` texture, so every sample reads
-/// from `.r`. The chroma planes are half-size in both axes and GL's own
-/// bilinear filtering upsamples them, which is what the shader would otherwise
-/// have to do by hand.
+/// Each plane is a `LUMINANCE` texture, so every read uses `.r`. Bilinear
+/// filtering upsamples the half-size chroma planes.
 const I420_FRAG_SRC: &str = "\
 #version 100
 precision mediump float;
@@ -62,19 +52,16 @@ void main() {
     gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }";
 
-// ── GlesRenderer ───────────────────────────────────────────────────
-
-/// Tracks which upload path was last used, so `draw` picks the right program.
+/// The upload path of the last frame, which decides the program `draw` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveMode {
     Rgba,
     I420,
 }
 
-/// GLES2 renderer with RGBA, NV12, and zero-copy DMA-BUF upload paths.
+/// A GLES2 renderer with RGBA and I420 upload paths.
 ///
-/// Platform-agnostic: works with any `glow::Context`. The caller is
-/// responsible for creating the GL context and swapping buffers.
+/// The caller creates the GL context and swaps buffers.
 #[derive(Debug)]
 pub(crate) struct GlesRenderer {
     gl: glow::Context,
@@ -84,13 +71,12 @@ pub(crate) struct GlesRenderer {
     // RGBA path.
     rgba_program: glow::Program,
     rgba_texture: glow::Texture,
-    // NV12 path.
+    // I420 path.
     i420_program: glow::Program,
     i420_a_pos_loc: u32,
     y_texture: glow::Texture,
     u_texture: glow::Texture,
     v_texture: glow::Texture,
-    // State tracking.
     active: ActiveMode,
     tex_width: u32,
     tex_height: u32,
@@ -139,18 +125,17 @@ impl GlesRenderer {
     /// Creates both shader programs, VBO, and textures.
     ///
     /// # Safety
+    ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn new(gl: glow::Context) -> Result<Self> {
         let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
 
-        // RGBA program.
         let rgba_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, RGBA_FRAG_SRC)?;
         let rgba_program = link_program(&gl, vs, rgba_fs)?;
         unsafe { gl.delete_shader(rgba_fs) };
         let a_pos_loc = unsafe { gl.get_attrib_location(rgba_program, "a_pos") }
             .context("a_pos not found in RGBA program")?;
 
-        // NV12 program.
         let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
         let i420_program = link_program(&gl, vs, nv12_fs)?;
         unsafe { gl.delete_shader(nv12_fs) };
@@ -158,7 +143,7 @@ impl GlesRenderer {
         let i420_a_pos_loc = unsafe { gl.get_attrib_location(i420_program, "a_pos") }
             .context("a_pos not found in NV12 program")?;
 
-        // Bind NV12 sampler uniforms (texture units 0 and 1).
+        // The Y, U and V samplers read texture units 0, 1 and 2.
         unsafe { gl.use_program(Some(i420_program)) };
         if let Some(loc) = unsafe { gl.get_uniform_location(i420_program, "u_y_tex") } {
             unsafe { gl.uniform_1_i32(Some(&loc), 0) };
@@ -182,7 +167,10 @@ impl GlesRenderer {
         unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo)) };
         unsafe { gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW) };
 
-        // Textures.
+        // The I420 planes are packed rows. GL's default alignment of 4 would
+        // read past a row whose length is not a multiple of 4.
+        unsafe { gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1) };
+
         let rgba_texture = create_texture(&gl)?;
         let y_texture = create_texture(&gl)?;
         let u_texture = create_texture(&gl)?;
@@ -210,6 +198,7 @@ impl GlesRenderer {
     /// Uploads RGBA pixel data to the texture.
     ///
     /// # Safety
+    ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn upload_rgba(&mut self, rgba: &[u8], w: u32, h: u32) {
         self.active = ActiveMode::Rgba;
@@ -227,12 +216,10 @@ impl GlesRenderer {
         }
     }
 
-    /// Uploads the three I420 planes, leaving the colour conversion to the
-    /// shader.
+    /// Uploads the three I420 planes for the shader to convert.
     ///
-    /// Every plane goes up as `LUMINANCE`, one byte per texel. GLES2 has no
-    /// `GL_UNPACK_ROW_LENGTH`, so a plane whose stride exceeds its width has to
-    /// have the padding removed on the CPU first.
+    /// The planes must be tightly packed. GLES2 has no `GL_UNPACK_ROW_LENGTH`,
+    /// so row padding has to be removed on the CPU first.
     ///
     /// # Safety
     ///
@@ -276,18 +263,14 @@ impl GlesRenderer {
         }
     }
 
-    /// Uploads a decoded frame, taking the plane path when the surface is
-    /// already I420 and downloading to RGBA otherwise.
-    ///
-    /// Takes the frame by value because converting a surface consumes it, and
-    /// the renderer is the end of the pipeline.
+    /// Uploads a decoded frame, as planes if it is I420 and as RGBA otherwise.
     ///
     /// # Safety
     ///
     /// The GL context must be current on the calling thread.
-    pub(crate) unsafe fn upload_frame(&mut self, frame: Frame) {
+    pub(crate) unsafe fn upload_frame(&mut self, frame: &Frame) {
         let size = frame.size();
-        match frame.surface {
+        match &frame.surface {
             Surface::I420(i420) => unsafe {
                 self.upload_i420(i420.y(), i420.u(), i420.v(), i420.width(), i420.height());
             },
@@ -296,7 +279,7 @@ impl GlesRenderer {
                     self.upload_rgba(rgba.data(), rgba.width(), rgba.height());
                 },
                 Err(err) => {
-                    tracing::warn!(error = %err, %size, "failed to convert a frame for display");
+                    warn!(error = %err, %size, "failed to convert a frame for display");
                 }
             },
         }
@@ -304,10 +287,10 @@ impl GlesRenderer {
 
     /// Draws the uploaded frame as a fullscreen triangle.
     ///
-    /// Clears to black and renders using whichever program matches the last
-    /// upload. The caller must swap buffers after this call.
+    /// The caller swaps buffers afterwards.
     ///
     /// # Safety
+    ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn draw(&self, vp_w: i32, vp_h: i32) {
         unsafe {
@@ -358,16 +341,16 @@ impl GlesRenderer {
 
     /// Uploads a frame and draws it in one call.
     ///
-    /// Combines [`upload_frame`](Self::upload_frame) and [`draw`](Self::draw).
-    /// The caller must swap buffers after this call.
+    /// The caller swaps buffers afterwards.
     ///
     /// # Safety
+    ///
     /// The GL context must be current on the calling thread.
     #[allow(
         dead_code,
         reason = "convenience wrapper for a caller that has no use for upload and draw separately"
     )]
-    pub(crate) unsafe fn render_frame(&mut self, frame: Frame, vp_w: i32, vp_h: i32) {
+    pub(crate) unsafe fn render_frame(&mut self, frame: &Frame, vp_w: i32, vp_h: i32) {
         unsafe {
             self.upload_frame(frame);
             self.draw(vp_w, vp_h);
@@ -407,11 +390,9 @@ impl Drop for GlesRenderer {
     }
 }
 
-// ── Texture upload helpers ──────────────────────────────────────────
-
-/// Uploads pixel data, reusing `tex_sub_image_2d` when dimensions match.
+/// Uploads pixel data, reallocating the texture only when its size changes.
 ///
-/// `cached_w` / `cached_h` track the last allocated size for this texture.
+/// `cached_w` and `cached_h` hold the texture's allocated size.
 #[allow(
     clippy::too_many_arguments,
     reason = "GL upload needs all texture parameters"

@@ -12,8 +12,8 @@ export interface RelayInfo {
 }
 
 /**
- * Starts the iroh-live-relay binary with --dev mode, binding to port 0
- * for both QUIC and HTTP so tests never collide with running services.
+ * Starts the iroh-live-relay binary on port 0 for both QUIC and HTTP, so
+ * tests never collide with running services.
  *
  * Parses startup output to extract the actual bound ports and iroh endpoint ID.
  */
@@ -25,12 +25,8 @@ export async function startRelay(): Promise<RelayInfo> {
 
   const proc = spawn(
     relayBin,
-    [
-      "--bind",
-      "[::]:0",
-      "--http-bind",
-      "[::]:0",
-    ],
+    // No `--http-bind`: HTTP then shares the QUIC port, which the page connects to.
+    ["--bind", "[::]:0"],
     {
       env: { ...process.env, IROH_LIVE_RELAY_DATA: dataDir },
       stdio: ["pipe", "pipe", "pipe"],

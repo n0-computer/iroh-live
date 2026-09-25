@@ -1,45 +1,76 @@
 # iroh-moq
 
-[Media over QUIC](https://moq.dev/) transport over
-[iroh](https://github.com/n0-computer/iroh).
+[Media over QUIC](https://moq.dev/) over [iroh](https://github.com/n0-computer/iroh).
 
-`Moq` binds an iroh `Endpoint` to a MoQ origin. Broadcasts created with
-`Moq::publish` are announced to every peer, and `MoqSession` reaches the ones a
-peer announces back. An internal actor owns session lifetime, so a second
-`Moq::connect` to a peer we already have a session with returns that session
-rather than opening a second connection.
+A `Moq` node publishes broadcasts at paths and subscribes to paths. It keeps
+one route table fed by every link it has: direct sessions with peers, and moq
+relays it is attached to. A path resolves to its cheapest route. When that
+route dies, moq moves to another route from the same first hop, and
+`Subscription::closed` asks the table again for any other. The application
+picks the paths, and
+nothing here knows about media: a broadcast holds whatever tracks you write.
 
 ```rust
-use iroh_moq::Moq;
+use iroh_moq::{Audience, Moq, MoqConfig, MoqPreset, Reach};
 
-let moq = Moq::new(endpoint.clone());
+let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
+let moq = Moq::new(endpoint.clone(), MoqConfig::default());
 
-// Accept incoming sessions on every MoQ version this build speaks.
-let mut router = iroh::protocol::Router::builder(endpoint);
-for alpn in iroh_moq::alpns() {
-    router = router.accept(alpn, moq.protocol_handler());
-}
-let router = router.spawn();
+// Accept sessions on every MoQ version this build speaks.
+let router = moq.mount(iroh::protocol::Router::builder(endpoint)).spawn();
 
-// Publish, announced to every peer with a session.
-let producer = moq.publish("my-stream")?;
+// Publish a broadcast this process writes, to everyone.
+let broadcast = moq_net::broadcast::Info::new().produce();
+let publication = moq.publish("demo/my-stream", &broadcast, Audience::Everyone)?;
 
-// Or reach a peer's.
-let session = moq.connect(remote_addr).await?;
-let consumer = session.subscribe("my-stream").await?;
+// Resolve a peer's broadcast, dialing the peer if no route exists yet.
+let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
+let consumer = subscription.as_moq();
 ```
 
-Publishing is a property of the node rather than of a connection: a moq-net
-session takes exactly one publisher origin and the node origin is it. There is no
-per-session publish.
+## Who sees what
 
-## ALPN
+A publication's `Audience` says who sees it: `Everyone`, or a watched set of
+`Peers`. A session's
+`Grant` says what the peer may subscribe to and publish, in moq-auth's pattern
+form. `MoqConfig::grant` gives each peer its grant from its endpoint id.
+`iroh-live`, for example, lets a peer publish under `live/<its id>/` only, so
+no peer can stand in for another.
 
-`iroh_moq::ALPN` is `moq_net::ALPNS[0]`, the newest MoQ version this build
-speaks, so it tracks the dependency rather than a string someone has to remember
-to bump. `iroh_moq::alpns()` returns the whole list newest first, with HTTP/3
-last. Register all of them, or a peer built against a different moq release will
-not find a version in common.
+With `Admission::Manual`, incoming sessions wait in `Moq::accept` until the
+application admits or rejects them, for example after checking a token.
 
-Both halves of the handshake branch on what was negotiated: raw QUIC carries the
-MoQ stream directly, and H3 answers a CONNECT first.
+## Relays
+
+`Moq::attach_relay(RelayConfig::new(url))` stays attached to a moq relay at an
+`iroh://` or `https://` URL, and redials it with backoff. `RelayConfig::iroh(id)`
+builds the `iroh://` URL from an endpoint id. Public publications go
+to the relay, and the relay's routes join the route table at a higher cost than
+a direct route. A node that only publishes through the relay sets
+`RelayConfig::consume` to false.
+
+A relay is trusted with every path it forwards. On a relay where anyone may
+publish anywhere, a peer can publish `live/<victim>/cam`, and a subscriber whose
+relay route arrives before its direct one reads the forgery. Attach only relays
+that keep each publisher to its own paths, as `iroh-live-relay` and moq-relay's
+tokens do.
+
+## Links
+
+Every link runs a connection monitor. `Session::link()` and `RelayLink::link()`
+return its latest `LinkSample`: round trip, minimum round trip, loss, goodput
+and the peer's delivery estimate, with `None` for what is not measured yet.
+`Subscription::link()` returns the sample of whichever link serves the
+subscription.
+
+## Endpoints and transport
+
+`MoqPreset` is iroh's N0 preset with BBR3, so the send-rate estimate moq-net
+gives subscribers tracks the link.
+`iroh_moq::transport::{dial, accept}` do the ALPN negotiation and HTTP/3
+handling for applications that run moq-net's client or server themselves, as
+`iroh-live-relay` does.
+
+`iroh_moq::alpns()` lists every MoQ version this build speaks, newest first,
+then HTTP/3. Mount the node under all of them, so peers on other moq releases
+still connect.

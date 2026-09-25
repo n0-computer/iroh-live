@@ -1,42 +1,41 @@
 #![cfg(target_os = "android")]
 //! JNI bridge for the iroh-live Android demo app.
 //!
-//! Exposes a small set of functions to Kotlin: connect to a broadcast, publish
-//! one, dial a peer for a two-way call, push camera frames, and draw whatever is
-//! being decoded. Two offline pipelines exercise the media stack with no network
-//! at all, which is how the MediaCodec encoder and decoder get smoke-tested on a
-//! device.
+//! Kotlin can watch or publish a broadcast, make or answer a call, push camera
+//! frames and draw the video. Two offline pipelines run the media stack with no
+//! network, to smoke-test MediaCodec on a device.
 //!
-//! A global tokio runtime drives all async work. Every session lives behind one
-//! `jlong` handle that Kotlin holds and passes back in.
+//! A global tokio runtime drives all async work. Each session lives behind a
+//! `jlong` handle that Kotlin passes back in.
 
 mod logcat;
 
 use std::{
+    collections::BTreeSet,
     ffi::c_void,
     sync::{Arc, Mutex, OnceLock, Weak},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use iroh_live::{Call, Live, Subscription, ticket::LiveTicket};
+use iroh::EndpointId;
+use iroh_live::{
+    Audience, BroadcastTicket, CALL, EndpointOptions, Live, Publication, Reach,
+    media::{
+        AudioEncoding, AudioOutput, AudioSource, Catalog, FrameSender, LocalBroadcast,
+        MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
+        VideoFormat, VideoFrames, VideoRendition, VideoSource,
+    },
+};
+use iroh_live_media_android::{handle, renderer::AndroidRenderer};
 use jni::{
     JNIEnv, JavaVM,
     objects::{JByteArray, JClass, JObject, JString},
     sys::{jboolean, jint, jlong},
 };
-use moq_media::{
-    frame_channel::FrameReceiver,
-    publish::LocalBroadcast,
-    subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
-};
-use moq_media_android::{
-    camera::{CameraSink, camera},
-    handle,
-    renderer::AndroidRenderer,
-};
 use moq_net::Timestamp;
-use moq_video::{Frame, I420, Size, Surface};
+use moq_video::{Frame, I420, Rate, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
+use n0_future::task::AbortOnDropHandle;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -47,7 +46,7 @@ const LOGCAT_FILTER: &str = "\
     iroh_live=debug,\
     iroh_live_android=debug,\
     iroh_moq=debug,\
-    moq_media=debug,\
+    iroh_live_media=debug,\
     moq_video=debug,\
     moq_audio=debug,\
     moq_net=debug,\
@@ -58,14 +57,20 @@ const LOGCAT_FILTER: &str = "\
 /// The broadcast name the local encode and decode loop reports in its logs.
 const LOOPBACK_NAME: &str = "loopback";
 
-/// Initializes ndk-context and tracing on library load.
+/// The frame rate the camera source declares.
 ///
-/// Called by the JVM when `System.loadLibrary` loads this `.so`.
+/// CameraX delivers at the rate the device picks. This is the most the encoder
+/// plans for.
+const CAMERA_FPS: u32 = 30;
+
+/// The track name of the one video rendition the demo publishes.
+const VIDEO_RENDITION: &str = "video";
+
+/// Initializes ndk-context and tracing when `System.loadLibrary` loads this library.
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
-    // SAFETY: the JVM guarantees `vm` is valid for the duration of JNI_OnLoad,
-    // and the pointer it hands out stays valid for the process. The activity is
-    // null because cpal's Oboe backend only needs the VM pointer.
+    // SAFETY: `vm` stays valid for the life of the process. The activity is
+    // null because cpal's Oboe backend only needs the VM.
     unsafe {
         ndk_context::initialize_android_context(
             vm.get_java_vm_pointer().cast(),
@@ -76,7 +81,7 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
     jni::sys::JNI_VERSION_1_6
 }
 
-// ── Global runtime ──────────────────────────────────────────────────
+// Global runtime
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
@@ -90,78 +95,89 @@ fn runtime() -> &'static Runtime {
     })
 }
 
-// ── Session handle ──────────────────────────────────────────────────
+// Session handle
 
-/// Where the render loop takes its pictures from.
-enum FrameSource {
-    /// Nothing to draw: a publish-only session, or one whose track has not
-    /// opened yet.
-    Empty,
-    /// A remote track this node is decoding.
-    Track(VideoTrack),
-    /// This node's own camera frames, tapped on their way to the encoders.
-    Preview(Arc<FrameReceiver<Arc<Frame>>>),
-}
+/// How long a dial waits for the peer to answer.
+const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
-impl FrameSource {
-    /// Takes the newest picture, if one arrived since the last call.
-    ///
-    /// Both halves hand out shared frames so the caller has one type to draw. A
-    /// decoded frame is not shared with anyone, so wrapping it costs one
-    /// allocation per rendered frame and saves a second render path.
-    fn take(&self) -> Option<Arc<Frame>> {
-        match self {
-            Self::Empty => None,
-            Self::Track(track) => track.take().map(Arc::new),
-            Self::Preview(frames) => frames.take(),
-        }
-    }
-
-    /// The rendition being decoded, for the status line.
-    fn rendition(&self) -> Option<String> {
-        match self {
-            Self::Track(track) => Some(track.rendition()),
-            Self::Empty | Self::Preview(_) => None,
-        }
-    }
-}
-
-/// Opaque handle stored as a `jlong` on the Kotlin side.
+/// Binds the endpoint for a screen, with the key from `IROH_SECRET` if set.
 ///
-/// `Arc<Mutex<..>>` because JNI calls arrive concurrently from the render
-/// thread, the camera analyzer thread, and the UI thread.
+/// The demo stores no key, so without `IROH_SECRET` every screen gets a new
+/// endpoint id.
+async fn bind_live() -> Result<Live> {
+    let options = EndpointOptions::from_env()?;
+    Ok(Live::builder(options.bind().await?).with_router().spawn())
+}
+
+/// This node's side of a call, offered to one peer while held.
+///
+/// The peer sees the offer in its route table, which is how it learns it is
+/// called, as `irl call` does.
+struct Offer(Publication);
+
+impl Offer {
+    fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
+        let publication = live.moq().publish(
+            live.ticket(CALL).path(),
+            broadcast,
+            Audience::Peers(n0_watcher::Watchable::new(BTreeSet::from([peer]))),
+        )?;
+        Ok(Self(publication))
+    }
+}
+
+impl Drop for Offer {
+    fn drop(&mut self) {
+        self.0.unpublish();
+    }
+}
+
+/// Subscribes to `peer`'s side of a call and plays it.
+async fn play_call(live: &Live, peer: EndpointId, output: &AudioOutput) -> Result<Player> {
+    let path = BroadcastTicket::new(peer, CALL).path();
+    let subscription = live.moq().subscribe(path, Reach::Direct(peer)).await?;
+    play(&live.remote_broadcast(&subscription), output)
+}
+
+/// The state behind the `jlong` handle Kotlin holds.
+///
+/// It is shared behind a mutex because the render, camera and UI threads call
+/// in concurrently.
 struct SessionHandle {
     /// The endpoint and transport. `None` for the offline pipelines.
     live: Option<Live>,
-    /// A subscribe-only session, from `connect`. Held so the transport and the
-    /// signal producer behind it stay alive.
-    subscription: Option<Subscription>,
-    /// A two-way call, from `dial`. Owns its session and the peer's broadcast.
-    call: Option<Call>,
-    /// The broadcast being watched, from whichever path opened it.
-    remote: Option<RemoteBroadcast>,
-    /// The playing audio track. Held so playback keeps running.
-    #[allow(dead_code, reason = "dropping it stops playback")]
-    audio: Option<AudioTrack>,
-    /// The broadcast this node publishes, whether it is being watched by a
-    /// subscriber or carried by a call.
+    /// This node's side of a call, once the call is up.
+    offer: Option<Offer>,
+    /// Playback of the watched broadcast. Dropping it stops decoding and audio.
+    player: Option<Player>,
+    /// The speaker, which is also the microphone's echo reference.
+    ///
+    /// `None` in the offline pipelines and in a publish-only session.
+    #[allow(dead_code, reason = "dropping it closes the speaker")]
+    output: Option<AudioOutput>,
+    /// The broadcast this node publishes, for a subscriber or a call.
     broadcast: Option<LocalBroadcast>,
     /// Where the camera frames Kotlin pushes go.
-    camera: Option<CameraSink>,
+    camera: Option<FrameSender<Frame>>,
     /// What the render loop draws.
-    frames: FrameSource,
+    ///
+    /// The player's decoded frames, or the local camera frames on their way to
+    /// the encoder.
+    frames: Option<VideoFrames>,
     /// The ticket a published broadcast is reachable by.
     ticket: Option<String>,
-    /// The GLES renderer, behind its own lock so drawing does not block camera
-    /// pushes on the session mutex.
+    /// The GLES renderer.
+    ///
+    /// Behind its own lock, so drawing does not block camera pushes.
     renderer: Arc<Mutex<Option<AndroidRenderer>>>,
-    /// The dimensions of the last frame drawn, which the decoder knows more
-    /// precisely than the catalog does.
+    /// The size of the last frame drawn.
     frame_dims: Option<Size>,
-    /// The task waiting for somebody to call, for a handle from `answer`.
-    /// Aborted when this handle drops, which is what stops an unanswered wait
-    /// outliving the screen that started it.
-    waiting: Option<AbortOnDrop>,
+    /// The task waiting for a caller, for a handle from `answer`.
+    ///
+    /// Dropping the handle aborts it, so the wait ends with its screen.
+    waiting: Option<AbortOnDropHandle<()>>,
+    /// Set by `disconnect`, so a call answered during teardown is not installed.
+    closing: bool,
     cam_frames_pushed: u64,
     dec_frames_rendered: u64,
     created_at: Instant,
@@ -169,35 +185,22 @@ struct SessionHandle {
 
 type SharedHandle = Arc<Mutex<SessionHandle>>;
 
-/// A spawned task that is cancelled when this is dropped.
-///
-/// `tokio::task::JoinHandle` detaches on drop, which for the answering task
-/// would mean an endpoint and a camera held open by a wait nobody is watching.
-#[derive(Debug)]
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 impl SessionHandle {
-    /// An empty handle: no session, nothing to draw, counters at zero.
+    /// Creates an empty handle.
     fn new() -> Self {
         Self {
             live: None,
-            subscription: None,
-            call: None,
-            remote: None,
-            audio: None,
+            offer: None,
+            player: None,
+            output: None,
             broadcast: None,
             camera: None,
-            frames: FrameSource::Empty,
+            frames: None,
             ticket: None,
             renderer: Arc::new(Mutex::new(None)),
             frame_dims: None,
             waiting: None,
+            closing: false,
             cam_frames_pushed: 0,
             dec_frames_rendered: 0,
             created_at: Instant::now(),
@@ -208,40 +211,44 @@ impl SessionHandle {
         Arc::new(Mutex::new(self))
     }
 
-    /// The broadcast this node publishes, if it has one.
-    fn local(&self) -> Option<&LocalBroadcast> {
-        self.broadcast.as_ref()
+    /// Returns the round-trip time on the link the player reads, once measured.
+    fn rtt(&self) -> Option<Duration> {
+        self.player.as_ref()?.stats().network?.rtt
     }
 
-    /// The round-trip time on the selected path, if this session has a
-    /// connection at all.
-    fn rtt(&self) -> Option<std::time::Duration> {
-        let conn = self
-            .subscription
-            .as_ref()
-            .map(|sub| sub.session().conn())
-            .or_else(|| self.call.as_ref().map(|call| call.session().conn()))?;
-        Some(conn.paths().iter().find(|path| path.is_selected())?.rtt())
-    }
-
-    /// The timestamp to stamp the next camera frame with.
+    /// Returns the timestamp for the next camera frame, counted from session start.
     ///
-    /// Taken from the broadcast's own clock, which audio is stamped from too,
-    /// so the two tracks share a timeline even though the microphone and the
-    /// camera start at different moments.
+    /// The broadcast rebases each source onto its media clock at the first
+    /// frame, so the camera does not have to share a clock with the microphone.
     fn timestamp(&self) -> Timestamp {
-        self.local()
-            .map_or(Timestamp::ZERO, |local| local.clock().now())
+        let micros = u64::try_from(self.created_at.elapsed().as_micros()).unwrap_or(u64::MAX);
+        Timestamp::from_micros(micros).unwrap_or(Timestamp::ZERO)
+    }
+
+    /// Returns the rendition the player is drawing.
+    fn rendition(&self) -> Option<String> {
+        self.player.as_ref()?.status().borrow().rendition.clone()
+    }
+
+    /// Returns the newest catalog of the watched broadcast, if one arrived.
+    fn catalog(&self) -> Option<Catalog> {
+        self.player.as_ref()?.broadcast().catalog().borrow().clone()
     }
 }
 
+/// Returns a new reference to the handle's state.
+///
 /// # Safety
+///
 /// `h` must be a live handle from [`SessionHandle::into_shared`].
 unsafe fn borrow_handle(h: jlong) -> SharedHandle {
     unsafe { handle::from_i64(h) }
 }
 
+/// Takes back ownership of the handle's state.
+///
 /// # Safety
+///
 /// `h` must be a live handle, and must not be used after this call.
 unsafe fn take_handle(h: jlong) -> SharedHandle {
     unsafe { handle::take_i64(h) }
@@ -258,34 +265,62 @@ fn read_jstring(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
     }
 }
 
-// ── Capture wiring ──────────────────────────────────────────────────
+// Capture wiring
 
-/// Points a broadcast's video track at the camera Kotlin pushes into.
+/// Sets the broadcast's video to a camera that Kotlin pushes frames into.
 ///
-/// Video is a push source: Camera2 delivers frames on whichever thread it likes
-/// and the publish task pulls the newest one.
-fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<CameraSink> {
-    let (sink, source) = camera(size);
-    broadcast.video().set(source)?;
-    Ok(sink)
+/// Returns the sink for those frames and a stream of the same frames on their
+/// way to the encoder. A local preview draws that stream without any encode or
+/// decode.
+fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Frame>, VideoFrames)> {
+    let rate = Rate::new(CAMERA_FPS, 1).std_context("camera frame rate")?;
+    let (sink, source) = VideoSource::push(VideoFormat { size, rate });
+    let preview = source.frames();
+    broadcast.set_video(
+        source,
+        VideoEncoding::single(VideoRendition::new(VIDEO_RENDITION)),
+    )?;
+    Ok((sink, preview))
 }
 
-/// Publishes the default microphone.
+/// Publishes the default microphone, cancelling the echo of `echo` if given.
 ///
-/// Unlike the camera, this is a device the publish task opens itself: nothing
-/// in Kotlin touches the microphone.
-fn set_microphone(broadcast: &LocalBroadcast) {
-    broadcast.audio().set(moq_audio::capture::Config::default());
+/// A call passes its speaker here, or a phone on speaker sends the peer's
+/// voice straight back. If the microphone does not open, the session goes on
+/// with video only.
+async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) {
+    let config = MicrophoneConfig {
+        echo_reference: echo.cloned(),
+        ..MicrophoneConfig::default()
+    };
+    let published = AudioSource::microphone(config)
+        .await
+        .and_then(|source| broadcast.set_audio(source, AudioEncoding::voice()));
+    if let Err(err) = published {
+        warn!("publishing without audio: {err:#}");
+    }
 }
 
-/// Creates a broadcast with no transport behind it, for the offline pipelines.
-fn local_broadcast() -> Result<LocalBroadcast> {
-    Ok(LocalBroadcast::new(
-        moq_net::broadcast::Info::new().produce(),
-    )?)
+/// Opens the default speaker, or an output that discards audio if that fails.
+async fn open_output() -> AudioOutput {
+    match AudioOutput::open(None).await {
+        Ok(output) => output,
+        Err(err) => {
+            warn!("playing audio nowhere, the speaker did not open: {err:#}");
+            AudioOutput::null()
+        }
+    }
 }
 
-// ── JNI: connect (subscribe only) ───────────────────────────────────
+/// Starts playing `remote`, with its audio through `output`.
+fn play(remote: &RemoteBroadcast, output: &AudioOutput) -> Result<Player> {
+    Ok(remote.play(PlayerConfig {
+        audio: Some(output.clone()),
+        ..PlayerConfig::default()
+    })?)
+}
+
+// JNI: connect (subscribe only)
 
 /// Connects to a remote broadcast. Returns a session handle, or 0 on failure.
 #[unsafe(no_mangle)]
@@ -307,31 +342,29 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
 }
 
 async fn connect_impl(ticket: String) -> Result<jlong> {
-    let ticket: LiveTicket = ticket.parse().context("failed to parse ticket")?;
+    let ticket: BroadcastTicket = ticket.parse().context("failed to parse ticket")?;
 
-    let live = Live::from_env().await?.with_router().spawn();
-    info!(broadcast = %ticket.broadcast_name, "connecting to broadcast");
+    let live = bind_live().await?;
+    info!(broadcast = %ticket.name(), "connecting to broadcast");
 
-    let subscription = live
-        .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
-        .await?;
-    let tracks = subscription.media().await;
-    info!(
-        video = tracks.video.is_some(),
-        audio = tracks.audio.is_some(),
-        "subscribed"
-    );
+    let subscription = live.subscribe(&ticket).await?;
+    info!("subscribed");
+
+    // The player waits for the catalog on its own, so the handle is usable
+    // right away.
+    let output = open_output().await;
+    let remote = live.remote_broadcast(&subscription);
+    let player = play(&remote, &output)?;
 
     let mut session = SessionHandle::new();
-    session.remote = Some(subscription.broadcast().clone());
-    session.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
-    session.audio = tracks.audio;
-    session.subscription = Some(subscription);
+    session.frames = Some(player.video());
+    session.player = Some(player);
+    session.output = Some(output);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
 }
 
-// ── JNI: dial (two-way call) ────────────────────────────────────────
+// JNI: dial (two-way call)
 
 /// Dials a remote peer: publishes camera and microphone, subscribes to theirs.
 ///
@@ -359,46 +392,41 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_dial(
 
 async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(%ticket, %size, "parsing call ticket");
-    let ticket: LiveTicket = ticket.parse().context("failed to parse call ticket")?;
+    let ticket: BroadcastTicket = ticket.parse().context("failed to parse call ticket")?;
 
-    let live = Live::from_env().await?.with_router().spawn();
+    let live = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
-    // Each peer publishes its own side of the call under its own endpoint id,
-    // and subscribes to the other's.
-    let broadcast = live.publish(Call::path(live.endpoint().id()))?;
-    let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast);
+    let output = open_output().await;
+    let broadcast = LocalBroadcast::new();
+    let (camera, _preview) = set_camera(&broadcast, size)?;
+    set_microphone(&broadcast, Some(&output)).await;
 
-    let call = Call::dial(&live, ticket.endpoint).await?;
-    info!(remote = %call.remote_id().fmt_short(), "call connected");
-
-    let tracks = call.remote().media().await;
-    info!(
-        video = tracks.video.is_some(),
-        audio = tracks.audio.is_some(),
-        "remote media subscribed"
-    );
+    let offer = Offer::new(&live, &broadcast, ticket.peer())?;
+    // A busy callee answers only once its call ends, so give up as `irl call`
+    // does.
+    let player = tokio::time::timeout(PEER_TIMEOUT, play_call(&live, ticket.peer(), &output))
+        .await
+        .std_context("the peer did not answer")??;
+    info!(remote = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();
-    session.remote = Some(call.remote().clone());
-    session.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
-    session.audio = tracks.audio;
+    session.frames = Some(player.video());
+    session.player = Some(player);
+    session.output = Some(output);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    session.call = Some(call);
+    session.offer = Some(offer);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
 }
 
-/// Publishes this node's side of a call and waits for a peer to dial it.
+/// Opens this node's side of a call and waits for a peer to call.
 ///
-/// Returns a session handle at once, with the ticket already readable, so the
-/// screen can show the code before any peer exists. The peer's tracks arrive
-/// later, on a task this handle owns;
-/// [`Java_com_n0_irohlive_demo_IrohBridge_callConnected`] says when.
-///
-/// Returns 0 on failure.
+/// Returns a session handle at once, so the screen can show the ticket. A
+/// task on the handle waits for the caller, and
+/// [`Java_com_n0_irohlive_demo_IrohBridge_callConnected`] reports when one
+/// arrived. Returns 0 on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
     _env: JNIEnv<'_>,
@@ -418,98 +446,82 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
 
 async fn answer_impl(size: Size) -> Result<jlong> {
     info!(%size, "waiting for a call");
-    let live = Live::from_env().await?.with_router().spawn();
+    let live = bind_live().await?;
     let id = live.endpoint().id();
     info!(id = %id.fmt_short(), "endpoint ready");
 
-    // The same shape the dialing side uses: each peer publishes its own half of
-    // the call under its own endpoint id, and subscribes to the other's. The
-    // camera starts here rather than when a peer arrives, so the preview is
-    // live while the code is on screen and the first frame the peer sees does
-    // not wait for a device to open.
-    let path = Call::path(id);
-    let broadcast = live.publish(&path)?;
-    let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast);
+    // Start the camera now, so the preview runs while the ticket is on screen
+    // and the peer's first frame does not wait for the device to open.
+    let output = open_output().await;
+    let broadcast = LocalBroadcast::new();
+    let (camera, preview) = set_camera(&broadcast, size)?;
+    set_microphone(&broadcast, Some(&output)).await;
 
     let mut session = SessionHandle::new();
-    session.frames = broadcast
-        .preview()
-        .map_or(FrameSource::Empty, FrameSource::Preview);
+    session.frames = Some(preview);
+    session.output = Some(output.clone());
     session.camera = Some(camera);
-    session.ticket = Some(LiveTicket::new(id, path.as_str()).to_string());
-    session.broadcast = Some(broadcast);
+    session.ticket = Some(live.ticket(CALL).to_string());
+    session.broadcast = Some(broadcast.clone());
     session.live = Some(live.clone());
     let shared = session.into_shared();
 
-    // The task gets a `Weak`, not an `Arc`. Holding a strong reference to the
-    // handle it is going to write into would keep that handle alive for as long
-    // as the task runs, and the task runs until somebody calls, so a screen
-    // backed out of before any peer arrived would hold its endpoint, its camera
-    // and its broadcast open for the rest of the process. Instead the task is
-    // owned by the handle through `waiting`, so `disconnect` dropping the last
-    // `Arc` aborts it.
+    // The task holds a `Weak`. A strong reference would keep the handle, and
+    // with it the endpoint and camera, alive until somebody calls. The handle
+    // owns the task through `waiting`, so dropping the last `Arc` aborts it.
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
-        if let Err(err) = accept_one(live, waiting).await {
+        if let Err(err) = accept_one(live, broadcast, output, waiting).await {
             error!("answering failed: {err:#}");
         }
     });
-    shared.lock().expect("poisoned").waiting = Some(AbortOnDrop(task));
+    shared.lock().expect("poisoned").waiting = Some(AbortOnDropHandle::new(task));
 
     Ok(handle::to_i64(shared))
 }
 
-/// Accepts the first peer that calls, and installs its tracks on `session`.
+/// Answers the first peer that calls and installs a player for it on `session`.
 ///
-/// Sessions this node dialed are skipped: everything that speaks MoQ arrives
-/// the same way, and only an inbound one can be a caller.
-async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<()> {
-    let mut incoming = live.transport().incoming_sessions();
-    while let Some(moq) = incoming.next().await {
-        if moq.dialed() {
-            continue;
-        }
-        let remote_id = moq.remote_id();
-        info!(remote = %remote_id.fmt_short(), "incoming session");
-        // A plain subscriber arrives here too and never publishes the call path
-        // this waits for, so a failure is an ordinary outcome rather than an
-        // error: keep listening for somebody who does.
-        let call = match Call::accept(moq).await {
-            Ok(call) => call,
-            Err(err) => {
-                info!(remote = %remote_id.fmt_short(), error = %err, "not a caller");
-                continue;
-            }
-        };
-        let tracks = call.remote().media().await;
-        info!(
-            remote = %call.remote_id().fmt_short(),
-            video = tracks.video.is_some(),
-            audio = tracks.audio.is_some(),
-            "call answered",
-        );
-
-        let Some(session) = session.upgrade() else {
-            // The screen was left while this was settling, so there is nothing
-            // to install it on. Closing the call tells the peer, where dropping
-            // it would leave them waiting out a timeout.
-            call.close();
+/// A caller offers `live/<its id>/call` to this node only, so the first such
+/// path in the route table is the call.
+async fn accept_one(
+    live: Live,
+    broadcast: LocalBroadcast,
+    output: AudioOutput,
+    session: Weak<Mutex<SessionHandle>>,
+) -> Result<()> {
+    let me = live.endpoint().id();
+    let mut updates = live.moq().origin().announced();
+    let peer = loop {
+        let Some(update) = updates.next().await else {
             return Ok(());
         };
-        let mut held = session.lock().expect("poisoned");
-        held.remote = Some(call.remote().clone());
-        // Replaces the local preview, so the screen switches from this node's
-        // own camera to the peer's picture the moment there is one.
-        held.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
-        held.audio = tracks.audio;
-        held.call = Some(call);
+        let caller = BroadcastTicket::from_path(update.prefix.as_str())
+            .filter(|ticket| update.kind.is_active() && ticket.name() == CALL);
+        if let Some(ticket) = caller.filter(|ticket| ticket.peer() != me) {
+            break ticket.peer();
+        }
+    };
+    info!(remote = %peer.fmt_short(), "answering");
+    let offer = Offer::new(&live, &broadcast, peer)?;
+    let player = play_call(&live, peer, &output).await?;
+    info!(remote = %peer.fmt_short(), "call answered");
+
+    let Some(session) = session.upgrade() else {
+        return Ok(());
+    };
+    let mut held = session.lock().expect("poisoned");
+    if held.closing {
         return Ok(());
     }
+    // Replace the local preview with the peer's video.
+    held.frames = Some(player.video());
+    held.player = Some(player);
+    held.offer = Some(offer);
     Ok(())
 }
 
-/// Whether an answered call has a peer on it yet.
+/// Returns whether an answered call has a peer yet.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
     _env: JNIEnv<'_>,
@@ -520,11 +532,11 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
         return 0;
     }
     let session = unsafe { borrow_handle(handle) };
-    let connected = session.lock().expect("poisoned").call.is_some();
+    let connected = session.lock().expect("poisoned").offer.is_some();
     jboolean::from(connected)
 }
 
-// ── JNI: publish ────────────────────────────────────────────────────
+// JNI: publish
 
 /// Publishes camera and microphone under `name`.
 ///
@@ -552,22 +564,20 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
 
 async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     info!(%name, %size, "publishing broadcast");
-    let live = Live::from_env().await?.with_router().spawn();
+    let live = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
-    let broadcast = live.publish(&name)?;
-    let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast);
+    let broadcast = LocalBroadcast::new();
+    let (camera, preview) = set_camera(&broadcast, size)?;
+    // A publish-only session plays no sound, so there is no echo to cancel.
+    set_microphone(&broadcast, None).await;
+    live.publish(&name, &broadcast)?;
 
-    let ticket = LiveTicket::new(live.endpoint().id(), name.as_str()).to_string();
+    let ticket = live.ticket(&name).to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();
-    // The publisher watches itself: the preview is the frames on their way to
-    // the encoders, so it costs no decode.
-    session.frames = broadcast
-        .preview()
-        .map_or(FrameSource::Empty, FrameSource::Preview);
+    session.frames = Some(preview);
     session.camera = Some(camera);
     session.ticket = Some(ticket);
     session.broadcast = Some(broadcast);
@@ -593,14 +603,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getTicket<'a>(
     new_string(&mut env, &ticket)
 }
 
-// ── JNI: offline pipelines ──────────────────────────────────────────
+// JNI: offline pipelines
 
-/// Starts a camera passthrough pipeline: no encode, no decode, no network.
+/// Starts a camera preview with no encode, decode or network.
 ///
-/// The camera feeds a broadcast nobody subscribes to, so its encoders stay
-/// idle and the preview draws the frames exactly as they arrive.
-///
-/// Returns a session handle, or 0 on failure.
+/// Nobody subscribes to the broadcast, so its encoders stay idle. Returns a
+/// session handle, or 0 on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
     _env: JNIEnv<'_>,
@@ -620,26 +628,22 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
 
 fn start_direct_impl(size: Size) -> Result<jlong> {
     info!(%size, "starting direct camera pipeline");
-    // The publish task is a tokio task even with no transport under it.
+    // The broadcast spawns its encode task on tokio.
     let _guard = runtime().enter();
 
-    let broadcast = local_broadcast()?;
-    let camera = set_camera(&broadcast, size)?;
-    let preview = broadcast
-        .preview()
-        .ok_or_else(|| anyerr!("video source did not open a preview"))?;
+    let broadcast = LocalBroadcast::new();
+    let (camera, preview) = set_camera(&broadcast, size)?;
 
     let mut session = SessionHandle::new();
-    session.frames = FrameSource::Preview(preview);
+    session.frames = Some(preview);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
     Ok(handle::to_i64(session.into_shared()))
 }
 
-/// Starts a local encode and decode loop: camera to MediaCodec and back, with
-/// no network in between.
+/// Starts a local loop from the camera through MediaCodec and back.
 ///
-/// Returns a session handle, or 0 on failure.
+/// Uses no network. Returns a session handle, or 0 on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startH264(
     _env: JNIEnv<'_>,
@@ -661,71 +665,42 @@ fn start_h264_impl(size: Size) -> Result<jlong> {
     info!(%size, "starting local H264 pipeline");
     let _guard = runtime().enter();
 
-    let broadcast = local_broadcast()?;
-    let camera = set_camera(&broadcast, size)?;
-    let consumer = broadcast.consume();
+    let broadcast = LocalBroadcast::new();
+    let (camera, _preview) = set_camera(&broadcast, size)?;
+    let player = open_loopback(&broadcast)?;
 
     let mut session = SessionHandle::new();
+    session.frames = Some(player.video());
+    session.player = Some(player);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    let session = session.into_shared();
-
-    // The catalog only appears once the camera has pushed a first frame, which
-    // cannot happen before Kotlin holds this handle. So the subscription
-    // resolves in the background and installs itself when it is ready.
-    //
-    // The task holds a weak reference on purpose: it is waiting on a broadcast
-    // the handle owns, so a strong one would keep both alive forever if the user
-    // disconnected before the first frame.
-    runtime().spawn(open_loopback(Arc::downgrade(&session), consumer));
-    Ok(handle::to_i64(session))
+    Ok(handle::to_i64(session.into_shared()))
 }
 
-/// Subscribes to a broadcast this node publishes, and draws what comes back.
-async fn open_loopback(
-    session: std::sync::Weak<Mutex<SessionHandle>>,
-    consumer: moq_net::broadcast::Consumer,
-) {
-    let remote = match RemoteBroadcast::new(LOOPBACK_NAME, consumer).await {
-        Ok(remote) => remote,
-        Err(err) => {
-            error!("loopback subscribe failed: {err:#}");
-            return;
-        }
-    };
-    let video = match remote.video().await {
-        Ok(video) => video,
-        Err(err) => {
-            error!("loopback decode failed: {err:#}");
-            return;
-        }
-    };
-    info!(rendition = %video.rendition(), "loopback decoding");
-
-    let Some(session) = session.upgrade() else {
-        return;
-    };
-    let Ok(mut guard) = session.lock() else {
-        return;
-    };
-    guard.frames = FrameSource::Track(video);
-    guard.remote = Some(remote);
-}
-
-// ── JNI: camera frame push ──────────────────────────────────────────
-
-/// What a camera push needs from the handle.
+/// Plays a local broadcast in-process.
 ///
-/// Read under the lock and returned by value, because turning a camera buffer
-/// into a frame costs a full-picture copy and the render loop wants this mutex
-/// back long before that finishes.
+/// The catalog appears only after the first camera frame. The player waits for
+/// it on its own.
+fn open_loopback(broadcast: &LocalBroadcast) -> Result<Player> {
+    let player = RemoteBroadcast::local(broadcast).play(PlayerConfig::default())?;
+    info!(broadcast = LOOPBACK_NAME, "loopback playing");
+    Ok(player)
+}
+
+// JNI: camera frame push
+
+/// What a camera push needs from the handle, copied out of the lock.
+///
+/// Converting a camera buffer copies the whole picture, and the render loop
+/// needs the lock back sooner.
 struct CameraTarget {
-    sink: CameraSink,
+    sink: FrameSender<Frame>,
     timestamp: Timestamp,
     /// How many frames were pushed before this one.
     pushed: u64,
 }
 
+/// Reads the camera target out of the handle.
 fn camera_target(session: &SharedHandle) -> Option<CameraTarget> {
     let guard = session.lock().ok()?;
     Some(CameraTarget {
@@ -764,17 +739,28 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
     let Some(target) = camera_target(&session) else {
         return;
     };
-    if let Err(err) = target.sink.push_rgba(&rgba, target.timestamp) {
-        warn!(width, height, "rejected RGBA camera frame: {err}");
+    let size = Size::new(width as u32, height as u32);
+    let surface = match Surface::rgba(&rgba, size) {
+        Ok(surface) => surface,
+        Err(err) => {
+            warn!(%size, "rejected RGBA camera frame: {err}");
+            return;
+        }
+    };
+    if target
+        .sink
+        .push(Frame::new(surface, target.timestamp))
+        .is_err()
+    {
         return;
     }
     count_camera_frame(&session);
 }
 
-/// Pushes one camera frame as the NV12 planes Camera2 hands out.
+/// Pushes one camera frame as the NV12 planes CameraX hands out.
 ///
-/// `y_stride` and `uv_stride` are the driver's row pitches, which are often
-/// wider than the picture.
+/// `y_stride` and `uv_stride` are the driver's row pitches, often wider than
+/// the picture.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
     env: JNIEnv<'_>,
@@ -822,16 +808,17 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
             return;
         }
     };
-    target
-        .sink
-        .push(Frame::new(Surface::I420(planes), target.timestamp));
+    let frame = Frame::new(Surface::I420(planes), target.timestamp);
+    if target.sink.push(frame).is_err() {
+        return;
+    }
     count_camera_frame(&session);
 }
 
-/// Deinterleaves Camera2's NV12 planes into the packed I420 an encoder wants.
+/// Converts CameraX's NV12 planes into packed I420.
 ///
-/// The copy is unavoidable: NV12 rows carry driver padding and its chroma is
-/// interleaved, while `moq_video::I420` is tightly packed and planar.
+/// Camera NV12 rows carry padding and interleaved chroma, and `I420` is packed
+/// and planar, so a copy is needed.
 fn nv12_to_i420(
     y: &[u8],
     y_stride: usize,
@@ -866,21 +853,21 @@ fn nv12_to_i420(
         let src = &uv[row * uv_stride..row * uv_stride + chroma_width * 2];
         let u_row = &mut u_plane[row * chroma_width..(row + 1) * chroma_width];
         let v_row = &mut v_plane[row * chroma_width..(row + 1) * chroma_width];
-        for (col, pair) in src.chunks_exact(2).enumerate() {
-            u_row[col] = pair[0];
-            v_row[col] = pair[1];
+        for (col, [u, v]) in src.as_chunks::<2>().0.iter().enumerate() {
+            u_row[col] = *u;
+            v_row[col] = *v;
         }
     }
 
     I420::new(size, data).std_context("packing I420 planes")
 }
 
-// ── JNI: rendering ──────────────────────────────────────────────────
+// JNI: rendering
 
 /// Creates the EGL context and GL renderer for an Android surface.
 ///
-/// Must be called from the render thread. Rust owns the whole EGL lifecycle;
-/// Kotlin only hands over the `android.view.Surface`.
+/// Call it from the render thread. Kotlin only hands over the
+/// `android.view.Surface`, and Rust manages EGL.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
     env: JNIEnv<'_>,
@@ -891,8 +878,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
     if handle == 0 {
         return;
     }
-    // SAFETY: ANativeWindow_fromSurface needs the raw JNIEnv and a live
-    // `android.view.Surface`, both of which JNI just handed us.
+    // SAFETY: JNI just passed a valid JNIEnv and a live `android.view.Surface`.
     let native_window = unsafe {
         moq_video::ndk::native_window::NativeWindow::from_surface(env.get_raw(), surface.as_raw())
     };
@@ -903,15 +889,15 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
 
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return };
-    // SAFETY: the window was just created from a live surface and outlives this
-    // call; the renderer acquires its own reference.
+    // SAFETY: the window comes from a live surface and outlives this call. The
+    // renderer takes its own reference.
     match unsafe { AndroidRenderer::new(native_window.ptr().as_ptr().cast()) } {
         Ok(renderer) => *guard.renderer.lock().expect("renderer lock") = Some(renderer),
         Err(err) => error!("initSurface failed: {err:#}"),
     }
 }
 
-/// Tears down the EGL surface and context, when the render loop exits.
+/// Tears down the EGL surface and context when the render loop exits.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_teardownSurface(
     _env: JNIEnv<'_>,
@@ -934,7 +920,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_teardownSurface(
 
 /// Draws the newest frame and swaps the EGL buffers.
 ///
-/// Returns whether anything was drawn. Must be called from the render thread.
+/// Returns whether it drew a frame. Call it from the render thread.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     _env: JNIEnv<'_>,
@@ -949,13 +935,13 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     }
     let session = unsafe { borrow_handle(handle) };
 
-    // Hold the session lock only long enough to take the frame. Drawing can be
-    // slow, and a camera push waiting on this mutex is a dropped frame.
+    // Hold the session lock only to take the frame. Drawing can be slow, and a
+    // camera push that waits on the lock drops a frame.
     let (frame, renderer) = {
         let Ok(mut guard) = session.lock() else {
             return false;
         };
-        let Some(frame) = guard.frames.take() else {
+        let Some(frame) = guard.frames.as_mut().and_then(VideoFrames::try_next) else {
             return false;
         };
         guard.dec_frames_rendered += 1;
@@ -973,8 +959,8 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     let Some(renderer) = renderer.as_ref() else {
         return false;
     };
-    // The coroutine dispatcher can move the render loop between threads, so the
-    // context has to be rebound before every draw.
+    // The coroutine dispatcher can move the render loop between threads, so
+    // rebind the context before every draw.
     renderer.make_current();
     draw(
         renderer,
@@ -995,8 +981,8 @@ fn draw(
 ) -> bool {
     let size = frame.size();
     match &frame.surface {
-        // The MediaCodec decoder renders into an ImageReader, so a decoded
-        // picture reaches GL without a CPU round trip.
+        // MediaCodec decodes into an ImageReader, so the picture reaches GL
+        // without a CPU copy.
         Surface::HardwareBuffer(surface) => {
             let buffer = match surface.buffer() {
                 Ok(buffer) => buffer,
@@ -1005,8 +991,8 @@ fn draw(
                     return false;
                 }
             };
-            // SAFETY: the EGL context is current, and `buffer` holds a reference
-            // of its own for the whole call.
+            // SAFETY: the EGL context is current, and `buffer` holds its own
+            // reference for the whole call.
             unsafe {
                 renderer.render_hardware_buffer(
                     buffer.as_ptr().cast::<c_void>(),
@@ -1018,13 +1004,13 @@ fn draw(
                 );
             }
         }
-        // Software decode and the camera preview both land here. The shader
-        // converts NV12 on the GPU, so interleaving the two chroma planes is
-        // much cheaper than converting to RGBA on the CPU.
+        // Software decode and the camera preview land here. Interleaving the
+        // chroma for the NV12 shader is much cheaper than an RGBA conversion on
+        // the CPU.
         Surface::I420(planes) => {
             let chroma = interleave_chroma(planes);
             // SAFETY: the EGL context is current. Both planes are tightly
-            // packed, so their strides are the row lengths passed alongside.
+            // packed, so their strides equal the widths passed in.
             unsafe {
                 renderer.render_nv12(
                     planes.y(),
@@ -1039,9 +1025,8 @@ fn draw(
                 );
             }
         }
-        // Unreachable today: on Android a surface is one of the two above. The
-        // enum is non-exhaustive so that a new variant upstream is a dropped
-        // frame here rather than a build failure.
+        // On Android a surface is one of the two above. The enum is
+        // non-exhaustive, so a new variant drops frames here.
         _ => {
             warn!("no render path for this surface");
             return false;
@@ -1062,7 +1047,7 @@ fn interleave_chroma(planes: &I420) -> Vec<u8> {
     chroma
 }
 
-// ── JNI: status ─────────────────────────────────────────────────────
+// JNI: status
 
 /// Returns `(width << 32) | height` for the video being drawn, or 0.
 #[unsafe(no_mangle)]
@@ -1077,24 +1062,21 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return 0 };
 
-    // The decoder's own answer beats the catalog's, which describes the encoded
-    // resolution rather than what came out.
+    // Prefer the decoded size. The catalog only has the encoded size.
     if let Some(size) = guard.frame_dims {
         return (i64::from(size.width) << 32) | i64::from(size.height);
     }
-    let (Some(rendition), Some(remote)) = (guard.frames.rendition(), guard.remote.as_ref()) else {
+    let (Some(rendition), Some(catalog)) = (guard.rendition(), guard.catalog()) else {
         return 0;
     };
-    remote
-        .catalog()
-        .video()
+    catalog
+        .video
+        .renditions
         .get(&rendition)
-        .map(|config| {
-            let width = i64::from(config.coded_width.unwrap_or(0));
-            let height = i64::from(config.coded_height.unwrap_or(0));
-            (width << 32) | height
+        .and_then(|config| config.coded_width.zip(config.coded_height))
+        .map_or(0, |(width, height)| {
+            (i64::from(width) << 32) | i64::from(height)
         })
-        .unwrap_or(0)
 }
 
 /// Returns the available video renditions, one per line.
@@ -1112,14 +1094,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
         return empty_string(&mut env);
     };
     let names = guard
-        .remote
-        .as_ref()
-        .map(|remote| {
-            remote
-                .catalog()
-                .video()
-                .keys()
-                .cloned()
+        .catalog()
+        .map(|catalog| {
+            catalog
+                .ranked_video()
+                .into_iter()
+                .map(|(name, _)| name)
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -1127,10 +1107,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
     new_string(&mut env, &names)
 }
 
-/// Switches the video track to a named rendition.
+/// Pins the player to a named rendition.
 ///
-/// The replacement decoder opens alongside the incumbent and takes over on its
-/// first frame, so the picture does not go blank across the switch.
+/// The new decoder runs next to the old one until it catches up, so the picture
+/// does not go blank.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     mut env: JNIEnv<'_>,
@@ -1146,12 +1126,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     };
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return };
-    let FrameSource::Track(track) = &guard.frames else {
-        warn!(%name, "not watching a track, nothing to switch");
+    let Some(player) = guard.player.as_ref() else {
+        warn!(%name, "not playing a broadcast, nothing to switch");
         return;
     };
     info!(%name, "switching video rendition");
-    track.set_rendition(name);
+    player.set_rendition(RenditionMode::pinned(name));
 }
 
 /// Returns a compact status line for the debug overlay.
@@ -1172,9 +1152,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getStatusLine<'a>(
     new_string(&mut env, &line)
 }
 
+/// Formats the debug overlay line.
 fn status_line(session: &SessionHandle) -> String {
     let video = session
-        .frames
         .rendition()
         .map(|name| format!("trk:{name}"))
         .unwrap_or_else(|| "no track".into());
@@ -1189,16 +1169,16 @@ fn status_line(session: &SessionHandle) -> String {
         .map(|rtt| format!("rtt:{}ms", rtt.as_millis()))
         .unwrap_or_default();
     let playout = session
-        .remote
+        .player
         .as_ref()
-        .map(|remote| format!("lat:{}ms", remote.sync().latency().as_millis()))
+        .map(|player| format!("lat:{}ms", player.stats().latency.as_millis()))
         .unwrap_or_default();
     let elapsed = session.created_at.elapsed().as_secs();
 
     format!("{video} {dims} | cam:{cam} dec:{dec} | {net} {playout} | {elapsed}s")
 }
 
-// ── JNI: teardown ───────────────────────────────────────────────────
+// JNI: teardown
 
 /// Disconnects and frees the session handle, which must not be used after.
 #[unsafe(no_mangle)]
@@ -1211,13 +1191,16 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         return;
     }
     let session = unsafe { take_handle(handle) };
-    // Take what shutdown needs and release the lock before blocking on it.
-    // Holding it across `block_on` would stall every other JNI entry point
-    // that touches this handle, including the status line the UI thread reads,
-    // for as long as the router and endpoint take to close.
-    let (remote, broadcast, live) = match session.lock() {
+    // Release the lock before `block_on`. Holding it would stall every other
+    // JNI call on this handle until the endpoint closes.
+    let (waiting, player, offer, broadcast, live) = match session.lock() {
         Ok(mut guard) => (
-            guard.remote.take(),
+            {
+                guard.closing = true;
+                guard.waiting.take()
+            },
+            guard.player.take(),
+            guard.offer.take(),
             guard.broadcast.take(),
             guard.live.take(),
         ),
@@ -1226,19 +1209,24 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
             return;
         }
     };
-    if let Some(remote) = remote {
-        remote.shutdown();
-    }
-    if let Some(mut broadcast) = broadcast {
-        runtime().block_on(broadcast.shutdown());
-    }
-    if let Some(live) = live {
-        runtime().block_on(live.shutdown());
-    }
+    runtime().block_on(async move {
+        // Stop waiting for a caller first, so none is accepted during shutdown.
+        drop(waiting);
+        drop(player);
+        drop(offer);
+        if let Some(broadcast) = broadcast {
+            // Let the encoders finish, so subscribers see the broadcast end.
+            broadcast.close();
+            broadcast.closed().await;
+        }
+        if let Some(live) = live {
+            live.shutdown().await;
+        }
+    });
     info!("disconnected");
 }
 
-// ── JNI string helpers ──────────────────────────────────────────────
+// JNI string helpers
 
 fn empty_string<'a>(env: &mut JNIEnv<'a>) -> JString<'a> {
     env.new_string("").expect("allocating an empty JNI string")

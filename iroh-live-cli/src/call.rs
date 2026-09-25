@@ -1,19 +1,17 @@
-//! `irl call`: a 1:1 bidirectional video call.
+//! `irl call`: a 1:1 video call.
 //!
-//! Both peers publish their own side at `calls/<their endpoint id>` and
-//! subscribe to the other's, which is all [`Call`] is: [`Live::publish`] and a
-//! subscription pointed at each other. Everything here is the window over that,
-//! plus the small state machine that decides whether this node is dialing,
-//! answering, or already talking.
+//! Each side offers its broadcast as [`CALL`] to the other peer only, and
+//! subscribes to the other's. A node is called when a peer's `call` path
+//! appears in its route table, and a hang-up withdraws the offer. The Android
+//! demo does the same, so the two can call each other.
 //!
-//! A call is symmetric and so is the way the two sides find each other. Every
-//! window shows its own ticket as a QR code while nobody is on the line, and
-//! every window has a scan screen that reads one off the camera, so it does not
-//! matter which side holds its screen up: whoever scans the other places the
-//! call. That is the whole exchange on a machine with no keyboard to paste a
-//! ticket into. See [`crate::scan`] for the reader.
+//! Each window shows its own ticket as a QR code and can scan the peer's off
+//! the camera. Whoever scans places the call, so no keyboard is needed.
 
-use iroh_live::{Call, Live, media::publish::LocalBroadcast};
+use iroh_live::{
+    CALL, Live,
+    media::{AudioOutput, LocalBroadcast},
+};
 use n0_error::Result;
 use tracing::info;
 
@@ -26,163 +24,171 @@ use crate::{
 
 /// Runs the `call` command.
 pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
-    let (live, broadcast, ticket) = rt.block_on(setup(&args))?;
+    let local = rt.block_on(setup(&args))?;
 
-    // eframe takes the main thread from here on, so the runtime keeps its
-    // workers only for as long as this guard lives.
+    // eframe takes over the main thread. The guard lets code on it spawn onto
+    // the runtime.
     let _guard = rt.enter();
-    window::run(live, broadcast, ticket, args)
+    window::run(local, args)
 }
 
-/// Binds the endpoint, publishes this node's side, and prints the ticket the
-/// peer needs.
-async fn setup(args: &CallArgs) -> Result<(Live, LocalBroadcast, String)> {
+/// This node's side of the call, and the speaker the peer's side plays on.
+struct Local {
+    live: Live,
+    broadcast: LocalBroadcast,
+    sources: source::Opened,
+    output: AudioOutput,
+    ticket: String,
+}
+
+/// Binds the endpoint, opens this node's side, and prints the ticket.
+async fn setup(args: &CallArgs) -> Result<Local> {
+    // Opened first so the microphone can cancel its echo.
+    let output = crate::playback::output(None).await?;
     let live = transport::setup_live(true).await?;
-    let (live, (broadcast, ticket)) = transport::with_live(live, async |live| {
-        let broadcast = publish_local(live, &args.capture)?;
-        let ticket = transport::ticket(live, &Call::path(live.endpoint().id()));
+    let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
+        let broadcast = LocalBroadcast::new();
+        let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
+        let ticket = live.ticket(CALL).to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
-        Ok((broadcast, ticket))
+        Ok((broadcast, sources, ticket))
     })
     .await?;
-    Ok((live, broadcast, ticket))
-}
-
-/// Publishes this node's side of the call and opens the capture devices.
-///
-/// Published once and held for the process's lifetime. Publishing is node-wide,
-/// so this broadcast is announced on every session, and a call neither creates
-/// nor consumes it: peers that come and go all read the same one.
-fn publish_local(live: &Live, args: &CaptureArgs) -> Result<LocalBroadcast> {
-    let broadcast = live.publish(Call::path(live.endpoint().id()))?;
-    source::configure(&broadcast, args)?;
-    Ok(broadcast)
+    Ok(Local {
+        live,
+        broadcast,
+        sources,
+        output,
+        ticket,
+    })
 }
 
 /// Who holds the camera while nothing is being scanned.
 ///
-/// The scan screen opens the default camera, and a capture device does not open
-/// twice, so a window whose publisher already has one has to hand it over and
-/// take it back. A window publishing anything else keeps publishing throughout.
+/// A capture device does not open twice. When the publisher already has the
+/// camera, the scan screen reads its frames instead of opening it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Camera {
-    /// The publisher opened it, so the scan screen is handed the device.
+    /// The publisher has the camera, and the scan screen reads or borrows it.
     Publisher,
-    /// Nothing here has it: the local video is a display, a test pattern, or
-    /// nothing at all, and the scan screen opens the camera on its own.
+    /// Nothing here has the camera, so the scan screen opens it itself.
     Free,
 }
 
 impl Camera {
-    /// Works out who holds the camera from what `--video` asked for.
+    /// Works out who holds the camera, from `--video` and `--scan-camera`.
     ///
-    /// A specifier that does not parse never opened anything, and whoever set
-    /// the publish up has already reported it, so it counts as free.
-    fn of(args: &CaptureArgs) -> Self {
-        match args.video_source() {
-            Ok(Spec::Camera(_)) => Self::Publisher,
-            // `rpicam-vid` drives the Pi camera through libcamera rather than
-            // V4L2, and the two still cannot hold one sensor at once.
+    /// A `--video` that does not parse opened nothing, so the camera counts as
+    /// free. A scan camera on another device leaves the publisher alone.
+    fn of(args: &CaptureArgs, scan: Option<&Spec>) -> Self {
+        let Ok(publishing) = args.video_source() else {
+            return Self::Free;
+        };
+        let holds_a_camera = match &publishing {
+            Spec::Camera(_) => true,
+            // `rpicam-vid` goes through libcamera, not V4L2, and the two still
+            // cannot hold one sensor at once.
             #[cfg(all(target_os = "linux", feature = "rpicam"))]
-            Ok(Spec::Rpicam(_)) => Self::Publisher,
-            Ok(_) | Err(_) => Self::Free,
+            Spec::Rpicam(_) => true,
+            _ => false,
+        };
+        let shared = match scan {
+            None => true,
+            Some(scan) => same_device(&publishing, scan),
+        };
+        if holds_a_camera && shared {
+            Self::Publisher
+        } else {
+            Self::Free
         }
     }
 }
 
-mod window {
-    //! The call window: the peer's picture, this node's own in a corner, and
-    //! the ticket exchange that gets the two connected.
-    //!
-    //! Four screens. The waiting screen shows this node's ticket as a QR code
-    //! over the local picture, the scan screen reads the peer's off the camera,
-    //! the calling screen is what a dial can be given up from, and the call
-    //! itself draws the peer full width. The chrome is `irl watch`'s, down to
-    //! the top bar, the control panel, and the way both fade out with the
-    //! pointer, so the two commands do not feel like different programs.
+/// Returns whether two camera specifiers may name the same device.
+///
+/// A default camera counts as the same as any named one. Guessing wrong would
+/// open one device twice, which fails.
+fn same_device(left: &Spec, right: &Spec) -> bool {
+    match (left, right) {
+        (Spec::Camera(left), Spec::Camera(right)) => {
+            left.is_none() || right.is_none() || left == right
+        }
+        #[cfg(all(target_os = "linux", feature = "rpicam"))]
+        (Spec::Rpicam(_), Spec::Rpicam(_)) => true,
+        _ => false,
+    }
+}
 
-    use std::time::Duration;
+mod window {
+    //! The call window, with the same chrome as `irl watch`.
+
+    use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
     use eframe::egui;
+    use iroh::EndpointId;
     use iroh_live::{
-        Call, CallError, Live,
-        media::{publish::LocalBroadcast, subscribe::MediaTracks},
-        moq::MoqSession,
-        ticket::LiveTicket,
+        Audience, BroadcastTicket, CALL, Live, Publication, Reach,
+        media::{AudioOutput, LocalBroadcast, Player, SlotState, VideoSource},
     };
-    use moq_media_egui::{egui_wgpu::RenderState, overlay::fit_to_aspect};
+    use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
-    use tokio::sync::{mpsc, oneshot};
+    use n0_watcher::{Watchable, Watcher as _};
+    use tokio::sync::oneshot;
     use tracing::{debug, info, warn};
 
-    use super::Camera;
+    use super::{Camera, Local};
     use crate::{
-        args::{CallArgs, CaptureArgs, PlaybackArgs},
+        args::{CallArgs, PlaybackArgs},
         scan::ScanView,
-        source,
-        transport::PEER_TIMEOUT,
-        ui::{CursorIdle, LocalPreview, RemoteView, TicketQr},
+        transport::{PEER_TIMEOUT, Subscribed},
+        ui::{CursorIdle, RemoteView, TicketQr},
     };
 
-    /// How many unanswered incoming sessions are held before the oldest one
-    /// waits its turn. Callers are rare; this only has to cover a burst.
-    const INCOMING_QUEUE: usize = 4;
-
-    /// How often the window is woken while nothing is drawing it.
-    ///
-    /// Answering a call within this is imperceptible, and it costs a state
-    /// machine pass ten times a second when the window is off screen.
+    /// How often the state machine runs while nothing draws the window.
     const HEARTBEAT: Duration = Duration::from_millis(100);
 
-    /// How long the publisher waits before taking the camera back from the scan
-    /// screen.
-    ///
     /// Width of the local picture-in-picture, in points.
     const PIP_WIDTH: f32 = 240.0;
 
-    /// Aspect ratio both the local preview and the picture-in-picture are drawn
-    /// at, whatever the camera's own is.
+    /// Aspect ratio of the local preview and the picture-in-picture.
     const ASPECT: f32 = 16.0 / 9.0;
 
-    /// Size of the buttons on the screens with no call on them.
+    /// Size of the buttons outside a call.
     ///
-    /// Larger than an egui default because the machine this was built for is a
-    /// small touchscreen with no pointer to aim precisely with, and those
-    /// buttons are the only way off those screens.
+    /// Larger than the egui default, for small touchscreens.
     const BUTTON: egui::Vec2 = egui::vec2(160.0, 36.0);
 
-    /// Width of the column a screen with no ticket QR code on it draws in,
-    /// in points.
+    /// Width of the calling screen's dialog, in points.
     const DIALOG_WIDTH: f32 = 280.0;
 
     /// Fraction of the window's shorter side the ticket QR code takes.
     const QR_FRACTION: f32 = 0.5;
 
-    /// Smallest the ticket QR code is drawn, in points.
+    /// Smallest side of the ticket QR code, in points.
     ///
-    /// A button's width, because the buttons under the code are what set the
-    /// width of the column both are drawn in, and a code narrower than them
-    /// would sit in a panel with space either side of it.
+    /// The buttons under the code set the column width, so a narrower code
+    /// would leave gaps beside it.
     const QR_MIN: f32 = BUTTON.x;
 
-    /// Largest the ticket QR code is drawn, in points.
+    /// Largest side of the ticket QR code, in points.
     ///
-    /// A camera only has to resolve the modules, and past this the code is
-    /// merely taking up window.
+    /// A camera reads the code well below this size.
     const QR_MAX: f32 = 280.0;
 
     /// Opens the call window and runs it until it closes.
-    pub(super) fn run(
-        live: Live,
-        broadcast: LocalBroadcast,
-        ticket: String,
-        args: CallArgs,
-    ) -> Result {
-        // Parsed before the window opens, so a bad specifier is a line in the
-        // terminal rather than a message on a screen nobody asked for yet.
+    pub(super) fn run(local: Local, args: CallArgs) -> Result {
+        let Local {
+            live,
+            broadcast,
+            sources,
+            output,
+            ticket,
+        } = local;
+        // Parsed before the window opens, so a bad specifier fails in the
+        // terminal.
         let scan_camera = crate::scan::camera_spec(args.scan_camera.as_deref())
             .map_err(|err| anyerr!("{err}"))?;
         eframe::run_native(
@@ -191,25 +197,39 @@ mod window {
             Box::new(move |cc| {
                 let ctx = &cc.egui_ctx;
                 crate::ui::spawn_ctrl_c_handler(ctx);
-                let (tx, incoming) = mpsc::channel(INCOMING_QUEUE);
-                let forwarder = spawn(forward_incoming(live.clone(), tx));
+                let callers = Watchable::new(BTreeSet::new());
+                let ringing = callers.watch();
+                let watcher = spawn(watch_callers(live.clone(), callers));
+                let preview = VideoView::new(
+                    ctx,
+                    "call-preview",
+                    sources.video.as_ref().map(VideoSource::frames),
+                    cc.wgpu_render_state.as_ref(),
+                );
                 let mut app = CallApp {
                     qr: TicketQr::new(ctx, "call-ticket", &ticket),
                     ticket,
-                    camera: Camera::of(&args.capture),
-                    capture: args.capture,
+                    camera: Camera::of(&args.capture, scan_camera.as_ref()),
+                    capture: args.capture.clone(),
+                    restoring: None,
+                    camera_owed: false,
+                    camera_epoch: Arc::default(),
+                    notice: None,
+                    local_video: sources.video,
+                    _local_audio: sources.audio,
+                    output,
                     scan_camera,
                     playback: args.playback,
-                    preview: LocalPreview::new(ctx, "call-preview", cc.wgpu_render_state.as_ref()),
+                    preview,
                     render_state: cc.wgpu_render_state.clone(),
                     _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
-                    _forwarder: AbortOnDropHandle::new(forwarder),
+                    _watcher: AbortOnDropHandle::new(watcher),
                     live,
                     broadcast,
-                    incoming,
+                    ringing,
+                    ended: BTreeSet::new(),
                     pending: None,
                     screen: Screen::waiting(),
-                    restore: false,
                     cursor: CursorIdle::default(),
                 };
                 if let Some(ticket) = args.ticket {
@@ -226,54 +246,91 @@ mod window {
         live: Live,
         /// This node's ticket, shown in the top bar and as a QR code.
         ticket: String,
-        /// The ticket as a code the peer's camera can read, or `None` on the
-        /// machines where it would not render.
+        /// The ticket as a QR code, or `None` where it does not render.
         qr: Option<TicketQr>,
-        /// The local side, which every peer reads and no call owns.
+        /// The local side, offered to one peer per call.
         broadcast: LocalBroadcast,
-        /// What the local side captures, kept so the video can be restarted
-        /// after the scan screen has borrowed the camera.
-        capture: CaptureArgs,
+        /// The local video, which the preview draws and the scan screen may read.
+        local_video: Option<VideoSource>,
+        /// The local audio, kept alive with the window.
+        _local_audio: Option<iroh_live::media::AudioSource>,
+        /// Where the peer's voice plays, and what the microphone cancels.
+        output: AudioOutput,
         camera: Camera,
-        /// Whether the publisher owes itself a camera, because the scan screen
-        /// borrowed it.
-        restore: bool,
-        incoming: mpsc::Receiver<MoqSession>,
-        _forwarder: AbortOnDropHandle<()>,
+        /// The capture flags, kept to reopen the camera after a scan.
+        capture: crate::args::CaptureArgs,
+        /// The publisher's camera reopening after a scan.
+        restoring: Option<Restoring>,
+        /// Whether the scan screen took the publisher's camera and has not returned it.
+        ///
+        /// Settled whenever the scan screen is not up. A call answered mid-scan
+        /// replaces the screen without going through [`CallApp::leave_scan`].
+        camera_owed: bool,
+        /// Bumped under its lock each time the scan screen takes the camera.
+        ///
+        /// A restore still opening the device checks it, so it cannot set the
+        /// video after the scan screen cleared it.
+        camera_epoch: Arc<std::sync::Mutex<u64>>,
+        /// A message for the waiting screen that arrived while another was up.
+        notice: Option<String>,
+        /// The peers offering this node their side of a call.
+        ringing: n0_watcher::Direct<BTreeSet<EndpointId>>,
+        /// Peers whose call ended here and who still offer their side.
+        ///
+        /// Skipped until they withdraw it, so a hang-up is not answered again.
+        ended: BTreeSet<EndpointId>,
+        _watcher: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
-        /// The attempt in flight, of which there is at most one.
+        /// The attempt in flight. There is at most one.
         pending: Option<Pending>,
         screen: Screen,
-        preview: LocalPreview,
+        preview: VideoView,
         render_state: Option<RenderState>,
         cursor: CursorIdle,
-        /// The playback flags the peer's broadcast is opened under.
+        /// The playback flags for the peer's broadcast.
         playback: PlaybackArgs,
         /// Which camera the scan screen opens.
         scan_camera: Option<crate::source_spec::VideoSourceSpec>,
     }
 
+    /// A task reopening the publisher's camera after a scan.
+    struct Restoring {
+        done: oneshot::Receiver<n0_error::Result<Option<VideoSource>>>,
+        _task: AbortOnDropHandle<()>,
+    }
+
+    /// How many times the camera is tried while the scan screen releases it.
+    const RESTORE_ATTEMPTS: u32 = 5;
+
+    /// How long one attempt has to get the video running.
+    ///
+    /// Setting a source only spawns it. `rpicam-vid` finds out the sensor is
+    /// busy only once it runs.
+    const RESTORE_PATIENCE: Duration = Duration::from_secs(10);
+
+    /// The pause between two attempts.
+    const RESTORE_DELAY: Duration = Duration::from_secs(1);
+
     /// What the window is showing.
     enum Screen {
-        /// Nobody on the line: this node's ticket as a QR code for the peer to
-        /// read, a box to paste theirs into, and the local picture behind both.
+        /// Nobody on the line: this node's ticket and a box for the peer's.
         Waiting(Waiting),
-        /// The camera, looking for the peer's ticket in a QR code.
+        /// The camera, looking for the peer's ticket.
         Scanning(Box<ScanView>),
-        /// A dial this window started, with nothing to draw until it answers.
+        /// A dial this window started, not yet answered.
         Calling(Calling),
         /// A call in progress.
         InCall(Box<InCall>),
     }
 
     impl Screen {
-        /// The waiting screen with nothing typed and nothing to report.
+        /// Returns an empty waiting screen.
         fn waiting() -> Self {
             Self::Waiting(Waiting::default())
         }
 
-        /// The waiting screen, reporting what became of the last attempt.
+        /// Returns the waiting screen showing `message`.
         fn reporting(message: String) -> Self {
             Self::Waiting(Waiting {
                 input: String::new(),
@@ -285,106 +342,160 @@ mod window {
     /// The waiting screen's state.
     #[derive(Debug, Default)]
     struct Waiting {
-        /// The ticket the user is typing.
+        /// The ticket being typed.
         input: String,
-        /// What became of the last attempt, if there was one.
+        /// The outcome of the last attempt, if any.
         message: Option<String>,
     }
 
-    /// A dial in flight, as the screen waiting on it sees it.
+    /// A dial in flight, as the calling screen sees it.
     #[derive(Debug)]
     struct Calling {
-        /// Who is being called, named on the screen and in the note a cancel
-        /// leaves behind. The attempt itself is in [`CallApp::pending`].
+        /// Who is being called. The attempt itself is in [`CallApp::pending`].
         peer: String,
     }
 
-    /// A connected call: the session and the peer's picture and sound.
+    /// A connected call. Dropping it hangs up.
     struct InCall {
-        /// Owns the session and the stats and signal tasks behind the overlay.
-        call: Call,
+        peer: EndpointId,
+        _offer: Offer,
+        sub: Subscribed,
         remote: RemoteView,
     }
 
     impl InCall {
-        /// Ends the call and the decoders drawing it.
-        fn shutdown(&mut self) {
-            self.remote.shutdown();
-            self.call.close();
+        /// Reports whether the peer hung up or its session ended.
+        ///
+        /// The peer withdrawing its offer ends the broadcast at once.
+        fn ended(&self) -> bool {
+            self.sub.subscription().as_moq().is_closed() || self.sub.broadcast().is_closed()
+        }
+    }
+
+    /// This node's side of a call, offered to one peer until dropped.
+    ///
+    /// The peer sees the offer in its route table, which is how it learns it
+    /// is called, and dropping the offer is how it learns of a hang-up.
+    struct Offer(Publication);
+
+    impl Offer {
+        fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
+            let publication = live.moq().publish(
+                live.ticket(CALL).path(),
+                broadcast,
+                Audience::Peers(Watchable::new(BTreeSet::from([peer]))),
+            )?;
+            Ok(Self(publication))
+        }
+    }
+
+    impl Drop for Offer {
+        fn drop(&mut self) {
+            self.0.unpublish();
         }
     }
 
     /// A dial or an answer in flight.
     struct Pending {
-        /// Which way it goes, which is what decides how the window waits on it.
+        /// Which side started it.
         direction: Direction,
+        /// Held here, not in the task, so abandoning the attempt withdraws it
+        /// at once.
+        offer: Offer,
         rx: oneshot::Receiver<Answer>,
-        /// Aborting this is what abandons the attempt.
-        task: AbortOnDropHandle<()>,
+        /// Aborting this abandons the attempt.
+        _task: AbortOnDropHandle<()>,
     }
 
-    impl Pending {
-        /// Gives up on the attempt, closing a call that landed as it was
-        /// abandoned.
-        ///
-        /// Closing the channel before draining it means an attempt that has not
-        /// answered yet fails its send and closes what it built, and one that
-        /// has answered is closed here. The abort then stops whatever is still
-        /// dialing.
-        fn discard(mut self) {
-            self.rx.close();
-            if let Ok(Answer::Connected(connected)) = self.rx.try_recv() {
-                connected.discard();
+    /// The outcome of one attempt to reopen the publisher's camera.
+    enum Restored {
+        /// The video runs. Holds the raw source, if any, for the preview.
+        Running(Option<VideoSource>),
+        /// The scan screen took the camera again before the source was set.
+        Superseded,
+    }
+
+    /// Opens the publisher's camera once and waits for its video to run.
+    ///
+    /// Sets the source under the epoch lock, and only if the epoch is still
+    /// `mine`, so a scan screen that took the camera meanwhile is never undone.
+    /// Fails if the video does not run within [`RESTORE_PATIENCE`].
+    async fn restore_once(
+        broadcast: &LocalBroadcast,
+        capture: &crate::args::CaptureArgs,
+        epoch: &std::sync::Mutex<u64>,
+        mine: u64,
+    ) -> Result<Restored> {
+        let opened = crate::source::open_video(capture).await?;
+        let video = {
+            let current = epoch.lock().expect("poisoned");
+            if *current != mine {
+                return Ok(Restored::Superseded);
             }
-            self.task.abort();
+            match opened {
+                Some(opened) => opened.apply(broadcast)?,
+                None => return Ok(Restored::Running(None)),
+            }
+        };
+        let mut status = broadcast.status();
+        let running = tokio::time::timeout(RESTORE_PATIENCE, async {
+            loop {
+                match status.borrow_and_update().video.clone() {
+                    SlotState::Running => return Ok(()),
+                    SlotState::Failed(err) => return Err(anyerr!("the camera failed: {err}")),
+                    _ => {}
+                }
+                if status.changed().await.is_err() {
+                    return Err(anyerr!("the broadcast closed"));
+                }
+            }
+        })
+        .await;
+        match running {
+            Ok(Ok(())) => Ok(Restored::Running(video)),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(anyerr!(
+                "the camera did not start within {}s",
+                RESTORE_PATIENCE.as_secs()
+            )),
         }
     }
 
     /// Which side started an attempt.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Copy)]
     enum Direction {
-        /// This node dialed, so the calling screen waits on it and the user can
-        /// give up.
-        Outgoing { peer: String },
-        /// A peer opened a session and this node is answering it.
+        /// This node dialed. The calling screen waits on it and can cancel it.
+        Outgoing(EndpointId),
+        /// A peer offered its side and this node is answering.
         ///
-        /// Speculative: everything that speaks MoQ to this node arrives the
-        /// same way, and a plain subscriber never publishes the call path an
-        /// answer waits for. So this one runs behind whatever is on screen, and
-        /// its failure goes to the log rather than to the user.
-        Incoming { peer: String },
+        /// This runs behind the current screen, and its failure only goes to
+        /// the log.
+        Incoming(EndpointId),
     }
 
-    /// What a dial or an answer came back with.
-    enum Answer {
-        /// The peer is on the line and its tracks are open.
-        Connected(Box<Connected>),
-        /// The attempt failed, with something to show the user.
-        Failed(String),
-    }
-
-    /// A call that established, with the peer's tracks already open.
-    struct Connected {
-        call: Call,
-        tracks: MediaTracks,
-    }
-
-    impl Connected {
-        /// Ends a call that nothing is going to draw.
-        ///
-        /// An attempt that landed just as the user gave up on it owns a session
-        /// and a set of decoders that no screen will ever hold, and dropping
-        /// those leaves the peer to time the session out instead of being told.
-        fn discard(self) {
-            let Self { call, tracks } = self;
-            drop(tracks);
-            call.remote().shutdown();
-            call.close();
+    impl Direction {
+        fn peer(self) -> EndpointId {
+            match self {
+                Self::Outgoing(peer) | Self::Incoming(peer) => peer,
+            }
         }
     }
 
-    /// What the waiting screen was asked to do, applied once its panel has
-    /// closed and given the borrow of the screen's own state back.
+    /// The outcome of a dial or an answer.
+    enum Answer {
+        /// The peer is on the line and its tracks are open.
+        Connected(Box<Connected>),
+        /// The attempt failed, with a message for the user.
+        Failed(String),
+    }
+
+    /// The peer's side of an established call, playing.
+    struct Connected {
+        sub: Subscribed,
+        player: Player,
+    }
+
+    /// A waiting screen action, applied once the panel releases its borrow.
     enum Action {
         /// Open the camera and look for a ticket.
         Scan,
@@ -395,24 +506,23 @@ mod window {
     impl eframe::App for CallApp {
         /// Drives the state machine.
         ///
-        /// Here rather than in [`ui`](Self::ui) because eframe runs no egui
-        /// pass while the window is minimized or occluded, and a window nobody
-        /// is looking at still has to answer the phone.
+        /// eframe skips `ui` while the window is minimized or occluded, and the
+        /// window still has to answer calls then.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
             ctx.request_repaint_after(Duration::from_millis(16));
             self.poll_scan(ctx);
+            self.poll_restore();
             self.poll_pending(ctx);
             self.poll_hangup();
-            self.poll_capture();
             self.answer_next(ctx);
+            self.settle_camera();
+            self.show_notice();
         }
 
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
-            // Before the screen switch, so Escape leaves full screen from the
-            // scan and calling screens too, not only during a call.
+            // Before the screen match, so Escape works on every screen.
             crate::ui::escape_leaves_fullscreen(&ctx);
-            self.preview.update(&ctx, &self.broadcast);
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
             match self.screen {
@@ -425,18 +535,14 @@ mod window {
 
         fn on_exit(&mut self) {
             info!("exit");
-            if let Screen::InCall(session) = &mut self.screen {
-                session.shutdown();
-            }
-            if let Some(pending) = self.pending.take() {
-                pending.discard();
-            }
-            crate::ui::shutdown_publish_blocking(&self.live, &mut self.broadcast);
+            self.screen = Screen::waiting();
+            self.pending = None;
+            crate::ui::shutdown_publish_blocking(&self.live, &self.broadcast);
         }
     }
 
     impl CallApp {
-        /// Calls whichever ticket the camera has read, if it has read one.
+        /// Calls the ticket the camera has read, if any.
         fn poll_scan(&mut self, ctx: &egui::Context) {
             let Screen::Scanning(view) = &self.screen else {
                 return;
@@ -447,7 +553,7 @@ mod window {
             self.dial(ctx, ticket);
         }
 
-        /// Takes the outcome of an attempt that finished since the last pass.
+        /// Handles an attempt that finished since the last pass.
         fn poll_pending(&mut self, ctx: &egui::Context) {
             let Some(pending) = self.pending.as_mut() else {
                 return;
@@ -455,227 +561,301 @@ mod window {
             let answer = match pending.rx.try_recv() {
                 Ok(answer) => answer,
                 Err(oneshot::error::TryRecvError::Empty) => return,
-                // The task went away without answering, which happens only as
-                // the runtime shuts down.
+                // The task dropped its sender, which only happens at shutdown.
                 Err(oneshot::error::TryRecvError::Closed) => {
                     Answer::Failed("the call attempt stopped".to_string())
                 }
             };
-            let direction = self
+            let Pending {
+                direction, offer, ..
+            } = self
                 .pending
                 .take()
-                .expect("the attempt was borrowed a moment ago")
-                .direction;
+                .expect("the attempt was borrowed a moment ago");
 
             let message = match answer {
-                Answer::Connected(connected) => return self.enter_call(ctx, *connected),
+                Answer::Connected(connected) => {
+                    return self.enter_call(ctx, direction.peer(), offer, *connected);
+                }
                 Answer::Failed(message) => message,
             };
+            self.ended.insert(direction.peer());
+            let peer = direction.peer().fmt_short();
             match direction {
-                Direction::Outgoing { peer } => {
+                Direction::Outgoing(_) => {
                     warn!(%peer, %message, "the call failed");
                     self.screen = Screen::reporting(message);
                 }
-                // Not news: the session was most likely a subscriber that never
-                // meant to place a call at all.
-                Direction::Incoming { peer } => {
-                    debug!(%peer, %message, "the session turned out not to be a caller");
-                }
+                Direction::Incoming(_) => debug!(%peer, %message, "answering failed"),
             }
         }
 
         /// Moves to the in-call screen and opens the peer's video for drawing.
-        fn enter_call(&mut self, ctx: &egui::Context, connected: Connected) {
-            let Connected { call, tracks } = connected;
-            info!(remote = %call.remote_id().fmt_short(), "call connected");
+        fn enter_call(
+            &mut self,
+            ctx: &egui::Context,
+            peer: EndpointId,
+            offer: Offer,
+            connected: Connected,
+        ) {
+            let Connected { sub, player } = connected;
+            info!(remote = %peer.fmt_short(), "call connected");
             let remote = RemoteView::new(
                 ctx,
                 "call-remote",
-                call.remote().clone(),
-                tracks,
-                call.signals().clone(),
+                player,
+                self.playback.decoder,
                 self.render_state.as_ref(),
-            );
-            self.screen = Screen::InCall(Box::new(InCall { call, remote }));
+            )
+            .with_link(sub.subscription().clone());
+            self.screen = Screen::InCall(Box::new(InCall {
+                peer,
+                _offer: offer,
+                sub,
+                remote,
+            }));
         }
 
-        /// Returns to the waiting screen once the session closes, whichever
-        /// side ended it.
+        /// Returns to the waiting screen once the peer hangs up.
         fn poll_hangup(&mut self) {
-            let Screen::InCall(session) = &self.screen else {
+            let Screen::InCall(call) = &self.screen else {
                 return;
             };
-            if session.call.session().conn().close_reason().is_none() {
+            if !call.ended() {
                 return;
             }
             info!("call ended");
-            let ended = std::mem::replace(
-                &mut self.screen,
-                Screen::reporting("the call ended".to_string()),
-            );
-            if let Screen::InCall(mut session) = ended {
-                session.remote.shutdown();
+            self.hang_up("the call ended");
+        }
+
+        /// Ends the call on screen, if any, and shows `message`.
+        fn hang_up(&mut self, message: &str) {
+            let screen = std::mem::replace(&mut self.screen, Screen::reporting(message.to_owned()));
+            if let Screen::InCall(call) = screen {
+                self.ended.insert(call.peer);
             }
         }
 
-        /// Takes the camera back after the scan screen has had it.
-        ///
-        /// No wait for the scan camera's thread to let go. The publish path
-        /// retries a device that will not open yet, from 200ms up to a
-        /// ceiling, so asking immediately costs at most one refused attempt
-        /// and a line in the log. Waiting a fixed interval instead was a guess
-        /// at how long a thread takes to stop, and it was wrong in both
-        /// directions: too long for a device already free, too short for one
-        /// that is not.
-        fn poll_capture(&mut self) {
-            if !self.restore {
-                return;
-            }
-            self.restore = false;
-            info!("taking the camera back from the scan screen");
-            if let Err(err) = source::configure_video(&self.broadcast, &self.capture) {
-                warn!(error = %err, "could not restart the local video after scanning");
-            }
-        }
-
-        /// Answers the next caller waiting in the queue, if this node is idle.
+        /// Answers a peer that offers its side, if this node is idle.
         fn answer_next(&mut self, ctx: &egui::Context) {
+            let ringing = self.ringing.get();
+            self.ended.retain(|peer| ringing.contains(peer));
             if self.pending.is_some() || matches!(self.screen, Screen::InCall(_)) {
                 return;
             }
-            // Skip sessions that closed while they waited: something that came
-            // and went is not a caller holding the line.
-            let session = loop {
-                match self.incoming.try_recv() {
-                    Ok(session) if session.conn().close_reason().is_none() => break session,
-                    Ok(_) => continue,
-                    Err(_) => return,
-                }
+            let Some(peer) = ringing.into_iter().find(|peer| !self.ended.contains(peer)) else {
+                return;
             };
-            let peer = session.remote_id().fmt_short().to_string();
-            let attempt = answer_call(session, self.playback);
-            self.start(ctx, Direction::Incoming { peer }, attempt);
+            info!(remote = %peer.fmt_short(), "answering");
+            self.start(ctx, Direction::Incoming(peer));
         }
 
         /// Calls `ticket`, replacing whatever the window was doing.
         ///
-        /// Leaves the scan screen first, so a ticket read off the camera hands
-        /// the device back to the publisher while the dial is in flight.
-        fn dial(&mut self, ctx: &egui::Context, ticket: LiveTicket) {
-            let peer = ticket.endpoint.id.fmt_short().to_string();
+        /// Leaves the scan screen first, so the publisher gets its camera back
+        /// while the dial runs.
+        fn dial(&mut self, ctx: &egui::Context, ticket: BroadcastTicket) {
+            let peer = ticket.peer();
+            info!(remote = %peer.fmt_short(), "dialing");
             self.leave_scan();
-            if let Some(pending) = self.pending.take() {
-                pending.discard();
-            }
-            self.screen = Screen::Calling(Calling { peer: peer.clone() });
-            let attempt = dial_call(self.live.clone(), ticket, self.playback);
-            self.start(ctx, Direction::Outgoing { peer }, attempt);
+            self.discard_pending();
+            self.screen = Screen::Calling(Calling {
+                peer: peer.fmt_short().to_string(),
+            });
+            self.start(ctx, Direction::Outgoing(peer));
         }
 
-        /// Runs `attempt` and remembers it as the pending one.
-        ///
-        /// The task holds the only handle to what it builds until it answers,
-        /// so discarding the returned [`Pending`] both aborts the attempt and
-        /// takes the call with it. An attempt that answers into a channel
-        /// nobody is holding any more closes what it built rather than dropping
-        /// it.
-        fn start(
-            &mut self,
-            ctx: &egui::Context,
-            direction: Direction,
-            attempt: impl Future<Output = Answer> + Send + 'static,
-        ) {
+        /// Offers this node's side to the peer and waits for the peer's, as the pending attempt.
+        fn start(&mut self, ctx: &egui::Context, direction: Direction) {
+            let peer = direction.peer();
+            let offer = match Offer::new(&self.live, &self.broadcast, peer) {
+                Ok(offer) => offer,
+                Err(err) => {
+                    warn!(remote = %peer.fmt_short(), "cannot offer this side: {err:#}");
+                    self.ended.insert(peer);
+                    if let Direction::Outgoing(_) = direction {
+                        self.screen = Screen::reporting(format!("{err:#}"));
+                    }
+                    return;
+                }
+            };
+            let attempt = reach(self.live.clone(), peer, self.playback, self.output.clone());
             let (tx, rx) = oneshot::channel();
             let ctx = ctx.clone();
             let task = spawn(async move {
-                if let Err(Answer::Connected(connected)) = tx.send(attempt.await) {
-                    info!("the call landed after it was given up on, closing it");
-                    connected.discard();
+                if tx.send(attempt.await).is_err() {
+                    info!("the call landed after it was given up on, dropping it");
                 }
                 ctx.request_repaint();
             });
             self.pending = Some(Pending {
                 direction,
+                offer,
                 rx,
-                task: AbortOnDropHandle::new(task),
+                _task: AbortOnDropHandle::new(task),
             });
         }
 
+        /// Abandons the attempt in flight, withdrawing this node's offer.
+        fn discard_pending(&mut self) {
+            if let Some(pending) = self.pending.take() {
+                self.ended.insert(pending.direction.peer());
+            }
+        }
+
         /// Gives up on the dial in flight and returns to the waiting screen.
-        ///
-        /// What is abandoned is our half: the task is aborted, so nothing here
-        /// is still waiting for a catalog, and a call it established in the
-        /// meantime is closed rather than dropped. The session underneath is
-        /// the transport's, which coalesces one per peer, so a dial the actor
-        /// completed after we stopped listening stays cached there until the
-        /// window closes, and calling the same peer again picks it up.
         fn cancel(&mut self, peer: &str) {
             info!(%peer, "the call was cancelled");
-            if let Some(pending) = self.pending.take() {
-                pending.discard();
-            }
+            self.discard_pending();
             self.screen = Screen::reporting(format!("stopped calling {peer}"));
         }
 
-        /// Leaves the waiting screen and opens the camera.
+        /// Switches to the scan screen.
         ///
-        /// A publisher holding the camera gives it up here, because a capture
-        /// device does not open twice. The scan screen is only reachable while
-        /// no call is up, so what stops is a track no call is drawing; anything
-        /// else subscribed to this node sees the video pause and come back.
+        /// A publisher holding the camera lends the scan screen its frames and
+        /// keeps publishing. Otherwise the scan screen opens the camera itself.
         fn enter_scan(&mut self, ctx: &egui::Context) {
             info!("scanning for a ticket");
-            if self.camera == Camera::Publisher {
-                self.broadcast.video().clear();
-            }
-            self.restore = false;
-            // No ticket is held off here: a call that fails to connect lands on
-            // the waiting screen with a button rather than reopening the
-            // camera, so there is no loop for a hold-off to break.
-            self.screen = Screen::Scanning(Box::new(ScanView::new(
-                ctx,
-                self.render_state.as_ref(),
-                None,
-                self.scan_camera.clone(),
-            )));
+            let view = match (&self.local_video, self.camera) {
+                (Some(camera), Camera::Publisher) => {
+                    ScanView::from_frames(ctx, self.render_state.as_ref(), None, camera.frames())
+                }
+                (None, Camera::Publisher) => {
+                    // The publisher holds the camera but has no frames to
+                    // lend, since `rpicam` outputs encoded H.264. It releases
+                    // the sensor for the scan and reopens it afterwards.
+                    // Subscribers see the video pause.
+                    {
+                        let mut epoch = self.camera_epoch.lock().expect("poisoned");
+                        *epoch += 1;
+                        self.broadcast.clear_video();
+                    }
+                    self.restoring = None;
+                    self.camera_owed = true;
+                    ScanView::new(
+                        ctx,
+                        self.render_state.as_ref(),
+                        None,
+                        self.scan_camera.clone(),
+                    )
+                }
+                _ => ScanView::new(
+                    ctx,
+                    self.render_state.as_ref(),
+                    None,
+                    self.scan_camera.clone(),
+                ),
+            };
+            self.screen = Screen::Scanning(Box::new(view));
         }
 
-        /// Closes the scan screen and asks for the camera back.
+        /// Closes the scan screen and shows the waiting screen.
         ///
-        /// Leaves the waiting screen behind; a caller that wants a different
-        /// one sets it afterwards. Dropping the view is what asks the scan
-        /// camera's thread to stop, and the publisher asks for the device
-        /// straight away: the open retries until the thread has let go.
+        /// Dropping the view releases a camera it opened.
+        /// [`Self::settle_camera`] gives the publisher its camera back.
         fn leave_scan(&mut self) {
             if !matches!(self.screen, Screen::Scanning(_)) {
                 return;
             }
             self.screen = Screen::waiting();
-            if self.camera == Camera::Publisher {
-                self.restore = true;
+        }
+
+        /// Gives the publisher its camera back once the scan screen is gone.
+        fn settle_camera(&mut self) {
+            if self.camera_owed && !matches!(self.screen, Screen::Scanning(_)) {
+                self.camera_owed = false;
+                self.restore_camera();
             }
         }
 
-        /// Shows `message` on the waiting screen, if that is where the window
-        /// is.
+        /// Reopens the publisher's camera, retrying while the scan screen releases it.
+        ///
+        /// An attempt counts only once the video runs. A new `rpicam-vid` that
+        /// finds the sensor busy exits, which shows as a failed video, not as
+        /// an error from setting the source.
+        fn restore_camera(&mut self) {
+            let broadcast = self.broadcast.clone();
+            let capture = self.capture.clone();
+            let epoch = self.camera_epoch.clone();
+            let mine = *epoch.lock().expect("poisoned");
+            let (done, report) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let mut attempt = 0;
+                let result = loop {
+                    attempt += 1;
+                    let outcome = restore_once(&broadcast, &capture, &epoch, mine).await;
+                    match outcome {
+                        Ok(Restored::Running(video)) => break Ok(video),
+                        Ok(Restored::Superseded) => return,
+                        Err(err) if attempt >= RESTORE_ATTEMPTS => break Err(err),
+                        Err(err) => {
+                            debug!(error = %format!("{err:#}"), attempt, "the camera is not free yet");
+                            tokio::time::sleep(RESTORE_DELAY).await;
+                        }
+                    }
+                };
+                let _ = done.send(result);
+            });
+            self.restoring = Some(Restoring {
+                done: report,
+                _task: AbortOnDropHandle::new(task),
+            });
+        }
+
+        /// Collects the result of reopening the publisher's camera.
+        fn poll_restore(&mut self) {
+            let Some(restoring) = self.restoring.as_mut() else {
+                return;
+            };
+            let result = match restoring.done.try_recv() {
+                Ok(result) => result,
+                Err(oneshot::error::TryRecvError::Empty) => return,
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    Err(n0_error::anyerr!("the camera restore was abandoned"))
+                }
+            };
+            self.restoring = None;
+            match result {
+                Ok(video) => {
+                    info!("the publisher has its camera back");
+                    self.preview
+                        .set_frames(video.as_ref().map(VideoSource::frames));
+                    self.local_video = video;
+                }
+                Err(err) => {
+                    let message = format!("the camera did not come back after the scan: {err:#}");
+                    warn!(%message);
+                    self.notice = Some(message);
+                }
+            }
+        }
+
+        /// Shows `message` on the waiting screen, if it is up.
         fn report(&mut self, message: String) {
             if let Screen::Waiting(waiting) = &mut self.screen {
                 waiting.message = Some(message);
             }
         }
 
-        /// Draws the local picture filling the window, which is what sits
-        /// behind every screen with no remote video on it.
-        fn draw_backdrop(&self, ui: &mut egui::Ui) {
+        /// Moves the kept notice onto the waiting screen once it is up and free.
+        fn show_notice(&mut self) {
+            if let Screen::Waiting(waiting) = &mut self.screen
+                && waiting.message.is_none()
+                && let Some(message) = self.notice.take()
+            {
+                waiting.message = Some(message);
+            }
+        }
+
+        /// Draws the local picture behind the screens without remote video.
+        fn draw_backdrop(&mut self, ui: &mut egui::Ui) {
             let available = ui.available_size();
             let size = fit_to_aspect(available, ASPECT);
-            let image = self.preview.image();
+            let image = self.preview.render();
             ui.centered_and_justified(|ui| ui.add_sized(size, image));
         }
 
-        /// Draws the waiting screen: this node's ticket as a QR code for the
-        /// peer to read, the two ways of taking one the other way, and the
-        /// local picture behind them.
+        /// Draws the waiting screen.
         fn waiting_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
             self.draw_backdrop(ui);
             crate::ui::top_bar(ui, ctx, &self.ticket);
@@ -710,8 +890,8 @@ mod window {
                 if let Some(text) = paste_row(ui, side, waiting) {
                     action = Some(Action::Dial(text));
                 }
-                // An incoming attempt keeps the ticket on screen rather than
-                // taking it over, because it is not yet known to be a caller.
+                // An incoming attempt only shows a spinner. The session may
+                // not be a caller.
                 if answering {
                     ui.spinner();
                 }
@@ -722,7 +902,7 @@ mod window {
 
             match action {
                 Some(Action::Scan) => self.enter_scan(ctx),
-                Some(Action::Dial(text)) => match text.parse::<LiveTicket>() {
+                Some(Action::Dial(text)) => match text.parse::<BroadcastTicket>() {
                     Ok(ticket) => self.dial(ctx, ticket),
                     Err(err) => self.report(format!("that is not a ticket: {err}")),
                 },
@@ -730,8 +910,7 @@ mod window {
             }
         }
 
-        /// Draws the scan screen: the camera picture, and the way back to the
-        /// ticket.
+        /// Draws the scan screen and its cancel button.
         fn scan_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
             if let Screen::Scanning(view) = &mut self.screen {
                 view.draw(ui);
@@ -748,8 +927,7 @@ mod window {
             }
         }
 
-        /// Draws the screen shown while a dial is in flight, with the button
-        /// that gives up on it.
+        /// Draws the calling screen and its cancel button.
         fn calling_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
             self.draw_backdrop(ui);
             crate::ui::top_bar(ui, ctx, &self.ticket);
@@ -770,8 +948,7 @@ mod window {
             }
         }
 
-        /// Draws the in-call screen: the peer full width, this node in the
-        /// corner, and the overlay while the pointer is moving.
+        /// Draws the call: the peer, this node in a corner, and the overlay.
         fn in_call_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
             let expanded = match &self.screen {
                 Screen::InCall(session) => session.remote.overlay_expanded(),
@@ -802,7 +979,7 @@ mod window {
                         .fill(egui::Color32::BLACK)
                         .corner_radius(4.0)
                         .inner_margin(2.0)
-                        .show(ui, |ui| ui.add_sized(pip, preview.image()));
+                        .show(ui, |ui| ui.add_sized(pip, preview.render()));
                 });
 
             if !show_overlay {
@@ -821,16 +998,12 @@ mod window {
             });
             if hang_up {
                 info!("hanging up");
-                if let Screen::InCall(session) = &mut self.screen {
-                    session.shutdown();
-                }
-                self.screen = Screen::reporting("you hung up".to_string());
+                self.hang_up("you hung up");
             }
         }
     }
 
-    /// Draws the box a ticket is pasted into and the button that calls it, and
-    /// returns whatever was entered.
+    /// Draws the ticket box and the call button, and returns an entered ticket.
     fn paste_row(ui: &mut egui::Ui, width: f32, waiting: &mut Waiting) -> Option<String> {
         let text = egui::TextEdit::singleline(&mut waiting.input).hint_text("Their ticket");
         let response = ui.add_sized(egui::vec2(width, BUTTON.y), text);
@@ -840,86 +1013,84 @@ mod window {
             .clicked();
         let submitted =
             ready && response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
-        match clicked || submitted {
-            true => Some(waiting.input.trim().to_string()),
-            false => None,
+        if clicked || submitted {
+            Some(waiting.input.trim().to_string())
+        } else {
+            None
         }
     }
 
-    /// The side of the ticket QR code, in points, for a window of `content`
-    /// size.
+    /// Returns the ticket QR code's side, in points, for a window of `content` size.
     ///
-    /// A proportion of the shorter side rather than a fixed size: a code that
-    /// took a fixed [`QR_MAX`] of a small touchscreen would leave no room for
-    /// the buttons under it, and one that took half of a desktop window would
-    /// be larger than any camera needs.
+    /// Scales with the shorter side, so the buttons under the code still fit
+    /// on a small touchscreen.
     fn qr_side(content: egui::Vec2) -> f32 {
         (content.x.min(content.y) * QR_FRACTION).clamp(QR_MIN, QR_MAX)
     }
 
-    /// Forwards the sessions peers open to this node.
+    /// Tracks which peers offer this node their side of a call.
     ///
-    /// Runs for the window's whole life rather than for one attempt: a stream
-    /// read only between attempts would miss a caller that dialed during one.
-    /// Sessions this node dialed arrive here too and are skipped, since they
-    /// are the outgoing half of a call already under way.
-    async fn forward_incoming(live: Live, tx: mpsc::Sender<MoqSession>) {
-        let mut incoming = live.transport().incoming_sessions();
-        while let Some(session) = incoming.next().await {
-            if session.dialed() {
+    /// A caller offers `live/<its id>/call` to the callee only, so the path
+    /// appearing in the route table is the ring. Runs for the window's life.
+    async fn watch_callers(live: Live, callers: Watchable<BTreeSet<EndpointId>>) {
+        let me = live.endpoint().id();
+        let mut updates = live.moq().origin().announced();
+        while let Some(update) = updates.next().await {
+            let Some(caller) = BroadcastTicket::from_path(update.prefix.as_str())
+                .filter(|ticket| ticket.name() == CALL && ticket.peer() != me)
+                .map(|ticket| ticket.peer())
+            else {
                 continue;
+            };
+            let mut ringing = callers.get();
+            if update.kind.is_active() {
+                debug!(remote = %caller.fmt_short(), "ringing");
+                ringing.insert(caller);
+            } else {
+                ringing.remove(&caller);
             }
-            debug!(remote = %session.remote_id().fmt_short(), "incoming session");
-            if tx.send(session).await.is_err() {
-                break;
-            }
+            callers.set(ringing).ok();
         }
     }
 
-    /// Dials the peer named by `ticket` and opens its tracks.
-    async fn dial_call(live: Live, ticket: LiveTicket, playback: PlaybackArgs) -> Answer {
-        info!(remote = %ticket.endpoint.id.fmt_short(), "dialing");
-        settle(Call::dial(&live, ticket.endpoint), playback).await
-    }
-
-    /// Answers `session` and opens the caller's tracks.
-    async fn answer_call(session: MoqSession, playback: PlaybackArgs) -> Answer {
-        info!(remote = %session.remote_id().fmt_short(), "answering");
-        settle(Call::accept(session), playback).await
-    }
-
-    /// Waits for a call to establish, then opens whichever tracks the peer
-    /// carries.
+    /// Waits for `peer`'s side of the call, then plays it.
     ///
-    /// Both directions are given [`PEER_TIMEOUT`], answering included: an
-    /// incoming session is not necessarily a caller, since everything that
-    /// speaks MoQ to this node arrives the same way and a plain subscriber
-    /// never publishes the call path an answer waits for.
-    async fn settle(
-        setup: impl Future<Output = Result<Call, CallError>>,
+    /// Gives up after [`PEER_TIMEOUT`], for a peer that is busy or away.
+    async fn reach(
+        live: Live,
+        peer: EndpointId,
         playback: PlaybackArgs,
+        output: AudioOutput,
     ) -> Answer {
-        let call = match tokio::time::timeout(PEER_TIMEOUT, setup).await {
-            Ok(Ok(call)) => call,
+        let path = BroadcastTicket::new(peer, CALL).path();
+        let subscription = match tokio::time::timeout(
+            PEER_TIMEOUT,
+            live.moq().subscribe(path, Reach::Direct(peer)),
+        )
+        .await
+        {
+            Ok(Ok(subscription)) => subscription,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),
             Err(_) => {
                 return Answer::Failed(format!(
-                    "gave up after {}s: the peer never published its side",
+                    "gave up after {}s: the peer did not answer",
                     PEER_TIMEOUT.as_secs()
                 ));
             }
         };
-        crate::ui::prepare_playback(call.remote(), &playback);
-        let tracks = call.remote().media().await;
-        Answer::Connected(Box::new(Connected { call, tracks }))
+        let sub = Subscribed::open(&live, subscription);
+        let config = crate::ui::player_config(&playback, Some(&output));
+        match sub.broadcast().play(config) {
+            Ok(player) => Answer::Connected(Box::new(Connected { sub, player })),
+            Err(err) => Answer::Failed(format!("{err:#}")),
+        }
     }
 
     #[cfg(test)]
     mod tests {
         use super::{QR_MAX, QR_MIN, egui, qr_side};
 
-        /// The window this was built for is a small touchscreen, where a code
-        /// at [`QR_MAX`] would cover the buttons under it.
+        /// A small window draws the code below [`QR_MAX`], so the buttons fit.
         #[test]
         fn a_small_window_draws_the_code_smaller() {
             let side = qr_side(egui::vec2(480.0, 320.0));
@@ -927,15 +1098,13 @@ mod window {
             assert!(side >= QR_MIN, "unexpected: {side}");
         }
 
-        /// Past a point the code is only taking up window: a camera resolves
-        /// the modules long before then.
+        /// The code stops growing at [`QR_MAX`].
         #[test]
         fn a_large_window_stops_growing_the_code() {
             assert_eq!(qr_side(egui::vec2(2560.0, 1440.0)), QR_MAX);
         }
 
-        /// A window dragged down to nothing would otherwise render a code of no
-        /// pixels at all.
+        /// A tiny window still draws the code at [`QR_MIN`].
         #[test]
         fn a_window_with_no_room_still_draws_a_whole_code() {
             assert_eq!(qr_side(egui::vec2(40.0, 20.0)), QR_MIN);
@@ -947,7 +1116,7 @@ mod window {
 mod tests {
     use super::{Camera, CaptureArgs};
 
-    /// A `--video` specifier, as `irl call` would have parsed one.
+    /// Returns capture flags with the given `--video` specifier.
     fn capture(video: &str) -> CaptureArgs {
         CaptureArgs {
             video: video.to_string(),
@@ -955,27 +1124,40 @@ mod tests {
         }
     }
 
-    /// The default, and the one case where the scan screen has to be handed the
-    /// device.
+    /// A camera publisher lends its device to the scan screen.
     #[test]
     fn a_camera_publisher_hands_the_scan_screen_its_device() {
-        assert_eq!(Camera::of(&capture("cam")), Camera::Publisher);
-        assert_eq!(Camera::of(&capture("cam:0")), Camera::Publisher);
+        assert_eq!(Camera::of(&capture("cam"), None), Camera::Publisher);
+        assert_eq!(Camera::of(&capture("cam:0"), None), Camera::Publisher);
     }
 
-    /// Neither of these is what the scan screen opens, so both keep publishing
-    /// while a ticket is read.
+    /// A publisher without a camera leaves the camera free.
     #[test]
     fn a_publisher_of_anything_else_keeps_its_source() {
-        assert_eq!(Camera::of(&capture("screen")), Camera::Free);
-        assert_eq!(Camera::of(&capture("test")), Camera::Free);
-        assert_eq!(Camera::of(&capture("none")), Camera::Free);
+        assert_eq!(Camera::of(&capture("screen"), None), Camera::Free);
+        assert_eq!(Camera::of(&capture("test"), None), Camera::Free);
+        assert_eq!(Camera::of(&capture("none"), None), Camera::Free);
     }
 
-    /// The publish already failed and said so; the scan screen is not the place
-    /// to report it a second time.
+    /// A scan camera on another device leaves the publisher alone.
+    ///
+    /// One that may be the same device is shared.
+    #[test]
+    fn a_scan_camera_of_its_own_leaves_the_publisher_alone() {
+        use crate::source_spec::VideoSourceSpec as Spec;
+        let usb = Spec::Camera(Some("usb".to_string()));
+        assert_eq!(Camera::of(&capture("cam:0"), Some(&usb)), Camera::Free);
+        assert_eq!(
+            Camera::of(&capture("cam:usb"), Some(&usb)),
+            Camera::Publisher
+        );
+        assert_eq!(Camera::of(&capture("cam"), Some(&usb)), Camera::Publisher);
+        assert_eq!(Camera::of(&capture("screen"), Some(&usb)), Camera::Free);
+    }
+
+    /// A `--video` that does not parse holds no camera.
     #[test]
     fn a_specifier_that_never_opened_anything_holds_nothing() {
-        assert_eq!(Camera::of(&capture("nonsense:")), Camera::Free);
+        assert_eq!(Camera::of(&capture("nonsense:"), None), Camera::Free);
     }
 }

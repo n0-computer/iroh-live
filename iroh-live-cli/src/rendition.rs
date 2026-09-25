@@ -1,25 +1,16 @@
 //! The `--renditions` grammar, and the capture frame rate it settles.
 //!
-//! A rung is `[<name>:]<geometry>[@<fps>]`, so `720p`, `low:640x360` and
-//! `high:1280x720@60` are all rungs. The geometry is `<height>p` or
-//! `<width>x<height>`; a rung with no geometry at all is a name standing for
-//! the source's own resolution, which is what a single-rendition publish uses.
+//! A rung is `[<name>:]<geometry>[@<fps>]`, where the geometry is `<height>p`
+//! or `<width>x<height>`. A rung with no geometry is a name for the source's
+//! own resolution.
 //!
-//! `@<fps>` names a capture rate rather than a per-rung encode rate. Every rung
-//! of a ladder is fed the same pictures: `moq_media` opens one capture, and
-//! `fan_out` hands each frame to every encoder, so there is one frame rate for
-//! the whole ladder and no rung can run slower than another. The rung that asks
-//! for the most frames therefore sets the rate all of them are captured at, and
-//! [`Ladder::report`] names any rung that asked for something else.
-//!
-//! `--fps` says the same thing about the whole publish and wins where the two
-//! disagree: it is the capture rate, and a rung asking for more than it allows
-//! gets what the capture actually runs at.
+//! One capture feeds every encoder of a ladder, so `@<fps>` is a capture rate.
+//! The highest one wins, and `--fps` overrides them all.
 
 use std::time::Duration;
 
 use iroh_live::media::{
-    publish::VideoRendition,
+    Bitrate, VideoEncoding, VideoRendition,
     video::{self, Size},
 };
 use n0_error::{Result, anyerr};
@@ -29,17 +20,13 @@ use crate::{args::CaptureArgs, source_spec::VideoSourceSpec};
 
 /// The capture frame rate when nothing asks for one.
 ///
-/// A capture backend substitutes the nearest rate it has for one it cannot
-/// reach, so requesting this is what gives a publisher `min(30, whatever the
-/// device supports)` without a mode list to consult. It is also the rate every
-/// screen capture backend in `moq_video` already falls back to.
+/// A backend picks its nearest rate, so this gives at most 30 without a mode
+/// list. It matches the screen capture backends' own default.
 pub const DEFAULT_FRAMERATE: u32 = 30;
 
 /// The highest frame rate `--fps` or an `@<fps>` suffix may name.
 ///
-/// The ceiling the PipeWire backend offers a compositor, and well above any
-/// camera mode. A larger number is a typo, and catching it here beats asking a
-/// device for it.
+/// The PipeWire backend's ceiling. A larger number is a typo.
 const MAX_FRAMERATE: u32 = 1_000;
 
 /// The rendition name a publish without `--renditions` uses.
@@ -48,22 +35,21 @@ const SINGLE_RENDITION: &str = "video";
 /// The capture frame rate a publish runs at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureFramerate {
-    /// The rate the backend is asked for. A device that cannot reach it
-    /// substitutes the nearest rate it has, which is why this is a request and
-    /// not the rate the pictures actually arrive at.
+    /// The rate the backend is asked for.
+    ///
+    /// A device may substitute its nearest rate.
     Requested {
         /// Frames per second.
         fps: u32,
         /// What settled the number.
         origin: FramerateOrigin,
     },
-    /// Nothing is asked of the backend, which runs at its own rate.
+    /// The backend runs at its own rate.
     Device,
 }
 
 impl CaptureFramerate {
-    /// Returns the rate to put in a capture config, or `None` to leave it to
-    /// the backend.
+    /// Returns the rate for a capture config, or `None` for the backend's own.
     pub fn request(self) -> Option<u32> {
         match self {
             Self::Requested { fps, .. } => Some(fps),
@@ -71,11 +57,10 @@ impl CaptureFramerate {
         }
     }
 
-    /// Returns the rate a source that produces its own frames should run at.
+    /// Returns the rate for a source that generates its own frames.
     ///
-    /// The test pattern and `rpicam-vid` deliver exactly the rate they are
-    /// given, so there is no device mode to defer to and [`DEFAULT_FRAMERATE`]
-    /// stands in for one.
+    /// The test pattern and `rpicam-vid` have no device mode to defer to, so
+    /// [`DEFAULT_FRAMERATE`] stands in.
     pub fn generated(self) -> u32 {
         self.request().unwrap_or(DEFAULT_FRAMERATE)
     }
@@ -88,14 +73,14 @@ pub enum FramerateOrigin {
     Flag,
     /// The highest `@<fps>` in `--renditions` named it.
     Renditions,
-    /// A rung asked for more than `--fps` allows, so `--fps` settled it.
+    /// `--fps` named it, below what a rung asked for.
     Capped,
     /// Nothing named a rate, so [`DEFAULT_FRAMERATE`] applies.
     Default,
 }
 
 impl FramerateOrigin {
-    /// Returns the word the `origin` log field carries.
+    /// Returns the `origin` log field.
     fn label(self) -> &'static str {
         match self {
             Self::Flag => "--fps",
@@ -109,9 +94,9 @@ impl FramerateOrigin {
 /// A rung that asked for a frame rate the capture does not run at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnmetRate {
-    /// The rendition name, as the catalog has it.
+    /// The rendition name.
     name: String,
-    /// The rate the rung's `@<fps>` asked for.
+    /// The rate its `@<fps>` asked for.
     asked: u32,
 }
 
@@ -122,29 +107,25 @@ struct Rung {
     name: String,
     /// The encoded size, or `None` for the source's own resolution.
     size: Option<Size>,
-    /// What the rung's `@<fps>` asked for, if it carried one.
+    /// The rate its `@<fps>` asked for, if any.
     framerate: Option<u32>,
 }
 
-/// The simulcast ladder `--renditions` describes, and the capture frame rate it
-/// settles.
+/// The simulcast ladder and its capture frame rate.
 #[derive(Debug)]
 pub struct Ladder {
-    /// The rungs, ready for `set_renditions`.
-    pub renditions: Vec<VideoRendition>,
+    /// The rungs, ready for `set_video`.
+    pub encoding: VideoEncoding,
     /// The rate the capture backend is asked for.
     pub framerate: CaptureFramerate,
-    /// The rungs whose `@<fps>` is not the rate the ladder is captured at, kept
-    /// so [`report`](Self::report) can name them.
+    /// The rungs whose `@<fps>` differs from the capture rate.
     unmet: Vec<UnmetRate>,
 }
 
 impl Ladder {
-    /// Logs the capture frame rate, where it came from, and every rung that
-    /// asked for another one.
+    /// Logs the capture frame rate and the rungs that asked for another.
     ///
-    /// Call this once the source is known to exist: `--video none` publishes no
-    /// pictures and has no capture rate to report.
+    /// Call it only once a video source opened.
     pub fn report(&self) {
         match self.framerate {
             CaptureFramerate::Requested { fps, origin } => info!(
@@ -172,25 +153,20 @@ impl Ladder {
     }
 }
 
-/// The ladder and capture frame rate `args` describe for a source of kind
-/// `spec`.
+/// Builds the ladder and capture frame rate for `spec` from `args`.
 ///
-/// # Errors
-///
-/// Fails if a rung is not `[<name>:]<geometry>[@<fps>]`, or if `--fps` or an
-/// `@<fps>` suffix names a rate no capture backend accepts.
+/// Fails if a rung does not parse or a frame rate is out of range.
 pub fn ladder(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Ladder> {
     let rungs = rungs(args)?;
     let framerate = capture_framerate(spec, args, &rungs)?;
     Ok(Ladder {
-        renditions: renditions(args, &rungs),
+        encoding: VideoEncoding::ladder(renditions(args, &rungs)),
         unmet: unmet_rates(&rungs, framerate),
         framerate,
     })
 }
 
-/// Parses every rung of `--renditions`, or the single unscaled rendition the
-/// flag's absence stands for.
+/// Parses `--renditions`, or returns one unscaled rung when it is empty.
 fn rungs(args: &CaptureArgs) -> Result<Vec<Rung>> {
     if args.renditions.is_empty() {
         return Ok(vec![Rung {
@@ -204,10 +180,8 @@ fn rungs(args: &CaptureArgs) -> Result<Vec<Rung>> {
 
 /// Parses one rung: `[<name>:]<geometry>[@<fps>]`.
 fn rung(spec: &str) -> Result<Rung> {
-    // The rate comes off first so the rest of the rung parses exactly as it did
-    // before the suffix existed. Splitting on the first `@` rather than the
-    // last means `a@b@60` fails on `b@60` instead of quietly accepting `a@b` as
-    // a rendition name.
+    // Splitting on the first `@` makes `a@b@60` fail on `b@60` instead of
+    // accepting `a@b` as a name.
     let (geometry, framerate) = match spec.split_once('@') {
         Some((geometry, fps)) => (geometry, Some(rung_framerate(spec, fps)?)),
         None => (spec, None),
@@ -219,8 +193,7 @@ fn rung(spec: &str) -> Result<Rung> {
             })?;
             (name.to_string(), Some(parsed))
         }
-        // A bare rung is either a size, which names itself, or a name standing
-        // for the source's own resolution.
+        // A bare size names itself. Anything else is a name at source size.
         None => (geometry.to_string(), parse_size(geometry)),
     };
     if name.is_empty() {
@@ -259,7 +232,7 @@ fn flag_framerate(fps: u32) -> Result<u32> {
     Ok(fps)
 }
 
-/// The rate the capture is asked for, and what settled it.
+/// Settles the capture frame rate and its origin.
 fn capture_framerate(
     spec: &VideoSourceSpec,
     args: &CaptureArgs,
@@ -268,8 +241,6 @@ fn capture_framerate(
     let asked = rungs.iter().filter_map(|rung| rung.framerate).max();
     let flag = args.fps.map(flag_framerate).transpose()?;
     let framerate = match (flag, asked) {
-        // `--fps` is the capture rate outright, so it caps the ladder: a rung
-        // asking for more gets the rate the capture actually runs at.
         (Some(fps), Some(asked)) if asked > fps => CaptureFramerate::Requested {
             fps,
             origin: FramerateOrigin::Capped,
@@ -278,8 +249,6 @@ fn capture_framerate(
             fps,
             origin: FramerateOrigin::Flag,
         },
-        // One capture feeds every rung, so the rung wanting the most frames
-        // decides what all of them are fed.
         (None, Some(fps)) => CaptureFramerate::Requested {
             fps,
             origin: FramerateOrigin::Renditions,
@@ -293,22 +262,17 @@ fn capture_framerate(
     Ok(framerate)
 }
 
-/// Whether the backend behind `spec` acts on a requested frame rate.
+/// Returns whether the backend behind `spec` acts on a requested frame rate.
 ///
-/// `moq_video`'s AVFoundation camera backend does not: it warns that width,
-/// height and framerate are ignored and opens the device on its own mode.
-/// Requesting the default rate there would add that warning to every macOS
-/// camera publish in exchange for nothing, so the default is withheld and the
-/// device's own rate stands. An explicit `--fps` still goes through, because
-/// somebody who typed it should see what the backend makes of it.
+/// The AVFoundation camera backend ignores it and warns. We skip the default
+/// there to avoid that warning, but still pass an explicit `--fps`.
 fn takes_framerate(spec: &VideoSourceSpec) -> bool {
     !(cfg!(target_os = "macos") && matches!(spec, VideoSourceSpec::Camera(_)))
 }
 
-/// The rungs whose `@<fps>` is not the rate the ladder is captured at.
+/// Returns the rungs whose `@<fps>` differs from the capture rate.
 fn unmet_rates(rungs: &[Rung], framerate: CaptureFramerate) -> Vec<UnmetRate> {
-    // No request means no rung named a rate either, since a rung that did would
-    // have become one.
+    // No request means no rung named a rate.
     let Some(fps) = framerate.request() else {
         return Vec::new();
     };
@@ -324,44 +288,39 @@ fn unmet_rates(rungs: &[Rung], framerate: CaptureFramerate) -> Vec<UnmetRate> {
         .collect()
 }
 
-/// Turns parsed rungs into the ladder `set_renditions` takes.
+/// Turns parsed rungs into the renditions `set_video` encodes.
 fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
     let codec = args.codec.into();
     let kind = video::encode::Kind::from(args.encoder);
 
-    // `--bitrate` names the top rung, so the ladder is scaled against whichever
-    // rung is largest. A rung with no explicit size encodes at the source's
-    // resolution, which is at least as large as any of the others, so an
-    // unsized rung means there is nothing to scale against.
-    let largest = match rungs.iter().any(|rung| rung.size.is_none()) {
-        true => None,
-        false => rungs
+    // `--bitrate` is for the largest rung. An unsized rung is at source size,
+    // which is unknown here, so there is nothing to scale against.
+    let largest = if rungs.iter().any(|rung| rung.size.is_none()) {
+        None
+    } else {
+        rungs
             .iter()
             .filter_map(|rung| rung.size)
-            .max_by_key(Size::pixels),
+            .max_by_key(Size::pixels)
     };
 
     rungs
         .iter()
         .map(|rung| {
-            let mut rendition = VideoRendition::new(rung.name.clone())
-                .with_codec(codec)
-                .with_kind(kind.clone());
-            if let Some(size) = rung.size {
-                rendition = rendition.with_size(size);
-            }
+            let mut rendition = VideoRendition {
+                size: rung.size,
+                codec,
+                encoder: kind.clone(),
+                ..VideoRendition::new(rung.name.clone())
+            };
             if args.keyframe_interval > 0.0 {
-                rendition = rendition
-                    .with_keyframe_interval(Duration::from_secs_f64(args.keyframe_interval));
+                rendition.keyframe_interval = Duration::from_secs_f64(args.keyframe_interval);
             }
-            if let Some(bitrate) = args.bitrate {
-                // Scale by pixel count against the largest rung, so a ladder
-                // does not advertise the same bitrate at every size. A
-                // subscriber compares its estimate against the rendition's
-                // bitrate, and identical figures make the rungs
-                // indistinguishable to it.
-                rendition = rendition.with_bitrate(scaled_bitrate(bitrate, rung.size, largest));
-            }
+            // A subscriber picks a rung by comparing its bandwidth estimate
+            // with each rung's bitrate, so the rungs must differ.
+            rendition.bitrate = args
+                .bitrate
+                .map(|bitrate| Bitrate::from_bps(scaled_bitrate(bitrate, rung.size, largest)));
             rendition
         })
         .collect()
@@ -369,11 +328,10 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
 
 /// Shares `bitrate` across a ladder in proportion to pixel count.
 ///
-/// `bitrate` is the figure for the largest rung. A rung at a quarter of the
-/// pixels gets a quarter of it, floored so a very small rung is still given
-/// something an encoder can work with.
+/// `bitrate` is for the largest rung. The result has a floor, so a tiny rung
+/// still gets a usable rate.
 fn scaled_bitrate(bitrate: u64, size: Option<Size>, largest: Option<Size>) -> u64 {
-    /// Below this a rung is unusable however small it is.
+    /// Below this, no rung is usable.
     const FLOOR: u64 = 64_000;
 
     let (Some(size), Some(largest)) = (size, largest) else {
@@ -387,9 +345,8 @@ fn scaled_bitrate(bitrate: u64, size: Option<Size>, largest: Option<Size>) -> u6
 
 /// Parses `<height>p` or `<width>x<height>`.
 ///
-/// Both dimensions are rounded up to the next even number: I420 chroma is
-/// subsampled 2x2, so every stage of the pipeline rejects an odd one. The
-/// `<height>p` shorthand assumes 16:9.
+/// Rounds both dimensions up to even, since I420 chroma is subsampled 2x2.
+/// `<height>p` assumes 16:9.
 fn parse_size(spec: &str) -> Option<Size> {
     if let Some((width, height)) = spec.split_once(['x', 'X']) {
         let width: u32 = width.parse().ok()?;
@@ -419,8 +376,7 @@ mod tests {
         }
     }
 
-    /// A source kind whose backend takes a requested frame rate on every
-    /// platform, so the tests below read the same on macOS as elsewhere.
+    /// A source that takes a requested frame rate on every platform.
     const TEST_SOURCE: VideoSourceSpec =
         VideoSourceSpec::Test(crate::source_spec::TestPattern::Timing);
 
@@ -430,8 +386,7 @@ mod tests {
         assert_eq!(parse_size("1080p"), Some(Size::new(1920, 1080)));
         assert_eq!(parse_size("480p"), Some(Size::new(854, 480)));
         assert_eq!(parse_size("640x360"), Some(Size::new(640, 360)));
-        // I420 chroma is subsampled 2x2, so an odd dimension is rounded up
-        // rather than passed to an encoder that will reject it.
+        // Odd dimensions round up to even.
         assert_eq!(parse_size("641x361"), Some(Size::new(642, 362)));
         assert_eq!(parse_size("source"), None);
     }
@@ -445,7 +400,6 @@ mod tests {
         );
         assert_eq!(quarter, 1_000_000);
 
-        // The top rung keeps the figure it was given.
         let top = scaled_bitrate(
             4_000_000,
             Some(Size::new(1280, 720)),
@@ -453,7 +407,6 @@ mod tests {
         );
         assert_eq!(top, 4_000_000);
 
-        // A tiny rung still gets something an encoder can work with.
         let tiny = scaled_bitrate(
             4_000_000,
             Some(Size::new(16, 16)),
@@ -461,7 +414,6 @@ mod tests {
         );
         assert_eq!(tiny, 64_000);
 
-        // Nothing to scale against: the figure passes through.
         assert_eq!(scaled_bitrate(4_000_000, None, None), 4_000_000);
     }
 
@@ -512,7 +464,6 @@ mod tests {
                 framerate: Some(60),
             }
         );
-        // A rung with no geometry is a name, and takes a rate just the same.
         assert_eq!(
             rung("source@24").unwrap(),
             Rung {
@@ -529,10 +480,7 @@ mod tests {
         assert!(rung("720p@sixty").is_err());
         assert!(rung("720p@0").is_err());
         assert!(rung(&format!("720p@{}", MAX_FRAMERATE + 1)).is_err());
-        // The first `@` splits, so a second one lands in the rate and fails
-        // there rather than becoming part of a rendition name.
         assert!(rung("a@b@60").is_err());
-        // A rate needs something to attach to.
         assert!(rung("@60").is_err());
         assert!(rung("high:@60").is_err());
     }
@@ -564,7 +512,6 @@ mod tests {
                 origin: FramerateOrigin::Renditions,
             }
         );
-        // The slower rung is fed the same pictures as the fast one, and says so.
         assert_eq!(
             ladder.unmet,
             vec![UnmetRate {
@@ -628,18 +575,19 @@ mod tests {
     #[test]
     fn a_ladder_without_the_flag_is_one_unscaled_rendition() {
         let ladder = ladder(&TEST_SOURCE, &args(&[], None)).unwrap();
-        assert_eq!(ladder.renditions.len(), 1);
-        assert_eq!(ladder.renditions[0].name, SINGLE_RENDITION);
-        assert_eq!(ladder.renditions[0].size, None);
+        assert_eq!(ladder.encoding.renditions.len(), 1);
+        assert_eq!(ladder.encoding.renditions[0].name, SINGLE_RENDITION);
+        assert_eq!(ladder.encoding.renditions[0].size, None);
     }
 
     #[test]
     fn a_rate_does_not_reach_the_rendition_the_encoder_is_built_from() {
-        // Every rung of a ladder sees the same pictures, so `@<fps>` describes
-        // the capture and leaves the rendition alone; the size still lands.
         let ladder = ladder(&TEST_SOURCE, &args(&["high:1280x720@60"], None)).unwrap();
-        assert_eq!(ladder.renditions.len(), 1);
-        assert_eq!(ladder.renditions[0].name, "high");
-        assert_eq!(ladder.renditions[0].size, Some(Size::new(1280, 720)));
+        assert_eq!(ladder.encoding.renditions.len(), 1);
+        assert_eq!(ladder.encoding.renditions[0].name, "high");
+        assert_eq!(
+            ladder.encoding.renditions[0].size,
+            Some(Size::new(1280, 720))
+        );
     }
 }

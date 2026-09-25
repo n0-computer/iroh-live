@@ -1,38 +1,24 @@
-//! Turning parsed specifiers into the sources `moq-media` publishes.
+//! Opens the sources that specifiers name, and sets them on a broadcast.
 //!
-//! A capture source is a `moq_video::capture::Config` or a
-//! `moq_audio::capture::Config` and nothing more: the device is opened inside
-//! the publish task, which is what lets it be released again when publishing
-//! stops. The test pattern and the test tone come from
-//! [`moq_media::test_source`], so `irl publish --test-source` works on a
-//! machine with neither camera nor microphone. Both take the broadcast's own
-//! clock, which is what puts the picture's flash and the tone's beep on one
-//! timeline for a viewer to judge A/V sync against.
-//!
-//! The Raspberry Pi camera is the exception: `rpicam-vid` is started here
-//! rather than in the publish task. Under `rpicam` what it hands back is
-//! already-encoded H.264 and no stage of ours sees a picture; under
-//! `rpicam:raw` it hands back I420 and the rest of the pipeline behaves as it
-//! would for any other camera.
+//! Sources open before they reach the broadcast, so a missing device is an
+//! error here and not a retry loop in the log.
 
-#[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::media::rpicam;
 use iroh_live::media::{
-    audio,
-    audio_file::AudioFile,
-    publish::{AudioSource, LocalBroadcast, VideoSource},
-    test_source,
+    AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, MicrophoneConfig,
+    VideoFormat, VideoSource, audio,
     video::{self, Size},
 };
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+use iroh_live::media::{EncodedVideoSource, RpicamConfig};
 use n0_error::{Result, anyerr};
 
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+use crate::{args::VideoCodecArg, backend::Backend, source_spec::RpicamMode};
 use crate::{
-    args::CaptureArgs,
+    args::{AudioCodecArg, CaptureArgs},
     rendition::{self, CaptureFramerate},
     source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
 };
-#[cfg(all(target_os = "linux", feature = "rpicam"))]
-use crate::{args::VideoCodecArg, backend::EncoderArg, source_spec::RpicamMode};
 
 /// Resolution of the test pattern when `--width` / `--height` are not given.
 const TEST_SIZE: Size = Size {
@@ -40,85 +26,130 @@ const TEST_SIZE: Size = Size {
     height: 720,
 };
 
-/// Capture mode of the Raspberry Pi camera when `--width` / `--height` are not
-/// given. A Pi Zero 2 W streams this comfortably, and a larger mode is one flag
-/// away.
+/// Capture size of the Raspberry Pi camera without `--width` and `--height`.
+///
+/// A Pi Zero 2 W streams this comfortably.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 const RPICAM_SIZE: Size = Size {
     width: 640,
     height: 360,
 };
 
-/// Frequency of the unbroken test tone, in hertz. Concert A: unmistakable, and
-/// low enough that no resampler on the way out can alias it. The beeping tone
-/// names its own frequency, an octave above this one.
-const TEST_TONE_HZ: f64 = 440.0;
-
-/// Sample rate of the test tone. Opus's native rate, so it is encoded
-/// without a resampling step.
-const TEST_TONE_RATE: u32 = 48_000;
-
-/// Speaker layout of the test tone.
-const TEST_TONE_LAYOUT: moq_media::audio::Layout = moq_media::audio::Layout::Stereo;
-
-/// Sets up whichever of video and audio `args` asked for.
+/// Frequency of the continuous test tone, in hertz.
 ///
-/// # Errors
-///
-/// Fails if a specifier is unusable here (a `file:` video source belongs to
-/// `irl publish`), or if the rendition ladder does not parse. A device that
-/// will not open surfaces in the log and ends its track, not here.
-pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
-    configure_video(broadcast, args)?;
-    if let Some(source) = audio_source(&args.audio_source()?, *broadcast.clock())? {
-        broadcast.audio().set_with(source, audio_options(args));
-    }
-    Ok(())
+/// Concert A, low enough that no resampler can alias it.
+const TEST_TONE_HZ: f32 = 440.0;
+
+/// Speaker layout of the test tones.
+const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
+
+/// The sources [`configure`] opened, for a preview or a QR scanner.
+#[derive(Debug, Default)]
+pub struct Opened {
+    /// The raw video source. `None` for no video or pre-encoded video.
+    pub video: Option<VideoSource>,
+    /// The audio source.
+    pub audio: Option<AudioSource>,
 }
 
-/// Sets up the video half alone, leaving whatever audio is publishing in place.
+/// An opened video source.
+#[derive(Debug)]
+enum Video {
+    /// Raw pictures, encoded into the ladder.
+    Raw(VideoSource),
+    /// Pre-encoded H.264, published as it is.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    Encoded(EncodedVideoSource),
+}
+
+/// Opens the video and audio `args` asks for, and sets them on `broadcast`.
 ///
-/// `irl call` hands its camera to the scan screen and takes it back afterwards,
-/// which is a video source to reopen and a microphone that never stopped.
+/// `output` is the speaker whose echo the microphone cancels. Fails for a
+/// `file:` video source, a ladder that does not parse, or a source that does
+/// not open.
+pub async fn configure(
+    broadcast: &LocalBroadcast,
+    args: &CaptureArgs,
+    output: Option<&AudioOutput>,
+) -> Result<Opened> {
+    let video = configure_video(broadcast, args).await?;
+    let audio = match audio_source(&args.audio_source()?, output).await? {
+        Some(source) => {
+            broadcast.set_audio(source.clone(), audio_encoding(args))?;
+            Some(source)
+        }
+        None => None,
+    };
+    Ok(Opened { video, audio })
+}
+
+/// Opens the video `args` asks for and sets it, leaving the audio alone.
 ///
-/// # Errors
+/// Returns the raw source, if any, for a preview.
+pub async fn configure_video(
+    broadcast: &LocalBroadcast,
+    args: &CaptureArgs,
+) -> Result<Option<VideoSource>> {
+    match open_video(args).await? {
+        Some(opened) => opened.apply(broadcast),
+        None => Ok(None),
+    }
+}
+
+/// A video source opened and not yet set on a broadcast.
 ///
-/// As [`configure`], for the video half.
-pub fn configure_video(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
+/// Opening is async and setting is sync, so a caller can decide at the last
+/// moment whether to set it.
+#[derive(Debug)]
+pub struct OpenedVideo {
+    source: Video,
+    ladder: rendition::Ladder,
+}
+
+/// Opens the video `args` asks for without setting it.
+///
+/// Returns `None` for `--video none`.
+pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
     let spec = args.video_source()?;
     let ladder = rendition::ladder(&spec, args)?;
-    if let Some(source) = video_source(&spec, args, ladder.framerate, broadcast)? {
-        // Only now is there a capture to describe: `--video none` reaches here
-        // with a ladder nothing will encode.
-        ladder.report();
-        broadcast
-            .video()
-            .set_renditions(source, ladder.renditions)?;
-    }
-    Ok(())
+    Ok(video_source(&spec, args, ladder.framerate)
+        .await?
+        .map(|source| OpenedVideo { source, ladder }))
 }
 
-/// The video source a specifier names, or `None` for `--video none`.
+impl OpenedVideo {
+    /// Sets the source on `broadcast` and returns it if raw, for a preview.
+    pub fn apply(self, broadcast: &LocalBroadcast) -> Result<Option<VideoSource>> {
+        let Self { source, ladder } = self;
+        ladder.report();
+        match source {
+            Video::Raw(source) => {
+                broadcast.set_video(source.clone(), ladder.encoding)?;
+                Ok(Some(source))
+            }
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Video::Encoded(source) => {
+                broadcast.set_encoded_video(source)?;
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// Opens the video source `spec` names, or `None` for `--video none`.
 ///
-/// # Errors
-///
-/// Fails for a `file:` source, which only `irl publish` can take.
-fn video_source(
+/// Fails for a `file:` source, which only `irl publish` takes.
+async fn video_source(
     spec: &VideoSourceSpec,
     args: &CaptureArgs,
     framerate: CaptureFramerate,
-    broadcast: &LocalBroadcast,
-) -> Result<Option<VideoSource>> {
+) -> Result<Option<Video>> {
     use video::capture::Source;
 
     let source = match spec {
         VideoSourceSpec::None => return Ok(None),
-        VideoSourceSpec::Test(pattern) => {
-            test_pattern(*pattern, args, framerate, *broadcast.clock())
-        }
+        VideoSourceSpec::Test(pattern) => Video::Raw(test_pattern(args, framerate, *pattern)?),
         VideoSourceSpec::File { path, .. } => {
-            // Only `irl publish` has the import path; every other command that
-            // captures reaches this with whatever the user typed.
             return Err(anyerr!(
                 "a file: video source is published by `irl publish --video \
                  file:{}`, which republishes the file without re-encoding it; \
@@ -127,24 +158,23 @@ fn video_source(
             ));
         }
         #[cfg(all(target_os = "linux", feature = "rpicam"))]
-        VideoSourceSpec::Rpicam(mode) => rpicam_source(args, framerate, *mode, *broadcast.clock())?,
-        VideoSourceSpec::Camera(id) => capture(Source::Camera(id.clone()), args, framerate),
-        VideoSourceSpec::Display(id) => capture(Source::Display(id.clone()), args, framerate),
-        VideoSourceSpec::Window(id) => capture(Source::Window(id.clone()), args, framerate),
-        VideoSourceSpec::App(id) => capture(Source::App(id.clone()), args, framerate),
+        VideoSourceSpec::Rpicam(mode) => rpicam_source(args, framerate, *mode).await?,
+        VideoSourceSpec::Camera(id) => capture(Source::Camera(id.clone()), args, framerate).await?,
+        VideoSourceSpec::Display(id) => {
+            capture(Source::Display(id.clone()), args, framerate).await?
+        }
+        VideoSourceSpec::Window(id) => capture(Source::Window(id.clone()), args, framerate).await?,
+        VideoSourceSpec::App(id) => capture(Source::App(id.clone()), args, framerate).await?,
     };
     Ok(Some(source))
 }
 
-/// A capture config for `source`, carrying the geometry hints from the flags.
-///
-/// `framerate` is the rate the whole ladder is captured at, which `--fps` and
-/// the rungs' `@<fps>` suffixes settle between them: see [`crate::rendition`].
-fn capture(
+/// Opens a capture device with the geometry hints from the flags.
+async fn capture(
     source: video::capture::Source,
     args: &CaptureArgs,
     framerate: CaptureFramerate,
-) -> VideoSource {
+) -> Result<Video> {
     let mut config = video::capture::Config::default();
     config.source = source;
     config.width = args.width;
@@ -153,91 +183,40 @@ fn capture(
         video::Rate::new(fps, 1).expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
     });
     config.cursor = !args.no_cursor;
-    VideoSource::Capture(config)
+    Ok(Video::Raw(VideoSource::capture(config).await?))
 }
 
-/// Returns the bitrate to hand `rpicam-vid`, or the default when none was
-/// given.
+/// Starts `rpicam-vid` in the mode `mode` names.
 ///
-/// # Errors
-///
-/// Fails if the number does not fit the subprocess's flag. Rejected here rather
-/// than clamped, because clamping turns a typo into a 4 Gbps request that
-/// `rpicam-vid` refuses in its own words, about a process the user does not
-/// know they are running.
+/// Under [`RpicamMode::Encoded`], `--bitrate` goes to `rpicam-vid` and our
+/// encoding flags are refused. Under [`RpicamMode::Raw`], the pictures go
+/// through our encoders like any camera's.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-fn rpicam_bitrate(bitrate: Option<u64>) -> Result<u32> {
-    let Some(bitrate) = bitrate else {
-        return Ok(rpicam::DEFAULT_BITRATE);
-    };
-    u32::try_from(bitrate).map_err(|_| {
-        anyerr!(
-            "--bitrate {bitrate} is out of range for --video rpicam, which can \
-             ask its encoder for at most {} bits per second",
-            u32::MAX
-        )
-    })
-}
-
-/// Starts `rpicam-vid` and returns whichever of H.264 and raw pictures `mode`
-/// asked for.
-///
-/// `--width`, `--height`, and the settled capture frame rate describe the
-/// capture either way. Under [`RpicamMode::Encoded`] `--bitrate` goes to the
-/// subprocess, which is the only thing that can act on it, and the flags that
-/// describe an encode of ours are refused. Under [`RpicamMode::Raw`] none of
-/// that applies: the picture reaches our encoders like any other camera's, so
-/// `--bitrate` belongs to the rendition ladder and the subprocess is told
-/// nothing about it.
-///
-/// Raw frames are stamped on `clock`, the one the broadcast's audio is stamped
-/// from, so the two tracks land on a single timeline.
-///
-/// # Errors
-///
-/// Fails if `rpicam-vid` cannot be started, or if a flag asks the pre-encoded
-/// source for an encode it cannot perform.
-#[cfg(all(target_os = "linux", feature = "rpicam"))]
-fn rpicam_source(
+async fn rpicam_source(
     args: &CaptureArgs,
     framerate: CaptureFramerate,
     mode: RpicamMode,
-    clock: moq_mux::Clock,
-) -> Result<VideoSource> {
-    let width = args.width.unwrap_or(RPICAM_SIZE.width);
-    let height = args.height.unwrap_or(RPICAM_SIZE.height);
-    // `rpicam-vid` delivers the rate it is told to, so there is no device mode
-    // to fall back on and the default stands in for one.
+) -> Result<Video> {
+    let size = Size::new(
+        args.width.unwrap_or(RPICAM_SIZE.width),
+        args.height.unwrap_or(RPICAM_SIZE.height),
+    );
     let framerate = framerate.generated();
+    // `--keyframe-interval` does not apply: the config keeps a keyframe a second.
+    let mut config = RpicamConfig::new(size, framerate);
     match mode {
-        RpicamMode::Raw => {
-            let config = rpicam::RawConfig::new(width, height, framerate);
-            Ok(VideoSource::Frames(rpicam::frames(config, clock)?))
-        }
+        RpicamMode::Raw => Ok(Video::Raw(VideoSource::rpicam(config).await?)),
         RpicamMode::Encoded => {
             check_rpicam_flags(args)?;
-            let output = rpicam::Output::H264 {
-                bitrate: rpicam_bitrate(args.bitrate)?,
-                // A keyframe a second. The subprocess owns the encode, so this
-                // is the only place the join latency can be set.
-                keyframe_interval: framerate,
-            };
-            Ok(rpicam::open(rpicam::Config::new(
-                width, height, framerate, output,
-            ))?)
+            if let Some(bitrate) = args.bitrate {
+                config.bitrate = Bitrate::from_bps(bitrate);
+            }
+            Ok(Video::Encoded(EncodedVideoSource::rpicam(config).await?))
         }
     }
 }
 
 /// Refuses the encoding flags a pre-encoded source cannot act on.
-///
-/// None of this applies to `rpicam:raw`, which hands over pictures nothing has
-/// encoded yet.
-///
-/// The picture is already H.264 by the time we see it, so `--codec` and
-/// `--encoder` describe an encode that does not happen and a ladder has
-/// nothing to scale. Saying so beats starting the camera and publishing
-/// something other than what was asked for.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
     if args.codec != VideoCodecArg::H264 {
@@ -247,7 +226,7 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
              rpicam:raw takes the pictures instead and encodes them here"
         ));
     }
-    if args.encoder != EncoderArg::Auto {
+    if args.encoder != Backend::Auto {
         return Err(anyerr!(
             "--encoder {} has nothing to do under --video rpicam: rpicam-vid \
              has already encoded the picture, and no encoder of ours runs. \
@@ -260,88 +239,170 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
         return Err(anyerr!(
             "--video rpicam publishes one rendition: the stream arrives \
              encoded and cannot be produced again at a second size. Give at \
-             most one rung, which names the catalog entry, or use --video \
-             rpicam:raw to encode a ladder from the pictures"
+             most one rung, or use --video rpicam:raw to encode a ladder from \
+             the pictures"
         ));
     }
     Ok(())
 }
 
-/// The test pattern at its default geometry, for a caller with no flags to
-/// consult.
-#[cfg(feature = "render")]
-pub fn default_test_pattern(clock: moq_mux::Clock) -> VideoSource {
-    test_source::timing::video(TEST_SIZE, rendition::DEFAULT_FRAMERATE, clock)
-}
-
-/// The test pattern, at whatever geometry the flags asked for.
-///
-/// `clock` is the broadcast's, so the marker the timing pattern flashes and the
-/// beep [`audio_source`] generates describe the same instant.
+/// Starts the test pattern `pattern` names, at the size the flags ask for.
 fn test_pattern(
-    pattern: TestPattern,
     args: &CaptureArgs,
     framerate: CaptureFramerate,
-    clock: moq_mux::Clock,
-) -> VideoSource {
+    pattern: TestPattern,
+) -> Result<VideoSource> {
     let size = Size::new(
         args.width.unwrap_or(TEST_SIZE.width),
         args.height.unwrap_or(TEST_SIZE.height),
     );
-    // The generator draws exactly the rate it is asked for, so there is no
-    // device to defer to here either.
-    let framerate = framerate.generated();
+    let rate = video::Rate::new(framerate.generated(), 1)
+        .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE");
     match pattern {
-        TestPattern::Timing => test_source::timing::video(size, framerate, clock),
-        TestPattern::Gradient => test_source::video(size, framerate),
+        TestPattern::Timing => Ok(VideoSource::test_pattern(size, rate)),
+        TestPattern::Gradient => gradient(size, framerate.generated()),
     }
 }
 
-/// The audio source a specifier names, or `None` for `--audio none`.
+/// Starts a diagonal gradient that shifts every frame, on its own thread.
 ///
-/// # Errors
+/// A static image would compress to almost nothing, so a stalled pipeline
+/// would look the same as a working one.
+fn gradient(size: Size, fps: u32) -> Result<VideoSource> {
+    let rate = video::Rate::new(fps, 1).expect("the ladder settles only on valid rates");
+    let format = VideoFormat { size, rate };
+    let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
+    let source = VideoSource::spawn("gradient", format, move |sender| {
+        let clock = moq_mux::Clock::new();
+        let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
+        let mut next = std::time::Instant::now();
+        for tick in 0u32.. {
+            paint_gradient(&mut rgba, size, tick);
+            let surface =
+                video::Surface::rgba(&rgba, size).expect("the buffer is sized for the picture");
+            if sender
+                .push(video::Frame::new(surface, clock.now()))
+                .is_err()
+            {
+                break;
+            }
+            next += interval;
+            std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
+        }
+        Ok(())
+    })?;
+    Ok(source)
+}
+
+/// Fills `rgba` with a diagonal gradient that shifts with `tick`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the gradient wraps on purpose"
+)]
+fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
+    let phase = tick.wrapping_mul(3) as u8;
+    for y in 0..size.height {
+        for x in 0..size.width {
+            let offset = ((y * size.width + x) * 4) as usize;
+            rgba[offset] = (x as u8).wrapping_add(phase);
+            rgba[offset + 1] = (y as u8).wrapping_add(phase);
+            rgba[offset + 2] = phase;
+            rgba[offset + 3] = 0xff;
+        }
+    }
+}
+
+/// Returns the config for microphone `id`, cancelling the echo of `output`.
 ///
-/// Fails if a `file:` source cannot be opened or holds no audio track.
-fn audio_source(spec: &AudioSourceSpec, clock: moq_mux::Clock) -> Result<Option<AudioSource>> {
+/// Without the `aec` feature, it warns and publishes the microphone as is.
+pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> MicrophoneConfig {
+    let mut config = MicrophoneConfig::default();
+    if let Some(id) = id {
+        config = config.with_device(id);
+    }
+    if let Some(output) = output {
+        #[cfg(feature = "aec")]
+        {
+            config.echo_reference = Some(output.clone());
+        }
+        // A null output plays nothing, so it has no echo.
+        #[cfg(not(feature = "aec"))]
+        if !output.is_null() {
+            tracing::warn!(
+                "this build has no echo cancellation, so the other side may hear itself; \
+                 build with the `aec` feature to cancel it"
+            );
+        }
+    }
+    config
+}
+
+/// Opens the audio source `spec` names, or `None` for `--audio none`.
+async fn audio_source(
+    spec: &AudioSourceSpec,
+    output: Option<&AudioOutput>,
+) -> Result<Option<AudioSource>> {
     let source = match spec {
         AudioSourceSpec::None => return Ok(None),
         AudioSourceSpec::Microphone(id) => {
-            let mut config = audio::capture::Config::default();
-            config.source = audio::capture::Source::Microphone(id.clone());
-            AudioSource::Device(config)
+            AudioSource::microphone(microphone_config(id.clone(), output)).await?
         }
         AudioSourceSpec::System => {
-            let mut config = audio::capture::Config::default();
-            config.source = audio::capture::Source::System;
-            AudioSource::Device(config)
+            let mut config = MicrophoneConfig::default();
+            config.capture.source = audio::capture::Source::System;
+            AudioSource::microphone(config).await?
         }
-        AudioSourceSpec::Test(TestTone::Beeps) => {
-            test_source::timing::audio(TEST_TONE_RATE, TEST_TONE_LAYOUT, clock)
-        }
-        AudioSourceSpec::Test(TestTone::Tone) => {
-            test_source::audio(TEST_TONE_HZ, TEST_TONE_RATE, TEST_TONE_LAYOUT)
-        }
-        AudioSourceSpec::File { path, looping } => {
-            let file = AudioFile::open(path, *looping)?;
-            AudioSource::Frames {
-                input: file.input(),
-                frames: file.into_stream(),
-            }
-        }
+        AudioSourceSpec::Test(TestTone::Beeps) => AudioSource::test_pattern(TEST_TONE_LAYOUT),
+        AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT),
+        AudioSourceSpec::File { path, looping } => AudioSource::file(path, *looping).await?,
     };
     Ok(Some(source))
 }
 
-/// The encoder options `--audio-codec` and `--audio-bitrate` imply.
-fn audio_options(args: &CaptureArgs) -> audio::encode::Options {
-    let mut options = audio::encode::Options::default();
-    options.settings.codec = args.audio_codec.into();
-    // PCM's bitrate follows from its sample rate and channel count, and the
-    // encoder rejects an explicit one, so only Opus takes the flag.
-    if options.settings.codec == audio::encode::Codec::Opus {
-        options.settings.bitrate = args
-            .audio_bitrate
-            .map(|bps| moq_net::bandwidth::Rate::from_bps(bps.into()));
+/// Returns the encoding for `--audio-codec` and `--audio-bitrate`.
+///
+/// A microphone gets the voice preset. Any other source may be music and
+/// keeps its channels. PCM ignores `--audio-bitrate`.
+fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
+    let mut encoding = match (args.audio_codec, is_microphone(args)) {
+        (AudioCodecArg::Pcm, _) => return AudioEncoding::pcm(),
+        (AudioCodecArg::Opus, true) => AudioEncoding::voice(),
+        (AudioCodecArg::Opus, false) => AudioEncoding::music(),
+    };
+    if let Some(bps) = args.audio_bitrate {
+        encoding.bitrate = Some(Bitrate::from_bps(bps.into()));
     }
-    options
+    encoding
+}
+
+/// Returns whether `--audio` names a microphone.
+fn is_microphone(args: &CaptureArgs) -> bool {
+    matches!(args.audio_source(), Ok(AudioSourceSpec::Microphone(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The microphone config carries the output as its echo reference.
+    #[cfg(feature = "aec")]
+    #[test]
+    fn the_microphone_cancels_the_output_it_is_given() {
+        let output = AudioOutput::null();
+        let config = microphone_config(None, Some(&output));
+        assert!(
+            config.echo_reference.is_some(),
+            "the microphone config carries no echo reference"
+        );
+        assert!(microphone_config(None, None).echo_reference.is_none());
+    }
+
+    #[test]
+    fn a_microphone_by_id_keeps_its_id() {
+        let config = microphone_config(Some("hw:1".into()), None);
+        assert_eq!(
+            config.capture.source,
+            audio::capture::Source::Microphone(Some("hw:1".into()))
+        );
+    }
 }

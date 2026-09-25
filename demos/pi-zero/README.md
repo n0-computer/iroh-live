@@ -1,17 +1,16 @@
 # pi-zero-demo
 
-Publishes a live camera stream from a Raspberry Pi Zero 2 W over iroh, and can
-show the connection ticket as a QR code on a Waveshare 2.13" Touch e-Paper HAT.
-It also watches a remote stream, rendering with GLES2 either in a window or
-straight to HDMI.
+Publishes a Raspberry Pi camera over iroh, and can show the ticket as a QR code
+on a Waveshare 2.13" Touch e-Paper HAT. It also watches a remote stream,
+rendered with GLES2 in a window or straight to HDMI.
 
-The e-paper display is optional. Without the HAT, or with SPI disabled, the
-binary still runs and prints the ticket to the terminal.
+The e-paper display is optional. Without the HAT, or with SPI off, the ticket
+goes to the terminal only.
 
 ## Hardware
 
 - **Board**: Raspberry Pi Zero 2 W. A Pi 4 or 5 should work.
-- **Camera**: any Pi-compatible CSI camera module.
+- **Camera**: any Pi CSI camera module.
 - **Display** (optional): [Waveshare 2.13inch Touch e-Paper HAT](https://www.waveshare.com/wiki/2.13inch_Touch_e-Paper_HAT_Manual),
   revision V4.
 
@@ -25,90 +24,74 @@ binary still runs and prints the ticket to the terminal.
 ./pi-zero-demo epaper-demo
 ```
 
-`publish` runs `rpicam-vid`, publishes the Annex-B H.264 it produces, prints a
-ticket, and optionally renders it as a QR code on the HAT. `--relay` also
-connects to a relay; publishing is node-wide, so the announce follows the
-connection with nothing further to configure.
+`publish` runs `rpicam-vid`, publishes the H.264 it writes, and prints a
+ticket. `--epaper` also draws the ticket as a QR code on the HAT. `--relay`
+also pushes the broadcast to a relay and redials it if the session drops, so
+browsers can watch it there.
 
-`watch` subscribes and renders. Without `--fb` it opens a window through glutin
-and winit, which needs the `windowed` feature, on by default. With `--fb` it
-takes over the console and renders through DRM/KMS, GBM, and EGL directly to
-HDMI, with no window system. `--endpoint-id` plus `--name` works in place of a
-ticket.
+`watch` subscribes and renders. Without `--fb` it opens a window through
+glutin and winit, which needs the `windowed` feature (on by default). With
+`--fb` it renders through DRM/KMS, GBM, and EGL straight to HDMI, with no
+window system.
 
-`fb-demo` renders a generated pattern to HDMI with no network and no camera,
-which isolates the display path. `epaper-demo` walks the HAT through a
-checkerboard, a QR code, and a clear.
+`fb-demo` renders a test pattern to HDMI with no network and no camera, to check
+the display path alone. `epaper-demo` shows a checkerboard, then a QR code,
+then clears the HAT, waiting for Enter between steps.
 
-## How capture works
+## How it works
 
-On Raspberry Pi OS the CSI camera is only reachable through the libcamera stack:
-`/dev/video0` hands back raw Bayer data from the Unicam sensor, unusable without
-the ISP. `rpicam-vid` drives that pipeline and the Pi's hardware H.264 encoder,
-so this demo reads the Annex-B bytes from its stdout and publishes them
-unchanged. The Pi never software-encodes, and the raw YUV pipe (about 10 MB/s at
-640x360) never happens.
+On Raspberry Pi OS the CSI camera is only reachable through libcamera:
+`/dev/video0` returns raw Bayer data that needs the ISP. `rpicam-vid` drives
+the ISP and the Pi's hardware H.264 encoder. The demo reads its Annex-B output
+and publishes it unchanged, so the Pi never encodes in software. `rpicam-vid`
+has to be on `PATH`, and it ships with Raspberry Pi OS.
 
-`moq_mux::codec::h264` splits the stream into access units and derives the
-catalog entry from its first SPS, so nothing has to describe an encoding it did
-not perform.
+Watching on the Pi decodes H.264 in software. `src/gles.rs` draws the pictures
+with GLES2 through `glow`, since the Pi Zero has no Vulkan and
+`moq_video::render` cannot run there. I420 pictures go up as three `LUMINANCE`
+textures and a shader converts them from BT.601 limited range. Any other
+picture goes up as one RGBA texture.
 
-`rpicam-vid` has to be on `PATH`. It ships with Raspberry Pi OS.
+## Building
 
-The V4L2 stateful M2M path that drove the VideoCore codec directly, and the
-`codec-test` subcommand that exercised it, were removed with the in-house codec
-stack and have no upstream replacement. Watching on the Pi decodes H.264 in
-software through openh264.
-
-## Rendering
-
-`src/gles.rs` is a GLES2 renderer over `glow`. The Pi Zero has no Vulkan and no
-wgpu, so `moq_video::render` cannot draw there. Two upload routes are chosen from
-the decoder's surface: I420 goes up as three `LUMINANCE` textures and is
-converted with a BT.601 limited-range fragment shader, which is what openh264
-produces, and packed RGBA goes up as a single texture. There is no zero-copy
-path.
-
-## Cross-compiling
+Cross-compile from the repository root:
 
 ```sh
-cargo make cross-sysroot-aarch64                            # once, from the repo root
+cargo make cross-sysroot-aarch64                            # once
 cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 ```
 
-The binary is at `target/aarch64-unknown-linux-gnu/release/pi-zero-demo`. See
-[cross/README.md](../../cross/README.md) for prerequisites and the Docker path
-for hosts that cannot install zig.
+The binary is at `target/aarch64-unknown-linux-gnu/release/pi-zero-demo`. The
+sysroot is built from Debian packages, so nothing has to be copied off a Pi.
+See [cross/README.md](../../cross/README.md) for the prerequisites and a Docker
+path for hosts without zig.
 
-Building on the Pi works too, and is slower:
+Building on the Pi also works, but slowly:
 
 ```sh
 sudo apt install build-essential libasound2-dev libpipewire-0.3-dev pkg-config
 cargo build -p pi-zero-demo --release
 ```
 
-The sysroot under `cross/` is assembled from Debian packages, so nothing has to
-be copied off a running Pi to build for one.
-
 ## Deploying
 
 ```sh
-scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_IP>:~/
+scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_HOST>:~/
 ```
 
-Or `cargo make cross-deploy` from this directory, which builds, strips, and
-copies to `$PI_HOST` (default `livepizero`).
+Or run `cargo make cross-deploy` in this directory. It builds, strips, and
+copies the binary to `pi@$PI_HOST:~/pi-zero-demo`. `PI_HOST` defaults to
+`livepizero`.
 
 ## Pi setup
 
-A fresh Raspberry Pi OS Bookworm, 64-bit, with SSH enabled.
+Start from Raspberry Pi OS Bookworm, 64-bit, with SSH enabled.
 
 ### WiFi, before the first boot
 
-`scripts/setup-network.sh` writes a NetworkManager profile onto a Bookworm
-rootfs while the SD card is still mounted on the host, which brings the Pi up on
-the network without a keyboard or a monitor. It is the one script here that runs
-on the development machine rather than on the Pi:
+`scripts/setup-network.sh` runs on the development machine. It writes a
+NetworkManager profile onto the SD card's rootfs while the card is mounted, so
+the Pi joins the network without a keyboard or a monitor:
 
 ```sh
 ./scripts/setup-network.sh <SSID> <PSK> [ROOTFS_PATH]
@@ -117,6 +100,10 @@ on the development machine rather than on the Pi:
 `ROOTFS_PATH` defaults to `/var/run/media/$USER/rootfs`.
 
 ### Camera
+
+Plug the CSI ribbon into the small connector near the HDMI port, not the
+display connector. The contacts face the board: lift the plastic clip, insert
+the ribbon, and press the clip back down. Then:
 
 ```sh
 sudo raspi-config     # Interface Options -> Camera -> Enable
@@ -132,10 +119,8 @@ sudo reboot
 ls /dev/spidev0.0
 ```
 
-The HAT plugs onto the 40-pin header with no extra wiring. Align pin 1 and press
-it on. The touch controller uses I2C, which this demo does not need.
-
-Active pins:
+The HAT plugs onto the 40-pin header with no extra wiring. The demo uses these
+pins:
 
 | Function | BCM GPIO | Board pin |
 |----------|----------|-----------|
@@ -146,6 +131,8 @@ Active pins:
 | RST      | 17       | 11        |
 | BUSY     | 24       | 18        |
 
+The touch controller uses I2C, which the demo does not need.
+
 ### Permissions
 
 ```sh
@@ -154,43 +141,32 @@ sudo usermod -aG video,spi,gpio $USER
 
 Log out and back in.
 
-`gpu_mem` no longer matters. It sized the VideoCore memory the M2M codec used,
-and nothing here opens that codec.
-
-### Camera cable
-
-Plug the CSI ribbon into the small connector near the HDMI port, not the display
-connector. Contacts face the board: lift the plastic clip, insert, press back
-down.
-
 ## Running
 
 ```sh
 RUST_LOG=info ./pi-zero-demo publish --epaper
 ```
 
-The ticket is printed to the terminal whether or not the HAT works.
+The ticket is printed to the terminal whether or not the HAT works. Watch it
+from a desktop with `irl watch <TICKET>`, or scan the QR code off the display.
 
-### Persistent secret key
+### A stable ticket
 
-iroh generates a new secret key on first run, so the ticket changes on every
-restart unless you pin it. The first run logs the value:
+The ticket names the endpoint id, which comes from a secret key. Without
+`IROH_SECRET` the demo takes a new key on every start, so the ticket changes.
+Pin one with 64 hex characters:
 
 ```sh
-export IROH_SECRET=abcdef...
+export IROH_SECRET=$(openssl rand -hex 32)   # once, then keep the value
 ./pi-zero-demo publish
 ```
 
-Any 64 hex characters will do, so a key can also be chosen before the first
-run with `openssl rand -hex 32`.
-
 ### Starting on boot
 
-[`scripts/pi-zero-demo.service`](scripts/pi-zero-demo.service) is a systemd user
-unit that runs the publisher with a pinned secret, keeping the key in a file of
-its own rather than in the world-readable unit.
-[`scripts/install-service.sh`](scripts/install-service.sh) puts it in place,
-from the Pi:
+[`scripts/pi-zero-demo.service`](scripts/pi-zero-demo.service) is a systemd
+user unit that runs `publish --name pi-zero`.
+[`scripts/install-service.sh`](scripts/install-service.sh) installs it, and
+runs on the Pi:
 
 ```sh
 scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_HOST>:~/
@@ -198,72 +174,55 @@ scp -r demos/pi-zero/scripts pi@<PI_HOST>:~/
 ssh pi@<PI_HOST> ./scripts/install-service.sh
 ```
 
-It refuses to install a binary that is not there or does not run, generates the
-secret on first install and keeps it on every one after, enables lingering, and
-prints the ticket once the publisher has started. Running it again after
-copying a new binary is how the service is updated.
+The script checks that `~/pi-zero-demo` runs, and generates `IROH_SECRET` into
+`~/.config/pi-zero-demo/env` on the first install. Later installs keep it. It
+enables lingering, so the service starts at boot rather than at login, and
+prints the ticket once the publisher is up. Run it again after copying a new
+binary.
 
-Lingering is the part that is easy to miss: without it the user manager, and so
-the publisher, starts at login rather than at boot. Options such as `--epaper`
-go in `PI_ZERO_DEMO_ARGS` in `~/.config/pi-zero-demo/env`, which saves editing
-the unit. The ticket goes to the journal, where
-`journalctl --user -u pi-zero-demo -f` will show it.
-
-## Watching from a desktop
-
-```sh
-irl watch <TICKET>
-```
-
-Or scan the QR code off the e-paper display.
+Extra options such as `--epaper` go in `PI_ZERO_DEMO_ARGS` in the same env
+file. With `--epaper`, raise `RestartSec` in the unit to 180 or more: the panel
+refreshes at every start, and its datasheet asks for 180 s between refreshes.
+The ticket also goes to the journal: `journalctl --user -u pi-zero-demo -f`.
 
 ## Troubleshooting
 
-**No camera.** Check the ribbon cable, run `rpicam-hello`, and confirm the camera
-is enabled in `raspi-config`. `rpicam-vid` must be on `PATH`. Running
-`v4l2-ctl --list-devices` should list both `unicam` and `bcm2835-codec`; if it
-does not, the sensor is not being detected at all and no amount of userspace
-configuration will help.
+**No camera.** Check the ribbon, run `rpicam-hello`, and check that the camera
+is enabled in `raspi-config`. `v4l2-ctl --list-devices` should list `unicam`.
+If it does not, the sensor is not detected at all.
 
-**"could not display QR on e-paper".** SPI is off, the HAT is not connected, or
-permissions on `/dev/spidev0.0` or `/dev/gpiochip0` are wrong. The stream keeps
-publishing regardless.
+**"could not display QR on e-paper".** SPI is off, the HAT is not connected,
+or the permissions on `/dev/spidev0.0` or `/dev/gpiochip0` are wrong. The
+broadcast keeps publishing.
 
-**Nothing on HDMI with `--fb`.** Try `fb-demo` first: it removes the network and
-the camera from the picture and leaves only DRM/KMS and GLES2.
+**Nothing on HDMI with `--fb`.** Run `fb-demo` first. It leaves out the network
+and the camera, and tests only DRM/KMS and GLES2.
 
-**The stream stutters or drops.** The Pi Zero's WiFi produces GSO errors
-(`sendmsg: Input/output error`) that iroh recovers from on its own, so those log
-lines by themselves are not the cause. Pinning a nearby relay usually helps more
-than anything else:
-
-```sh
-IROH_RELAY=https://euc1-1.relay.n0.iroh-canary.iroh.link./ ./pi-zero-demo publish
-```
-
-Turning off WiFi power saving with `sudo iw wlan0 set power_save off` removes
-another source of latency spikes.
+**The stream stutters.** The Pi Zero's WiFi logs GSO errors
+(`sendmsg: Input/output error`) that iroh recovers from, so those lines alone
+are not the cause. Turning off WiFi power saving with
+`sudo iw wlan0 set power_save off` removes one source of latency spikes.
 
 **SSH is slow to connect.** Set `UseDNS no` in `/etc/ssh/sshd_config` on the Pi
-and restart sshd, and set `GSSAPIAuthentication no` for the host in your
+and restart sshd. Set `GSSAPIAuthentication no` for the host in your
 `~/.ssh/config`.
 
-## E-paper precautions
+## E-paper driver
 
-`epaper.rs` and `epd_v4.rs` are a hand-written driver for the V4 panel
-(SSD1680), because `epd-waveshare` covers V2 and V3 only and the V4 refresh
-command differs. The code respects every
-[Waveshare precaution](https://www.waveshare.com/wiki/2.13inch_Touch_e-Paper_HAT_Manual#Precautions):
+`epaper.rs` and `epd_v4.rs` are a driver for the V4 panel (SSD1680). The
+`epd-waveshare` crate covers V2 and V3 only, and the V4 refresh command
+differs. The driver follows the
+[Waveshare precautions](https://www.waveshare.com/wiki/2.13inch_Touch_e-Paper_HAT_Manual#Precautions):
 
-| # | Precaution | Status |
+| # | Precaution | How the driver handles it |
 |---|-----------|--------|
 | 1 | No continuous partial refresh without a full one | Full refresh only, never partial |
 | 2 | Do not leave powered on when not refreshing | `epd.sleep()` after every update |
-| 3 | Minimum 180 s between refreshes, at least one per 24 h | Periodic refresh every 12 h |
-| 4 | Re-initialise after sleep before sending data | Every operation creates a fresh `Epd2in13` |
-| 5 | Border waveform register | Not applicable: the defaults suit a QR code |
+| 3 | Minimum 180 s between refreshes, at least one per 24 h | Refresh every 12 h |
+| 4 | Re-initialise after sleep before sending data | Every operation creates a fresh `Epd2in13V4` |
+| 5 | Border waveform register | The defaults suit a QR code |
 | 6 | Image size must match the display | The buffer is exactly 122x250 |
-| 7 | Working voltage and level conversion | Handled by the HAT hardware from V2.1 |
+| 7 | Working voltage and level conversion | Handled by the HAT from V2.1 |
 | 8 | The FPC cable is fragile | Physical handling |
 | 9 | The screen is fragile | Physical handling |
 | 10 | Clear before long-term storage | Cleared to white on Ctrl-C |

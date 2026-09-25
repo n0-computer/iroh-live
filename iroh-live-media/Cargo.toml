@@ -1,0 +1,62 @@
+[package]
+name = "iroh-live-media"
+version = "0.1.0"
+edition = "2024"
+description = "publish and subscribe plumbing over moq-video and moq-audio"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1.12.1"
+derive_more = { version = "2.1.1", features = ["display", "debug", "eq", "deref"] }
+hang = { workspace = true }
+moq-audio = { workspace = true }
+moq-mux = { workspace = true }
+moq-net = { workspace = true }
+# The software H.264 fallback. The workspace takes moq-video without defaults,
+# which would drop it.
+moq-video = { workspace = true, features = ["openh264"] }
+n0-error = "1"
+n0-future = "0.3.2"
+tokio = { version = "1.53.1", features = ["sync", "time"] }
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+
+# Reads audio files. moq-audio has no container reader.
+symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["full"] }
+
+[features]
+default = ["capture", "sound-server"]
+# Camera, screen and microphone capture. Off for a build that only publishes
+# frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
+capture = ["moq-video/capture", "moq-audio/capture"]
+# Speaker output.
+playback = ["moq-audio/playback"]
+# Audio devices through PipeWire or PulseAudio instead of ALSA. Checked at
+# runtime, so a build with it still runs without either. On by default because
+# ALSA lists a card's subdevices many times over and names our streams after
+# its plugin.
+sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
+# Echo cancellation: removes the output mix from the microphone.
+aec = ["capture", "playback", "moq-audio/aec"]
+# Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.
+pipewire = ["capture", "moq-video/pipewire"]
+# GPU rendering of decoded frames, through wgpu.
+render = ["moq-video/render"]
+# The Raspberry Pi camera through `rpicam-vid`, which must be on PATH. Linux
+# only.
+rpicam = ["tokio/process", "tokio/io-util"]
+# Intel and AMD hardware H.264 encoding.
+vaapi = ["moq-video/vaapi"]
+# NVIDIA hardware encoding and decoding. Off by default to keep CUDA out.
+nvidia = ["moq-video/nvidia"]
+# The V4L2 H.264 encoder and decoder of ARM SoCs such as the Raspberry Pi.
+# Off by default: elsewhere the backend fails to open on every start.
+v4l2 = ["moq-video/v4l2"]
