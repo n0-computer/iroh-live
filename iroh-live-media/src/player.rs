@@ -484,7 +484,7 @@ impl Player {
             video: self.stats.video.get(),
             audio: self.stats.audio.get(),
             latency: self.clock.latency(),
-            network: self.broadcast.network().map(|signals| signals.0.sample()),
+            network: self.broadcast.network().map(|signals| signals()),
         }
     }
 

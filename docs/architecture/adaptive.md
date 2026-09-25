@@ -10,15 +10,14 @@ The decoder swap is the supervisor's job, described in
 
 ## Signals
 
-`iroh_live_media::NetworkSignals` is the transport-agnostic input: a trait with
-one method, `sample()`, that returns a `NetworkSample`. A closure that returns
-a sample implements it.
+The transport-agnostic input is a function that returns a `NetworkSample`,
+attached with `RemoteBroadcast::with_network`.
 
 ```rust
 pub struct NetworkSample {
     pub rtt: Option<Duration>,
     pub min_rtt: Option<Duration>,     // smallest recent rtt on this path
-    pub loss: Option<f32>,             // 0.0..=1.0
+    pub loss: Option<f64>,             // 0.0..=1.0
     pub delivery: Option<Bitrate>,     // the publisher's estimate of the path
     pub path_generation: u64,          // bumped when the path changes
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use iroh_live_media::{Bitrate, NetworkSample, NetworkSignals};
+use iroh_live_media::{Bitrate, NetworkSample};
 use iroh_moq::{LinkId, Subscription};
 
 /// Returns the network signals of the link serving `subscription`.
@@ -10,7 +10,9 @@ use iroh_moq::{LinkId, Subscription};
 /// Each sample reads whichever link serves the subscription at that moment.
 /// The path generation also counts changes of the serving link, so
 /// adaptation never compares one link's history with another's.
-pub(crate) fn signals(subscription: Subscription) -> impl NetworkSignals {
+pub(crate) fn signals(
+    subscription: Subscription,
+) -> impl Fn() -> NetworkSample + Send + Sync + 'static {
     // The serving link and path generation at the last sample, and how often
     // that pair changed.
     let last = Mutex::new((None::<(LinkId, u64)>, 0));

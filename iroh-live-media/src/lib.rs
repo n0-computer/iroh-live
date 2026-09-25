@@ -8,7 +8,8 @@
 //!
 //! Nothing here depends on iroh. A transport publishes a [`LocalBroadcast`]
 //! through `moq_net::Consume`, builds a [`RemoteBroadcast`] from what it
-//! subscribed to, and attaches its view of the link as [`NetworkSignals`].
+//! subscribed to, and attaches its view of the link with
+//! [`RemoteBroadcast::with_network`].
 //!
 //! # Example
 //!
@@ -62,7 +63,7 @@
 //!
 //! A [`RemoteBroadcast`] that follows a route table looks for another route
 //! when its broadcast ends, so it closes about three seconds after the
-//! publisher went. A player adapts only to the [`NetworkSignals`] a transport
+//! publisher went. A player adapts only to the network signals a transport
 //! attached. Without them, [`RenditionMode::Auto`] plays the best rendition
 //! its limits allow.
 //!
@@ -108,7 +109,7 @@ pub use self::{
     catalog::Catalog,
     error::{Closed, Error, SwitchError},
     frames::VideoFrames,
-    network::{NetworkSample, NetworkSignals},
+    network::NetworkSample,
     output::AudioOutput,
     player::{Adaptation, Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
     publish::{

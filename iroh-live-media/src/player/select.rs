@@ -318,7 +318,7 @@ pub(crate) async fn run(inputs: Inputs) {
             max_age: latency.max,
         };
 
-        let sample = network.as_ref().map(|network| network.0.sample());
+        let sample = network.as_ref().map(|network| network());
         let on_screen = status.get().rendition;
         let nothing_playing = on_screen.is_none();
         // The bound weighs its target against what this selector last asked
