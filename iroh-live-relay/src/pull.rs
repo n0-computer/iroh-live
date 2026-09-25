@@ -13,7 +13,6 @@
 
 use std::{
     collections::HashMap,
-    fmt,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -36,9 +35,10 @@ const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Shared state for pull operations.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct PullState {
     moq: Moq,
+    #[debug(skip)]
     cluster: Cluster,
     linger: Duration,
     /// Live or dialing pulls, by local broadcast name.
@@ -50,16 +50,6 @@ pub struct PullState {
     ///
     /// The last one to go closes the session with the publisher.
     publishers: Arc<Mutex<HashMap<EndpointId, usize>>>,
-}
-
-impl fmt::Debug for PullState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PullState")
-            .field("endpoint", &self.moq.endpoint().id())
-            .field("linger", &self.linger)
-            .field("pulls", &self.pulls.lock().map(|pulls| pulls.len()).ok())
-            .finish_non_exhaustive()
-    }
 }
 
 /// How far a pull's dial has got.

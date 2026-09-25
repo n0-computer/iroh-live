@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    fmt,
     sync::{Arc, Mutex},
 };
 
@@ -42,7 +41,7 @@ pub enum Reach {
 }
 
 /// How a [`Moq`] node runs.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, derive_more::Debug)]
 pub struct MoqConfig {
     /// How incoming sessions are admitted.
     pub admission: Admission,
@@ -54,6 +53,7 @@ pub struct MoqConfig {
     /// A grant's publish patterns decide which paths the peer may put into the
     /// route table. Let each peer publish only under paths that name it, or
     /// one peer can stand in for another.
+    #[debug("{}", grant.is_some())]
     pub grant: Option<GrantFn>,
     /// A route table to share with another server, instead of the node's own.
     ///
@@ -62,17 +62,8 @@ pub struct MoqConfig {
     /// peers announce to this node, including broadcasts they offered to this
     /// node alone. Share a table only with a server that serves no more widely
     /// than this node's peers expect.
+    #[debug("{}", origin.is_some())]
     pub origin: Option<origin::Producer>,
-}
-
-impl fmt::Debug for MoqConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MoqConfig")
-            .field("admission", &self.admission)
-            .field("grant", &self.grant.is_some())
-            .field("origin", &self.origin.as_ref().map(|origin| origin.hop()))
-            .finish()
-    }
 }
 
 /// A MoQ node on an iroh endpoint.
@@ -105,27 +96,18 @@ impl fmt::Debug for MoqConfig {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
+#[debug("Moq({}, hop {})", shared.id.fmt_short(), shared.table.hop())]
 pub struct Moq {
     pub(crate) shared: Arc<Shared>,
     /// Aborts the node's tasks when the last handle drops.
     pub(crate) tasks: Arc<Tasks>,
 }
 
-impl fmt::Debug for Moq {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Moq")
-            .field("id", &self.shared.id.fmt_short().to_string())
-            .field("hop", &self.shared.hop)
-            .finish_non_exhaustive()
-    }
-}
-
 /// What every handle of a node shares.
 pub(crate) struct Shared {
     pub(crate) endpoint: Endpoint,
     pub(crate) id: EndpointId,
-    pub(crate) hop: moq_net::Hop,
     pub(crate) admission: Admission,
     grant: Option<GrantFn>,
     /// The route table.
@@ -170,13 +152,11 @@ impl Moq {
                 (table, Some(AbortOnDropHandle::new(task)))
             }
         };
-        let hop = table.hop();
         let (actor_tx, actor_rx) = mpsc::channel(16);
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         let shared = Arc::new(Shared {
             endpoint,
             id,
-            hop,
             admission: config.admission,
             grant: config.grant,
             table,
@@ -188,7 +168,7 @@ impl Moq {
             shutdown: CancellationToken::new(),
             done: Watchable::new(false),
         });
-        info!(id = %id.fmt_short(), %hop, admission = ?config.admission, "moq node started");
+        info!(id = %id.fmt_short(), hop = %shared.table.hop(), admission = ?config.admission, "moq node started");
         let actor = Actor::new(shared.clone());
         let actor_task = tokio::spawn(
             actor

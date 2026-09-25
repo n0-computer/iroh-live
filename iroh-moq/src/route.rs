@@ -8,7 +8,6 @@
 
 use std::{
     collections::HashMap,
-    fmt,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
@@ -83,7 +82,8 @@ pub struct RouteInfo {
 /// between two relays. A move between a direct and a relay route ends the
 /// broadcast instead, and [`closed`](Self::closed) asks the table again then.
 /// Cheap to clone.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
+#[debug("Subscription({}, link {:?})", inner.path, inner.link)]
 pub struct Subscription {
     inner: Arc<SubscriptionInner>,
 }
@@ -95,15 +95,6 @@ struct SubscriptionInner {
     /// The link this subscription is pinned to, if it does not follow the table.
     link: Option<u64>,
     shared: Weak<Shared>,
-}
-
-impl fmt::Debug for Subscription {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Subscription")
-            .field("path", &self.inner.path)
-            .field("link", &self.inner.link)
-            .finish_non_exhaustive()
-    }
 }
 
 impl Subscription {

@@ -1,7 +1,6 @@
 //! Admission: who gets a session, and what it may do once it has one.
 
 use std::{
-    fmt,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -211,21 +210,17 @@ impl ConnectOptions {
 /// Yielded by [`Moq::accept`](crate::Moq::accept) under
 /// [`Admission::Manual`](crate::Admission::Manual). Dropping it without
 /// admitting rejects the session.
+#[derive(derive_more::Debug)]
 pub struct Incoming {
+    #[debug("{}", remote.fmt_short())]
     pub(crate) remote: EndpointId,
     pub(crate) request: SessionRequest,
+    #[debug(skip)]
     pub(crate) connection: Connection,
+    #[debug(skip)]
     pub(crate) handshake: Handshake<Transport>,
+    #[debug(skip)]
     pub(crate) shared: Weak<Shared>,
-}
-
-impl fmt::Debug for Incoming {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Incoming")
-            .field("remote", &self.remote.fmt_short().to_string())
-            .field("request", &self.request)
-            .finish_non_exhaustive()
-    }
 }
 
 impl Incoming {

@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    fmt,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -67,7 +66,8 @@ pub(crate) fn driver_now() -> std::time::Instant {
 ///
 /// Cheap to clone. Dropping the handles does not close it: it ends when either
 /// side closes it, the connection fails, or the node shuts down.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
+#[debug("Session({}, link {}, dialed {})", inner.remote.fmt_short(), inner.link, inner.dialed)]
 pub struct Session {
     pub(crate) inner: Arc<SessionInner>,
 }
@@ -85,16 +85,6 @@ pub(crate) struct SessionInner {
     pub(crate) shared: Weak<Shared>,
     /// Set by [`Session::close`], so a connect right after it dials anew.
     pub(crate) closing: AtomicBool,
-}
-
-impl fmt::Debug for Session {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Session")
-            .field("remote", &self.inner.remote.fmt_short().to_string())
-            .field("link", &self.inner.link)
-            .field("dialed", &self.inner.dialed)
-            .finish_non_exhaustive()
-    }
 }
 
 impl PartialEq for Session {
