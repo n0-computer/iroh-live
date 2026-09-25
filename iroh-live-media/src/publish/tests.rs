@@ -152,3 +152,27 @@ async fn closing_finishes_the_broadcast() {
         Err(Error::Closed { .. })
     ));
 }
+
+/// A pushed audio source ends its slot once every sender is dropped.
+#[tokio::test]
+async fn a_pushed_audio_source_ends_when_its_senders_go() {
+    let format = crate::AudioFormat {
+        sample_rate: 48_000,
+        layout: audio::Layout::Mono,
+    };
+    let (sender, source) = AudioSource::push(format);
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_audio(source, AudioEncoding::voice())
+        .expect("valid");
+    audio_becomes(&broadcast, SlotState::Running).await;
+    let silence = bytes::Bytes::from(vec![0u8; 960 * 4]);
+    sender
+        .push(audio::Frame::new(
+            silence,
+            moq_net::Timestamp::from_micros(0).expect("0"),
+        ))
+        .expect("the source is open");
+    drop(sender);
+    audio_becomes(&broadcast, SlotState::Ended).await;
+}

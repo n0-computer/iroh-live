@@ -46,10 +46,16 @@ pub(super) async fn run(
                 Err(err) => Err(err),
             }
         }
-        AudioKind::Pcm { format, fanout } => {
-            let _wanted = source.want();
-            pcm(&job, &stats, *format, fanout.subscribe(), &encoding, &stop).await
-        }
+        AudioKind::Pcm { format, fanout } => match fanout.upgrade() {
+            Some(fanout) => {
+                let frames = fanout.subscribe();
+                drop(fanout);
+                let _wanted = source.want();
+                pcm(&job, &stats, *format, frames, &encoding, &stop).await
+            }
+            // The producer is already gone.
+            None => Ok(()),
+        },
     };
     if stop.is_cancelled() {
         return;

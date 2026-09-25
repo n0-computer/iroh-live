@@ -20,7 +20,7 @@ use tracing::{debug, warn};
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
 pub use self::sender::FrameSender;
-use self::sender::{Demand, DemandGuard, PcmFanout};
+use self::sender::{Demand, DemandGuard, WeakPcmFanout};
 #[cfg(feature = "capture")]
 use crate::output::AudioOutput;
 use crate::{
@@ -401,9 +401,12 @@ pub(crate) enum AudioKind {
     #[cfg(feature = "capture")]
     Microphone(MicrophoneConfig),
     /// PCM, fanned out to every broadcast that reads it.
+    ///
+    /// The fan-out is weak, so the source ends when its producer drops the
+    /// sender.
     Pcm {
         format: AudioFormat,
-        fanout: PcmFanout,
+        fanout: WeakPcmFanout,
     },
 }
 
@@ -515,19 +518,22 @@ impl AudioSource {
     pub async fn file(path: impl AsRef<Path>, looping: bool) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
+        let weak = fanout.downgrade();
         let stop = CancellationToken::new();
         // Stops the decode thread if this future is dropped. A looping file
         // would otherwise decode for the rest of the process.
         let abandoned = stop.clone().drop_guard();
         let format = {
-            let fanout = fanout.clone();
             let stop = stop.clone();
             tokio::task::spawn_blocking(move || file::spawn(path, looping, fanout, stop))
                 .await
                 .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
         };
         abandoned.disarm();
-        let kind = AudioKind::Pcm { format, fanout };
+        let kind = AudioKind::Pcm {
+            format,
+            fanout: weak,
+        };
         Ok(Self::new("file", kind, stop, Driver::Thread))
     }
 
@@ -556,9 +562,9 @@ impl AudioSource {
             layout,
         };
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
+        let weak = fanout.downgrade();
         let stop = CancellationToken::new();
         let spawned = {
-            let fanout = fanout.clone();
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name(name.into())
@@ -569,7 +575,10 @@ impl AudioSource {
         }
         Self::new(
             name,
-            AudioKind::Pcm { format, fanout },
+            AudioKind::Pcm {
+                format,
+                fanout: weak,
+            },
             stop,
             Driver::Thread,
         )
@@ -584,14 +593,16 @@ impl AudioSource {
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
-        let sink = Arc::new(fanout.clone());
         let source = Self::new(
             "push",
-            AudioKind::Pcm { format, fanout },
+            AudioKind::Pcm {
+                format,
+                fanout: fanout.downgrade(),
+            },
             stop.clone(),
             Driver::Pushed,
         );
-        let sender = FrameSender::new(sink, stop, source.inner.demand.clone());
+        let sender = FrameSender::new(Arc::new(fanout), stop, source.inner.demand.clone());
         (sender, source)
     }
 
