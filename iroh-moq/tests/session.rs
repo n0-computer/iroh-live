@@ -62,7 +62,7 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
     let addr = bob.endpoint.addr();
     let (first, second) = step(
         "concurrent dials",
-        futures_lite::future::zip(alice.moq.connect(addr.clone()), alice.moq.connect(addr)),
+        n0_future::future::zip(alice.moq.connect(addr.clone()), alice.moq.connect(addr)),
     )
     .await;
     let first = first.expect("failed to dial");

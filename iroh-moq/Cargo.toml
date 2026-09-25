@@ -32,7 +32,5 @@ web-transport-iroh = { workspace = true }
 web-transport-proto = "0.6"
 
 [dev-dependencies]
-futures-lite = "2"
-iroh = { workspace = true, features = ["test-utils"] }
 n0-tracing-test = "0.3.0"
 tokio = { version = "1.53.1", features = ["full"] }

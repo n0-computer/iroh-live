@@ -575,9 +575,7 @@ async fn a_parked_accept_does_not_hold_up_shutdown() {
     .await;
     let mut accepting = Box::pin(alice.moq.accept());
     assert!(
-        futures_lite::future::poll_once(&mut accepting)
-            .await
-            .is_none(),
+        n0_future::future::poll_once(&mut accepting).await.is_none(),
         "nothing to accept yet"
     );
     step("the shutdown ends", alice.moq.shutdown()).await;
