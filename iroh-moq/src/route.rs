@@ -212,6 +212,13 @@ pub(crate) async fn subscribe(
         connected = moq.connect(peer) => connected,
     };
     match connected {
+        // The peer's announcement of the path would never enter the table.
+        Ok(session) if !session.inner.grant.allows_publish(path.as_str()) => {
+            if !relays {
+                return Err(e!(Error::NotGranted { path }));
+            }
+            info!(%path, "the publisher may not publish the path here, waiting for a relay");
+        }
         Ok(session) => {
             // The session ending is the end of the wait unless a relay can
             // still bring the path.

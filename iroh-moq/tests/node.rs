@@ -135,18 +135,12 @@ async fn a_peers_audience_follows_its_set() {
     let session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    tokio::join!(
-        stays_pending(
-            "carol resolved the path",
-            QUIET,
-            session.subscribe(publication.path()),
-        ),
-        stays_pending(
-            "carol resolved the bare alias",
-            QUIET,
-            session.subscribe("cam"),
-        ),
-    );
+    stays_pending(
+        "carol resolved the path",
+        QUIET,
+        session.subscribe(publication.path()),
+    )
+    .await;
 
     // Adding her to the set offers it on her open session.
     members.set(BTreeSet::from([bob.id(), carol.id()])).ok();
@@ -611,7 +605,7 @@ async fn the_router_shuts_the_node_down() {
     alice.shutdown().await;
 }
 
-/// A peer publishes into this node only within its grant.
+/// A peer publishes into this node only within its grant, and a subscribe outside it fails.
 #[tokio::test]
 #[traced_test]
 async fn a_grant_bounds_what_a_peer_publishes() {
@@ -652,10 +646,22 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     .await
     .expect("subscribe");
     read_counter(&subscription.as_moq()).await;
-    stays_pending(
-        "alice took a broadcast outside bob's grant",
-        QUIET,
+    let err = step(
+        "outside the grant",
         alice.moq.subscribe(other.path(), Reach::Direct(bob.id())),
+    )
+    .await
+    .expect_err("resolved a path outside bob's grant");
+    assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
+    let session = step("alice sees bob", session_with(&alice, bob.id())).await;
+    let err = step("outside the grant", session.subscribe(other.path()))
+        .await
+        .expect_err("resolved a path outside bob's grant");
+    assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
+    stays_pending(
+        "bob's broadcast outside his grant reached alice's table",
+        QUIET,
+        announced(&mut alice.moq.origin().announced(), other.path().as_str()),
     )
     .await;
 

@@ -302,8 +302,9 @@ impl Room {
     /// # Errors
     ///
     /// Fails with [`Error::Left`] once the room was left, and with
-    /// [`Error::Transport`] if the member cannot be dialed or its session ends
-    /// before it announces `name`.
+    /// [`Error::Transport`] if the member cannot be dialed, if the node's
+    /// grant does not let the member publish under [`publish_scope`], or if
+    /// the session ends before the member announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
         if self.inner.done.get() {
             return Err(e!(Error::Left));

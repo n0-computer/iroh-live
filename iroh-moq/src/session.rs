@@ -152,10 +152,14 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::NotAnnounced`] if the session ends before the peer
-    /// announces the path.
+    /// Fails with [`Error::NotGranted`] if the session's grant does not let
+    /// the peer publish the path, and [`Error::NotAnnounced`] if the session
+    /// ends before the peer announces it.
     pub async fn subscribe(&self, path: impl AsPath) -> Result<Subscription, Error> {
         let path = path.as_path().to_owned();
+        if !self.inner.grant.allows_publish(path.as_str()) {
+            return Err(e!(Error::NotGranted { path }));
+        }
         let ingest = self.inner.ingest.consume();
         let broadcast = tokio::select! {
             resolved = ingest.routed_broadcast(&path) => match resolved {

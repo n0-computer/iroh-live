@@ -215,9 +215,11 @@ impl Moq {
     ///
     /// Fails with [`Error::NoRoute`] if `reach` allows no way to reach the
     /// path, [`Error::Connect`] if the publisher cannot be dialed and no relay
-    /// can stand in, [`Error::NotAnnounced`] if the publisher's session ends
-    /// before it announces the path, and [`Error::ShutDown`] once the node has
-    /// shut down.
+    /// can stand in, [`Error::NotGranted`] if the publisher's grant does not
+    /// let it publish the path and no relay can stand in,
+    /// [`Error::NotAnnounced`] if the publisher's session ends before it
+    /// announces the path, and [`Error::ShutDown`] once the node has shut
+    /// down.
     pub async fn subscribe(&self, path: impl AsPath, reach: Reach) -> Result<Subscription, Error> {
         route::subscribe(self, path.as_path().to_owned(), reach).await
     }
