@@ -76,15 +76,13 @@ impl RelayConfig {
 }
 
 /// What a node publishes into a relay.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RelayOffer {
     /// Every publication whose audience is [`Everyone`](crate::Audience::Everyone).
     #[default]
     Public,
     /// Nothing: the relay is for consuming only.
     Nothing,
-    /// These publications, whatever their audience.
-    Only(Vec<Publication>),
 }
 
 /// The state of a relay link.
@@ -285,14 +283,6 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         );
         link
     };
-    let guards: Vec<OfferGuard> = match &config.offer {
-        RelayOffer::Only(publications) => publications
-            .iter()
-            .map(|publication| OfferGuard::new(shared, publication.id(), link))
-            .collect(),
-        _ => Vec::new(),
-    };
-
     let ingest = origins.ingest.consume();
     let url = config.url.clone();
     info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
@@ -313,7 +303,6 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         tokio::spawn(
             async move {
                 let _stop = _stop;
-                let _guards = guards;
                 let (ingest, _drivers) = origins.run();
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
                 let _bridge = config.consume.then(|| {
