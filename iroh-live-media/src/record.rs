@@ -143,20 +143,18 @@ impl Recording {
     ///
     /// # Errors
     ///
-    /// Fails on an export or write error. Once a failure has been returned,
-    /// later calls return [`Error::Closed`].
-    ///
-    /// # Panics
-    ///
-    /// Passes on a panic of the recording task.
+    /// Fails on an export or write error, and with [`Error::Broadcast`] if the
+    /// recording task panicked or the runtime stopped it. Once a failure has
+    /// been returned, later calls return [`Error::Closed`].
     pub async fn wait(&mut self) -> Result<u64, Error> {
         if let Some(finished) = self.finished {
             return finished.map_err(|()| n0_error::e!(Error::Closed));
         }
-        // The task is only aborted on drop, so a join error is a panic.
+        // A panic here comes from an upstream exporter on remote media, which
+        // is not the caller's bug, so it is an error, as in `AudioSource::file`.
         let result = (&mut self.task)
             .await
-            .unwrap_or_else(|err| std::panic::resume_unwind(err.into_panic()));
+            .unwrap_or_else(|err| Err(Error::broadcast(err)));
         self.finished = Some(result.as_ref().map(|written| *written).map_err(|_| ()));
         result
     }
