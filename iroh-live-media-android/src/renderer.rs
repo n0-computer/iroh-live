@@ -224,7 +224,12 @@ impl AndroidRenderer {
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW);
         }
 
-        unsafe { gl.clear_color(0.0, 0.0, 0.0, 1.0) };
+        unsafe {
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            // The NV12 planes are packed rows. GL's default alignment of 4
+            // would read past a row whose length is not a multiple of 4.
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        }
 
         tracing::info!(
             renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
@@ -312,8 +317,9 @@ impl AndroidRenderer {
     /// Draws an NV12 frame from CPU memory, letterboxed and rotated.
     ///
     /// The planes are uploaded as textures and converted to RGB in the shader,
-    /// with no CPU color conversion. Strides are in bytes. Call
-    /// [`Self::swap_buffers`] afterwards.
+    /// with no CPU color conversion. Strides are in bytes. A plane shorter than
+    /// the picture is skipped with a warning. Call [`Self::swap_buffers`]
+    /// afterwards.
     ///
     /// # Safety
     ///
@@ -335,7 +341,7 @@ impl AndroidRenderer {
         rotation_degrees: u32,
     ) {
         let uv_h = height.div_ceil(2);
-        let uv_w = width / 2;
+        let uv_w = width.div_ceil(2);
 
         // GLES2 has no GL_UNPACK_ROW_LENGTH. Row padding must be stripped
         // before upload, or it shows up as a green stripe.
@@ -360,6 +366,19 @@ impl AndroidRenderer {
             );
             &uv_stripped
         };
+
+        if y_upload.len() < (width * height) as usize
+            || uv_upload.len() < (uv_row_bytes * uv_h) as usize
+        {
+            tracing::warn!(
+                width,
+                height,
+                y_len = y_upload.len(),
+                uv_len = uv_upload.len(),
+                "NV12 planes are shorter than the picture, skipping the frame"
+            );
+            return;
+        }
 
         unsafe {
             self.gl.active_texture(glow::TEXTURE0);
