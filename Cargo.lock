@@ -4449,6 +4449,7 @@ name = "iroh-live-cli"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "bytesize",
  "clap",
  "data-encoding",
  "dirs",
@@ -4480,6 +4481,7 @@ dependencies = [
 name = "iroh-live-egui"
 version = "0.1.0"
 dependencies = [
+ "bytesize",
  "derive_more",
  "egui",
  "egui-wgpu",

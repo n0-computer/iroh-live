@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use bytesize::ByteSize;
 use iroh_live::{
     BroadcastTicket, Live,
     media::{self, Catalog, RecordConfig, Recording, RemoteBroadcast},
@@ -75,11 +76,7 @@ async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOption
         None => println!("recording, press Ctrl+C to stop"),
     }
     let written = finish(recording, stop_after(options.duration)).await?;
-    println!(
-        "wrote {} to {}",
-        format_bytes(written),
-        options.path.display()
-    );
+    println!("wrote {} to {}", ByteSize(written), options.path.display());
 
     sub.close();
     Ok(())
@@ -177,7 +174,7 @@ pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) ->
             _ = report.tick() => println!(
                 "[{:.0}s] {}",
                 started.elapsed().as_secs_f64(),
-                format_bytes(recording.written())
+                ByteSize(recording.written())
             ),
         }
     };
@@ -232,22 +229,6 @@ async fn stop_after(duration: Option<Duration>) {
             }
         }
         () = deadline => {}
-    }
-}
-
-/// Formats a byte count for the progress line.
-fn format_bytes(bytes: u64) -> String {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a byte count large enough to lose precision is not a figure anyone reads"
-    )]
-    let scaled = bytes as f64;
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1_048_576 {
-        format!("{:.1} KiB", scaled / 1024.0)
-    } else {
-        format!("{:.1} MiB", scaled / 1_048_576.0)
     }
 }
 

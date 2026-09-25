@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytesize::ByteSize;
 use iroh_live_media::{
     FrameTiming, MediaKind, NetworkSample, PlaybackStats, PlayerStatus, PublishStats,
     PublishStatus, RenditionMode, RenditionState, SlotState,
@@ -538,16 +539,6 @@ fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-/// Formats a byte count in megabytes, or kilobytes below one.
-fn format_bytes(bytes: u64) -> String {
-    let bytes = bytes as f64;
-    if bytes >= 1_000_000.0 {
-        format!("{:.1} MB", bytes / 1_000_000.0)
-    } else {
-        format!("{:.0} kB", bytes / 1_000.0)
-    }
-}
-
 /// Returns a line for the state of the slot called `name`.
 fn slot_line(name: &str, state: &SlotState) -> Line {
     match state {
@@ -873,7 +864,7 @@ fn net_publish(stats: &PublishStats) -> Section {
             bps as f64,
             egui::Color32::WHITE,
         ),
-        Line::info(format!("video sent: {}", format_bytes(bytes))),
+        Line::info(format!("video sent: {}", ByteSize(bytes).display().si())),
     ];
     Section::new(StatCategory::Net, vec![format!("out:{total}")], lines)
 }

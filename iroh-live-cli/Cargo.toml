@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 bytes = "1.12.1"
+bytesize = "2.7"
 clap = { version = "4.6", features = ["derive"] }
 data-encoding = "2"
 dirs = "7"
