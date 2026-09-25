@@ -19,7 +19,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
 use crate::{
-    Error, Grant, LinkId, LinkKind, LinkSample, Moq, OfferGuard, Publication,
+    Error, Grant, LinkId, LinkKind, LinkSample, Moq,
     link::{self, LinkState},
     node::{Shared, Tasks},
     route,
@@ -161,22 +161,6 @@ impl RelayLink {
     /// Empty for a link that does not consume.
     pub fn origin(&self) -> origin::Consumer {
         self.inner.ingest.clone()
-    }
-
-    /// Offers `publication` to the relay, whatever its audience.
-    ///
-    /// Dropping the guard withdraws it again.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`Error::ShutDown`] once the node has shut down.
-    pub fn offer(&self, publication: &Publication) -> Result<OfferGuard, Error> {
-        let shared = self
-            .inner
-            .shared
-            .upgrade()
-            .ok_or_else(|| e!(Error::ShutDown))?;
-        Ok(OfferGuard::new(&shared, publication.id(), self.inner.link))
     }
 
     /// Detaches from the relay.

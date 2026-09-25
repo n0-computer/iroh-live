@@ -1,7 +1,7 @@
 //! Publications: a broadcast placed at a path, before an audience.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     sync::{Arc, Weak},
 };
 
@@ -30,11 +30,6 @@ pub enum Audience {
     /// Never offered to relays. The publication holds the set: change it
     /// through a clone of the watchable.
     Peers(n0_watcher::Watchable<BTreeSet<EndpointId>>),
-    /// No one, until offered with [`Session::offer`] or [`RelayLink::offer`].
-    ///
-    /// [`Session::offer`]: crate::Session::offer
-    /// [`RelayLink::offer`]: crate::RelayLink::offer
-    Manual,
 }
 
 /// An [`Audience`] as the registry keeps it: the current set, not its watcher.
@@ -42,7 +37,6 @@ pub enum Audience {
 pub(crate) enum AudienceKind {
     Everyone,
     Peers(BTreeSet<EndpointId>),
-    Manual,
 }
 
 impl From<&Audience> for AudienceKind {
@@ -50,7 +44,6 @@ impl From<&Audience> for AudienceKind {
         match audience {
             Audience::Everyone => Self::Everyone,
             Audience::Peers(peers) => Self::Peers(peers.get()),
-            Audience::Manual => Self::Manual,
         }
     }
 }
@@ -98,10 +91,6 @@ impl Publication {
                 withdrawn,
             }),
         }
-    }
-
-    pub(crate) fn id(&self) -> u64 {
-        self.inner.id
     }
 
     /// Returns the path the broadcast is published at.
@@ -162,52 +151,6 @@ impl Publication {
         if let Some(entry) = removed {
             info!(path = %entry.path, "unpublished");
         }
-    }
-}
-
-/// Keeps a publication offered on one session or relay.
-///
-/// Dropping it withdraws the offer, unless the audience admits the link
-/// anyway.
-#[derive(Debug)]
-#[must_use = "dropping the guard withdraws the offer"]
-pub struct OfferGuard {
-    publication: u64,
-    link: u64,
-    shared: Weak<Shared>,
-}
-
-impl OfferGuard {
-    /// Offers `publication` on `link`, counting the offer.
-    pub(crate) fn new(shared: &Arc<Shared>, publication: u64, link: u64) -> Self {
-        let mut state = shared.state.lock().expect("poisoned");
-        if let Some(entry) = state.publications.get_mut(&publication) {
-            *entry.manual.entry(link).or_default() += 1;
-        }
-        state.reconcile(publication, link);
-        Self {
-            publication,
-            link,
-            shared: Arc::downgrade(shared),
-        }
-    }
-}
-
-impl Drop for OfferGuard {
-    fn drop(&mut self) {
-        let Some(shared) = self.shared.upgrade() else {
-            return;
-        };
-        let mut state = shared.state.lock().expect("poisoned");
-        if let Some(entry) = state.publications.get_mut(&self.publication)
-            && let Some(count) = entry.manual.get_mut(&self.link)
-        {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                entry.manual.remove(&self.link);
-            }
-        }
-        state.reconcile(self.publication, self.link);
     }
 }
 
@@ -300,7 +243,6 @@ pub(crate) fn publish(
             path: path.clone(),
             broadcast,
             audience: AudienceKind::from(&audience),
-            manual: HashMap::new(),
             local,
             peers_task: peers_task(&audience, id, &weak),
             _closed_task: AbortOnDropHandle::new(closed_task),

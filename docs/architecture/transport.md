@@ -72,16 +72,14 @@ several paths at once.
 
 Every session has a publish origin of its own. A publication is offered on a
 session when its audience admits the peer and the session's grant covers its
-path. The audience is `Everyone`, a watched set of `Peers`, or `Manual` with
-`Session::offer`. Offers change while the session runs, as audiences and grants
-change.
+path. The audience is `Everyone` or a watched set of `Peers`. Offers change
+while the session runs, as audiences change.
 
 Withdrawing an offer retracts the path: the peer can no longer resolve it, and
 the broadcast it resolved closes. Tracks it already reads run on, since in
 moq-lite a retraction does not disturb subscriptions in flight. To cut a peer
-off at once, close its session. An offer is withdrawn when its `OfferGuard`
-drops, a `Peers` set shrinks, `set_audience` or `unpublish` is called, or the
-session ends.
+off at once, close its session. An offer is withdrawn when a `Peers` set
+shrinks, `set_audience` or `unpublish` is called, or the session ends.
 
 ## Sessions and admission
 

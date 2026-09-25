@@ -30,8 +30,8 @@ let consumer = subscription.as_moq();
 
 ## Who sees what
 
-A publication's `Audience` says who sees it: `Everyone`, a watched set of
-`Peers`, or `Manual`, offered per session with `Session::offer`. A session's
+A publication's `Audience` says who sees it: `Everyone`, or a watched set of
+`Peers`. A session's
 `Grant` says what the peer may subscribe to and publish, in moq-auth's pattern
 form. `MoqConfig::grant` gives each peer its grant from its endpoint id.
 `iroh-live`, for example, lets a peer publish under `live/<its id>/` only, so

@@ -219,54 +219,6 @@ async fn offers_show_in_the_route_table() {
     carol.shutdown().await;
 }
 
-/// A manual publication needs an offer, and withdrawing it takes the path away.
-#[tokio::test]
-#[traced_test]
-async fn a_manual_audience_needs_an_offer() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
-
-    let broadcast = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Manual)
-        .expect("publish");
-    let bob_session = step("connect", bob.moq.connect(alice.endpoint.addr()))
-        .await
-        .expect("connect");
-    let session = step("alice sees bob", session_with(&alice, bob.id())).await;
-    stays_pending(
-        "bob resolved it before the offer",
-        QUIET,
-        bob_session.subscribe(publication.path()),
-    )
-    .await;
-
-    let offer = session.offer(&publication).expect("offer");
-    let subscription = step(
-        "subscribe",
-        bob.moq
-            .subscribe(publication.path(), Reach::Direct(alice.id())),
-    )
-    .await
-    .expect("subscribe after the offer");
-    reading(&subscription.as_moq()).await;
-    let mut updates = bob.moq.origin().announced();
-    announced(&mut updates, publication.path().as_str()).await;
-
-    drop(offer);
-    retracted(&mut updates, publication.path().as_str()).await;
-    stays_pending(
-        "bob resolved it again after the withdrawal",
-        Duration::from_secs(1),
-        bob_session.subscribe(publication.path()),
-    )
-    .await;
-
-    alice.shutdown().await;
-    bob.shutdown().await;
-}
-
 /// Unpublishing takes the path away from peers, and says so on the publication.
 #[tokio::test]
 #[traced_test]
@@ -329,7 +281,7 @@ async fn closing_a_session_cuts_the_peer_off() {
     bob.shutdown().await;
 }
 
-/// Manual admission checks a token, and the grant bounds what can be offered.
+/// Manual admission checks a token, and the grant bounds what the peer sees.
 #[tokio::test]
 #[traced_test]
 async fn manual_admission_checks_a_token_and_bounds_offers() {
@@ -345,7 +297,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let public = (
         alice
             .moq
-            .publish(alice.path("public"), &public.producer, Audience::Manual)
+            .publish(alice.path("public"), &public.producer, Audience::Everyone)
             .expect("publish"),
         public,
     );
@@ -353,16 +305,15 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let secret = (
         alice
             .moq
-            .publish(alice.path("secret"), &secret.producer, Audience::Manual)
+            .publish(alice.path("secret"), &secret.producer, Audience::Everyone)
             .expect("publish"),
         secret,
     );
 
     let alice_id = alice.id();
     let moq = alice.moq.clone();
-    let public_publication = public.0.clone();
     let accept_loop = AbortOnDropHandle::new(tokio::spawn(async move {
-        let mut offers = Vec::new();
+        let mut sessions = Vec::new();
         while let Some(incoming) = moq.accept().await {
             if incoming.request().query("jwt") != Some("letmein") {
                 incoming.reject(moq_net::Error::Unauthorized);
@@ -373,12 +324,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
                 subscribe: Patterns::from(pattern),
                 publish: Patterns::new(),
             };
-            let session = incoming.admit(grant).await.expect("admit");
-            offers.push(
-                session
-                    .offer(&public_publication)
-                    .expect("within the grant"),
-            );
+            sessions.push(incoming.admit(grant).await.expect("admit"));
         }
     }));
 
@@ -404,16 +350,13 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     read_counter(&subscription.as_moq()).await;
     assert_eq!(session.remote_id(), alice.id());
 
-    // The grant does not cover the secret one, so it cannot be offered.
-    let admitted = alice.moq.sessions().get();
-    let bob_session = admitted
-        .iter()
-        .find(|session| session.remote_id() == bob.id())
-        .expect("bob's session");
-    let err = bob_session
-        .offer(&secret.0)
-        .expect_err("an offer outside the grant");
-    assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
+    // The grant does not cover the secret one, so it is not offered.
+    stays_pending(
+        "bob resolved the secret one",
+        QUIET,
+        session.subscribe(secret.0.path()),
+    )
+    .await;
 
     // Without the token the session is refused. The dialer's half of the
     // handshake completes first, so the refusal arrives as the session closing.
@@ -723,7 +666,11 @@ async fn the_route_table_carries_public_publications_only() {
         .expect("publish");
     let secret = alice
         .moq
-        .publish(alice.path("secret"), &secret.producer, Audience::Manual)
+        .publish(
+            alice.path("secret"),
+            &secret.producer,
+            Audience::Peers(Watchable::new(BTreeSet::new())),
+        )
         .expect("publish");
 
     let served = step(
@@ -734,11 +681,11 @@ async fn the_route_table_carries_public_publications_only() {
     .expect("resolve");
     read_counter(&served).await;
     let unrouted = step(
-        "the table does not serve the manual one",
+        "the table does not serve the private one",
         origin.request_broadcast(secret.path()),
     )
     .await;
-    assert!(unrouted.is_err(), "a manual publication reached the table");
+    assert!(unrouted.is_err(), "a private publication reached the table");
 
     alice.shutdown().await;
 }

@@ -82,7 +82,7 @@ pub use self::{
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},
     preset::MoqPreset,
-    publish::{Audience, OfferGuard, Publication},
+    publish::{Audience, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::{LinkId, LinkKind, Subscription},
     session::Session,

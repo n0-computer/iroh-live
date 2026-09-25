@@ -20,8 +20,7 @@ use tokio::{
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkKind, LinkSample, OfferGuard, Publication, SessionRequest,
-    Subscription,
+    ConnectOptions, Error, Grant, LinkKind, LinkSample, SessionRequest, Subscription,
     link::{self, LinkState},
     node::Shared,
     route,
@@ -116,34 +115,6 @@ impl Session {
     /// Empty for a session this node dialed.
     pub fn request(&self) -> &SessionRequest {
         &self.inner.request
-    }
-
-    /// Offers `publication` on this session, within its grant.
-    ///
-    /// Dropping the guard withdraws the offer, unless the publication's
-    /// audience admits this peer anyway.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`Error::NotGranted`] if the session's grant does not cover
-    /// the publication's path, and with [`Error::ShutDown`] once the node has
-    /// shut down.
-    pub fn offer(&self, publication: &Publication) -> Result<OfferGuard, Error> {
-        let shared = self
-            .inner
-            .shared
-            .upgrade()
-            .ok_or_else(|| e!(Error::ShutDown))?;
-        if !self
-            .inner
-            .grant
-            .allows_subscribe(publication.path().as_str())
-        {
-            return Err(e!(Error::NotGranted {
-                path: publication.path().to_owned()
-            }));
-        }
-        Ok(OfferGuard::new(&shared, publication.id(), self.inner.link))
     }
 
     /// Resolves `path` through this session only.

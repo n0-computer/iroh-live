@@ -1,7 +1,7 @@
 //! The node's bookkeeping: publications, links, and what each link is offered.
 //!
 //! Everything here changes under one lock and never awaits, so `publish`,
-//! `set_audience` and `offer` are synchronous.
+//! `publish` and `set_audience` are synchronous.
 //!
 //! Each link has its own publish origin. Offering a publication on a link adds
 //! a dynamic route at its path there (see [`serve`]).
@@ -38,10 +38,6 @@ pub(crate) struct PubEntry {
     #[debug(skip)]
     pub(crate) broadcast: broadcast::Consumer,
     pub(crate) audience: AudienceKind,
-    /// Explicit offers, per link.
-    ///
-    /// Counted, because several guards can offer one publication on one link.
-    pub(crate) manual: HashMap<u64, usize>,
     /// The publication's route in the node's own route table.
     ///
     /// Only for an `Everyone` publication, so a local subscriber resolves it.
@@ -104,13 +100,6 @@ impl State {
         if self.links.remove(&id).is_none() {
             return;
         }
-        for manual in self
-            .publications
-            .values_mut()
-            .map(|publication| &mut publication.manual)
-        {
-            manual.remove(&id);
-        }
         self.served.retain(|_, link| *link != id);
     }
 
@@ -154,7 +143,7 @@ impl State {
             entry.offers.remove(&publication);
             return;
         };
-        let wanted = visible(publication_entry, link, entry);
+        let wanted = visible(publication_entry, entry);
         let offered = entry.offers.contains_key(&publication);
         if wanted == offered {
             return;
@@ -196,16 +185,13 @@ impl State {
 
 /// Reports whether `publication` belongs on link `id`.
 ///
-/// Offered when the link's grant covers the path and either an explicit offer
-/// names the link or the audience admits it. Relays see `Everyone`
+/// Offered when the link's grant covers the path and the audience admits
+/// the link. Relays see `Everyone`
 /// publications only when their configuration offers public ones, and never a
 /// `Peers` one, which a relay would forward to anyone.
-fn visible(publication: &PubEntry, id: u64, link: &LinkEntry) -> bool {
+fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
     if !link.grant.allows_subscribe(publication.path.as_str()) {
         return false;
-    }
-    if publication.manual.get(&id).is_some_and(|count| *count > 0) {
-        return true;
     }
     match (&publication.audience, link.kind) {
         (AudienceKind::Everyone, LinkKind::Direct) => true,

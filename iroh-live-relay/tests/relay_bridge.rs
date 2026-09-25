@@ -1022,7 +1022,6 @@ async fn a_relay_gets_public_publications_only() {
     let (endpoint, live) = relay_node(false).await;
     let (public, _public) = counter("data");
     let (peers, _peers) = counter("data");
-    let (manual, _manual) = counter("data");
     let members = Watchable::new(BTreeSet::from([relay.iroh_id]));
     let public = live
         .moq()
@@ -1035,10 +1034,6 @@ async fn a_relay_gets_public_publications_only() {
             &peers,
             Audience::Peers(members.clone()),
         )
-        .expect("publish");
-    let manual = live
-        .moq()
-        .publish(live.ticket("manual").path(), &manual, Audience::Manual)
         .expect("publish");
 
     let sub_origin = moq_tokio::origin::spawn();
@@ -1058,13 +1053,10 @@ async fn a_relay_gets_public_publications_only() {
 
     let _public_link = attached(&live, &relay, RelayOffer::Public).await;
     announced_at(&sub_origin, public.path().as_str()).await;
-    for private in [&peers, &manual] {
-        assert!(
-            !routed_soon(&sub_origin, private.path().as_str()).await,
-            "{} reached the relay",
-            private.path()
-        );
-    }
+    assert!(
+        !routed_soon(&sub_origin, peers.path().as_str()).await,
+        "a Peers publication reached the relay"
+    );
 
     live.shutdown().await;
     drop(endpoint);
