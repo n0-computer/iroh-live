@@ -38,8 +38,7 @@ with one clickable section per `StatCategory`. `show_playback` shows a
 `Player`'s stats and timeline, and `show_publish` shows a `LocalBroadcast`'s
 stats. Clicking a section opens a detail panel with sparklines.
 
-## Features
+## wgpu
 
-`wgpu-render` is on by default and enables the video views and
-`create_egui_wgpu_config`. The crate has no direct `wgpu` dependency. Use the
-re-exported `iroh_live_egui::wgpu` so your `wgpu` types match the renderer's.
+The crate has no direct `wgpu` dependency. Use the re-exported
+`iroh_live_egui::wgpu` so your `wgpu` types match the renderer's.

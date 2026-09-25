@@ -1,9 +1,8 @@
 //! Video views for egui, on top of [`iroh_live_media`].
 //!
 //! The views draw decoded frames through the `wgpu` renderer in
-//! `iroh_live_media`. They need the `wgpu-render` feature, which is on by
-//! default, and an `egui_wgpu::RenderState`. A view without a render state
-//! shows a black placeholder.
+//! `iroh_live_media`. They need an [`egui_wgpu::RenderState`]. A view without
+//! one shows a black placeholder.
 //!
 //! This draws a player's video:
 //!
@@ -24,21 +23,16 @@
 //!
 //! The main items are:
 //!
-//! - `VideoView` draws a `VideoFrames` stream and wakes the window when a
+//! - [`VideoView`] draws a [`VideoFrames`] stream and wakes the window when a
 //!   frame arrives.
-//! - `FrameView` draws frames you hand it.
-//! - `create_egui_wgpu_config` builds the `wgpu` setup for eframe, with
+//! - [`FrameView`] draws frames you hand it.
+//! - [`create_egui_wgpu_config`] builds the `wgpu` setup for eframe, with
 //!   DMA-BUF import on Linux.
 //! - [`overlay::DebugOverlay`] paints playback or publish stats over a video.
 
-// The `wgpu-render` items above are in plain backticks: an intra-doc link to
-// them breaks `cargo doc --no-default-features`.
-
 pub mod overlay;
 
-#[cfg(feature = "wgpu-render")]
 pub use egui_wgpu;
-#[cfg(feature = "wgpu-render")]
 use iroh_live_media::VideoFrames;
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
@@ -57,13 +51,11 @@ pub fn format_bitrate(rate: iroh_live_media::Bitrate) -> String {
 /// [`iroh_live_media::video::render`].
 ///
 /// Use it to name `wgpu` types, so they always match the renderer's version.
-#[cfg(feature = "wgpu-render")]
 pub use iroh_live_media::video::render::wgpu;
 
 /// Renderer that draws decoded frames into an egui texture.
 ///
 /// It is bound to one `wgpu` device and queue.
-#[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 struct EguiVideoRenderer {
     #[debug(skip)]
@@ -74,7 +66,6 @@ struct EguiVideoRenderer {
     texture: Option<(egui::TextureId, (u32, u32))>,
 }
 
-#[cfg(feature = "wgpu-render")]
 impl EguiVideoRenderer {
     /// Creates a renderer bound to `render_state`'s device and queue.
     fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, iroh_live_media::video::Error> {
@@ -118,7 +109,6 @@ impl EguiVideoRenderer {
     }
 }
 
-#[cfg(feature = "wgpu-render")]
 impl Drop for EguiVideoRenderer {
     /// Frees the texture registered with egui.
     ///
@@ -135,7 +125,6 @@ impl Drop for EguiVideoRenderer {
 ///
 /// It shows the last drawn frame, or a black placeholder before the first.
 /// [`VideoView`] builds on it and reads frames from a [`VideoFrames`] stream.
-#[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 pub struct FrameView {
     renderer: Option<EguiVideoRenderer>,
@@ -145,7 +134,6 @@ pub struct FrameView {
     failing: bool,
 }
 
-#[cfg(feature = "wgpu-render")]
 impl FrameView {
     /// Creates a view that draws through `render_state`.
     ///
@@ -207,7 +195,6 @@ impl FrameView {
 ///
 /// It wakes the window when a frame arrives and draws the newest frame on the
 /// next pass.
-#[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
 pub struct VideoView {
     frames: Option<VideoFrames>,
@@ -226,7 +213,6 @@ pub struct VideoView {
 /// show it up to one tick late, and the uneven delay makes a steady stream
 /// judder. The task reads its own clone of `frames`, so it does not take
 /// frames from the drawing pass.
-#[cfg(feature = "wgpu-render")]
 fn wake_on_frame(
     ctx: &egui::Context,
     frames: Option<&VideoFrames>,
@@ -242,7 +228,6 @@ fn wake_on_frame(
     ))
 }
 
-#[cfg(feature = "wgpu-render")]
 impl VideoView {
     /// Creates a view of `frames` that draws through `render_state`.
     ///
@@ -294,7 +279,6 @@ impl VideoView {
 /// Elsewhere, or if Vulkan is not available or excluded by `WGPU_BACKEND`,
 /// egui builds the device and the renderer uploads frames from the CPU. The
 /// device always requests the adapter's own limits.
-#[cfg(feature = "wgpu-render")]
 pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     #[cfg(target_os = "linux")]
     {
@@ -312,7 +296,6 @@ pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
 /// desktop limits, for example eight color attachments. The Raspberry Pi 4
 /// Vulkan driver allows four, so the request fails and eframe exits before a
 /// window opens. Video rendering needs nothing beyond the adapter's limits.
-#[cfg(feature = "wgpu-render")]
 fn device_descriptor(
     adapter: &wgpu::Adapter,
     required_features: wgpu::Features,
@@ -328,7 +311,6 @@ fn device_descriptor(
 /// Returns egui's configuration with the device limits taken from the adapter.
 ///
 /// See [`device_descriptor`] for why.
-#[cfg(feature = "wgpu-render")]
 fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
@@ -342,7 +324,7 @@ fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
 }
 
 /// Builds a Vulkan device, with DMA-BUF import if the adapter supports it.
-#[cfg(all(target_os = "linux", feature = "wgpu-render"))]
+#[cfg(target_os = "linux")]
 fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     // DMA-BUF import needs Vulkan. If `WGPU_BACKEND` asks for another
     // backend, fall back to egui's setup, which reads the same variable.
