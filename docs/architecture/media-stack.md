@@ -59,22 +59,8 @@ renderer for the Pi Zero, which has no Vulkan.
 
 ## Feature flags
 
-`iroh-live-media` defines these features, and `iroh-live` and `iroh-live-cli`
-forward them.
-
-| Feature | Default | What it adds |
-|---|---|---|
-| `capture` | yes | Camera, screen and microphone devices. Pulls V4L2 and ALSA build dependencies on Linux |
-| `sound-server` | yes | Audio devices through PipeWire or PulseAudio instead of ALSA |
-| `playback` | no | Speaker output through `moq_audio::playback` |
-| `aec` | no | Echo cancellation. Implies `capture` and `playback` |
-| `pipewire` | no | Linux screen capture through xdg-desktop-portal. Links `libpipewire-0.3` |
-| `render` | no | The wgpu renderer |
-| `vaapi` | no | Intel and AMD hardware H.264 through VA-API |
-| `nvidia` | no | NVIDIA hardware encode and decode. Off here to keep CUDA out of a default build |
-| `v4l2` | no | The V4L2 memory-to-memory H.264 encoder and decoder of ARM SoCs such as the Raspberry Pi |
-| `rpicam` | no | The `rpicam-vid` sources. Linux only, needs the program on `PATH` |
-
-The generated sources need no feature. `iroh-live` defaults to `capture`,
-`render` and `sound-server`. `iroh-live-cli` always renders and
-defaults to `aec`, `playback` and `sound-server`.
+`iroh-live-media` defines the device and graphics features, and its
+[README](../../iroh-live-media/README.md#feature-flags) lists them.
+`iroh-live` forwards them and defaults to `capture`, `render` and
+`sound-server`. `iroh-live-cli` always renders and defaults to `aec`,
+`playback` and `sound-server`.

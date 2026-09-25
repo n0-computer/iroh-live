@@ -57,8 +57,6 @@ let mut frames = player.video();
   the catalog, for a subscription from a ticket, a room or `Moq::subscribe`.
   The broadcast follows its path through the route table, so a change of route
   is a switch, not an end. Its players adapt to the link that serves it.
-  `RemoteBroadcast::closed()` resolves about three seconds after the publisher
-  ends the broadcast.
 - `CALL` is the broadcast name of the call convention `irl call` and the
   Android demo share.
 - `grant` is the grant a live node gives each peer: subscribe to anything,

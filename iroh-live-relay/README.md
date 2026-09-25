@@ -45,8 +45,8 @@ with a 404 on `ws://localhost:4443/<name>`.
    the name the browser asked for.
 3. The browser reads it through the relay.
 
-Browsers watching the same ticket share one upstream session, which the relay
-closes ten seconds after the last viewer leaves.
+[Peer-to-peer and the relay](../docs/architecture/p2p-relay.md) describes how
+pulls share and end their upstream sessions.
 
 ## Web client
 
@@ -61,6 +61,8 @@ npm ci
 npm run dev    # dev server with hot reload
 npm run build  # bundle for embedding
 ```
+
+After changing the client, rebuild the bundle and then the relay.
 
 ## Configuration
 

@@ -27,24 +27,10 @@ WebTransport listener and an iroh endpoint, so a broadcast that arrives over
 one is reachable from the other. Browsers come in through moq-tokio's server,
 and iroh clients through `IrohSessions` (`src/iroh_sessions.rs`).
 
-It also serves the web client, built with solid-js on `@moq/watch` and
-`@moq/publish` and embedded in the binary with `include_dir`.
-
-`--bind` sets the QUIC address, `[::]:4443` by default, and `--http-bind` the
-HTTP address, which defaults to the address `--bind` bound. The TLS certificate is self-signed
-and generated at startup. `GET /certificate.sha256` returns its fingerprint so a
-browser can pin it. There is no ACME support.
-
-The relay keeps its iroh secret key in `iroh_secret_key` under
-`IROH_LIVE_RELAY_DATA`, or under `iroh-live-relay` in the platform data
-directory. It loads the key with `iroh_live::secret_key_file`, so the relay's
-endpoint id survives a restart.
-
-**There is no authentication.** Anyone may connect and subscribe to every path.
-Publishing is scoped by identity only. An iroh client, whose endpoint id iroh
-authenticated, may publish only at `live/<its id>/...` and
-`rooms/<topic>/<its id>/...`. A browser may publish only at names of one
-segment. Do not run the relay on a public address.
+`IrohSessions` accepts iroh sessions itself, so iroh has authenticated each
+client's endpoint id, and the relay lets a client publish only at paths that
+name it. The [relay README](../../iroh-live-relay/README.md) covers the rest of
+running it: flags, the certificate, the key and the web client.
 
 ## Pull on demand
 
@@ -69,5 +55,5 @@ backoff, and every publication with the `Everyone` audience is offered to it.
 `irl publish --relay <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` this
 way. A relay link consumes by default: it copies every route the relay knows
 into the node's route table. `irl publish` only publishes, so it attaches with
-`consume: false`. See the [browser relay guide](../guide/browser-relay.md) for
-the full workflow.
+`consume: false`. The [browser relay guide](../guide/browser-relay.md) has the
+workflow.

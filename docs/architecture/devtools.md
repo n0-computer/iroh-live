@@ -68,16 +68,10 @@ only while `timeline_open()` is true.
 
 `iroh-live/tests/e2e.rs` runs over a real QUIC connection between two iroh
 endpoints. Every source is generated, so no camera, microphone or speaker is
-needed, but the codecs are real.
-
-- `publish_subscribe_video` checks five frames for a non-zero size and
-  non-decreasing timestamps.
-- `publish_subscribe_audio` plays into `AudioOutput::null()` and waits for the
-  player's stats to count decoded audio.
-- `adaptive_rendition_switching` replaces the network signals with a closure
-  over a made-up `NetworkSample` and checks that the downgrade lands.
-- `changing_the_decoder_backend_rebuilds_it` switches a playing player to the
-  software decoder and checks that the new decoder produces the frames.
+needed, but the codecs are real. It plays video, and audio into
+`AudioOutput::null()`. It drives a rendition switch with made-up network
+samples, changes the decoder of a playing player, and runs the call
+convention's ring, answer and hang-up.
 
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, and prints the figures.

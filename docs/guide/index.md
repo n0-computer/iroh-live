@@ -19,8 +19,8 @@ sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
 
 macOS needs `libtool` and `automake` from Homebrew.
 
-A build with `--no-default-features` needs none of these. It encodes and
-decodes, but it cannot open a device or draw.
+`iroh-live-media` without its default features needs none of these. It
+encodes and decodes, but it cannot open a device or draw.
 
 ## Building
 
@@ -28,10 +28,6 @@ decodes, but it cannot open a device or draw.
 cargo build --workspace                  # default features
 cargo build --workspace --all-features   # every feature, VA-API and NVIDIA included
 ```
-
-The workspace patches the moq crates to the `iroh-live-5` branch of
-`Frando/moq`, which adds one Windows build fix to the released versions.
-`Cargo.lock` pins the revision, so a clean clone builds as is.
 
 ## First stream
 
@@ -105,9 +101,7 @@ opens when the broadcast first has a subscriber, and a failure then shows in
 
 `Live::subscribe` returns once a route to the broadcast is found. The catalog
 arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`
-when it does. After the publisher ends the broadcast,
-`RemoteBroadcast::closed()` resolves about three seconds later, because the
-broadcast first looks for another route.
+when it does.
 
 `iroh-live/examples/publish.rs` is a complete publisher, with a two-rung
 ladder behind `--simulcast`.

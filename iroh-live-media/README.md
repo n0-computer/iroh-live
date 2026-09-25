@@ -59,9 +59,7 @@ owns a playout clock that holds video back by the audio queued at the speaker.
 A transport builds the `RemoteBroadcast`. `from_origin` follows a path in a
 route table and looks it up again when a route change ends the broadcast.
 `from_resolved` does the same, starting from a consumer the caller already
-has. Because of that lookup, `closed()` resolves about three seconds after
-the publisher ends. `RemoteBroadcast::local` reads a `LocalBroadcast`
-in-process.
+has. `RemoteBroadcast::local` reads a `LocalBroadcast` in-process.
 
 `record` writes a broadcast to fragmented MP4 or Matroska without decoding.
 `Recording::stop` takes `&mut self`, so it can share a `select!` with `wait`:
@@ -84,16 +82,16 @@ Audio plays through an `AudioOutput` that the app opens and passes to each
 
 | Feature | Default | What it adds |
 |---|---|---|
-| `capture` | yes | Camera, screen and microphone devices |
-| `sound-server` | yes | Audio devices through PipeWire or PulseAudio |
+| `capture` | yes | Camera, screen and microphone devices. Needs the V4L2 and ALSA headers on Linux |
+| `sound-server` | yes | Audio devices through PipeWire or PulseAudio instead of ALSA |
 | `playback` | no | Speaker output |
 | `aec` | no | Echo cancellation. Implies `capture` and `playback` |
-| `pipewire` | no | Linux screen capture. Links `libpipewire-0.3` |
+| `pipewire` | no | Linux screen capture through xdg-desktop-portal. Links `libpipewire-0.3` |
 | `render` | no | The wgpu renderer |
-| `vaapi` | no | Intel and AMD hardware H.264 encoding |
+| `vaapi` | no | Intel and AMD hardware H.264 through VA-API |
 | `nvidia` | no | NVIDIA hardware encoding and decoding |
-| `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs |
-| `rpicam` | no | The `rpicam-vid` sources. Linux only |
+| `v4l2` | no | The V4L2 memory-to-memory H.264 codecs of ARM SoCs such as the Raspberry Pi |
+| `rpicam` | no | The `rpicam-vid` sources. Linux only, needs the program on `PATH` |
 
 Every codec is always compiled upstream, so there are no codec flags. The test
 pattern and tones need no flag either.

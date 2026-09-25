@@ -8,9 +8,9 @@ This repository holds the layer that joins them.
 
 | Crate | What it is |
 |---|---|
-| `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links and endpoint setup |
+| `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions and relay links |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
-| `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, and the re-exports |
+| `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, endpoint setup, and the re-exports |
 | `iroh-live-media` | Sources, broadcasts and players over moq-video and moq-audio |
 | `iroh-live-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
 | `iroh-live-media-android` | The EGL renderer and JNI handle helpers for Android |
@@ -88,8 +88,8 @@ task, and the supervisor's reader tasks drop their decoders with them.
 
 Continuous state is an `n0_watcher::Watchable`, read through a `Direct<T>`
 watcher that always has a current value and can be awaited for changes. The
-catalog, a broadcast's `PublishStatus`, a player's `PlayerStatus`, the open
-sessions and the routes to a path all work this way. Statistics are snapshots
+catalog, a broadcast's `PublishStatus`, a player's `PlayerStatus` and the open
+sessions all work this way. Statistics are snapshots
 read on demand.
 
 Channels are bounded. Frames between the decoder and the renderer go through

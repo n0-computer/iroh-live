@@ -51,28 +51,13 @@
 //!
 //! # Cancellation safety
 //!
-//! Every public future of this crate and the crates it re-exports. "Safe"
-//! means dropping the future leaves nothing half done that a later call
-//! cannot pick up.
-//!
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
-//! | `VideoSource::capture`, `VideoSource::rpicam`, `EncodedVideoSource::rpicam`, `AudioSource::file` | yes | stops the thread or subprocess and releases the device |
-//! | `AudioSource::microphone` | yes | nothing is open yet |
-//! | `AudioOutput::open`, `AudioOutput::devices` | yes | closes the device, or abandons the query |
-//! | `AudioOutput::switch` | yes | the switch completes, only its result is lost |
 //! | [`EndpointOptions::bind`] | yes | nothing is bound |
-//! | [`Live::subscribe`], `Moq::subscribe`, `Moq::connect`, `Moq::connect_with`, `Session::subscribe`, `Room::subscribe` | yes | abandons the wait; a dial it started continues for other callers |
-//! | `moq::transport::dial`, `moq::transport::accept` | yes | drops the connection being set up |
-//! | `Moq::accept` | yes | a queued session stays queued |
-//! | `Incoming::admit` | yes | rejects the session before the handshake completes, admits it after |
-//! | `Rooms::join` | yes | leaves the topic, publishes nothing |
-//! | every `closed()`, `Publication::withdrawn`, `VideoFrames::next`, every watcher's `updated()` | yes | loses nothing |
-//! | `Player::wait_for_rendition` | yes | the switch continues |
-//! | `Recording::wait`, `Recording::stop` | yes, while the `Recording` is kept | a later `wait` returns the result; dropping the `Recording` stops it without flushing |
-//! | `RelayLink::detach` | yes | the link's task finishes the close |
-//! | [`Live::shutdown`], `Moq::shutdown`, `Room::leave` | no, idempotent | call again to finish |
+//! | [`Live::subscribe`] | yes | abandons the wait; a dial it started continues for other callers |
+//! | [`Live::shutdown`] | no, idempotent | call again to finish |
 //!
+//! [`media`], [`moq`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
 //!
 //! # Features

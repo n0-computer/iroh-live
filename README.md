@@ -45,64 +45,23 @@ All commands and flags are in [docs/cli.md](docs/cli.md).
 
 ## Using iroh-live in Rust
 
-Publish a camera and a microphone:
+The [`iroh-live`](iroh-live) crate is the library: a `Live` node publishes
+broadcasts and plays other nodes' broadcasts, and its player picks a rendition
+from the ladder as the link allows. [Getting started](docs/guide/index.md)
+walks through a publisher and a subscriber, and
+[`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs) is a complete
+publisher.
 
-```rust
-use iroh_live::{
-    EndpointOptions, Live, LocalBroadcast,
-    media::{
-        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
-        video,
-    },
-};
-
-let live = Live::builder(EndpointOptions::default().bind().await?).with_router().spawn();
-let broadcast = LocalBroadcast::new();
-
-let camera = VideoSource::capture(video::capture::Config::default()).await?;
-broadcast.set_video(
-    camera,
-    VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
-)?;
-let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
-broadcast.set_audio(microphone, AudioEncoding::voice())?;
-
-live.publish("hello", &broadcast)?;
-println!("{}", live.ticket("hello"));
-```
-
-Subscribe and read decoded frames:
-
-```rust
-use iroh_live::PlayerConfig;
-
-let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
-let subscription = live.subscribe(&ticket).await?;
-let player = live
-    .remote_broadcast(&subscription)
-    .play(PlayerConfig::default())?;
-
-let mut frames = player.video();
-while let Some(frame) = frames.next().await {
-    // hand `frame` to a renderer
-}
-```
-
-The player picks a rendition from the ladder as the link allows, and switches
-without a blank picture. [`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs)
-is a complete publisher. The guides are in [docs/guide/index.md](docs/guide/index.md).
-
-The workspace patches the moq crates to `Frando/moq@iroh-live-5`: the released
-versions plus one fix for building `moq-video` on Windows with `capture`. On
-other platforms the crates.io releases build as they are. To build for Windows
-downstream, copy the `[patch.crates-io]` block from [Cargo.toml](Cargo.toml).
+The workspace patches the moq crates with one fix for building `moq-video` on
+Windows, and [Cargo.toml](Cargo.toml) says why. To build for Windows
+downstream, copy its `[patch.crates-io]` block.
 
 ## Crates
 
 | Crate | Description |
 |---|---|
-| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, and re-exports of the crates below |
-| [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, grants, and endpoint setup |
+| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and re-exports of the crates below |
+| [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, and grants |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | [`iroh-live-egui`](iroh-live-egui) | egui video views and the debug overlay |
@@ -139,40 +98,15 @@ Details are in [docs/platforms.md](docs/platforms.md).
 cargo build --workspace
 ```
 
-Codecs need no system libraries. Device access and graphics do:
+Codecs need no system libraries. Device access and graphics do, and
+[Getting started](docs/guide/index.md#system-dependencies) lists them.
 
-```sh
-# Debian and Ubuntu
-sudo apt install libasound2-dev libpipewire-0.3-dev libclang-dev \
-                 libegl-dev libgbm-dev libdrm-dev libfontconfig-dev libva-dev nasm
-
-# Arch
-sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
-```
-
-macOS needs `brew install libtool automake`.
-
-### Feature flags
-
-Every codec compiles upstream, so there are no per-codec flags. The flags gate
-devices and graphics. `iroh-live-media` defines them, and `iroh-live` and
-`iroh-live-cli` pass them through.
-
-| Flag | Default in `iroh-live` | What it adds |
-|---|---|---|
-| `capture` | yes | Camera, screen, and microphone capture |
-| `render` | yes | The wgpu renderer |
-| `sound-server` | yes | Audio devices through PipeWire or PulseAudio |
-| `playback` | no | Speaker output |
-| `aec` | no | Echo cancellation. Implies `capture` and `playback` |
-| `pipewire` | no | Linux screen capture. Links `libpipewire-0.3` |
-| `vaapi` | no | Intel and AMD hardware H.264 |
-| `nvidia` | no | NVIDIA hardware encode and decode |
-| `v4l2` | no | The V4L2 hardware H.264 codecs of ARM SoCs |
-| `rpicam` | no | The Raspberry Pi camera through `rpicam-vid`. Linux only |
-
-`iroh-live` also has `rooms`, which re-exports `iroh-live-rooms`, and `auth`.
-`iroh-live-cli` turns on `playback` and `aec` by default.
+Every codec compiles upstream, so there are no per-codec features. The
+features gate devices and graphics. `iroh-live-media` defines them, and its
+[README](iroh-live-media/README.md#feature-flags) lists them. `iroh-live`
+passes them through and turns on `capture`, `render`, and `sound-server` by
+default. `irl` also turns on `playback` and `aec`. `iroh-live` adds `rooms`,
+which re-exports `iroh-live-rooms`.
 
 ### Cross-compiling for aarch64
 

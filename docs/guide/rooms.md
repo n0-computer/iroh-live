@@ -77,8 +77,7 @@ node from its membership for a moment, which cuts off what this node reads. In
 both cases the state stays the same and the tile freezes. So a grid also drops
 every tile whose `RemoteBroadcast::is_closed()` is true, on a timer, and
 subscribes again if the member still lists the name.
-`iroh-live-cli/src/room.rs` does this. A closed broadcast reports it about
-three seconds after it ended.
+`iroh-live-cli/src/room.rs` does this.
 
 Anyone who knows the topic id can join the room and announce itself.
 
