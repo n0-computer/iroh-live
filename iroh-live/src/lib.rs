@@ -107,9 +107,7 @@
 //! `capture`, `render` and `sound-server` are on by default; `playback`,
 //! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
 //! codecs, and forward to [`media`]. `rooms` re-exports `iroh-live-rooms`, and
-//! `auth` enables `Grant::from_claims`. `test-util` exposes the player's
-//! adaptation timers for tests, as `media::test_util`; no application should
-//! enable it.
+//! `auth` enables `Grant::from_claims`.
 
 mod error;
 mod live;

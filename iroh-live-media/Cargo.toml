@@ -17,25 +17,20 @@ hang = { workspace = true }
 moq-audio = { workspace = true }
 moq-mux = { workspace = true }
 moq-net = { workspace = true }
-# OpenH264 is the software fallback every build relies on when no hardware
-# codec opens. moq-video 0.0.26 made it an optional feature (default on), and
-# the workspace takes moq-video without defaults, so it is named here.
+# The software H.264 fallback. The workspace takes moq-video without defaults,
+# which would drop it.
 moq-video = { workspace = true, features = ["openh264"] }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.2"
 n0-watcher = "1"
-serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-serde_with = "3.23.0"
 strum = { version = "0.28", features = ["derive"] }
 throttled-tracing = "0.1.0"
 tokio = { version = "1.53.1", features = ["sync", "time"] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
 
-# The audio file source. moq-audio pulls symphonia only for raw AAC-LC frames
-# off the wire, so it has no container reader we could use instead. No resampler
-# here: the encoder is told the file's own rate and converts once.
+# Reads audio files. moq-audio has no container reader.
 symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav"] }
 
 [dev-dependencies]
@@ -44,45 +39,29 @@ tracing-subscriber = "0.3.23"
 
 [features]
 default = ["capture", "sound-server"]
-# Camera, screen, and microphone capture. Off for a build that only publishes
-# frames it produces itself (a file source, an Android app pushing camera
-# buffers), since the device stack adds V4L2 and ALSA build dependencies on
-# Linux.
+# Camera, screen and microphone capture. Off for a build that only publishes
+# frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-video/capture", "moq-audio/capture"]
-# Speaker output, for anything that plays audio rather than only publishing it.
+# Speaker output.
 playback = ["moq-audio/playback"]
-# Reach devices through the Linux sound server rather than through its ALSA
-# compatibility plugin. cpal prefers PipeWire, then PulseAudio, then ALSA, and
-# each check happens at runtime, so a build with this on still runs where
-# neither is present. On by default because a desktop has one of them and the
-# ALSA view of the same hardware is barely usable: a card's subdevices are
-# listed many times over under one description, and streams appear under the
-# plugin's name instead of ours.
+# Audio devices through PipeWire or PulseAudio instead of ALSA. Checked at
+# runtime, so a build with it still runs without either. On by default because
+# ALSA lists a card's subdevices many times over and names our streams after
+# its plugin.
 sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
-# Acoustic echo cancellation: subtracts the output mix from the microphone, so a
-# handset on speakerphone stops publishing its own audio back.
+# Echo cancellation: removes the output mix from the microphone.
 aec = ["capture", "playback", "moq-audio/aec"]
-# Linux screen capture through xdg-desktop-portal and PipeWire. Links
-# libpipewire-0.3 at build time, so it stays opt-in.
+# Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.
 pipewire = ["capture", "moq-video/pipewire"]
-# GPU rendering of decoded frames. Pulls a graphics stack, so only a build that
-# actually draws video turns it on.
+# GPU rendering of decoded frames, through wgpu.
 render = ["moq-video/render"]
-# Raspberry Pi camera capture by driving `rpicam-vid` and publishing the H.264
-# it already encoded. Linux only, and it needs `rpicam-vid` on PATH at runtime.
+# The Raspberry Pi camera through `rpicam-vid`, which must be on PATH. Linux
+# only.
 rpicam = ["tokio/process", "tokio/io-util"]
 # Intel and AMD hardware H.264 encoding.
 vaapi = ["moq-video/vaapi"]
-# NVIDIA hardware encode and decode. On by default upstream; off here so a
-# default build stays free of the CUDA graph.
+# NVIDIA hardware encoding and decoding. Off by default to keep CUDA out.
 nvidia = ["moq-video/nvidia"]
-# Test knobs: `test_util::Tuning` and `PlayerConfig::with_tuning`, for tests
-# that cannot wait out the player's production adaptation timers. Never for an
-# application.
-test-util = []
-# The V4L2 stateful memory-to-memory H.264 encoder and decoder that most ARM
-# SoCs expose, a Raspberry Pi's VideoCore among them. Both were validated
-# upstream on a Raspberry Pi 4. Off by default because only ARM SoCs have the
-# codec node: elsewhere the backend fails at open, which automatic backend
-# selection then falls through, at the cost of a failed open per start.
+# The V4L2 H.264 encoder and decoder of ARM SoCs such as the Raspberry Pi.
+# Off by default: elsewhere the backend fails to open on every start.
 v4l2 = ["moq-video/v4l2"]

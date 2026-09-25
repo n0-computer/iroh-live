@@ -23,9 +23,8 @@ use std::time::{Duration, Instant};
 use iroh::{Endpoint, endpoint::presets};
 use iroh_live::{BroadcastTicket, Live, Reach, RemoteBroadcast, Subscription, moq::LinkSample};
 use iroh_live_media::{
-    Bitrate, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding, VideoFormat,
-    VideoFrames, VideoRendition, VideoSource,
-    test_util::Tuning,
+    Adaptation, Bitrate, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding,
+    VideoFormat, VideoFrames, VideoRendition, VideoSource,
     video::{Frame, Rate, Size, Surface},
 };
 use n0_tracing_test::traced_test;
@@ -65,13 +64,14 @@ const DOWNGRADE_HOLD: Duration = Duration::from_millis(500);
 /// Only the timers are shortened. The thresholds are left at their defaults,
 /// because those are the part being tested: a test that also moved the loss and
 /// bandwidth limits would be checking arithmetic it had just written.
-fn quick() -> Tuning {
-    let mut tuning = Tuning::default();
-    tuning.downgrade_hold = Duration::from_millis(300);
-    tuning.upgrade_hold = Duration::from_millis(500);
-    tuning.post_downgrade_cooldown = Duration::from_secs(1);
-    tuning.tick = Duration::from_millis(100);
-    tuning
+fn quick() -> Adaptation {
+    Adaptation {
+        downgrade_hold: Duration::from_millis(300),
+        upgrade_hold: Duration::from_millis(500),
+        post_downgrade_cooldown: Duration::from_secs(1),
+        tick: Duration::from_millis(100),
+        ..Adaptation::default()
+    }
 }
 
 /// The loss fraction at which the adaptation steps down, as the player's
@@ -223,7 +223,7 @@ impl Fixture {
         self.play_with(
             renditions,
             RenditionMode::pinned(rendition),
-            Tuning::default(),
+            Adaptation::default(),
         )
         .await
     }
@@ -236,7 +236,7 @@ impl Fixture {
     /// steady: a stable ladder under shortened timers says nothing about the
     /// one a user gets.
     async fn play_auto(&self, renditions: usize) -> Viewer {
-        self.play_with(renditions, RenditionMode::auto(), Tuning::default())
+        self.play_with(renditions, RenditionMode::auto(), Adaptation::default())
             .await
     }
 
@@ -249,13 +249,18 @@ impl Fixture {
             .await
     }
 
-    async fn play_with(&self, renditions: usize, mode: RenditionMode, tuning: Tuning) -> Viewer {
+    async fn play_with(
+        &self,
+        renditions: usize,
+        mode: RenditionMode,
+        adaptation: Adaptation,
+    ) -> Viewer {
         let broadcast = &self.broadcast;
         let mut catalog = broadcast.catalog();
         tokio::time::timeout(TIMEOUT, async {
             while catalog
                 .get()
-                .is_none_or(|catalog| catalog.video().len() < renditions)
+                .is_none_or(|catalog| catalog.video.renditions.len() < renditions)
             {
                 catalog.updated().await.expect("the broadcast is alive");
             }
@@ -264,11 +269,11 @@ impl Fixture {
         .expect("timed out waiting for the video catalog");
 
         let player = broadcast
-            .play(
-                PlayerConfig::default()
-                    .with_rendition(mode)
-                    .with_tuning(tuning),
-            )
+            .play(PlayerConfig {
+                rendition: mode,
+                adaptation,
+                ..PlayerConfig::default()
+            })
             .expect("failed to play");
         let frames = player.video();
         Viewer { player, frames }
@@ -286,7 +291,10 @@ impl Fixture {
 /// measured on this picture, which is why it is drawn here rather than taken
 /// from the test pattern: a different picture encodes to a different rate.
 fn gradient(size: Size) -> VideoSource {
-    let format = VideoFormat::new(size, Rate::new(FRAMERATE, 1).expect("a valid rate"));
+    let format = VideoFormat {
+        size,
+        rate: Rate::new(FRAMERATE, 1).expect("a valid rate"),
+    };
     VideoSource::spawn("gradient", format, move |sender| {
         let started = Instant::now();
         let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
@@ -502,10 +510,15 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
 /// tighter than the ladder suggests before it binds on anything.
 fn ladder() -> Vec<VideoRendition> {
     vec![
-        VideoRendition::new("high").with_bitrate(Bitrate::from_bps(800_000)),
-        VideoRendition::new("low")
-            .with_size(Size::new(320, 240))
-            .with_bitrate(Bitrate::from_bps(200_000)),
+        VideoRendition {
+            bitrate: Some(Bitrate::from_bps(800_000)),
+            ..VideoRendition::new("high")
+        },
+        VideoRendition {
+            size: Some(Size::new(320, 240)),
+            bitrate: Some(Bitrate::from_bps(200_000)),
+            ..VideoRendition::new("low")
+        },
     ]
 }
 
@@ -540,7 +553,10 @@ const RTT_CORROBORATION: Duration = Duration::from_secs(30);
 async fn frames_survive_a_latency_ramp() {
     let fixture = Fixture::start(
         Size::new(320, 240),
-        vec![VideoRendition::new("video").with_bitrate(Bitrate::from_bps(500_000))],
+        vec![VideoRendition {
+            bitrate: Some(Bitrate::from_bps(500_000)),
+            ..VideoRendition::new("video")
+        }],
     )
     .await;
     let mut viewer = fixture.play(1, "video").await;
@@ -610,7 +626,10 @@ async fn frames_survive_a_latency_ramp() {
 async fn frames_survive_a_loss_spike() {
     let fixture = Fixture::start(
         Size::new(320, 240),
-        vec![VideoRendition::new("video").with_bitrate(Bitrate::from_bps(500_000))],
+        vec![VideoRendition {
+            bitrate: Some(Bitrate::from_bps(500_000)),
+            ..VideoRendition::new("video")
+        }],
     )
     .await;
     let mut viewer = fixture.play(1, "video").await;

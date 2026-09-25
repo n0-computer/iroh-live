@@ -1,9 +1,7 @@
 //! The crate's error types.
 //!
-//! One [`Error`] for everything the crate does, with variants by what a caller
-//! can act on rather than by which half of the crate raised them. Sources are
-//! boxed as [`AnyError`], so no dependency's error type is part of ours and a
-//! dependency's major release is not a breaking change here.
+//! One [`Error`] covers everything the crate does. Its variants group failures
+//! by what a caller can act on.
 
 use std::sync::Arc;
 
@@ -11,10 +9,9 @@ use n0_error::{AnyError, stack_error};
 
 /// Errors raised by `iroh-live-media`.
 ///
-/// Stored as `Arc<Error>` where a watched status has to hold one: see
+/// A watched status holds it as `Arc<Error>`, as in
 /// [`SlotState::Failed`](crate::SlotState::Failed).
 #[stack_error(derive, add_meta)]
-#[non_exhaustive]
 pub enum Error {
     /// A capture or playback device would not open, or failed while running.
     #[error("device failed")]
@@ -68,13 +65,12 @@ pub enum Error {
         #[error(source)]
         source: AnyError,
     },
-    /// The broadcast layer underneath, moq-net, refused a track or broadcast
-    /// operation, or reset a track being read.
+    /// The broadcast layer refused an operation or reset a track being read.
     ///
-    /// Whatever carries the broadcast: a closed or reset track shows here the
-    /// same whether the transport is iroh, another one, or none. Failures of
-    /// the transport itself (a peer unreachable, a path unresolved) belong to
-    /// the transport's own error, `iroh_moq::Error` for iroh.
+    /// The error comes from moq-net and looks the same whatever transport
+    /// carries the broadcast. Failures of the transport itself, such as an
+    /// unreachable peer, belong to the transport's own error, `iroh_moq::Error`
+    /// for iroh.
     #[error("broadcast failed")]
     Broadcast {
         /// What moq-net reported.
@@ -102,6 +98,11 @@ impl Error {
     }
 
     /// Creates an [`Error::Device`] from an upstream error.
+    #[cfg(any(
+        feature = "capture",
+        feature = "playback",
+        all(target_os = "linux", feature = "rpicam")
+    ))]
     pub(crate) fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_std(source)
@@ -154,7 +155,6 @@ impl From<std::io::Error> for Error {
 ///
 /// Returned by [`Player::wait_for_rendition`](crate::Player::wait_for_rendition).
 #[stack_error(derive, add_meta)]
-#[non_exhaustive]
 pub enum SwitchError {
     /// A newer request replaced it before it landed.
     #[error("the switch to {rendition} was superseded")]
@@ -168,8 +168,7 @@ pub enum SwitchError {
         /// The rendition the switch was for.
         rendition: String,
     },
-    /// Its decoder did not open, its track ended, or it did not take over in
-    /// time.
+    /// The decoder did not open, the track ended, or the switch timed out.
     #[error("the switch to {rendition} failed")]
     Failed {
         /// The rendition the switch was for.

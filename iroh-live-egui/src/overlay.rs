@@ -1,13 +1,13 @@
-//! Translucent stat bars painted over video.
+//! Translucent stats bars painted over video.
 //!
-//! [`DebugOverlay`] draws a bottom bar of collapsible sections (NET, CAPTURE,
-//! RENDER, AUDIO, TIME) from the snapshots a
-//! [`Player`](iroh_live_media::Player) and a
-//! [`LocalBroadcast`](iroh_live_media::LocalBroadcast) hand out. Those
-//! snapshots carry only current values, so the overlay keeps the short history
-//! behind its sparklines itself; the TIME panel draws the player's own
-//! [`timeline`](iroh_live_media::Player::timeline) of presented frames. [`overlay_bar`] and [`fit_to_aspect`] are the
-//! building blocks for callers that draw their own overlays.
+//! [`DebugOverlay`] draws a bar of clickable sections along the bottom of a
+//! video. It shows the stats of a [`Player`](iroh_live_media::Player) or a
+//! [`LocalBroadcast`](iroh_live_media::LocalBroadcast). The stats carry only
+//! current values, so the overlay keeps its own short history for the
+//! sparklines.
+//!
+//! [`overlay_bar`] and [`fit_to_aspect`] help callers that draw their own
+//! overlays.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -20,13 +20,12 @@ use iroh_live_media::{
     PublishStatus, RenditionMode, RenditionState, SlotState,
 };
 
-/// Height of a single overlay bar (text + padding).
+/// Height of one overlay bar, text and padding included.
 pub const OVERLAY_BAR_H: f32 = 15.0;
 
-/// Paints a translucent overlay bar with monospace text at the given rect.
+/// Paints a translucent bar with monospace text over `rect`.
 ///
-/// Does **not** allocate egui layout space: the bar is painted over existing
-/// content (typically video). Use [`OVERLAY_BAR_H`] for positioning.
+/// Does not allocate layout space. Use [`OVERLAY_BAR_H`] as the bar height.
 pub fn overlay_bar(painter: &egui::Painter, rect: egui::Rect, text: &str) {
     let font = egui::FontId::monospace(11.0);
     let galley = painter.layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
@@ -51,12 +50,10 @@ pub fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
 
 const BG_ALPHA: u8 = 200;
 
-/// How often the overlay records a point for its sparklines. The overlay is
-/// drawn every frame, and recording at the frame rate would make the length of
-/// the visible history depend on how fast the window repaints.
+/// How often the overlay records history, so its length does not depend on the repaint rate.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Points kept per sparkline, twelve seconds at [`SAMPLE_INTERVAL`].
+/// Points kept per series: twelve seconds at [`SAMPLE_INTERVAL`].
 const HISTORY_LEN: usize = 120;
 
 const SPARK_W: f32 = 100.0;
@@ -68,29 +65,21 @@ const COLOR_DIM: egui::Color32 = egui::Color32::from_rgb(160, 160, 160);
 
 /// A section of the overlay's bottom bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum StatCategory {
-    /// The link: round trip, loss and the sender's delivery estimate on a
-    /// player; the encoded video leaving a broadcast on the publish side,
-    /// which has no link figures of its own.
+    /// The player's link figures, or the outgoing video of a broadcast.
     Net,
-    /// The publish side: the source frame rate, each rendition's encoder, the
-    /// audio encoder, and the state of every slot.
+    /// The publisher's source, encoders, and slot states.
     Capture,
-    /// The player's video: rendition mode, rendition, decoder, frame rate and
-    /// decode time, plus the reason the last switch failed, if one did.
+    /// The player's video decoding and rendition switching.
     Render,
     /// The player's audio and the playout latency.
     ///
-    /// The latency sits here rather than under [`Render`](Self::Render)
-    /// because it is the jitter allowance plus the audio queued at the
-    /// speaker, so it moves with the audio buffer shown next to it.
+    /// The latency is here because it includes the audio queued at the
+    /// speaker, so it moves with the audio buffer.
     Audio,
-    /// The player's timeline: how long each picture was held between its
-    /// decoder and the screen, the cadence of pictures and audio, their sync,
-    /// the audio buffer and the round trip, over the last ten seconds.
+    /// The player's timeline of presented frames over the last ten seconds.
     ///
-    /// Scrolling over the panel pauses it and moves back in time; a double
+    /// Scrolling over the panel pauses it and moves back in time. A double
     /// click returns to the live edge.
     Time,
 }
@@ -108,40 +97,34 @@ impl StatCategory {
     }
 }
 
-/// Consolidated debug overlay with a persistent bottom bar and click-to-expand
-/// detail panels.
+/// Debug overlay with a bottom bar and detail panels.
 ///
-/// The bottom bar shows every enabled section that has something to say, each
-/// with a few key figures. Clicking a section toggles a detail panel above the
-/// bar with every figure, and a sparkline next to those that change over time.
+/// The bar shows a short summary for each enabled category. Clicking a section
+/// toggles a panel above the bar with all figures and their sparklines.
 /// Several panels can be open at once.
 #[derive(Debug)]
 pub struct DebugOverlay {
-    /// The enabled categories in bar order, each with whether its panel is
-    /// open.
+    /// Enabled categories in bar order, each with whether its panel is open.
     categories: Vec<(StatCategory, bool)>,
     visible: bool,
     history: History,
-    /// What the transport says about the link, beyond the network signals:
-    /// the path's kind and address, say. The first line joins the summary.
+    /// Transport details such as path kind and address. The first line joins
+    /// the NET summary.
     link: Vec<String>,
-    /// How far back from now the timeline shows, in seconds, while paused.
+    /// Seconds the paused timeline is scrolled back from `timeline_paused`.
     timeline_scroll: f32,
-    /// When the timeline was paused, which its right edge is measured back
-    /// from; `None` while it follows the live edge.
+    /// When the timeline was paused, or `None` while it follows the live edge.
     timeline_paused: Option<Instant>,
-    /// Salts every interactive id this overlay claims, so a grid of tiles does
-    /// not share them. Two overlays under one id are one widget as far as egui
-    /// is concerned, and hovering a section on one tile would light the same
-    /// section on every other.
+    /// Salt for this overlay's interaction ids. Without it, overlays on
+    /// several tiles would share ids and highlight together on hover.
     salt: egui::Id,
 }
 
-/// Hands each [`DebugOverlay`] an id nothing else uses.
+/// Counter that gives each [`DebugOverlay`] its own id salt.
 static OVERLAY_SALT: AtomicU64 = AtomicU64::new(0);
 
 impl DebugOverlay {
-    /// Creates a new overlay with the given categories enabled, all collapsed.
+    /// Creates an overlay with the given categories enabled, all collapsed.
     pub fn new(categories: &[StatCategory]) -> Self {
         Self {
             categories: categories.iter().map(|&cat| (cat, false)).collect(),
@@ -162,26 +145,25 @@ impl DebugOverlay {
         self.visible = !self.visible;
     }
 
-    /// Sets what the transport says about the link, shown in the NET section
-    /// of a player: the media crate knows nothing of paths or addresses, so a
-    /// caller that does hands them in here. The first line also joins the
-    /// section's summary.
+    /// Sets the link details shown in a player's NET section.
+    ///
+    /// The media crate does not know about paths or addresses, so the caller
+    /// passes them in. The first line also joins the section summary.
     pub fn set_link(&mut self, lines: Vec<String>) {
         self.link = lines;
     }
 
-    /// Returns true if any detail panel is currently expanded.
+    /// Returns whether any detail panel is open.
     pub fn any_expanded(&self) -> bool {
         self.categories.iter().any(|&(_, expanded)| expanded)
     }
 
     /// Draws the overlay for a player at the bottom of `video_rect`.
     ///
-    /// Uses the NET, RENDER, AUDIO and TIME categories; CAPTURE has nothing to
-    /// show for a player and is left out of the bar. `timeline` is what
-    /// [`Player::timeline`](iroh_live_media::Player::timeline) returns, read
-    /// only when the TIME panel is open, so a caller can pass an empty slice
-    /// otherwise.
+    /// Shows the enabled NET, RENDER, AUDIO, and TIME categories. `timeline` is
+    /// what [`Player::timeline`](iroh_live_media::Player::timeline) returns.
+    /// It is only read while the TIME panel is open, so you can pass an empty
+    /// slice otherwise. See [`timeline_open`](Self::timeline_open).
     pub fn show_playback(
         &mut self,
         ui: &mut egui::Ui,
@@ -207,17 +189,19 @@ impl DebugOverlay {
         self.draw(ui, video_rect, &sections, timeline);
     }
 
-    /// Reports whether the TIME panel is open, so a caller knows whether to
-    /// read the player's timeline for [`show_playback`](Self::show_playback).
+    /// Returns whether the TIME panel is open.
+    ///
+    /// Use it to decide whether to fetch the player's timeline for
+    /// [`show_playback`](Self::show_playback).
     pub fn timeline_open(&self) -> bool {
         self.visible && self.is_expanded(StatCategory::Time)
     }
 
     /// Draws the overlay for a local broadcast at the bottom of `video_rect`.
     ///
-    /// Uses the CAPTURE and NET categories. NET shows the encoded video the
-    /// broadcast sends, summed over its renditions, since the publish side
-    /// carries no link figures. RENDER and AUDIO are left out of the bar.
+    /// Shows the enabled CAPTURE and NET categories. The publish side has no
+    /// link figures, so NET shows the encoded video bitrate summed over all
+    /// renditions.
     pub fn show_publish(
         &mut self,
         ui: &mut egui::Ui,
@@ -271,7 +255,6 @@ impl DebugOverlay {
                 egui::vec2(video_rect.width(), height),
             );
             self.paint_panel(ui.painter(), rect, &section.lines, &font);
-            // The timeline sits above the TIME section's own figures.
             if section.category == StatCategory::Time {
                 y_cursor -= TIMELINE_H;
                 let rect = egui::Rect::from_min_size(
@@ -300,8 +283,6 @@ impl DebugOverlay {
                 egui::vec2(section_width, OVERLAY_BAR_H),
             );
 
-            // A lighter background and an underline on hover show that the
-            // section can be clicked.
             let id = self.salt.with(("dbg_section", section.category.label()));
             let response = ui.interact(section_rect, id, egui::Sense::click());
             if response.hovered() {
@@ -344,8 +325,8 @@ impl DebugOverlay {
         }
     }
 
-    /// Paints one detail panel, with a sparkline beside every line that has a
-    /// history of at least two points.
+    /// Paints one detail panel, with a sparkline beside each line that has at
+    /// least two points of history.
     fn paint_panel(
         &self,
         painter: &egui::Painter,
@@ -377,7 +358,7 @@ impl DebugOverlay {
     }
 }
 
-/// One section of the bar: its summary, and the lines of its detail panel.
+/// One section of the bar: its summary and its detail panel lines.
 struct Section {
     category: StatCategory,
     summary: String,
@@ -385,7 +366,7 @@ struct Section {
 }
 
 impl Section {
-    /// Creates a section whose summary joins the category label and `parts`.
+    /// Creates a section whose summary is the category label followed by `parts`.
     fn new(category: StatCategory, parts: Vec<String>, lines: Vec<Line>) -> Self {
         let mut summary = category.label().to_string();
         for part in parts {
@@ -404,7 +385,7 @@ impl Section {
 struct Line {
     text: String,
     color: egui::Color32,
-    /// The history key and the current value, for a line with a sparkline.
+    /// History key and current value, for a line with a sparkline.
     plot: Option<(String, f64)>,
 }
 
@@ -433,11 +414,10 @@ impl Line {
     }
 }
 
-/// The overlay's own record of the figures it plots.
+/// The overlay's own history of the figures it plots.
 ///
-/// Every series is a ring of at most [`HISTORY_LEN`] points, and a series not
-/// fed for that many samples is dropped, so the history stays bounded however
-/// many figures come and go.
+/// Each series keeps at most [`HISTORY_LEN`] points. A series that gets no
+/// point for that many samples is dropped, so the history stays bounded.
 #[derive(Debug, Default)]
 struct History {
     last_sample: Option<Instant>,
@@ -448,7 +428,7 @@ struct History {
 #[derive(Debug, Default)]
 struct Series {
     values: VecDeque<f64>,
-    /// When each value was recorded, for the timeline's strips.
+    /// When each value was recorded, for the timeline.
     times: VecDeque<Instant>,
     last_tick: u64,
 }
@@ -576,7 +556,6 @@ fn slot_line(name: &str, state: &SlotState) -> Line {
         SlotState::Running => Line::colored(format!("{name}: running"), COLOR_GOOD),
         SlotState::Failed(err) => Line::colored(format!("{name}: failed: {err}"), COLOR_BAD),
         SlotState::Ended => Line::info(format!("{name}: ended")),
-        other => Line::info(format!("{name}: {other:?}")),
     }
 }
 
@@ -589,12 +568,11 @@ fn mode_text(mode: &RenditionMode) -> String {
         } => format!("auto, up to {height}p"),
         RenditionMode::Pinned(name) => format!("pinned to {name}"),
         RenditionMode::Off => "off".to_string(),
-        other => format!("{other:?}"),
     }
 }
 
-/// Builds the NET section of a player from the last link reading and what
-/// the transport said about the link.
+/// Builds a player's NET section from the last network sample and the link
+/// details.
 fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
     let mut parts: Vec<String> = link.first().cloned().into_iter().collect();
     let mut lines: Vec<Line> = link.iter().map(|line| Line::info(line.clone())).collect();
@@ -633,10 +611,11 @@ fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
         ));
     }
     if let Some(delivery) = net.delivery {
-        parts.push(format!("bw:{delivery}"));
+        let delivery_text = crate::format_bitrate(delivery);
+        parts.push(format!("bw:{delivery_text}"));
         lines.push(Line::metric(
             "net.delivery",
-            format!("delivery estimate: {delivery}"),
+            format!("delivery estimate: {delivery_text}"),
             delivery.as_bps() as f64,
             egui::Color32::WHITE,
         ));
@@ -765,9 +744,9 @@ fn audio_playback(stats: &PlaybackStats, status: &PlayerStatus) -> Section {
 
 /// Builds the CAPTURE section of a broadcast.
 ///
-/// Lists every rendition either snapshot knows of: the status names audio
-/// renditions and idle video ones too, while the stats hold an entry only for
-/// a video rendition whose encoder has started.
+/// Lists every rendition either snapshot knows of. The status also names
+/// audio and idle renditions. The stats only hold video renditions whose
+/// encoder has started.
 fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> Section {
     let mut parts = Vec::new();
     let mut lines = vec![slot_line("video", &status.video)];
@@ -825,7 +804,7 @@ fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> Section {
         fields.extend(encoder.map(str::to_string));
         fields.extend(encode.size.map(|size| size.to_string()));
         fields.extend(encode.fps.map(|fps| format!("{fps:.1}fps")));
-        fields.extend(encode.bitrate.map(|bitrate| bitrate.to_string()));
+        fields.extend(encode.bitrate.map(crate::format_bitrate));
         fields.extend(
             encode
                 .encode_time
@@ -885,12 +864,13 @@ fn net_publish(stats: &PublishStats) -> Section {
             vec![Line::info("no video encoding")],
         );
     }
-    let total = iroh_live_media::Bitrate::from_bps(rates.iter().sum());
+    let bps: u64 = rates.iter().sum();
+    let total = crate::format_bitrate(iroh_live_media::Bitrate::from_bps(bps));
     let lines = vec![
         Line::metric(
             "net.out",
             format!("video out: {total} over {} renditions", rates.len()),
-            total.as_bps() as f64,
+            bps as f64,
             egui::Color32::WHITE,
         ),
         Line::info(format!("video sent: {}", format_bytes(bytes))),
@@ -898,8 +878,7 @@ fn net_publish(stats: &PublishStats) -> Section {
     Section::new(StatCategory::Net, vec![format!("out:{total}")], lines)
 }
 
-/// Returns `later - earlier` in milliseconds, negative when `later` is the
-/// earlier of the two.
+/// Returns `later - earlier` in milliseconds, negative if `later` comes first.
 fn signed_ms(later: Instant, earlier: Instant) -> f32 {
     match later.checked_duration_since(earlier) {
         Some(ahead) => ahead.as_secs_f32() * 1000.0,
@@ -907,11 +886,10 @@ fn signed_ms(later: Instant, earlier: Instant) -> f32 {
     }
 }
 
-/// How much later a picture was presented than the audio with the closest
-/// timestamp, in milliseconds, or `None` without audio.
+/// Returns how many milliseconds after the nearest audio a frame was presented.
 ///
-/// `audio` is sorted by timestamp, so the closest is found by a binary search
-/// rather than a scan per picture.
+/// The nearest audio is the one with the closest timestamp. Returns `None`
+/// without audio. `audio` must be sorted by timestamp.
 fn av_offset(video: &FrameTiming, audio: &[&FrameTiming]) -> Option<f32> {
     let at = audio.partition_point(|timing| timing.pts < video.pts);
     let closest = [at.checked_sub(1), Some(at)]
@@ -922,7 +900,7 @@ fn av_offset(video: &FrameTiming, audio: &[&FrameTiming]) -> Option<f32> {
     Some(signed_ms(video.presented, closest.presented))
 }
 
-/// Grades an A/V offset: within 20 ms nobody sees it, past 40 ms lips drift.
+/// Grades an A/V offset: under 20 ms nobody notices, past 40 ms lips drift.
 fn av_color(offset_ms: f32) -> egui::Color32 {
     match offset_ms.abs() {
         abs if abs < 20.0 => COLOR_DIM,
@@ -975,7 +953,7 @@ fn time_playback(timeline: &[FrameTiming]) -> Section {
 const TIMELINE_WINDOW_SECS: f32 = 10.0;
 
 /// How far back the paused timeline scrolls, in seconds: about as far as the
-/// player's timeline and the overlay's own history reach.
+/// recorded history reaches.
 const TIMELINE_SCROLL_MAX: f32 = 12.0;
 const HOLD_LANE_H: f32 = 36.0;
 const VIDEO_LANE_H: f32 = 20.0;
@@ -984,7 +962,7 @@ const AV_LANE_H: f32 = 20.0;
 const BUFFER_LANE_H: f32 = 26.0;
 const RTT_LANE_H: f32 = 26.0;
 const AXIS_H: f32 = 14.0;
-/// The timeline's height: every lane and the axis, plus a little air.
+/// The timeline's height: every lane and the axis, plus a small margin.
 const TIMELINE_H: f32 = HOLD_LANE_H
     + VIDEO_LANE_H
     + AUDIO_LANE_H
@@ -998,8 +976,10 @@ const COLOR_AUDIO: egui::Color32 = egui::Color32::from_rgb(68, 136, 204);
 const COLOR_RTT: egui::Color32 = egui::Color32::from_rgb(0, 200, 200);
 const COLOR_GRID: egui::Color32 = egui::Color32::from_rgb(50, 50, 50);
 
-/// Grades a picture's gap to the one before against the usual gap: steady is
-/// good, half again as long is a hiccup, twice as long is a dropped frame.
+/// Grades a frame's gap to the previous one against the expected gap.
+///
+/// Under 1.5 times the expected gap is good. Twice as long means a dropped
+/// frame.
 fn gap_color(gap_ms: f32, expected_ms: f32) -> egui::Color32 {
     let ratio = gap_ms / expected_ms.max(1.0);
     if ratio < 1.5 {
@@ -1011,7 +991,7 @@ fn gap_color(gap_ms: f32, expected_ms: f32) -> egui::Color32 {
     }
 }
 
-/// Where a timeline lane is, and how times map onto it.
+/// Maps times onto the timeline's x axis.
 struct Lanes {
     rect: egui::Rect,
     left: Instant,
@@ -1019,18 +999,18 @@ struct Lanes {
 }
 
 impl Lanes {
-    /// The x coordinate of `at`.
+    /// Returns the x coordinate of `at`.
     fn x(&self, at: Instant) -> f32 {
         let px_per_sec = self.rect.width() / TIMELINE_WINDOW_SECS;
         self.rect.min.x + signed_ms(at, self.left) / 1000.0 * px_per_sec
     }
 
-    /// Whether `at` is inside the window.
+    /// Returns whether `at` is inside the visible window.
     fn shows(&self, at: Instant) -> bool {
         at >= self.left && at <= self.right
     }
 
-    /// The lane `height` tall starting `top` below the timeline's top.
+    /// Returns the lane `height` tall that starts `top` below the timeline's top.
     fn lane(&self, top: f32, height: f32) -> egui::Rect {
         egui::Rect::from_min_size(
             egui::pos2(self.rect.min.x, self.rect.min.y + top),
@@ -1040,17 +1020,14 @@ impl Lanes {
 }
 
 impl DebugOverlay {
-    /// Paints the timeline: how long each picture was held, picture and audio
-    /// cadence, A/V offset, the audio buffer and the round trip, over a
-    /// scrollable time axis.
+    /// Paints the timeline panel and handles scrolling through it.
     fn paint_timeline(&mut self, ui: &mut egui::Ui, rect: egui::Rect, timeline: &[FrameTiming]) {
         let painter = ui.painter().clone();
         painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
         let font = egui::FontId::monospace(9.0);
 
         let now = Instant::now();
-        // Paused, the right edge stays where it was put rather than sliding
-        // along with the clock.
+        // While paused, the right edge stays fixed.
         let right = match self.timeline_paused {
             None => now,
             Some(at) => at
@@ -1063,7 +1040,6 @@ impl DebugOverlay {
         let lanes = Lanes { rect, left, right };
         let px_per_sec = rect.width() / TIMELINE_WINDOW_SECS;
 
-        // A grid line every two seconds.
         for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
             let x = rect.min.x + sec as f32 * px_per_sec;
             painter.line_segment(
@@ -1101,7 +1077,7 @@ impl DebugOverlay {
             painter.galley(at, galley, color);
         };
 
-        // How long each picture was held between its decoder and the screen.
+        // HOLD: time from decode to screen, per frame.
         let mut top = 0.0;
         let hold_rect = lanes.lane(top, HOLD_LANE_H);
         label(hold_rect, "HOLD", COLOR_DIM);
@@ -1139,7 +1115,7 @@ impl DebugOverlay {
         }
         top += HOLD_LANE_H;
 
-        // One box per picture, coloured by its gap to the one before.
+        // VIDEO: one box per frame, colored by its gap to the previous frame.
         let video_rect = lanes.lane(top, VIDEO_LANE_H);
         label(video_rect, "VIDEO", COLOR_DIM);
         let mut gaps: Vec<f32> = video
@@ -1171,8 +1147,8 @@ impl DebugOverlay {
         }
         top += VIDEO_LANE_H;
 
-        // One box per block of audio, red when it reached the speaker more
-        // than 100 ms after it decoded.
+        // AUDIO: one box per audio block, red if it played more than 100 ms
+        // after it was decoded.
         let audio_rect = lanes.lane(top, AUDIO_LANE_H);
         label(audio_rect, "AUDIO", COLOR_AUDIO);
         for (index, timing) in audio.iter().enumerate() {
@@ -1193,7 +1169,7 @@ impl DebugOverlay {
         }
         top += AUDIO_LANE_H;
 
-        // How much later each picture was presented than its audio.
+        // A/V: how much later each frame was presented than its audio.
         let av_rect = lanes.lane(top, AV_LANE_H);
         let zero = av_rect.center().y;
         painter.line_segment(
@@ -1228,8 +1204,8 @@ impl DebugOverlay {
         }
         top += AV_LANE_H;
 
-        // The audio queued at the speaker, and the round trip, from the
-        // overlay's own history of the AUDIO and NET figures.
+        // BUFFER and RTT come from the overlay's history of the AUDIO and NET
+        // figures.
         for (key, name, height, color) in [
             ("audio.buffered", "BUFFER", BUFFER_LANE_H, COLOR_AUDIO),
             ("net.rtt", "RTT", RTT_LANE_H, COLOR_RTT),
@@ -1264,7 +1240,7 @@ impl DebugOverlay {
             top += height;
         }
 
-        // The axis, in seconds before the right edge.
+        // Axis labels show seconds before now.
         let axis_y = rect.max.y - AXIS_H;
         let axis_color = egui::Color32::from_rgb(120, 120, 120);
         let offset = now.saturating_duration_since(right).as_secs_f32();
@@ -1285,14 +1261,14 @@ impl DebugOverlay {
             color,
         );
 
-        // Scrolling pauses and moves back in time; a double click resumes.
+        // Scrolling pauses the timeline and moves back in time. A double click
+        // resumes.
         let id = self.salt.with("timeline_scroll");
         let response = ui.interact(rect, id, egui::Sense::click().union(egui::Sense::hover()));
         if response.hovered() {
             let delta = ui.input(|input| input.smooth_scroll_delta.y);
             if delta.abs() > 0.1 {
                 self.timeline_paused.get_or_insert(now);
-                // No further back than the timeline keeps.
                 self.timeline_scroll =
                     (self.timeline_scroll + delta * 0.5).clamp(0.0, TIMELINE_SCROLL_MAX);
             }

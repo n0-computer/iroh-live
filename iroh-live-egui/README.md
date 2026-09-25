@@ -1,58 +1,45 @@
 # iroh-live-egui
 
-An [egui](https://github.com/emilk/egui) video widget over
+[egui](https://github.com/emilk/egui) video views for
 [`iroh-live-media`](../iroh-live-media), plus a debug overlay.
 
-`moq_video::render::Renderer` hands back a `wgpu::Texture` per frame. This crate
-registers that texture with egui and draws it.
+## Video views
 
-## Two levels
-
-`VideoView` reads a `VideoFrames` stream, the one frame type every source of
-pictures hands out: a `Player`'s decoded video, a `VideoSource`'s own frames for
-a local preview, or a scanner's camera. Call `render` in the draw loop and it
-takes the newest frame, uploads it, and returns an `egui::Image` plus the
-frame's timestamp. The stream wakes the window when a frame arrives, so nothing
-has to poll.
+`VideoView` draws a `VideoFrames` stream, such as a `Player`'s video. It wakes
+the window when a frame arrives. Call `render` in the update loop to draw the
+newest frame and get an `egui::Image`:
 
 ```rust
 use iroh_live_egui::VideoView;
 
 let mut view = VideoView::new(&ctx, "remote", player.video(), Some(&render_state));
 
-let (image, timestamp) = view.render(available_size);
-ui.add(image);
+ui.add(view.render());
 ```
 
-`FrameView` is the same upload machinery without a stream, for a caller that
-has a frame in hand. `irl publish --preview` uses it to draw the camera's own
-frames.
+`FrameView` is the lower level. It draws the frames you hand it with
+`render_frame`, and shows a black placeholder before the first one.
 
-Both need a wgpu render state. A view built without one logs a warning and draws
-a placeholder, because upstream exposes pixels only through the wgpu pipeline.
+Both need a `wgpu` render state. Without one, a view only shows the
+placeholder.
 
-## Handing eframe a device
+## wgpu setup
 
-`create_egui_wgpu_config()` builds the `egui_wgpu::WgpuConfiguration` to pass
-eframe. On Linux it selects the Vulkan backend and requests
-`VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter advertises it, which turns on
-zero-copy DMA-BUF import for PipeWire screen capture. eframe would not otherwise
-ask for it. Elsewhere it returns the default.
+`create_egui_wgpu_config()` returns an `egui_wgpu::WgpuConfiguration` to pass
+to eframe. On Linux it builds a Vulkan device with DMA-BUF import when the
+adapter supports it, so screen capture frames reach the GPU without a CPU
+copy. On every platform the device requests only the adapter's own limits.
+egui's defaults are too high for some drivers, such as the Raspberry Pi 4.
 
 ## Debug overlay
 
-`overlay::DebugOverlay` draws a translucent bar along the bottom of a video tile
-with one clickable section per `StatCategory`: `Net`, `Capture`, `Render`,
-`Audio`, and `Time`. `show_playback` draws a `Player`'s `PlaybackStats`,
-`PlayerStatus` and frame timeline,
-and `show_publish` a `LocalBroadcast`'s `PublishStats` and `PublishStatus`.
-Clicking a section opens a detail panel with values and sparklines, whose
-history the overlay keeps itself, bounded to the last few seconds.
+`overlay::DebugOverlay` draws a translucent bar along the bottom of a video,
+with one clickable section per `StatCategory`. `show_playback` shows a
+`Player`'s stats and timeline, and `show_publish` shows a `LocalBroadcast`'s
+stats. Clicking a section opens a detail panel with sparklines.
 
-## Feature flags
+## Features
 
-`wgpu-render` is the only one, and it is on by default. `wgpu` is deliberately
-not a direct dependency: every `wgpu` type this crate names comes from
-`iroh_live_media::video::render::wgpu`, the exact build the renderer links, so a
-texture it hands back can never be a different `wgpu` major than the one this
-crate draws with.
+`wgpu-render` is on by default and enables the video views and
+`create_egui_wgpu_config`. The crate has no direct `wgpu` dependency. Use the
+re-exported `iroh_live_egui::wgpu` so your `wgpu` types match the renderer's.

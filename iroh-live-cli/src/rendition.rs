@@ -344,26 +344,22 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
     rungs
         .iter()
         .map(|rung| {
-            let mut rendition = VideoRendition::new(rung.name.clone())
-                .with_codec(codec)
-                .with_encoder(kind.clone());
-            if let Some(size) = rung.size {
-                rendition = rendition.with_size(size);
-            }
+            let mut rendition = VideoRendition {
+                size: rung.size,
+                codec,
+                encoder: kind.clone(),
+                ..VideoRendition::new(rung.name.clone())
+            };
             if args.keyframe_interval > 0.0 {
-                rendition = rendition
-                    .with_keyframe_interval(Duration::from_secs_f64(args.keyframe_interval));
+                rendition.keyframe_interval = Duration::from_secs_f64(args.keyframe_interval);
             }
-            if let Some(bitrate) = args.bitrate {
-                // Scale by pixel count against the largest rung, so a ladder
-                // does not advertise the same bitrate at every size. A
-                // subscriber compares its estimate against the rendition's
-                // bitrate, and identical figures make the rungs
-                // indistinguishable to it.
-                rendition = rendition.with_bitrate(Bitrate::from_bps(scaled_bitrate(
-                    bitrate, rung.size, largest,
-                )));
-            }
+            // Scale by pixel count against the largest rung, so a ladder does
+            // not advertise the same bitrate at every size. A subscriber
+            // compares its estimate against the rendition's bitrate, and
+            // identical figures make the rungs indistinguishable to it.
+            rendition.bitrate = args
+                .bitrate
+                .map(|bitrate| Bitrate::from_bps(scaled_bitrate(bitrate, rung.size, largest)));
             rendition
         })
         .collect()

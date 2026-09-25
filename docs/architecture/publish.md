@@ -5,8 +5,7 @@ owns the catalog that describes it, a media clock, one video slot, and one audio
 slot. `set_video`, `set_encoded_video`, and `set_audio` fill the slots, each
 replacing whatever the slot held, and `clear_video` and `clear_audio` empty
 them. `LocalBroadcast::new()` creates a broadcast published nowhere yet, which a
-transport reads through `moq_net::Consume`; `from_moq(producer)` wraps a
-producer the transport created. In iroh-live, `Live::publish(name, &broadcast)`
+transport reads through `moq_net::Consume`. In iroh-live, `Live::publish(name, &broadcast)`
 takes the broadcast by reference and publishes what it reads through
 `Consume` at `live/<this node's id>/<name>`, and `Live::ticket(name)` names that
 path for a subscriber.
@@ -29,9 +28,8 @@ broadcasts and previews read it at once.
 `VideoSource` has these constructors:
 
 - `capture(moq_video::capture::Config)` opens a camera, a display, or a window
-  and returns once it produced a frame. It needs the `capture` feature. A busy
-  device is tried again for two seconds, and one that opens and produces nothing
-  within thirty fails.
+  and returns once it produced a frame. It needs the `capture` feature. A device
+  that opens and produces nothing within thirty seconds fails.
 - `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock, and
   a marker that flashes in step with `AudioSource::test_pattern`'s beep.
 - `push(format)` returns a `FrameSender` for frames the application makes. The
@@ -149,16 +147,10 @@ reading Annex-B off its stdout. See [Raspberry Pi](../guide/raspberry-pi.md).
 
 ## Catalog
 
-The catalog is `moq_mux::catalog::Producer<IrohLiveExt>`, which is hang's
-catalog with an extension flattened alongside the `video` and `audio` sections.
-The extension carries the one thing iroh-live uses and hang has no place for: a
-`user` section with the publisher's identity. `set_metadata(Metadata)` writes
-the display name into it, and a subscriber reads it back as
-`Catalog::metadata()`. A base hang consumer ignores the section, so the
-broadcast stays wire-compatible with any hang player. Chat is not part of a
-media broadcast: `irl room` publishes it as a broadcast of its own.
-
-Extra tracks go through `as_moq()`, which returns the underlying producer.
+The catalog is hang's, written by `moq_mux::catalog::Producer` with no
+extension, so any hang player reads it. A room carries display names in its own
+announcements and publishes chat as a broadcast of its own (see
+[rooms](../guide/rooms.md)).
 
 ## Clock
 

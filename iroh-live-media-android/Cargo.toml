@@ -18,9 +18,9 @@ n0-watcher = "1"
 tracing = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
-# The EGL and GL setup in `renderer`, which reports failures as plain messages
-# rather than a typed error the caller could act on.
+# `renderer` reports EGL and GL setup failures as plain messages.
 anyhow = "1"
+derive_more = { version = "2.1.1", features = ["debug"] }
 glow = "0.18"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libc = "0.2"

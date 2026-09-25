@@ -348,10 +348,10 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(CameraSink, Vid
 /// voice straight back. A microphone that will not open is logged and left
 /// out, so the session still carries video.
 async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) {
-    let mut config = MicrophoneConfig::default();
-    if let Some(output) = echo {
-        config = config.with_echo_cancellation(output);
-    }
+    let config = MicrophoneConfig {
+        echo_reference: echo.cloned(),
+        ..MicrophoneConfig::default()
+    };
     let published = AudioSource::microphone(config)
         .await
         .and_then(|source| broadcast.set_audio(source, AudioEncoding::voice()));
@@ -377,7 +377,10 @@ async fn open_output() -> AudioOutput {
 
 /// Starts playing `remote`, with its audio through `output`.
 fn play(remote: &RemoteBroadcast, output: &AudioOutput) -> Result<Player> {
-    Ok(remote.play(PlayerConfig::default().with_audio(output))?)
+    Ok(remote.play(PlayerConfig {
+        audio: Some(output.clone()),
+        ..PlayerConfig::default()
+    })?)
 }
 
 // ── JNI: connect (subscribe only) ───────────────────────────────────
@@ -1175,10 +1178,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
         return 0;
     };
     catalog
-        .video_rendition(&rendition)
-        .and_then(|info| info.size)
-        .map_or(0, |size| {
-            (i64::from(size.width) << 32) | i64::from(size.height)
+        .video
+        .renditions
+        .get(&rendition)
+        .and_then(|config| config.coded_width.zip(config.coded_height))
+        .map_or(0, |(width, height)| {
+            (i64::from(width) << 32) | i64::from(height)
         })
 }
 
@@ -1200,9 +1205,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
         .catalog()
         .map(|catalog| {
             catalog
-                .video()
-                .iter()
-                .map(|info| info.name.as_str())
+                .ranked_video()
+                .into_iter()
+                .map(|(name, _)| name)
                 .collect::<Vec<_>>()
                 .join("\n")
         })

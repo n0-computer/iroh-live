@@ -25,16 +25,15 @@ use crate::{args::PlaybackArgs, backend::DecoderArg};
 /// The player config a window wants: the decoder `--decoder` asked for, the
 /// latency `--latency` names, and audio through `output`.
 pub fn player_config(args: &PlaybackArgs, output: Option<&AudioOutput>) -> PlayerConfig {
-    let mut config = PlayerConfig::default()
-        .with_decoder(args.decoder.into())
-        .with_latency(Latency::range(
-            args.latency.jitter(),
-            args.latency.max_latency(),
-        ));
-    if let Some(output) = output {
-        config = config.with_audio(output);
+    PlayerConfig {
+        decoder: args.decoder.into(),
+        latency: Latency {
+            min: args.latency.jitter(),
+            max: args.latency.max_latency(),
+        },
+        audio: output.cloned(),
+        ..PlayerConfig::default()
     }
-    config
 }
 
 /// Height of the top bar, in points.
@@ -298,7 +297,7 @@ impl LocalPreview {
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
         Self {
-            view: FrameView::new_wgpu(ctx, name, render_state),
+            view: FrameView::new(ctx, name, render_state),
             _wake: wake_on_frame(ctx, frames.as_ref()),
             frames,
             ctx: ctx.clone(),
@@ -413,7 +412,7 @@ impl Link {
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",
-                iroh_live_egui::format_bitrate(bps as f64)
+                iroh_live_egui::format_bitrate(iroh_live::media::Bitrate::from_bps(bps))
             ));
         }
         lines
@@ -486,8 +485,7 @@ impl RemoteView {
     /// Returns the response of whatever was drawn, whose rect is what
     /// [`draw_overlay`](Self::draw_overlay) wants.
     pub fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
-        let (image, _) = self.video.render(size);
-        ui.add_sized(size, image)
+        ui.add_sized(size, self.video.render())
     }
 
     /// Draws the stats overlay over `rect`.
@@ -517,7 +515,7 @@ impl RemoteView {
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
         let status = self.player.status().get();
         let catalog = self.player.broadcast().catalog().get();
-        let Some(catalog) = catalog.filter(|catalog| !catalog.video().is_empty()) else {
+        let Some(catalog) = catalog.filter(|catalog| !catalog.video.renditions.is_empty()) else {
             ui.label("no video");
             return;
         };
@@ -537,11 +535,11 @@ impl RemoteView {
                 if ui.selectable_label(auto, "Auto").clicked() {
                     chosen = Some(RenditionMode::auto());
                 }
-                for info in catalog.video() {
-                    let pinned = status.mode == RenditionMode::pinned(info.name.clone());
-                    let text = info.label.clone().unwrap_or_else(|| info.name.clone());
+                for (name, config) in catalog.ranked_video() {
+                    let pinned = status.mode == RenditionMode::pinned(name);
+                    let text = config.label.as_deref().unwrap_or(name);
                     if ui.selectable_label(pinned, text).clicked() {
-                        chosen = Some(RenditionMode::pinned(info.name.clone()));
+                        chosen = Some(RenditionMode::pinned(name));
                     }
                 }
             });

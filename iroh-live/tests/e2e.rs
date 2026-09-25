@@ -141,7 +141,10 @@ async fn publish_subscribe_audio() {
     let remote = subscribe(&subscriber, &publisher, "av-stream").await;
     let output = AudioOutput::null();
     let player = remote
-        .play(PlayerConfig::default().with_audio(&output))
+        .play(PlayerConfig {
+            audio: Some(output.clone()),
+            ..PlayerConfig::default()
+        })
         .expect("failed to play");
 
     tokio::time::timeout(TIMEOUT, async {
@@ -167,10 +170,15 @@ async fn adaptive_rendition_switching() {
         .set_video(
             VideoSource::test_pattern(Size::new(640, 480), Rate::new(30, 1).expect("valid")),
             VideoEncoding::ladder([
-                VideoRendition::new("high").with_bitrate(Bitrate::from_bps(2_000_000)),
-                VideoRendition::new("low")
-                    .with_size(Size::new(320, 240))
-                    .with_bitrate(Bitrate::from_bps(200_000)),
+                VideoRendition {
+                    bitrate: Some(Bitrate::from_bps(2_000_000)),
+                    ..VideoRendition::new("high")
+                },
+                VideoRendition {
+                    size: Some(Size::new(320, 240)),
+                    bitrate: Some(Bitrate::from_bps(200_000)),
+                    ..VideoRendition::new("low")
+                },
             ]),
         )
         .expect("failed to set video");
@@ -180,13 +188,13 @@ async fn adaptive_rendition_switching() {
 
     // A healthy link to start with, replacing the one the subscription
     // attached: the samples are what the test drives.
-    let sample = Arc::new(Mutex::new(
-        NetworkSample::default()
-            .with_rtt(Duration::from_millis(20))
-            .with_min_rtt(Duration::from_millis(20))
-            .with_loss(0.0)
-            .with_delivery(Bitrate::from_bps(10_000_000)),
-    ));
+    let sample = Arc::new(Mutex::new(NetworkSample {
+        rtt: Some(Duration::from_millis(20)),
+        min_rtt: Some(Duration::from_millis(20)),
+        loss: Some(0.0),
+        delivery: Some(Bitrate::from_bps(10_000_000)),
+        ..NetworkSample::default()
+    }));
     let reader = sample.clone();
     let remote = remote.with_network(move || *reader.lock().expect("poisoned"));
 
@@ -194,7 +202,7 @@ async fn adaptive_rendition_switching() {
     tokio::time::timeout(TIMEOUT, async {
         while catalog
             .get()
-            .is_none_or(|catalog| catalog.video().len() < 2)
+            .is_none_or(|catalog| catalog.video.renditions.len() < 2)
         {
             catalog.updated().await.expect("the broadcast is alive");
         }
@@ -214,11 +222,13 @@ async fn adaptive_rendition_switching() {
         .expect("a healthy link starts at the top");
 
     // A quarter of the packets lost is an emergency drop, not a gradual one.
-    *sample.lock().expect("poisoned") = NetworkSample::default()
-        .with_rtt(Duration::from_millis(200))
-        .with_min_rtt(Duration::from_millis(20))
-        .with_loss(0.25)
-        .with_delivery(Bitrate::from_bps(100_000));
+    *sample.lock().expect("poisoned") = NetworkSample {
+        rtt: Some(Duration::from_millis(200)),
+        min_rtt: Some(Duration::from_millis(20)),
+        loss: Some(0.25),
+        delivery: Some(Bitrate::from_bps(100_000)),
+        ..NetworkSample::default()
+    };
 
     // The replacement encoder only starts once someone subscribes to it, so the
     // switch waits on an openh264 open plus a keyframe. That is fast alone and

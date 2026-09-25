@@ -87,12 +87,14 @@ sets its own cadence, and it is not what you want for live playback with audio.
 use std::time::Duration;
 use iroh_live_media::{Latency, PlayerConfig, video::decode};
 
-PlayerConfig::default()                       // 100 ms hold, 150 ms max, Auto
-    .with_latency(Latency::range(
-        Duration::from_millis(400),
-        Duration::from_millis(600),
-    ))
-    .with_decoder(decode::Kind::Software)
+PlayerConfig {
+    latency: Latency {
+        min: Duration::from_millis(400),
+        max: Duration::from_millis(600),
+    },
+    decoder: decode::Kind::Software,
+    ..PlayerConfig::default() // 100 ms hold, 150 ms max, Auto
+}
 ```
 
 `decoder: decode::Kind` becomes the decoder `kind` on

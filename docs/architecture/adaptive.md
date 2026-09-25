@@ -92,7 +92,7 @@ a queue that never drains.
 
 ## Ranking
 
-`Catalog::video()` lists the renditions largest first, by pixel count, and
+`Catalog::ranked_video()` lists the renditions largest first, by pixel count, and
 between two of the same size by the higher advertised bitrate. The selector
 walks that list from the top, so the first rendition that passes every check
 wins.
@@ -100,8 +100,7 @@ wins.
 Before any network reading counts, the caller's constraints rule renditions
 out: a `max_height` from `RenditionMode::Auto` (a grid tile has no use for
 1080p), a catalog `stalled` flag the publisher set, and any rendition whose
-decoder recently failed. A failed rendition is left alone for 5 s the first
-time, doubling to at most 60 s on repeated failures. When every rendition is
+decoder recently failed, which is left alone for 10 s. When every rendition is
 ruled out, the smallest still plays, so there is always an answer.
 
 ## The decision
@@ -196,12 +195,8 @@ place of the old rule's probe cooldown.
 
 ## Configuration
 
-The thresholds and timers are an internal `Tuning` value, so they can be
-retuned in a patch without an API change. Tests that cannot wait out the
-production timers reach it as `iroh_live_media::test_util::Tuning` behind the
-`test-util` feature (which `iroh-live` forwards) and hand it to one player with
-`PlayerConfig::with_tuning`. No application should enable that feature: the
-fields change without notice.
+The thresholds and timers are `PlayerConfig::adaptation`, an `Adaptation`
+value. Tests that cannot wait out the production timers shorten them there.
 
 | Field | Default | Meaning |
 |---|---|---|

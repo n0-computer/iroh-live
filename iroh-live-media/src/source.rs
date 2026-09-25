@@ -1,21 +1,21 @@
-//! Opened sources: cameras, screens, microphones, files, generators, and
-//! frames the application pushes.
+//! Opened video and audio sources.
 //!
-//! A source is a value that is already open. Opening a device is async and
-//! fails if the device will not open, so "the camera does not exist" is an
-//! error where the application asked for the camera rather than a log line
-//! from a task that retries forever. The device lives on a thread of its own
-//! for its whole life, which is what non-`Send` platform capture objects
-//! require, and only frames cross.
+//! A source is already open when the application gets it. Opening is async
+//! and fails if the device does not open, so a missing camera is an error
+//! where the application asked for it. Each device lives on its own thread,
+//! because platform capture objects are often not `Send`. Only frames cross
+//! threads.
 //!
 //! A source runs while any clone of it exists, including the clone a
-//! [`LocalBroadcast`](crate::LocalBroadcast) holds, and any number of
-//! broadcasts and previews read it at once.
+//! [`LocalBroadcast`](crate::LocalBroadcast) holds. Any number of broadcasts
+//! and previews can read it at once.
 
-use std::{fmt, path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+#[cfg(feature = "capture")]
+use tracing::info;
+use tracing::{debug, warn};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
@@ -38,17 +38,14 @@ mod generator;
 mod rpicam;
 mod sender;
 
-/// How many PCM frames a slow broadcast may fall behind a source before it
-/// loses the oldest.
+/// How many PCM frames a broadcast may lag before it loses the oldest.
 ///
-/// Sources deliver 10 to 60 ms per frame, so this is between one and six
-/// seconds of audio: far more than a broadcast that keeps up ever holds, and a
-/// bound on what one that stalls can make the source keep.
+/// Sources deliver 10 to 60 ms per frame, so this is one to six seconds of
+/// audio.
 const PCM_BUFFER: usize = 100;
 
 /// The size and cadence of a raw video source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct VideoFormat {
     /// The picture size.
     pub size: video::Size,
@@ -56,19 +53,10 @@ pub struct VideoFormat {
     pub rate: video::Rate,
 }
 
-impl VideoFormat {
-    /// Creates a format of `size` pictures at `rate`.
-    pub fn new(size: video::Size, rate: video::Rate) -> Self {
-        Self { size, rate }
-    }
-}
-
 /// The sample rate and speaker layout of a raw audio source.
 ///
-/// Samples are interleaved 32-bit floats in `-1.0..=1.0`, which is what every
-/// encoder takes without a conversion.
+/// Samples are interleaved 32-bit floats in `-1.0..=1.0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct AudioFormat {
     /// Samples per second per channel.
     pub sample_rate: u32,
@@ -76,37 +64,19 @@ pub struct AudioFormat {
     pub layout: audio::Layout,
 }
 
-impl AudioFormat {
-    /// Creates a format of `sample_rate` samples a second in `layout`.
-    pub fn new(sample_rate: u32, layout: audio::Layout) -> Self {
-        Self {
-            sample_rate,
-            layout,
-        }
-    }
-}
-
 /// What keeps a source's producer running, dropped with the last handle.
+#[derive(Debug)]
 enum Driver {
     /// A thread that watches the stop token.
     Thread,
     /// A task on a thread of its own, for capture objects that cannot move.
+    #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
     Local {
         /// Stops the task when dropped.
         _task: crate::local_task::LocalTask,
     },
     /// Nothing: the application pushes.
     Pushed,
-}
-
-impl fmt::Debug for Driver {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Thread => "Thread",
-            Self::Local { .. } => "Local",
-            Self::Pushed => "Pushed",
-        })
-    }
 }
 
 /// The shared half of a [`VideoSource`].
@@ -117,7 +87,7 @@ struct VideoInner {
     format: VideoFormat,
     frames: FrameReader,
     demand: Demand,
-    /// Cancelled when the last handle goes, which stops the producer.
+    /// Cancelled when the last handle drops, to stop the producer.
     stop: CancellationToken,
     _driver: Driver,
 }
@@ -130,8 +100,8 @@ impl Drop for VideoInner {
 
 /// A raw video source running on its own thread.
 ///
-/// Capture runs while any clone exists, including the clone a broadcast holds;
-/// encoding is demand-driven. Cheap to clone.
+/// Capture runs while any clone exists, including the clone a broadcast holds.
+/// Encoding runs only while something wants the frames. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct VideoSource {
     inner: Arc<VideoInner>,
@@ -157,21 +127,18 @@ impl VideoSource {
         }
     }
 
-    /// Opens a camera, display or window, as `config.source` names, and returns
-    /// once it produced a frame.
+    /// Opens the camera, display or window that `config.source` names.
     ///
-    /// The config is upstream's, which already names every backend and device.
-    /// A device that is busy is tried again for a moment, which covers another
-    /// part of the application handing it over; one that opens and then
-    /// produces nothing within half a minute fails, since a screen capture may
-    /// wait that long on a permission dialog but a camera never does.
+    /// Returns once the device has produced a frame. A device that produces
+    /// none within 30 seconds fails. A screen capture may wait that long on a
+    /// permission dialog.
     ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Device`] if the device will not open or produces no
+    /// Returns [`Error::Device`] if the device does not open or produces no
     /// frame.
     #[cfg(feature = "capture")]
     pub async fn capture(config: video::capture::Config) -> Result<Self, Error> {
@@ -190,10 +157,8 @@ impl VideoSource {
 
     /// Returns a generated test pattern at `size` and `rate`.
     ///
-    /// A sweeping bar, a frame counter, a clock and a marker that flashes in
-    /// step with [`AudioSource::test_pattern`]'s beep, drawn on a thread of its
-    /// own at exactly `rate`. See the `generator` module docs for what each
-    /// element makes visible.
+    /// The pattern shows a sweeping bar, a frame counter and a clock. A marker
+    /// flashes in step with the beep of [`AudioSource::test_pattern`].
     pub fn test_pattern(size: video::Size, rate: video::Rate) -> Self {
         let slot = FrameSlot::new();
         let reader = slot.reader();
@@ -203,25 +168,24 @@ impl VideoSource {
             .name("test-pattern".into())
             .spawn(move || generator::run_pattern(size, rate, slot, token));
         if let Err(err) = spawned {
-            // The slot closes with the thread that never started, so the
-            // source reads as ended rather than as silent.
+            // The slot closes with the unstarted thread, so the source reads
+            // as ended.
             warn!(error = %err, "the test pattern thread did not start");
         }
         Self::new(
             "test-pattern",
-            VideoFormat::new(size, rate),
+            VideoFormat { size, rate },
             reader,
             stop,
             Driver::Thread,
         )
     }
 
-    /// Returns a source fed by the returned sender, for frames the application
-    /// makes.
+    /// Returns a source fed by the returned sender.
     ///
     /// The source ends when every sender is dropped. `format` describes what
-    /// the sender will push; the broadcast encodes at the size of the frames
-    /// that actually arrive.
+    /// the sender will push. The broadcast encodes at the size of the frames
+    /// that arrive.
     pub fn push(format: VideoFormat) -> (FrameSender<video::Frame>, Self) {
         let slot = FrameSlot::new();
         let reader = slot.reader();
@@ -231,28 +195,26 @@ impl VideoSource {
         (sender, source)
     }
 
-    /// Runs `run` on a dedicated thread, which feeds frames into the sender it
-    /// is handed.
+    /// Runs `run` on a dedicated thread that feeds the source.
     ///
-    /// `run` may create thread-bound platform objects, which is what this is
-    /// for. The thread has a single-threaded Tokio runtime entered, so `run`
-    /// can drive async code with `tokio::runtime::Handle::current().block_on`.
-    /// The source ends when `run` returns, and fails with its error if it
-    /// returns one. `run` should return once [`FrameSender::push`] reports
-    /// [`Closed`](crate::Closed).
+    /// Use it for thread-bound platform objects. The thread has a
+    /// current-thread Tokio runtime entered, so `run` can drive async code
+    /// with `tokio::runtime::Handle::current().block_on`. The source ends once
+    /// `run` returns and every clone of its sender is dropped. If `run` fails,
+    /// the source fails with its error. `run` should return once
+    /// [`FrameSender::push`] reports [`Closed`](crate::Closed).
     ///
     /// # Errors
     ///
-    /// Fails if the thread cannot be started.
+    /// Fails if the thread or its runtime cannot be started.
     pub fn spawn<F>(name: &str, format: VideoFormat, run: F) -> Result<Self, Error>
     where
         F: FnOnce(FrameSender<video::Frame>) -> Result<(), Error> + Send + 'static,
     {
         let slot = FrameSlot::new();
-        let reader = slot.reader();
         let stop = CancellationToken::new();
-        let demand = Demand::default();
-        let sender = FrameSender::new(Arc::new(slot.clone()), stop.clone(), demand.clone());
+        let source = Self::new(name, format, slot.reader(), stop.clone(), Driver::Thread);
+        let sender = FrameSender::new(Arc::new(slot.clone()), stop, source.inner.demand.clone());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -261,36 +223,22 @@ impl VideoSource {
             .name(name.to_string())
             .spawn(move || {
                 let _entered = runtime.enter();
-                let result = run(sender);
-                match result {
-                    Ok(()) => {
-                        debug!(source = %thread_name, "video source ended");
-                        slot.close(None);
-                    }
+                match run(sender) {
+                    Ok(()) => debug!(source = %thread_name, "video source ended"),
                     Err(err) => {
                         warn!(source = %thread_name, error = %format!("{err:#}"), "video source failed");
-                        slot.close(Some(Arc::new(err)));
+                        slot.fail(Arc::new(err));
                     }
                 }
             })?;
-        Ok(Self {
-            inner: Arc::new(VideoInner {
-                kind: name.to_string(),
-                format,
-                frames: reader,
-                demand,
-                stop,
-                _driver: Driver::Thread,
-            }),
-        })
+        Ok(source)
     }
 
     /// Starts the Raspberry Pi camera through `rpicam-vid`, for raw pictures.
     ///
-    /// The raw geometry is rounded up to one libcamera leaves tightly packed,
-    /// so [`format`](Self::format) may be a few columns wider than asked for.
-    /// For the camera's own hardware H.264, see
-    /// [`EncodedVideoSource::rpicam`].
+    /// The width is rounded up to one libcamera writes without row padding, so
+    /// [`format`](Self::format) may be a few columns wider than asked for. For
+    /// the camera's hardware H.264, use [`EncodedVideoSource::rpicam`].
     ///
     /// Cancellation safe: dropping the future kills the subprocess.
     ///
@@ -314,14 +262,15 @@ impl VideoSource {
 
     /// Returns the captured frames, for a local preview or a QR scanner.
     ///
-    /// Every call returns a handle onto the same stream: reading it costs no
+    /// Every call returns a handle onto the same stream. Reading it does not
     /// encode and does not count as demand.
     pub fn frames(&self) -> VideoFrames {
         self.inner.frames.frames()
     }
 
-    /// Returns what the source actually opened at, which may differ from what
-    /// the config asked for.
+    /// Returns the format the source opened at.
+    ///
+    /// It may differ from what the config asked for.
     pub fn format(&self) -> VideoFormat {
         self.inner.format
     }
@@ -342,29 +291,25 @@ impl VideoSource {
     }
 }
 
-/// Pre-encoded H.264, bypassing the encoders.
+/// A source of pre-encoded H.264 that skips the encoders.
 ///
-/// The stream describes itself: the catalog rendition is derived from its
-/// first SPS, so nothing here has to describe an encode it did not perform.
-/// Not `Clone`, because a byte stream has one reader.
+/// The catalog rendition is derived from the stream's first SPS. Not `Clone`,
+/// because a byte stream has one reader.
+#[derive(derive_more::Debug)]
 pub struct EncodedVideoSource {
+    #[debug(skip)]
     pub(crate) bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
     /// Keeps whatever produces the bytes alive, such as a subprocess.
+    #[debug(skip)]
     pub(crate) _guard: Option<Box<dyn std::any::Any + Send>>,
-}
-
-impl fmt::Debug for EncodedVideoSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EncodedVideoSource").finish_non_exhaustive()
-    }
 }
 
 impl EncodedVideoSource {
     /// Wraps an Annex-B H.264 byte stream.
     ///
-    /// The stream may split anywhere: access units are found by their start
-    /// codes. It should repeat its parameter sets before every keyframe, so a
-    /// subscriber that joins late can start decoding.
+    /// The stream may split anywhere, since access units are found by their
+    /// start codes. It should repeat its parameter sets before every keyframe,
+    /// or a late subscriber cannot start decoding.
     pub fn annex_b(bytes: impl n0_future::Stream<Item = bytes::Bytes> + Send + 'static) -> Self {
         Self {
             bytes: Box::pin(bytes),
@@ -372,14 +317,12 @@ impl EncodedVideoSource {
         }
     }
 
-    /// Starts the Raspberry Pi camera through `rpicam-vid`, for the H.264 its
-    /// hardware encoder produces.
+    /// Starts the Raspberry Pi camera's hardware H.264 through `rpicam-vid`.
     ///
-    /// The cheapest thing a Pi Zero can publish: no raw pipe and no second
-    /// encode. The subprocess is killed when the source is dropped.
+    /// This is the cheapest thing a Pi Zero can publish: no raw pipe and no
+    /// second encode. Dropping the source kills the subprocess.
     ///
-    /// Cancellation safe: the subprocess starts without waiting, so the future
-    /// resolves at its first poll.
+    /// Cancellation safe: the future resolves at its first poll.
     ///
     /// # Errors
     ///
@@ -394,52 +337,35 @@ impl EncodedVideoSource {
     }
 }
 
-/// Which microphone, and which output's signal to cancel from it.
+/// The microphone to open, and the output to cancel from it.
 #[cfg(feature = "capture")]
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct MicrophoneConfig {
     /// The device and its capture settings.
     pub capture: audio::capture::Config,
-    /// The output whose signal is removed from the microphone. `None` disables
-    /// echo cancellation.
+    /// The output whose signal is removed from the microphone.
+    ///
+    /// `None` turns echo cancellation off, and a handset on speakerphone then
+    /// sends its own output back to the peer. Needs the `aec` feature:
+    /// [`AudioSource::microphone`] refuses the config without it. An output
+    /// feeds one canceller at a time, so the canceller is built when a
+    /// broadcast starts publishing the microphone, after the publication it
+    /// replaces has released its own.
     pub echo_reference: Option<AudioOutput>,
 }
 
 #[cfg(feature = "capture")]
 impl MicrophoneConfig {
-    /// Returns the config with a specific microphone, by the id
-    /// `audio::capture::devices` reports.
+    /// Returns the config with the microphone set to `device`.
+    ///
+    /// `device` is an id as `audio::capture::devices` reports it.
     #[must_use]
     pub fn with_device(mut self, device: impl Into<String>) -> Self {
         self.capture.source = audio::capture::Source::Microphone(Some(device.into()));
         self
     }
 
-    /// Returns the config with `output`'s signal cancelled from the
-    /// microphone.
-    ///
-    /// Without it, a handset on speakerphone publishes its own output back to
-    /// the peer, which is the one audio failure everybody notices. Needs the
-    /// `aec` feature: [`AudioSource::microphone`] refuses the config without
-    /// it, rather than opening a microphone that echoes.
-    ///
-    /// The canceller itself is built when a broadcast starts publishing the
-    /// microphone, after the publication it replaces has let go of its own:
-    /// an output feeds one canceller at a time.
-    #[must_use]
-    pub fn with_echo_cancellation(mut self, output: &AudioOutput) -> Self {
-        self.echo_reference = Some(output.clone());
-        self
-    }
-
-    /// Checks what can be checked before a publication starts: that echo
-    /// cancellation, if asked for, is compiled in.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`] if echo cancellation is asked for in a
-    /// build without it.
+    /// Checks that echo cancellation, if asked for, is compiled in.
     pub(crate) fn check(&self) -> Result<(), Error> {
         if self.echo_reference.is_some() && !cfg!(feature = "aec") {
             return Err(Error::invalid(
@@ -452,26 +378,15 @@ impl MicrophoneConfig {
 
     /// Returns the capture config with the echo canceller attached.
     ///
-    /// # Errors
-    ///
-    /// Fails if echo cancellation is asked for in a build without it, or if
-    /// the output already feeds another canceller.
+    /// Fails if echo cancellation is not compiled in, or if the output already
+    /// feeds another canceller.
     pub(crate) fn resolve(&self) -> Result<audio::capture::Config, Error> {
+        self.check()?;
         #[cfg_attr(not(feature = "aec"), allow(unused_mut, reason = "only aec attaches"))]
         let mut capture = self.capture.clone();
+        #[cfg(feature = "aec")]
         if let Some(output) = &self.echo_reference {
-            #[cfg(feature = "aec")]
-            {
-                capture.aec = output.canceller()?;
-            }
-            #[cfg(not(feature = "aec"))]
-            {
-                let _ = output;
-                return Err(Error::invalid(
-                    "echo cancellation needs the `aec` feature, which this build was \
-                     compiled without",
-                ));
-            }
+            capture.aec = output.canceller()?;
         }
         Ok(capture)
     }
@@ -480,12 +395,12 @@ impl MicrophoneConfig {
 /// What an audio source produces.
 #[derive(Debug)]
 pub(crate) enum AudioKind {
-    /// A microphone, opened by the publication that encodes it, which also
-    /// builds its echo canceller.
+    /// A microphone, opened by the publication that encodes it.
+    ///
+    /// The publication also builds its echo canceller.
     #[cfg(feature = "capture")]
     Microphone(MicrophoneConfig),
-    /// PCM from a file, a generator or the application, fanned out to every
-    /// broadcast that reads it.
+    /// PCM, fanned out to every broadcast that reads it.
     Pcm {
         format: AudioFormat,
         fanout: PcmFanout,
@@ -497,8 +412,7 @@ pub(crate) enum AudioKind {
 struct AudioInner {
     kind_name: &'static str,
     kind: AudioKind,
-    /// Held while a broadcast publishes this source, for
-    /// [`FrameSender::demand`].
+    /// Held while a broadcast publishes this source.
     demand: Demand,
     stop: CancellationToken,
     _driver: Driver,
@@ -512,7 +426,7 @@ impl Drop for AudioInner {
 
 /// A raw audio source.
 ///
-/// Runs while any clone exists. Cheap to clone; every broadcast it feeds reads
+/// Runs while any clone exists. Cheap to clone. Every broadcast it feeds reads
 /// all of its samples.
 #[derive(Debug, Clone)]
 pub struct AudioSource {
@@ -520,53 +434,37 @@ pub struct AudioSource {
 }
 
 impl AudioSource {
-    fn pcm(
+    fn new(
         kind_name: &'static str,
-        format: AudioFormat,
-        fanout: PcmFanout,
+        kind: AudioKind,
         stop: CancellationToken,
         driver: Driver,
-    ) -> Self {
-        Self::pcm_with_demand(kind_name, format, fanout, stop, driver, Demand::default())
-    }
-
-    fn pcm_with_demand(
-        kind_name: &'static str,
-        format: AudioFormat,
-        fanout: PcmFanout,
-        stop: CancellationToken,
-        driver: Driver,
-        demand: Demand,
     ) -> Self {
         Self {
             inner: Arc::new(AudioInner {
                 kind_name,
-                kind: AudioKind::Pcm { format, fanout },
-                demand,
+                kind,
+                demand: Demand::default(),
                 stop,
                 _driver: driver,
             }),
         }
     }
 
-    /// Registers a broadcast publishing this source, for
-    /// [`FrameSender::demand`].
+    /// Registers a broadcast that publishes this source.
     pub(crate) fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
 
-    /// Opens a microphone.
+    /// Creates a microphone source.
     ///
-    /// Checks that the device exists and that echo cancellation, if asked
+    /// This checks that the device exists and that echo cancellation, if asked
     /// for, is compiled in. The device itself opens when a broadcast first has
-    /// a listener for it, together with the echo canceller, and a failure then
-    /// shows in the broadcast's [`PublishStatus`](crate::PublishStatus):
-    /// moq-audio opens a microphone only inside the publication that encodes
-    /// it. The same source set on two broadcasts is therefore two captures of
-    /// the device.
+    /// a listener for it. A failure then shows in the broadcast's
+    /// [`PublishStatus`](crate::PublishStatus). The same source set on two
+    /// broadcasts captures the device twice.
     ///
-    /// Cancellation safe: nothing is open until a broadcast wants it, so
-    /// dropping the future only abandons the device query.
+    /// Cancellation safe: dropping the future only abandons the device query.
     ///
     /// # Errors
     ///
@@ -596,35 +494,30 @@ impl AudioSource {
     /// Wraps a microphone config without looking for the device.
     #[cfg(feature = "capture")]
     pub(crate) fn microphone_unchecked(config: MicrophoneConfig) -> Self {
-        Self {
-            inner: Arc::new(AudioInner {
-                kind_name: "microphone",
-                kind: AudioKind::Microphone(config),
-                demand: Demand::default(),
-                stop: CancellationToken::new(),
-                _driver: Driver::Pushed,
-            }),
-        }
+        Self::new(
+            "microphone",
+            AudioKind::Microphone(config),
+            CancellationToken::new(),
+            Driver::Pushed,
+        )
     }
 
-    /// Decodes a file in real time, restarting at the beginning when
-    /// `looping`.
+    /// Decodes an audio file in real time.
     ///
-    /// WAV and MP3 are readable. Opens and validates the codec before
-    /// returning.
+    /// Restarts at the beginning when `looping`. Reads WAV and MP3. The file
+    /// is probed before this returns, and decoding starts on its own thread.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, holds no audio track, or uses a codec
-    /// this build cannot decode.
+    /// Fails if the file cannot be read or holds no audio track.
     pub async fn file(path: impl AsRef<Path>, looping: bool) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
-        // Stops the decode thread if this future is dropped after it started:
-        // a looping file would otherwise decode for the rest of the process.
+        // Stops the decode thread if this future is dropped. A looping file
+        // would otherwise decode for the rest of the process.
         let abandoned = stop.clone().drop_guard();
         let format = {
             let fanout = fanout.clone();
@@ -634,7 +527,8 @@ impl AudioSource {
                 .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
         };
         abandoned.disarm();
-        Ok(Self::pcm("file", format, fanout, stop, Driver::Thread))
+        let kind = AudioKind::Pcm { format, fanout };
+        Ok(Self::new("file", kind, stop, Driver::Thread))
     }
 
     /// Returns a steady sine tone at `hz`, at 48 kHz in `layout`.
@@ -642,12 +536,11 @@ impl AudioSource {
         Self::generated("tone", f64::from(hz), layout, generator::Gate::Continuous)
     }
 
-    /// Returns the beeping tone that goes with
-    /// [`VideoSource::test_pattern`].
+    /// Returns the beeping tone that goes with [`VideoSource::test_pattern`].
     ///
-    /// Beeps for a tenth of a second every second, on the timeline the
-    /// pattern's marker flashes on, so whether the flash and the beep land
-    /// together is something a viewer sees and hears.
+    /// It beeps for a tenth of a second every second, on the timeline the
+    /// pattern's marker flashes on. A viewer can see and hear whether the two
+    /// line up.
     pub fn test_pattern(layout: audio::Layout) -> Self {
         Self::generated("test-pattern", generator::BEEP_HZ, layout, generator::BEEP)
     }
@@ -658,7 +551,10 @@ impl AudioSource {
         layout: audio::Layout,
         gate: generator::Gate,
     ) -> Self {
-        let format = AudioFormat::new(generator::TONE_RATE, layout);
+        let format = AudioFormat {
+            sample_rate: generator::TONE_RATE,
+            layout,
+        };
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
         let spawned = {
@@ -671,11 +567,15 @@ impl AudioSource {
         if let Err(err) = spawned {
             warn!(error = %err, "the tone thread did not start");
         }
-        Self::pcm(name, format, fanout, stop, Driver::Thread)
+        Self::new(
+            name,
+            AudioKind::Pcm { format, fanout },
+            stop,
+            Driver::Thread,
+        )
     }
 
-    /// Returns a source fed by the returned sender, for PCM the application
-    /// makes.
+    /// Returns a source fed by the returned sender.
     ///
     /// Frames carry interleaved 32-bit float samples in `format`. A broadcast
     /// that falls more than a few seconds behind loses the oldest frames and
@@ -684,12 +584,15 @@ impl AudioSource {
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
-        let demand = Demand::default();
-        let sender = FrameSender::new(Arc::new(fanout.clone()), stop.clone(), demand.clone());
-        (
-            sender,
-            Self::pcm_with_demand("push", format, fanout, stop, Driver::Pushed, demand),
-        )
+        let sink = Arc::new(fanout.clone());
+        let source = Self::new(
+            "push",
+            AudioKind::Pcm { format, fanout },
+            stop.clone(),
+            Driver::Pushed,
+        );
+        let sender = FrameSender::new(sink, stop, source.inner.demand.clone());
+        (sender, source)
     }
 
     /// Returns what the source produces.
@@ -703,16 +606,14 @@ impl AudioSource {
     }
 }
 
-/// How long a busy capture device is tried again before its open fails.
-#[cfg(feature = "capture")]
-pub(crate) const OPEN_PATIENCE: Duration = Duration::from_secs(2);
-
 /// How long an opened capture device may take over its first frame.
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
-pub(crate) const FIRST_FRAME_PATIENCE: Duration = Duration::from_secs(30);
+pub(crate) const FIRST_FRAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn rate(fps: u32) -> video::Rate {
@@ -738,7 +639,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_pushed_source_ends_when_its_senders_go() {
-        let format = VideoFormat::new(video::Size::new(2, 2), rate(30));
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
         let (sender, source) = VideoSource::push(format);
         let mut frames = source.frames();
         let surface = video::Surface::rgba(&[0; 16], format.size).expect("2x2");
@@ -755,7 +659,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_pushed_source_reports_demand_while_something_encodes() {
-        let format = VideoFormat::new(video::Size::new(2, 2), rate(30));
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
         let (sender, source) = VideoSource::push(format);
         let mut demand = sender.demand();
         use n0_watcher::Watcher as _;
@@ -770,7 +677,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_spawned_source_that_fails_reports_why() {
-        let format = VideoFormat::new(video::Size::new(2, 2), rate(30));
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
         let source = VideoSource::spawn("failing", format, |_sender| {
             Err(Error::device_msg("the camera caught fire"))
         })
@@ -781,11 +691,10 @@ mod tests {
         assert!(matches!(*failure, Error::Device { .. }));
     }
 
-    /// Echo cancellation used to be something nothing attached. The
-    /// microphone config builds its canceller from the output it is given,
-    /// and this fails if it does not. It needs an output device, so it is run
-    /// by hand; `publish::tests` covers the publication asking for the
-    /// canceller without one.
+    /// The microphone config builds its echo canceller from its output.
+    ///
+    /// It needs an output device, so it runs by hand. `publish::tests` covers
+    /// the publication side without a device.
     #[cfg(all(feature = "aec", feature = "playback"))]
     #[tokio::test]
     #[ignore = "needs an audio output device"]
@@ -794,10 +703,12 @@ mod tests {
         let output = AudioOutput::open(None)
             .await
             .expect("an audio output device");
-        let capture = MicrophoneConfig::default()
-            .with_echo_cancellation(&output)
-            .resolve()
-            .expect("the canceller builds");
+        let capture = MicrophoneConfig {
+            echo_reference: Some(output.clone()),
+            ..MicrophoneConfig::default()
+        }
+        .resolve()
+        .expect("the canceller builds");
         assert!(
             capture.aec.is_some(),
             "the microphone config carries no canceller"
@@ -810,7 +721,10 @@ mod tests {
     #[test]
     fn echo_cancellation_without_the_feature_is_refused() {
         use crate::output::AudioOutput;
-        let config = MicrophoneConfig::default().with_echo_cancellation(&AudioOutput::null());
+        let config = MicrophoneConfig {
+            echo_reference: Some(AudioOutput::null().clone()),
+            ..MicrophoneConfig::default()
+        };
         assert!(matches!(config.resolve(), Err(Error::InvalidConfig { .. })));
     }
 }

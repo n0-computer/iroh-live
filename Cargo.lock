@@ -4480,6 +4480,7 @@ dependencies = [
 name = "iroh-live-egui"
 version = "0.1.0"
 dependencies = [
+ "derive_more",
  "egui",
  "egui-wgpu",
  "epaint",
@@ -4503,9 +4504,7 @@ dependencies = [
  "n0-error",
  "n0-future",
  "n0-watcher",
- "serde",
  "serde_json",
- "serde_with",
  "strum",
  "symphonia",
  "throttled-tracing",
@@ -4520,6 +4519,7 @@ name = "iroh-live-media-android"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "derive_more",
  "glow 0.18.0",
  "iroh-live-media",
  "khronos-egl",

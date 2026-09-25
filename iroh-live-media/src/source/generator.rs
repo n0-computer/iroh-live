@@ -1,33 +1,26 @@
-//! Generated sources: a picture and a tone built for diagnosing playback.
+//! Generated sources: a test picture and a tone for diagnosing playback.
 //!
-//! The pattern answers the questions someone asks while looking at a live
-//! stream: is it smooth, how far behind is it, and do the picture and the sound
-//! still agree? Every element earns its place by making one fault visible.
+//! Each element of the pattern makes one fault visible:
 //!
-//! - A white bar sweeps left to right, one crossing every [`SWEEP`]. Judder and
-//!   dropped frames stand out on a moving edge and hide completely on a static
-//!   picture. The bar's edge is straight and spans most of the frame height, so
-//!   tearing and shear break it into offset segments.
-//! - A ruler across the top of the sweep band divides the width into tenths,
-//!   one tick every 200 ms of the bar's travel, to read the rate off rather
-//!   than guess at it.
-//! - Vertical stripes at four pitches sit below the sweep. The three grey
-//!   columns lose their stripes when the picture is scaled or the encoder runs
-//!   out of bits; the magenta and green column has a flat luma by construction,
-//!   so it goes a solid olive only when chroma detail is thrown away.
-//! - A frame counter and a clock, drawn as digits sized to the frame. The
-//!   counter makes a dropped frame countable. The clock makes latency
-//!   measurable: photograph the publisher's screen and the player's screen
-//!   together and subtract the two stamps.
-//! - A marker band lights for [`BEEP_LENGTH`] every [`BEEP_PERIOD`], on the
-//!   same media time as the beeping tone. Whether the flash and the beep land
-//!   together is then something you see and hear rather than estimate.
+//! - A white bar sweeps left to right once every [`SWEEP`]. Judder and dropped
+//!   frames show on its moving edge. The edge spans most of the frame height,
+//!   so tearing breaks it into offset segments.
+//! - A ruler above the sweep marks tenths of the width, one tick per 200 ms of
+//!   the bar's travel, so the rate can be read off.
+//! - Stripes at four pitches sit below the sweep. The three grey columns lose
+//!   their stripes when the picture is scaled or the encoder runs out of bits.
+//!   The magenta and green column has flat luma, so it turns solid olive only
+//!   when chroma detail is lost.
+//! - A frame counter makes dropped frames countable. A clock makes latency
+//!   measurable: photograph the publisher's and the player's screens together
+//!   and subtract the two stamps.
+//! - A marker lights for [`BEEP_LENGTH`] every [`BEEP_PERIOD`], at the same
+//!   media time as the beep, so a viewer sees and hears whether they agree.
 //!
-//! Both generators draw their phase from one process-wide clock, so a picture
-//! and a tone started at different moments still flash and beep together. Each
-//! runs on a thread of its own, paced against an absolute schedule: a sleep
-//! always overshoots, so a relative wait would run slower than the clock it
-//! draws, which is the one fault a timing source must not have.
+//! Both generators take their phase from one process-wide clock, so a picture
+//! and a tone started at different moments still agree. Each paces against an
+//! absolute schedule, because a sleep always overshoots and relative waits
+//! would fall behind the clock.
 
 use std::{
     sync::{Arc, OnceLock},
@@ -47,9 +40,8 @@ use crate::{
 
 /// How long the bar takes to sweep the frame once.
 ///
-/// Two seconds across the width puts a ruler tick every 200 ms, which is slow
-/// enough to follow by eye and fast enough that a stall of a few frames is a
-/// visible hesitation rather than a rounding error.
+/// Two seconds is slow enough to follow by eye, and a stall of a few frames
+/// still shows as a hesitation.
 const SWEEP: Duration = Duration::from_secs(2);
 
 /// How often the marker flashes and the tone beeps.
@@ -57,12 +49,13 @@ const BEEP_PERIOD: Duration = Duration::from_secs(1);
 
 /// How long each flash and beep lasts.
 ///
-/// Three frames at 30 fps: short enough to time against, long enough that no
-/// single dropped frame can hide the whole event.
+/// Three frames at 30 fps, so no single dropped frame hides the event.
 const BEEP_LENGTH: Duration = Duration::from_millis(100);
 
-/// Frequency of the beep, in hertz. An octave above concert A, which carries
-/// through a laptop speaker and a phone microphone alike.
+/// The beep frequency, in hertz.
+///
+/// An octave above concert A carries through a laptop speaker and a phone
+/// microphone.
 pub(crate) const BEEP_HZ: f64 = 880.0;
 
 /// When the marker is lit and the beep sounds, in media time.
@@ -71,24 +64,26 @@ pub(crate) const BEEP: Gate = Gate::Pulse {
     length: BEEP_LENGTH,
 };
 
-/// The sample rate every generated tone runs at: Opus's own, so it encodes
-/// without a resampling step.
+/// The sample rate of every generated tone.
+///
+/// It is the Opus rate, so the encoder does not resample.
 pub(crate) const TONE_RATE: u32 = 48_000;
 
-/// One buffer per 20 ms, matching the Opus frame duration so the encoder
-/// consumes each buffer whole.
+/// The duration of one tone buffer.
+///
+/// It matches the Opus frame, so the encoder takes each buffer whole.
 const TONE_FRAME: Duration = Duration::from_millis(20);
 
-/// Peak amplitude. Not full scale on purpose: Opus overshoots a little on
-/// decode, and a tone at 1.0 clips against the mixer's clamp, which is audible
-/// as distortion on a signal chosen for being unmistakable.
+/// The peak amplitude of the tone.
+///
+/// Opus overshoots a little on decode, so a tone at full scale clips against
+/// the mixer's clamp.
 const AMPLITUDE: f32 = 0.5;
 
 /// How long a pulse takes to reach full amplitude, and to fall from it.
 ///
-/// A hard edge on a sine is a click, which wears on anyone listening to a
-/// beeping stream for an hour. Two milliseconds is a fifteenth of a frame at
-/// 30 fps, far too short to move a reading of when the beep began.
+/// A hard edge on a sine clicks. Two milliseconds is a fifteenth of a frame at
+/// 30 fps, too short to shift when the beep appears to start.
 const RAMP: Duration = Duration::from_millis(2);
 
 /// The timeline both generators draw their phase from.
@@ -114,7 +109,7 @@ pub(crate) enum Gate {
 }
 
 impl Gate {
-    /// Whether the tone sounds at `media`.
+    /// Returns whether the tone sounds at `media`.
     fn open(self, media: Duration) -> bool {
         match self {
             Self::Continuous => true,
@@ -124,8 +119,7 @@ impl Gate {
         }
     }
 
-    /// The amplitude multiplier at `media`, tapered over [`RAMP`] at each end
-    /// of a pulse.
+    /// Returns the amplitude at `media`, tapered over [`RAMP`] at each edge.
     fn envelope(self, media: Duration) -> f32 {
         let Self::Pulse { period, length } = self else {
             return 1.0;
@@ -142,7 +136,7 @@ impl Gate {
 
 /// Sleeps until `due`, or returns `false` once `stop` is cancelled.
 ///
-/// Wakes at least every 100 ms to look at `stop`, so a dropped source does not
+/// Wakes at least every 100 ms to check `stop`, so a dropped source does not
 /// hold its thread for a whole slow frame interval.
 fn sleep_until(due: Instant, stop: &CancellationToken) -> bool {
     loop {
@@ -160,8 +154,7 @@ fn sleep_until(due: Instant, stop: &CancellationToken) -> bool {
     }
 }
 
-/// Paints the pattern at `size` and `rate` into `slot` until `stop` is
-/// cancelled.
+/// Paints the pattern into `slot` until `stop` is cancelled.
 pub(crate) fn run_pattern(size: Size, rate: video::Rate, slot: FrameSlot, stop: CancellationToken) {
     let clock = test_clock();
     let interval = Duration::from_secs_f64(1.0 / rate.as_f64());
@@ -172,10 +165,9 @@ pub(crate) fn run_pattern(size: Size, rate: video::Rate, slot: FrameSlot, stop: 
         if !sleep_until(due, &stop) {
             break;
         }
-        // Read the clock after the wait and paint from what it says, so the
-        // digits describe the frame that carries them.
+        // Read the clock after the wait, so the frame shows its own time.
         let timestamp = clock.now();
-        let media = Duration::from_micros(timestamp.as_micros() as u64);
+        let media = Duration::from(timestamp);
         let rgba = canvas.paint(count, media, SystemTime::now());
         match Surface::rgba(rgba, size) {
             Ok(surface) => slot.send(Arc::new(video::Frame::new(surface, timestamp))),
@@ -188,8 +180,7 @@ pub(crate) fn run_pattern(size: Size, rate: video::Rate, slot: FrameSlot, stop: 
     debug!("test pattern stopped");
 }
 
-/// Generates a sine at `hz`, gated by `gate`, into `fanout` until `stop` is
-/// cancelled.
+/// Generates a gated sine at `hz` into `fanout` until `stop` is cancelled.
 pub(crate) fn run_tone(
     hz: f64,
     format: AudioFormat,
@@ -203,9 +194,8 @@ pub(crate) fn run_tone(
     let per_frame = (f64::from(sample_rate) * TONE_FRAME.as_secs_f64()) as usize;
     let sample_ns = 1_000_000_000 / u64::from(sample_rate);
     let step = hz * std::f64::consts::TAU / f64::from(sample_rate);
-    // Where the track starts on the test clock's timeline, so the beep lines
-    // up with the flash the picture draws off the same clock.
-    let origin = Duration::from_micros(clock.now().as_micros() as u64);
+    // Start on the shared test clock, so the beep lines up with the flash.
+    let origin = Duration::from(clock.now());
     let started = Instant::now();
     let mut sample = 0usize;
 
@@ -216,8 +206,8 @@ pub(crate) fn run_tone(
         let start = origin + TONE_FRAME * index as u32;
         let mut data = Vec::with_capacity(per_frame * channels as usize * 4);
         for offset in 0..per_frame {
-            // Each sample carries its own media time, so a pulse begins and
-            // ends where the gate says rather than at a buffer boundary.
+            // Each sample gets its own media time, so a pulse edge can fall
+            // inside a buffer.
             let media = start + Duration::from_nanos(offset as u64 * sample_ns);
             let value =
                 ((sample + offset) as f64 * step).sin() as f32 * AMPLITUDE * gate.envelope(media);
@@ -229,13 +219,13 @@ pub(crate) fn run_tone(
         let Ok(timestamp) = moq_net::Timestamp::from_micros(start.as_micros() as u64) else {
             break;
         };
-        // Nobody attached is not an error: the tone plays to no one.
+        // An error only means no broadcast is attached.
         let _ = fanout.send(audio::Frame::new(data.into(), timestamp));
     }
     debug!("test tone stopped");
 }
 
-/// Rows of the frame one element of the pattern occupies.
+/// The rows one element of the pattern occupies.
 #[derive(Debug, Clone, Copy)]
 struct Band {
     /// First row, inclusive.
@@ -256,10 +246,8 @@ impl Band {
 
 /// Where each element lands, for one frame size.
 ///
-/// The bands are cut in sixteenths of the height: two for each line of digits
-/// and the rest split between the sweep, the stripes, and the marker. Every
-/// element scales with the frame, so the pattern reads the same at 320x240 as
-/// at 1920x1080.
+/// Bands are cut in sixteenths of the height, so the pattern reads the same at
+/// every frame size.
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     size: Size,
@@ -291,11 +279,10 @@ impl Layout {
         }
     }
 
-    /// Rows the sweeping bar spans.
+    /// Returns the rows the sweeping bar spans.
     ///
-    /// The bar runs from the top of its own band to the bottom of the frame,
-    /// crossing the stripes and the marker. A long straight edge is what makes
-    /// tearing legible, and a short one shows nothing.
+    /// The bar runs from the top of its band to the bottom of the frame, across
+    /// the stripes and the marker. Tearing shows only on a long edge.
     fn bar(self) -> Band {
         Band {
             top: self.sweep.top,
@@ -303,8 +290,10 @@ impl Layout {
         }
     }
 
-    /// Width of the sweeping bar. Wide enough to survive an encoder at a low
-    /// bitrate, narrow enough to place against a ruler tick.
+    /// Returns the width of the sweeping bar.
+    ///
+    /// Wide enough to survive a low bitrate, narrow enough to place against a
+    /// ruler tick.
     fn bar_width(self) -> u32 {
         (self.size.width / 64).max(4)
     }
@@ -313,30 +302,29 @@ impl Layout {
 /// Ink for the digits and the sweeping bar.
 const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
 
-/// Behind everything that is not lit.
+/// The background.
 const BLACK: [u8; 3] = [0x00, 0x00, 0x00];
 
-/// The lit marker. Nothing else in the pattern is yellow, so a camera pointed
-/// at two screens at once tells the flashes apart from the rest.
+/// The lit marker.
+///
+/// Nothing else in the pattern is yellow, so a flash stands out in a photo of
+/// two screens.
 const YELLOW: [u8; 3] = [0xff, 0xff, 0x00];
 
 /// The ruler above the sweep.
 const GREY: [u8; 3] = [0x60, 0x60, 0x60];
 
-/// The marker between flashes. Dark, but not the black of the sweep band: the
-/// band has to be findable in a still frame for a flash in the next one to mean
-/// anything.
+/// The marker between flashes.
+///
+/// Not black, so the marker band can be found in a still frame.
 const DIM: [u8; 3] = [0x28, 0x28, 0x28];
 
 /// The four stripe columns: pitch in pixels, then the two colours.
 ///
-/// The greys go from one pixel to four, so the column where the stripes turn to
-/// mush says how much detail the path is losing. The last pair is chroma alone:
-/// magenta and this green have the same BT.601 luma (about 105), so the luma
-/// plane across that column is flat and only the colour difference carries the
-/// stripes. They survive 4:2:0 subsampling, which samples chroma every second
-/// pixel; they do not survive a picture that has been scaled or a chroma
-/// resampler cutting corners.
+/// The greys go from one pixel to four, so the column where the stripes blur
+/// shows how much detail is lost. Magenta and this green have the same BT.601
+/// luma (about 105), so only chroma carries the last column's stripes. They
+/// survive 4:2:0 subsampling, but not scaling or a poor chroma resampler.
 const STRIPES: [(u32, [u8; 3], [u8; 3]); 4] = [
     (1, WHITE, BLACK),
     (2, WHITE, BLACK),
@@ -346,10 +334,8 @@ const STRIPES: [(u32, [u8; 3], [u8; 3]); 4] = [
 
 /// The buffers one publication paints from.
 ///
-/// Most of the frame is the same in every one: the stripes, the ruler, and the
-/// black behind the digits. Painting those once and copying them back costs a
-/// memcpy per frame instead of a pass over every pixel, which is what keeps a
-/// 720p pattern comfortably inside its frame interval.
+/// The static parts are painted once and copied into each frame. That keeps a
+/// 720p pattern well inside its frame interval.
 #[derive(Debug)]
 struct Canvas {
     layout: Layout,
@@ -360,7 +346,7 @@ struct Canvas {
 }
 
 impl Canvas {
-    /// A canvas for `size`, with the static half of the pattern already drawn.
+    /// Creates a canvas for `size` with the static parts drawn.
     fn new(size: Size) -> Self {
         let layout = Layout::new(size);
         let mut background = vec![0u8; size.pixels() as usize * 4];
@@ -379,11 +365,9 @@ impl Canvas {
 
     /// Paints one frame and returns its pixels.
     ///
-    /// `media` is the frame's own presentation time, and it drives the sweep
-    /// and the marker: both then move at a constant rate on the timeline a
-    /// player reconstructs, so a stall shows up as a jump rather than as smooth
-    /// motion. `count` and `wall` are drawn as digits and describe nothing but
-    /// themselves.
+    /// `media` is the frame's presentation time and drives the sweep and the
+    /// marker. Both move at a constant rate on the player's timeline, so a stall
+    /// shows as a jump. `count` and `wall` are only drawn as digits.
     fn paint(&mut self, count: u64, media: Duration, wall: SystemTime) -> &[u8] {
         let layout = self.layout;
         let size = layout.size;
@@ -413,16 +397,14 @@ impl Canvas {
     }
 }
 
-/// The frame counter line: six digits, which wrap after nine hours at 30 fps.
+/// Returns the frame counter line, six digits that wrap after nine hours at 30 fps.
 fn counter_text(count: u64) -> String {
     format!("F {:06}", count % 1_000_000)
 }
 
-/// The clock line: the time of day in UTC, to the millisecond.
+/// Returns the clock line: the time of day in UTC, to the millisecond.
 ///
-/// UTC rather than local time, because the machine that publishes and the
-/// machine that plays need not agree on a timezone, and the difference between
-/// two stamps is what a latency measurement reads.
+/// UTC, because the publisher and the player may not share a timezone.
 fn clock_text(wall: SystemTime) -> String {
     let since = wall
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -437,7 +419,7 @@ fn clock_text(wall: SystemTime) -> String {
     )
 }
 
-/// Left edge of the sweeping bar at `media`.
+/// Returns the left edge of the sweeping bar at `media`.
 fn sweep_x(width: u32, bar: u32, media: Duration) -> u32 {
     let period = SWEEP.as_micros();
     let phase = media.as_micros() % period;
@@ -463,8 +445,6 @@ fn stripes(rgba: &mut [u8], size: Size, band: Band) {
         return;
     };
     for x in 0..size.width {
-        // Integer division puts the last column one pixel wider on a width that
-        // does not divide by four, which no measurement depends on.
         let column = (x * STRIPES.len() as u32 / size.width).min(STRIPES.len() as u32 - 1);
         let (pitch, first_colour, second) = STRIPES[column as usize];
         let colour = match (x / pitch) % 2 {
@@ -478,9 +458,8 @@ fn stripes(rgba: &mut [u8], size: Size, band: Band) {
 
 /// Copies the first row of `band` over the rest of it.
 ///
-/// Every band is the same on every row, so one row is painted pixel by pixel
-/// and the remainder is memcpy. At 720p that is the difference between a pass
-/// over the whole frame and a handful of copies.
+/// Every band is the same on every row, so only one row is painted pixel by
+/// pixel.
 fn replicate(rgba: &mut [u8], size: Size, band: Band) {
     let stride = size.width as usize * 4;
     let Some(first) = band.rows().next() else {
@@ -497,9 +476,6 @@ fn replicate(rgba: &mut [u8], size: Size, band: Band) {
 }
 
 /// Draws a tick at every tenth of the width along the top of `band`.
-///
-/// The bar crosses one gap every tenth of [`SWEEP`], so the ticks turn "it
-/// looks slow" into a number.
 fn ruler(rgba: &mut [u8], size: Size, band: Band) {
     let height = (band.height() / 6).max(2);
     let width = (size.width / 200).max(1);
@@ -522,12 +498,11 @@ const GLYPH_COLS: u32 = 5;
 
 /// Draws `text` centred in `band`, as large as the band and the frame allow.
 ///
-/// The size follows the frame so the digits stay readable in a photograph of a
-/// small panel, which is how latency gets measured.
+/// Large digits stay readable in a photo of a small screen.
 fn draw_line(rgba: &mut [u8], size: Size, band: Band, text: &str, ink: [u8; 3]) {
     let columns = text.chars().count() as u32 * (GLYPH_COLS + 1);
-    // Leave a sixteenth of the width as a margin, and two rows of the band, so
-    // no glyph touches an edge an encoder is about to blur.
+    // Leave a sixteenth of the width and two rows of the band as margin, so no
+    // glyph touches an edge the encoder blurs.
     let from_width = (size.width * 15 / 16) / columns.max(1);
     let from_height = band.height().saturating_sub(2) / GLYPH_ROWS as u32;
     let scale = from_width.min(from_height).max(1);
@@ -540,8 +515,7 @@ fn draw_line(rgba: &mut [u8], size: Size, band: Band, text: &str, ink: [u8; 3]) 
     }
 }
 
-/// Draws one glyph with its top-left corner at (`x`, `y`), each font pixel
-/// `scale` pixels square.
+/// Draws one glyph at (`x`, `y`), each font pixel `scale` pixels square.
 fn draw_glyph(
     rgba: &mut [u8],
     size: Size,
@@ -570,12 +544,10 @@ fn draw_glyph(
     }
 }
 
-/// The bitmap for `ch`, five columns by seven rows, or a blank for a character
-/// the font does not carry.
+/// Returns the 5x7 bitmap for `ch`, or a blank if the font lacks it.
 ///
-/// A font stack for two labels and twelve digits would be a dependency to keep
-/// current, so the glyphs the pattern draws are written out here and nothing
-/// else is drawable.
+/// Only the glyphs the pattern draws are written out, to avoid a font
+/// dependency.
 fn glyph(ch: char) -> [u8; GLYPH_ROWS] {
     match ch {
         '0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
@@ -613,18 +585,18 @@ mod tests {
         height: 240,
     };
 
-    /// Paints one frame and hands back the pixels.
+    /// Paints one frame and returns its pixels.
     fn frame(count: u64, media: Duration, wall: SystemTime) -> Vec<u8> {
         Canvas::new(SIZE).paint(count, media, wall).to_vec()
     }
 
-    /// The colour at (`x`, `y`).
+    /// Returns the colour at (`x`, `y`).
     fn pixel(rgba: &[u8], x: u32, y: u32) -> [u8; 3] {
         let offset = ((y * SIZE.width + x) * 4) as usize;
         [rgba[offset], rgba[offset + 1], rgba[offset + 2]]
     }
 
-    /// The left edge of the sweeping bar, read back off the painted pixels.
+    /// Returns the left edge of the sweeping bar, read off the pixels.
     fn bar_left(rgba: &[u8]) -> u32 {
         let y = Layout::new(SIZE).sweep.bottom - 1;
         (0..SIZE.width)
@@ -646,7 +618,7 @@ mod tests {
         );
     }
 
-    /// 12:34:56.123 UTC, spelled the way the digits are drawn.
+    /// The clock and counter lines format as drawn.
     #[test]
     fn the_clock_line_reads_as_time_of_day() {
         let wall = SystemTime::UNIX_EPOCH + Duration::from_millis(45_296_123);
@@ -654,8 +626,7 @@ mod tests {
         assert_eq!(counter_text(1_000_042), "F 000042");
     }
 
-    /// The marker is lit for the length of the beep and dark for the rest of
-    /// the period, on the same gate the tone beeps on.
+    /// The marker is lit on the gate the tone beeps on, and dark otherwise.
     #[test]
     fn the_marker_lights_for_the_beep_window() {
         let layout = Layout::new(SIZE);
@@ -674,13 +645,15 @@ mod tests {
         assert!(lit(BEEP_PERIOD));
     }
 
-    /// The generated tone keeps pace with the clock and leaves headroom below
-    /// full scale.
+    /// The tone keeps pace with the clock and peaks below full scale.
     #[test]
     fn the_tone_keeps_up_with_the_clock() {
         let (fanout, mut frames) = tokio::sync::broadcast::channel(64);
         let stop = CancellationToken::new();
-        let format = AudioFormat::new(TONE_RATE, audio::Layout::Mono);
+        let format = AudioFormat {
+            sample_rate: TONE_RATE,
+            layout: audio::Layout::Mono,
+        };
         let thread = {
             let stop = stop.clone();
             std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, fanout, stop))

@@ -74,7 +74,10 @@ fn stagger(index: u64) -> u64 {
 /// A moving gradient at 30 fps, with every frame's hand-over instant recorded
 /// under its source timestamp.
 fn stamped_source(handed: Handed) -> VideoSource {
-    let format = VideoFormat::new(SIZE, Rate::new(30, 1).expect("a valid rate"));
+    let format = VideoFormat {
+        size: SIZE,
+        rate: Rate::new(30, 1).expect("a valid rate"),
+    };
     VideoSource::spawn("stamped", format, move |sender| {
         let started = Instant::now();
         let mut rgba = vec![0u8; (SIZE.width * SIZE.height * 4) as usize];
@@ -152,9 +155,11 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
         .subscribe(&ticket)
         .await
         .expect("failed to subscribe");
-    let config = PlayerConfig::default()
-        .with_latency(latency)
-        .with_decoder(decode::Kind::Software);
+    let config = PlayerConfig {
+        latency,
+        decoder: decode::Kind::Software,
+        ..PlayerConfig::default()
+    };
     let player = remote.play(config).expect("failed to play");
     let mut frames = player.video();
 

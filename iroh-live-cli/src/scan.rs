@@ -319,7 +319,7 @@ impl ScanView {
     ) -> Self {
         let (opened_tx, opened) = watch::channel(None);
         let (state_tx, state) = watch::channel(ScanState::Looking);
-        let view = FrameView::new_wgpu(ctx, "scan", render_state);
+        let view = FrameView::new(ctx, "scan", render_state);
         let ctx = ctx.clone();
         let scan = AbortOnDropHandle::new(tokio::spawn(async move {
             scan(pictures, &opened_tx, &state_tx, &ctx, skip.as_ref()).await;

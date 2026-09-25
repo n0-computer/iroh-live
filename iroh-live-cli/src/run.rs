@@ -414,13 +414,15 @@ fn play_audio(
     name: &str,
     output: &media::AudioOutput,
 ) -> Option<Player> {
-    if catalog.audio().is_empty() {
+    if catalog.audio.renditions.is_empty() {
         info!(name, "the broadcast carries no audio");
         return None;
     }
-    let config = PlayerConfig::default()
-        .with_rendition(RenditionMode::Off)
-        .with_audio(output);
+    let config = PlayerConfig {
+        rendition: RenditionMode::Off,
+        audio: Some(output.clone()),
+        ..PlayerConfig::default()
+    };
     sub.broadcast()
         .play(config)
         .inspect_err(|err| warn!(name, error = %err, "audio failed to play"))

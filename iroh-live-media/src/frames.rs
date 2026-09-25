@@ -1,196 +1,109 @@
 //! Latest-frame-wins video frames, with a cursor per handle.
 //!
-//! Every renderer in the crate reads the same type: a player's decoded
-//! pictures, a source's captured ones, and anything that scans them for a code.
-//! The producer overwrites one slot, so a reader that falls behind skips to the
-//! newest picture instead of draining a backlog, and a backlog of GPU surfaces
-//! never builds up out of the decoder's pool. What each reader keeps is only how
-//! far it has read, so two readers of one stream both see every picture that
-//! is current when they look, rather than splitting the stream between them.
+//! Players and sources both hand out this type, and every renderer reads it.
+//! It wraps a `tokio::sync::watch` channel. The producer overwrites one value,
+//! so a reader that falls behind skips to the newest picture instead of
+//! draining a backlog.
 
-use std::{
-    fmt,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, OnceLock};
 
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 use crate::{error::Error, video};
 
-/// What the slot holds, behind its lock.
-#[derive(Default)]
-struct State {
-    /// The newest frame, seen by anyone or not.
-    latest: Option<Arc<video::Frame>>,
-    /// Bumped on every frame, so a reader tells new from seen by comparing.
-    generation: u64,
-    /// Set once the producer is gone.
-    closed: bool,
-    /// Why it went, if it failed rather than ended.
-    failure: Option<Arc<Error>>,
-}
-
-/// The shared slot a producer writes and every [`VideoFrames`] reads.
-struct Slot {
-    state: Mutex<State>,
-    notify: Notify,
-}
-
-impl fmt::Debug for Slot {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = self.state.lock().expect("poisoned");
-        f.debug_struct("Slot")
-            .field("generation", &state.generation)
-            .field("closed", &state.closed)
-            .finish()
-    }
-}
-
-/// The producing end of a frame slot.
+/// The producing end of a frame stream.
 ///
-/// Crate-private: sources and players hold one, and hand out [`VideoFrames`].
-/// Dropping the last clone closes the slot, and every reader's
-/// [`next`](VideoFrames::next) then returns `None`.
-#[derive(Debug, Clone)]
+/// Dropping the last clone ends the stream: every reader's
+/// [`next`](VideoFrames::next) returns the last frame, then `None`.
+#[derive(derive_more::Debug, Clone)]
 pub(crate) struct FrameSlot {
-    slot: Arc<Slot>,
-    /// Closes the slot when the last producer handle goes.
-    _closer: Arc<Closer>,
-}
-
-/// Closes the slot on drop.
-#[derive(Debug)]
-struct Closer(Arc<Slot>);
-
-impl Drop for Closer {
-    fn drop(&mut self) {
-        let mut state = self.0.state.lock().expect("poisoned");
-        state.closed = true;
-        drop(state);
-        self.0.notify.notify_waiters();
-    }
+    #[debug(skip)]
+    tx: watch::Sender<Option<Arc<video::Frame>>>,
+    failure: Arc<OnceLock<Arc<Error>>>,
 }
 
 impl FrameSlot {
-    /// Creates an empty, open slot.
+    /// Creates an empty slot.
     pub(crate) fn new() -> Self {
-        let slot = Arc::new(Slot {
-            state: Mutex::new(State::default()),
-            notify: Notify::new(),
-        });
         Self {
-            _closer: Arc::new(Closer(slot.clone())),
-            slot,
+            tx: watch::Sender::new(None),
+            failure: Default::default(),
         }
     }
 
     /// Replaces the current frame, waking every reader.
     pub(crate) fn send(&self, frame: Arc<video::Frame>) {
-        let mut state = self.slot.state.lock().expect("poisoned");
-        state.latest = Some(frame);
-        state.generation += 1;
-        drop(state);
-        self.slot.notify.notify_waiters();
+        self.tx.send_replace(Some(frame));
     }
 
-    /// Closes the slot now, recording why when it failed.
-    ///
-    /// Readers see the last frame through [`VideoFrames::current`] and `None`
-    /// from their next [`VideoFrames::next`].
-    pub(crate) fn close(&self, failure: Option<Arc<Error>>) {
-        let mut state = self.slot.state.lock().expect("poisoned");
-        state.closed = true;
-        if state.failure.is_none() {
-            state.failure = failure;
-        }
-        drop(state);
-        self.slot.notify.notify_waiters();
-    }
-
-    /// Returns why the slot closed, if it failed.
-    #[cfg(test)]
-    fn failure(&self) -> Option<Arc<Error>> {
-        self.slot.state.lock().expect("poisoned").failure.clone()
+    /// Records why the stream is about to end, for [`FrameReader::failure`].
+    pub(crate) fn fail(&self, failure: Arc<Error>) {
+        let _ = self.failure.set(failure);
     }
 
     /// Returns a reader starting at the current frame.
     pub(crate) fn frames(&self) -> VideoFrames {
-        VideoFrames::new(self.slot.clone())
+        VideoFrames::new(self.tx.subscribe())
     }
 
     /// Returns a handle that reads the slot without keeping it open.
     pub(crate) fn reader(&self) -> FrameReader {
         FrameReader {
-            slot: self.slot.clone(),
+            rx: self.tx.subscribe(),
+            failure: self.failure.clone(),
         }
     }
 }
 
 /// Reads a slot without holding it open.
 ///
-/// What a source keeps, so that the slot closes when the frames stop coming
-/// rather than when the last handle to the source goes.
-#[derive(Debug, Clone)]
+/// A source keeps this, so its stream ends when the frames stop even while
+/// handles to the source remain.
+#[derive(derive_more::Debug, Clone)]
 pub(crate) struct FrameReader {
-    slot: Arc<Slot>,
+    #[debug(skip)]
+    rx: watch::Receiver<Option<Arc<video::Frame>>>,
+    failure: Arc<OnceLock<Arc<Error>>>,
 }
 
 impl FrameReader {
     /// Returns a reader starting at the current frame.
     pub(crate) fn frames(&self) -> VideoFrames {
-        VideoFrames::new(self.slot.clone())
+        VideoFrames::new(self.rx.clone())
     }
 
-    /// Returns why the slot closed, if it failed.
+    /// Returns why the stream ended, if it failed.
     pub(crate) fn failure(&self) -> Option<Arc<Error>> {
-        self.slot.state.lock().expect("poisoned").failure.clone()
+        self.failure.get().cloned()
     }
 }
 
-/// Latest-frame-wins video frames. Each clone keeps its own cursor.
+/// Latest-frame-wins video frames.
 ///
 /// Returned by [`VideoSource::frames`](crate::VideoSource::frames) for a local
-/// preview and by [`Player::video`](crate::Player::video) for playback. A frame
-/// comes as an `Arc` because upstream frames are not `Clone`: a GPU surface is
-/// shared, not copied, and every reader of one stream sees the same picture.
+/// preview and by [`Player::video`](crate::Player::video) for playback. Each
+/// clone keeps its own cursor. A frame comes as an `Arc` because upstream
+/// frames are not `Clone`: a GPU surface is shared, not copied.
 ///
-/// A fresh handle reports the frame current when it was created as new, so the
-/// first [`next`](Self::next) returns at once if a picture is already there.
+/// On a fresh handle, the first [`next`](Self::next) returns at once if a
+/// picture is already there.
+#[derive(derive_more::Debug, Clone)]
 pub struct VideoFrames {
-    slot: Arc<Slot>,
-    /// The generation this handle last returned.
-    seen: u64,
-}
-
-impl fmt::Debug for VideoFrames {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VideoFrames")
-            .field("seen", &self.seen)
-            .field("slot", &self.slot)
-            .finish()
-    }
-}
-
-impl Clone for VideoFrames {
-    fn clone(&self) -> Self {
-        Self {
-            slot: self.slot.clone(),
-            seen: self.seen,
-        }
-    }
+    #[debug(skip)]
+    rx: watch::Receiver<Option<Arc<video::Frame>>>,
 }
 
 impl VideoFrames {
-    fn new(slot: Arc<Slot>) -> Self {
-        Self { slot, seen: 0 }
+    fn new(mut rx: watch::Receiver<Option<Arc<video::Frame>>>) -> Self {
+        rx.mark_changed();
+        Self { rx }
     }
 
-    /// Returns the newest frame, seen or not.
+    /// Returns the newest frame, seen or not, without moving the cursor.
     ///
-    /// For render loops that redraw every vsync and want whatever is current.
-    /// Does not move this handle's cursor.
+    /// For render loops that redraw every vsync.
     pub fn current(&self) -> Option<Arc<video::Frame>> {
-        self.slot.state.lock().expect("poisoned").latest.clone()
+        self.rx.borrow().clone()
     }
 
     /// Waits for a frame newer than the last this handle returned.
@@ -199,68 +112,31 @@ impl VideoFrames {
     /// newest is returned. Returns `None` once the producer is gone and this
     /// handle has seen its last frame.
     ///
-    /// Cancellation safe: dropping the future loses nothing, and the next call
-    /// returns the same frame it would have.
+    /// Cancellation safe.
     pub async fn next(&mut self) -> Option<Arc<video::Frame>> {
         loop {
-            // Registered before the check, so a frame or a close landing
-            // between the two wakes this rather than being missed.
-            let notified = self.slot.notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            {
-                let state = self.slot.state.lock().expect("poisoned");
-                if state.generation != self.seen
-                    && let Some(frame) = &state.latest
-                {
-                    self.seen = state.generation;
-                    return Some(frame.clone());
-                }
-                if state.closed {
-                    return None;
-                }
+            self.rx.changed().await.ok()?;
+            if let Some(frame) = self.rx.borrow_and_update().clone() {
+                return Some(frame);
             }
-            notified.await;
         }
     }
 
-    /// Returns a frame newer than the last this handle returned without
-    /// waiting, or `None` when there is none.
+    /// Returns a newer frame without waiting, if there is one.
     ///
     /// For a render loop that draws only when the picture changed.
     pub fn try_next(&mut self) -> Option<Arc<video::Frame>> {
-        let state = self.slot.state.lock().expect("poisoned");
-        if state.generation == self.seen {
-            return None;
+        let frame = self.rx.borrow_and_update();
+        match frame.has_changed() {
+            true => frame.clone(),
+            false => None,
         }
-        let frame = state.latest.clone()?;
-        self.seen = state.generation;
-        Some(frame)
     }
 
     /// Waits until the producer is gone. Cancellation safe.
     pub(crate) async fn closed(&self) {
-        loop {
-            let notified = self.slot.notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.slot.state.lock().expect("poisoned").closed {
-                return;
-            }
-            notified.await;
-        }
-    }
-
-    /// Reports whether a frame newer than the last this handle returned is
-    /// waiting, without taking it.
-    pub fn has_new(&self) -> bool {
-        let state = self.slot.state.lock().expect("poisoned");
-        state.generation != self.seen && state.latest.is_some()
-    }
-
-    /// Reports whether the producer is gone.
-    pub fn is_closed(&self) -> bool {
-        self.slot.state.lock().expect("poisoned").closed
+        let mut rx = self.rx.clone();
+        while rx.changed().await.is_ok() {}
     }
 }
 
@@ -288,8 +164,6 @@ mod tests {
         let mut first = slot.frames();
         let mut second = slot.frames();
         slot.send(frame(1));
-        // The old `FrameReceiver::take` handed the frame to whichever holder
-        // asked first and nothing to the other.
         assert_eq!(first.next().await.as_deref().map(micros), Some(1));
         assert_eq!(second.next().await.as_deref().map(micros), Some(1));
     }
@@ -310,38 +184,23 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn current_does_not_move_the_cursor() {
-        let slot = FrameSlot::new();
-        let mut frames = slot.frames();
-        slot.send(frame(7));
-        assert_eq!(frames.current().as_deref().map(micros), Some(7));
-        assert!(frames.has_new());
-        assert_eq!(frames.next().await.as_deref().map(micros), Some(7));
-        assert!(!frames.has_new());
-        assert_eq!(frames.current().as_deref().map(micros), Some(7));
-    }
-
     #[test]
     fn try_next_takes_only_what_is_new() {
         let slot = FrameSlot::new();
         let mut frames = slot.frames();
         assert!(frames.try_next().is_none());
         slot.send(frame(4));
+        assert_eq!(frames.current().as_deref().map(micros), Some(4));
         assert_eq!(frames.try_next().as_deref().map(micros), Some(4));
         assert!(frames.try_next().is_none(), "the same frame twice");
     }
 
     #[tokio::test]
-    async fn a_clone_starts_where_its_original_was() {
+    async fn a_fresh_handle_sees_the_current_frame() {
         let slot = FrameSlot::new();
-        let mut original = slot.frames();
-        slot.send(frame(1));
-        original.next().await;
-        let mut clone = original.clone();
-        slot.send(frame(2));
-        assert_eq!(clone.next().await.as_deref().map(micros), Some(2));
-        assert_eq!(original.next().await.as_deref().map(micros), Some(2));
+        slot.send(frame(5));
+        let mut frames = slot.frames();
+        assert_eq!(frames.next().await.as_deref().map(micros), Some(5));
     }
 
     #[tokio::test]
@@ -352,30 +211,15 @@ mod tests {
         drop(slot);
         assert_eq!(frames.next().await.as_deref().map(micros), Some(9));
         assert!(frames.next().await.is_none());
-        assert!(frames.is_closed());
     }
 
     #[tokio::test]
-    async fn a_waiting_reader_wakes_on_close() {
+    async fn a_reader_does_not_hold_the_slot_open() {
         let slot = FrameSlot::new();
-        let mut frames = slot.frames();
-        let waiter = tokio::spawn(async move { frames.next().await.is_none() });
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let reader = slot.reader();
+        slot.fail(Arc::new(n0_error::e!(Error::Closed)));
         drop(slot);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), waiter)
-                .await
-                .expect("the close woke the reader")
-                .expect("the task ran")
-        );
-    }
-
-    #[tokio::test]
-    async fn a_close_with_a_failure_keeps_it() {
-        let slot = FrameSlot::new();
-        let failure = Arc::new(n0_error::e!(Error::Closed));
-        slot.close(Some(failure.clone()));
-        assert!(Arc::ptr_eq(&slot.failure().expect("kept"), &failure));
-        assert!(slot.frames().next().await.is_none());
+        assert!(reader.frames().next().await.is_none());
+        assert!(reader.failure().is_some());
     }
 }

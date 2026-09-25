@@ -269,13 +269,16 @@ async fn rpicam_source(
     let framerate = framerate.generated();
     // A keyframe a second. The subprocess owns the encode, so this is the only
     // place the join latency can be set.
-    let mut config = RpicamConfig::new(size, framerate).with_keyframe_interval(framerate);
+    let mut config = RpicamConfig {
+        keyframe_interval: framerate,
+        ..RpicamConfig::new(size, framerate)
+    };
     match mode {
         RpicamMode::Raw => Ok(Video::Raw(VideoSource::rpicam(config).await?)),
         RpicamMode::Encoded => {
             check_rpicam_flags(args)?;
             if let Some(bitrate) = args.bitrate {
-                config = config.with_bitrate(Bitrate::from_bps(bitrate));
+                config.bitrate = Bitrate::from_bps(bitrate);
             }
             Ok(Video::Encoded(EncodedVideoSource::rpicam(config).await?))
         }
@@ -362,7 +365,7 @@ fn test_pattern(
 /// Fails if the thread cannot be started.
 fn gradient(size: Size, fps: u32) -> Result<VideoSource> {
     let rate = video::Rate::new(fps, 1).expect("the ladder settles only on valid rates");
-    let format = VideoFormat::new(size, rate);
+    let format = VideoFormat { size, rate };
     let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
     let source = VideoSource::spawn("gradient", format, move |sender| {
         let clock = moq_mux::Clock::new();
@@ -419,7 +422,7 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> Mi
     if let Some(output) = output {
         #[cfg(feature = "aec")]
         {
-            config = config.with_echo_cancellation(output);
+            config.echo_reference = Some(output.clone());
         }
         // A null output plays nothing, so there is no echo to warn about.
         #[cfg(not(feature = "aec"))]
@@ -473,7 +476,7 @@ fn audio_encoding(args: &CaptureArgs, source: &AudioSource) -> AudioEncoding {
     };
     let _ = source;
     if let Some(bps) = args.audio_bitrate {
-        encoding = encoding.with_bitrate(Bitrate::from_bps(bps.into()));
+        encoding.bitrate = Some(Bitrate::from_bps(bps.into()));
     }
     encoding
 }

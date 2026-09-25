@@ -1,62 +1,42 @@
 //! Remote broadcasts: a catalog and a subscription, not yet playing.
 //!
 //! [`RemoteBroadcast`] reads a broadcast's catalog and keeps the subscription
-//! open. Any number of [`Player`]s and [`Recording`]s read it; each owns what
-//! it does with the media.
+//! open. Any number of [`Player`]s and [`Recording`]s can read it.
 
 use std::{
-    fmt,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::{Watchable, Watcher as _};
+use n0_watcher::Watchable;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::{
     Catalog, LocalBroadcast, NetworkSignals, Player, PlayerConfig, RecordConfig, Recording,
-    catalog::{HangCatalog, IrohLiveExt},
-    error::Error,
-    network::SharedSignals,
+    error::Error, network::SharedSignals,
 };
 
-/// How long a broadcast that ended is looked for again through the route
-/// table before it counts as gone.
+/// How long to look for an ended broadcast again before it counts as gone.
 ///
-/// A change of route ends a broadcast only for the next request to find it
-/// through the new route at once, so a second is plenty; anything longer is a
-/// publisher that left. [`RemoteBroadcast::closed`] documents the cost: a
-/// deliberate hang-up closes this late too.
+/// After a change of route, the next request finds the broadcast at once. A
+/// longer wait means the publisher left. A deliberate hang-up also closes this
+/// late, as [`RemoteBroadcast::closed`] documents.
 const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// The broadcast consumer a player reads, and how many times it has changed.
 ///
-/// Compared by generation, which is what a watcher needs: a new consumer is a
-/// new generation even when it reaches the same broadcast.
-#[derive(Clone, Default)]
+/// Equality compares the generation only, so a new consumer counts as a change
+/// even when it reaches the same broadcast.
+#[derive(derive_more::Debug, Clone, Default, derive_more::PartialEq, derive_more::Eq)]
 pub(crate) struct Epoch {
     pub(crate) generation: u64,
+    #[debug(skip)]
+    #[eq(skip)]
     pub(crate) consumer: Option<moq_net::broadcast::Consumer>,
 }
-
-impl fmt::Debug for Epoch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Epoch")
-            .field("generation", &self.generation)
-            .field("connected", &self.consumer.is_some())
-            .finish()
-    }
-}
-
-impl PartialEq for Epoch {
-    fn eq(&self, other: &Self) -> bool {
-        self.generation == other.generation
-    }
-}
-
-impl Eq for Epoch {}
 
 /// Where a remote broadcast comes from.
 #[derive(Clone)]
@@ -70,31 +50,27 @@ enum Origin {
     },
 }
 
+#[derive(derive_more::Debug)]
 struct Shared {
+    #[debug(skip)]
     origin: Origin,
+    #[debug("{:?}", epoch.get())]
     epoch: Watchable<Epoch>,
+    #[debug(skip)]
     catalog: Watchable<Option<Catalog>>,
-    closed: Watchable<bool>,
+    closed: CancellationToken,
+    #[debug(skip)]
     network: Mutex<Option<SharedSignals>>,
     span: tracing::Span,
+    #[debug(skip)]
     _task: AbortOnDropHandle<()>,
-}
-
-impl fmt::Debug for Shared {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RemoteBroadcast")
-            .field("epoch", &self.epoch.get())
-            .field("closed", &self.closed.get())
-            .finish_non_exhaustive()
-    }
 }
 
 /// A broadcast being read.
 ///
-/// Cheap to clone. Holding it keeps the broadcast subscription; its tracks are
-/// subscribed by the players and recordings that read it. Constructing one
-/// spawns the task that reads the catalog, so it has to happen within a Tokio
-/// runtime.
+/// Cheap to clone. Holding it keeps the broadcast subscription open, and the
+/// players and recordings that read it subscribe to its tracks. Constructing
+/// one spawns a task, so it must happen inside a Tokio runtime.
 #[derive(Debug, Clone)]
 pub struct RemoteBroadcast {
     shared: Arc<Shared>,
@@ -103,9 +79,8 @@ pub struct RemoteBroadcast {
 impl RemoteBroadcast {
     /// Starts reading the catalog of `broadcast`.
     ///
-    /// Does not wait: [`catalog`](Self::catalog) is `None` until it arrives,
-    /// which keeps construction usable in a UI reconcile loop.
-    pub fn from_moq(broadcast: moq_net::broadcast::Consumer) -> Self {
+    /// The remote broadcast ends when `broadcast` ends.
+    pub(crate) fn from_moq(broadcast: moq_net::broadcast::Consumer) -> Self {
         let span = tracing::info_span!("remote");
         Self::spawn(Origin::Moq, Some(broadcast), span)
     }
@@ -113,28 +88,25 @@ impl RemoteBroadcast {
     /// Follows `path` in a route table.
     ///
     /// When a change of route ends the broadcast, it is requested again through
-    /// the next route, and players see a switch rather than an end. The
-    /// broadcast counts as closed only once no route serves the path; see
-    /// [`closed`](Self::closed) for how long that takes to tell.
+    /// the next route, and players see a switch instead of an end. The
+    /// broadcast closes once no route serves the path, as
+    /// [`closed`](Self::closed) explains.
     ///
-    /// The first request waits for as long as it takes, since the publisher
-    /// may not have announced the path yet. A caller that already resolved the
-    /// path uses [`from_resolved`](Self::from_resolved) instead.
+    /// The first request waits without limit, since the publisher may not have
+    /// announced the path yet. If you already resolved the path, use
+    /// [`from_resolved`](Self::from_resolved).
     pub fn from_origin(origin: moq_net::origin::Consumer, path: impl moq_net::AsPath) -> Self {
         let path = path.as_path().to_owned();
         let span = tracing::info_span!("remote", path = %path);
         Self::spawn(Origin::Routed { origin, path }, None, span)
     }
 
-    /// Follows `path` in a route table, starting from `broadcast`, which the
-    /// caller already resolved there.
+    /// Follows `path` in a route table, starting from a resolved `broadcast`.
     ///
-    /// As [`from_origin`](Self::from_origin), except that nothing waits for a
-    /// first route: every later request is a failover and gets the same
-    /// bounded patience, so a publisher that is gone by the time this runs
-    /// closes the broadcast rather than leaving it waiting forever. A
-    /// transport's subscription resolves the path before it hands it out, and
-    /// this is how it passes that on; `iroh-live` does it on subscribe.
+    /// Works like [`from_origin`](Self::from_origin), except that nothing
+    /// waits for a first route. Every later request is a failover with a time
+    /// limit, so a publisher that is already gone closes the broadcast. This is
+    /// what `iroh-live` uses on subscribe, after resolving the path.
     pub fn from_resolved(
         origin: moq_net::origin::Consumer,
         path: impl moq_net::AsPath,
@@ -150,14 +122,13 @@ impl RemoteBroadcast {
         Self::from_moq(moq_net::Consume::consume(broadcast))
     }
 
-    /// Attaches the link's view, for automatic rendition selection.
+    /// Attaches network signals for automatic rendition selection.
     ///
-    /// Transports call this; `iroh-live` does it on subscribe. Players started
-    /// afterwards read it. The signals belong to the broadcast rather than to
-    /// this handle, so every clone sees them, and attaching again replaces
-    /// them for every clone. A transport that stops producing readings leaves
-    /// players adapting on the last one, so it should be kept for as long as
-    /// the broadcast is played.
+    /// Transports call this, and `iroh-live` does so on subscribe. Players
+    /// started afterwards use the signals. They belong to the broadcast, not
+    /// to this handle: every clone sees them, and attaching again replaces
+    /// them for all clones. Players adapt on the last reading, so keep the
+    /// signals current for as long as the broadcast plays.
     #[must_use]
     pub fn with_network(self, signals: impl NetworkSignals) -> Self {
         *self.shared.network.lock().expect("poisoned") = Some(SharedSignals(Arc::new(signals)));
@@ -194,33 +165,25 @@ impl RemoteBroadcast {
 
     /// Waits until the broadcast has closed.
     ///
-    /// A broadcast read with [`from_moq`](Self::from_moq) or
-    /// [`local`](Self::local) closes when its consumer does. One that follows a
-    /// route table, from [`from_origin`](Self::from_origin) or
+    /// A broadcast read with [`local`](Self::local) closes when its local
+    /// broadcast does. One that follows a route table, from
+    /// [`from_origin`](Self::from_origin) or
     /// [`from_resolved`](Self::from_resolved), cannot tell a publisher that
-    /// ended its broadcast from a change of route, which also ends it: it asks
-    /// the table again, and closes only once no route has answered for three
-    /// seconds. So a hang-up shows here about three seconds after the
-    /// publisher closed.
+    /// left from a change of route. It asks the table again and closes once no
+    /// route has answered for three seconds. So a hang-up shows here about
+    /// three seconds late.
     ///
     /// Cancellation safe.
     pub async fn closed(&self) {
-        let mut closed = self.shared.closed.watch();
-        loop {
-            if closed.get() {
-                return;
-            }
-            if closed.updated().await.is_err() {
-                return;
-            }
-        }
+        self.shared.closed.cancelled().await;
     }
 
     /// Reports whether the broadcast has closed.
     ///
-    /// Subject to the same re-resolve window as [`closed`](Self::closed).
+    /// Lags a routed publisher's hang-up by the same three seconds as
+    /// [`closed`](Self::closed).
     pub fn is_closed(&self) -> bool {
-        self.shared.closed.get()
+        self.shared.closed.is_cancelled()
     }
 
     /// Returns a watcher over the consumer players read.
@@ -253,7 +216,7 @@ impl RemoteBroadcast {
     ) -> Self {
         let epoch = Watchable::new(Epoch::default());
         let catalog = Watchable::new(None);
-        let closed = Watchable::new(false);
+        let closed = CancellationToken::new();
         let task = {
             let origin = origin.clone();
             let epoch = epoch.clone();
@@ -277,14 +240,13 @@ impl RemoteBroadcast {
     }
 }
 
-/// Reads the broadcast, and requests it again through the route table when a
-/// change of route ends it.
+/// Reads the broadcast, requesting it again when a change of route ends it.
 async fn follow(
     origin: Origin,
     first: Option<moq_net::broadcast::Consumer>,
     epoch: Watchable<Epoch>,
     catalog: Watchable<Option<Catalog>>,
-    closed: Watchable<bool>,
+    closed: CancellationToken,
 ) {
     let mut generation = 0u64;
     let mut next = first;
@@ -294,9 +256,8 @@ async fn follow(
             None => match &origin {
                 Origin::Moq => break,
                 Origin::Routed { origin, path } => {
-                    // The first resolution waits as long as it takes, since the
-                    // publisher may not have announced yet. Later ones are a
-                    // failover, which the next route answers at once.
+                    // The publisher may not have announced yet, so only a
+                    // failover has a time limit.
                     let resolved = match generation {
                         0 => origin.routed_broadcast(path).await,
                         _ => match tokio::time::timeout(
@@ -342,7 +303,7 @@ async fn follow(
             consumer: None,
         })
         .ok();
-    closed.set(true).ok();
+    closed.cancel();
 }
 
 /// Reads catalog updates into `catalog` until the catalog track ends.
@@ -350,26 +311,23 @@ async fn read_catalog(
     consumer: &moq_net::broadcast::Consumer,
     catalog: &Watchable<Option<Catalog>>,
 ) {
-    let mut reader =
-        match moq_mux::catalog::Consumer::<IrohLiveExt>::new(consumer, Default::default()).await {
-            Ok(reader) => reader,
-            Err(err) => {
-                warn!(error = %err, "the catalog track could not be read");
-                return;
-            }
-        };
+    let mut reader = match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await
+    {
+        Ok(reader) => reader,
+        Err(err) => {
+            warn!(error = %err, "the catalog track could not be read");
+            return;
+        }
+    };
     loop {
         match reader.next().await {
             Ok(Some(next)) => {
-                // At trace, because a catalog is the first thing to look at when
-                // a publisher and a subscriber disagree about what is on the wire.
                 if tracing::enabled!(tracing::Level::TRACE)
                     && let Ok(json) = serde_json::to_string(&next)
                 {
                     trace!(catalog = %json, "catalog");
                 }
-                let next: HangCatalog = next;
-                catalog.set(Some(Catalog::new(next))).ok();
+                catalog.set(Some(Catalog::from(next))).ok();
             }
             Ok(None) => {
                 debug!("catalog track ended");
@@ -385,28 +343,9 @@ async fn read_catalog(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use n0_watcher::Watcher as _;
 
-    #[tokio::test]
-    async fn a_local_broadcast_plays_its_catalog_in_process() {
-        let broadcast = LocalBroadcast::new();
-        broadcast.set_metadata(crate::Metadata::default().with_display_name("ada"));
-        let remote = RemoteBroadcast::local(&broadcast);
-        let mut catalog = remote.catalog();
-        let known = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(known) = catalog.get()
-                    && known.metadata().display_name.is_some()
-                {
-                    return known;
-                }
-                catalog.updated().await.expect("the catalog keeps coming");
-            }
-        })
-        .await
-        .expect("the catalog arrived");
-        assert_eq!(known.metadata().display_name.as_deref(), Some("ada"));
-    }
+    use super::*;
 
     #[tokio::test]
     async fn a_closed_local_broadcast_closes_its_remote() {
@@ -419,8 +358,7 @@ mod tests {
         assert!(remote.is_closed());
     }
 
-    /// A broadcast seeded with the consumer its caller resolved closes once
-    /// the publisher goes, rather than waiting forever for a first route.
+    /// A resolved broadcast closes once its publisher is gone.
     #[tokio::test]
     async fn a_resolved_broadcast_closes_once_its_route_is_gone() {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
@@ -433,7 +371,7 @@ mod tests {
             .routed_broadcast("live/cam")
             .await
             .expect("resolved");
-        // Gone before the remote broadcast even starts.
+        // The publisher leaves before the remote broadcast starts.
         drop(published);
         let remote = RemoteBroadcast::from_resolved(origin.consume(), "live/cam", consumer);
         tokio::time::timeout(REROUTE_PATIENCE + Duration::from_secs(5), remote.closed())
@@ -441,8 +379,7 @@ mod tests {
             .expect("the remote closed within its re-resolve window");
     }
 
-    /// A route change ends the broadcast it served; the remote asks again and
-    /// players see a new epoch rather than an end.
+    /// A change of route gives players a new epoch instead of a close.
     #[tokio::test]
     async fn a_routed_broadcast_survives_a_change_of_route() {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());

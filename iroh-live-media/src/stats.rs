@@ -1,16 +1,13 @@
 //! Snapshots of what a broadcast and a player are doing.
 //!
-//! [`PublishStats`] and [`PlaybackStats`] are plain values, read with
-//! `stats()` as often as a UI draws. Every figure in them has exactly one
-//! writer: each rendition's encoder writes its own entry, the source's frame
-//! rate is written by the one task that reads the source, and so on. The shared
-//! counters every encoder used to write into, where the smoothed value sat
-//! somewhere among the rungs and the labels named whichever wrote last, are
-//! gone.
+//! [`PublishStats`] and [`PlaybackStats`] are plain values. A UI can read them
+//! with `stats()` as often as it draws. Every figure has exactly one writer.
+//! Each rendition's encoder writes its own entry, and the task that reads the
+//! source writes the source frame rate.
 //!
-//! Rates are counted over a window rather than derived from the gap between two
-//! events: one late frame in a 30 fps stream reads as 50 by the gap and as 30
-//! by the count, and averaging reciprocal gaps reads high besides.
+//! Rates are counted over a window instead of derived from the gap between two
+//! events. One late frame in a 30 fps stream reads as 50 by the gap and as 30
+//! by the count.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -22,10 +19,8 @@ use crate::{Bitrate, NetworkSample, video};
 
 /// What a [`LocalBroadcast`](crate::LocalBroadcast) is sending.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct PublishStats {
-    /// Frames per second arriving from the video source, which every
-    /// rendition of a ladder shares.
+    /// Frames per second arriving from the video source, shared by every rendition.
     pub source_fps: Option<f32>,
     /// Each video rendition, by name.
     pub renditions: BTreeMap<String, EncodeStats>,
@@ -35,7 +30,6 @@ pub struct PublishStats {
 
 /// One video rendition's encoder.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct EncodeStats {
     /// The encoder backend that opened, such as `openh264` or `vaapi`.
     pub encoder: Option<String>,
@@ -53,9 +47,22 @@ pub struct EncodeStats {
     pub bytes: u64,
 }
 
+impl EncodeStats {
+    /// Counts one encoded frame of `bytes` and stores the rates from a [`RateMeter`].
+    ///
+    /// `rates` holds frames and bytes per second.
+    pub(crate) fn record(&mut self, bytes: u64, rates: Option<(f64, f64)>) {
+        self.frames += 1;
+        self.bytes += bytes;
+        if let Some((fps, bytes_per_second)) = rates {
+            self.fps = Some(fps as f32);
+            self.bitrate = Some(Bitrate::from_bps((bytes_per_second * 8.0) as u64));
+        }
+    }
+}
+
 /// The audio publication.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct AudioEncodeStats {
     /// The codec, such as `opus`.
     pub codec: Option<String>,
@@ -67,14 +74,14 @@ pub struct AudioEncodeStats {
 
 /// What a [`Player`](crate::Player) is playing.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct PlaybackStats {
     /// The video decoder, while video plays.
     pub video: Option<VideoPlaybackStats>,
     /// The audio decoder, while audio plays.
     pub audio: Option<AudioPlaybackStats>,
-    /// How far behind its arrival a picture is shown: the jitter allowance plus
-    /// whatever audio is queued at the speaker.
+    /// How long after arrival a picture is shown.
+    ///
+    /// This is the jitter allowance plus the audio queued at the speaker.
     pub latency: Duration,
     /// The last reading of the link, if the broadcast has network signals.
     pub network: Option<NetworkSample>,
@@ -82,7 +89,6 @@ pub struct PlaybackStats {
 
 /// The video decoder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct VideoPlaybackStats {
     /// The rendition on screen.
     pub rendition: String,
@@ -102,7 +108,6 @@ pub struct VideoPlaybackStats {
 
 /// The audio decoder.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct AudioPlaybackStats {
     /// The rendition playing.
     pub rendition: String,
@@ -116,7 +121,6 @@ pub struct AudioPlaybackStats {
 
 /// Which medium a [`FrameTiming`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum MediaKind {
     /// A decoded picture.
     Video,
@@ -124,14 +128,13 @@ pub enum MediaKind {
     Audio,
 }
 
-/// When one frame left its decoder and when it was presented, for a timeline
-/// view of playback.
+/// When one frame left its decoder and when it was presented.
 ///
-/// Read with [`Player::timeline`](crate::Player::timeline). The gap between
-/// the two instants is what the playout clock held the frame for, and pictures
-/// and audio with the same timestamp should be presented together.
+/// Read with [`Player::timeline`](crate::Player::timeline) for a timeline view
+/// of playback. The gap between the two instants is how long the playout clock
+/// held the frame. Pictures and audio with the same timestamp should be
+/// presented together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct FrameTiming {
     /// The medium.
     pub kind: MediaKind,
@@ -139,18 +142,20 @@ pub struct FrameTiming {
     pub pts: Duration,
     /// When the decoder handed the frame over.
     pub decoded: Instant,
-    /// When the frame was presented: a picture handed to the player's frames,
-    /// or audio reaching the speaker, which is when it was written plus what
-    /// was already queued ahead of it.
+    /// When the frame was presented.
+    ///
+    /// A picture is presented when it is handed to the player's frames. Audio
+    /// is presented when it reaches the speaker: when it was written plus the
+    /// audio already queued ahead of it.
     pub presented: Instant,
 }
 
-/// How many frames a [`Timeline`] keeps per medium: ten seconds of 50 Hz audio,
-/// and more than that of 30 fps video.
+/// How many frames a [`Timeline`] keeps per medium.
+///
+/// That is ten seconds of 50 Hz audio, and more of 30 fps video.
 const TIMELINE_LEN: usize = 512;
 
-/// The last frames of one medium, oldest first, written by the task that
-/// presents them.
+/// The last frames of one medium, oldest first, written by the presenting task.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Timeline(Cell<VecDeque<FrameTiming>>);
 
@@ -172,20 +177,8 @@ impl Timeline {
 }
 
 /// A value one task writes and anyone snapshots.
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Cell<T>(Arc<Mutex<T>>);
-
-impl<T> Clone for Cell<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: Default> Default for Cell<T> {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(T::default())))
-    }
-}
 
 impl<T: Clone> Cell<T> {
     /// Changes the value in place.
@@ -235,7 +228,7 @@ impl PublishRecorder {
         cell
     }
 
-    /// Drops every video entry, as a video slot is cleared.
+    /// Drops every video entry when the video slot is cleared.
     pub(crate) fn clear_video(&self) {
         self.renditions.update(BTreeMap::clear);
         self.source_fps.update(|fps| *fps = None);
@@ -248,23 +241,24 @@ impl PublishRecorder {
         cell
     }
 
-    /// Drops the audio entry, as the audio slot is cleared.
+    /// Drops the audio entry when the audio slot is cleared.
     pub(crate) fn clear_audio(&self) {
         self.audio.update(|audio| *audio = None);
     }
 }
 
-/// How long a [`RateMeter`] counts events before it has a figure.
+/// How long a [`RateMeter`] counts events before it reports.
 ///
-/// A second is what a frame rate is quoted in, and it is short enough that a
-/// stream which stops is seen to stop.
+/// Frame rates are quoted per second, and a second is short enough to show a
+/// stopped stream quickly.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
-/// Counts events and reports how many happened per second.
+/// Counts events and reports their rate once per window.
 ///
 /// Owned by the one task that sees the events, so it needs no lock.
 #[derive(Debug)]
 pub(crate) struct RateMeter {
+    window: Duration,
     started: Instant,
     events: u32,
     amount: u64,
@@ -272,22 +266,29 @@ pub(crate) struct RateMeter {
 
 impl Default for RateMeter {
     fn default() -> Self {
-        Self::starting(Instant::now())
+        Self::over(RATE_WINDOW)
     }
 }
 
 impl RateMeter {
-    /// A meter whose window opened at `started`.
-    fn starting(started: Instant) -> Self {
+    /// Creates a meter that reports once per `window`.
+    pub(crate) fn over(window: Duration) -> Self {
+        Self::starting(window, Instant::now())
+    }
+
+    /// Creates a meter whose window opened at `started`.
+    fn starting(window: Duration, started: Instant) -> Self {
         Self {
+            window,
             started,
             events: 0,
             amount: 0,
         }
     }
 
-    /// Counts one event carrying `amount` (bytes, say), and returns events and
-    /// amount per second once the window has closed.
+    /// Counts one event carrying `amount`, such as bytes.
+    ///
+    /// Returns events and amount per second once the window has closed.
     pub(crate) fn tick(&mut self, amount: u64) -> Option<(f64, f64)> {
         self.tick_at(amount, Instant::now())
     }
@@ -296,7 +297,7 @@ impl RateMeter {
         self.events += 1;
         self.amount += amount;
         let elapsed = now.duration_since(self.started);
-        if elapsed < RATE_WINDOW {
+        if elapsed < self.window {
             return None;
         }
         let seconds = elapsed.as_secs_f64();
@@ -304,9 +305,9 @@ impl RateMeter {
             f64::from(self.events) / seconds,
             self.amount as f64 / seconds,
         );
-        // The window restarts at the reading, so the time spent computing does
-        // not accumulate across windows.
-        *self = Self::starting(now);
+        // The window restarts at the reading, so time spent computing does not
+        // add up across windows.
+        *self = Self::starting(self.window, now);
         Some(rates)
     }
 }
@@ -316,7 +317,7 @@ impl RateMeter {
 pub(crate) struct Smoothed(Option<f64>);
 
 impl Smoothed {
-    /// Weight of a new sample.
+    /// The weight of a new sample.
     const ALPHA: f64 = 0.2;
 
     /// Folds `sample` in and returns the smoothed value.
@@ -338,16 +339,14 @@ mod tests {
     /// Runs forty events at offsets from `offset` and returns the first rate.
     fn drive(offset: impl Fn(u32) -> Duration) -> f64 {
         let start = Instant::now();
-        let mut meter = RateMeter::starting(start);
+        let mut meter = RateMeter::starting(RATE_WINDOW, start);
         (0..40)
             .find_map(|event| meter.tick_at(0, start + offset(event)))
             .expect("the offsets span the window")
             .0
     }
 
-    /// Counted over a window, bursty delivery reads the same as even delivery.
-    /// The old reciprocal-of-one-gap measure read this stream at about 36 fps
-    /// while it swung between 21 and 50.
+    /// Bursty delivery reads the same rate as even delivery.
     #[test]
     fn a_burst_reads_the_same_as_an_even_stream() {
         let bursty = drive(|event| Duration::from_millis(350) * (event / 10));
@@ -359,7 +358,7 @@ mod tests {
     #[test]
     fn the_amount_is_a_rate_too() {
         let start = Instant::now();
-        let mut meter = RateMeter::starting(start);
+        let mut meter = RateMeter::starting(RATE_WINDOW, start);
         for tick in 0..30u32 {
             if let Some((_, bytes)) = meter.tick_at(2_500, start + Duration::from_millis(33) * tick)
             {
@@ -374,7 +373,7 @@ mod tests {
         assert!((70_000.0..82_000.0).contains(&bytes), "{bytes}");
     }
 
-    /// Each rendition writes its own entry, so two rungs never mix.
+    /// Each rendition writes its own entry, so two renditions never mix.
     #[test]
     fn two_renditions_keep_separate_entries() {
         let recorder = PublishRecorder::default();

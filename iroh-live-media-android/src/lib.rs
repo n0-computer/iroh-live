@@ -1,20 +1,21 @@
 //! Android integration for iroh-live-media.
 //!
-//! Provides reusable building blocks for Android apps that use iroh-live-media:
+//! Hardware H.264 through MediaCodec lives in `moq-video`. This crate holds the
+//! other pieces an Android app needs:
 //!
-//! - [`camera`] bridges Android's push-model camera callbacks to the
-//!   [`VideoSource`](iroh_live_media::VideoSource) a
-//!   [`LocalBroadcast`](iroh_live_media::LocalBroadcast) encodes
-//! - `egl` provides safe wrappers around the EGL and GLES extension functions for
-//!   the HardwareBuffer to EGLImage to GL texture path
-//! - [`handle`]: `Arc<Mutex<T>>` <-> `i64` conversion for JNI handles
+//! - [`camera`] feeds frames from Android camera callbacks into a
+//!   [`VideoSource`](iroh_live_media::VideoSource).
+//! - `renderer` draws frames to an Android `Surface` with EGL and GLES2.
+//! - `egl` wraps the EGL and GLES extension functions the renderer needs.
+//! - [`handle`] passes an `Arc<Mutex<T>>` across JNI as an `i64`.
 //!
-//! Nothing here is async. The camera bridge never blocks: a pushed frame
-//! replaces one the encoder has not taken yet.
+//! `renderer` and `egl` only exist on Android. Nothing here is async, and the
+//! camera bridge never blocks: a pushed frame replaces one the encoder has not
+//! taken yet.
 //!
 //! # Example
 //!
-//! Publish frames a camera callback pushes, and stop the camera while nobody
+//! This publishes frames from a camera callback and checks whether anyone
 //! watches:
 //!
 //! ```no_run

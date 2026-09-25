@@ -6,13 +6,13 @@ use crate::{AudioFormat, Bitrate, audio, error::Error, video};
 
 /// How a video source is encoded: one or more renditions of the same picture.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct VideoEncoding {
     /// The renditions, which a subscriber chooses among.
     pub renditions: Vec<VideoRendition>,
-    /// Try hardware encoders first, falling back to software once per
-    /// rendition if the hardware one fails to open or fails mid-stream.
-    /// Default: true.
+    /// Whether hardware encoders are tried first. Default: true.
+    ///
+    /// A rendition falls back to software once if the hardware encoder fails
+    /// to open or fails mid-stream.
     pub prefer_hardware: bool,
 }
 
@@ -30,15 +30,8 @@ impl VideoEncoding {
         }
     }
 
-    /// Returns the encoding with hardware encoders tried first or skipped.
-    #[must_use]
-    pub fn with_prefer_hardware(mut self, prefer: bool) -> Self {
-        self.prefer_hardware = prefer;
-        self
-    }
-
     /// Checks everything that can be checked without opening an encoder.
-    pub(crate) fn validate(&self, source: video::Rate, taken: &[String]) -> Result<(), Error> {
+    pub(crate) fn validate(&self, source: video::Rate) -> Result<(), Error> {
         if self.renditions.is_empty() {
             return Err(Error::invalid(
                 "a video encoding needs at least one rendition",
@@ -52,12 +45,6 @@ impl VideoEncoding {
             if !seen.insert(rendition.name.as_str()) {
                 return Err(Error::invalid(format!(
                     "two renditions are named {}",
-                    rendition.name
-                )));
-            }
-            if taken.contains(&rendition.name) {
-                return Err(Error::invalid(format!(
-                    "the rendition name {} is already a track on this broadcast",
                     rendition.name
                 )));
             }
@@ -86,8 +73,8 @@ impl VideoEncoding {
                     rendition.name
                 )));
             }
-            // The one encoder every build carries is OpenH264, which speaks
-            // H.264 alone, so a software-only H.265 rendition can never open.
+            // OpenH264 is the one encoder every build carries, and it only
+            // encodes H.264. A software-only H.265 rendition can never open.
             let software_only =
                 !self.prefer_hardware || rendition.encoder == video::encode::Kind::Software;
             if rendition.codec == video::encode::Codec::H265 && software_only {
@@ -102,22 +89,20 @@ impl VideoEncoding {
 
 /// One encoding of a broadcast's picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct VideoRendition {
-    /// The name, which is its track name and what a subscriber picks by.
+    /// The track name, which a subscriber picks the rendition by.
     pub name: String,
     /// The encoded size. `None` encodes at the source's own size.
     pub size: Option<video::Size>,
     /// The target bitrate. `None` derives one from the size and rate.
     pub bitrate: Option<Bitrate>,
-    /// The frame rate. `None` follows the source; at most the source's rate.
+    /// The frame rate. `None` follows the source. It cannot exceed the source's rate.
     pub rate: Option<video::Rate>,
     /// How often the encoder inserts a keyframe.
     ///
-    /// A subscriber cannot draw anything until the next keyframe, so this is
-    /// join latency far more than it is bitrate: how long somebody who just
-    /// scanned a code waits for a picture, and how long a rendition switch
-    /// takes to land.
+    /// A subscriber cannot draw anything before a keyframe. This interval
+    /// mostly sets how long a new viewer waits for a picture and how long a
+    /// rendition switch takes.
     pub keyframe_interval: Duration,
     /// Which codec to encode.
     pub codec: video::encode::Codec,
@@ -126,8 +111,7 @@ pub struct VideoRendition {
 }
 
 impl VideoRendition {
-    /// Creates a rendition at the source's own size, with a keyframe every two
-    /// seconds.
+    /// Creates a rendition at the source's size with a keyframe every two seconds.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -160,59 +144,20 @@ impl VideoRendition {
         Self::preset("1080p", 1920, 1080, 4_000)
     }
 
-    /// A preset at 16:9, with a bitrate reviewed for 30 fps camera content:
-    /// about what the encoder derives on its own, rounded up a little, since
-    /// a ladder rung that starves at its own ceiling is worse than one that
-    /// spends a bit more.
+    /// Creates a 16:9 preset with a bitrate chosen for 30 fps camera content.
+    ///
+    /// The bitrate is a little above what the encoder derives on its own. A
+    /// rendition that starves at its ceiling looks worse than one that spends a
+    /// bit more.
     fn preset(name: &str, width: u32, height: u32, kbps: u64) -> Self {
-        Self::new(name)
-            .with_size(video::Size::new(width, height))
-            .with_bitrate(Bitrate::from_kbps(kbps))
+        Self {
+            size: Some(video::Size::new(width, height)),
+            bitrate: Some(Bitrate::from_kbps(kbps)),
+            ..Self::new(name)
+        }
     }
 
-    /// Returns the rendition scaled to `size`.
-    #[must_use]
-    pub fn with_size(mut self, size: video::Size) -> Self {
-        self.size = Some(size);
-        self
-    }
-
-    /// Returns the rendition with a target bitrate.
-    #[must_use]
-    pub fn with_bitrate(mut self, bitrate: Bitrate) -> Self {
-        self.bitrate = Some(bitrate);
-        self
-    }
-
-    /// Returns the rendition at a frame rate below the source's.
-    #[must_use]
-    pub fn with_rate(mut self, rate: video::Rate) -> Self {
-        self.rate = Some(rate);
-        self
-    }
-
-    /// Returns the rendition with a different keyframe interval.
-    #[must_use]
-    pub fn with_keyframe_interval(mut self, interval: Duration) -> Self {
-        self.keyframe_interval = interval;
-        self
-    }
-
-    /// Returns the rendition encoded with `codec`.
-    #[must_use]
-    pub fn with_codec(mut self, codec: video::encode::Codec) -> Self {
-        self.codec = codec;
-        self
-    }
-
-    /// Returns the rendition encoded by a specific backend.
-    #[must_use]
-    pub fn with_encoder(mut self, encoder: video::encode::Kind) -> Self {
-        self.encoder = encoder;
-        self
-    }
-
-    /// The encoder config for this rendition of a source of `size` at `rate`.
+    /// Returns the encoder config for this rendition of a source of `size` at `rate`.
     pub(crate) fn encode_config(
         &self,
         size: video::Size,
@@ -223,7 +168,7 @@ impl VideoRendition {
         let size = self.size.unwrap_or(size);
         let rate = self.rate.unwrap_or(rate);
         let mut config = video::encode::Config::new(size.width, size.height, rate);
-        config.bitrate = self.bitrate.map(Bitrate::to_moq);
+        config.bitrate = self.bitrate;
         config.codec = self.codec;
         config.kind = match (&self.encoder, prefer_hardware) {
             (video::encode::Kind::Auto, false) => video::encode::Kind::Software,
@@ -237,7 +182,6 @@ impl VideoRendition {
 
 /// How an audio source is encoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct AudioEncoding {
     /// Which codec to encode.
     pub codec: audio::encode::Codec,
@@ -245,8 +189,9 @@ pub struct AudioEncoding {
     pub bitrate: Option<Bitrate>,
     /// The channel layout. `None` follows the source.
     pub layout: Option<audio::Layout>,
-    /// The duration of one encoded frame. Opus takes 2.5, 5, 10, 20, 40 or 60
-    /// ms.
+    /// The duration of one encoded frame.
+    ///
+    /// Opus accepts 2.5, 5, 10, 20, 40 or 60 ms.
     pub frame_duration: Duration,
 }
 
@@ -281,28 +226,7 @@ impl AudioEncoding {
         }
     }
 
-    /// Returns the encoding with a target bitrate.
-    #[must_use]
-    pub fn with_bitrate(mut self, bitrate: Bitrate) -> Self {
-        self.bitrate = Some(bitrate);
-        self
-    }
-
-    /// Returns the encoding with a channel layout.
-    #[must_use]
-    pub fn with_layout(mut self, layout: audio::Layout) -> Self {
-        self.layout = Some(layout);
-        self
-    }
-
-    /// Returns the encoding with a frame duration.
-    #[must_use]
-    pub fn with_frame_duration(mut self, duration: Duration) -> Self {
-        self.frame_duration = duration;
-        self
-    }
-
-    /// The track name the encoding publishes under.
+    /// Returns the track name the encoding publishes under.
     pub(crate) fn track_name(&self) -> String {
         self.codec.to_string()
     }
@@ -317,8 +241,8 @@ impl AudioEncoding {
         if self.frame_duration.is_zero() {
             return Err(Error::invalid("an audio frame duration cannot be zero"));
         }
-        // Opus encodes only these frame sizes; another one would fail in the
-        // publication, long after the call that asked for it returned.
+        // Opus accepts only these frame sizes. Another one would fail later in
+        // the publication, after this call has returned.
         const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_000];
         if self.codec == audio::encode::Codec::Opus
             && !OPUS_FRAMES_MICROS.contains(&self.frame_duration.as_micros())
@@ -331,8 +255,9 @@ impl AudioEncoding {
         Ok(())
     }
 
-    /// The codec settings for a source in `format`, or at the codec's default
-    /// rate where the source is not described yet.
+    /// Returns the codec settings for a source in `format`.
+    ///
+    /// Without a format, the codec's default rate applies.
     pub(crate) fn settings(&self, format: Option<AudioFormat>) -> audio::encode::Settings {
         let input = match format {
             Some(format) => audio::encode::Input::new(format.sample_rate, format.layout),
@@ -342,7 +267,7 @@ impl AudioEncoding {
         if let Some(layout) = self.layout {
             settings.layout = layout;
         }
-        settings.bitrate = self.bitrate.map(Bitrate::to_moq);
+        settings.bitrate = self.bitrate;
         settings.frame_duration = self.frame_duration;
         settings
     }
@@ -366,7 +291,7 @@ mod tests {
     fn an_empty_ladder_is_refused() {
         let encoding = VideoEncoding::ladder([]);
         assert!(matches!(
-            encoding.validate(fps(30), &[]),
+            encoding.validate(fps(30)),
             Err(Error::InvalidConfig { .. })
         ));
     }
@@ -375,38 +300,42 @@ mod tests {
     fn duplicate_names_are_refused() {
         let encoding = VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p360()]);
         assert!(matches!(
-            encoding.validate(fps(30), &[]),
+            encoding.validate(fps(30)),
             Err(Error::InvalidConfig { .. })
         ));
     }
 
     #[test]
-    fn a_name_the_audio_already_uses_is_refused() {
-        let encoding = VideoEncoding::single(VideoRendition::new("opus"));
-        assert!(encoding.validate(fps(30), &["opus".into()]).is_err());
-    }
-
-    #[test]
     fn a_rate_above_the_source_is_refused() {
-        let encoding = VideoEncoding::single(VideoRendition::p360().with_rate(fps(60)));
-        assert!(encoding.validate(fps(30), &[]).is_err());
-        assert!(encoding.validate(fps(60), &[]).is_ok());
+        let encoding = VideoEncoding::single(VideoRendition {
+            rate: Some(fps(60)),
+            ..VideoRendition::p360()
+        });
+        assert!(encoding.validate(fps(30)).is_err());
+        assert!(encoding.validate(fps(60)).is_ok());
     }
 
     #[test]
     fn software_h265_has_no_encoder() {
-        let encoding =
-            VideoEncoding::single(VideoRendition::p360().with_codec(video::encode::Codec::H265))
-                .with_prefer_hardware(false);
+        let encoding = VideoEncoding {
+            prefer_hardware: false,
+            ..VideoEncoding::single(VideoRendition {
+                codec: video::encode::Codec::H265,
+                ..VideoRendition::p360()
+            })
+        };
         assert!(matches!(
-            encoding.validate(fps(30), &[]),
+            encoding.validate(fps(30)),
             Err(Error::NoEncoder { .. })
         ));
     }
 
     #[test]
     fn the_keyframe_interval_reaches_the_encoder_config() {
-        let rendition = VideoRendition::new("video").with_keyframe_interval(Duration::from_secs(1));
+        let rendition = VideoRendition {
+            keyframe_interval: Duration::from_secs(1),
+            ..VideoRendition::new("video")
+        };
         let size = video::Size::new(1280, 720);
         assert_eq!(
             rendition.encode_config(size, fps(30), None, true).gop,
@@ -423,31 +352,39 @@ mod tests {
         let size = video::Size::new(640, 360);
         let auto = VideoRendition::p360().encode_config(size, fps(30), None, false);
         assert_eq!(auto.kind, video::encode::Kind::Software);
-        let named = VideoRendition::p360()
-            .with_encoder(video::encode::Kind::Named("vaapi".into()))
-            .encode_config(size, fps(30), None, false);
+        let named = VideoRendition {
+            encoder: video::encode::Kind::Named("vaapi".into()),
+            ..VideoRendition::p360()
+        }
+        .encode_config(size, fps(30), None, false);
         assert_eq!(named.kind, video::encode::Kind::Named("vaapi".into()));
     }
 
     #[test]
     fn voice_is_mono_opus() {
-        let settings =
-            AudioEncoding::voice().settings(Some(AudioFormat::new(48_000, audio::Layout::Stereo)));
+        let settings = AudioEncoding::voice().settings(Some(AudioFormat {
+            sample_rate: 48_000,
+            layout: audio::Layout::Stereo,
+        }));
         assert_eq!(settings.layout, audio::Layout::Mono);
         assert_eq!(settings.codec, audio::encode::Codec::Opus);
     }
 
     #[test]
     fn pcm_follows_the_source() {
-        let settings =
-            AudioEncoding::pcm().settings(Some(AudioFormat::new(44_100, audio::Layout::Stereo)));
+        let settings = AudioEncoding::pcm().settings(Some(AudioFormat {
+            sample_rate: 44_100,
+            layout: audio::Layout::Stereo,
+        }));
         assert_eq!(settings.sample_rate, 44_100);
         assert_eq!(settings.layout, audio::Layout::Stereo);
         assert!(
-            AudioEncoding::pcm()
-                .with_bitrate(Bitrate::from_kbps(1))
-                .validate()
-                .is_err()
+            AudioEncoding {
+                bitrate: Some(Bitrate::from_kbps(1)),
+                ..AudioEncoding::pcm()
+            }
+            .validate()
+            .is_err()
         );
     }
 }

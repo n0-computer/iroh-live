@@ -148,7 +148,7 @@ mod app {
         let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 if let Some(known) = n0_watcher::Watcher::get(&mut catalog)
-                    && !known.video().is_empty()
+                    && !known.video.renditions.is_empty()
                 {
                     return Ok(known);
                 }

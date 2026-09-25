@@ -6,25 +6,24 @@ the catalog, and holds the subscription. `RemoteBroadcast::play` starts a
 decoders, its playout clock, its rendition choice, and its statistics. Two
 players of one broadcast are two playbacks and cannot interfere. Decoding is
 upstream: `moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a
-backend from the catalog entry and hand back frames. Three things have no
+backend from the catalog entry and hand back frames. Two things have no
 upstream counterpart and live here.
 
 Rendition selection is the first. `moq_mux::select` is fixed at construction, so
 a subscriber that wants to follow its downlink has to choose for itself. The
 second is the playout clock, which keeps audio and video aligned across two
-independent decode paths. The third is the catalog extension, where the
-publisher's identity rides alongside the media sections.
+independent decode paths.
 
 ## Opening a broadcast
 
-`RemoteBroadcast::from_moq(consumer)` starts reading the catalog and returns at
-once. `catalog()` is a watcher over an `Option<Catalog>` that reads `None` until
-the first catalog arrives, which keeps construction usable in a UI reconcile
+Every constructor starts reading the catalog and returns at once. `catalog()`
+is a watcher over an `Option<Catalog>` that reads `None` until the first catalog
+arrives, which keeps construction usable in a UI reconcile
 loop; a caller that needs the catalog waits on the watcher. A background task
 follows the catalog track and republishes each update.
 
-`RemoteBroadcast::from_origin(origin, path)` follows a path in a route table
-instead. When a change of route ends the broadcast, it is requested again
+`RemoteBroadcast::from_origin(origin, path)` follows a path in a route table.
+When a change of route ends the broadcast, it is requested again
 through the next route, and players see a new generation of the broadcast
 rather than an end. The broadcast counts as closed only once no route serves the
 path for three seconds, so `closed()` resolves about three seconds after a
@@ -35,12 +34,10 @@ then closes the broadcast rather than leaving it waiting.
 `RemoteBroadcast::local(&broadcast)` reads a `LocalBroadcast` in-process, with
 no transport at all.
 
-`Catalog` wraps hang's catalog and is compared by snapshot identity: every
-update the publisher sends is a new snapshot, which is the honest comparison
-for a watcher, since hang's catalog carries floats and is only `PartialEq`.
-`video()` lists the renditions largest first as `VideoRenditionInfo`, `audio()`
-lists `AudioRenditionInfo`, and `metadata()` carries the publisher's display
-name. `as_hang()` reaches hang's own shape for a caller that needs it.
+`Catalog` is hang's catalog behind an `Arc`, and derefs to it. It is compared
+by snapshot identity: every update the publisher sends is a new snapshot, which
+is the honest comparison for a watcher, since hang's catalog carries floats and
+is only `PartialEq`. `ranked_video()` lists the video renditions largest first.
 
 In iroh-live, `Live::subscribe` resolves the path first and builds the
 `RemoteBroadcast` with `from_resolved` on the transport's route table, returning
@@ -139,12 +136,13 @@ That figure is the only latency either side can actually measure.
 buffered duration and the most recent peak for a meter. There is no audio
 ladder, so the first audio rendition plays and there is nothing to switch
 between. The audio task reopens on a new route to the broadcast, and retries a
-track that ended or never opened when the catalog changes.
+track that ended or never opened when the catalog changes, and every two
+seconds.
 
 ## Player configuration
 
-`PlayerConfig` carries a `RenditionMode`, a `Latency`, the `AudioOutput`, and a
-decoder selection. `Latency { min, max }` is how far behind live to run: the
+`PlayerConfig` carries a `RenditionMode`, a `Latency`, the `AudioOutput`, a
+decoder selection, and the `Adaptation` thresholds and timers. `Latency { min, max }` is how far behind live to run: the
 playout clock holds each picture for `min`, and `max` becomes `max_age` on both
 `moq_video::decode::Options` and `moq_audio::decode::Options`, which is where
 upstream drops stale groups. The default holds for 100 ms and skips past

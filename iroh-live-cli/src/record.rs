@@ -57,10 +57,10 @@ async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOption
     let catalog = crate::playback::catalog(sub.broadcast()).await?;
     println!(
         "catalog: {} video, {} audio renditions",
-        catalog.video().len(),
-        catalog.audio().len()
+        catalog.video.renditions.len(),
+        catalog.audio.renditions.len()
     );
-    if catalog.video().is_empty() && catalog.audio().is_empty() {
+    if catalog.video.renditions.is_empty() && catalog.audio.renditions.is_empty() {
         return Err(anyerr!(
             "the broadcast carries no video and no audio, so there is nothing \
              to record"
@@ -128,13 +128,11 @@ impl RecordOptions {
             RecordFormat::Fmp4 => media::RecordFormat::Fmp4,
             RecordFormat::Mkv => media::RecordFormat::Mkv,
         };
-        let mut config = RecordConfig::default()
-            .with_format(format)
-            .with_max_age(self.latency);
-        if let Some(name) = &self.rendition {
-            config = config.with_rendition(name.clone());
+        RecordConfig {
+            format,
+            rendition: self.rendition.clone(),
+            max_age: self.latency,
         }
-        config
     }
 }
 
@@ -205,8 +203,6 @@ fn format_from_extension(path: &Path) -> Option<RecordFormat> {
     match media::RecordFormat::from_path(path)? {
         media::RecordFormat::Fmp4 => Some(RecordFormat::Fmp4),
         media::RecordFormat::Mkv => Some(RecordFormat::Mkv),
-        // A container the media crate learned and this flag has not.
-        _ => None,
     }
 }
 
@@ -229,13 +225,13 @@ fn unknown_extension(path: &Path) -> n0_error::AnyError {
 /// Fails if the catalog has no video rendition of that name, listing the ones
 /// it does have.
 fn check_rendition(catalog: &Catalog, name: &str) -> Result<()> {
-    if catalog.video_rendition(name).is_some() {
+    if catalog.video.renditions.contains_key(name) {
         return Ok(());
     }
     let offered: Vec<&str> = catalog
-        .video()
-        .iter()
-        .map(|info| info.name.as_str())
+        .ranked_video()
+        .into_iter()
+        .map(|(name, _)| name)
         .collect();
     Err(anyerr!(
         "the broadcast has no video rendition named '{name}'; it offers {}",

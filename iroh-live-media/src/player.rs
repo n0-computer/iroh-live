@@ -1,15 +1,15 @@
 //! Playback: one player over a remote broadcast.
 //!
-//! A [`Player`] owns everything mutable about one playback: its decoders, its
-//! playout clock, its rendition choice and its statistics. Two views of one
-//! broadcast are two players, and cannot interfere.
+//! A [`Player`] owns its decoders, its playout clock, its rendition choice and
+//! its statistics. Two views of one broadcast are two players, and they do not
+//! interfere.
 //!
-//! Underneath, three tasks cooperate. The selector turns the rendition mode,
-//! the catalog and the network into the rendition that should play. The video
+//! Three tasks run underneath. The selector turns the rendition mode, the
+//! catalog and the network into the rendition that should play. The video
 //! supervisor keeps one decoder playing and at most one replacement warming
 //! up, and hands over once the replacement has caught up
 //! ([`switch`](self::switch)). The audio task decodes into the output and
-//! reports how much it has buffered, which is what the video waits on.
+//! reports how much it has buffered. The video waits on that figure.
 
 use std::{
     sync::{Arc, Mutex},
@@ -31,17 +31,17 @@ use crate::{
 };
 
 mod audio;
-pub(crate) mod bound;
+mod bound;
 mod clock;
 mod select;
 pub(crate) mod switch;
 mod video_task;
 
+pub use self::bound::Adaptation;
 pub(crate) use self::clock::PlayoutClock;
 
 /// How to choose the video rendition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RenditionMode {
     /// Follow the link, never above `max_height` if set (a grid tile).
     ///
@@ -89,12 +89,11 @@ impl RenditionMode {
 
 /// How far behind live to run.
 ///
-/// The playout clock holds each picture for `min` past its arrival, plus
-/// whatever audio is queued at the speaker, and media later than `max` is
-/// skipped rather than played; `max` also bounds what the transport keeps for
-/// the player (moq `max_age`). `min == max` is a fixed latency.
+/// The playout clock holds each picture for `min` past its arrival, plus the
+/// audio queued at the speaker. Media later than `max` is skipped. `max` also
+/// bounds what the transport keeps for the player (moq `max_age`). Setting
+/// `min == max` gives a fixed latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Latency {
     /// The jitter allowance every picture is held for.
     pub min: Duration,
@@ -111,36 +110,43 @@ impl Latency {
         }
     }
 
-    /// Returns a latency the playout may run anywhere between `min` and `max`.
-    pub const fn range(min: Duration, max: Duration) -> Self {
-        Self { min, max }
-    }
-
     /// No buffer and no pacing: a frame presents as soon as it decodes.
     ///
-    /// Media older than 150 ms is still skipped, since a player with no
-    /// buffer is one that wants the live edge.
+    /// Media older than 150 ms is still skipped: a player without a buffer
+    /// wants the live edge.
     pub const IMMEDIATE: Self = Self {
         min: Duration::ZERO,
         max: Duration::from_millis(150),
     };
 
-    /// Whether frames are held for the clock at all.
+    /// Returns whether frames are held for the clock.
     pub(crate) fn paced(&self) -> bool {
         !self.min.is_zero()
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        match self.min > self.max {
+            true => Err(Error::invalid(format!(
+                "a latency's minimum ({:?}) is above its maximum ({:?})",
+                self.min, self.max
+            ))),
+            false => Ok(()),
+        }
     }
 }
 
 impl Default for Latency {
     /// Held for 100 ms, and skipped past 150 ms.
     fn default() -> Self {
-        Self::range(Duration::from_millis(100), Duration::from_millis(150))
+        Self {
+            min: Duration::from_millis(100),
+            max: Duration::from_millis(150),
+        }
     }
 }
 
 /// How a player plays.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
@@ -148,72 +154,14 @@ pub struct PlayerConfig {
     pub latency: Latency,
     /// Where audio plays. `None` does not subscribe to audio at all.
     pub audio: Option<AudioOutput>,
-    /// Which decoder backend to open; upstream's `Kind`, `Auto` by default.
+    /// The decoder backend to open, `Auto` by default.
     pub decoder: video::decode::Kind,
-    /// The adaptation thresholds and timers, the production ones unless a
-    /// test set others through `with_tuning`.
-    pub(crate) tuning: bound::Tuning,
-}
-
-impl PlayerConfig {
-    /// Returns the config with a rendition mode.
-    #[must_use]
-    pub fn with_rendition(mut self, mode: RenditionMode) -> Self {
-        self.rendition = mode;
-        self
-    }
-
-    /// Returns the config with a latency.
-    #[must_use]
-    pub fn with_latency(mut self, latency: Latency) -> Self {
-        self.latency = latency;
-        self
-    }
-
-    /// Returns the config with audio playing through `output`.
-    #[must_use]
-    pub fn with_audio(mut self, output: &AudioOutput) -> Self {
-        self.audio = Some(output.clone());
-        self
-    }
-
-    /// Returns the config with a decoder backend.
-    #[must_use]
-    pub fn with_decoder(mut self, decoder: video::decode::Kind) -> Self {
-        self.decoder = decoder;
-        self
-    }
-
-    /// Returns the config with the adaptation thresholds and timers `tuning`.
-    ///
-    /// For tests that cannot wait out the production timers; see
-    /// [`test_util`](crate::test_util). Behind the `test-util` feature, which
-    /// no application should enable.
-    #[cfg(feature = "test-util")]
-    #[must_use]
-    pub fn with_tuning(mut self, tuning: crate::test_util::Tuning) -> Self {
-        self.tuning = tuning;
-        self
-    }
-
-    fn validate(&self) -> Result<(), Error> {
-        validate_latency(&self.latency)
-    }
-}
-
-fn validate_latency(latency: &Latency) -> Result<(), Error> {
-    match latency.min > latency.max {
-        true => Err(Error::invalid(format!(
-            "a latency's minimum ({:?}) is above its maximum ({:?})",
-            latency.min, latency.max
-        ))),
-        false => Ok(()),
-    }
+    /// How automatic selection follows the link.
+    pub adaptation: Adaptation,
 }
 
 /// The state of a player.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct PlayerStatus {
     /// The video slot.
     pub video: SlotState,
@@ -229,8 +177,9 @@ pub struct PlayerStatus {
     pub switch_error: Option<Arc<Error>>,
     /// The decoder backend running, such as `vaapi`.
     pub decoder: Option<String>,
-    /// The rendition whose failure `video` reports, when it is `Failed`, so a
-    /// wait for another rendition is not handed an error that is not its own.
+    /// The rendition whose failure `video` reports when it is `Failed`.
+    ///
+    /// A wait for another rendition must not get an error that is not its own.
     pub(crate) failed_rendition: Option<String>,
 }
 
@@ -252,6 +201,16 @@ impl PartialEq for PlayerStatus {
 }
 
 impl Eq for PlayerStatus {}
+
+impl PlayerStatus {
+    /// Sets the video slot to `state` with nothing on screen or on its way.
+    pub(crate) fn clear_video(&mut self, state: SlotState) {
+        self.video = state;
+        self.rendition = None;
+        self.switching_to = None;
+        self.decoder = None;
+    }
+}
 
 /// The player's status, written by its tasks.
 #[derive(Debug, Clone)]
@@ -319,11 +278,10 @@ pub(crate) struct Controls {
     pub(crate) volume: watch::Sender<f32>,
 }
 
-/// One playback: video into [`VideoFrames`], audio into an
-/// [`AudioOutput`].
+/// One playback: video into [`VideoFrames`], audio into an [`AudioOutput`].
 ///
-/// Dropping it stops its decoders. Not `Clone`: the player is the owner of
-/// its playback, and a second view of the broadcast is a second player.
+/// Dropping it stops its decoders. It is not `Clone`: a second view of the
+/// broadcast is a second player.
 #[derive(Debug)]
 pub struct Player {
     broadcast: RemoteBroadcast,
@@ -345,10 +303,9 @@ impl Drop for Player {
 }
 
 impl Player {
-    /// Starts playing `broadcast`. Called by
-    /// [`RemoteBroadcast::play`](crate::RemoteBroadcast::play).
+    /// Starts playing `broadcast`, for [`RemoteBroadcast::play`].
     pub(crate) fn start(broadcast: RemoteBroadcast, config: PlayerConfig) -> Result<Self, Error> {
-        config.validate()?;
+        config.latency.validate()?;
         let span = tracing::info_span!(parent: broadcast.span(), "player");
         let status = StatusCell::new(PlayerStatus {
             mode: config.rendition.clone(),
@@ -369,18 +326,18 @@ impl Player {
             volume: watch::Sender::new(1.0),
         });
         let (events, _) = broadcast::channel(16);
-        let clock = PlayoutClock::with_jitter(config.latency.min);
+        let clock = PlayoutClock::new(config.latency.min);
         let stats = PlaybackRecorder::default();
         let shutdown = CancellationToken::new();
         let slot = FrameSlot::new();
         let frames = slot.frames();
-        // The supervisor tells the selector which renditions failed, so they
-        // are left alone for a while. Bounded: a report that does not fit is a
-        // report of a failure already being backed off.
+        // The supervisor reports failed renditions, and the selector backs off
+        // from them. A report that does not fit is for a failure already
+        // backed off.
         let (reports_tx, reports_rx) = mpsc::channel(8);
         let (desired_tx, desired_rx) = watch::channel(None);
-        // The target on screen, exactly: the selector falls back to its
-        // decoder configuration when a change of decoder fails.
+        // The exact target on screen, with its decoder configuration. The
+        // selector falls back to it when a decoder change fails.
         let (playing_tx, playing_rx) = watch::channel(None);
 
         let mut tasks = Vec::new();
@@ -394,7 +351,7 @@ impl Player {
                 playing: playing_rx,
                 desired: desired_tx,
                 clock: clock.clone(),
-                tuning: config.tuning.clone(),
+                adaptation: config.adaptation,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::debug_span!(parent: &span, "select")),
@@ -410,7 +367,7 @@ impl Player {
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
-                switch_deadline: config.tuning.switch_deadline,
+                switch_deadline: config.adaptation.switch_deadline,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::info_span!(parent: &span, "video")),
@@ -446,10 +403,9 @@ impl Player {
 
     /// Returns the decoded frames.
     ///
-    /// Every call returns a handle onto the same stream, which survives
-    /// rendition switches and decoder changes. Each handle keeps its own
-    /// cursor. The stream ends once the broadcast closes, or the player is
-    /// dropped.
+    /// Every call returns a handle onto the same stream, and each handle keeps
+    /// its own cursor. The stream survives rendition switches and decoder
+    /// changes. It ends when the broadcast closes or the player is dropped.
     pub fn video(&self) -> VideoFrames {
         self.frames.clone()
     }
@@ -467,16 +423,16 @@ impl Player {
 
     /// Changes how far behind live the player runs.
     ///
-    /// The jitter allowance moves at once. A changed maximum rebuilds the
-    /// video decoder behind the picture, which takes over once it has caught
-    /// up, so nothing goes blank. Audio keeps the maximum it opened with until
-    /// it next opens, since rebuilding it would be heard.
+    /// The jitter allowance changes at once. A new maximum rebuilds the video
+    /// decoder behind the picture, and the new decoder takes over once it has
+    /// caught up. Audio keeps its old maximum until it next opens, because a
+    /// rebuild would be audible.
     ///
     /// # Errors
     ///
     /// Fails if `latency.min` is above `latency.max`.
     pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
-        validate_latency(&latency)?;
+        latency.validate()?;
         self.clock.set_jitter(latency.min);
         self.controls.latency.send_replace(latency);
         Ok(())
@@ -501,7 +457,7 @@ impl Player {
         self.status.watch.watch()
     }
 
-    /// Returns what the player is playing.
+    /// Returns the player's playback statistics.
     pub fn stats(&self) -> PlaybackStats {
         PlaybackStats {
             video: self.stats.video.get(),
@@ -511,12 +467,11 @@ impl Player {
         }
     }
 
-    /// Returns the last frames presented, video and audio together, ordered
-    /// by when they were presented.
+    /// Returns the last presented video and audio frames, in presentation order.
     ///
     /// Keeps a few hundred frames of each medium, about ten seconds at usual
-    /// rates. For a debugging view of pacing and A/V sync: read it as often as
-    /// such a view draws, not per frame.
+    /// rates. It is meant for a debugging view of pacing and A/V sync. Read it
+    /// once per redraw of that view, not per frame.
     pub fn timeline(&self) -> Vec<FrameTiming> {
         let mut frames: Vec<FrameTiming> = self
             .stats
@@ -531,17 +486,16 @@ impl Player {
 
     /// Waits until `name` is on screen.
     ///
-    /// Waits through whatever the rendition mode decides meanwhile: it resolves
-    /// once `name` plays, and fails once a switch to `name` was superseded,
-    /// withdrawn or failed, once the catalog shows no such rendition, once the
-    /// video failed with nothing left playing, or once the player's video
-    /// ended. Callers bound the wait with `tokio::time::timeout`.
+    /// The wait follows whatever the rendition mode decides meanwhile. Bound it
+    /// with `tokio::time::timeout`.
     ///
     /// Cancellation safe: dropping the future leaves the switch running.
     ///
     /// # Errors
     ///
-    /// Returns the [`SwitchError`] that ended the wait.
+    /// Fails when a switch to `name` is superseded, withdrawn or fails, when
+    /// the catalog has no such rendition, when the video failed with nothing
+    /// left playing, or when the player's video ended.
     pub async fn wait_for_rendition(&self, name: &str) -> Result<(), SwitchError> {
         let mut events = self.events.subscribe();
         let mut status = self.status.watch.watch();
@@ -559,8 +513,8 @@ impl Player {
             match &current.video {
                 SlotState::Ended => return Err(n0_error::e!(SwitchError::Ended)),
                 // Nothing on screen and nothing on its way: the last switch
-                // failed, which the waiter hears as such rather than as an end,
-                // whichever of the status and the event it sees first.
+                // failed. Report a failure, whether the status or the event
+                // arrives first.
                 SlotState::Failed(source)
                     if current.switching_to.is_none()
                         && current.failed_rendition.as_deref() == Some(name) =>
@@ -573,7 +527,7 @@ impl Player {
                 _ => {}
             }
             if let Some(known) = catalog.get()
-                && known.video_rendition(name).is_none()
+                && !known.video.renditions.contains_key(name)
             {
                 return Err(n0_error::e!(SwitchError::UnknownRendition {
                     rendition: name.to_string()
@@ -582,8 +536,8 @@ impl Player {
             tokio::select! {
                 event = events.recv() => match event {
                     Ok(SwitchEvent::Landed(landed)) if landed == name => return Ok(()),
-                    // Superseded by a switch to the same rendition under a new
-                    // decoder configuration, which is still a switch to `name`.
+                    // A switch to `name` under a new decoder configuration is
+                    // still a switch to `name`.
                     Ok(SwitchEvent::Abandoned(rendition, Abandon::Superseded))
                         if rendition == name
                             && status.get().switching_to.as_deref() == Some(name) => {}
