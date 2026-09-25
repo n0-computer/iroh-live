@@ -84,7 +84,6 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let connect = moq_tokio::connect::Config::default();
 
     let iroh_secret = secret_key()?;
-    let alpns = iroh_moq::alpns().into_iter().map(<[u8]>::to_vec).collect();
     // mDNS finds a ticket's publisher on this machine or LAN at once, where
     // pkarr and DNS take seconds and need internet. `Announce`, since clients
     // reach the relay by endpoint id.
@@ -92,9 +91,6 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         secret_key: Some(iroh_secret),
         mdns: Mdns::Announce,
     }
-    .builder()
-    .await
-    .alpns(alpns)
     .bind()
     .await?;
 

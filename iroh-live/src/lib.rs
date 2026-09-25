@@ -60,7 +60,7 @@
 //! | `AudioSource::microphone` | yes | nothing is open yet |
 //! | `AudioOutput::open`, `AudioOutput::devices` | yes | closes the device, or abandons the query |
 //! | `AudioOutput::switch` | yes | the switch completes, only its result is lost |
-//! | `EndpointOptions::bind`, `EndpointOptions::builder` | yes | nothing is bound |
+//! | [`EndpointOptions::bind`] | yes | nothing is bound |
 //! | [`Live::subscribe`], [`Call::dial`], [`Call::accept`], `Moq::subscribe`, `Moq::connect`, `Moq::connect_with`, `Session::subscribe`, `Room::subscribe` | yes | abandons the wait; a dial it started continues for other callers |
 //! | `moq::transport::dial`, `moq::transport::accept` | yes | drops the connection being set up |
 //! | `Moq::accept` | yes | a queued session stays queued |

@@ -62,10 +62,9 @@ impl EndpointOptions {
 
     /// Returns an endpoint builder with [`MoqPreset`], the key and mDNS applied.
     ///
-    /// For a caller that sets more before binding. If mDNS cannot start, as in
-    /// a sandbox or on a phone without a multicast lock, logs a warning and
-    /// goes without it.
-    pub async fn builder(self) -> Builder {
+    /// If mDNS cannot start, as in a sandbox or on a phone without a multicast
+    /// lock, logs a warning and goes without it.
+    async fn builder(self) -> Builder {
         let mut builder = Endpoint::builder(MoqPreset);
         if let Some(key) = self.secret_key {
             builder = builder.secret_key(key);
