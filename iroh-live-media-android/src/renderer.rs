@@ -84,7 +84,8 @@ pub struct AndroidRenderer {
     gl: glow::Context,
     #[debug(skip)]
     egl: Egl,
-    extensions: Extensions,
+    /// `None` if the driver lacks them, and then hardware buffers are not drawn.
+    extensions: Option<Extensions>,
     egl_display: egl_api::Display,
     egl_context: egl_api::Context,
     egl_surface: egl_api::Surface,
@@ -257,8 +258,10 @@ impl AndroidRenderer {
     /// Draws an `AHardwareBuffer` frame, letterboxed and rotated.
     ///
     /// The buffer is imported as an `EGLImage` for this one draw, without a
-    /// copy. If the import fails, this logs a warning and draws nothing. Call
-    /// [`Self::swap_buffers`] afterwards, then release the buffer.
+    /// copy. If the import fails, this logs a warning and draws nothing. If the
+    /// driver lacks the EGL extensions, it draws nothing, and [`Self::new`]
+    /// warned about it. Call [`Self::swap_buffers`] afterwards, then release
+    /// the buffer.
     ///
     /// # Safety
     ///
@@ -273,17 +276,19 @@ impl AndroidRenderer {
         video_h: u32,
         rotation_degrees: u32,
     ) {
-        let Some(client_buffer) = (unsafe {
-            self.extensions
-                .get_native_client_buffer(buffer_ptr as *const c_void)
-        }) else {
+        let Some(extensions) = &self.extensions else {
+            return;
+        };
+        let Some(client_buffer) =
+            (unsafe { extensions.get_native_client_buffer(buffer_ptr as *const c_void) })
+        else {
             tracing::warn!("eglGetNativeClientBufferANDROID failed");
             return;
         };
 
         let attrs = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let Some(egl_image) = (unsafe {
-            self.extensions.create_image(
+            extensions.create_image(
                 self.egl_display.as_ptr(),
                 EGL_NATIVE_BUFFER_ANDROID,
                 client_buffer,
@@ -294,23 +299,11 @@ impl AndroidRenderer {
             return;
         };
 
-        let bound = unsafe {
+        unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
                 .bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(self.oes_texture));
-            self.extensions
-                .image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image)
-        };
-        if !bound {
-            tracing::warn!("glEGLImageTargetTexture2DOES is not available");
-            unsafe {
-                self.extensions
-                    .destroy_image(self.egl_display.as_ptr(), egl_image)
-            };
-            return;
-        }
-
-        unsafe {
+            extensions.image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
             self.draw(
                 self.oes_program,
                 self.oes_a_pos_loc,
@@ -319,17 +312,16 @@ impl AndroidRenderer {
                 (video_w, video_h),
                 rotation_degrees,
             );
-            self.extensions
-                .destroy_image(self.egl_display.as_ptr(), egl_image);
+            extensions.destroy_image(self.egl_display.as_ptr(), egl_image);
         }
     }
 
     /// Draws an NV12 frame from CPU memory, letterboxed and rotated.
     ///
     /// The planes are uploaded as textures and converted to RGB in the shader,
-    /// with no CPU color conversion. Strides are in bytes. A plane shorter than
-    /// the picture is skipped with a warning. Call [`Self::swap_buffers`]
-    /// afterwards.
+    /// with no CPU color conversion. Strides are in bytes. A frame whose planes
+    /// are shorter than the picture is skipped with a warning. Call
+    /// [`Self::swap_buffers`] afterwards.
     ///
     /// # Safety
     ///

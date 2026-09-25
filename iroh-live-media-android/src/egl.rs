@@ -24,13 +24,13 @@ type CreateImageFn =
 type DestroyImageFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
 type ImageTargetTextureFn = unsafe extern "C" fn(u32, *mut c_void);
 
-/// The extension functions, each `None` if the driver lacks it.
+/// The extension functions.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Extensions {
-    get_native_client_buffer: Option<GetNativeClientBufferFn>,
-    create_image: Option<CreateImageFn>,
-    destroy_image: Option<DestroyImageFn>,
-    image_target_texture: Option<ImageTargetTextureFn>,
+    get_native_client_buffer: GetNativeClientBufferFn,
+    create_image: CreateImageFn,
+    destroy_image: DestroyImageFn,
+    image_target_texture: ImageTargetTextureFn,
 }
 
 /// Resolves `name` through `eglGetProcAddress`.
@@ -50,22 +50,30 @@ unsafe fn resolve<T: Copy>(egl: &Egl, name: &str) -> Option<T> {
 
 impl Extensions {
     /// Resolves every extension function through `egl`.
-    pub(crate) fn load(egl: &Egl) -> Self {
+    ///
+    /// Returns `None` if the driver lacks any of them, with a warning for each.
+    pub(crate) fn load(egl: &Egl) -> Option<Self> {
         // SAFETY: Each type matches the signature in the EGL or GLES extension
         // spec of the function it names.
-        unsafe {
-            Self {
-                get_native_client_buffer: resolve(egl, "eglGetNativeClientBufferANDROID"),
-                create_image: resolve(egl, "eglCreateImageKHR"),
-                destroy_image: resolve(egl, "eglDestroyImageKHR"),
-                image_target_texture: resolve(egl, "glEGLImageTargetTexture2DOES"),
-            }
-        }
+        let (get_native_client_buffer, create_image, destroy_image, image_target_texture) = unsafe {
+            (
+                resolve(egl, "eglGetNativeClientBufferANDROID"),
+                resolve(egl, "eglCreateImageKHR"),
+                resolve(egl, "eglDestroyImageKHR"),
+                resolve(egl, "glEGLImageTargetTexture2DOES"),
+            )
+        };
+        Some(Self {
+            get_native_client_buffer: get_native_client_buffer?,
+            create_image: create_image?,
+            destroy_image: destroy_image?,
+            image_target_texture: image_target_texture?,
+        })
     }
 
     /// Converts an `AHardwareBuffer` pointer into an `EGLClientBuffer`.
     ///
-    /// Returns `None` if the extension is missing or the conversion fails.
+    /// Returns `None` if the conversion fails.
     ///
     /// # Safety
     ///
@@ -75,13 +83,13 @@ impl Extensions {
         &self,
         hardware_buffer: *const c_void,
     ) -> Option<*mut c_void> {
-        let result = unsafe { self.get_native_client_buffer?(hardware_buffer) };
+        let result = unsafe { (self.get_native_client_buffer)(hardware_buffer) };
         (!result.is_null()).then_some(result)
     }
 
     /// Creates an `EGLImage` from an `EGLClientBuffer`.
     ///
-    /// Returns `None` if the extension is missing or creation fails.
+    /// Returns `None` if creation fails.
     ///
     /// # Safety
     ///
@@ -97,37 +105,27 @@ impl Extensions {
     ) -> Option<*mut c_void> {
         let no_context = std::ptr::null_mut();
         let result =
-            unsafe { self.create_image?(display, no_context, target, client_buffer, attrs) };
+            unsafe { (self.create_image)(display, no_context, target, client_buffer, attrs) };
         (!result.is_null()).then_some(result)
     }
 
     /// Destroys an `EGLImage`.
     ///
-    /// Does nothing if the extension is missing.
-    ///
     /// # Safety
     ///
     /// `display` must be a valid `EGLDisplay`. `image` must be a valid `EGLImage`.
     pub(crate) unsafe fn destroy_image(&self, display: *mut c_void, image: *mut c_void) {
-        if let Some(destroy) = self.destroy_image {
-            unsafe { destroy(display, image) };
-        }
+        unsafe { (self.destroy_image)(display, image) };
     }
 
     /// Binds an `EGLImage` to the texture currently bound to `target`.
-    ///
-    /// Returns `false` if the extension is missing.
     ///
     /// # Safety
     ///
     /// `image` must be a valid `EGLImage`. A GL context must be current on this
     /// thread.
-    pub(crate) unsafe fn image_target_texture_2d(&self, target: u32, image: *mut c_void) -> bool {
-        let Some(bind) = self.image_target_texture else {
-            return false;
-        };
-        unsafe { bind(target, image) };
-        true
+    pub(crate) unsafe fn image_target_texture_2d(&self, target: u32, image: *mut c_void) {
+        unsafe { (self.image_target_texture)(target, image) };
     }
 }
 
