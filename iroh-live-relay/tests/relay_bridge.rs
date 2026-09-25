@@ -1,12 +1,7 @@
-//! Integration tests for the iroh-live relay bridging.
+//! The relay's bridging, pulls and admission, over real connections.
 //!
-//! These tests exercise the relay's ability to bridge broadcasts between
-//! different transport backends (noq/WebTransport and iroh P2P), verifying
-//! that data published on one transport is visible to subscribers on another.
-//!
-//! All iroh endpoints use `presets::Minimal` + a shared `MemoryLookup` instead
-//! of `presets::N0` to avoid depending on real network discovery (DNS, relays),
-//! which is flaky in CI.
+//! Endpoints use `presets::Minimal` and a shared `MemoryLookup`, so no test
+//! needs network discovery.
 
 use std::{sync::OnceLock, time::Duration};
 
@@ -26,11 +21,9 @@ fn shared_lookup() -> MemoryLookup {
     ADDRESS_LOOKUP.get_or_init(Default::default).clone()
 }
 
-/// Starts a relay (noq server + iroh endpoint + cluster) and returns handles.
+/// A relay: noq server, iroh endpoint and cluster.
 ///
-/// Both tasks are held rather than detached, so a test that ends early, or
-/// panics, takes its relay with it instead of leaving it accepting connections
-/// for the rest of the run.
+/// Its tasks end with it, so a test that panics takes its relay along.
 struct TestRelay {
     _server_task: AbortOnDropHandle<()>,
     /// Accepts iroh clients, for a relay wired as the shipped one is.
@@ -42,24 +35,14 @@ struct TestRelay {
 }
 
 impl TestRelay {
-    /// Starts a relay that lets anyone publish anywhere, as a relay with loose
-    /// admission would.
+    /// Starts a relay that lets anyone publish anywhere.
     ///
-    /// Most tests here are about bridging, which does not care who may
-    /// publish where; the ones about forging paths use it as the relay a node
-    /// must not trust.
-    ///
-    /// A cluster unannounces a broadcast the moment it loses its last source,
-    /// which is what the pull-lifecycle tests below observe. It used to linger
-    /// for five seconds unless told otherwise; moq removed the knob along with
-    /// the delay.
+    /// The forgery tests use it as the relay a node must not trust.
     async fn start() -> Self {
         Self::start_with(false).await
     }
 
-    /// Starts a relay wired the way `iroh_live_relay::run` wires one: iroh
-    /// clients publish only under their own id, browsers only at names of one
-    /// segment.
+    /// Starts a relay with the admission `iroh_live_relay::run` uses.
     async fn start_shipped() -> Self {
         Self::start_with(true).await
     }
@@ -345,11 +328,7 @@ async fn iroh_publish_iroh_subscribe() {
     sub_ep.close().await;
 }
 
-/// noq publish -> relay -> iroh subscribe (via Live::subscribe).
-/// This is the browser->CLI path that fails in the e2e Playwright test.
-///
-/// Uses `Live::subscribe` which wraps the full catalog + video track pipeline,
-/// so this exercises the exact same code path as the real `subscribe_test` binary.
+/// noq publish -> relay -> iroh subscribe through `Live::subscribe`.
 #[tokio::test]
 #[serial]
 async fn noq_publish_iroh_subscribe() {
@@ -392,7 +371,7 @@ async fn noq_publish_iroh_subscribe() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Subscriber (iroh via Live::subscribe) ──
+    // Subscriber: iroh, through `Live::subscribe`.
     let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate())
@@ -442,7 +421,6 @@ async fn noq_publish_iroh_subscribe() {
                 assert_eq!(video[0].name, "video/h264");
                 assert_eq!(video[0].height(), Some(240));
                 tracing::info!(attempt, "subscribed to browser-stream via iroh");
-                // Success: clean up and return.
                 drop(sub);
                 drop(_pub_session);
                 sub_ep.close().await;
@@ -467,11 +445,7 @@ async fn noq_publish_iroh_subscribe() {
     );
 }
 
-/// Pull mode: remote iroh publisher -> relay pulls via ticket -> noq subscriber.
-///
-/// A publisher runs independently, not connected to the relay. The relay
-/// resolves its broadcast from a ticket and mirrors it into the cluster under
-/// the ticket's string, where a noq (browser) subscriber finds it and reads it.
+/// A noq subscriber reads a broadcast the relay pulls from a ticket.
 #[tokio::test]
 #[serial]
 async fn pull_remote_broadcast_via_ticket() {
@@ -510,7 +484,6 @@ async fn pull_remote_broadcast_via_ticket() {
 }
 
 /// iroh publish -> relay -> noq subscribe.
-/// This is the CLI->browser path (works in Playwright).
 #[tokio::test]
 #[serial]
 async fn iroh_publish_noq_subscribe() {
@@ -569,13 +542,10 @@ fn trusted() -> iroh_moq::ConnectOptions {
     }
 }
 
-/// How long a pull may linger unwatched in the pull-lifecycle tests. Short
-/// enough to keep them quick, long enough to survive a slow CI scheduler.
+/// How long an unwatched pull lingers in these tests.
 const PULL_LINGER: Duration = Duration::from_millis(200);
 
-/// Publishes a generated 320x240 pattern on `broadcast`, as one rendition.
-/// Starts a standalone iroh publisher (not connected to the relay) with a video
-/// track, and returns it with a ticket naming its broadcast.
+/// Starts an iroh publisher with a video broadcast, and returns a ticket to it.
 async fn start_publisher(
     name: &str,
 ) -> (
@@ -612,14 +582,9 @@ async fn pull_endpoint() -> iroh::Endpoint {
     endpoint
 }
 
-/// Polls the cluster until `name` is routable (or no longer is), returning
-/// whether it got there before [`TIMEOUT`].
+/// Waits until `name` is routable in the cluster, or no longer is, within [`TIMEOUT`].
 ///
-/// The mirrored broadcast is announced for exactly as long as the pulled session
-/// that feeds it is alive, so this is how a test observes that session being
-/// dropped without reaching into the relay's internals. A route is what counts:
-/// `request_broadcast` resolves optimistically for any covered path, so it
-/// cannot tell a live mirror from a stale one.
+/// A route is what counts: `request_broadcast` resolves any covered path, live or not.
 async fn wait_for_broadcast(cluster: &Cluster, name: &str, present: bool) -> bool {
     let deadline = tokio::time::Instant::now() + TIMEOUT;
     let consumer = cluster.origin.consume();
@@ -639,15 +604,9 @@ async fn wait_for_broadcast(cluster: &Cluster, name: &str, present: bool) -> boo
     }
 }
 
-/// A pull is announced under the name the client asked for, not the ticket's
-/// canonical spelling.
+/// A pull is announced under the name the client asked for.
 ///
-/// A subscriber is only ever announced the exact path it subscribed to, so the
-/// two have to agree. `BroadcastTicket` parses both `iroh-live:<id>/<name>` and the
-/// bare `<id>/<name>`, and the bare form is what a person ends up pasting, so
-/// mirroring under `ticket.to_string()` served a broadcast nobody had asked
-/// for: the browser connected, waited, and was announced nothing, with the
-/// relay's own log reporting a successful pull.
+/// A subscriber is announced only the exact path it subscribed to.
 #[tokio::test]
 #[serial]
 async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
@@ -681,13 +640,7 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
     pub_ep.close().await;
 }
 
-/// A pulled session is owned by nothing in the cluster, so it has to be retired
-/// deliberately: once the local session that named the ticket disconnects and
-/// nothing is reading the mirrored broadcast, the connection to the publisher is
-/// dropped, and pulling the same ticket again dials a fresh one.
-///
-/// Without that, a relay accumulates one QUIC connection per ticket ever pulled,
-/// for as long as each publisher stays up.
+/// An unwatched pull retires and closes its connection, and the next pull dials anew.
 #[tokio::test]
 #[serial]
 async fn pull_retires_an_unwatched_session() {
@@ -710,16 +663,13 @@ async fn pull_retires_an_unwatched_session() {
         "the pulled broadcast should be announced in the cluster"
     );
 
-    // The only session that named the ticket is gone and nothing is reading the
-    // mirrored broadcast, so the pull has nothing left to serve. Dropping its
-    // session takes the mirrored broadcast down with it.
+    // Nothing wants the pull any more, so it retires and its mirror goes.
     drop(guard);
     assert!(
         wait_for_broadcast(&relay.cluster, &local_name, false).await,
         "an unwatched pull should be retired"
     );
-    // And the relay lets go of the publisher: its session closes, which the
-    // publisher sees.
+    // The relay closes its session with the publisher.
     let mut sessions = publisher.moq().sessions();
     tokio::time::timeout(TIMEOUT, async {
         use n0_watcher::Watcher;
@@ -734,8 +684,7 @@ async fn pull_retires_an_unwatched_session() {
     .await
     .expect("the relay kept its session with the publisher of a retired pull");
 
-    // The retired entry must not be handed out again: the same ticket dials a
-    // new session rather than joining one that is already closed.
+    // The same ticket dials a new session.
     let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
         .expect("re-pull timeout")
@@ -751,10 +700,7 @@ async fn pull_retires_an_unwatched_session() {
     pub_ep.close().await;
 }
 
-/// A subscriber that reached the mirrored broadcast over some other session
-/// holds no pull guard, so the guard count on its own would retire a pull
-/// somebody is watching. Demand on the mirrored broadcast is the second signal
-/// that keeps it alive, and its ending is what finally retires the pull.
+/// A reader that holds no pull guard keeps the pull alive through demand.
 #[tokio::test]
 #[serial]
 async fn pull_survives_a_reader_holding_no_guard() {
@@ -776,9 +722,7 @@ async fn pull_survives_a_reader_holding_no_guard() {
         "the pulled broadcast should be announced in the cluster"
     );
 
-    // Read the mirrored broadcast the way a subscriber session does, without
-    // going anywhere near the pull state.
-    // Subscribed rather than only holding the track, as a real session does.
+    // Read the mirror as a subscriber session does, holding no pull guard.
     let mirrored = relay
         .cluster
         .origin
@@ -816,10 +760,7 @@ async fn pull_survives_a_reader_holding_no_guard() {
     pub_ep.close().await;
 }
 
-/// A node attached to the relay through a relay link publishes into it and
-/// consumes from it: its public broadcast reaches a browser at the path that
-/// names the node, and a browser's broadcast resolves on the node through the
-/// relay, priced above a direct route.
+/// A relay link publishes the node's public broadcasts and consumes the relay's.
 #[tokio::test]
 #[serial]
 async fn a_relay_link_publishes_and_consumes() {
@@ -987,13 +928,7 @@ async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
         .is_some()
 }
 
-/// A subscription a relay serves carries the relay link's readings, and a
-/// player adapts on them.
-///
-/// Every relay link runs a connection monitor like a direct session's, and the
-/// facade reads whichever link serves the subscription, so a player behind a
-/// relay sees a round trip rather than holding its first rendition on no
-/// information at all.
+/// A relay-served subscription carries the relay link's readings to the player.
 #[tokio::test]
 #[serial]
 async fn a_relay_served_subscription_carries_link_samples() {
@@ -1060,9 +995,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
     publisher.shutdown().await;
 }
 
-/// Only public publications go to a relay, and only while the link offers
-/// them: a `Peers` or `Manual` one never reaches it, and a link that offers
-/// nothing publishes nothing.
+/// Only public publications reach a relay, and only on a link that offers them.
 #[tokio::test]
 #[serial]
 async fn a_relay_gets_public_publications_only() {
@@ -1124,8 +1057,7 @@ async fn a_relay_gets_public_publications_only() {
     drop(endpoint);
 }
 
-/// Shutting a node down reports its relay links detached, and a subscribe
-/// that wants a relay fails once none is attached.
+/// Shutting a node down detaches its relay links.
 #[tokio::test]
 #[serial]
 async fn shutdown_detaches_relay_links() {
@@ -1145,8 +1077,7 @@ async fn shutdown_detaches_relay_links() {
         .expect("attach");
 
     link.detach().await;
-    // The link left feeds the table nothing, so a relay subscribe has nowhere
-    // to wait.
+    // The detached link feeds nothing, so a relay subscribe fails.
     let err = tokio::time::timeout(TIMEOUT, live.moq().subscribe("anything", Reach::Relays))
         .await
         .expect("a relay subscribe with no consuming relay waited")
@@ -1166,12 +1097,9 @@ async fn shutdown_detaches_relay_links() {
     .expect("a relay link outlived its node's shutdown");
 }
 
-/// A subscription served by a direct session ends when that session goes, and
-/// asking again resolves the path through the relay.
+/// A subscription ends with its direct session, and asking again finds the relay.
 ///
-/// It does not move over on its own: a relay route cannot vouch that it comes
-/// from the publisher the direct session authenticated, so the node keeps the
-/// two apart (see `a_relay_cannot_splice_a_forgery_into_a_direct_subscription`).
+/// It does not move over on its own, since a relay route cannot vouch for the publisher.
 #[tokio::test]
 #[serial]
 async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
@@ -1261,20 +1189,16 @@ async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track:
     reader
 }
 
-/// The hop a node with endpoint id `id` announces under, as `iroh-moq` derives
-/// it: public, so anyone can compute it.
+/// The hop iroh-moq derives for `id`, which anyone can compute.
 fn hop_of(id: iroh::EndpointId) -> moq_net::Hop {
     let bytes: [u8; 8] = id.as_bytes()[..8].try_into().expect("32 bytes");
     let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
     moq_net::Hop::new(value.max(1)).expect("a valid hop")
 }
 
-/// A peer that publishes Alice's path into a relay under Alice's own hop is
-/// never spliced into a subscription Bob holds over his direct session with
-/// Alice, not even once that session goes.
+/// A forgery of Alice's path under her hop never reaches Bob's direct subscription.
 ///
-/// The test relay lets anyone publish anywhere, as a relay with loose
-/// admission would; the node must hold on its own.
+/// Not even once the direct session goes. The test relay lets anyone publish anywhere.
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
@@ -1375,10 +1299,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     alice.shutdown().await;
 }
 
-/// The shipped relay keeps every publisher to the paths that name it: an iroh
-/// client cannot publish under another client's id, and a browser cannot
-/// publish into `live/` or `rooms/` at all, while each still publishes what is
-/// its own.
+/// The shipped relay keeps iroh clients to their own paths, browsers to one segment.
 #[tokio::test]
 #[serial]
 async fn the_shipped_relay_refuses_forged_paths() {
@@ -1469,8 +1390,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     drop(mallory_endpoint);
 }
 
-/// Two pulls of one publisher share the relay's session with it: retiring
-/// one leaves the other reading, and the session closes only with the last.
+/// Two pulls of one publisher share a session, which closes with the last.
 #[tokio::test]
 #[serial]
 async fn a_publisher_session_outlives_all_but_its_last_pull() {
@@ -1581,10 +1501,9 @@ async fn room_node() -> (
     (endpoint, moq, rooms, router)
 }
 
-/// A room reads a member's broadcast over the session with that member, so a
-/// forgery of it that a relay routes into the member's own path never
-/// reaches the room, even though the forged route sits in the route table
-/// before the member joins.
+/// A forged room broadcast that a relay routes never reaches the room.
+///
+/// The room reads each member over its own session, even with the forgery routed first.
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_forge_a_room_members_broadcast() {

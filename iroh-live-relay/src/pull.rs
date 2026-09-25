@@ -1,32 +1,15 @@
-//! Pull mode: fetch remote broadcasts via iroh-live tickets.
+//! Pull mode: serving a broadcast ticket's broadcast from the relay.
 //!
-//! When a browser subscribes to a broadcast whose name is a valid
-//! [`BroadcastTicket`], the relay resolves the ticket's broadcast through an
-//! iroh-moq node of its own and mirrors it into the cluster under the name the
-//! browser asked for, so the browser consumes it transparently.
+//! When a session names a valid [`BroadcastTicket`], the relay subscribes to
+//! the ticket's broadcast through its own iroh-moq node, and splices it into
+//! the cluster under the name the session asked for.
 //!
-//! Mirroring is a splice: the cluster gets one dynamic route at the asked-for
-//! name, answered with the subscribed broadcast itself, so nothing is copied
-//! and nothing else the publisher happens to publish lands in the cluster.
-//!
-//! Nothing in the cluster owns the pulled QUIC connection, so it has to be
-//! retired deliberately, and two signals decide when. Every local session that
-//! named the ticket holds a [`PullGuard`], which accounts for a browser that has
-//! connected but not subscribed yet. The mirrored broadcast's
-//! [`Demand`](moq_net::broadcast::Demand) reports whether anything is reading
-//! it, which accounts for a subscriber that reached the broadcast over some
-//! other session and holds no guard. Once both have been quiet for
-//! [`PullState::with_linger`]'s window the mirror is retracted and the ticket's
-//! entry is retired, so the next pull dials afresh. The session with the
-//! publisher belongs to the relay's own node, which shares it between every
-//! pull of that publisher; once the last of them retires, the session is
-//! closed, so the relay holds no connection to a publisher nobody watches and
-//! the publisher stops offering the relay its broadcasts.
-//!
-//! A transport-level idle timer cannot stand in for either signal. Every counter
-//! [`moq_net::Session::stats`] reports is a QUIC counter, and iroh sends
-//! keep-alives every five seconds, so a connection nobody is reading moves them
-//! exactly like a busy one does.
+//! A pull retires once two signals have been quiet for the linger window. Each
+//! local session that named the ticket holds a [`PullGuard`], and the mirrored
+//! broadcast's [`Demand`](moq_net::broadcast::Demand) shows whether anything
+//! reads it. When the last pull of a publisher retires, the relay closes its
+//! session with that publisher. An idle timer on the connection cannot replace
+//! either signal, since iroh's keep-alives move its counters too.
 
 use std::{
     collections::HashMap,
@@ -46,41 +29,26 @@ use tracing::{debug, info, warn};
 
 /// Default for [`PullState::with_linger`].
 ///
-/// Long enough that a page reload, or a viewer flipping between two streams,
-/// reuses the connection instead of paying for another iroh dial and MoQ
-/// handshake. Short enough that an abandoned ticket stops occupying a slot on
-/// the publisher within seconds rather than minutes.
+/// Long enough for a page reload to reuse the connection.
 const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 
-/// How long to wait for the pulled broadcast to be announced into the cluster
-/// before giving up on watching its demand.
-///
-/// The announce follows the handshake by a round trip in the normal case. A pull
-/// that never sees one falls back to the guard count alone, which is the more
-/// conservative of the two signals: it holds the session while a local session
-/// that named the ticket is connected, and retires it a linger after the last
-/// one leaves.
+/// How long to wait for the mirror's announcement before watching guards alone.
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Shared state for pull operations.
 #[derive(Clone)]
 pub struct PullState {
-    /// Dials publishers and resolves ticket paths.
     moq: Moq,
     cluster: Cluster,
     linger: Duration,
-    /// One entry per ticket with a live or in-flight pull, keyed by the local
-    /// broadcast name.
+    /// Live or dialing pulls, by local broadcast name.
     ///
-    /// Doubles as the TOCTOU guard for concurrent pulls of one ticket and as the
-    /// handoff between [`PullState::pull`] and the task holding the session: a
-    /// claim is taken and a pull is retired under this single lock, so an entry
-    /// found here is always a session that is still open.
+    /// Claims and retirements happen under this lock, so an entry found here
+    /// is still open.
     pulls: Arc<Mutex<HashMap<String, Arc<Pull>>>>,
     /// How many pulls, live or dialing, each publisher has.
     ///
-    /// The node shares one session per publisher between them, and the last
-    /// one to go closes it.
+    /// The last one to go closes the session with the publisher.
     publishers: Arc<Mutex<HashMap<EndpointId, usize>>>,
 }
 
@@ -101,13 +69,11 @@ enum Dial {
     Pending,
     /// The session is up and the broadcast is mirroring into the cluster.
     Connected,
-    /// The dial failed, and this is why. Carried as a string because every
-    /// waiter gets a copy of it.
+    /// The dial failed. A string, since every waiter gets a copy.
     Failed(String),
 }
 
-/// One pulled ticket: the state [`PullState::pull`] and the task holding the
-/// session agree on.
+/// One pulled ticket.
 #[derive(Debug)]
 struct Pull {
     dial: watch::Sender<Dial>,
@@ -129,12 +95,9 @@ impl Pull {
     }
 }
 
-/// Keeps a pulled broadcast connected while the local session that asked for it
-/// is still around.
+/// Keeps a pull alive while the local session that asked for it runs.
 ///
-/// Returned by [`PullState::pull`]; hold it for as long as that session runs.
-/// Dropping it closes nothing by itself, it only withdraws this session's
-/// interest in the ticket.
+/// Dropping it withdraws the session's claim on the pull.
 #[derive(Debug)]
 pub struct PullGuard {
     pull: Arc<Pull>,
@@ -158,52 +121,33 @@ impl PullState {
         }
     }
 
-    /// Sets how long a pull stays connected after both the last local session
-    /// holding a [`PullGuard`] and the last reader of the mirrored broadcast are
-    /// gone.
+    /// Sets how long an unused pull stays connected.
     ///
-    /// Defaults to ten seconds. Tests shorten it to keep the retirement path
-    /// fast; a relay has no reason to change it.
+    /// Defaults to ten seconds.
     #[must_use]
     pub fn with_linger(mut self, linger: Duration) -> Self {
         self.linger = linger;
         self
     }
 
-    /// Pulls the remote broadcast a ticket names and makes it available in the
-    /// cluster under the ticket's string form.
+    /// Pulls the broadcast `ticket` names into the cluster under `requested`.
     ///
-    /// Returns a [`PullGuard`] to hold for the lifetime of the local session
-    /// that asked for the broadcast. Idempotent: a ticket that is already pulled
-    /// hands back another guard on the running session, and concurrent pulls for
-    /// one ticket share a single dial.
-    ///
-    /// Cancelling this future withdraws the caller's interest and nothing more.
-    /// The dial it may have started runs to completion in its own task, and the
-    /// session it produces is retired on the usual terms, so a caller that gives
-    /// up (a timeout, say) cannot strand a ticket on an entry nobody will ever
-    /// connect.
+    /// Hold the returned [`PullGuard`] while the session that asked runs.
+    /// Concurrent pulls of one name share a dial. Cancelling this future only
+    /// drops the caller's claim: the dial runs on, and the pull retires as
+    /// usual.
     pub async fn pull(
         &self,
         requested: &str,
         ticket: &BroadcastTicket,
     ) -> anyhow::Result<PullGuard> {
-        // The name the client asked for, not `ticket.to_string()`. A subscriber
-        // is announced the exact path it subscribed to, so mirroring under the
-        // canonical spelling serves a broadcast nobody asked for: a browser that
-        // pasted the ticket without its `iroh-live:` scheme, which parses and is
-        // what the QR code and the publish line both hand out, connected, waited,
-        // and was never announced anything.
-        //
-        // Two spellings of one ticket therefore pull twice. That is the price of
-        // serving what was asked for, and it is the right way round: a duplicate
-        // upstream session costs a connection, and a mismatch costs the viewer
-        // the stream.
+        // The name the client asked for, not `ticket.to_string()`: a subscriber
+        // is announced the exact path it subscribed to. Two spellings of one
+        // ticket pull twice.
         let local_name = requested.to_owned();
 
-        // Claiming and creating happen under the lock the holder task retires
-        // under, so a claim and a retirement can never both believe they won: an
-        // entry found here is guaranteed to outlive this call.
+        // Claimed under the lock retirement takes, so an entry found here
+        // outlives this call.
         let (pull, dial) = {
             let mut pulls = self.pulls.lock().expect("poisoned");
             let (pull, dial) = match pulls.get(&local_name) {
@@ -232,9 +176,7 @@ impl PullState {
                 let outcome = match state.do_connect(&ticket, &name, &pull, publisher).await {
                     Ok(()) => Dial::Connected,
                     Err(err) => {
-                        // Retire the failed entry so the next pull for this
-                        // ticket dials again rather than joining a session that
-                        // never came up.
+                        // Retire it, so the next pull dials again.
                         warn!(local_name = %name, %err, "pull dial failed");
                         state.retire(&name, &pull);
                         Dial::Failed(format!("{err:#}"))
@@ -252,8 +194,7 @@ impl PullState {
             .wait_for(|dial| !matches!(dial, Dial::Pending))
             .await
             .map_or_else(
-                // Needs every sender gone, and the dialling task holds one until
-                // it reports, so this is the pull being dropped underneath us.
+                // The dialing task holds a sender until it reports.
                 |_| Dial::Failed("the pull was dropped before it connected".to_owned()),
                 |dial| dial.clone(),
             );
@@ -264,9 +205,9 @@ impl PullState {
         Ok(guard)
     }
 
-    /// Resolves the ticket's broadcast, mirrors it into the cluster under
-    /// `local_name`, and spawns the task that holds it and decides when to
-    /// retire it.
+    /// Subscribes to the ticket's broadcast and mirrors it into the cluster.
+    ///
+    /// Spawns the task that holds the pull until it retires.
     async fn do_connect(
         &self,
         ticket: &BroadcastTicket,
@@ -279,9 +220,6 @@ impl PullState {
             broadcast = %ticket.name(),
             "pulling remote broadcast"
         );
-        // Through the node rather than a hand-rolled session, so the pull dials
-        // every MoQ version this build speaks and reaches a publisher on the
-        // path layout before paths named their publisher as well.
         let subscription = self
             .moq
             .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
@@ -318,9 +256,8 @@ impl PullState {
         publisher: PublisherClaim,
     ) {
         let serve = async {
-            // Each request is answered with the broadcast the subscription
-            // resolves to now, so a change of route upstream is picked up by
-            // the next reader.
+            // The broadcast the subscription resolves to now, so the next reader
+            // follows a route change upstream.
             while let Ok(request) = mirror.requested_broadcast().await {
                 request.accept(subscription.as_moq());
             }
@@ -338,30 +275,20 @@ impl PullState {
                 self.retire(&local_name, &pull);
             }
         }
-        // Dropping the route retracts the mirror from the cluster, and the
-        // claim closes the session with the publisher if no other pull of it
-        // remains.
+        // Retracts the mirror, and closes the publisher's session if this was
+        // its last pull.
         drop(mirror);
         drop(publisher);
     }
 
-    /// Blocks until the pull has nothing left to serve, then retires its entry.
+    /// Waits until the pull has nothing left to serve, then retires its entry.
     ///
-    /// Two signals have to agree. The guard count covers a local session that
-    /// named the ticket and has not subscribed yet, which has no demand to show
-    /// for itself. Demand on the mirrored broadcast covers a subscriber that
-    /// reached it over some other session, which holds no guard. Either signal
-    /// on its own would retire a pull somebody is still using.
-    ///
-    /// The decision is taken under the same lock [`Self::pull`] claims under, so
-    /// a pull claimed while this was waiting out the linger keeps running, and a
-    /// pull retired here can no longer be claimed. That is what makes the
-    /// re-dial path safe: the next pull for the ticket finds no entry and starts
-    /// a fresh session instead of joining one that is about to close.
+    /// Both signals must be quiet: the guard count covers a session that named
+    /// the ticket but has not subscribed yet, and demand covers a reader that
+    /// holds no guard. The final check runs under the lock [`Self::pull`]
+    /// claims under, so a pull claimed during the linger keeps running.
     async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
-        // Demand is only watchable once the remote's announce has been mirrored
-        // into the cluster, which is also the first moment there is anything to
-        // read.
+        // Demand exists once the mirror is announced.
         let demand = tokio::time::timeout(
             ANNOUNCE_TIMEOUT,
             self.cluster.origin.consume().routed_broadcast(local_name),
@@ -387,8 +314,7 @@ impl PullState {
 
             if let Some(demand) = &demand
                 && demand.is_used()
-                // `Err` means every producer of the mirrored broadcast is gone,
-                // which is as unread as it gets: fall through and retire.
+                // `Err` means every producer is gone: retire.
                 && demand.unused().await.is_ok()
             {
                 continue;
@@ -408,9 +334,7 @@ impl PullState {
 
     /// Drops `pull` from the map, if it is still the entry for `local_name`.
     ///
-    /// Identity-checked: a pull that was already retired may have been replaced
-    /// by a fresh dial for the same ticket, and that one belongs to its own
-    /// holder task.
+    /// A retired pull may have been replaced by a fresh dial for the same name.
     fn retire(&self, local_name: &str, pull: &Arc<Pull>) {
         remove_current(&mut self.pulls.lock().expect("poisoned"), local_name, pull);
     }

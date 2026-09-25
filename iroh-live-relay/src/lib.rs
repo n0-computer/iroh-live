@@ -1,13 +1,13 @@
-//! iroh-live relay server: bridges iroh P2P and browser WebTransport clients.
+//! A relay that serves iroh-live broadcasts to browsers.
 //!
-//! Admission is open: anyone may connect and subscribe to anything. What a
-//! session may publish is not. An iroh client publishes only at the paths that
-//! name its authenticated endpoint id (see [`iroh_sessions`]), and a browser
-//! only at names of one segment, so nobody can publish a broadcast under
-//! another publisher's path. Token auth for the rest is still to come.
+//! Browsers connect over WebTransport, iroh clients over iroh. Anyone may
+//! connect and subscribe to anything. An iroh client may publish only at the
+//! paths that name its endpoint id (see [`iroh_sessions`]), and a browser only
+//! at names of one segment. A session that names a broadcast ticket gets that
+//! broadcast pulled from its publisher (see [`pull`]).
 //!
-//! The binary is a thin wrapper around [`run`]; another CLI can embed the
-//! relay by flattening [`RelayConfig`] into its own arguments.
+//! The binary wraps [`run`]. Another CLI can embed the relay by flattening
+//! [`RelayConfig`] into its arguments.
 //!
 //! # Example
 //!
@@ -31,9 +31,8 @@
 //! # Cancellation safety
 //!
 //! [`run`] returns on ctrl-c, after closing its listeners. Dropping its future
-//! instead stops accepting, the cluster and the HTTP server, which the future
-//! owns, while connections already accepted run on their own tasks until they
-//! close.
+//! stops accepting, the cluster and the HTTP server, while accepted
+//! connections run on until they close.
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -63,31 +62,26 @@ pub use self::iroh_sessions::{IrohSessions, browser_auth, publish_scope};
 
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
-/// The name this relay reports in its auth requests.
-///
-/// Nothing reads it today, since every path is public, but the auth builder
-/// wants one and a relay that later grows an auth server should say which relay
-/// is asking.
+/// The name this relay gives its auth requests.
 const RELAY_NODE: &str = "iroh-live-relay";
 
-/// Configuration for the relay server. Can be embedded in another clap CLI
-/// via `#[command(flatten)]`.
+/// Configuration for the relay server, as clap arguments.
 #[derive(Args, Debug, Clone)]
 pub struct RelayConfig {
-    /// Bind address for QUIC (WebTransport and iroh).
+    /// Bind address for WebTransport over QUIC.
     #[arg(long, default_value = "[::]:4443")]
     pub bind: SocketAddr,
 
-    /// Bind address for HTTP (static files and fingerprint endpoint).
-    /// Defaults to the same as --bind.
+    /// Bind address for the web viewer over HTTP.
+    ///
+    /// Defaults to the same address as --bind.
     #[arg(long, default_value = "[::]:4443")]
     pub http_bind: SocketAddr,
 }
 
-/// Runs the relay server. Blocks until the accept loop ends (ctrl-c or error).
+/// Runs the relay server until ctrl-c or an error.
 ///
-/// Call `rustls::crypto::aws_lc_rs::default_provider().install_default()`
-/// before calling this if no crypto provider has been installed yet.
+/// Install a rustls crypto provider first, as the crate example does.
 pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let mut quic = moq_tokio::quic::Config::default();
     quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
@@ -108,16 +102,13 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     .bind()
     .await?;
 
-    // The backend is left to its default, which is noq. The iroh endpoint is
-    // part of the configuration now rather than attached after `init`.
     let mut server_config = moq_tokio::server::Config::default();
     server_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(config.bind));
-    // Self-signed TLS for dev mode. ACME/Let's Encrypt support is planned
-    // but not yet implemented.
+    // Self-signed TLS. No ACME yet.
     server_config.listen.tls.generate = vec!["localhost".to_string()];
     server_config.quic = quic.clone();
-    // Not `server_config.iroh`: iroh clients are accepted by `IrohSessions`
-    // below, which knows who they are.
+    // Not `server_config.iroh`: `IrohSessions` accepts iroh clients, since it
+    // knows who they are.
     let server = server_config.init()?;
     let client = connect.clone().init(quic)?.with_iroh(iroh_endpoint.clone());
 
@@ -126,17 +117,11 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     let certificates = server.certificates();
 
-    // Browsers and other non-iroh clients: subscribe to anything, publish at
-    // names of one segment. No expiry and no auth server behind it yet.
     let auth = browser_auth().init(RELAY_NODE, &connect.tls)?;
 
     let cluster =
         Cluster::new(moq_relay::cluster::Options::new(Default::default()))?.with_client(client);
-    // Started here rather than inside the task, so a cluster that cannot bind
-    // fails `run` before the relay prints that it is listening. Owned here, so
-    // both stop when the accept loop below returns rather than outliving the
-    // relay they belong to. With no peers configured it has nothing to do and
-    // the task ends at once.
+    // Started before the task, so a cluster that cannot bind fails `run`.
     let started = cluster.clone().start().await?;
     let _cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
         if let Err(err) = started.run().await {
@@ -144,10 +129,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         }
     }));
 
-    // The relay's own endpoint dials the tickets too. A second one would give
-    // the pulls a fresh identity on every restart and a second socket, relay
-    // connection and holepunching state to keep alive, for nothing: dialling
-    // out is unaffected by the ALPNs this one accepts on.
+    // Pulls dial over the relay's own endpoint, with its stable identity.
     let pull_state = Arc::new(pull::PullState::new(iroh_endpoint.clone(), cluster.clone()));
     let iroh_router =
         IrohSessions::new(cluster.clone(), Some(pull_state.clone())).router(iroh_endpoint.clone());
@@ -181,17 +163,9 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     // Machine-parseable lines (used by e2e test fixtures).
     println!("http port: {http_port}");
-    // The one address a person types. `http` and not `https` on purpose: this
-    // listener speaks plain HTTP, and the QUIC port next to it carries
-    // WebTransport over HTTP/3 rather than anything a browser will open from
-    // the address bar. Typing `https://localhost:{http_port}` reaches this
-    // listener over TCP and fails inside TLS ("record that exceeded the maximum
-    // permissible length"), which is the browser reading `HTTP/1.1 400` as a
-    // TLS record.
-    //
-    // The self-signed certificate needs no exception either. The page fetches
-    // its fingerprint from `/certificate.sha256` and pins it when it opens the
-    // WebTransport session, so the browser never prompts.
+    // `http`, since this listener speaks plain HTTP. The page pins the QUIC
+    // certificate's fingerprint from `/certificate.sha256`, so the browser
+    // never prompts.
     println!("iroh-live relay listening at http://localhost:{http_port}");
     if quic_port == http_port {
         println!("  WebTransport on UDP {quic_port}; the page above connects to it for you");
@@ -209,9 +183,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     info!(iroh_addr = %iroh_endpoint.id(), "relay ready");
 
     let mut listener = server.listen().await?;
-    // The accept loop is ours, so the signal is too. moq-tokio's server used to
-    // end on Ctrl-C by itself and no longer does: `accept` returning `None` now
-    // means every listener has stopped, which a terminal interrupt never causes.
+    // moq-tokio's listener does not stop on ctrl-c, so the loop watches for it.
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
     let mut conn_id = 0u64;
@@ -227,9 +199,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
             }
         };
         let transport = request.transport();
-        // A name that happens to parse as a ticket is a pull request; anything
-        // else is an ordinary broadcast name that the cluster already knows or
-        // does not.
+        // A name that parses as a ticket starts a pull.
         let name = extract_name_from_url(&request);
         debug!(conn_id, %transport, ?name, "accepted connection");
 
@@ -245,8 +215,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         });
     }
 
-    // Consumes the listener, so its sockets are released before `run` returns
-    // rather than whenever the last clone of anything holding them drops.
+    // Releases the listener's sockets before `run` returns.
     listener.close().await;
     if let Err(err) = iroh_router.shutdown().await {
         warn!(%err, "the iroh router did not shut down cleanly");
@@ -254,20 +223,15 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Pulls the broadcast a session named, if the name is a ticket, for as long
-/// as the returned handle lives.
+/// Pulls the broadcast a session named, if the name is a ticket.
 ///
-/// Alongside the session rather than before it: the dial can take as long as
-/// the publisher takes to answer, and a client that named an unreachable ticket
-/// should get a session that reports an empty broadcast rather than one that
-/// never starts. The handle holds the guard, so dropping it with the session
-/// tells the pull that this session stopped wanting the broadcast.
+/// Runs alongside the session, so a session that names an unreachable ticket
+/// still starts. Dropping the handle drops the session's claim on the pull.
 pub(crate) fn pull_for(
     pull_state: Arc<pull::PullState>,
     name: String,
 ) -> Option<AbortOnDropHandle<Option<pull::PullGuard>>> {
-    // The requested spelling travels with the ticket: it is the path the
-    // subscriber will be announced under, and the two have to agree.
+    // The name as requested, since the subscriber is announced under it.
     let ticket = name.parse::<BroadcastTicket>().ok()?;
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
         match pull_state.pull(&name, &ticket).await {
@@ -379,8 +343,7 @@ mod tests {
         assert_eq!(read_secret_key(&raw).unwrap().to_bytes(), raw);
     }
 
-    /// A file that is not a key is an error rather than a reason to generate
-    /// a new identity over the top of it.
+    /// A file that is not a key is an error.
     #[test]
     fn a_file_that_is_not_a_key_is_refused() {
         assert!(read_secret_key(b"").is_err());

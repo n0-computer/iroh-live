@@ -1,19 +1,11 @@
-//! Sessions from iroh clients, admitted by their endpoint id.
+//! Sessions from iroh clients, scoped by their endpoint id.
 //!
-//! moq-tokio's server can accept iroh connections too, but the request it hands
-//! to moq-relay's auth carries nothing that identifies the peer, although iroh
-//! has authenticated its endpoint id. A relay that admitted iroh clients that
-//! way could only let every one of them publish everywhere, and any client
-//! could then publish at `live/<someone else>/<name>`, a path whose whole point
-//! is that it names its publisher.
-//!
-//! So the relay accepts iroh sessions itself, with [`IrohSessions`] mounted on
-//! its endpoint, and scopes each by the id iroh authenticated: a client may
-//! publish only at the paths that name it, `live/<its id>/...` and
-//! `rooms/<topic>/<its id>/...`, and may subscribe to anything. Browsers still
-//! come in through moq-tokio's server and moq-relay's auth, which
-//! [`browser_auth`] keeps to names of one segment, so they cannot publish into
-//! either namespace.
+//! moq-tokio's server can accept iroh connections, but the auth request it
+//! hands moq-relay carries no peer identity. So the relay accepts iroh sessions
+//! itself with [`IrohSessions`], and lets each client publish only at the paths
+//! that name it, `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
+//! Browsers come in through moq-tokio's server, and [`browser_auth`] keeps them
+//! to names of one segment.
 
 use std::sync::Arc;
 
@@ -32,11 +24,10 @@ use crate::pull::PullState;
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Accepts MoQ sessions from iroh clients into the cluster, each scoped to the
-/// paths that name it.
+/// Accepts iroh clients' MoQ sessions into the cluster.
 ///
-/// Mount it under every ALPN in [`alpns`](Self::alpns), or let
-/// [`router`](Self::router) do so.
+/// Mount it under every ALPN in [`iroh_moq::alpns`], or use
+/// [`router`](Self::router).
 #[derive(Clone, derive_more::Debug)]
 pub struct IrohSessions {
     #[debug(skip)]
@@ -48,8 +39,8 @@ pub struct IrohSessions {
 impl IrohSessions {
     /// Creates the handler for `cluster`.
     ///
-    /// With `pulls` set, a session that names a ticket in its path pulls that
-    /// ticket's broadcast into the cluster, as a browser's does.
+    /// With `pulls` set, a session that names a ticket in its path pulls the
+    /// ticket's broadcast, as a browser's does.
     pub fn new(cluster: Cluster, pulls: Option<Arc<PullState>>) -> Self {
         Self {
             cluster,
@@ -94,8 +85,7 @@ impl IrohSessions {
             .map_err(AcceptError::from_err)?;
         info!(%path, "iroh client admitted, publishing under its own id only");
 
-        // Held for as long as the session runs, which is what tells the pull
-        // that this session stopped wanting the broadcast.
+        // Held while the session runs.
         let _pull = self
             .pulls
             .as_ref()
@@ -127,18 +117,15 @@ impl ProtocolHandler for IrohSessions {
     }
 }
 
-/// Returns what the iroh client `id` may publish into the relay: the paths
-/// that name it, as [`iroh_live::grant`] allows.
+/// Returns the paths the iroh client `id` may publish at, as [`iroh_live::grant`] allows.
 pub fn publish_scope(id: EndpointId) -> Patterns {
     iroh_live::grant(id).publish
 }
 
-/// Returns moq-relay's auth for sessions that are not iroh's, browsers above
-/// all: anyone may subscribe to anything, and publish at a name of one segment.
+/// Returns moq-relay's auth for browsers: subscribe anywhere, publish one segment.
 ///
 /// One segment keeps a browser out of `live/` and `rooms/`, whose paths name
-/// their publisher, which a browser has no iroh identity to prove. The relay's
-/// publish page publishes at the one-segment name its `?name=` gives.
+/// an iroh publisher.
 pub fn browser_auth() -> moq_relay::auth::Config {
     let mut config = moq_relay::auth::Config::default();
     config.public_subscribe = vec![Pattern::all()];
