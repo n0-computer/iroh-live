@@ -83,7 +83,7 @@ pub struct PlaybackStats {
     ///
     /// This is the jitter allowance plus the audio queued at the speaker.
     pub latency: Duration,
-    /// The last reading of the link, if the broadcast has network signals.
+    /// A reading of the link, if the broadcast has network signals.
     pub network: Option<NetworkSample>,
 }
 

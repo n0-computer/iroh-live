@@ -17,7 +17,8 @@ use crate::Bitrate;
 pub trait NetworkSignals: Send + Sync + 'static {
     /// Returns the link as it is now.
     ///
-    /// Called a few times per second. Must not block.
+    /// Called a few times per second, and on every
+    /// [`Player::stats`](crate::Player::stats). Must not block.
     fn sample(&self) -> NetworkSample;
 }
 

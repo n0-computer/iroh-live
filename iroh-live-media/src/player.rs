@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::{
-    AudioOutput, NetworkSample, RemoteBroadcast, SlotState,
+    AudioOutput, RemoteBroadcast, SlotState,
     error::{Error, SwitchError},
     frames::{FrameSlot, VideoFrames},
     stats::{Cell, FrameTiming, PlaybackStats, Timeline},
@@ -262,7 +262,6 @@ pub(crate) enum Abandon {
 pub(crate) struct PlaybackRecorder {
     pub(crate) video: Cell<Option<crate::stats::VideoPlaybackStats>>,
     pub(crate) audio: Cell<Option<crate::stats::AudioPlaybackStats>>,
-    pub(crate) network: Cell<Option<NetworkSample>>,
     /// Written by the video task as it presents pictures.
     pub(crate) video_timeline: Timeline,
     /// Written by the audio task as it writes to the output.
@@ -346,7 +345,6 @@ impl Player {
                 broadcast: broadcast.clone(),
                 controls: controls.clone(),
                 status: status.clone(),
-                stats: stats.clone(),
                 reports: reports_rx,
                 playing: playing_rx,
                 desired: desired_tx,
@@ -463,7 +461,7 @@ impl Player {
             video: self.stats.video.get(),
             audio: self.stats.audio.get(),
             latency: self.clock.latency(),
-            network: self.stats.network.get(),
+            network: self.broadcast.network().map(|signals| signals.0.sample()),
         }
     }
 

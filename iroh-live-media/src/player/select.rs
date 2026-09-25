@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace};
 
 use super::{
-    Controls, Latency, PlaybackRecorder, RenditionMode, StatusCell,
+    Controls, Latency, RenditionMode, StatusCell,
     bound::{Adaptation, Bound, Constraints, Reading, Rung},
     switch::Target,
 };
@@ -106,7 +106,6 @@ pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
     pub controls: Arc<Controls>,
     pub status: StatusCell,
-    pub stats: PlaybackRecorder,
     /// What happened to the decoders, reported by the supervisor.
     pub reports: mpsc::Receiver<Report>,
     /// The target on screen, as the supervisor reports it.
@@ -170,7 +169,6 @@ pub(crate) async fn run(inputs: Inputs) {
         broadcast,
         controls,
         status,
-        stats,
         mut reports,
         mut playing,
         desired,
@@ -321,7 +319,6 @@ pub(crate) async fn run(inputs: Inputs) {
         };
 
         let sample = network.as_ref().map(|network| network.0.sample());
-        stats.network.update(|last| *last = sample);
         let on_screen = status.get().rendition;
         let nothing_playing = on_screen.is_none();
         // The bound weighs its target against what this selector last asked
@@ -620,7 +617,6 @@ mod tests {
                 volume: watch::Sender::new(1.0),
             }),
             status: StatusCell::new(super::super::PlayerStatus::default()),
-            stats: PlaybackRecorder::default(),
             reports,
             playing,
             desired,
