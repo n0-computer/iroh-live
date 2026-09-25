@@ -13,8 +13,8 @@
 //!   pipe and an encode. It is the only path for anything that needs pixels,
 //!   such as a preview, a QR scanner or a rendition ladder.
 //!
-//! The raw path takes a [`RawConfig`], whose geometry is aligned so libcamera
-//! does not pad its rows.
+//! The raw path aligns its geometry with [`aligned`], so libcamera does not
+//! pad its rows.
 
 use std::{
     collections::VecDeque,
@@ -24,7 +24,6 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use n0_error::{Result, stack_error};
 use n0_future::{
     boxed::BoxStream,
     task::{AbortOnDropHandle, spawn},
@@ -75,52 +74,9 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// give the same byte count as 704, 800 the same as 832, and 96 the same as
 /// 128. Heights are not padded: 358 and 362 come out exact.
 ///
-/// [`RawConfig::new`] rounds the width up to this, so reading is a plain split
-/// with no per-row copy.
+/// [`aligned`] rounds the width up to this, so reading is a plain split with no
+/// per-row copy.
 const RAW_WIDTH_ALIGN: u32 = 64;
-
-/// Errors raised while running `rpicam-vid`.
-#[stack_error(derive, add_meta, from_sources)]
-pub(crate) enum RpicamError {
-    /// The subprocess could not be started, usually because it is not installed.
-    #[error("failed to start {RPICAM_VID}")]
-    Spawn {
-        /// The spawn failure.
-        #[error(source, std_err)]
-        source: std::io::Error,
-    },
-    /// The subprocess started without a stdout pipe.
-    #[error("{RPICAM_VID} produced no output pipe")]
-    NoOutput,
-    /// The raw geometry cannot hold I420 pictures.
-    #[error(
-        "{width}x{height} cannot be captured as I420: both dimensions must be even and non-zero"
-    )]
-    Geometry {
-        /// The requested width.
-        width: u32,
-        /// The requested height.
-        height: u32,
-    },
-    /// The raw stream ended part way through a picture.
-    ///
-    /// The rows were not the length the geometry implies. On this camera that
-    /// means libcamera padded them, which [`RAW_WIDTH_ALIGN`] should prevent.
-    #[error(
-        "{RPICAM_VID} wrote {trailing} bytes that are not a whole {width}x{height} \
-         picture of {frame} bytes; its rows are not the length this geometry implies"
-    )]
-    PartialFrame {
-        /// Bytes left over when the stream ended.
-        trailing: usize,
-        /// Bytes one tightly-packed picture should take.
-        frame: usize,
-        /// The width the pictures were split at.
-        width: u32,
-        /// The height the pictures were split at.
-        height: u32,
-    },
-}
 
 /// Target bitrate for [`Output::H264`] when the caller names none.
 ///
@@ -145,100 +101,63 @@ pub(crate) enum Output {
     I420,
 }
 
-/// How to run `rpicam-vid`.
-#[derive(Debug, Clone)]
-pub(crate) struct Config {
-    /// Capture width in pixels.
-    pub(crate) width: u32,
-    /// Capture height in pixels.
-    pub(crate) height: u32,
-    /// Capture and encode framerate.
-    pub(crate) framerate: u32,
-    /// What the camera app writes to stdout.
-    pub(crate) output: Output,
-}
-
-/// A raw capture geometry that libcamera does not pad, and its frame rate.
+/// Returns the smallest raw capture size at or above `size` that libcamera does
+/// not pad.
 ///
-/// [`RawConfig::new`] is the only constructor, and it rounds the width up to
-/// [`RAW_WIDTH_ALIGN`]. That lets [`frames`] split pictures by size alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RawConfig {
-    width: u32,
-    height: u32,
-    framerate: u32,
+/// The width rounds up to [`RAW_WIDTH_ALIGN`] and the height to even. That lets
+/// [`frames`] split pictures by size alone. The encoder scales to the
+/// renditions, so the rounding costs a few captured columns and does not change
+/// what is published.
+fn aligned(size: Size) -> Size {
+    let capture = Size::new(
+        size.width.max(1).div_ceil(RAW_WIDTH_ALIGN) * RAW_WIDTH_ALIGN,
+        size.height.max(1).next_multiple_of(2),
+    );
+    if capture != size {
+        info!(
+            requested = %size,
+            capturing = %capture,
+            align = RAW_WIDTH_ALIGN,
+            "rounding the raw capture up to a geometry libcamera does not pad",
+        );
+    }
+    capture
 }
 
-impl RawConfig {
-    /// Creates a raw capture config, rounding the geometry up to avoid padding.
-    ///
-    /// The encoder scales to the renditions, so the rounding costs a few
-    /// captured columns and does not change what is published.
-    pub(crate) fn new(width: u32, height: u32, framerate: u32) -> Self {
-        let capture_width = align_up(width.max(1), RAW_WIDTH_ALIGN);
-        let capture_height = even(height.max(1));
-        if (capture_width, capture_height) != (width, height) {
-            info!(
-                requested = format_args!("{width}x{height}"),
-                capturing = format_args!("{capture_width}x{capture_height}"),
-                align = RAW_WIDTH_ALIGN,
-                "rounding the raw capture up to a geometry libcamera does not pad",
-            );
-        }
-        Self {
-            width: capture_width,
-            height: capture_height,
-            framerate,
-        }
+/// Returns the `rpicam-vid` command line for `output` at `size` and `framerate`.
+fn args(size: Size, framerate: u32, output: Output) -> Vec<String> {
+    let mut args = vec![
+        "--nopreview".to_string(),
+        // Run until killed. The process dies with the source.
+        "--timeout".to_string(),
+        "0".to_string(),
+        "--width".to_string(),
+        size.width.to_string(),
+        "--height".to_string(),
+        size.height.to_string(),
+        "--framerate".to_string(),
+        framerate.to_string(),
+        "--output".to_string(),
+        "-".to_string(),
+    ];
+    match output {
+        Output::H264 {
+            bitrate,
+            keyframe_interval,
+        } => args.extend([
+            "--codec".to_string(),
+            "h264".to_string(),
+            // Repeat the parameter sets before every keyframe, so a
+            // subscriber that joined late can start decoding.
+            "--inline".to_string(),
+            "--bitrate".to_string(),
+            bitrate.to_string(),
+            "--intra".to_string(),
+            keyframe_interval.to_string(),
+        ]),
+        Output::I420 => args.extend(["--codec".to_string(), "yuv420".to_string()]),
     }
-
-    /// Returns the [`Config`] that runs `rpicam-vid` for this capture.
-    fn config(self) -> Config {
-        Config {
-            width: self.width,
-            height: self.height,
-            framerate: self.framerate,
-            output: Output::I420,
-        }
-    }
-}
-
-impl Config {
-    /// Returns the command line for this config.
-    fn args(&self) -> Vec<String> {
-        let mut args = vec![
-            "--nopreview".to_string(),
-            // Run until killed. The process dies with the source.
-            "--timeout".to_string(),
-            "0".to_string(),
-            "--width".to_string(),
-            self.width.to_string(),
-            "--height".to_string(),
-            self.height.to_string(),
-            "--framerate".to_string(),
-            self.framerate.to_string(),
-            "--output".to_string(),
-            "-".to_string(),
-        ];
-        match self.output {
-            Output::H264 {
-                bitrate,
-                keyframe_interval,
-            } => args.extend([
-                "--codec".to_string(),
-                "h264".to_string(),
-                // Repeat the parameter sets before every keyframe, so a
-                // subscriber that joined late can start decoding.
-                "--inline".to_string(),
-                "--bitrate".to_string(),
-                bitrate.to_string(),
-                "--intra".to_string(),
-                keyframe_interval.to_string(),
-            ]),
-            Output::I420 => args.extend(["--codec".to_string(), "yuv420".to_string()]),
-        }
-        args
-    }
+    args
 }
 
 /// How to run the Raspberry Pi camera.
@@ -287,13 +206,7 @@ pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Err
         bitrate,
         keyframe_interval: config.keyframe_interval,
     };
-    annexb(Config {
-        width: config.size.width,
-        height: config.size.height,
-        framerate: config.framerate,
-        output,
-    })
-    .map_err(Error::device)
+    annexb(config.size, config.framerate, output)
 }
 
 /// Starts `rpicam-vid` for raw pictures and waits for the first one.
@@ -304,14 +217,11 @@ pub(super) async fn open_raw(
     slot: FrameSlot,
     stop: CancellationToken,
 ) -> Result<(VideoFormat, LocalTask), Error> {
-    let raw = RawConfig::new(config.size.width, config.size.height, config.framerate);
-    let rate = crate::video::Rate::new(raw.framerate.max(1), 1)
+    let size = aligned(config.size);
+    let rate = crate::video::Rate::new(config.framerate.max(1), 1)
         .map_err(|err| Error::invalid(err.to_string()))?;
-    let format = VideoFormat {
-        size: Size::new(raw.width, raw.height),
-        rate,
-    };
-    let mut pictures = frames(raw, moq_mux::Clock::new()).map_err(Error::device)?;
+    let format = VideoFormat { size, rate };
+    let mut pictures = frames(size, config.framerate, moq_mux::Clock::new())?;
     let (first_tx, first) = tokio::sync::oneshot::channel();
     let task = crate::local_task::spawn("rpicam", stop, move |stop| async move {
         use n0_future::StreamExt;
@@ -344,14 +254,11 @@ pub(super) async fn open_raw(
 /// Starts `rpicam-vid` and returns its raw pictures, stamped on `clock`.
 ///
 /// The broadcast restamps what it reads, so `clock` only has to be monotonic.
-///
-/// # Errors
-///
-/// Fails if `rpicam-vid` is not installed or cannot open the camera, or if the
-/// geometry is odd or zero in either dimension.
-fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, RpicamError> {
-    let pictures = Pictures::new(config.width, config.height)?;
-    let process = Process::spawn(&config.config())?;
+/// Fails if `rpicam-vid` does not start, or if `size` is odd or zero in either
+/// dimension.
+fn frames(size: Size, framerate: u32, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, Error> {
+    let pictures = Pictures::new(size)?;
+    let process = Process::spawn(size, framerate, Output::I420)?;
 
     let state = Raw {
         process,
@@ -377,8 +284,15 @@ fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, 
                         // A stream that ended mid-picture means the rows were
                         // not the length we split at, and every picture was
                         // sheared. The exit status does not show that.
-                        if let Err(err) = state.pictures.finish() {
-                            warn!(error = %err, "the raw camera stream does not divide into pictures");
+                        let trailing = state.pictures.leftover();
+                        if trailing > 0 {
+                            warn!(
+                                trailing,
+                                frame = state.pictures.frame,
+                                size = %state.pictures.size,
+                                "the raw camera stream ended part way through a picture; \
+                                 its rows are not the length this size implies",
+                            );
                         }
                         state.process.report_exit().await;
                         return None;
@@ -396,8 +310,8 @@ fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, 
 }
 
 /// Starts `rpicam-vid` and returns the Annex-B bytes it writes.
-fn annexb(config: Config) -> Result<BoxStream<Bytes>, RpicamError> {
-    let process = Process::spawn(&config)?;
+fn annexb(size: Size, framerate: u32, output: Output) -> Result<BoxStream<Bytes>, Error> {
+    let process = Process::spawn(size, framerate, output)?;
     let state = AnnexB {
         process,
         buffer: BytesMut::with_capacity(READ_CHUNK),
@@ -444,30 +358,22 @@ struct Raw {
 ///
 /// Nothing frames the pictures, so only the geometry says where one ends, and
 /// a wrong geometry goes unnoticed while reading. Leftover bytes at the end,
-/// reported by [`finish`](Self::finish), are the one sign of it.
+/// counted by [`leftover`](Self::leftover), are the one sign of it.
 struct Pictures {
-    width: u32,
-    height: u32,
+    size: Size,
     /// Bytes of one picture: Y, then U, then V, with no row padding.
     frame: usize,
     buffer: BytesMut,
 }
 
 impl Pictures {
-    /// Creates a split for pictures of the given geometry.
+    /// Creates a split for pictures of `size`.
     ///
     /// Fails if either dimension is odd or zero, which 4:2:0 cannot describe.
-    fn new(width: u32, height: u32) -> Result<Self, RpicamError> {
-        if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-            return Err(n0_error::e!(RpicamError::Geometry { width, height }));
-        }
-        // After the check above, `len` only refuses a geometry too large to
-        // address.
-        let frame = I420::len(Size::new(width, height))
-            .map_err(|_| n0_error::e!(RpicamError::Geometry { width, height }))?;
+    fn new(size: Size) -> Result<Self, Error> {
+        let frame = I420::len(size).map_err(|err| Error::invalid(err.to_string()))?;
         Ok(Self {
-            width,
-            height,
+            size,
             frame,
             buffer: BytesMut::with_capacity(frame),
         })
@@ -485,27 +391,19 @@ impl Pictures {
             return None;
         }
         let data: Vec<u8> = self.buffer.split_to(self.frame).into();
-        // `new` checked the geometry and `frame` is `I420::len` of it, so
+        // `new` checked the size and `frame` is `I420::len` of it, so
         // `I420::new` cannot fail.
-        let picture = I420::new(Size::new(self.width, self.height), data)
-            .expect("the geometry and the length were both checked");
+        let picture =
+            I420::new(self.size, data).expect("the size and the length were both checked");
         Some(picture)
     }
 
-    /// Checks that the stream ended on a picture boundary.
+    /// Returns the bytes that do not make a whole picture.
     ///
-    /// Leftover bytes mean the camera wrote a different row stride and the
-    /// pictures handed on were sheared. The error names the leftover count.
-    fn finish(&self) -> Result<(), RpicamError> {
-        match self.buffer.len() {
-            0 => Ok(()),
-            trailing => Err(n0_error::e!(RpicamError::PartialFrame {
-                trailing,
-                frame: self.frame,
-                width: self.width,
-                height: self.height,
-            })),
-        }
+    /// At the end of the stream, any means the camera wrote another row stride
+    /// and the pictures handed on were sheared.
+    fn leftover(&self) -> usize {
+        self.buffer.len()
     }
 }
 
@@ -523,31 +421,25 @@ struct Process {
 }
 
 impl Process {
-    /// Starts `rpicam-vid` with the command line `config` describes.
+    /// Starts `rpicam-vid` writing `output` at `size` and `framerate`.
     ///
-    /// Fails if the subprocess cannot be started or has no stdout pipe.
-    fn spawn(config: &Config) -> Result<Self, RpicamError> {
-        let args = config.args();
-        info!(
-            width = config.width,
-            height = config.height,
-            framerate = config.framerate,
-            output = ?config.output,
-            "starting {RPICAM_VID}",
-        );
+    /// Fails if the subprocess cannot be started, usually because it is not
+    /// installed, or has no stdout pipe.
+    fn spawn(size: Size, framerate: u32, output: Output) -> Result<Self, Error> {
+        info!(%size, framerate, ?output, "starting {RPICAM_VID}");
 
         let mut child = tokio::process::Command::new(RPICAM_VID)
-            .args(&args)
+            .args(args(size, framerate, output))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|source| n0_error::e!(RpicamError::Spawn { source }))?;
+            .map_err(|err| Error::device_msg(format!("failed to start {RPICAM_VID}: {err}")))?;
 
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| n0_error::e!(RpicamError::NoOutput))?;
+            .ok_or_else(|| Error::device_msg(format!("{RPICAM_VID} produced no output pipe")))?;
 
         // The camera app reports every problem on stderr only. An unseated
         // ribbon cable reads as "no cameras available" there, and as an empty
@@ -629,16 +521,6 @@ impl Drop for Process {
     }
 }
 
-/// Rounds `value` up to the next multiple of `align`.
-fn align_up(value: u32, align: u32) -> u32 {
-    value.div_ceil(align) * align
-}
-
-/// Rounds `value` up to the next even number.
-fn even(value: u32) -> u32 {
-    value + (value % 2)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +531,11 @@ mod tests {
 
     /// Bytes one 640x360 I420 picture takes: 345,600.
     const FRAME: usize = (WIDTH * HEIGHT) as usize * 3 / 2;
+
+    const SIZE: Size = Size {
+        width: WIDTH,
+        height: HEIGHT,
+    };
 
     /// Feeds `bytes` to a split in chunks, the way reads from a pipe arrive.
     fn split(pictures: &mut Pictures, bytes: &[u8], chunk: usize) -> Vec<I420> {
@@ -664,7 +551,7 @@ mod tests {
 
     #[test]
     fn a_whole_number_of_pictures_splits_into_that_many() {
-        let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
+        let mut pictures = Pictures::new(SIZE).expect("640x360 is even");
         assert_eq!(pictures.frame, FRAME);
 
         let stream = vec![0u8; FRAME * 3];
@@ -677,13 +564,13 @@ mod tests {
             // Y is `width * height`, U and V a quarter of that each.
             assert_eq!(picture.data().len(), FRAME);
         }
-        pictures.finish().expect("the stream ended on a boundary");
+        assert_eq!(pictures.leftover(), 0);
     }
 
     /// Each picture comes out whole and in order, whatever the read boundaries.
     #[test]
     fn a_picture_is_not_sheared_by_the_reads_that_carried_it() {
-        let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
+        let mut pictures = Pictures::new(SIZE).expect("640x360 is even");
         let mut stream = Vec::with_capacity(FRAME * 4);
         for index in 0..4u8 {
             stream.extend(std::iter::repeat_n(index, FRAME));
@@ -703,10 +590,10 @@ mod tests {
         }
     }
 
-    /// A padded row stride shows as leftover bytes, and the error names them.
+    /// A padded row stride shows as leftover bytes.
     #[test]
     fn a_stream_that_does_not_divide_is_reported() {
-        let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
+        let mut pictures = Pictures::new(SIZE).expect("640x360 is even");
 
         // Two pictures with a 704-byte row stride at a 640 pixel width.
         let padded = (704 * HEIGHT) as usize * 3 / 2;
@@ -714,55 +601,46 @@ mod tests {
         let taken = split(&mut pictures, &stream, READ_CHUNK);
 
         assert_eq!(taken.len(), stream.len() / FRAME);
-        let err = pictures
-            .finish()
-            .expect_err("the leftover is not a picture");
-        assert!(
-            format!("{err}").contains(&(stream.len() % FRAME).to_string()),
-            "{err}",
-        );
+        assert_eq!(pictures.leftover(), stream.len() % FRAME);
     }
 
     #[test]
     fn an_odd_geometry_is_refused() {
-        assert!(Pictures::new(641, 360).is_err());
-        assert!(Pictures::new(640, 361).is_err());
-        assert!(Pictures::new(0, 360).is_err());
+        assert!(Pictures::new(Size::new(641, 360)).is_err());
+        assert!(Pictures::new(Size::new(640, 361)).is_err());
+        assert!(Pictures::new(Size::new(0, 360)).is_err());
     }
 
-    /// A 640x360 capture at 30 fps writing H.264.
-    fn h264(bitrate: u32, keyframe_interval: u32) -> Config {
-        Config {
-            width: 640,
-            height: 360,
-            framerate: 30,
-            output: Output::H264 {
-                bitrate,
-                keyframe_interval,
-            },
-        }
+    /// The command line of a 640x360 capture at 30 fps writing H.264.
+    fn h264(bitrate: u32, keyframe_interval: u32) -> String {
+        let output = Output::H264 {
+            bitrate,
+            keyframe_interval,
+        };
+        args(SIZE, 30, output).join(" ")
     }
 
     /// The raw width rounds up to a multiple of 64 and the height to even.
     #[test]
     fn raw_capture_rounds_up_to_an_unpadded_geometry() {
-        assert_eq!(RawConfig::new(640, 360, 30).width, 640);
-        assert_eq!(RawConfig::new(1280, 720, 30).width, 1280);
-        assert_eq!(RawConfig::new(854, 480, 30).width, 896);
-        assert_eq!(RawConfig::new(700, 360, 30).width, 704);
-        assert_eq!(RawConfig::new(96, 64, 30).width, 128);
-        assert_eq!(RawConfig::new(640, 361, 30).height, 362);
-        assert_eq!(RawConfig::new(0, 0, 30).width, RAW_WIDTH_ALIGN);
+        let width = |width, height| aligned(Size::new(width, height)).width;
+        assert_eq!(width(640, 360), 640);
+        assert_eq!(width(1280, 720), 1280);
+        assert_eq!(width(854, 480), 896);
+        assert_eq!(width(700, 360), 704);
+        assert_eq!(width(96, 64), 128);
+        assert_eq!(aligned(Size::new(640, 361)).height, 362);
+        assert_eq!(width(0, 0), RAW_WIDTH_ALIGN);
     }
 
     #[test]
     fn the_output_picks_the_codec_flag() {
-        let h264 = h264(DEFAULT_BITRATE, 30).args().join(" ");
+        let h264 = h264(DEFAULT_BITRATE, 30);
         assert!(h264.contains("--codec h264"), "{h264}");
         assert!(h264.contains("--bitrate 500000"), "{h264}");
         assert!(h264.contains("--intra 30"), "{h264}");
 
-        let raw = RawConfig::new(640, 360, 30).config().args().join(" ");
+        let raw = args(SIZE, 30, Output::I420).join(" ");
         assert!(raw.contains("--codec yuv420"), "{raw}");
         assert!(!raw.contains("--bitrate"), "{raw}");
         assert!(!raw.contains("--intra"), "{raw}");
@@ -771,18 +649,8 @@ mod tests {
     /// The bitrate and keyframe interval reach the command line.
     #[test]
     fn the_encoder_settings_reach_the_command_line() {
-        let args = h264(2_000_000, 60).args().join(" ");
+        let args = h264(2_000_000, 60);
         assert!(args.contains("--bitrate 2000000"), "{args}");
         assert!(args.contains("--intra 60"), "{args}");
-    }
-
-    /// A raw capture runs `rpicam-vid` at its aligned geometry.
-    #[test]
-    fn a_raw_capture_runs_at_the_geometry_it_was_aligned_to() {
-        let raw = RawConfig::new(854, 480, 30);
-        let args = raw.config().args().join(" ");
-        assert!(args.contains("--width 896"), "{args}");
-        assert!(args.contains("--height 480"), "{args}");
-        assert_eq!(raw.config().output, Output::I420);
     }
 }
