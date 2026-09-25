@@ -176,7 +176,6 @@ impl StatusCell {
             cell: self.clone(),
             medium,
             generation,
-            names: names.to_vec(),
         }
     }
 
@@ -210,7 +209,6 @@ pub(crate) struct Reporter {
     cell: StatusCell,
     medium: Medium,
     generation: u64,
-    names: Vec<String>,
 }
 
 impl Reporter {
@@ -226,9 +224,6 @@ impl Reporter {
 
     /// Sets one rendition's state.
     pub(crate) fn rendition(&self, name: &str, state: RenditionState) {
-        if !self.names.iter().any(|owned| owned == name) {
-            return;
-        }
         self.cell.write(self.medium, self.generation, |status| {
             status.renditions.insert(name.to_string(), state);
         });
@@ -245,10 +240,9 @@ mod tests {
         names.iter().map(|name| name.to_string()).collect()
     }
 
-    /// A replaced task that is still finishing cannot overwrite its
-    /// replacement's state.
+    /// A replaced task still finishing cannot overwrite its replacement's state.
     #[test]
-    fn a_stale_bundle_cannot_write() {
+    fn a_replaced_task_cannot_write() {
         let cell = StatusCell::default();
         let old = cell.begin(Medium::Video, 1, &names(&["video"]));
         let new = cell.begin(Medium::Video, 2, &names(&["video"]));
@@ -266,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_bundle_replaces_the_old_renditions_only_for_its_medium() {
+    fn a_new_task_replaces_the_old_renditions_only_for_its_medium() {
         let cell = StatusCell::default();
         let _audio = cell.begin(Medium::Audio, 1, &names(&["opus"]));
         let _video = cell.begin(Medium::Video, 1, &names(&["360p", "720p"]));
