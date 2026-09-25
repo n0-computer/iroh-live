@@ -375,14 +375,18 @@ pub(crate) async fn run(inputs: Inputs) {
                 step_down,
             })
         });
-        let vanished =
-            next.is_none() && !matches!(mode, RenditionMode::Off) && desired.borrow().is_some();
+        // A catalog that never had video counts too, so an audio-only
+        // broadcast ends its video instead of starting forever.
+        let vanished = next.is_none()
+            && !matches!(mode, RenditionMode::Off)
+            && status.get().video != SlotState::Ended;
         if vanished {
             let since = *vanished_since.get_or_insert(now);
             if now.duration_since(since) < VANISH_GRACE {
                 continue;
             }
             debug!("the catalog has had no video for a while; the video is over");
+            status.update(|status| status.video = SlotState::Ended);
         }
         vanished_since = None;
         // Ask again for a target given up on once its backoff is over. A
