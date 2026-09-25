@@ -18,12 +18,17 @@ const DATA_TRACK: &str = "data";
 
 /// A broadcast whose data track writes a counter every 20 ms.
 fn counter_broadcast() -> (broadcast::Producer, AbortOnDropHandle<()>) {
+    counting_from(0)
+}
+
+/// A counter broadcast that starts at `first`, to tell two apart.
+fn counting_from(first: u32) -> (broadcast::Producer, AbortOnDropHandle<()>) {
     let broadcast = broadcast::Info::new().produce();
     let mut track = broadcast
         .create_track(DATA_TRACK, track::Info::default())
         .expect("data track");
     let writer = tokio::spawn(async move {
-        for counter in 0u32.. {
+        for counter in first.. {
             if track
                 .write_frame(Timestamp::now(), counter.to_be_bytes().to_vec())
                 .is_err()
@@ -190,12 +195,17 @@ async fn room_broadcasts_are_private() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let (cam, _writer) = counter_broadcast();
     let publication = room_a.publish("cam", &cam).expect("publish");
+    let a = peer_a.id();
+    // In a's own scope, outside the room.
     let (public, _public_writer) = counter_broadcast();
     let public = peer_a
         .moq
-        .publish("public", &public, iroh_moq::Audience::Everyone)
+        .publish(
+            format!("rooms/elsewhere/{a}/public"),
+            &public,
+            iroh_moq::Audience::Everyone,
+        )
         .expect("publish");
-    let a = peer_a.id();
     wait_for_state(&room_b, "b sees a's cam", |state| {
         state
             .peers
@@ -239,7 +249,7 @@ async fn invalid_names_are_refused() {
     let room = peer.join(&RoomTicket::generate(), "solo").await;
     let (cam, _writer) = counter_broadcast();
     for name in ["", "someone/cam"] {
-        let err = room.publish(name, &cam).expect_err("a reserved name");
+        let err = room.publish(name, &cam).expect_err("an invalid name");
         assert!(matches!(err, Error::InvalidName { .. }), "{err:#}");
     }
     peer.shutdown().await;
@@ -372,4 +382,71 @@ async fn dropping_a_room_frees_its_names() {
     room.publish("cam", &cam).expect("publish after rejoining");
 
     peer.shutdown().await;
+}
+
+/// A counter offset that tells a forged broadcast's frames from the real one's.
+const FORGED: u32 = 1_000_000;
+
+/// A member cannot publish at another member's room path.
+///
+/// Each member's grant keeps it to its own room scope, so the forgery never
+/// enters the table, and the room reads the real broadcast.
+#[tokio::test]
+#[traced_test]
+async fn a_member_cannot_forge_anothers_broadcast() {
+    let (peer_b, room_b, peer_c, room_c) = two_peers_in_room().await;
+    let mallory = Peer::spawn().await;
+    let _room_m = mallory.join(&room_b.ticket(), "mallory").await;
+    let b = peer_b.id();
+    let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
+    let (forged, _forger) = counting_from(FORGED);
+    let _forgery = mallory
+        .moq
+        .publish(path.as_str(), &forged, iroh_moq::Audience::Everyone)
+        .expect("publish at b's path");
+    tokio::time::timeout(TIMEOUT, mallory.moq.connect(peer_c.endpoint.addr()))
+        .await
+        .expect("timed out connecting")
+        .expect("connect");
+
+    let routed = tokio::time::timeout(
+        Duration::from_secs(2),
+        peer_c.moq.origin().routed(path.as_str()),
+    )
+    .await;
+    assert!(routed.is_err(), "the forgery reached c's table");
+
+    let (cam, _writer) = counter_broadcast();
+    room_b.publish("cam", &cam).expect("publish");
+    wait_for_state(&room_c, "c sees b's cam", |state| {
+        state
+            .peers
+            .get(&b)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
+    })
+    .await;
+    let subscription = tokio::time::timeout(TIMEOUT, room_c.subscribe(b, "cam"))
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+    let mut track = subscription
+        .as_moq()
+        .track(DATA_TRACK)
+        .expect("data track")
+        .subscribe(None)
+        .await
+        .expect("subscribe to the track")
+        .ordered();
+    let mut group = tokio::time::timeout(TIMEOUT, track.next_group())
+        .await
+        .expect("timed out reading")
+        .expect("track failed")
+        .expect("track ended");
+    let frame = group.read_frame().await.expect("group").expect("a frame");
+    let value = u32::from_be_bytes(frame.payload[..].try_into().expect("4 bytes"));
+    assert!(value < FORGED, "c read the forgery");
+
+    mallory.shutdown().await;
+    peer_b.shutdown().await;
+    peer_c.shutdown().await;
 }

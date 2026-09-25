@@ -2,11 +2,14 @@
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
 use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms};
-use iroh_moq::{Moq, MoqConfig};
+use iroh_moq::{Grant, Moq, MoqConfig};
 use n0_watcher::Watcher;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -35,9 +38,16 @@ pub(crate) struct Peer {
 }
 
 impl Peer {
+    /// Spawns a peer whose peers may publish only under their room scope.
     pub(crate) async fn spawn() -> Self {
         let endpoint = endpoint().await;
-        let moq = Moq::new(endpoint.clone(), MoqConfig::default());
+        let config = MoqConfig {
+            grant: Some(Arc::new(|peer| {
+                Grant::publish_under(iroh_live_rooms::publish_scope(peer))
+            })),
+            ..Default::default()
+        };
+        let moq = Moq::new(endpoint.clone(), config);
         let rooms = Rooms::new(&moq);
         let router = moq
             .mount(Router::builder(endpoint.clone()))

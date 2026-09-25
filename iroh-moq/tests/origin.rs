@@ -77,18 +77,9 @@ impl Server {
             .await
             .expect("timed out waiting for a connection")
             .expect("router gone");
-        let transport = if connection.alpn() == web_transport_iroh::ALPN_H3.as_bytes() {
-            let request = web_transport_iroh::H3Request::accept(connection)
-                .await
-                .expect("H3 CONNECT");
-            let mut response = web_transport_proto::ConnectResponse::OK;
-            if let Some(protocol) = request.protocols.first() {
-                response = response.with_protocol(protocol);
-            }
-            request.respond(response).await.expect("H3 response")
-        } else {
-            web_transport_iroh::Session::raw(connection)
-        };
+        let (transport, _target) = iroh_moq::transport::accept(connection)
+            .await
+            .expect("transport handshake");
         let mut server = moq_net::Server::new().with_publisher(publisher);
         if let Some(subscriber) = subscriber {
             server = server.with_subscriber(subscriber);
