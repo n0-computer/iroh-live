@@ -23,65 +23,52 @@ use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use crate::ticket::RoomTicket;
 
-/// The ALPN rooms speak: iroh-gossip's. Mount [`Rooms::protocol_handler`]
-/// under it.
+/// The ALPN rooms speak, iroh-gossip's.
+///
+/// Mount [`Rooms::protocol_handler`] under it.
 pub const ALPN: &[u8] = iroh_gossip::ALPN;
 
 /// The key a member's announcement is stored under in the room's gossip map.
 const PEER_STATE_KEY: &[u8] = b"s";
 
-/// How long a member's announcement survives in the gossip map unrewritten.
+/// How long a member's announcement lives in the gossip map without renewal.
 ///
-/// The map is the membership roll, so this is how long a member that vanished
-/// without saying so stays on it: long enough to ride out a brief outage, short
-/// enough that a room does not accumulate members who left minutes ago.
-/// smol-kv 0.4 sweeps expired entries on a fixed 30 second timer, so such a
-/// member actually drops off between two and two and a half minutes after its
-/// last renewal. The age is measured against the timestamp the member wrote, by
-/// its own clock, so a member whose clock runs more than this far behind is
-/// never seen at all.
+/// smol-kv 0.4 sweeps every 30 seconds, so a vanished member drops off two to
+/// two and a half minutes after its last renewal. The age is measured by the
+/// member's own clock: a member whose clock runs more than this far behind is
+/// never seen.
 const STATE_HORIZON: Duration = Duration::from_secs(2 * 60);
 
-/// How often a member rewrites its announcement, which renews its lease.
-///
-/// Several refreshes fit inside [`STATE_HORIZON`], so a member that misses one
-/// or two is still a member.
+/// How often a member rewrites its announcement to renew its lease.
 const STATE_REFRESH: Duration = Duration::from_secs(30);
 
 /// How often the gossip map should look for announcements past the horizon.
 ///
-/// smol-kv 0.4 ignores it and sweeps every 30 seconds; it is passed on for the
-/// release that honours it.
+/// smol-kv 0.4 ignores it and sweeps every 30 seconds.
 const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long leaving waits for each step that needs the network.
 ///
-/// Telling the others and stopping the gossip map both wait on peers; a room
-/// whose peers are gone must still be left promptly.
+/// Telling the others and stopping the gossip map wait on peers, who may be
+/// gone.
 const LEAVE_STEP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How often in a row the room resubscribes to its gossip map before it gives
-/// up.
+/// How many times in a row the room resubscribes to its gossip map.
 ///
-/// smol-kv ends a subscription that falls behind its internal buffer; a fresh
-/// one replays the map, so the room carries on. One that ends again at once,
-/// several times over, means the map itself is gone.
+/// smol-kv ends a subscription that falls behind, and a fresh one replays the
+/// map. One that keeps ending means the map is gone.
 const MAP_RESUBSCRIBES: u32 = 3;
 
-/// Everything that can go wrong in a room.
+/// Errors of a room.
 #[stack_error(derive, add_meta, from_sources)]
 pub enum Error {
     /// The room's gossip topic could not be joined.
     #[error(transparent)]
     Gossip(iroh_gossip::api::ApiError),
-    /// The transport refused: a publication, a subscription, or a dial.
-    ///
-    /// The same `iroh_moq::Error` the facade's `Error::Transport` carries.
+    /// The transport failed a publication, a subscription or a dial.
     #[error(transparent)]
     Transport(iroh_moq::Error),
-    /// A broadcast name that a room does not accept: empty, or holding a
-    /// slash, which would reach into another member's part of the room's
-    /// namespace.
+    /// A broadcast name that is empty or holds a slash.
     #[error("invalid broadcast name {name:?}")]
     InvalidName { name: String },
     /// The room was left.
@@ -91,8 +78,7 @@ pub enum Error {
 
 /// Rooms on one endpoint.
 ///
-/// Owns the one gossip instance rooms need, so two rooms share it rather than
-/// fighting over its ALPN. Cheap to clone.
+/// Owns the gossip instance all rooms on the endpoint share. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct Rooms {
     moq: Moq,
@@ -100,15 +86,13 @@ pub struct Rooms {
 }
 
 impl Rooms {
-    /// Creates the room service for the endpoint `moq` runs on, spawning its
-    /// gossip instance.
+    /// Creates the room service on `moq`'s endpoint, with its own gossip.
     pub fn new(moq: &Moq) -> Self {
         let gossip = Gossip::builder().spawn(moq.endpoint().clone());
         Self::with_gossip(moq, gossip)
     }
 
-    /// Creates the room service over a gossip instance the application already
-    /// runs.
+    /// Creates the room service over an existing gossip instance.
     pub fn with_gossip(moq: &Moq, gossip: Gossip) -> Self {
         Self {
             moq: moq.clone(),
@@ -124,7 +108,7 @@ impl Rooms {
     /// Joins the room `ticket` names, as `display_name` if given.
     ///
     /// Subscribes to the room's gossip topic and starts announcing this
-    /// member. Cancellation safe: dropping the future leaves the topic.
+    /// member.
     ///
     /// # Errors
     ///
@@ -202,8 +186,7 @@ pub struct RoomPeer {
 /// A joined room.
 ///
 /// Cheap to clone. The actor behind it runs while any clone exists, and
-/// [`leave`](Self::leave) ends it for all of them. Nothing a caller does with
-/// the state can stall it: the state is a watcher.
+/// [`leave`](Self::leave) ends it for all of them.
 #[derive(Debug, Clone)]
 pub struct Room {
     inner: Arc<Inner>,
@@ -245,19 +228,16 @@ impl Room {
         self.inner.ticket.with_bootstrap(self.inner.me)
     }
 
-    /// Returns the room's membership and what each member publishes, as it
-    /// changes.
+    /// Returns the members and their broadcasts, as they change.
     pub fn state(&self) -> n0_watcher::Direct<RoomState> {
         self.inner.state.watch()
     }
 
     /// Publishes `broadcast` into the room as `name`, to its members only.
     ///
-    /// The path is `rooms/<topic>/<this member>/<name>`, and the audience is the
-    /// room's membership as it changes, so the broadcast is offered to exactly
-    /// the members and to nobody else who connects. It stays in this member's
-    /// announcement until it is withdrawn: when the broadcast ends, with
-    /// [`Publication::unpublish`], or when the room is left.
+    /// The path is `rooms/<topic>/<this member>/<name>`. The broadcast stays in
+    /// this member's announcement until it ends, is unpublished, or the room is
+    /// left.
     ///
     /// # Errors
     ///
@@ -286,9 +266,8 @@ impl Room {
         info!(%name, path = %publication.path(), "published into the room");
         {
             let mut local = self.inner.local.lock().expect("poisoned");
-            // Spawned under the lock the task takes to forget the entry, so it
-            // cannot run before the entry is there, whenever the publication
-            // is withdrawn.
+            // Spawned under the lock, so the task cannot run before the entry
+            // exists.
             let withdrawn = {
                 let inner = Arc::downgrade(&self.inner);
                 let name = name.to_owned();
@@ -315,19 +294,16 @@ impl Room {
 
     /// Resolves `peer`'s broadcast `name` over the session with that member.
     ///
-    /// Dials the member if there is no session yet, and reads the broadcast
-    /// from what the member itself announces on that session, so no other peer
-    /// can stand in for it. Room broadcasts go to members directly and never
-    /// through a relay. Waits until the member announces `name` to this node,
-    /// which it does once it counts this node as a member and for as long as
-    /// it publishes `name`, so a caller that may ask for a name the member
-    /// never published should bound the wait. Cancellation safe.
+    /// Dials the member if needed, and reads what the member itself announces
+    /// on that session, so no other peer can stand in for it. Waits until the
+    /// member announces `name` to this node, so bound the wait if the member
+    /// may never publish it.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::Left`] once the room was left, and with
-    /// [`Error::Transport`] if the member cannot be dialed or its session ends before
-    /// it announces `name`.
+    /// [`Error::Transport`] if the member cannot be dialed or its session ends
+    /// before it announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
         if self.inner.done.get() {
             return Err(e!(Error::Left));
@@ -344,12 +320,10 @@ impl Room {
 
     /// Leaves the room for every clone of this handle.
     ///
-    /// Tells the other members and withdraws this member's publications. The
-    /// subscriptions this member made with
-    /// [`subscribe`](Self::subscribe) are the caller's and stay open; drop or
-    /// close them as well. Steps that need the network are bounded, so this
-    /// returns within seconds even with every other member gone. Idempotent;
-    /// not cancellation safe, call it again to finish.
+    /// Tells the other members and withdraws this member's publications.
+    /// Subscriptions made with [`subscribe`](Self::subscribe) stay open, so
+    /// drop them too. Returns within seconds even if every other member is
+    /// gone. Idempotent. Not cancellation safe: call it again to finish.
     pub async fn leave(&self) {
         let (reply, reply_rx) = oneshot::channel();
         if self.inner.leave.send(reply).await.is_ok() {
@@ -414,8 +388,7 @@ struct Actor {
 }
 
 impl Drop for Actor {
-    /// Lets [`Room::leave`] return, also when the actor panicked or its last
-    /// handle went without leaving.
+    /// Lets [`Room::leave`] return, even if the actor panicked.
     fn drop(&mut self) {
         self.inner.done.set(true).ok();
     }
@@ -499,8 +472,7 @@ impl Actor {
         )
     }
 
-    /// Withdraws everything this member put into the room, telling the others
-    /// when it is leaving on purpose.
+    /// Withdraws this member's publications, and tells the others if `leaving`.
     async fn shut_down(&mut self, leaving: bool) {
         if leaving {
             info!("leaving the room");
@@ -563,10 +535,8 @@ impl Actor {
                     self.publish_state();
                 }
             }
-            // The boundary between entries that were there when the
-            // subscription opened and the ones that arrive from here on. After
-            // a resubscription, a member the replay did not show expired while
-            // the room was not listening.
+            // The replay is complete. After a resubscription, a member it did
+            // not show expired in the meantime.
             SubscribeItem::CurrentDone => {
                 if let Some(seen) = self.resync.take() {
                     let before = self.peers.len();
@@ -666,13 +636,9 @@ async fn put(writer: &WriteScope, announcement: &Announcement) {
     }
 }
 
-/// Returns the paths `member` publishes its room broadcasts under:
-/// `rooms/*/<member>/**`.
+/// Returns the paths `member` publishes room broadcasts under, `rooms/*/<member>/**`.
 ///
-/// A node that runs rooms lets every peer publish under it, next to whatever
-/// else its [`MoqConfig::grant`](iroh_moq::MoqConfig::grant) allows, or room
-/// broadcasts do not reach it. Anything else would let one member stand in
-/// for another.
+/// A node that runs rooms adds this to every peer's grant.
 pub fn publish_scope(member: EndpointId) -> Pattern {
     format!("rooms/*/{member}/**")
         .parse()
@@ -680,9 +646,6 @@ pub fn publish_scope(member: EndpointId) -> Pattern {
 }
 
 /// Returns the path a room broadcast lives at: `rooms/<topic>/<publisher>/<name>`.
-///
-/// The topic scopes it, so a member of two rooms can publish "cam" in each, and
-/// the publisher's id makes one broadcast one path over every link.
 pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> String {
     format!("rooms/{topic}/{publisher}/{name}")
 }
@@ -693,8 +656,7 @@ mod tests {
 
     use super::*;
 
-    /// The refresh interval and the expiry horizon are one mechanism split
-    /// across two constants: a member has to survive two missed refreshes.
+    /// A member survives two missed refreshes.
     #[test]
     fn several_refreshes_fit_inside_the_expiry_horizon() {
         assert!(STATE_REFRESH * 3 <= STATE_HORIZON);

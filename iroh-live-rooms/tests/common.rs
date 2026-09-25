@@ -1,9 +1,4 @@
-//! Shared harness for `iroh-live-rooms` integration tests.
-//!
-//! Builds a peer from scratch: an endpoint on an in-memory address lookup, a
-//! MoQ node, the room service, and a router mounting both. This file carries no
-//! `#[test]` items of its own; it becomes its own (empty) test binary under
-//! cargo's test autodiscovery, which is expected.
+//! Shared harness for the rooms tests.
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
@@ -14,7 +9,7 @@ use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms};
 use iroh_moq::{Moq, MoqConfig};
 use n0_watcher::Watcher;
 
-/// Generous: must survive CPU contention when the whole workspace suite runs.
+/// Generous, because the suite shares a machine with whatever else is running.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Binds an endpoint against a shared in-memory address lookup.
@@ -30,8 +25,7 @@ pub(crate) async fn endpoint() -> Endpoint {
     endpoint
 }
 
-/// A peer: an endpoint, the MoQ node, the room service, and the router that
-/// accepts both.
+/// A peer with a MoQ node, rooms, and a router that accepts both.
 #[derive(Debug)]
 pub(crate) struct Peer {
     pub(crate) endpoint: Endpoint,

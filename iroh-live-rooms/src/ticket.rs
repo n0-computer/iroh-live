@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// A room: its gossip topic and the peers to contact first.
 ///
-/// Serializes to a compact string through the `iroh_tickets` envelope, with
-/// kind `room`.
+/// Its string form is an `iroh_tickets` ticket of kind `room`.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, derive_more::Display)]
 #[display("{}", iroh_tickets::Ticket::encode_string(self))]
 pub struct RoomTicket {
@@ -26,8 +25,7 @@ impl RoomTicket {
         }
     }
 
-    /// Creates a ticket for a new room with a random topic and no bootstrap
-    /// peers.
+    /// Creates a ticket for a new room with a random topic.
     pub fn generate() -> Self {
         Self::new(TopicId::from_bytes(rand::random()), [])
     }

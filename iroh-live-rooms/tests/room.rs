@@ -1,8 +1,6 @@
-//! Integration tests for rooms over real QUIC connections: membership, on-demand
-//! subscription, leaving, and the privacy of room broadcasts.
+//! Rooms over real QUIC connections.
 //!
-//! Nothing here touches media: broadcasts carry a plain data track with
-//! hand-written frames, since `iroh-live-rooms` does not depend on the media crate.
+//! Broadcasts carry a plain data track, since rooms know nothing of media.
 
 mod common;
 
@@ -15,11 +13,10 @@ use moq_net::{Timestamp, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 
-/// The name of the plain data track used in place of a media track.
+/// The name of the data track.
 const DATA_TRACK: &str = "data";
 
-/// A broadcast with a data track that writes an incrementing counter every
-/// 20 ms, standing in for a media encoder.
+/// A broadcast whose data track writes a counter every 20 ms.
 fn counter_broadcast() -> (broadcast::Producer, AbortOnDropHandle<()>) {
     let broadcast = broadcast::Info::new().produce();
     let mut track = broadcast
@@ -121,8 +118,7 @@ async fn a_member_subscribes_on_demand() {
     peer_b.shutdown().await;
 }
 
-/// Ending a broadcast changes what a member publishes, not whether it is in the
-/// room.
+/// Ending a broadcast leaves the member in the room.
 #[tokio::test]
 #[traced_test]
 async fn ending_a_broadcast_keeps_the_member() {
@@ -164,8 +160,7 @@ async fn ending_a_broadcast_keeps_the_member() {
     peer_b.shutdown().await;
 }
 
-/// A member that leaves is gone at once for the others, not after its lease
-/// runs out, and its own handles stop working.
+/// A member that leaves is gone at once for the others, and its handles stop working.
 #[tokio::test]
 #[traced_test]
 async fn leaving_is_seen_at_once() {
@@ -188,9 +183,7 @@ async fn leaving_is_seen_at_once() {
     peer_b.shutdown().await;
 }
 
-/// A room broadcast is offered to members only: a peer outside the room that
-/// connects to a member does not get it, while the member's public broadcast
-/// is there for it.
+/// A room broadcast reaches members only, while a public one reaches anyone.
 #[tokio::test]
 #[traced_test]
 async fn room_broadcasts_are_private() {
@@ -238,8 +231,7 @@ async fn room_broadcasts_are_private() {
     peer_b.shutdown().await;
 }
 
-/// A name must be one path segment, so it stays in the member's own part of
-/// the room.
+/// A broadcast name must be one path segment.
 #[tokio::test]
 #[traced_test]
 async fn invalid_names_are_refused() {
