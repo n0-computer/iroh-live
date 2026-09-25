@@ -35,14 +35,19 @@ test("CLI publish → browser watch", async ({ page }) => {
     "--renditions", "360p",
   ]);
 
-  // Wait for publisher to announce
-  await waitForOutput(publisher, "publishing at", 30_000);
+  // The relay carries the broadcast at its full path, `live/<id>/hello`,
+  // which the publisher prints once it attaches.
+  const path = await waitForOutput(
+    publisher,
+    /viewers find the broadcast there at (\S+)\n/,
+    30_000
+  );
 
   // Navigate browser to relay watch page. HTTP and QUIC share the same
   // port (TCP vs UDP), so the moq-lite fingerprint flow works: it fetches
   // the fingerprint from http://host:port/certificate.sha256, then connects
   // via WebTransport to https://host:port/.
-  const watchUrl = `http://localhost:${relay.httpPort}/?name=hello`;
+  const watchUrl = `http://localhost:${relay.httpPort}/?name=${path}`;
   await page.goto(watchUrl);
 
   // Wait for canvas to be visible
@@ -107,18 +112,21 @@ test("CLI publish → browser watch", async ({ page }) => {
 /**
  * Waits for a specific string to appear in stdout or stderr of a child process.
  */
+/**
+ * Waits for `pattern` in the process output and returns its first group.
+ */
 function waitForOutput(
   proc: ChildProcess,
-  needle: string,
+  pattern: RegExp,
   timeoutMs: number
-): Promise<void> {
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let output = "";
 
     const timeout = setTimeout(() => {
       reject(
         new Error(
-          `Timed out waiting for "${needle}" after ${timeoutMs}ms. Output:\n${output}`
+          `Timed out waiting for ${pattern} after ${timeoutMs}ms. Output:\n${output}`
         )
       );
     }, timeoutMs);
@@ -126,9 +134,10 @@ function waitForOutput(
     const check = (data: Buffer) => {
       const text = data.toString();
       output += text;
-      if (output.includes(needle)) {
+      const found = output.match(pattern);
+      if (found) {
         clearTimeout(timeout);
-        resolve();
+        resolve(found[1]);
       }
     };
 
@@ -144,7 +153,7 @@ function waitForOutput(
       clearTimeout(timeout);
       reject(
         new Error(
-          `Process exited with code ${code} before "${needle}" appeared. Output:\n${output}`
+          `Process exited with code ${code} before ${pattern} appeared. Output:\n${output}`
         )
       );
     });
