@@ -362,17 +362,24 @@ async fn changing_the_decoder_backend_rebuilds_it() {
         .expect("failed to play");
     first_frame(&player).await;
 
-    player.set_decoder(decode::Kind::Software);
-
-    // A replacement takes over only on a decoded frame.
+    // `Auto` may already run openh264, so the decoder's name alone proves
+    // nothing. A rebuild warms up a replacement, which takes over on a decoded
+    // frame.
     let mut status = player.status();
+    player.set_decoder(decode::Kind::Software);
     tokio::time::timeout(TIMEOUT, async {
-        while status.get().decoder.as_deref() != Some("openh264") {
+        while status.get().switching_to.is_none() {
+            status.updated().await.expect("the player is alive");
+        }
+        while status.get().switching_to.is_some() {
             status.updated().await.expect("the player is alive");
         }
     })
     .await
-    .expect("timed out waiting for the software decoder to take over");
+    .expect("timed out waiting for the rebuilt decoder to take over");
+    let status = status.get();
+    assert!(status.switch_error.is_none(), "{:?}", status.switch_error);
+    assert_eq!(status.decoder.as_deref(), Some("openh264"));
 
     let mut frames = player.video();
     tokio::time::timeout(TIMEOUT, frames.next())

@@ -355,6 +355,14 @@ async fn requested(player: &Player, rendition: &str) {
     }
 }
 
+/// Returns half the frames [`FRAMERATE`] delivers in `window`.
+///
+/// A test that counts switches asserts this too, since a stalled player does
+/// not switch either.
+fn half_rate(window: Duration) -> u32 {
+    (window.as_secs_f64() * f64::from(FRAMERATE) / 2.0) as u32
+}
+
 /// Reads frames for `duration` and returns when each one arrived.
 ///
 /// Awaits every frame rather than polling. The frame slot keeps only the
@@ -997,6 +1005,11 @@ async fn adaptation_holds_steady_under_a_marginal_cap() {
         "the ladder switched {switches} times ({requests} asked for) in {watched:?} under a \
          {cap_kbit} kbit/s cap",
     );
+    // A player that stalls never switches either.
+    assert!(
+        frames >= half_rate(watched),
+        "only {frames} frames arrived in {watched:?} under a {cap_kbit} kbit/s cap",
+    );
 
     fixture.shutdown().await;
 }
@@ -1040,15 +1053,20 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
     let watched = Duration::from_secs(40);
     let until = Instant::now() + watched;
     let mut last = viewer.rendition();
-    let mut switches = 0;
+    let (mut switches, mut frames) = (0, 0u32);
+    let mut poll = tokio::time::interval(Duration::from_millis(100));
     while Instant::now() < until {
-        let current = viewer.rendition();
-        if current != last {
-            info!(from = %last, to = %current, "rendition changed");
-            switches += 1;
-            last = current;
+        tokio::select! {
+            Some(_) = viewer.frames.next() => frames += 1,
+            _ = poll.tick() => {
+                let current = viewer.rendition();
+                if current != last {
+                    info!(from = %last, to = %current, "rendition changed");
+                    switches += 1;
+                    last = current;
+                }
+            }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     let after = signals.read();
@@ -1057,6 +1075,7 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
         min_rtt_ms = millis(after.min_rtt),
         goodput_kbps = ?after.goodput_bps.map(|bps| bps / 1000),
         switches,
+        frames,
         "risen baseline watched",
     );
 
@@ -1064,6 +1083,10 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
         switches, 0,
         "the ladder moved {switches} time(s) over {watched:?} on a path that only got longer, \
          ending on `{last}`",
+    );
+    assert!(
+        frames >= half_rate(watched),
+        "only {frames} frames arrived in {watched:?} on a path that only got longer",
     );
 
     // A minimum stuck on the old path makes every later round trip read as a

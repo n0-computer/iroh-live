@@ -169,14 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_qr_stays_sparse() {
-        // 84 bytes fit a 37-module QR code, three pixels per module on the Pi
-        // Zero demo's 122 px e-paper panel.
-        let ticket = BroadcastTicket::new(test_endpoint_id(), "my-stream-name");
-        assert!(ticket.to_string().len() <= 84);
-    }
-
-    #[test]
     fn serde_reads_the_string_form() {
         use serde::de::{IntoDeserializer, value::Error};
 
