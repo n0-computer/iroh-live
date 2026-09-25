@@ -22,7 +22,7 @@ use crate::{
 /// Where a broadcast is served and how its address is shared.
 #[derive(Args, Debug)]
 pub struct TransportArgs {
-    /// Broadcast path, as it appears in the ticket.
+    /// Broadcast name, as it appears in the ticket.
     #[arg(long, default_value = "hello")]
     pub name: String,
 
@@ -372,7 +372,7 @@ pub struct RemoteArgs {
     #[arg(long, conflicts_with = "ticket", requires = "broadcast_name")]
     pub endpoint_id: Option<EndpointId>,
 
-    /// Broadcast path. Needs `--endpoint-id`.
+    /// Broadcast name. Needs `--endpoint-id`.
     #[arg(
         long = "name",
         value_name = "NAME",

@@ -58,7 +58,7 @@ const LOOPBACK_NAME: &str = "loopback";
 
 /// The frame rate the camera source declares.
 ///
-/// Camera2 delivers at the rate the device picks. This is the most the encoder
+/// CameraX delivers at the rate the device picks. This is the most the encoder
 /// plans for.
 const CAMERA_FPS: u32 = 30;
 
@@ -751,7 +751,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
     count_camera_frame(&session);
 }
 
-/// Pushes one camera frame as the NV12 planes Camera2 hands out.
+/// Pushes one camera frame as the NV12 planes CameraX hands out.
 ///
 /// `y_stride` and `uv_stride` are the driver's row pitches, often wider than
 /// the picture.
@@ -809,7 +809,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
     count_camera_frame(&session);
 }
 
-/// Converts Camera2's NV12 planes into packed I420.
+/// Converts CameraX's NV12 planes into packed I420.
 ///
 /// Camera NV12 rows carry padding and interleaved chroma, and `I420` is packed
 /// and planar, so a copy is needed.

@@ -49,7 +49,8 @@ pub struct MoqConfig {
     /// Returns the grant of a session with a peer, from its endpoint id.
     ///
     /// Used for sessions admitted under [`Admission::Open`], and for dials
-    /// without [`ConnectOptions::grant`]. `None` grants everything.
+    /// without [`ConnectOptions::grant`]. `None` grants everything: any peer
+    /// may publish at any path.
     ///
     /// A grant's publish patterns decide which paths the peer may put into the
     /// route table. Let each peer publish only under paths that name it, or

@@ -16,7 +16,7 @@ use tracing::{info, warn};
 #[derive(Parser)]
 #[command(about = "Publishes the default camera and microphone over iroh-live")]
 struct Args {
-    /// The path to publish on.
+    /// The broadcast name.
     #[clap(long, default_value = "demo")]
     name: String,
 

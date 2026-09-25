@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["media"] }
 # `capture` for the microphone source, `playback` for the speaker. Video capture
-# comes from Kotlin's Camera2, not from a device this crate opens.
+# comes from Kotlin's CameraX, not from a device this crate opens.
 # `aec` implies `capture` and `playback`: a handset on speakerphone has to
 # subtract its own output from the microphone or it publishes itself back.
 iroh-live-media = { workspace = true, features = ["aec"] }

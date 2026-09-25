@@ -67,7 +67,7 @@ Capture and encoding:
 | `--encoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvenc`, `vaapi`, `v4l2`, `openh264` |
 | `--renditions <LIST>` | The simulcast ladder, comma-separated. A rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`, with an optional `@<fps>`. A bare name encodes at the source's size. Default: one rendition named `video` at the source's size |
 | `--keyframe-interval <SECONDS>` | Seconds between keyframes (default: 2). A viewer waits up to this long for a first picture, and a rendition switch waits as long. Use 1 for a call or a demo |
-| `--bitrate <BITS_PER_SECOND>` | Target video bitrate for every rung. Omit to derive one from the resolution |
+| `--bitrate <BITS_PER_SECOND>` | Target video bitrate of the largest rung. Smaller rungs get a share by pixel count. Omit to derive one from the resolution |
 | `--width`, `--height` | Requested capture size. The device picks its nearest mode |
 | `--fps` | Requested capture frame rate, see below |
 | `--no-cursor` | Hide the pointer in screen, window, and application capture |

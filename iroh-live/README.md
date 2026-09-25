@@ -6,7 +6,7 @@ Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 endpoint, publishes broadcasts at `live/<endpoint id>/<name>`, and resolves
 other nodes' broadcasts over a direct session or an attached relay. The media
 crate is re-exported as `iroh_live::media` and the transport as
-`iroh_live::moq`, so an application needs this one dependency.
+`iroh_live::moq`.
 
 ## Example
 

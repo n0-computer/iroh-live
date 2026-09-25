@@ -12,8 +12,8 @@ export interface RelayInfo {
 }
 
 /**
- * Starts the iroh-live-relay binary with --dev mode, binding to port 0
- * for both QUIC and HTTP so tests never collide with running services.
+ * Starts the iroh-live-relay binary on port 0 for both QUIC and HTTP, so
+ * tests never collide with running services.
  *
  * Parses startup output to extract the actual bound ports and iroh endpoint ID.
  */

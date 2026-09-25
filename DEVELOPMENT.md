@@ -135,7 +135,8 @@ callback on a real-time thread that `moq_audio::playback::Engine` owns.
 - `tracing` with structured fields. Use `throttled-tracing` for anything that
   logs per frame.
 - Doc comments follow RFC 1574: third-person sentences that start with a verb,
-  no headings in item docs, and types linked as ``[`Type`]``.
+  no headings in item docs besides `# Errors`, `# Panics` and `# Examples`,
+  and types linked as ``[`Type`]``.
 - Prose uses full sentences, no em dashes, and no emoji.
 
 ## Known gaps

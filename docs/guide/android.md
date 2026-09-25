@@ -1,6 +1,6 @@
 # Android
 
-`demos/android` is a Kotlin app with a Rust core. It captures with Camera2,
+`demos/android` is a Kotlin app with a Rust core. It captures with CameraX,
 encodes and decodes H.264 with MediaCodec, sends over iroh, and draws decoded
 frames through EGL without a copy.
 

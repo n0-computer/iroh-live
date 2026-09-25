@@ -47,9 +47,9 @@ window when a frame arrives. `render()` draws the newest frame and returns an
 picture on screen until the new stream delivers one. `VideoView::new` must run
 inside a Tokio runtime.
 
-`FrameView` draws frames you hand it with `render_frame`. `irl publish
---preview` uses it for the camera frames of `VideoSource::frames()`. Create it
-with `FrameView::new(ctx, name, render_state)`.
+`FrameView` draws frames you hand it with `render_frame`. The QR scanner of
+`irl watch --scan` uses it for the frames it reads. Create it with
+`FrameView::new(ctx, name, render_state)`.
 
 Without a render state, both views show a black placeholder.
 

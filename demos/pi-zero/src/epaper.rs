@@ -329,8 +329,7 @@ mod tests {
 
     /// A ticket QR is 33 modules wide and gets three pixels per module.
     ///
-    /// Tickets carry no addresses to stay this small. With addresses a ticket
-    /// needs 57 modules, gets one pixel each, and phones fail to read it.
+    /// At one pixel per module, phones fail to read it off the panel.
     #[test]
     fn a_ticket_qr_gets_three_pixels_per_module() {
         let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");

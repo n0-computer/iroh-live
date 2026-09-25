@@ -46,7 +46,7 @@ with a 404 on `ws://localhost:4443/<name>`.
 3. The browser reads it through the relay.
 
 Browsers watching the same ticket share one upstream session, which the relay
-closes a few seconds after the last viewer leaves.
+closes ten seconds after the last viewer leaves.
 
 ## Web client
 
