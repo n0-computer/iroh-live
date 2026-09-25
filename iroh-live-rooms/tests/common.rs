@@ -39,11 +39,8 @@ impl Peer {
         let endpoint = endpoint().await;
         let moq = Moq::new(endpoint.clone(), MoqConfig::default());
         let rooms = Rooms::new(&moq);
-        let mut router = Router::builder(endpoint.clone());
-        for alpn in iroh_moq::alpns() {
-            router = router.accept(alpn, moq.clone());
-        }
-        let router = router
+        let router = moq
+            .mount(Router::builder(endpoint.clone()))
             .accept(iroh_live_rooms::ALPN, rooms.protocol_handler())
             .spawn();
         Self {

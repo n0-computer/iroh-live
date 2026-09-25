@@ -28,8 +28,8 @@
 //!
 //! The main types:
 //!
-//! - [`Moq`]: the node. Mount it on a [`Router`](iroh::protocol::Router) under
-//!   every ALPN in [`alpns`].
+//! - [`Moq`]: the node. Mount it on a [`Router`](iroh::protocol::Router) with
+//!   [`Moq::mount`].
 //! - [`Publication`]: a published broadcast. Its [`Audience`] says who sees it.
 //! - [`Subscription`]: a path resolved in the route table.
 //! - [`Session`]: a direct session with a peer. Its [`Grant`] says what the
@@ -95,7 +95,7 @@ pub const ALPN: &[u8] = moq_net::ALPNS[0].as_bytes();
 
 /// Returns every ALPN a node accepts, newest MoQ version first, then HTTP/3.
 ///
-/// Mount a [`Moq`] under all of them.
+/// [`Moq::mount`] mounts a node under all of them.
 pub fn alpns() -> Vec<&'static [u8]> {
     moq_net::ALPNS
         .iter()

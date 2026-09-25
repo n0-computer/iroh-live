@@ -60,14 +60,11 @@ impl Node {
         config.grant.get_or_insert_with(|| Arc::new(own_paths));
         let endpoint = endpoint().await;
         let moq = Moq::new(endpoint.clone(), config);
-        let mut router = Router::builder(endpoint.clone());
-        for alpn in iroh_moq::alpns() {
-            router = router.accept(alpn, moq.clone());
-        }
+        let router = moq.mount(Router::builder(endpoint.clone())).spawn();
         Self {
             endpoint,
             moq,
-            router: router.spawn(),
+            router,
         }
     }
 

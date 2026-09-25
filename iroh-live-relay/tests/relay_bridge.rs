@@ -1485,11 +1485,8 @@ async fn room_node() -> (
     shared_lookup().add_endpoint_info(endpoint.addr());
     let moq = iroh_moq::Moq::new(endpoint.clone(), iroh_live::moq_config());
     let rooms = iroh_live_rooms::Rooms::new(&moq);
-    let mut router = iroh::protocol::Router::builder(endpoint.clone());
-    for alpn in iroh_moq::alpns() {
-        router = router.accept(alpn, moq.clone());
-    }
-    let router = router
+    let router = moq
+        .mount(iroh::protocol::Router::builder(endpoint.clone()))
         .accept(iroh_live_rooms::ALPN, rooms.protocol_handler())
         .spawn();
     (endpoint, moq, rooms, router)

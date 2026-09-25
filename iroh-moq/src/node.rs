@@ -8,7 +8,7 @@ use std::{
 use iroh::{
     Endpoint, EndpointAddr, EndpointId,
     endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler},
+    protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
 use moq_net::{AsPath, Consume, broadcast, origin};
 use n0_error::{AnyError, e};
@@ -61,8 +61,7 @@ pub struct MoqConfig {
 ///
 /// Holds the route table, the node's publications and its sessions. Cheap to
 /// clone, and [`shutdown`](Self::shutdown) ends it for every clone. Mount it
-/// on a [`Router`](iroh::protocol::Router) under every ALPN in
-/// [`alpns`](crate::alpns).
+/// on a [`Router`](iroh::protocol::Router) with [`mount`](Self::mount).
 ///
 /// # Examples
 ///
@@ -75,11 +74,7 @@ pub struct MoqConfig {
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let endpoint = Endpoint::bind(presets::Minimal).await?;
 /// let moq = Moq::new(endpoint.clone(), MoqConfig::default());
-/// let mut router = Router::builder(endpoint);
-/// for alpn in iroh_moq::alpns() {
-///     router = router.accept(alpn, moq.clone());
-/// }
-/// let _router = router.spawn();
+/// let _router = moq.mount(Router::builder(endpoint)).spawn();
 ///
 /// let broadcast = moq_net::broadcast::Info::new().produce();
 /// // write tracks into `broadcast`, then:
@@ -168,6 +163,14 @@ impl Moq {
                 relays: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Mounts the node on `router` under every ALPN in [`alpns`](crate::alpns).
+    pub fn mount(&self, mut router: RouterBuilder) -> RouterBuilder {
+        for alpn in crate::alpns() {
+            router = router.accept(alpn, self.clone());
+        }
+        router
     }
 
     /// Returns the endpoint the node runs on.

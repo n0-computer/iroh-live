@@ -109,10 +109,7 @@ impl LiveBuilder {
             .moq
             .unwrap_or_else(|| Moq::new(self.endpoint.clone(), moq_config()));
         let router = (self.router || !self.protocols.is_empty()).then(|| {
-            let mut router = Router::builder(self.endpoint.clone());
-            for alpn in iroh_moq::alpns() {
-                router = router.accept(alpn, moq.clone());
-            }
+            let mut router = moq.mount(Router::builder(self.endpoint.clone()));
             for (alpn, handler) in self.protocols {
                 router = router.accept(alpn, handler);
             }

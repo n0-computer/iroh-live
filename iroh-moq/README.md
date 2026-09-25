@@ -15,11 +15,7 @@ let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
 let moq = Moq::new(endpoint.clone(), MoqConfig::default());
 
 // Accept sessions on every MoQ version this build speaks.
-let mut router = iroh::protocol::Router::builder(endpoint);
-for alpn in iroh_moq::alpns() {
-    router = router.accept(alpn, moq.clone());
-}
-let router = router.spawn();
+let router = moq.mount(iroh::protocol::Router::builder(endpoint)).spawn();
 
 // Publish a broadcast this process writes, to everyone.
 let broadcast = moq_net::broadcast::Info::new().produce();
