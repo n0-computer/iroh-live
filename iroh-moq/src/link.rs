@@ -8,7 +8,6 @@ use std::{
 
 use iroh::endpoint::{Connection, PathId};
 use moq_net::session::Stats;
-use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
 use crate::{LinkId, LinkKind};
@@ -39,11 +38,14 @@ const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
 pub struct LinkSample {
     /// The smoothed round trip time.
     pub rtt: Option<Duration>,
-    /// The smallest round trip in the last fifteen seconds on this path.
+    /// The smallest smoothed round trip time read on this path in the last
+    /// fifteen seconds.
     pub min_rtt: Option<Duration>,
-    /// Loss over the last two seconds, in `0.0..=1.0`.
+    /// The share of packets sent in the last two seconds that were lost, in
+    /// `0.0..=1.0`.
     pub loss_rate: Option<f64>,
-    /// The rate bytes arrived at over the last two seconds, in bits per second.
+    /// The rate UDP bytes arrived at over the last two seconds, in bits per
+    /// second, overhead and duplicates included.
     pub goodput_bps: Option<u64>,
     /// The peer's estimate of the path to this endpoint, in bits per second.
     pub delivery_bps: Option<u64>,
@@ -103,16 +105,13 @@ enum PathKey {
     Session(u64),
 }
 
-/// Reads `source` into `state` every [`SAMPLE_INTERVAL`], until cancelled or closed.
-pub(crate) async fn monitor(source: Source, state: LinkState, cancel: CancellationToken) {
+/// Reads `source` into `state` every [`SAMPLE_INTERVAL`] until the connection closes.
+pub(crate) async fn monitor(source: Source, state: LinkState) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sampler = Sampler::default();
     loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = cancel.cancelled() => return,
-        }
+        interval.tick().await;
         let sample = match &source {
             Source::Direct(moq, connection) => {
                 if connection.close_reason().is_some() {
@@ -200,11 +199,12 @@ impl Sampler {
             rtt: latest.rtt,
             min_rtt: self.readings.iter().filter_map(|reading| reading.rtt).min(),
             loss_rate: base.map(|base| {
+                // The sent count includes the packets later declared lost.
                 let lost = latest.lost_packets.saturating_sub(base.lost_packets);
                 let sent = latest.sent_packets.saturating_sub(base.sent_packets);
-                match sent + lost {
-                    total if total < MIN_PACKETS => 0.0,
-                    total => lost as f64 / total as f64,
+                match sent {
+                    sent if sent < MIN_PACKETS => 0.0,
+                    sent => (lost as f64 / sent as f64).min(1.0),
                 }
             }),
             goodput_bps: base.map(|base| {
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(early.goodput_bps, None);
         let full = run(&mut sampler, t0, 12, (20, 2, 20_000));
         let loss = full.loss_rate.expect("a loss rate");
-        assert!((loss - 2.0 / 22.0).abs() < 0.01, "{full:?}");
+        assert!((loss - 2.0 / 20.0).abs() < 0.01, "{full:?}");
         let bps = full.goodput_bps.expect("a goodput");
         assert!((700_000..=900_000).contains(&bps), "{bps}");
     }

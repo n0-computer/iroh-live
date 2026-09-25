@@ -624,7 +624,6 @@ impl Actor {
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
                     link::Source::Direct(moq.clone(), connection),
                     link_state,
-                    cancel.child_token(),
                 )));
                 let run = moq_net::time::run(driver);
                 tokio::pin!(run);

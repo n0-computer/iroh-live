@@ -293,7 +293,6 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         let monitor = link::monitor(
             link::Source::Relay(connection.monitor()),
             link_state.clone(),
-            shared.shutdown.child_token(),
         );
         let mut watch = connection.clone();
         // Aborts the connection for every clone when the task ends, so a
