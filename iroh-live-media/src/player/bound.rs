@@ -28,6 +28,8 @@ use std::{
 
 use tokio::time::Instant;
 
+use crate::NetworkSample;
+
 /// One rendition, as the bound sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Rung {
@@ -60,17 +62,6 @@ impl Constraints {
                 _ => true,
             }
     }
-}
-
-/// One reading of the network, as the bound needs it.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(crate) struct Reading {
-    /// The fraction of packets lost, if measured.
-    pub loss: Option<f64>,
-    /// The publisher's delivery estimate in bits per second, if it sent one.
-    pub delivery: Option<u64>,
-    /// Bumped whenever the network path changes.
-    pub path_generation: u64,
 }
 
 /// The player's adaptation thresholds and timers.
@@ -191,9 +182,9 @@ impl Bound {
     }
 
     /// Returns the sliding maximum of the estimate, if there is one.
-    fn estimate(&mut self, reading: &Reading, now: Instant) -> Option<u64> {
+    fn estimate(&mut self, reading: &NetworkSample, now: Instant) -> Option<u64> {
         if let Some(delivery) = reading.delivery {
-            self.estimates.push_back((now, delivery));
+            self.estimates.push_back((now, delivery.as_bps()));
         }
         while let Some((at, _)) = self.estimates.front()
             && now.duration_since(*at) > self.adaptation.estimate_window
@@ -257,7 +248,7 @@ impl Bound {
         current: Option<&str>,
         on_screen: Option<&str>,
         constraints: &Constraints,
-        reading: &Reading,
+        reading: &NetworkSample,
         now: Instant,
     ) -> Option<String> {
         if self.path_generation != Some(reading.path_generation) {
@@ -402,6 +393,7 @@ impl Bound {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Bitrate;
 
     fn rung(name: &str, bitrate: u64, height: u32) -> Rung {
         Rung {
@@ -420,19 +412,18 @@ mod tests {
         ]
     }
 
-    fn estimate(bps: u64) -> Reading {
-        Reading {
+    fn estimate(bps: u64) -> NetworkSample {
+        NetworkSample {
             loss: Some(0.0),
-            delivery: Some(bps),
-            path_generation: 0,
+            delivery: Some(Bitrate::from_bps(bps)),
+            ..NetworkSample::default()
         }
     }
 
-    fn loss(loss: f64) -> Reading {
-        Reading {
+    fn loss(loss: f64) -> NetworkSample {
+        NetworkSample {
             loss: Some(loss),
-            delivery: None,
-            path_generation: 0,
+            ..NetworkSample::default()
         }
     }
 
@@ -442,7 +433,7 @@ mod tests {
         ranked: &[Rung],
         current: &str,
         on_screen: &str,
-        reading: &Reading,
+        reading: &NetworkSample,
         now: Instant,
     ) -> String {
         bound
@@ -458,7 +449,11 @@ mod tests {
     }
 
     /// Decides once over the ladder from nothing, under `constraints`.
-    fn first(bound: &mut Bound, constraints: &Constraints, reading: &Reading) -> Option<String> {
+    fn first(
+        bound: &mut Bound,
+        constraints: &Constraints,
+        reading: &NetworkSample,
+    ) -> Option<String> {
         bound.decide(&ladder(), None, None, constraints, reading, Instant::now())
     }
 
@@ -468,7 +463,7 @@ mod tests {
     fn run(
         bound: &mut Bound,
         current: &str,
-        reading: Reading,
+        reading: NetworkSample,
         start: Instant,
         span: Duration,
     ) -> (String, Instant) {
@@ -661,7 +656,7 @@ mod tests {
         assert_eq!(playing, "1080p");
         // The path changes, and the new one only just carries 720p: the
         // downgrade is due after one hold, not after the old maximum ages.
-        let fresh = Reading {
+        let fresh = NetworkSample {
             path_generation: 1,
             ..estimate(2_500_000)
         };
@@ -862,7 +857,7 @@ mod tests {
             Instant::now(),
         );
         assert!(bound.loss_ceiling.is_some());
-        let fresh = Reading {
+        let fresh = NetworkSample {
             path_generation: 1,
             ..loss(0.0)
         };

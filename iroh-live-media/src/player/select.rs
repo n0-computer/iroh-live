@@ -20,7 +20,7 @@ use tracing::{debug, info, trace};
 
 use super::{
     Controls, Latency, RenditionMode, StatusCell,
-    bound::{Adaptation, Bound, Constraints, Reading, Rung},
+    bound::{Adaptation, Bound, Constraints, Rung},
     switch::Target,
 };
 use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
@@ -469,18 +469,7 @@ fn choose(
         excluded: excluded.clone(),
     };
     let choice = match sample {
-        Some(sample) => bound.decide(
-            &rungs,
-            current,
-            on_screen,
-            &constraints,
-            &Reading {
-                loss: sample.loss.map(f64::from),
-                delivery: sample.delivery.map(crate::Bitrate::as_bps),
-                path_generation: sample.path_generation,
-            },
-            now,
-        ),
+        Some(sample) => bound.decide(&rungs, current, on_screen, &constraints, sample, now),
         // Nothing to adapt to: the best rendition allowed plays.
         None => best(&rungs, &constraints),
     };

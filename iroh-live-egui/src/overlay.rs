@@ -591,7 +591,7 @@ fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
         lines.push(Line::info(format!("min rtt: {:.1} ms", millis(min_rtt))));
     }
     if let Some(loss) = net.loss {
-        let pct = f64::from(loss) * 100.0;
+        let pct = loss * 100.0;
         parts.push(format!("loss:{pct:.1}%"));
         let color = lower_is_better(pct, 2.0, 10.0);
         lines.push(Line::metric(

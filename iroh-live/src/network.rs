@@ -28,7 +28,7 @@ pub(crate) fn signals(subscription: Subscription) -> impl NetworkSignals {
         if let Some(link) = link {
             sample.rtt = link.sample.rtt;
             sample.min_rtt = link.sample.min_rtt;
-            sample.loss = link.sample.loss_rate.map(|loss| loss as f32);
+            sample.loss = link.sample.loss_rate;
             sample.delivery = link.sample.delivery_bps.map(Bitrate::from_bps);
         }
         sample

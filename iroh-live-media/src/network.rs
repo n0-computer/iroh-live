@@ -53,7 +53,7 @@ pub struct NetworkSample {
     /// On a subscriber these packets are mostly acknowledgements. The figure
     /// matches loss on the media's direction only when both directions are
     /// impaired alike.
-    pub loss: Option<f32>,
+    pub loss: Option<f64>,
     /// The sender's estimate of what the path to this endpoint delivers.
     ///
     /// This is the only field that measures capacity. Adaptation caps the
