@@ -18,7 +18,6 @@ anyhow = "1"
 derive_more = { version = "2.1.1", features = ["debug"] }
 glow = "0.18"
 khronos-egl = { version = "6", features = ["dynamic"] }
-libc = "0.2"
 
 [lints]
 workspace = true

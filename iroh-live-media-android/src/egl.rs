@@ -1,8 +1,8 @@
 //! EGL and GLES extension functions for rendering an `AHardwareBuffer`.
 //!
-//! These functions are not available at link time. This module resolves them
-//! at runtime through `eglGetProcAddress` and caches each pointer after first
-//! use. A hardware buffer becomes a texture in three steps:
+//! These functions are not available at link time, so [`Extensions::load`]
+//! resolves them through `eglGetProcAddress`. A hardware buffer becomes a
+//! texture in three steps:
 //!
 //! ```text
 //! AHardwareBuffer
@@ -11,183 +11,136 @@
 //!   -> glEGLImageTargetTexture2DOES     -> GL_TEXTURE_EXTERNAL_OES texture
 //! ```
 
-use std::{ffi::c_void, sync::OnceLock};
+use std::ffi::c_void;
 
-type EglGetProcAddressFn = unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void;
+use khronos_egl as egl_api;
+
+/// The EGL instance the renderer loads.
+pub(crate) type Egl = egl_api::DynamicInstance<egl_api::EGL1_4>;
+
 type GetNativeClientBufferFn = unsafe extern "C" fn(*const c_void) -> *mut c_void;
 type CreateImageFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut c_void, *const i32) -> *mut c_void;
 type DestroyImageFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
 type ImageTargetTextureFn = unsafe extern "C" fn(u32, *mut c_void);
 
-static FN_GET_PROC_ADDRESS: OnceLock<Option<EglGetProcAddressFn>> = OnceLock::new();
-static FN_GET_NATIVE_CLIENT_BUFFER: OnceLock<Option<GetNativeClientBufferFn>> = OnceLock::new();
-static FN_CREATE_IMAGE: OnceLock<Option<CreateImageFn>> = OnceLock::new();
-static FN_DESTROY_IMAGE: OnceLock<Option<DestroyImageFn>> = OnceLock::new();
-static FN_IMAGE_TARGET_TEXTURE: OnceLock<Option<ImageTargetTextureFn>> = OnceLock::new();
-
-/// Loads `eglGetProcAddress` from the already loaded `libEGL.so`.
-fn load_egl_get_proc_address() -> Option<EglGetProcAddressFn> {
-    *FN_GET_PROC_ADDRESS.get_or_init(|| {
-        // SAFETY: With RTLD_NOLOAD, dlopen only returns a handle if libEGL.so
-        // is already loaded. On Android the Java side always loads it. dlsym
-        // then resolves the symbol from that library.
-        unsafe {
-            let lib = libc::dlopen(c"libEGL.so".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY);
-            if lib.is_null() {
-                tracing::error!("dlopen(libEGL.so) failed");
-                return None;
-            }
-            let sym = libc::dlsym(lib, c"eglGetProcAddress".as_ptr());
-            if sym.is_null() {
-                tracing::error!("dlsym(eglGetProcAddress) failed");
-                return None;
-            }
-            Some(std::mem::transmute_copy(&sym))
-        }
-    })
+/// The extension functions, each `None` if the driver lacks it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Extensions {
+    get_native_client_buffer: Option<GetNativeClientBufferFn>,
+    create_image: Option<CreateImageFn>,
+    destroy_image: Option<DestroyImageFn>,
+    image_target_texture: Option<ImageTargetTextureFn>,
 }
 
-/// Resolves an EGL or GL extension function through `eglGetProcAddress`.
+/// Resolves `name` through `eglGetProcAddress`.
 ///
 /// # Safety
 ///
-/// `T` must match the signature of the symbol. `name` must be NUL-terminated.
-unsafe fn resolve_egl_proc<T: Copy>(name: &[u8]) -> Option<T> {
-    let get_proc = load_egl_get_proc_address()?;
-    // SAFETY: The caller guarantees that `name` is NUL-terminated and that `T`
-    // matches the signature of the symbol.
-    unsafe {
-        let sym = get_proc(name.as_ptr().cast());
-        if sym.is_null() {
-            None
-        } else {
-            Some(std::mem::transmute_copy(&sym))
+/// `T` must be a function pointer type that matches the symbol's signature.
+unsafe fn resolve<T: Copy>(egl: &Egl, name: &str) -> Option<T> {
+    let function = egl.get_proc_address(name);
+    if function.is_none() {
+        tracing::warn!(name, "EGL extension function not available");
+    }
+    // SAFETY: Android's "system" ABI is "C", both are function pointers of the
+    // same size, and the caller guarantees the signature.
+    function.map(|function| unsafe { std::mem::transmute_copy(&function) })
+}
+
+impl Extensions {
+    /// Resolves every extension function through `egl`.
+    pub(crate) fn load(egl: &Egl) -> Self {
+        // SAFETY: Each type matches the signature in the EGL or GLES extension
+        // spec of the function it names.
+        unsafe {
+            Self {
+                get_native_client_buffer: resolve(egl, "eglGetNativeClientBufferANDROID"),
+                create_image: resolve(egl, "eglCreateImageKHR"),
+                destroy_image: resolve(egl, "eglDestroyImageKHR"),
+                image_target_texture: resolve(egl, "glEGLImageTargetTexture2DOES"),
+            }
         }
+    }
+
+    /// Converts an `AHardwareBuffer` pointer into an `EGLClientBuffer`.
+    ///
+    /// Returns `None` if the extension is missing or the conversion fails.
+    ///
+    /// # Safety
+    ///
+    /// `hardware_buffer` must be a valid `AHardwareBuffer*` with an acquired
+    /// reference.
+    pub(crate) unsafe fn get_native_client_buffer(
+        &self,
+        hardware_buffer: *const c_void,
+    ) -> Option<*mut c_void> {
+        let result = unsafe { self.get_native_client_buffer?(hardware_buffer) };
+        (!result.is_null()).then_some(result)
+    }
+
+    /// Creates an `EGLImage` from an `EGLClientBuffer`.
+    ///
+    /// Returns `None` if the extension is missing or creation fails.
+    ///
+    /// # Safety
+    ///
+    /// `display` must be a valid `EGLDisplay`. `client_buffer` must be a valid
+    /// `EGLClientBuffer`. `attrs` must be an `EGL_NONE`-terminated attribute
+    /// list.
+    pub(crate) unsafe fn create_image(
+        &self,
+        display: *mut c_void,
+        target: u32,
+        client_buffer: *mut c_void,
+        attrs: *const i32,
+    ) -> Option<*mut c_void> {
+        let no_context = std::ptr::null_mut();
+        let result =
+            unsafe { self.create_image?(display, no_context, target, client_buffer, attrs) };
+        (!result.is_null()).then_some(result)
+    }
+
+    /// Destroys an `EGLImage`.
+    ///
+    /// Does nothing if the extension is missing.
+    ///
+    /// # Safety
+    ///
+    /// `display` must be a valid `EGLDisplay`. `image` must be a valid `EGLImage`.
+    pub(crate) unsafe fn destroy_image(&self, display: *mut c_void, image: *mut c_void) {
+        if let Some(destroy) = self.destroy_image {
+            unsafe { destroy(display, image) };
+        }
+    }
+
+    /// Binds an `EGLImage` to the texture currently bound to `target`.
+    ///
+    /// Returns `false` if the extension is missing.
+    ///
+    /// # Safety
+    ///
+    /// `image` must be a valid `EGLImage`. A GL context must be current on this
+    /// thread.
+    pub(crate) unsafe fn image_target_texture_2d(&self, target: u32, image: *mut c_void) -> bool {
+        let Some(bind) = self.image_target_texture else {
+            return false;
+        };
+        unsafe { bind(target, image) };
+        true
     }
 }
 
-fn get_native_client_buffer_fn() -> Option<GetNativeClientBufferFn> {
-    *FN_GET_NATIVE_CLIENT_BUFFER.get_or_init(|| {
-        // SAFETY: function signature matches the EGL extension spec.
-        unsafe { resolve_egl_proc(b"eglGetNativeClientBufferANDROID\0") }
-    })
-}
-
-fn get_create_image_fn() -> Option<CreateImageFn> {
-    *FN_CREATE_IMAGE.get_or_init(|| {
-        // SAFETY: function signature matches the EGL extension spec.
-        unsafe { resolve_egl_proc(b"eglCreateImageKHR\0") }
-    })
-}
-
-fn get_destroy_image_fn() -> Option<DestroyImageFn> {
-    *FN_DESTROY_IMAGE.get_or_init(|| {
-        // SAFETY: function signature matches the EGL extension spec.
-        unsafe { resolve_egl_proc(b"eglDestroyImageKHR\0") }
-    })
-}
-
-fn get_image_target_texture_fn() -> Option<ImageTargetTextureFn> {
-    *FN_IMAGE_TARGET_TEXTURE.get_or_init(|| {
-        // SAFETY: function signature matches the GLES extension spec.
-        unsafe { resolve_egl_proc(b"glEGLImageTargetTexture2DOES\0") }
-    })
-}
-
-/// Creates a `glow::Context` that resolves GL functions through `eglGetProcAddress`.
+/// Creates a `glow::Context` that resolves GL functions through `egl`.
 ///
 /// # Safety
 ///
 /// An EGL context must be current on the calling thread.
-pub unsafe fn create_glow_context() -> glow::Context {
-    let get_proc = load_egl_get_proc_address();
+pub(crate) unsafe fn create_glow_context(egl: &Egl) -> glow::Context {
     unsafe {
         glow::Context::from_loader_function(|name| {
-            let Ok(c_name) = std::ffi::CString::new(name) else {
-                return std::ptr::null();
-            };
-            get_proc
-                .and_then(|f| {
-                    let p = f(c_name.as_ptr());
-                    if p.is_null() {
-                        None
-                    } else {
-                        Some(p as *const _)
-                    }
-                })
-                .unwrap_or(std::ptr::null())
+            egl.get_proc_address(name)
+                .map_or(std::ptr::null(), |function| function as *const c_void)
         })
     }
-}
-
-/// Converts an `AHardwareBuffer` pointer into an `EGLClientBuffer`.
-///
-/// Returns `None` if the extension is missing or the conversion fails.
-///
-/// # Safety
-///
-/// `hardware_buffer` must be a valid `AHardwareBuffer*` with an acquired
-/// reference.
-pub unsafe fn get_native_client_buffer(hardware_buffer: *const c_void) -> Option<*mut c_void> {
-    let func = get_native_client_buffer_fn()?;
-    let result = unsafe { func(hardware_buffer) };
-    if result.is_null() { None } else { Some(result) }
-}
-
-/// Creates an `EGLImage` from an `EGLClientBuffer`.
-///
-/// Returns `None` if the extension is missing or creation fails.
-///
-/// # Safety
-///
-/// `display` must be a valid `EGLDisplay`. `client_buffer` must be a valid
-/// `EGLClientBuffer`. `attrs` must be a null-terminated EGL attribute list.
-pub unsafe fn create_image(
-    display: *mut c_void,
-    target: u32,
-    client_buffer: *mut c_void,
-    attrs: *const i32,
-) -> Option<*mut c_void> {
-    let func = get_create_image_fn()?;
-    let result = unsafe {
-        func(
-            display,
-            std::ptr::null_mut(), // EGL_NO_CONTEXT
-            target,
-            client_buffer,
-            attrs,
-        )
-    };
-    if result.is_null() { None } else { Some(result) }
-}
-
-/// Destroys an `EGLImage`.
-///
-/// Does nothing if the extension is missing.
-///
-/// # Safety
-///
-/// `display` must be a valid `EGLDisplay`. `image` must be a valid `EGLImage`.
-pub unsafe fn destroy_image(display: *mut c_void, image: *mut c_void) {
-    if let Some(func) = get_destroy_image_fn() {
-        unsafe { func(display, image) };
-    }
-}
-
-/// Binds an `EGLImage` to the texture currently bound to `target`.
-///
-/// Returns `false` if the extension is missing.
-///
-/// # Safety
-///
-/// `image` must be a valid `EGLImage`. A GL context must be current on this
-/// thread.
-pub unsafe fn image_target_texture_2d(target: u32, image: *mut c_void) -> bool {
-    let Some(func) = get_image_target_texture_fn() else {
-        tracing::error!("glEGLImageTargetTexture2DOES not available");
-        return false;
-    };
-    unsafe { func(target, image) };
-    true
 }

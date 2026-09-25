@@ -6,7 +6,7 @@ it, and any Android Rust project can use it too.
 
 Hardware H.264 through MediaCodec lives in `moq-video` behind
 `cfg(target_os = "android")`, and backend selection picks it up on its own. The
-`renderer` and `egl` modules only build on Android.
+`renderer` module only builds on Android.
 
 Camera frames need no bridge: `iroh_live_media::VideoSource::push` returns a
 `FrameSender` that Kotlin's frame callbacks push into through JNI.
@@ -19,13 +19,6 @@ MediaCodec's `ImageReader` as a `GL_TEXTURE_EXTERNAL_OES` texture, with no copy.
 `render_nv12` uploads the two planes of a software-decoded or preview frame and
 converts them to RGB in the shader. Both letterbox the frame and apply the
 sensor rotation.
-
-## `egl`
-
-Wrappers for the EGL and GLES extension functions the renderer needs, such as
-`eglCreateImageKHR` and `glEGLImageTargetTexture2DOES`. They are not available
-at link time, so the module resolves them at runtime through
-`eglGetProcAddress`.
 
 ## `handle`
 

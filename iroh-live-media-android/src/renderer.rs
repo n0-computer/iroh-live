@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 use khronos_egl as egl_api;
 
-use crate::egl;
+use crate::egl::{self, Egl, Extensions};
 
 /// `GL_TEXTURE_EXTERNAL_OES`, which glow does not define.
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
@@ -83,7 +83,8 @@ void main() {
 pub struct AndroidRenderer {
     gl: glow::Context,
     #[debug(skip)]
-    egl: egl_api::DynamicInstance<egl_api::EGL1_4>,
+    egl: Egl,
+    extensions: Extensions,
     egl_display: egl_api::Display,
     egl_context: egl_api::Context,
     egl_surface: egl_api::Surface,
@@ -114,10 +115,7 @@ impl AndroidRenderer {
     ///
     /// `native_window` must be a valid `ANativeWindow*`.
     pub unsafe fn new(native_window: *mut c_void) -> Result<Self> {
-        let egl = unsafe {
-            egl_api::DynamicInstance::<egl_api::EGL1_4>::load_required()
-                .map_err(|e| anyhow::anyhow!("load EGL: {e}"))?
-        };
+        let egl = unsafe { Egl::load_required().map_err(|e| anyhow::anyhow!("load EGL: {e}"))? };
 
         let egl_display =
             unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }.context("eglGetDisplay failed")?;
@@ -176,7 +174,8 @@ impl AndroidRenderer {
         )
         .map_err(|e| anyhow::anyhow!("eglMakeCurrent: {e}"))?;
 
-        let gl = unsafe { egl::create_glow_context() };
+        let gl = unsafe { egl::create_glow_context(&egl) };
+        let extensions = Extensions::load(&egl);
 
         // Both programs share the vertex shader.
         let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
@@ -239,6 +238,7 @@ impl AndroidRenderer {
         Ok(Self {
             gl,
             egl,
+            extensions,
             egl_display,
             egl_context,
             egl_surface,
@@ -274,16 +274,17 @@ impl AndroidRenderer {
         video_h: u32,
         rotation_degrees: u32,
     ) {
-        let Some(client_buffer) =
-            (unsafe { egl::get_native_client_buffer(buffer_ptr as *const c_void) })
-        else {
+        let Some(client_buffer) = (unsafe {
+            self.extensions
+                .get_native_client_buffer(buffer_ptr as *const c_void)
+        }) else {
             tracing::warn!("eglGetNativeClientBufferANDROID failed");
             return;
         };
 
         let attrs = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let Some(egl_image) = (unsafe {
-            egl::create_image(
+            self.extensions.create_image(
                 self.egl_display.as_ptr(),
                 EGL_NATIVE_BUFFER_ANDROID,
                 client_buffer,
@@ -294,11 +295,20 @@ impl AndroidRenderer {
             return;
         };
 
-        unsafe {
+        let bound = unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
                 .bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(self.oes_texture));
-            egl::image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
+            self.extensions
+                .image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image)
+        };
+        if !bound {
+            tracing::warn!("glEGLImageTargetTexture2DOES is not available");
+            unsafe {
+                self.extensions
+                    .destroy_image(self.egl_display.as_ptr(), egl_image)
+            };
+            return;
         }
 
         unsafe {
@@ -310,7 +320,8 @@ impl AndroidRenderer {
                 (video_w, video_h),
                 rotation_degrees,
             );
-            egl::destroy_image(self.egl_display.as_ptr(), egl_image);
+            self.extensions
+                .destroy_image(self.egl_display.as_ptr(), egl_image);
         }
     }
 

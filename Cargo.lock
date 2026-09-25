@@ -4524,7 +4524,6 @@ dependencies = [
  "derive_more",
  "glow 0.18.0",
  "khronos-egl",
- "libc",
  "n0-future",
  "tracing",
 ]
