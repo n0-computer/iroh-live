@@ -2,9 +2,10 @@
 //!
 //! A [`Moq`] node publishes broadcasts at paths and subscribes to paths. It
 //! keeps one route table fed by every link it has: direct sessions with peers,
-//! and moq relays it is attached to. A path resolves to its cheapest route, and
-//! moq moves to the next one when that route dies. The application picks the
-//! paths.
+//! and moq relays it is attached to. A path resolves to its cheapest route.
+//! When that route dies, moq moves to another route from the same first hop,
+//! and [`Subscription::closed`] asks the table again for any other. The
+//! application picks the paths.
 //!
 //! ```no_run
 //! use iroh::EndpointId;

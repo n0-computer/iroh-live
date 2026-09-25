@@ -26,6 +26,10 @@ pub struct TransportArgs {
     pub name: String,
 
     /// Also push the broadcast to this relay endpoint.
+    ///
+    /// Use a relay that keeps each publisher to its own paths, as
+    /// iroh-live-relay does. On a relay where anyone may publish anywhere, a
+    /// viewer that reads through it can be served a forgery.
     #[arg(long)]
     pub relay: Option<EndpointId>,
 

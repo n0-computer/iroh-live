@@ -25,12 +25,8 @@ export async function startRelay(): Promise<RelayInfo> {
 
   const proc = spawn(
     relayBin,
-    [
-      "--bind",
-      "[::]:0",
-      "--http-bind",
-      "[::]:0",
-    ],
+    // No `--http-bind`: HTTP then shares the QUIC port, which the page connects to.
+    ["--bind", "[::]:0"],
     {
       env: { ...process.env, IROH_LIVE_RELAY_DATA: dataDir },
       stdio: ["pipe", "pipe", "pipe"],

@@ -101,7 +101,10 @@ impl Subscription {
         self.inner.origin.clone()
     }
 
-    /// Returns the broadcast the path resolves to now.
+    /// Returns the broadcast the path resolved to.
+    ///
+    /// Only [`closed`](Self::closed) re-resolves the path, so this stays the
+    /// first broadcast unless something awaits `closed`.
     pub fn as_moq(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
     }

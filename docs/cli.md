@@ -102,7 +102,9 @@ encoder opens. [Platform support](platforms.md) says which platform has which.
 `--relay` attaches the node to the relay and redials it when the session
 drops. Every public broadcast of the node goes to the relay. The link only
 publishes: it does not add the relay's routes to this node's route table. The
-command prints the path at which viewers find the broadcast on the relay.
+command prints the path at which viewers find the broadcast on the relay. Use a
+relay that keeps each publisher to its own paths, as `iroh-live-relay` does. On
+one where anyone may publish anywhere, a viewer can be served a forgery.
 
 `--preview` draws the frames that go to the encoders, so it decodes nothing. A
 file source and `--video rpicam` cannot be previewed, because their frames

@@ -12,8 +12,8 @@ that broadcast from its publisher over iroh.
 ```sh
 cargo run -p iroh-live-relay
 
-# Custom bind addresses
-cargo run -p iroh-live-relay -- --bind [::]:8443 --http-bind [::]:8443
+# Another port, for both QUIC and HTTP
+cargo run -p iroh-live-relay -- --bind [::]:8443
 ```
 
 Then open `http://localhost:4443` and paste a ticket or broadcast name, or
@@ -67,7 +67,7 @@ npm run build  # bundle for embedding
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--bind` | `[::]:4443` | WebTransport bind address |
-| `--http-bind` | `[::]:4443` | HTTP bind address |
+| `--http-bind` | the address `--bind` bound | HTTP bind address. The page connects to its own origin, so a different port needs `?url=` |
 
 TLS certificates are self-signed and generated at startup. There is no ACME
 and no token auth: anyone may connect and subscribe to anything. Publishing is

@@ -24,8 +24,10 @@ publisher. A `BroadcastTicket` names a publisher and a name, and
 Every link writes what its peer announces into an ingest origin of its own. A
 bridge (`route.rs`) mirrors each of those routes into the node's route table as
 a dynamic route with the same hops and cost. A request on that route resolves
-the path through the link's ingest. moq serves the cheapest route and moves to
-the next one when it dies.
+the path through the link's ingest. moq serves the cheapest route. When it
+dies, moq moves to another route with the same first hop; a move between a
+direct and a relay route ends the broadcast, and `Subscription::closed` asks the
+table again.
 
 Because each link's routes are also kept apart, the node can say which link
 serves a path (`Subscription::session`, `Subscription::link`), and list what one

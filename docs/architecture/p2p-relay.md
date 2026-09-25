@@ -31,7 +31,7 @@ It also serves the web client, built with solid-js on `@moq/watch` and
 `@moq/publish` and embedded in the binary with `include_dir`.
 
 `--bind` sets the QUIC address, `[::]:4443` by default, and `--http-bind` the
-HTTP address, which defaults to the same. The TLS certificate is self-signed
+HTTP address, which defaults to the address `--bind` bound. The TLS certificate is self-signed
 and generated at startup. `GET /certificate.sha256` returns its fingerprint so a
 browser can pin it. There is no ACME support.
 

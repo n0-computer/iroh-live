@@ -4,8 +4,10 @@
 
 A `Moq` node publishes broadcasts at paths and subscribes to paths. It keeps
 one route table fed by every link it has: direct sessions with peers, and moq
-relays it is attached to. A path resolves to its cheapest route, and moq moves
-to the next one when that route dies. The application picks the paths, and
+relays it is attached to. A path resolves to its cheapest route. When that
+route dies, moq moves to another route from the same first hop, and
+`Subscription::closed` asks the table again for any other. The application
+picks the paths, and
 nothing here knows about media: a broadcast holds whatever tracks you write.
 
 ```rust
@@ -46,6 +48,12 @@ builds the `iroh://` URL from an endpoint id. Public publications go
 to the relay, and the relay's routes join the route table at a higher cost than
 a direct route. A node that only publishes through the relay sets
 `RelayConfig::consume` to false.
+
+A relay is trusted with every path it forwards. On a relay where anyone may
+publish anywhere, a peer can publish `live/<victim>/cam`, and a subscriber whose
+relay route arrives before its direct one reads the forgery. Attach only relays
+that keep each publisher to its own paths, as `iroh-live-relay` and moq-relay's
+tokens do.
 
 ## Links
 

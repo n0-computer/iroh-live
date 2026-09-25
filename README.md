@@ -32,7 +32,9 @@ a beeping tone.
 
 To reach subscribers that cannot dial this node, attach to a relay. The node
 redials the relay if the session drops, and the relay carries the broadcast on
-to everyone:
+to everyone. Use a relay that keeps each publisher to its own paths, as
+`iroh-live-relay` does: on one where anyone may publish anywhere, a viewer can
+be served a forgery.
 
 ```sh
 irl publish --relay <RELAY_ENDPOINT_ID>

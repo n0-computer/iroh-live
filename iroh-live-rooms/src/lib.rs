@@ -46,15 +46,10 @@
 //! # }
 //! ```
 //!
-//! # Tiles that come back
-//!
-//! A member can end a broadcast and publish it again faster than its
-//! announcement changes, and a member that briefly drops this node from its
-//! membership cuts off what this node reads. Neither changes [`RoomState`]. A
-//! grid should therefore drop tiles whose broadcast closed, on a timer as well
-//! as on state updates, and reopen the ones the state still lists. With
-//! `iroh-live`, check `RemoteBroadcast::is_closed()`, as `irl room` does in
-//! `drop_closed`.
+//! A member can end a broadcast and publish it again, or briefly drop this
+//! node from its membership, without [`RoomState`] changing. So watch each
+//! subscription for its end, and subscribe again while the state still lists
+//! the broadcast.
 //!
 //! # Cancellation safety
 //!

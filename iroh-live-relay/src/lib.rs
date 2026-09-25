@@ -70,9 +70,9 @@ pub struct RelayConfig {
 
     /// Bind address for the web viewer over HTTP.
     ///
-    /// Defaults to the same address as --bind.
-    #[arg(long, default_value = "[::]:4443")]
-    pub http_bind: SocketAddr,
+    /// Defaults to the address --bind bound, over TCP.
+    #[arg(long)]
+    pub http_bind: Option<SocketAddr>,
 }
 
 /// Runs the relay server until ctrl-c or an error.
@@ -144,11 +144,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         )
         .with_state(certificates);
 
-    let http_bind = if config.http_bind == config.bind {
-        quic_addr
-    } else {
-        config.http_bind
-    };
+    let http_bind = config.http_bind.unwrap_or(quic_addr);
     let http_listener = tokio::net::TcpListener::bind(http_bind).await?;
     let http_port = http_listener.local_addr()?.port();
     info!(http_port, "http listening");

@@ -32,7 +32,8 @@ use crate::{
 pub enum Reach {
     /// Dials the publisher and waits for it to announce the path.
     ///
-    /// Relays serve only if they already have a route.
+    /// A relay route that is in the table, or arrives during the dial, also
+    /// resolves the path.
     Direct(EndpointId),
     /// Waits for an attached relay to route the path.
     Relays,
