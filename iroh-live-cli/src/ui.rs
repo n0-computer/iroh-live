@@ -1,6 +1,4 @@
-//! Shared pieces of the egui windows: a top bar, a floating control panel,
-//! cursor auto-hide, the local preview and remote-broadcast widgets, and the
-//! lifecycle helpers every window needs.
+//! Widgets and lifecycle helpers shared by the egui windows.
 
 use std::time::{Duration, Instant};
 
@@ -19,8 +17,7 @@ use tracing::{info, warn};
 
 use crate::{args::PlaybackArgs, backend::Backend};
 
-/// The player config a window wants: the decoder `--decoder` asked for, the
-/// latency `--latency` names, and audio through `output`.
+/// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
 pub fn player_config(args: &PlaybackArgs, output: Option<&AudioOutput>) -> PlayerConfig {
     PlayerConfig {
         decoder: args.decoder.into(),
@@ -36,8 +33,9 @@ const TOP_BAR_HEIGHT: f32 = 24.0;
 /// How long the pointer must sit still before the overlay fades out.
 const CURSOR_IDLE: Duration = Duration::from_secs(2);
 
-/// Draws the top bar: the ticket, which copies to the clipboard when clicked,
-/// and a fullscreen toggle.
+/// Draws the top bar with `text` and a fullscreen toggle.
+///
+/// Clicking the bar copies `text` to the clipboard.
 pub fn top_bar(ui: &mut egui::Ui, ctx: &egui::Context, text: &str) {
     let content = ctx.content_rect();
     let bar = egui::Rect::from_min_size(content.min, egui::vec2(content.width(), TOP_BAR_HEIGHT));
@@ -109,16 +107,10 @@ pub fn control_panel(ctx: &egui::Context, id: &str, contents: impl FnOnce(&mut e
 /// Spacing between the items of a [`dialog`], in points.
 const DIALOG_SPACING: f32 = 8.0;
 
-/// Draws `contents` in a column `width` points wide, in a translucent panel in
-/// the middle of the window.
+/// Draws `contents` in a centred translucent panel, `width` points wide.
 ///
-/// The counterpart of [`control_panel`] for a screen with nothing yet to
-/// control: what a window says while it waits for a connection, drawn over
-/// whatever picture is behind it rather than in place of one.
-///
-/// The width is the caller's because an [`egui::Area`] is bounded by the window
-/// rather than by its own contents, and a column centred inside that would be
-/// one the panel stretched across the screen to hold.
+/// The caller sets the width because an [`egui::Area`] is bounded by the
+/// window. Centred content would otherwise stretch the panel across the screen.
 pub fn dialog(ctx: &egui::Context, id: &str, width: f32, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Area::new(egui::Id::new(id))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -136,12 +128,7 @@ pub fn dialog(ctx: &egui::Context, id: &str, width: f32, contents: impl FnOnce(&
         });
 }
 
-/// Hides the overlay, and the pointer with it, once the pointer has been still
-/// for a while.
-///
-/// The pointer goes too because a still mouse arrow sitting over a picture is
-/// the thing every video player learned to hide, and leaving it there while the
-/// controls fade out looks like the controls broke rather than withdrew.
+/// Hides the overlay and the pointer once the pointer has been still for a while.
 #[derive(Debug)]
 pub struct CursorIdle {
     visible: bool,
@@ -158,10 +145,9 @@ impl Default for CursorIdle {
 }
 
 impl CursorIdle {
-    /// Reports whether the overlay should be drawn this frame.
+    /// Returns whether to draw the overlay this frame.
     ///
-    /// `pinned` keeps it up regardless, which is what an expanded stats panel
-    /// wants: it would otherwise vanish while being read.
+    /// `pinned` keeps it visible, for example while a stats panel is expanded.
     pub fn update(&mut self, ctx: &egui::Context, pinned: bool) -> bool {
         if pinned || ctx.input(|input| input.pointer.delta().length_sq() > 0.0) {
             self.visible = true;
@@ -170,25 +156,16 @@ impl CursorIdle {
             self.visible = false;
         }
         if !self.visible {
-            // Set every pass rather than once on the way out: egui resolves the
-            // cursor from what this frame asked for, so a single call would be
-            // undone by the next frame that asked for nothing.
+            // egui resets the cursor every frame, so set it on every pass.
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
         self.visible
     }
 }
 
-/// Leaves full screen when Escape is pressed, and does nothing otherwise.
+/// Leaves full screen when Escape is pressed.
 ///
-/// Only leaves. Escape is what a full-screen picture trains people to press,
-/// but a window is not something to close on it: a player that quit on Escape
-/// would throw away a stream that took a ticket to reach, and the key is easy
-/// to hit by accident.
-///
-/// The command goes out without asking whether the window is full screen
-/// already. Leaving a window that is not full screen does nothing, and reading
-/// the state first would only add a way to be wrong about it.
+/// Escape does not close the window, because it is easy to hit by accident.
 pub fn escape_leaves_fullscreen(ctx: &egui::Context) {
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -197,9 +174,8 @@ pub fn escape_leaves_fullscreen(ctx: &egui::Context) {
 
 /// Closes the egui viewport on Ctrl-C.
 ///
-/// Call this from the eframe creation closure. The task ends when the signal
-/// fires, so its handle is deliberately dropped rather than held: an
-/// abort-on-drop guard would cancel it as the closure returns.
+/// Call this from the eframe creation closure. The task handle is dropped on
+/// purpose: an abort-on-drop guard would cancel it when the closure returns.
 pub fn spawn_ctrl_c_handler(ctx: &egui::Context) {
     let ctx = ctx.clone();
     tokio::runtime::Handle::current().spawn(async move {
@@ -208,15 +184,11 @@ pub fn spawn_ctrl_c_handler(ctx: &egui::Context) {
     });
 }
 
-/// Wakes the window on a fixed interval for as long as the returned handle is
-/// held.
+/// Repaints the window every `period` while the returned handle is held.
 ///
-/// eframe runs a pass only when something asks it to, and a window that is
-/// unfocused, occluded, or minimized stops asking: a repaint requested from
-/// inside a pass never comes back around, so the pass that would have asked
-/// again never happens. A window whose work continues off screen, such as a
-/// call waiting to be answered, needs the loop to keep turning regardless of
-/// what the compositor thinks.
+/// eframe stops running passes for an unfocused, occluded, or minimized window,
+/// because repaints requested inside a pass are never delivered. Windows with
+/// off-screen work, such as a call waiting to be answered, need this.
 #[must_use = "the heartbeat stops when the handle is dropped"]
 pub fn spawn_heartbeat(ctx: &egui::Context, period: Duration) -> AbortOnDropHandle<()> {
     let ctx = ctx.clone();
@@ -230,8 +202,7 @@ pub fn spawn_heartbeat(ctx: &egui::Context, period: Duration) -> AbortOnDropHand
     }))
 }
 
-/// Shuts the endpoint down from `on_exit`, which eframe calls on the main
-/// thread outside any async context.
+/// Shuts the endpoint down from eframe's `on_exit`, outside any async context.
 pub fn shutdown_live_blocking(live: &Live) {
     let live = live.clone();
     tokio::runtime::Handle::current().block_on(async move {
@@ -239,7 +210,7 @@ pub fn shutdown_live_blocking(live: &Live) {
     });
 }
 
-/// Finishes a local publication before shutting its transport down.
+/// Closes `broadcast`, then shuts the endpoint down, from outside async context.
 pub fn shutdown_publish_blocking(live: &Live, broadcast: &LocalBroadcast) {
     let live = live.clone();
     let broadcast = broadcast.clone();
@@ -250,11 +221,10 @@ pub fn shutdown_publish_blocking(live: &Live, broadcast: &LocalBroadcast) {
     });
 }
 
-/// The window options every media window here wants.
+/// Returns the window options for a media window.
 ///
-/// eframe's wgpu renderer, configured the way `iroh-live-egui`'s video
-/// renderer needs it: a video frame arrives as a `wgpu::Texture` and there is
-/// no path that draws one through the glow backend.
+/// Video frames arrive as `wgpu::Texture`s, so the window needs eframe's wgpu
+/// renderer. The glow backend cannot draw them.
 pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -264,39 +234,32 @@ pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     }
 }
 
-/// One remote broadcast on screen.
+/// A remote broadcast on screen, with its player and stats overlay.
 ///
-/// Owns the player, which decodes the picture and plays the sound, and the
-/// stats overlay drawn over the frame. Both the single remote of a call and
-/// every tile of a room grid are one of these.
-///
-/// Dropping it stops the decoders.
+/// Used for the remote of a call and for each tile of a room. Dropping it
+/// stops the decoders.
 #[derive(Debug)]
 pub struct RemoteView {
     player: Player,
     video: VideoView,
     overlay: DebugOverlay,
-    /// The decoder the picker last asked for, which is not necessarily the one
-    /// running: `Auto` names a strategy, and a backend that fails to open leaves
-    /// the incumbent playing.
+    /// The decoder the picker last chose, which may differ from the one running.
     decoder: Backend,
     /// The output gain the slider last set.
     volume: f32,
-    /// The subscription the broadcast arrives over, for the overlay's link
-    /// lines.
+    /// The subscription the broadcast arrives over, for the overlay.
     link: Option<Link>,
 }
 
-/// What the overlay says about the transport, read off the serving link.
+/// The source of the overlay's transport lines.
 #[derive(Debug)]
 struct Link {
     subscription: iroh_live::Subscription,
-    /// When the lines were last read off the link.
+    /// When the lines were last refreshed.
     refreshed: Option<Instant>,
 }
 
-/// How often the overlay's link lines are read off the link: they change
-/// with the path, not with every frame drawn.
+/// How often the overlay's link lines are refreshed.
 const LINK_REFRESH: Duration = Duration::from_millis(500);
 
 impl Link {
@@ -312,11 +275,7 @@ impl Link {
         Some(self.lines())
     }
 
-    /// Whether the path is direct or relayed, and the bytes arriving, as the
-    /// overlay's NET lines.
-    ///
-    /// Follows the route: a relay link has no iroh path to describe, so it
-    /// says which link serves and what arrives over it.
+    /// Returns the overlay's NET lines: the path kind and the arriving bitrate.
     fn lines(&self) -> Vec<String> {
         let Some(serving) = self.subscription.link() else {
             return vec!["no link serves the broadcast".to_string()];
@@ -338,10 +297,9 @@ impl Link {
 }
 
 impl RemoteView {
-    /// Opens a view onto `player`, drawing through `render_state`.
+    /// Creates a view onto `player`, drawing through `render_state`.
     ///
-    /// `name` salts the texture and the widget ids, so a grid of these needs a
-    /// distinct one per tile.
+    /// `name` salts the texture and widget ids, so each tile needs its own.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
@@ -365,8 +323,7 @@ impl RemoteView {
         }
     }
 
-    /// Returns the view with the overlay describing the path of whichever
-    /// session serves `subscription`, and the bytes arriving over it.
+    /// Adds link lines for `subscription` to the overlay.
     pub fn with_link(mut self, subscription: iroh_live::Subscription) -> Self {
         self.link = Some(Link {
             subscription,
@@ -375,33 +332,29 @@ impl RemoteView {
         self
     }
 
-    /// Reports whether the stats overlay is expanded, which keeps the
-    /// controls up while it is being read.
+    /// Returns whether the stats overlay is expanded.
     pub fn overlay_expanded(&self) -> bool {
         self.overlay.any_expanded()
     }
 
-    /// Chooses how the rendition is picked.
+    /// Sets the rendition mode.
     pub fn set_rendition(&mut self, mode: RenditionMode) {
         info!(?mode, "rendition mode");
         self.player.set_rendition(mode);
     }
 
-    /// Points the video decoder at `choice`.
+    /// Switches the video decoder to `choice`.
     ///
-    /// The replacement opens alongside the incumbent and takes over once it has
-    /// caught up, leaving the picture up across the change.
+    /// The old decoder keeps the picture up until the new one catches up.
     pub fn set_decoder(&mut self, choice: Backend) {
         self.decoder = choice;
         info!(decoder = %choice, "decoder selected");
         self.player.set_decoder(choice.into());
     }
 
-    /// Draws the picture at `size`, or a placeholder while the peer sends no
-    /// video.
+    /// Draws the picture at `size`, or a placeholder when there is no video.
     ///
-    /// Returns the response of whatever was drawn, whose rect is what
-    /// [`draw_overlay`](Self::draw_overlay) wants.
+    /// Pass the rect of the response to [`draw_overlay`](Self::draw_overlay).
     pub fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
         ui.add_sized(size, self.video.render())
     }
@@ -417,7 +370,7 @@ impl RemoteView {
         {
             self.overlay.set_link(lines);
         }
-        // Copied out only while the TIME panel is open to draw it.
+        // Copy the timeline only while the TIME panel is open.
         let timeline = match self.overlay.timeline_open() {
             true => self.player.timeline(),
             false => Vec::new(),
@@ -428,8 +381,7 @@ impl RemoteView {
 
     /// Draws the rendition and decoder pickers and the volume slider.
     ///
-    /// `id` salts the widget ids, so a grid of these needs a distinct one per
-    /// tile.
+    /// `id` salts the widget ids, so each tile needs its own.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
         let status = self.player.status().get();
         let catalog = self.player.broadcast().catalog().get();
@@ -466,9 +418,8 @@ impl RemoteView {
         }
 
         ui.label("Decoder");
-        // The backend that opened, next to the choice that asked for it: `Auto`
-        // never names one, and a named backend that would not open leaves a
-        // different one running, which is the case worth seeing.
+        // Show the running backend next to the choice when they differ, as
+        // with `Auto` or a named backend that failed to open.
         let label = match self.decoder.to_string() == running {
             true => running,
             false => format!("{} ({running})", self.decoder),
@@ -505,17 +456,15 @@ impl RemoteView {
 
 /// Quiet zone around a rendered QR code, in modules.
 ///
-/// Four is what the QR standard asks for, and a decoder is entitled to rely on
-/// it. A code drawn flush against whatever is behind it is one a camera finds
-/// the grid of and then cannot read.
+/// The QR standard requires four. Without it, a camera finds the code but
+/// cannot read it.
 const QR_QUIET: usize = 4;
 
-/// A ticket drawn as a QR code, for a peer to read off this screen.
+/// A ticket drawn as a QR code, for a peer to scan off this screen.
 ///
 /// The texture holds one pixel per module and is magnified nearest-neighbour,
-/// so the code has hard edges at whatever size it is drawn and resizing the
-/// window costs no re-render. Its pixels are opaque black and white rather than
-/// themed: a QR code reads dark on light and nothing else.
+/// so edges stay hard at any size. It is black on white regardless of theme,
+/// because QR codes only read dark on light.
 #[derive(derive_more::Debug)]
 pub struct TicketQr {
     #[debug(skip)]
@@ -525,14 +474,8 @@ pub struct TicketQr {
 impl TicketQr {
     /// Renders `ticket` as a QR code.
     ///
-    /// `id` names the texture, so two of these in one window need distinct
-    /// ones.
-    ///
-    /// Returns `None` if the text does not fit in a QR code, which for a ticket
-    /// means something has gone wrong upstream: the largest version holds
-    /// nearly three kilobytes and a ticket is around a hundred bytes. A window
-    /// without a code to show is still a window, so this is reported in the log
-    /// rather than to the caller.
+    /// `id` names the texture, so each code in a window needs its own. Returns
+    /// `None` and logs a warning if the ticket does not fit in a QR code.
     pub fn new(ctx: &egui::Context, id: &str, ticket: &str) -> Option<Self> {
         let pixels = QrPixels::render(ticket)
             .inspect_err(|err| warn!(error = %err, "could not render the ticket QR code"))
@@ -543,20 +486,13 @@ impl TicketQr {
         })
     }
 
-    /// Returns the image for the code, which the caller draws at whatever
-    /// square size it has room for.
+    /// Returns the image of the code, to draw at any square size.
     pub fn image(&self) -> egui::Image<'_> {
         egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }
 
-/// A QR code as grayscale pixels: `side` by `side`, one byte per pixel, rows
-/// tightly packed.
-///
-/// One pixel per module, because that is all the information there is. What
-/// scales it up to something a camera can read is the texture sampler, which
-/// magnifies nearest-neighbour and so draws every module as a hard-edged
-/// square.
+/// A QR code as grayscale pixels, one per module, `side` by `side`, rows packed.
 #[derive(Debug)]
 struct QrPixels {
     side: usize,
@@ -566,9 +502,7 @@ struct QrPixels {
 impl QrPixels {
     /// Renders `text` as a QR code with the standard quiet zone around it.
     ///
-    /// # Errors
-    ///
-    /// Fails if `text` is longer than the largest QR version holds.
+    /// Fails if `text` does not fit in the largest QR version.
     fn render(text: &str) -> Result<Self, qrcode::types::QrError> {
         let code = qrcode::QrCode::new(text)?;
         let modules = code.width();
@@ -595,13 +529,10 @@ mod tests {
 
     /// Pixels per module in the upscaled test image.
     ///
-    /// Roughly what a camera sees of a code filling a third of a 720p frame,
-    /// and enough that `rqrr`'s binarization has clean edges to lock onto.
+    /// About what a camera sees of a code filling a third of a 720p frame.
     const MODULE_PIXELS: usize = 8;
 
-    /// Repeats every pixel of `pixels` [`MODULE_PIXELS`] times in both
-    /// directions, which is what the texture sampler does to the code on its
-    /// way to the screen.
+    /// Scales `pixels` up by [`MODULE_PIXELS`], as the texture does on screen.
     fn upscale(pixels: &QrPixels) -> QrPixels {
         let side = pixels.side * MODULE_PIXELS;
         let mut gray = vec![u8::MAX; side * side];
@@ -615,7 +546,7 @@ mod tests {
         QrPixels { side, gray }
     }
 
-    /// Reads the first QR code in `pixels`, the way the scan camera does.
+    /// Decodes the first QR code in `pixels` with `rqrr`.
     fn decode(pixels: &QrPixels) -> Option<String> {
         let side = pixels.side;
         let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(side, side, |x, y| {
@@ -628,8 +559,7 @@ mod tests {
             .map(|(_meta, text)| text)
     }
 
-    /// The whole point of drawing the code: the peer's `irl call --scan`
-    /// equivalent reads it back off a camera.
+    /// A rendered ticket decodes back to the same ticket.
     #[test]
     fn a_call_ticket_survives_the_round_trip_through_the_rendered_code() {
         let id = iroh::SecretKey::generate().public();
@@ -643,8 +573,7 @@ mod tests {
         );
     }
 
-    /// A code whose quiet zone is drawn over is one a camera locates and then
-    /// fails to read, which looks exactly like pointing it at nothing.
+    /// A rendered code keeps a white quiet zone around it.
     #[test]
     fn a_rendered_code_keeps_the_quiet_zone_a_decoder_relies_on() {
         let pixels = QrPixels::render("iroh-live:hello").expect("the text fits");

@@ -1,9 +1,7 @@
 //! Room chat: one more broadcast every member publishes into the room.
 //!
-//! The broadcast is named `chat` and carries `moq-room`'s chat track, a JSON
-//! window that holds the last ten seconds of messages, which is what
-//! `@moq/room` reads too. The grid leaves it out, and the window reads every
-//! other member's with [`read`].
+//! The broadcast carries `moq-room`'s chat track, a JSON window of the last ten
+//! seconds of messages, which `@moq/room` reads too.
 
 use std::{collections::VecDeque, time::Duration};
 
@@ -23,11 +21,10 @@ pub(super) const NAME: &str = "chat";
 /// How many typed messages wait for the writer task.
 const SEND_QUEUE: usize = 16;
 
-/// How long a reader waits before reading a member again once its read ended.
+/// How long a reader waits before reading a member again.
 const RETRY: Duration = Duration::from_secs(2);
 
-/// How many delivered messages a reader remembers, to skip them when a new
-/// read replays the window.
+/// How many delivered messages a reader remembers to skip replays.
 const REMEMBERED: usize = 64;
 
 /// A message another member sent.
@@ -94,9 +91,8 @@ impl Writer {
 
 /// Reads member `from`'s chat into `tx` until the task is dropped.
 ///
-/// Reads the member again after [`RETRY`] whenever a read ends. A new read
-/// starts with the member's whole window, and the messages this reader
-/// delivered already are skipped.
+/// Retries after [`RETRY`] when a read ends. A new read replays the member's
+/// window, and messages delivered already are skipped.
 pub(super) async fn read(
     room: Room,
     from: EndpointId,
@@ -150,8 +146,7 @@ async fn read_once(
     }
 }
 
-/// Returns the message at `index` unless it was delivered already, and
-/// remembers it.
+/// Returns the message at `index` once, remembering that it was delivered.
 ///
 /// Keyed by index and text: a member that restarted counts from zero again,
 /// with new text.

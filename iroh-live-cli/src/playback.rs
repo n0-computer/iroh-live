@@ -1,4 +1,4 @@
-//! The playback pieces every command that plays something shares.
+//! Playback helpers shared by the commands that play media.
 
 use std::time::Duration;
 
@@ -12,9 +12,7 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Waits for the broadcast's first catalog.
 ///
-/// # Errors
-///
-/// Fails if the broadcast closes before sending one, or sends none in time.
+/// Fails if the broadcast closes first or sends none in time.
 pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
     let mut catalog = broadcast.catalog();
     let first = async {
@@ -36,14 +34,10 @@ pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
         .ok_or_else(|| anyerr!("the broadcast closed before it described itself"))
 }
 
-/// Opens the speaker players play through.
+/// Opens the audio output for playback.
 ///
-/// A device named explicitly has to open. Without one, a machine with no
-/// speaker still shows the picture, through an output that discards.
-///
-/// # Errors
-///
-/// Fails if `device` names a device that will not open.
+/// Fails if `device` is set and does not open. Without `device`, a machine
+/// with no speaker gets an output that discards audio, so video still plays.
 #[allow(
     clippy::unused_async,
     reason = "a build without playback opens nothing, which is not async"

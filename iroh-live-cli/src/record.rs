@@ -1,10 +1,8 @@
-//! `irl record`: subscribe to a remote broadcast and write it to a file.
+//! `irl record`: subscribes to a remote broadcast and writes it to a file.
 //!
-//! Recording is a remux rather than a transcode, and the media crate does it:
-//! [`RemoteBroadcast::record`] reads encoded frames off the wire and writes
-//! them into fragmented MP4 or Matroska with no decoder anywhere in the path.
-//! What this adds is the command line: which file, which container, for how
-//! long, and a progress line while it runs.
+//! [`RemoteBroadcast::record`] remuxes the encoded frames into fragmented MP4
+//! or Matroska without decoding. This module adds the flags and a progress
+//! line.
 
 use std::{
     future::Future,
@@ -34,8 +32,7 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
     rt.block_on(record(args))
 }
 
-/// Connects, records until the broadcast ends or the user interrupts, and
-/// closes the session.
+/// Records until the broadcast ends or the user interrupts.
 async fn record(args: RecordArgs) -> Result {
     let ticket = args.remote.ticket()?;
     let options = options(&args)?;
@@ -46,12 +43,7 @@ async fn record(args: RecordArgs) -> Result {
     result
 }
 
-/// Records one broadcast over `live`, which the caller closes either way.
-///
-/// # Errors
-///
-/// Fails if the broadcast cannot be subscribed to, carries nothing to record,
-/// or the file cannot be written.
+/// Records one broadcast over `live`. The caller shuts `live` down.
 async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
     let sub = transport::subscribe(live, ticket).await?;
 
@@ -68,8 +60,8 @@ async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOption
         ));
     }
 
-    // The broadcast follows its path in the route table, which is also where a
-    // catalog rendition naming a sibling broadcast resolves.
+    // The subscribed broadcast records through its route table, so a rendition
+    // that names a sibling broadcast resolves too.
     let recording = start(sub.broadcast(), &catalog, options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
@@ -82,28 +74,26 @@ async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOption
     Ok(())
 }
 
-/// Where a recording goes, and which of the broadcast's tracks it keeps.
+/// Where a recording goes and which tracks it keeps.
 #[derive(Debug, Clone)]
 pub struct RecordOptions {
     /// The file to write.
     pub path: PathBuf,
-    /// The container to write it in.
+    /// The container format.
     pub format: RecordFormat,
-    /// The one video rendition to keep, or every one the catalog offers.
+    /// The video rendition to keep, or `None` for all of them.
     pub rendition: Option<String>,
-    /// How long a stalled group is waited for before the exporter skips it.
+    /// How long the exporter waits for a stalled group before skipping it.
     pub latency: Duration,
-    /// How long to record for, or until interrupted.
+    /// How long to record, or `None` to record until interrupted.
     pub duration: Option<Duration>,
 }
 
 impl RecordOptions {
-    /// Records `path` in `format`, or in the container `path`'s extension
-    /// names, keeping every rendition until the broadcast ends.
+    /// Creates options that record every rendition to `path` until the end.
     ///
-    /// # Errors
-    ///
-    /// Fails if neither `format` nor the extension names a container.
+    /// Without `format`, the container comes from the extension of `path`.
+    /// Fails if neither names a container.
     pub fn new(path: impl Into<PathBuf>, format: Option<RecordFormat>) -> Result<Self> {
         let path = path.into();
         let format = match format {
@@ -119,7 +109,7 @@ impl RecordOptions {
         })
     }
 
-    /// The media crate's config for these options.
+    /// Returns the media crate's config for these options.
     fn config(&self) -> RecordConfig {
         let format = match self.format {
             RecordFormat::Fmp4 => media::RecordFormat::Fmp4,
@@ -135,10 +125,8 @@ impl RecordOptions {
 
 /// Creates the output file and starts recording `broadcast` into it.
 ///
-/// # Errors
-///
-/// Fails if the requested rendition is not in `catalog`, or if the output file
-/// cannot be created.
+/// Fails if the requested rendition is not in `catalog` or the file cannot be
+/// created.
 pub async fn start(
     broadcast: &RemoteBroadcast,
     catalog: &Catalog,
@@ -154,15 +142,10 @@ pub async fn start(
     Ok(broadcast.record(BufWriter::new(file), options.config())?)
 }
 
-/// Waits for `recording` to end, or finishes it once `stop` resolves, printing
-/// progress as it goes; returns the bytes written.
+/// Runs `recording` until it ends or `stop` resolves, and returns the bytes written.
 ///
-/// The file is flushed either way, so an interrupted recording is still a
-/// playable file: fragmented containers are complete at every chunk boundary.
-///
-/// # Errors
-///
-/// Fails on an export or a write error.
+/// Prints progress while it runs. The file is flushed either way, and a
+/// fragmented container is playable at every chunk boundary.
 pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) -> Result<u64> {
     let started = tokio::time::Instant::now();
     let mut report = tokio::time::interval_at(started + REPORT_INTERVAL, REPORT_INTERVAL);
@@ -182,11 +165,7 @@ pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) ->
     Ok(written)
 }
 
-/// The options `args` describes.
-///
-/// # Errors
-///
-/// Fails if neither `--format` nor `--output`'s extension names a container.
+/// Builds the options from the command-line arguments.
 fn options(args: &RecordArgs) -> Result<RecordOptions> {
     let mut options = RecordOptions::new(&args.output, args.format)?;
     options.rendition = args.rendition.clone();
@@ -195,7 +174,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     Ok(options)
 }
 
-/// The container `path`'s extension names, if it names one.
+/// Returns the container the extension of `path` names, if any.
 fn format_from_extension(path: &Path) -> Option<RecordFormat> {
     match media::RecordFormat::from_path(path)? {
         media::RecordFormat::Fmp4 => Some(RecordFormat::Fmp4),
@@ -203,7 +182,7 @@ fn format_from_extension(path: &Path) -> Option<RecordFormat> {
     }
 }
 
-/// The error for a path whose extension names no container.
+/// Returns the error for a path whose extension names no container.
 fn unknown_extension(path: &Path) -> n0_error::AnyError {
     anyerr!(
         "cannot tell which container {} should be, so pass --format fmp4 or --format mkv; \
@@ -217,7 +196,6 @@ async fn stop_after(duration: Option<Duration>) {
     let deadline = async {
         match duration {
             Some(duration) => tokio::time::sleep(duration).await,
-            // Nothing else ends the recording, so wait for the interrupt alone.
             None => std::future::pending().await,
         }
     };
@@ -237,7 +215,7 @@ mod tests {
     use super::*;
     use crate::args::RemoteArgs;
 
-    /// A remote nothing in these tests dials.
+    /// Returns empty remote arguments. No test dials them.
     fn remote_args() -> RemoteArgs {
         RemoteArgs {
             ticket: None,
@@ -252,7 +230,7 @@ mod tests {
             format_from_extension(Path::new("out.mp4")),
             Some(RecordFormat::Fmp4)
         );
-        // The case a shell completion or a Windows path might hand us.
+        // Extensions match case-insensitively.
         assert_eq!(
             format_from_extension(Path::new("out.MKV")),
             Some(RecordFormat::Mkv)

@@ -1,16 +1,7 @@
-//! Reading a connection ticket off a QR code held up to the camera.
+//! Reads a [`BroadcastTicket`] off a QR code held up to the camera.
 //!
-//! `irl watch --scan` opens the camera instead of taking a ticket on the
-//! command line: the window shows what the lens sees and connects as soon as a
-//! frame carries a QR code that parses as a [`BroadcastTicket`]. It was built for a
-//! Raspberry Pi with a touchscreen reading the code off another node's e-paper
-//! display, where there is no keyboard to paste a ticket into.
-//!
-//! The camera is an opened [`VideoSource`], which runs on a thread of its own,
-//! and the QR decoder has another: it is CPU-bound enough that a runtime worker
-//! is the wrong place for it. A window that already publishes the camera hands
-//! the scanner that source's frames instead, since a device does not open
-//! twice.
+//! Built for a Raspberry Pi with a touchscreen and no keyboard. The QR decoder
+//! runs on its own thread because it is too slow for a runtime worker.
 
 use std::{
     sync::{
@@ -37,92 +28,73 @@ use tracing::{debug, info, warn};
 
 use crate::source_spec::VideoSourceSpec;
 
-/// How long the scanner waits between two looks for a QR code.
+/// How long the scanner waits between two decodes.
 ///
-/// Finding a grid costs a full-frame binarization pass followed by a corner
-/// search, which at 720p is on the order of tens of milliseconds on a
-/// Raspberry Pi 4. Running that on every frame would take most of a core and
-/// leave the preview stuttering, and it would buy nothing: somebody lining a
-/// code up in front of a lens holds it there for a second or more, so three
-/// looks a second finds it as fast as thirty would.
+/// A decode takes about 175 ms on a Raspberry Pi 4 (see [`Decoder`]), and
+/// someone holding up a code holds it for a second or more. Three decodes a
+/// second find it as fast as thirty.
 const DECODE_INTERVAL: Duration = Duration::from_millis(333);
 
-/// Capture geometry the scanner asks the camera for.
+/// The capture size the scanner asks for.
 ///
-/// Resolution matters more here than frame rate, because a QR code has to
-/// survive binarization at whatever size it lands in the picture: 720p reads a
-/// Pi Zero's e-paper display held at arm's length where 480p often does not.
-/// The camera snaps to its nearest supported mode regardless.
+/// 720p reads a Pi Zero's e-paper display at arm's length where 480p often
+/// does not.
 const SCAN_SIZE: Size = Size {
     width: 1280,
     height: 720,
 };
 
-/// Capture frame rate the scanner asks the camera for.
+/// The capture frame rate the scanner asks for.
 ///
-/// The picture only has to look live to somebody lining a code up, and every
-/// frame the camera produces costs a pixel format conversion on the capture
-/// thread before anything else happens to it.
+/// Enough for a live preview. Every frame costs a format conversion.
 const SCAN_FRAMERATE: u32 = 15;
 
 /// How long the scanner waits before reopening a camera that failed.
 const REOPEN_DELAY: Duration = Duration::from_secs(2);
 
-/// How many camera frames between one log line about the preview rate and the
-/// next. A hundred is every seven seconds at the scan frame rate.
+/// How many frames pass between two preview rate log lines.
 const PREVIEW_REPORT_EVERY: u64 = 100;
 
-/// How long a camera has to produce its first picture before it counts as the
-/// wrong camera.
+/// How long a camera may take to deliver a frame before it counts as broken.
 ///
-/// Generous, because a webcam that has to power up and settle its exposure can
-/// take a second or two, and reporting a working camera as broken is worse than
-/// waiting. Short enough that somebody holding a code up to a Pi finds out what
-/// is wrong rather than concluding the feature does not work.
+/// A webcam can take a second or two to power up and settle its exposure.
 const FIRST_FRAME_GRACE: Duration = Duration::from_secs(5);
 
-/// A ticket the scanner keeps looking past, and until when.
+/// A ticket the scanner ignores until a deadline.
 ///
-/// A dial that fails sends the window back to the camera with the same code
-/// still held up to it, which is the premise of the screen rather than an
-/// accident. Reporting that code again straight away re-dials a peer that just
-/// refused, and the caller can only answer by opening the camera again, so the
-/// two of them spin: open, decode, dial, fail, close. Carrying the refusal into
-/// the scan makes the wait happen behind a live preview instead, and a
-/// different code held up during it still connects immediately.
+/// After a failed dial the same code is usually still in front of the camera.
+/// Skipping it lets the wait happen behind a live preview, and a different code
+/// still connects at once.
 #[derive(Debug, Clone)]
 pub struct Skip {
-    /// The ticket not to report.
+    /// The ticket to ignore.
     pub ticket: BroadcastTicket,
-    /// When it may be reported again.
+    /// When the scanner may report it again.
     pub until: Instant,
 }
 
-/// A camera the scanner opened, with what to call it.
+/// A camera the scanner opened.
 struct Camera {
     source: VideoSource,
-    /// What to call it in a log line or an error.
+    /// The name used in logs and errors.
     label: String,
-    /// Whether this is the Raspberry Pi camera, which changes what a camera
-    /// that sends nothing is likely to mean.
+    /// Whether this is the Raspberry Pi camera, which changes the no-frames hint.
     rpicam: bool,
 }
 
 impl Camera {
-    /// Opens whichever camera `choice` names, or the best guess when it names
-    /// none.
+    /// Opens the camera `choice` names, or the best guess if `None`.
     ///
     /// # Errors
     ///
-    /// Returns a message for the screen if the camera will not open, or opens
-    /// and produces nothing within [`FIRST_FRAME_GRACE`].
+    /// Returns a message for the screen if the camera does not open, or opens
+    /// and delivers nothing within [`FIRST_FRAME_GRACE`].
     async fn open(choice: Option<&VideoSourceSpec>) -> Result<Self, String> {
         match resolve(choice) {
             #[cfg(all(target_os = "linux", feature = "rpicam"))]
             VideoSourceSpec::Rpicam(_) => Self::open_rpicam().await,
             VideoSourceSpec::Camera(id) => Self::open_capture(id).await,
-            // `camera_spec` rejects everything else at the flag, so this is
-            // unreachable rather than a case with a sensible answer.
+            // Unreachable: `camera_spec` rejects everything else.
             other => Err(format!("{other:?} is not a camera")),
         }
     }
@@ -138,9 +110,8 @@ impl Camera {
         config.height = Some(SCAN_SIZE.height);
         config.framerate =
             Some(video::Rate::new(SCAN_FRAMERATE, 1).expect("the scan rate is a valid frame rate"));
-        // The source returns once the camera produced a picture, so a camera
-        // that opens and then says nothing is caught by the timeout. Dropping
-        // the open releases the device.
+        // `capture` returns after the first frame, so the timeout catches a
+        // camera that opens and then delivers nothing.
         let source = tokio::time::timeout(FIRST_FRAME_GRACE, VideoSource::capture(config))
             .await
             .map_err(|_| no_frames(&label, false))?
@@ -166,20 +137,14 @@ impl Camera {
     }
 }
 
-/// Reads `--scan-camera`, which takes the grammar `--video` takes.
+/// Parses `--scan-camera`, which uses the `--video` syntax.
 ///
-/// Restricted to the sources that can hand over pixels, which is what a QR
-/// decoder needs: a camera by the id `irl devices` prints, or the Raspberry Pi
-/// camera. `rpicam` means its raw pictures whether or not `:raw` is spelled
-/// out, because the H.264 the camera app can produce instead is not something
-/// this can read. A display, a file or a test pattern parse and are refused
-/// here rather than opened and stared at.
-///
-/// `None` leaves the choice to [`resolve`].
+/// Accepts only cameras and the Raspberry Pi camera. `rpicam` always means raw
+/// frames, since the QR decoder cannot read H.264.
 ///
 /// # Errors
 ///
-/// Returns a message naming the accepted forms.
+/// Returns a message listing the accepted forms.
 pub fn camera_spec(spec: Option<&str>) -> Result<Option<VideoSourceSpec>, String> {
     let Some(spec) = spec else {
         return Ok(None);
@@ -197,16 +162,12 @@ pub fn camera_spec(spec: Option<&str>) -> Result<Option<VideoSourceSpec>, String
     }
 }
 
-/// The camera to open when `--scan-camera` named none.
+/// Returns the camera to open, preferring the Pi camera when none is named.
 ///
-/// A Raspberry Pi's `/dev/video0` is the Unicam node and hands back raw Bayer,
-/// which is not a picture anything here can read. It does not fail honestly
-/// either: the device accepts the requested geometry and then never delivers a
-/// frame, so taking the default camera leaves a black preview and no error.
-/// Where this build can drive `rpicam-vid`, that is the better guess.
-///
-/// A Pi with a USB webcam is the case this gets wrong, and `--scan-camera cam`
-/// is the answer to it.
+/// On a Raspberry Pi, `/dev/video0` is the Unicam node. It accepts the
+/// requested format and then never delivers a frame, so `rpicam-vid` is the
+/// better default where it is installed. A Pi with a USB webcam needs
+/// `--scan-camera cam`.
 fn resolve(choice: Option<&VideoSourceSpec>) -> VideoSourceSpec {
     if let Some(spec) = choice {
         return spec.clone();
@@ -218,47 +179,43 @@ fn resolve(choice: Option<&VideoSourceSpec>) -> VideoSourceSpec {
     VideoSourceSpec::Camera(None)
 }
 
-/// What the scan screen tells the user to do.
+/// The instruction on the scan screen.
 const PROMPT: &str = "Hold a ticket QR code up to the camera";
 
-/// How far the scanner has got.
+/// The scanner's progress.
 #[derive(Debug, Clone)]
 enum ScanState {
     /// The camera is open and no QR code has decoded yet.
     Looking,
-    /// A QR code decoded but is not an iroh-live ticket. Worth saying out
-    /// loud: pointing the camera at the wrong code otherwise looks exactly
-    /// like pointing it at nothing.
+    /// A QR code decoded but is not a ticket.
+    ///
+    /// Shown so a wrong code does not look like no code.
     NotATicket,
-    /// A ticket decoded. The camera has been released.
+    /// A ticket decoded and the camera is released.
     Found(Box<BroadcastTicket>),
-    /// The code in front of the camera is the one whose dial just failed, and
-    /// the wait before offering it again has not run out. Carries what is left
-    /// of that wait, so the screen can count it down.
+    /// The skipped ticket is in view, with the time left on its wait.
     Waiting(Duration),
-    /// The camera could not be opened, or it stopped.
+    /// The camera did not open, or it stopped.
     Failed(String),
 }
 
-/// Where the scanner's pictures come from.
+/// Where the scanner's frames come from.
 enum Pictures {
-    /// A camera the scanner opens itself, and opens again if it fails.
+    /// A camera the scanner opens, and reopens if it fails.
     Open(Option<VideoSourceSpec>),
-    /// The frames of a source something else opened.
+    /// The frames of a source opened elsewhere.
     Borrowed(VideoFrames),
 }
 
-/// The scan screen: a live camera picture and the ticket read out of it.
+/// The scan screen: a live camera picture and the ticket read from it.
 ///
-/// Dropping it stops the scan, which releases a camera it opened itself. Create
-/// one when the window enters scan mode and drop it when the window leaves,
-/// rather than holding an idle camera open behind a player.
+/// Dropping it stops the scan and releases a camera it opened.
 #[derive(Debug)]
 pub struct ScanView {
     view: FrameView,
     /// The frames being drawn, once a camera has opened.
     frames: Option<VideoFrames>,
-    /// Hands over the frames of each camera the scan opens.
+    /// The frames of each camera the scan opens.
     opened: watch::Receiver<Option<VideoFrames>>,
     state: watch::Receiver<ScanState>,
     _scan: AbortOnDropHandle<()>,
@@ -267,9 +224,7 @@ pub struct ScanView {
 impl ScanView {
     /// Opens the camera and starts looking for a ticket.
     ///
-    /// Returns immediately: a camera that will not open is reported on the
-    /// screen rather than here, because by then the window is already up and an
-    /// error it can show is more use than one it cannot.
+    /// Returns at once. A camera that does not open is reported on the screen.
     pub fn new(
         ctx: &egui::Context,
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
@@ -279,8 +234,10 @@ impl ScanView {
         Self::start(ctx, render_state, skip, Pictures::Open(camera))
     }
 
-    /// Starts looking for a ticket in `frames`, from a camera something else
-    /// holds open.
+    /// Starts looking for a ticket in `frames` from a camera opened elsewhere.
+    ///
+    /// Use this when the window already publishes the camera, since a device
+    /// cannot be opened twice.
     pub fn from_frames(
         ctx: &egui::Context,
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
@@ -312,8 +269,7 @@ impl ScanView {
         }
     }
 
-    /// Returns the ticket, once the camera has read one it is willing to
-    /// report.
+    /// Returns the ticket, once the scanner has found one.
     pub fn ticket(&self) -> Option<BroadcastTicket> {
         match &*self.state.borrow() {
             ScanState::Found(ticket) => Some((**ticket).clone()),
@@ -339,8 +295,7 @@ impl ScanView {
         self.banner(&ctx);
     }
 
-    /// Draws the instruction, and whatever the scanner has to report, over the
-    /// bottom of the picture.
+    /// Draws the instruction and the scanner's status over the picture.
     fn banner(&self, ctx: &egui::Context) {
         let note = match &*self.state.borrow() {
             ScanState::Looking => None,
@@ -379,14 +334,11 @@ impl ScanView {
     }
 }
 
-/// Reads the pictures until they yield a ticket.
+/// Reads frames until they yield a ticket.
 ///
-/// A camera the scanner opened itself is opened again whenever it fails: the
-/// scan screen has no way forward other than a working camera, so a device that
-/// is momentarily busy (another process letting go of it, a USB camera settling
-/// after a replug) is worth waiting for rather than reporting once and giving
-/// up. Borrowed frames that end are reported, since nothing here can bring
-/// them back.
+/// A camera the scanner opened is reopened whenever it fails, because a device
+/// can be busy for a moment, for example after a USB replug. Borrowed frames
+/// that end are reported as a failure.
 async fn scan(
     pictures: Pictures,
     opened: &watch::Sender<Option<VideoFrames>>,
@@ -423,8 +375,7 @@ async fn scan(
                 opened.send_replace(Some(camera.source.frames()));
                 report(state, ctx, ScanState::Looking);
                 let frames = camera.source.frames();
-                // Returning drops the camera, so it is released while the
-                // window dials rather than held open behind it.
+                // Returning drops the camera, so the window dials without it.
                 match look(frames, &camera.label, camera.rpicam, state, ctx, skip).await {
                     Ok(ticket) => return found(state, ctx, ticket),
                     Err(problem) => problem,
@@ -433,9 +384,7 @@ async fn scan(
             Err(problem) => problem,
         };
 
-        // One camera that is not there would otherwise say so every couple of
-        // seconds and bury everything else in the log. The screen keeps showing
-        // it regardless of which level this went out at.
+        // Warn once. The screen shows every failure.
         match said_so {
             false => warn!(%problem, "the scan camera is unusable"),
             true => debug!(%problem, "the scan camera is still unusable"),
@@ -456,14 +405,13 @@ fn found(state: &watch::Sender<ScanState>, ctx: &egui::Context, ticket: Broadcas
     report(state, ctx, ScanState::Found(Box::new(ticket)));
 }
 
-/// Reads `frames`, decoding some of them, until one carries a ticket.
+/// Reads `frames` until the decoder finds a ticket in one.
 ///
-/// `label` and `rpicam` describe the camera, for what to say when it goes
-/// quiet.
+/// `label` and `rpicam` describe the camera for the error message.
 ///
 /// # Errors
 ///
-/// Returns a message for the screen if the camera stops producing frames.
+/// Returns a message for the screen if the camera stops delivering frames.
 async fn look(
     mut frames: VideoFrames,
     label: &str,
@@ -478,11 +426,8 @@ async fn look(
     let mut next_look = Instant::now();
     let mut decoder = Decoder::spawn(state.clone(), ctx.clone(), skip.cloned());
     loop {
-        // A camera that opens and then says nothing is the failure a Raspberry
-        // Pi produces when pointed at `/dev/video0`, and it is silent: the
-        // device accepts the geometry and never delivers. Without this the
-        // screen is black with no explanation, which is indistinguishable from
-        // a lens cap.
+        // The timeout turns a silent camera, like a Pi's `/dev/video0`, into
+        // an error instead of a black screen.
         let read = tokio::select! {
             read = tokio::time::timeout(FIRST_FRAME_GRACE, frames.next()) => read,
             found = decoder.found() => return Ok(found),
@@ -491,8 +436,7 @@ async fn look(
             Ok(Some(frame)) => frame,
             Ok(None) => return Err("the camera stopped".to_string()),
             Err(_) if !seen_a_frame => return Err(no_frames(label, rpicam)),
-            // Already delivering, so a gap is the camera stalling rather than
-            // the wrong device: say so and let the reopen loop have it.
+            // A stall after frames arrived, which the reopen loop handles.
             Err(_) => {
                 return Err(format!(
                     "the camera stopped delivering after {}s",
@@ -503,62 +447,50 @@ async fn look(
         seen_a_frame = true;
         delivered += 1;
         if delivered.is_multiple_of(PREVIEW_REPORT_EVERY) {
-            // A rate for the preview, read off the log rather than the eye.
             debug!(
                 frames = delivered,
                 fps = format_args!("{:.1}", delivered as f64 / opened.elapsed().as_secs_f64()),
                 "scan camera delivering"
             );
         }
-        // The view draws from a handle of its own; this only wakes it.
+        // The view reads its own frames handle. This only wakes it.
         ctx.request_repaint();
 
-        // Only when the decoder is free: a look it cannot take yet is a look at
-        // a frame it will never see anyway, so the interval restarts from the
-        // hand-over rather than from a wish.
         if Instant::now() >= next_look && decoder.is_idle() {
             match luma(&frame.surface) {
                 Ok(luma) => decoder.look_at(luma),
-                // A download that fails once will fail again, and retrying it
-                // on every frame costs what decoding on every frame costs, so
-                // the interval restarts here as well.
+                // The interval also applies after a failure, since a failed
+                // download is likely to fail again.
                 Err(err) => warn!(error = %err, "could not read the frame's luma plane"),
             }
-            // Measured from the hand-over. The decoder reports when it is idle
-            // again, so a decode slower than the interval simply means the next
-            // look waits for it rather than piling up behind it.
+            // Measured from the hand-over, so a slow decode delays the next one
+            // instead of queueing frames.
             next_look = Instant::now() + DECODE_INTERVAL;
         }
     }
 }
 
-/// The QR decoder, on a thread of its own.
+/// The QR decoder, on its own thread.
 ///
-/// Decoding a 720p frame costs about 175ms on a Raspberry Pi 4, and the
-/// capture loop that would otherwise run it is also the loop that feeds the
-/// preview. On the capture thread every look froze the picture for that long,
-/// which at three looks a second is a preview that stutters for a third of the
-/// time. Here the capture loop hands a plane over and carries on reading; the
-/// decoder takes it, and says when it has finished.
+/// A decode of a 720p frame takes about 175 ms on a Raspberry Pi 4. On the
+/// frame loop it would freeze the preview for that long.
 ///
-/// One plane in flight at a time. A second look before the first has finished
-/// is a look at a frame the decoder would reach late and read the same code out
-/// of, so the capture loop skips it rather than queueing it: [`is_idle`] is
-/// what it asks.
+/// Only one plane is in flight. The frame loop checks [`is_idle`] and skips
+/// frames while the worker is busy, since a queued frame would show the same
+/// code.
 ///
 /// [`is_idle`]: Self::is_idle
 struct Decoder {
-    /// Planes go this way, at most one queued.
+    /// Sends planes to the worker, at most one queued.
     planes: std::sync::mpsc::SyncSender<Luma>,
-    /// The ticket comes back this way, once.
+    /// Receives the ticket, once.
     found: tokio::sync::mpsc::Receiver<BroadcastTicket>,
-    /// Whether the worker has taken and finished the last plane.
+    /// Whether the worker has finished the last plane.
     idle: Arc<AtomicBool>,
 }
 
 impl Decoder {
-    /// Starts the worker. It runs until the sender it is handed is dropped,
-    /// which happens when the [`Decoder`] is.
+    /// Starts the worker thread, which runs until the [`Decoder`] is dropped.
     fn spawn(state: watch::Sender<ScanState>, ctx: egui::Context, skip: Option<Skip>) -> Self {
         let (planes, incoming) = std::sync::mpsc::sync_channel::<Luma>(1);
         let (report_found, found) = tokio::sync::mpsc::channel::<BroadcastTicket>(1);
@@ -570,11 +502,8 @@ impl Decoder {
                 while let Ok(luma) = incoming.recv() {
                     let decoding = Instant::now();
                     let found = decode(&luma);
-                    // Every look, at debug: the decode is the one expensive
-                    // thing here, and on a small ARM core its cost is what
-                    // decides how often the scanner can look at all. A number
-                    // in the log turns "scanning is slow on the Pi" into a
-                    // figure to act on.
+                    // Logs every decode's cost, which limits the scan rate on
+                    // small ARM boards.
                     debug!(
                         took_ms = decoding.elapsed().as_millis() as u64,
                         found = found.is_some(),
@@ -586,7 +515,6 @@ impl Decoder {
                                 if let Some(left) = still_skipped(skip.as_ref(), &ticket) {
                                     report(&state, &ctx, ScanState::Waiting(left));
                                 } else if report_found.blocking_send(ticket).is_ok() {
-                                    // Found and delivered: nothing more to look for.
                                     return;
                                 }
                             }
@@ -607,16 +535,15 @@ impl Decoder {
         }
     }
 
-    /// Whether the worker is free to take a plane.
+    /// Returns whether the worker can take a plane.
     fn is_idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
     }
 
     /// Hands a plane to the worker.
     ///
-    /// Only meaningful right after [`is_idle`](Self::is_idle) said so; a plane
-    /// handed over while the worker is busy is dropped, since the one it is on
-    /// will be read the same.
+    /// Call only after [`is_idle`](Self::is_idle) returns true. A plane handed
+    /// over while the queue is full is dropped.
     fn look_at(&self, luma: Luma) {
         self.idle.store(false, Ordering::Release);
         if self.planes.try_send(luma).is_err() {
@@ -624,10 +551,9 @@ impl Decoder {
         }
     }
 
-    /// Waits for the ticket the worker reads, if it ever reads one.
+    /// Waits for the ticket the worker finds.
     ///
-    /// Pending forever once the worker has gone, which only happens after it
-    /// delivered a ticket or this [`Decoder`] was dropped.
+    /// Stays pending forever once the worker has exited.
     async fn found(&mut self) -> BroadcastTicket {
         match self.found.recv().await {
             Some(ticket) => ticket,
@@ -636,8 +562,7 @@ impl Decoder {
     }
 }
 
-/// Returns how much of `skip`'s wait is left, if `ticket` is the one it names
-/// and the wait has not run out.
+/// Returns the time left on `skip` if it names `ticket` and has not expired.
 fn still_skipped(skip: Option<&Skip>, ticket: &BroadcastTicket) -> Option<Duration> {
     let skip = skip?;
     if skip.ticket != *ticket {
@@ -646,13 +571,9 @@ fn still_skipped(skip: Option<&Skip>, ticket: &BroadcastTicket) -> Option<Durati
     skip.until.checked_duration_since(Instant::now())
 }
 
-/// What to say about a camera that opened and then produced nothing.
-///
-/// Names the flag, because the fix is a flag and the reader is looking at a
-/// black rectangle.
+/// Returns the error for a camera that opened and delivered no frames.
 fn no_frames(device: &str, rpicam: bool) -> String {
     match rpicam {
-        // Already on the Pi camera, so the next question is the hardware.
         true => format!(
             "{device} opened but sent no pictures within {}s; check the ribbon cable",
             FIRST_FRAME_GRACE.as_secs()
@@ -665,17 +586,13 @@ fn no_frames(device: &str, rpicam: bool) -> String {
     }
 }
 
-/// Publishes `next` and wakes the window so it is drawn.
+/// Publishes `next` and wakes the window.
 fn report(state: &watch::Sender<ScanState>, ctx: &egui::Context, next: ScanState) {
     state.send_replace(next);
     ctx.request_repaint();
 }
 
-/// A grayscale image: one byte per pixel, rows tightly packed.
-///
-/// This is the Y plane of a captured frame, which is exactly what a QR decoder
-/// wants. Nothing converts to RGB along the way, because a QR code carries no
-/// color and the round trip would cost two passes over the pixels.
+/// A grayscale image with one byte per pixel and tightly packed rows.
 struct Luma {
     width: u32,
     height: u32,
@@ -684,10 +601,7 @@ struct Luma {
 
 /// Copies the luma plane out of `surface`.
 ///
-/// A Linux or Windows camera hands over CPU-resident I420, so the only cost is
-/// copying the Y plane out. A macOS camera's `CVPixelBuffer`, and any other
-/// GPU-resident surface, is downloaded first; the surface itself is left alone
-/// for the preview.
+/// A GPU surface, such as a macOS `CVPixelBuffer`, is downloaded first.
 ///
 /// # Errors
 ///
@@ -701,47 +615,36 @@ fn luma(surface: &Surface) -> Result<Luma, video::Error> {
     })
 }
 
-/// Reads the first QR code in `image`, if it holds one.
+/// The sharpening radius as a fraction of the image's shorter side.
 ///
-/// How much of a blur the sharpening pass tries to undo, as a fraction of the
-/// picture's shorter side.
-///
-/// The unsharp mask needs a radius, and the right one is about a module, which
-/// depends on how big the code is in the frame. A code somebody is holding up
-/// fills a fifth to a half of a 720p frame at 33 modules, so a module is four
-/// to ten pixels; a 300th of the short side is 2.4 px at 720p, in the middle of
-/// that. Measured: at this radius the mask lifts the blur a decoder reads
-/// through from a third of a module to over half, on both decoders.
+/// The radius should be about one module. A hand-held code fills a fifth to a
+/// half of a 720p frame at 33 modules, so a module is 4 to 10 px. This gives
+/// 2.4 px at 720p. Measured: it raises the readable blur from a third of a
+/// module to over half, on both decoders.
 const SHARPEN_RADIUS_FRACTION: f64 = 1.0 / 300.0;
 
 /// How much of the recovered detail the sharpening pass adds back.
 ///
-/// Above about two the mask amplifies sensor noise into false modules faster
-/// than it recovers real ones. One and a half is where the harness peaks.
+/// Above about 2 the mask turns sensor noise into false modules. 1.5 is where
+/// the blur harness peaks.
 const SHARPEN_AMOUNT: f64 = 1.5;
 
-/// Reads the QR code out of a picture, if there is one it can read.
+/// Reads the QR code in `image`, if it can.
 ///
-/// Two decoders, tried in the order that reads through the most blur. A
-/// laptop webcam has to get close to a small panel to resolve its modules,
-/// and close is out of focus; a scanner that only reads sharp pictures is a
-/// scanner that does not read the Pi Zero's e-paper from a laptop, which is
-/// what this was built for.
-///
-/// The picture is sharpened once with an unsharp mask, which partially undoes
-/// a defocus at the cost of noise. `rxing`, the zxing port, is asked first: on
-/// the blur harness it reads through about twice the defocus `rqrr` does.
-/// `rqrr` runs on the same sharpened picture when `rxing` finds nothing,
-/// because the two fail on different pictures and it is cheap. Measured
-/// ceilings are in `blur_ceiling_report`.
+/// A laptop webcam must get close to the Pi Zero's small e-paper panel, which
+/// puts the code out of focus. The image is sharpened once, then `rxing` tries
+/// first because it reads through about twice the blur `rqrr` does. `rqrr`
+/// runs if `rxing` finds nothing, since the two fail on different images.
+/// `blur_ceiling_report` measures both.
 fn decode(image: &Luma) -> Option<String> {
     let radius = f64::from(image.width.min(image.height)) * SHARPEN_RADIUS_FRACTION;
     let sharpened = sharpen(image, radius, SHARPEN_AMOUNT);
     decode_rxing(&sharpened).or_else(|| decode_rqrr(&sharpened))
 }
 
-/// The zxing port, told it is looking for a QR code and asked to try harder,
-/// which turns on the slower finder-pattern search that copes with soft edges.
+/// Decodes with `rxing`, the zxing port.
+///
+/// `TryHarder` turns on a slower finder search that copes with soft edges.
 fn decode_rxing(image: &Luma) -> Option<String> {
     let mut hints = rxing::DecodeHints {
         TryHarder: Some(true),
@@ -758,16 +661,15 @@ fn decode_rxing(image: &Luma) -> Option<String> {
     .map(|result| result.getText().to_string())
 }
 
-/// `rqrr`, a pure-Rust port of quirc that takes a grayscale callback, so the
-/// plane goes straight in with no format conversion.
+/// Decodes with `rqrr`, a pure-Rust port of quirc.
 fn decode_rqrr(image: &Luma) -> Option<String> {
     let width = image.width as usize;
     let mut prepared =
         rqrr::PreparedImage::prepare_from_greyscale(width, image.height as usize, |x, y| {
             image.data[y * width + x]
         });
-    // A picture can hold several codes, and a partly obscured one detects as a
-    // grid and fails to decode; the first that decodes is the answer.
+    // A partly hidden code can detect as a grid and still fail to decode, so
+    // take the first grid that decodes.
     prepared
         .detect_grids()
         .into_iter()
@@ -775,12 +677,10 @@ fn decode_rqrr(image: &Luma) -> Option<String> {
         .map(|(_meta, text)| text)
 }
 
-/// Unsharp mask: the picture plus `amount` times what a Gaussian blur of
-/// `sigma` pixels took away from it.
+/// Applies an unsharp mask with a Gaussian of `sigma` pixels.
 ///
-/// Partially undoes a defocus. What it cannot undo is detail the blur removed
-/// entirely, so it lifts the readable blur by a fraction rather than removing
-/// the ceiling; and it amplifies noise, which is why `amount` is bounded.
+/// Adds `amount` times the difference between the image and its blur. This
+/// partly undoes a defocus and also amplifies noise.
 fn sharpen(image: &Luma, sigma: f64, amount: f64) -> Luma {
     let soft = gaussian_blur(image, sigma);
     let data = image
@@ -799,11 +699,10 @@ fn sharpen(image: &Luma, sigma: f64, amount: f64) -> Luma {
     }
 }
 
-/// A separable Gaussian blur of `sigma` pixels, three sigma each side, with
-/// the border pixel repeated past the edge.
+/// Applies a separable Gaussian blur of `sigma` pixels.
 ///
-/// Used by the sharpening pass, and by the tests to manufacture the defocus
-/// the pass exists to undo.
+/// The kernel spans three sigma each side, and edge pixels repeat past the
+/// border.
 fn gaussian_blur(image: &Luma, sigma: f64) -> Luma {
     if sigma <= 0.0 {
         return Luma {
@@ -856,17 +755,12 @@ mod tests {
     use super::*;
 
     /// Pixels per QR module in the rendered test images.
-    ///
-    /// Roughly what a camera sees of a code filling a third of a 720p frame,
-    /// and enough that `rqrr`'s binarization has clean edges to lock onto.
     const MODULE_PIXELS: u32 = 8;
 
-    /// Quiet zone around the rendered code, in modules. Four is what the QR
-    /// standard asks for, and a decoder is entitled to rely on it.
+    /// The quiet zone around a code in modules, as the QR standard requires.
     const QUIET_MODULES: u32 = 4;
 
-    /// Renders `text` as a QR code the way a camera would see one: dark
-    /// modules on a light background, with the quiet zone around them.
+    /// Renders `text` as a QR code, dark on light, with a quiet zone.
     fn render(text: &str) -> Luma {
         let code = qrcode::QrCode::new(text).expect("the text fits in a QR code");
         let modules = u32::try_from(code.width()).expect("a QR code is at most 177 modules wide");
@@ -895,31 +789,29 @@ mod tests {
         }
     }
 
-    /// A candidate decoder, as the harness compares them.
+    /// A decoder the harness compares.
     type Decoder = fn(&Luma) -> Option<String>;
 
-    /// The defocus a lens that is not on the code applies to it.
+    /// Simulates an out-of-focus lens.
     fn blur(image: &Luma, sigma: f64) -> Luma {
         gaussian_blur(image, sigma)
     }
 
-    /// The frame the scanner reads, which is the geometry the sharpen radius
-    /// is scaled to. A harness on a code-sized image would under-sharpen and
-    /// report a worse pipeline than the one that ships.
+    /// The frame size the scanner reads.
+    ///
+    /// The sharpen radius scales with it. A code-sized image would under-sharpen.
     const FRAME: Size = SCAN_SIZE;
 
-    /// One ticket, the same every run. The QR bit pattern follows the text, so
-    /// a random key would make the blur ceiling a lottery and the floor test
-    /// below flaky on the boundary.
+    /// Returns the same ticket on every run.
+    ///
+    /// The QR pattern depends on the text, so a random key would make the blur
+    /// tests flaky at the boundary.
     fn fixed_ticket() -> BroadcastTicket {
         let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
         BroadcastTicket::new(secret.public(), "pi-zero")
     }
 
-    /// A ticket as a webcam sees the Pi Zero's e-paper: the code drawn at
-    /// `module_pixels` per module in the middle of a scan-sized frame, white
-    /// around it. Three pixels per module is the panel itself; a webcam at arm's
-    /// length sees each module across a handful of its own pixels.
+    /// Renders a ticket centered in a white scan-sized frame.
     fn ticket_code(module_pixels: u32) -> (BroadcastTicket, Luma) {
         let ticket = fixed_ticket();
         let code = qrcode::QrCode::new(ticket.to_string()).expect("a ticket fits in a QR code");
@@ -956,13 +848,10 @@ mod tests {
         )
     }
 
-    /// The largest blur, in units of one module's width, at which `decoder`
-    /// still reads a ticket rendered at `module_pixels` per module.
+    /// Returns the largest blur, in modules, that `decoder` reads through.
     ///
-    /// Found by bisection to a tenth of a module. Decoding is monotonic enough
-    /// in blur for that to hold: a picture the decoder reads at one sigma it
-    /// reads at every smaller sigma, up to the pixel-phase noise a tenth of a
-    /// module absorbs.
+    /// Bisects to a tenth of a module, which assumes decoding is monotonic in
+    /// blur at that precision.
     fn blur_ceiling_with(module_pixels: u32, decoder: Decoder) -> f64 {
         let (ticket, sharp) = ticket_code(module_pixels);
         let reads = |tenths: u32| {
@@ -989,16 +878,11 @@ mod tests {
         f64::from(low) / 10.0
     }
 
-    /// What Franz saw: a laptop webcam has to get close to the Pi Zero's panel,
-    /// and close means out of focus. A blur whose sigma is half a module is
-    /// what that looks like at the module sizes a webcam delivers, and the
-    /// decoder has to read through it.
+    /// A ticket decodes through a blur of half a module.
     ///
-    /// One point per module size rather than a search: the floor is a check,
-    /// and the search that finds the ceiling is `blur_ceiling_report`. Half a
-    /// module is one bisection step under the 0.6 the shipped pipeline measures
-    /// at every size in a release build; plain `rqrr` on the raw plane gave up
-    /// at 0.2 to 0.3.
+    /// That is what a webcam close to the Pi Zero's panel sees. The shipped
+    /// pipeline measures 0.6 at every size in a release build, so 0.5 leaves one
+    /// bisection step of margin.
     #[test]
     fn a_ticket_decodes_through_the_blur_a_close_webcam_produces() {
         const FLOOR_MODULES: f64 = 0.5;
@@ -1015,17 +899,17 @@ mod tests {
         }
     }
 
-    /// What one decode of a scan-sized frame costs, which is what the
-    /// scanner pays every `DECODE_INTERVAL`. Meaningful in a release build:
-    /// `cargo test --release -p iroh-live-cli blur_ceiling_report -- --ignored --nocapture`.
+    /// Returns how long one decode of `image` takes.
     fn decode_cost(image: &Luma) -> Duration {
         let started = Instant::now();
         let _ = decode(image);
         started.elapsed()
     }
 
-    /// Prints the blur ceiling per module size and the cost of one decode, for
-    /// tuning rather than for passing. Run with `--ignored --nocapture`.
+    /// Prints the blur ceiling per decoder and module size, and the decode cost.
+    ///
+    /// Run in release:
+    /// `cargo test --release -p iroh-live-cli blur_ceiling_report -- --ignored --nocapture`.
     #[test]
     #[ignore = "a measurement, not a check; run by hand to see the ceiling"]
     fn blur_ceiling_report() {
@@ -1074,8 +958,7 @@ mod tests {
         assert!(text.parse::<BroadcastTicket>().is_err());
     }
 
-    /// The flag takes the grammar `--video` takes, so a device id that works
-    /// for publishing works for scanning, on every platform the same way.
+    /// `--scan-camera` accepts cameras in the `--video` syntax.
     #[test]
     fn the_scan_camera_takes_a_camera_by_id() {
         assert_eq!(
@@ -1089,8 +972,7 @@ mod tests {
         assert_eq!(camera_spec(None).expect("no flag is fine"), None);
     }
 
-    /// A scanner needs pixels, so a source that is not a camera is refused at
-    /// the flag rather than opened and stared at.
+    /// `--scan-camera` rejects sources that are not cameras.
     #[test]
     fn the_scan_camera_refuses_what_is_not_a_camera() {
         for spec in ["screen", "test", "file:clip.mp4", "none"] {
@@ -1100,8 +982,7 @@ mod tests {
         }
     }
 
-    /// The Pi camera can only mean its raw pictures here: the H.264 it can
-    /// produce instead is not something a QR decoder can read.
+    /// Every Pi camera spec maps to raw frames.
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     #[test]
     fn the_pi_camera_is_always_raw_for_scanning() {

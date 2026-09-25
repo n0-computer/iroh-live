@@ -1,18 +1,7 @@
-//! Turning parsed specifiers into opened sources, and setting them on a
-//! broadcast.
+//! Opens the sources that specifiers name, and sets them on a broadcast.
 //!
-//! A source is opened here, before it reaches the broadcast: a camera that is
-//! not there, a file that will not decode, or a microphone this machine lacks
-//! is an error at this point rather than a line in the log from a task that
-//! keeps trying. What the broadcast does with a source that opened, it reports
-//! in its status.
-//!
-//! The test pattern and the test tone share one timeline, so a viewer judges
-//! A/V sync by whether the picture's flash and the tone's beep land together.
-//!
-//! The Raspberry Pi camera comes in two forms. `rpicam` hands over the H.264
-//! the Pi's own encoder produced, which is published as it is; `rpicam:raw`
-//! hands over pictures, which reach our encoders like any other camera's.
+//! Sources open before they reach the broadcast, so a missing device is an
+//! error here and not a retry loop in the log.
 
 use iroh_live::media::{
     AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, MicrophoneConfig,
@@ -37,25 +26,24 @@ const TEST_SIZE: Size = Size {
     height: 720,
 };
 
-/// Capture mode of the Raspberry Pi camera when `--width` / `--height` are not
-/// given. A Pi Zero 2 W streams this comfortably, and a larger mode is one flag
-/// away.
+/// Capture size of the Raspberry Pi camera without `--width` and `--height`.
+///
+/// A Pi Zero 2 W streams this comfortably.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 const RPICAM_SIZE: Size = Size {
     width: 640,
     height: 360,
 };
 
-/// Frequency of the unbroken test tone, in hertz. Concert A: unmistakable, and
-/// low enough that no resampler on the way out can alias it. The beeping tone
-/// names its own frequency, an octave above this one.
+/// Frequency of the continuous test tone, in hertz.
+///
+/// Concert A, low enough that no resampler can alias it.
 const TEST_TONE_HZ: f32 = 440.0;
 
 /// Speaker layout of the test tones.
 const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
 
-/// What [`configure`] opened, for the callers that draw a preview of it or
-/// hand its camera to a scanner.
+/// The sources [`configure`] opened, for a preview or a QR scanner.
 #[derive(Debug, Default)]
 #[cfg_attr(
     not(feature = "render"),
@@ -65,14 +53,13 @@ const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
     )
 )]
 pub struct Opened {
-    /// The raw video source, if the video is one: a pre-encoded source has no
-    /// pictures to preview.
+    /// The raw video source. `None` for no video or pre-encoded video.
     pub video: Option<VideoSource>,
-    /// The audio source, if there is one.
+    /// The audio source.
     pub audio: Option<AudioSource>,
 }
 
-/// A video source a specifier opened.
+/// An opened video source.
 #[derive(Debug)]
 enum Video {
     /// Raw pictures, encoded into the ladder.
@@ -82,16 +69,10 @@ enum Video {
     Encoded(EncodedVideoSource),
 }
 
-/// Opens whichever of video and audio `args` asks for, and sets them on
-/// `broadcast`.
+/// Opens the video and audio `args` asks for, and sets them on `broadcast`.
 ///
-/// `output` is the speaker whose echo the microphone cancels, for the commands
-/// that play the other side's audio while publishing their own.
-///
-/// # Errors
-///
-/// Fails if a specifier is unusable here (a `file:` video source belongs to
-/// `irl publish`), if the rendition ladder does not parse, or if a source will
+/// `output` is the speaker whose echo the microphone cancels. Fails for a
+/// `file:` video source, a ladder that does not parse, or a source that does
 /// not open.
 pub async fn configure(
     broadcast: &LocalBroadcast,
@@ -109,14 +90,9 @@ pub async fn configure(
     Ok(Opened { video, audio })
 }
 
-/// Opens the video `args` asks for and sets it, leaving whatever audio is
-/// publishing in place.
+/// Opens the video `args` asks for and sets it, leaving the audio alone.
 ///
-/// Returns the raw source when the video is one, for a preview.
-///
-/// # Errors
-///
-/// As [`configure`], for the video half.
+/// Returns the raw source, if any, for a preview.
 pub async fn configure_video(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
@@ -127,23 +103,19 @@ pub async fn configure_video(
     }
 }
 
-/// A video source opened for a broadcast and not yet set on it.
+/// A video source opened and not yet set on a broadcast.
 ///
-/// Opening awaits a device, and setting is one synchronous call, so a caller
-/// that has to decide at the last moment whether the source still goes on the
-/// broadcast can make that decision and the set in one step.
+/// Opening is async and setting is sync, so a caller can decide at the last
+/// moment whether to set it.
 #[derive(Debug)]
 pub struct OpenedVideo {
     source: Video,
     ladder: rendition::Ladder,
 }
 
-/// Opens the video `args` asks for, without setting it, or `None` for
-/// `--video none`.
+/// Opens the video `args` asks for without setting it.
 ///
-/// # Errors
-///
-/// As [`configure`], for the video half.
+/// Returns `None` for `--video none`.
 pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
     let spec = args.video_source()?;
     let ladder = rendition::ladder(&spec, args)?;
@@ -153,16 +125,9 @@ pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
 }
 
 impl OpenedVideo {
-    /// Sets the source on `broadcast`, returning it when it is raw, for a
-    /// preview.
-    ///
-    /// # Errors
-    ///
-    /// Fails for an encoding the broadcast refuses.
+    /// Sets the source on `broadcast` and returns it if raw, for a preview.
     pub fn apply(self, broadcast: &LocalBroadcast) -> Result<Option<VideoSource>> {
         let Self { source, ladder } = self;
-        // Only now is there a capture to describe: `--video none` never gets
-        // here with a ladder nothing will encode.
         ladder.report();
         match source {
             Video::Raw(source) => {
@@ -178,12 +143,9 @@ impl OpenedVideo {
     }
 }
 
-/// Opens the video source a specifier names, or `None` for `--video none`.
+/// Opens the video source `spec` names, or `None` for `--video none`.
 ///
-/// # Errors
-///
-/// Fails for a `file:` source, which only `irl publish` can take, and for a
-/// device that will not open.
+/// Fails for a `file:` source, which only `irl publish` takes.
 async fn video_source(
     spec: &VideoSourceSpec,
     args: &CaptureArgs,
@@ -195,8 +157,6 @@ async fn video_source(
         VideoSourceSpec::None => return Ok(None),
         VideoSourceSpec::Test(pattern) => Video::Raw(test_pattern(args, framerate, *pattern)?),
         VideoSourceSpec::File { path, .. } => {
-            // Only `irl publish` has the import path; every other command that
-            // captures reaches this with whatever the user typed.
             return Err(anyerr!(
                 "a file: video source is published by `irl publish --video \
                  file:{}`, which republishes the file without re-encoding it; \
@@ -216,10 +176,7 @@ async fn video_source(
     Ok(Some(source))
 }
 
-/// Opens a capture device, carrying the geometry hints from the flags.
-///
-/// `framerate` is the rate the whole ladder is captured at, which `--fps` and
-/// the rungs' `@<fps>` suffixes settle between them: see [`crate::rendition`].
+/// Opens a capture device with the geometry hints from the flags.
 async fn capture(
     source: video::capture::Source,
     args: &CaptureArgs,
@@ -236,20 +193,11 @@ async fn capture(
     Ok(Video::Raw(VideoSource::capture(config).await?))
 }
 
-/// Starts `rpicam-vid` for whichever of H.264 and raw pictures `mode` asked
-/// for.
+/// Starts `rpicam-vid` in the mode `mode` names.
 ///
-/// `--width`, `--height`, and the settled capture frame rate describe the
-/// capture either way. Under [`RpicamMode::Encoded`] `--bitrate` goes to the
-/// subprocess, which is the only thing that can act on it, and the flags that
-/// describe an encode of ours are refused. Under [`RpicamMode::Raw`] the
-/// picture reaches our encoders like any other camera's, so `--bitrate` belongs
-/// to the rendition ladder.
-///
-/// # Errors
-///
-/// Fails if `rpicam-vid` cannot be started, or if a flag asks the pre-encoded
-/// source for an encode it cannot perform.
+/// Under [`RpicamMode::Encoded`], `--bitrate` goes to `rpicam-vid` and our
+/// encoding flags are refused. Under [`RpicamMode::Raw`], the pictures go
+/// through our encoders like any camera's.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 async fn rpicam_source(
     args: &CaptureArgs,
@@ -260,10 +208,8 @@ async fn rpicam_source(
         args.width.unwrap_or(RPICAM_SIZE.width),
         args.height.unwrap_or(RPICAM_SIZE.height),
     );
-    // `rpicam-vid` delivers the rate it is told to, so there is no device mode
-    // to fall back on and the default stands in for one.
     let framerate = framerate.generated();
-    // A keyframe a second, the config's default.
+    // `--keyframe-interval` does not apply: the config keeps a keyframe a second.
     let mut config = RpicamConfig::new(size, framerate);
     match mode {
         RpicamMode::Raw => Ok(Video::Raw(VideoSource::rpicam(config).await?)),
@@ -278,11 +224,6 @@ async fn rpicam_source(
 }
 
 /// Refuses the encoding flags a pre-encoded source cannot act on.
-///
-/// The picture is already H.264 by the time we see it, so `--codec` and
-/// `--encoder` describe an encode that does not happen and a ladder has nothing
-/// to scale. Saying so beats starting the camera and publishing something
-/// other than what was asked for.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
     if args.codec != VideoCodecArg::H264 {
@@ -312,8 +253,7 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
     Ok(())
 }
 
-/// The test pattern at its default geometry, for a caller with no flags to
-/// consult.
+/// Returns the test pattern at its default size and rate.
 #[cfg(feature = "render")]
 pub fn default_test_pattern() -> VideoSource {
     VideoSource::test_pattern(
@@ -322,11 +262,7 @@ pub fn default_test_pattern() -> VideoSource {
     )
 }
 
-/// The test pattern `pattern` names, at whatever geometry the flags asked for.
-///
-/// # Errors
-///
-/// Fails if the gradient's thread cannot be started.
+/// Starts the test pattern `pattern` names, at the size the flags ask for.
 fn test_pattern(
     args: &CaptureArgs,
     framerate: CaptureFramerate,
@@ -336,8 +272,6 @@ fn test_pattern(
         args.width.unwrap_or(TEST_SIZE.width),
         args.height.unwrap_or(TEST_SIZE.height),
     );
-    // The generator draws exactly the rate it is asked for, so there is no
-    // device to defer to here either.
     let rate = video::Rate::new(framerate.generated(), 1)
         .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE");
     match pattern {
@@ -346,15 +280,10 @@ fn test_pattern(
     }
 }
 
-/// A diagonal gradient that shifts every frame, drawn on a thread of its own.
+/// Starts a diagonal gradient that shifts every frame, on its own thread.
 ///
-/// Cheap, and different in every frame: a static image compresses to almost
-/// nothing after the first keyframe, so a pipeline that had stalled would
-/// still look like one moving bytes.
-///
-/// # Errors
-///
-/// Fails if the thread cannot be started.
+/// A static image would compress to almost nothing, so a stalled pipeline
+/// would look the same as a working one.
 fn gradient(size: Size, fps: u32) -> Result<VideoSource> {
     let rate = video::Rate::new(fps, 1).expect("the ladder settles only on valid rates");
     let format = VideoFormat { size, rate };
@@ -399,13 +328,9 @@ fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
     }
 }
 
-/// The microphone `id` names, with `output`'s echo cancelled from it.
+/// Returns the config for microphone `id`, cancelling the echo of `output`.
 ///
-/// Every command that plays the other side's audio while it publishes its own
-/// passes the speaker it plays through, so a laptop or a handset on speaker
-/// does not send the other side back to itself. A build without the `aec`
-/// feature says so and publishes the microphone as it is, rather than refusing
-/// to start a call.
+/// Without the `aec` feature, it warns and publishes the microphone as is.
 pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> MicrophoneConfig {
     let mut config = MicrophoneConfig::default();
     if let Some(id) = id {
@@ -416,7 +341,7 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> Mi
         {
             config.echo_reference = Some(output.clone());
         }
-        // A null output plays nothing, so there is no echo to warn about.
+        // A null output plays nothing, so it has no echo.
         #[cfg(not(feature = "aec"))]
         if !output.is_null() {
             tracing::warn!(
@@ -428,12 +353,7 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> Mi
     config
 }
 
-/// Opens the audio source a specifier names, or `None` for `--audio none`.
-///
-/// # Errors
-///
-/// Fails if a microphone is not there, or a `file:` source cannot be opened or
-/// holds no audio track.
+/// Opens the audio source `spec` names, or `None` for `--audio none`.
 async fn audio_source(
     spec: &AudioSourceSpec,
     output: Option<&AudioOutput>,
@@ -455,11 +375,10 @@ async fn audio_source(
     Ok(Some(source))
 }
 
-/// The encoding `--audio-codec` and `--audio-bitrate` imply.
+/// Returns the encoding for `--audio-codec` and `--audio-bitrate`.
 ///
-/// A microphone is speech and gets the voice preset; anything else may be
-/// music and keeps its channels. PCM's bitrate follows from its sample rate
-/// and channel count, so only Opus takes `--audio-bitrate`.
+/// A microphone gets the voice preset. Any other source may be music and
+/// keeps its channels. PCM ignores `--audio-bitrate`.
 fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
     let mut encoding = match (args.audio_codec, is_microphone(args)) {
         (AudioCodecArg::Pcm, _) => return AudioEncoding::pcm(),
@@ -472,7 +391,7 @@ fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
     encoding
 }
 
-/// Whether `--audio` names a microphone.
+/// Returns whether `--audio` names a microphone.
 fn is_microphone(args: &CaptureArgs) -> bool {
     matches!(args.audio_source(), Ok(AudioSourceSpec::Microphone(_)))
 }
@@ -481,9 +400,7 @@ fn is_microphone(args: &CaptureArgs) -> bool {
 mod tests {
     use super::*;
 
-    /// Echo cancellation was never attached before this CLI passed its output
-    /// in: every command that plays the other side's audio publishes a
-    /// microphone that cancels it. This fails if the config drops the output.
+    /// The microphone config carries the output as its echo reference.
     #[cfg(feature = "aec")]
     #[test]
     fn the_microphone_cancels_the_output_it_is_given() {

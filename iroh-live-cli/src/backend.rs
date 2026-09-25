@@ -1,10 +1,9 @@
 //! Backend selection for `--encoder` and `--decoder`.
 //!
-//! Both flags take a strategy (`auto`, `hardware`, `software`) or the name of
-//! one backend, from moq-video's own lists (`encode::NAMES`,
-//! `decode::NAMES`). An unknown name fails at parse time. A known name that
-//! this build lacks, such as `vaapi` without the `vaapi` feature, fails when
-//! the encoder or decoder opens.
+//! Both flags take a strategy (`auto`, `hardware`, `software`) or a backend
+//! name from moq-video's `encode::NAMES` or `decode::NAMES`. An unknown name
+//! fails at parse time. A known name this build lacks, such as `vaapi` without
+//! the `vaapi` feature, fails when the encoder or decoder opens.
 
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use iroh_live::media::video::{decode, encode};
@@ -17,10 +16,10 @@ pub enum Backend {
     #[default]
     #[display("auto")]
     Auto,
-    /// Hardware only: fails rather than fall back to the CPU.
+    /// Hardware only, with no fallback to software.
     #[display("hardware")]
     Hardware,
-    /// Software only, which is openh264.
+    /// Software only (openh264).
     #[display("software")]
     Software,
     /// Only the backend of this name.
@@ -44,7 +43,7 @@ impl Backend {
         Self::parser(decode::NAMES)
     }
 
-    /// Deserializes an encoder choice, for `irl run`'s session file.
+    /// Deserializes an encoder choice from an `irl run` session file.
     pub fn deserialize_encoder<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Self, D::Error> {

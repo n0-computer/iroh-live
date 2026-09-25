@@ -1,7 +1,7 @@
-//! `irl devices`: list the capture and playback devices this machine offers.
+//! `irl devices`: lists capture and playback devices.
 //!
-//! Every identifier printed here is one the `--video` and `--audio` specifiers
-//! accept, so the output doubles as the argument reference for `irl publish`.
+//! Every printed identifier is a valid `--video` or `--audio` value for
+//! `irl publish`.
 
 #[cfg(feature = "playback")]
 use iroh_live::media::AudioOutput;
@@ -13,23 +13,18 @@ pub fn run(rt: &tokio::runtime::Runtime) -> n0_error::Result {
     Ok(())
 }
 
-/// How many sizes a camera lists before the rest are summarised.
+/// How many sizes to print per camera before summarising the rest.
 ///
-/// A UVC camera commonly offers a dozen, most of them steps nobody asks for
-/// between the two anyone does. Enough to see the range and the shape of it
-/// without a page of output per device.
+/// A UVC camera often offers a dozen. Six show the range without a page of
+/// output per device.
 const MODES_SHOWN: usize = 6;
 
 /// Prints the cameras, with the sizes and frame rates each one reports.
 ///
-/// The modes are what `--renditions 720p@60` is checked against by hand: a rate
-/// the device does not have is not refused anywhere, it is quietly replaced by
-/// the nearest one, so the only way to know what to ask for is to be told what
-/// is there.
-///
-/// Only Linux answers. The other platforms' camera APIs report the mode they
-/// picked rather than the modes they have, so those cameras print their
-/// identifier alone and the rate is whatever opening the device gives.
+/// A rate the device lacks is silently replaced by the nearest one, so this
+/// list is how a user picks `--renditions` values. Only Linux reports modes.
+/// Other platforms report only the mode they picked, so their cameras print
+/// the identifier alone.
 async fn cameras() {
     let cameras = video::capture::cameras().await;
     println!("cameras:");
@@ -47,9 +42,7 @@ async fn cameras() {
 
     for camera in &cameras {
         println!("  cam:{}  {}", camera.id, camera.name);
-        // Enumerating opens nothing, so a camera another program is using still
-        // answers. A camera that will not answer is not an error worth a line:
-        // the identifier above it is still the thing a publisher needs.
+        // A camera that reports no modes still has a usable identifier.
         let Ok(modes) = video::capture::camera_modes(Some(&camera.id)).await else {
             continue;
         };
@@ -63,25 +56,22 @@ async fn cameras() {
     println!();
 }
 
-/// One size and the rates it offers, as a line under its camera.
+/// Formats one size and its frame rates as a line under its camera.
 fn describe(mode: &video::capture::Mode) -> String {
     let size = format!("{}x{}", mode.width, mode.height);
     if mode.framerates.is_empty() {
-        // The driver described a continuous range rather than listing rates, so
-        // the size is real and nothing here can say at which rates.
+        // The driver described a continuous range instead of listing rates.
         return format!("{size}  (rates not listed)");
     }
     let rates: Vec<String> = mode.framerates.iter().map(rate).collect();
     format!("{size}  {} fps", rates.join(", "))
 }
 
-/// One frame rate, as a person reads it.
+/// Formats a frame rate for reading.
 ///
-/// A driver reports an exact ratio rather than a whole number, so the common
-/// cinema and NTSC rates are fractions: 24000 frames per 1001 seconds is
-/// 23.976 fps and not 24. Printed to two decimals only when it needs them, so
-/// the ordinary 30 stays "30" rather than "30.00", where the rate's own
-/// `Display` would print "30/1".
+/// Drivers report exact ratios, and NTSC rates are fractions (24000/1001 is
+/// 23.976 fps). Whole rates print as "30", others with two decimals.
+/// `Rate`'s own `Display` would print "30/1".
 fn rate(rate: &video::Rate) -> String {
     let fps = rate.as_f64();
     if (fps - fps.round()).abs() < 0.005 {
@@ -91,7 +81,7 @@ fn rate(rate: &video::Rate) -> String {
     }
 }
 
-/// Prints every section, in the order a publisher reaches for them.
+/// Prints every device section.
 async fn list() {
     cameras().await;
 
@@ -109,9 +99,7 @@ async fn list() {
         )
     });
 
-    // Windows and applications are ScreenCaptureKit concepts. Everywhere else
-    // the enumeration returns `Unsupported`, so printing an empty section would
-    // only be noise.
+    // Window and app capture exist only on macOS (ScreenCaptureKit).
     #[cfg(target_os = "macos")]
     {
         section("windows", video::capture::windows().await, |window| {
@@ -132,9 +120,8 @@ async fn list() {
 
     #[cfg(feature = "playback")]
     section("audio outputs", AudioOutput::devices().await, |device| {
-        // The id is what `irl watch --audio-output` takes, so it leads: a
-        // user copies the first token of a line rather than the prose after
-        // it. The names alone do not distinguish a card's six subdevices.
+        // The id leads because it is what `irl watch --audio-output` takes.
+        // Names alone do not tell a card's subdevices apart.
         let default = if device.default { " (default)" } else { "" };
         format!("{}  {}{default}", device.id, device.name)
     });
@@ -142,35 +129,26 @@ async fn list() {
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub mod rpicam {
-    //! What `irl devices` can say about the Raspberry Pi camera.
+    //! Raspberry Pi camera listing for `irl devices`.
     //!
-    //! The libcamera stack is reachable only through `rpicam-vid`, so there is
-    //! no device list to read: the two things worth reporting are whether the
-    //! binary is installed and which sensors it can see.
+    //! libcamera is reachable only through `rpicam-vid`, so this reports whether
+    //! the binary is installed and which sensors it sees.
 
     use std::time::Duration;
 
-    /// The subprocess we drive, the same one `iroh_live_media::VideoSource::rpicam`
-    /// starts.
+    /// The binary that `iroh_live_media::VideoSource::rpicam` also runs.
     const RPICAM_VID: &str = "rpicam-vid";
 
-    /// How long `--list-cameras` is given before we give up on it.
+    /// How long `--list-cameras` may run.
     ///
-    /// Enumeration probes the I2C buses the CSI connector sits on, and a
-    /// half-seated ribbon cable is enough to keep it there. `irl devices`
-    /// should still print the microphones in that case.
+    /// Enumeration probes the I2C buses of the CSI connector and can hang on a
+    /// half-seated ribbon cable. The other sections should still print.
     const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// The cameras `rpicam-vid` reports, described as `irl devices` prints
-    /// them.
+    /// Returns the cameras `rpicam-vid --list-cameras` reports, as printable lines.
     ///
-    /// `--list-cameras` enumerates and exits without starting a capture, which
-    /// is what keeps this cheap enough to run on every `irl devices`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a note for the section when `rpicam-vid` is not installed, will
-    /// not run, or does not finish enumerating.
+    /// The error is a note for the section, returned when `rpicam-vid` is
+    /// missing, fails to run, or times out.
     pub(super) async fn cameras() -> Result<Vec<String>, String> {
         if !installed() {
             return Err(format!("{RPICAM_VID} is not on PATH"));
@@ -194,12 +172,10 @@ pub mod rpicam {
             .collect())
     }
 
-    /// Turns one line of the `--list-cameras` listing into a printable entry.
+    /// Turns one `--list-cameras` line into a printable entry.
     ///
-    /// The listing indents the mode table under a header per camera, so the
-    /// entries are the lines shaped `0 : imx219 [3280x2464 10-bit RGGB] (...)`.
-    /// The index is dropped: `--video rpicam` takes no id, because `rpicam-vid`
-    /// picks the camera itself.
+    /// Camera lines look like `0 : imx219 [3280x2464 10-bit RGGB] (...)`. The
+    /// index is dropped because `--video rpicam` takes no id.
     fn camera_line(line: &str) -> Option<String> {
         let (index, description) = line.split_once(" : ")?;
         index.trim().parse::<u32>().ok()?;
@@ -208,8 +184,7 @@ pub mod rpicam {
 
     /// Returns whether `rpicam-vid` is on `PATH`.
     ///
-    /// Looks for the binary rather than enumerating: `--list-cameras` probes
-    /// the I2C buses the CSI connector sits on and takes seconds.
+    /// Checks for the binary only, because `--list-cameras` takes seconds.
     pub fn installed() -> bool {
         std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|dir| dir.join(RPICAM_VID).is_file())
@@ -232,9 +207,9 @@ pub mod rpicam {
     }
 }
 
-/// Prints one section, turning a failed enumeration into a note rather than
-/// aborting the whole listing: a machine with no camera driver should still get
-/// to see its microphones.
+/// Prints one section, with a failed enumeration as a note.
+///
+/// A machine with no camera driver still gets to see its microphones.
 fn section<T, E: std::fmt::Display>(
     title: &str,
     devices: Result<Vec<T>, E>,

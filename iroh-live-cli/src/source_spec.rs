@@ -1,13 +1,8 @@
 //! Parsing for the `--video` and `--audio` source specifiers.
 //!
-//! A specifier names a kind of source and, optionally, which device of that
-//! kind: `cam`, `cam:2`, `screen`, `window:1042`, `file:clip.mp4`. The
-//! identifiers are the ones `irl devices` prints.
-//!
-//! There is no backend segment. `moq_video::capture::Source` and
-//! `moq_audio::capture::Source` name a device and let the platform pick the
-//! backend that reaches it, so a grammar that let you write `cam:v4l2:1` would
-//! be describing a choice the caller no longer makes.
+//! A specifier is a kind and an optional id, such as `cam:2` or
+//! `file:clip.mp4`. The ids are the ones `irl devices` prints. There is no
+//! backend segment: the platform picks the backend for a device.
 
 use std::path::PathBuf;
 
@@ -16,8 +11,9 @@ use std::path::PathBuf;
 pub enum VideoSourceSpec {
     /// A camera, by the id `irl devices` reports. `None` opens the default.
     Camera(Option<String>),
-    /// A whole display. `None` opens the main one; on Linux the desktop portal
-    /// owns the choice and the id is ignored.
+    /// A whole display. `None` opens the main one.
+    ///
+    /// On Linux the desktop portal picks, and the id is ignored.
     Display(Option<String>),
     /// A single window, by id. macOS only.
     Window(String),
@@ -25,9 +21,8 @@ pub enum VideoSourceSpec {
     App(String),
     /// The Raspberry Pi camera, driven through `rpicam-vid`.
     ///
-    /// Its own kind rather than a camera id, because it is not a capture
-    /// device: `/dev/video0` on a Pi is the Unicam node and hands back raw
-    /// Bayer that only libcamera can drive.
+    /// A kind of its own because a Pi's `/dev/video0` is the Unicam node. It
+    /// delivers raw Bayer that only libcamera can drive.
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     Rpicam(RpicamMode),
     /// A generated picture, for publishing without a camera.
@@ -61,9 +56,7 @@ impl VideoSourceSpec {
             "app" => rest
                 .map(|id| Self::App(id.to_string()))
                 .ok_or_else(|| "app: needs a bundle id (e.g. app:com.apple.Safari)".to_string()),
-            // No id: `rpicam-vid` picks the camera, so one given here would be
-            // dropped rather than honoured. The one suffix it takes names what
-            // the camera app hands over.
+            // No id, because `rpicam-vid` picks the camera.
             "rpicam" | "picam" => match rest.map(str::to_lowercase).as_deref() {
                 None => rpicam(RpicamMode::Encoded),
                 Some("raw") => rpicam(RpicamMode::Raw),
@@ -97,53 +90,43 @@ impl VideoSourceSpec {
     }
 }
 
-/// Which generated picture `test` and `test:<name>` publish.
+/// The generated picture `test` and `test:<name>` publish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TestPattern {
-    /// A sweeping bar, vertical stripes, a frame counter, a clock, and a marker
-    /// that flashes with the test tone's beep.
+    /// A sweeping bar, a frame counter, a clock, and a flashing marker.
     ///
-    /// The default, because someone publishing without a camera is looking at
-    /// the stream to judge it, and this is the pattern those judgements can be
-    /// read off: smoothness from the bar, dropped frames from the counter,
-    /// latency from the clock, and A/V sync from the flash against the beep.
-    /// See `iroh_live_media::VideoSource::test_pattern`.
+    /// The marker flashes with the test tone's beep.
+    ///
+    /// Shows smoothness, dropped frames, latency, and A/V sync. See
+    /// `iroh_live_media::VideoSource::test_pattern`.
     #[default]
     Timing,
-    /// A moving gradient.
-    ///
-    /// Cheap, and different in every frame so a stalled pipeline cannot pass
-    /// for a working one, but it answers no question about the playback.
+    /// A moving gradient. Cheap, and different in every frame.
     Gradient,
 }
 
-/// What `rpicam-vid` hands over, which `rpicam` and `rpicam:raw` pick between.
+/// What `rpicam-vid` hands over: `rpicam` or `rpicam:raw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpicamMode {
-    /// The H.264 the Pi's hardware encoder produced, published unchanged.
+    /// H.264 from the Pi's hardware encoder, published unchanged.
     ///
-    /// The cheapest thing a Pi can stream, and the only thing a Pi Zero should
-    /// be asked to. Nothing downstream sees a picture, so a preview, a software
-    /// encode, and a simulcast ladder are all out of reach.
+    /// The cheapest option, and the right one for a Pi Zero. There is no
+    /// preview, no choice of encoder, and no ladder.
     Encoded,
     /// Raw pictures, which we encode ourselves.
     ///
-    /// Costs the pipe (about 10 MB/s at 640x360) and an encode, and buys
-    /// everything that needs pixels: `--preview`, `--encoder`, `--codec`, and a
-    /// ladder with more than one rung.
+    /// Costs about 10 MB/s of pipe at 640x360, plus an encode. Allows
+    /// `--preview`, `--encoder`, `--codec`, and a ladder.
     Raw,
 }
 
-/// The `rpicam` specifier, for a build that has the source.
+/// Returns the `rpicam` source.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 fn rpicam(mode: RpicamMode) -> Result<VideoSourceSpec, String> {
     Ok(VideoSourceSpec::Rpicam(mode))
 }
 
-/// The `rpicam` specifier, for a build that does not have the source.
-///
-/// Answering with the "unknown video source" message would be misleading: the
-/// specifier is spelled correctly and this build simply cannot serve it.
+/// Fails with a message that names the missing feature.
 #[cfg(not(all(target_os = "linux", feature = "rpicam")))]
 fn rpicam(_mode: RpicamMode) -> Result<VideoSourceSpec, String> {
     Err(
@@ -156,8 +139,9 @@ fn rpicam(_mode: RpicamMode) -> Result<VideoSourceSpec, String> {
 /// A parsed `--audio` specifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioSourceSpec {
-    /// An input device, by the id `irl devices` reports. `None` opens the
-    /// default microphone.
+    /// An input device, by the id `irl devices` reports.
+    ///
+    /// `None` opens the default microphone.
     Microphone(Option<String>),
     /// Everything the machine is playing. macOS only.
     System,
@@ -174,30 +158,24 @@ pub enum AudioSourceSpec {
     None,
 }
 
-/// Which generated tone `test` and `test:<name>` publish.
+/// The generated tone `test` and `test:<name>` publish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TestTone {
-    /// A beep on every second, silent in between.
+    /// A beep every second, silent in between.
     ///
-    /// The default, and the half of `--video test` that makes A/V sync
-    /// measurable: each beep sounds while the picture's marker is lit, so the
-    /// two either arrive together or they do not.
+    /// Each beep sounds while the test pattern's marker is lit, to check A/V
+    /// sync.
     #[default]
     Beeps,
-    /// An unbroken sine tone. Nothing to line a picture up against, but a
-    /// dropout in it is audible the moment it happens.
+    /// A continuous sine tone. Dropouts are easy to hear.
     Tone,
 }
 
 impl AudioSourceSpec {
     /// Parses an `--audio` specifier.
     ///
-    /// An unrecognised specifier is taken as a device name, so an ALSA-style
-    /// `hw:0,1` reaches the right device without quoting rules.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message if `file:` was given without a path.
+    /// An unknown kind is a device name, such as `hw:0,1`. Fails for `file:`
+    /// without a path and for an unknown test tone.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let (kind, rest) = split_once(spec);
         match kind.to_lowercase().as_str() {
@@ -226,8 +204,6 @@ impl AudioSourceSpec {
 }
 
 /// Splits the `:loop` suffix off a file path, if it carries one.
-///
-/// Both `--video` and `--audio` spell looping this way, so both parse it here.
 fn split_loop(rest: &str) -> (&str, bool) {
     match rest.to_lowercase().ends_with(":loop") {
         true => (&rest[..rest.len() - ":loop".len()], true),
@@ -237,8 +213,8 @@ fn split_loop(rest: &str) -> (&str, bool) {
 
 /// Splits a specifier into its kind and the identifier that follows.
 ///
-/// Only the first colon separates: device ids and file paths carry their own
-/// (`hw:0,1`, `C:\clips\demo.mp4`), so everything after it stays intact.
+/// Only the first colon separates, because ids and paths such as `hw:0,1` and
+/// `C:\clips\demo.mp4` contain their own.
 fn split_once(spec: &str) -> (&str, Option<&str>) {
     match spec.split_once(':') {
         Some((kind, rest)) => (kind, Some(rest)),
@@ -270,8 +246,7 @@ mod tests {
         );
     }
 
-    /// The bare specifier is the diagnostic pattern, and the old gradient is
-    /// still reachable by name.
+    /// The bare specifier is the timing pattern, and the gradient has a name.
     #[test]
     fn test_patterns_by_name() {
         assert_eq!(
@@ -345,8 +320,7 @@ mod tests {
         assert!(err.contains(":raw"), "{err}");
     }
 
-    /// A build without the source names the reason rather than pretending the
-    /// specifier was a typo.
+    /// A build without the source names the missing feature.
     #[test]
     #[cfg(not(all(target_os = "linux", feature = "rpicam")))]
     fn video_rpicam_needs_the_feature() {

@@ -1,8 +1,7 @@
-//! `irl publish`: publish a capture device or a media file over iroh.
+//! `irl publish`: publishes a capture device or a media file over iroh.
 //!
-//! Capture sources go through `iroh-live-media`'s encode path, which fans one device
-//! out to the simulcast ladder `--renditions` describes. A `file:` source takes
-//! the import path instead: its tracks are republished as they already are.
+//! Capture sources are encoded into the renditions `--renditions` lists. A
+//! `file:` source is republished without re-encoding.
 
 use iroh_live::{Live, media::LocalBroadcast, moq::net::broadcast};
 use n0_error::{Result, anyerr};
@@ -22,9 +21,8 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
         VideoSourceSpec::File { path, looping } => {
             publish_file(FileSource::new(path, looping, &args)?, &args, rt)
         }
-        // Same reason as a file source: nothing on this path ever holds a
-        // picture. `rpicam:raw` is the other half of the choice and does, so
-        // it falls through to the ordinary capture path with its preview.
+        // `rpicam:raw` captures raw frames, so it falls through to the
+        // capture path and can be previewed.
         #[cfg(all(target_os = "linux", feature = "rpicam"))]
         VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) if args.preview => {
             Err(anyerr!(
@@ -52,8 +50,7 @@ async fn setup_capture(
         let sources = source::configure(&broadcast, &args.capture, None).await?;
         live.publish(&args.transport.name, &broadcast)?;
         let ticket = transport::advertise(live, &args.transport)?;
-        // `--test-source` overrides both flags, so logging what was typed would
-        // name a camera that was never opened.
+        // `--test-source` overrides both flags, so log what was opened.
         let (video, audio) = match args.capture.test_source {
             true => ("test", "test"),
             false => (args.capture.video.as_str(), args.capture.audio.as_str()),
@@ -72,8 +69,7 @@ async fn setup_capture(
 
 /// Publishes capture devices, optionally alongside a preview window.
 fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    // Checked before anything is opened: a build that cannot draw should say so
-    // rather than open the camera first and fail afterwards.
+    // Fail before opening any device.
     #[cfg(not(feature = "render"))]
     if args.preview {
         return Err(anyerr!(
@@ -90,8 +86,7 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 
     #[cfg(feature = "render")]
     {
-        // eframe owns the main thread, so the runtime stays alive only for as
-        // long as this guard does.
+        // eframe takes the main thread. The guard keeps the runtime entered.
         let _guard = rt.enter();
         preview::run(live, broadcast, sources, ticket, args)
     }
@@ -122,12 +117,12 @@ async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
     result
 }
 
-/// Publishes the file onto `live`, which the caller closes either way.
+/// Publishes the file on `live`. The caller shuts `live` down.
 async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> Result {
     let producer = broadcast::Info::new().produce();
     let import = FileImport::open(producer.clone(), source).await?;
-    // Published once the import has created the tracks it republishes, so a
-    // subscriber never sees the broadcast without them.
+    // Publish after the import created its tracks, so no subscriber sees the
+    // broadcast without them.
     live.publish(&args.transport.name, producer.consume())?;
     transport::advertise(live, &args.transport)?;
     info!(name = %args.transport.name, "publishing a file");
@@ -160,9 +155,9 @@ fn wait_for_ctrl_c(
 
 #[cfg(feature = "render")]
 mod preview {
-    //! The preview window: the frames on their way to the encoders, plus a
-    //! source picker that swaps the capture device without restarting the
-    //! broadcast.
+    //! The preview window, with the captured frames and a source picker.
+    //!
+    //! The picker swaps the device without restarting the broadcast.
 
     use std::time::Duration;
 
@@ -184,9 +179,6 @@ mod preview {
     use crate::{args::PublishArgs, source::Opened, source_spec::VideoSourceSpec};
 
     /// Opens the preview window and runs it until it closes.
-    ///
-    /// The picker starts on the `--video` specifier the broadcast was started
-    /// with, so it shows what is already publishing instead of guessing.
     pub(super) fn run(
         live: Live,
         broadcast: LocalBroadcast,
@@ -264,9 +256,7 @@ mod preview {
 
     /// A source the picker can switch to.
     ///
-    /// Deliberately coarse: the combo offers the default camera, the default
-    /// display, the test pattern, and nothing. Choosing a specific device is
-    /// what `--video` and `irl devices` are for.
+    /// Only defaults are offered. Use `--video` to pick a specific device.
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     enum PickedSource {
         Camera,
@@ -287,11 +277,10 @@ mod preview {
             }
         }
 
-        /// The entry matching a `--video` specifier, if the combo has one.
+        /// Returns the entry matching a `--video` specifier, if any.
         ///
-        /// A window or an application source names a device the combo cannot
-        /// express, so those start unmatched and the picker shows the flag
-        /// text until the user chooses something else.
+        /// Specific devices, windows, and apps have no entry. The picker then
+        /// shows the flag text.
         fn from_spec(spec: &VideoSourceSpec) -> Option<Self> {
             match spec {
                 VideoSourceSpec::Camera(None) => Some(Self::Camera),
@@ -305,19 +294,18 @@ mod preview {
 
     /// The source combo.
     ///
-    /// Switching opens the new source first and then sets it, which replaces
-    /// whatever was publishing: there is no separate teardown step, and the
-    /// catalog keeps the same rendition name across the swap. A source that
-    /// will not open leaves the old one publishing.
+    /// A switch opens the new source, then sets it on the broadcast in place of
+    /// the old one. If the new source fails to open, the old one keeps
+    /// publishing.
     #[derive(Debug)]
     struct SourcePicker {
         selected: Option<PickedSource>,
-        /// What `--video` said, shown while nothing in the combo matches it.
+        /// The `--video` text, shown while no entry matches it.
         flag: String,
         error: Option<String>,
-        /// The sources publishing now, held so they keep running.
+        /// The sources publishing now, held to keep them running.
         sources: Opened,
-        /// A source being opened, and where it reports.
+        /// A source switch in flight.
         opening: Option<Opening>,
     }
 
@@ -372,8 +360,7 @@ mod preview {
             }
         }
 
-        /// Collects a finished switch, returning the frames the preview should
-        /// draw from now on when the source changed.
+        /// Collects a finished switch and returns the new frames, if any.
         fn poll(&mut self) -> Option<Option<iroh_live::media::VideoFrames>> {
             let opening = self.opening.as_mut()?;
             let result = match opening.done.try_recv() {
@@ -399,10 +386,9 @@ mod preview {
             }
         }
 
-        /// Opens the selected source and publishes it at its own resolution.
+        /// Opens the selected source in a task and publishes it.
         ///
-        /// The open runs as a task, since a camera takes a moment; a switch
-        /// chosen while another is opening replaces it.
+        /// A new switch aborts one still opening.
         fn apply(&mut self, broadcast: &LocalBroadcast) {
             let selected = self.selected;
             let broadcast = broadcast.clone();
@@ -418,8 +404,7 @@ mod preview {
         }
     }
 
-    /// Opens `selected` and sets it on `broadcast`, or clears the video for
-    /// no source.
+    /// Opens `selected` and sets it on `broadcast`, or clears the video.
     async fn open_and_set(
         broadcast: &LocalBroadcast,
         selected: Option<PickedSource>,
