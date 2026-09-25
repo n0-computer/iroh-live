@@ -4,13 +4,13 @@
 //! `set_audience` and `offer` are synchronous.
 //!
 //! Each link has its own publish origin. Offering a publication on a link adds
-//! a dynamic route at its path there, answered through a gate (see [`serve`]).
+//! a dynamic route at its path there (see [`serve`]).
 
 use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
 use moq_net::{Path, PathOwned, broadcast, origin};
-use n0_future::task::{AbortOnDropHandle, JoinSet};
+use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -221,12 +221,6 @@ fn visible(publication: &PubEntry, id: u64, link: &LinkEntry) -> bool {
 ///
 /// The offer also ends with the broadcast. Returns `None`, and logs why, if
 /// the origin refuses the route.
-///
-/// Requests are answered through a gate, an origin of its own that serves the
-/// broadcast. moq-net keeps serving a spliced broadcast after its route
-/// retracts, and new requests join it, so without the gate a peer could read on
-/// after the offer was withdrawn. Dropping the handle tears the gate down,
-/// which ends every subscription through it.
 pub(crate) fn serve(
     origin: &origin::Producer,
     path: &Path<'_>,
@@ -239,55 +233,27 @@ pub(crate) fn serve(
             return None;
         }
     };
-    let (gate, gate_driver) = origin::Producer::new(origin.config());
-    let gated = match gate.dynamic(path, origin::Route::default()) {
-        Ok(dynamic) => dynamic,
-        Err(err) => {
-            warn!(%path, %err, "could not gate the broadcast");
-            return None;
-        }
-    };
     let broadcast = broadcast.clone();
     let path = path.to_owned();
     let root = origin.root().to_owned();
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
-        let through_gate = gate.consume();
-        let run_gate = moq_net::time::run(gate_driver);
-        tokio::pin!(run_gate);
-        let mut requests = JoinSet::new();
         loop {
             tokio::select! {
                 // A route must not outlive its broadcast.
                 _ = broadcast.closed() => break,
-                _ = &mut run_gate => break,
-                request = gated.requested_broadcast() => match request {
+                request = offered.requested_broadcast() => match request {
+                    // The route also catches paths below this one.
+                    Ok(request)
+                        if !request
+                            .path()
+                            .strip_prefix(&root)
+                            .is_some_and(|requested| requested == path) =>
+                    {
+                        request.reject(moq_net::Error::NotFound);
+                    }
                     Ok(request) => request.accept(&broadcast),
                     Err(_) => break,
                 },
-                request = offered.requested_broadcast() => match request {
-                    Ok(request) => {
-                        let through_gate = through_gate.clone();
-                        let exact = request
-                            .path()
-                            .strip_prefix(&root)
-                            .is_some_and(|requested| requested == path);
-                        let path = path.clone();
-                        // Resolving waits on the gate's driver, which this
-                        // loop runs.
-                        requests.spawn(async move {
-                            if !exact {
-                                request.reject(moq_net::Error::NotFound);
-                                return;
-                            }
-                            match through_gate.request_broadcast(&path).await {
-                                Ok(served) => request.accept(served),
-                                Err(err) => request.reject(err),
-                            }
-                        });
-                    }
-                    Err(_) => break,
-                },
-                Some(_) = requests.join_next(), if !requests.is_empty() => {}
             }
         }
     })))
@@ -351,83 +317,6 @@ mod tests {
             .expect("track failed")
             .expect("a group");
         (served, subscriber)
-    }
-
-    /// Measures what the gate in [`serve`] costs, per offer and per group.
-    ///
-    /// Run it with `cargo nextest run -p iroh-moq --run-ignored only gate_cost`.
-    #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "a measurement, run by hand"]
-    async fn gate_cost() {
-        const OFFERS: usize = 1_000;
-        const GROUPS: u64 = 20_000;
-        let payload = Bytes::from(vec![7u8; 1_000]);
-
-        let table = origin();
-        let broadcast = broadcast::Info::new().produce();
-        let started = std::time::Instant::now();
-        let offers: Vec<Serve> = (0..OFFERS)
-            .map(|n| {
-                let path = format!("live/publisher/cam{n}");
-                serve(&table, &Path::new(&path), &broadcast.consume()).expect("offer")
-            })
-            .collect();
-        let per_offer = started.elapsed() / OFFERS as u32;
-        drop(offers);
-        println!("setting up an offer: {per_offer:?}");
-
-        for gated in [false, true] {
-            let origin = origin();
-            let broadcast = broadcast::Info::new().produce();
-            let mut track = broadcast
-                .create_track("video", track::Info::default().with_max_age(MAX_AGE))
-                .expect("create track");
-            let path = Path::new("live/publisher/cam");
-            let _offer = if gated {
-                serve(&origin, &path, &broadcast.consume()).expect("offer")
-            } else {
-                let route = origin
-                    .dynamic(&path, origin::Route::default())
-                    .expect("route");
-                let consumer = broadcast.consume();
-                AbortOnDropHandle::new(tokio::spawn(async move {
-                    while let Ok(request) = route.requested_broadcast().await {
-                        request.accept(&consumer);
-                    }
-                }))
-            };
-            // One group first, so the subscription is in place before timing.
-            track
-                .write_frame(Timestamp::now(), payload.clone())
-                .expect("write");
-            let (_served, mut subscriber) = read(&origin, &path).await;
-            let started = std::time::Instant::now();
-            for _ in 0..GROUPS {
-                track
-                    .write_frame(Timestamp::now(), payload.clone())
-                    .expect("write");
-            }
-            let mut received = 0;
-            while received < GROUPS {
-                let mut group = tokio::time::timeout(TIMEOUT, subscriber.recv_group())
-                    .await
-                    .expect("stalled")
-                    .expect("track failed")
-                    .expect("track ended");
-                while group.read_frame().await.expect("frame").is_some() {}
-                received += 1;
-            }
-            let elapsed = started.elapsed();
-            println!(
-                "{GROUPS} groups of 1 KB {}: {elapsed:?}, {:?} per group",
-                if gated {
-                    "through the gate"
-                } else {
-                    "spliced directly"
-                },
-                elapsed / GROUPS as u32,
-            );
-        }
     }
 
     /// Withdrawing an offer closes what it served, and the path stops resolving.
