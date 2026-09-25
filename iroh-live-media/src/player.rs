@@ -102,14 +102,6 @@ pub struct Latency {
 }
 
 impl Latency {
-    /// Returns a fixed latency: held for `latency`, skipped past it.
-    pub const fn fixed(latency: Duration) -> Self {
-        Self {
-            min: latency,
-            max: latency,
-        }
-    }
-
     /// No buffer and no pacing: a frame presents as soon as it decodes.
     ///
     /// Media older than 150 ms is still skipped: a player without a buffer
