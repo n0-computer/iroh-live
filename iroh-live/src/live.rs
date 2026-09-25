@@ -192,8 +192,11 @@ impl Live {
     /// Resolves the ticket's broadcast over whichever link serves it.
     ///
     /// Dials the publisher, and waits on attached relays at the same time.
-    /// Returns once a route is found. Read the media with
-    /// [`remote_broadcast`](Self::remote_broadcast).
+    /// Returns once a route is found.
+    #[cfg_attr(
+        feature = "media",
+        doc = "Read the media with [`remote_broadcast`](Self::remote_broadcast)."
+    )]
     ///
     /// Cancellation safe.
     ///

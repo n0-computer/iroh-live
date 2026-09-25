@@ -49,6 +49,9 @@ jobs:
       - run: cargo check --locked --workspace --all-targets
       - run: cargo check --locked --workspace --all-targets --all-features
       - run: cargo check --locked --workspace --all-targets --no-default-features
+      # On their own, so the CLI's features do not turn `media` back on.
+      - run: cargo check --locked -p iroh-live-relay
+      - run: cargo check --locked -p iroh-live --all-targets --no-default-features --features rooms
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
       - run: cargo fmt --check
