@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::{
-    Catalog, LocalBroadcast, NetworkSignals, Player, PlayerConfig, RecordConfig, Recording,
-    error::Error, network::SharedSignals,
+    Catalog, LocalBroadcast, NetworkSample, Player, PlayerConfig, RecordConfig, Recording,
+    error::Error, network::NetworkSignals,
 };
 
 /// How long to look for an ended broadcast again before it counts as gone.
@@ -60,7 +60,7 @@ struct Shared {
     catalog: Watchable<Option<Catalog>>,
     closed: CancellationToken,
     #[debug(skip)]
-    network: Mutex<Option<SharedSignals>>,
+    network: Mutex<Option<NetworkSignals>>,
     span: tracing::Span,
     #[debug(skip)]
     _task: AbortOnDropHandle<()>,
@@ -124,14 +124,14 @@ impl RemoteBroadcast {
 
     /// Attaches network signals for automatic rendition selection.
     ///
-    /// Transports call this, and `iroh-live` does so on subscribe. Players
-    /// started afterwards use the signals. They belong to the broadcast, not
-    /// to this handle: every clone sees them, and attaching again replaces
-    /// them for all clones. Players adapt on the last reading, so keep the
-    /// signals current for as long as the broadcast plays.
+    /// `signals` returns the link as it is now. Players call it a few times a
+    /// second and on every [`Player::stats`], so it must not block. `iroh-live`
+    /// attaches it on subscribe. The signals belong to the broadcast, not to
+    /// this handle: every clone sees them, and attaching again replaces them
+    /// for all clones. Players started afterwards use them.
     #[must_use]
-    pub fn with_network(self, signals: impl NetworkSignals) -> Self {
-        *self.shared.network.lock().expect("poisoned") = Some(SharedSignals(Arc::new(signals)));
+    pub fn with_network(self, signals: impl Fn() -> NetworkSample + Send + Sync + 'static) -> Self {
+        *self.shared.network.lock().expect("poisoned") = Some(Arc::new(signals));
         self
     }
 
@@ -192,7 +192,7 @@ impl RemoteBroadcast {
     }
 
     /// Returns the network signals, if a transport attached any.
-    pub(crate) fn network(&self) -> Option<SharedSignals> {
+    pub(crate) fn network(&self) -> Option<NetworkSignals> {
         self.shared.network.lock().expect("poisoned").clone()
     }
 
@@ -322,11 +322,7 @@ async fn read_catalog(
     loop {
         match reader.next().await {
             Ok(Some(next)) => {
-                if tracing::enabled!(tracing::Level::TRACE)
-                    && let Ok(json) = serde_json::to_string(&next)
-                {
-                    trace!(catalog = %json, "catalog");
-                }
+                trace!(catalog = ?next, "catalog");
                 catalog.set(Some(Catalog::from(next))).ok();
             }
             Ok(None) => {

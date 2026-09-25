@@ -4,11 +4,11 @@
 
 use std::ffi::c_void;
 
-use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 use khronos_egl as egl_api;
+use n0_error::{Result, StdResultExt, anyerr, bail_any};
 
-use crate::egl;
+use crate::egl::{self, Egl, Extensions};
 
 /// `GL_TEXTURE_EXTERNAL_OES`, which glow does not define.
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
@@ -83,7 +83,8 @@ void main() {
 pub struct AndroidRenderer {
     gl: glow::Context,
     #[debug(skip)]
-    egl: egl_api::DynamicInstance<egl_api::EGL1_4>,
+    egl: Egl,
+    extensions: Extensions,
     egl_display: egl_api::Display,
     egl_context: egl_api::Context,
     egl_surface: egl_api::Surface,
@@ -114,15 +115,11 @@ impl AndroidRenderer {
     ///
     /// `native_window` must be a valid `ANativeWindow*`.
     pub unsafe fn new(native_window: *mut c_void) -> Result<Self> {
-        let egl = unsafe {
-            egl_api::DynamicInstance::<egl_api::EGL1_4>::load_required()
-                .map_err(|e| anyhow::anyhow!("load EGL: {e}"))?
-        };
+        let egl = unsafe { Egl::load_required().std_context("load EGL")? };
 
-        let egl_display =
-            unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }.context("eglGetDisplay failed")?;
-        egl.initialize(egl_display)
-            .map_err(|e| anyhow::anyhow!("eglInitialize: {e}"))?;
+        let egl_display = unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }
+            .std_context("eglGetDisplay failed")?;
+        egl.initialize(egl_display).std_context("eglInitialize")?;
 
         let config = egl
             .choose_first_config(
@@ -143,11 +140,11 @@ impl AndroidRenderer {
                     egl_api::NONE,
                 ],
             )
-            .map_err(|e| anyhow::anyhow!("eglChooseConfig: {e}"))?
-            .context("no matching EGL config")?;
+            .std_context("eglChooseConfig")?
+            .std_context("no matching EGL config")?;
 
         egl.bind_api(egl_api::OPENGL_ES_API)
-            .map_err(|e| anyhow::anyhow!("eglBindAPI: {e}"))?;
+            .std_context("eglBindAPI")?;
 
         let egl_context = egl
             .create_context(
@@ -156,7 +153,7 @@ impl AndroidRenderer {
                 None,
                 &[egl_api::CONTEXT_CLIENT_VERSION, 2, egl_api::NONE],
             )
-            .map_err(|e| anyhow::anyhow!("eglCreateContext: {e}"))?;
+            .std_context("eglCreateContext")?;
 
         let egl_surface = unsafe {
             egl.create_window_surface(
@@ -166,7 +163,7 @@ impl AndroidRenderer {
                 None,
             )
         }
-        .map_err(|e| anyhow::anyhow!("eglCreateWindowSurface: {e}"))?;
+        .std_context("eglCreateWindowSurface")?;
 
         egl.make_current(
             egl_display,
@@ -174,9 +171,10 @@ impl AndroidRenderer {
             Some(egl_surface),
             Some(egl_context),
         )
-        .map_err(|e| anyhow::anyhow!("eglMakeCurrent: {e}"))?;
+        .std_context("eglMakeCurrent")?;
 
-        let gl = unsafe { egl::create_glow_context() };
+        let gl = unsafe { egl::create_glow_context(&egl) };
+        let extensions = Extensions::load(&egl);
 
         // Both programs share the vertex shader.
         let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
@@ -185,7 +183,7 @@ impl AndroidRenderer {
         let oes_program = link_program(&gl, vs, oes_fs)?;
         unsafe { gl.delete_shader(oes_fs) };
         let oes_a_pos_loc = unsafe { gl.get_attrib_location(oes_program, "a_pos") }
-            .context("a_pos not found in OES program")?;
+            .std_context("a_pos not found in OES program")?;
         let oes_rotation_loc = unsafe { gl.get_uniform_location(oes_program, "u_rotation") };
 
         let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, NV12_FRAG_SRC)?;
@@ -195,7 +193,7 @@ impl AndroidRenderer {
             gl.delete_shader(vs);
         }
         let nv12_a_pos_loc = unsafe { gl.get_attrib_location(nv12_program, "a_pos") }
-            .context("a_pos not found in NV12 program")?;
+            .std_context("a_pos not found in NV12 program")?;
         let nv12_rotation_loc = unsafe { gl.get_uniform_location(nv12_program, "u_rotation") };
         // The Y plane goes on texture unit 0 and the UV plane on unit 1.
         unsafe { gl.use_program(Some(nv12_program)) };
@@ -218,13 +216,18 @@ impl AndroidRenderer {
                 vertices.len() * std::mem::size_of::<f32>(),
             )
         };
-        let vbo = unsafe { gl.create_buffer() }.map_err(|e| anyhow::anyhow!(e))?;
+        let vbo = unsafe { gl.create_buffer() }.map_err(|e| anyerr!(e))?;
         unsafe {
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW);
         }
 
-        unsafe { gl.clear_color(0.0, 0.0, 0.0, 1.0) };
+        unsafe {
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            // The NV12 planes are packed rows. GL's default alignment of 4
+            // would read past a row whose length is not a multiple of 4.
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        }
 
         tracing::info!(
             renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
@@ -234,6 +237,7 @@ impl AndroidRenderer {
         Ok(Self {
             gl,
             egl,
+            extensions,
             egl_display,
             egl_context,
             egl_surface,
@@ -269,16 +273,17 @@ impl AndroidRenderer {
         video_h: u32,
         rotation_degrees: u32,
     ) {
-        let Some(client_buffer) =
-            (unsafe { egl::get_native_client_buffer(buffer_ptr as *const c_void) })
-        else {
+        let Some(client_buffer) = (unsafe {
+            self.extensions
+                .get_native_client_buffer(buffer_ptr as *const c_void)
+        }) else {
             tracing::warn!("eglGetNativeClientBufferANDROID failed");
             return;
         };
 
         let attrs = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let Some(egl_image) = (unsafe {
-            egl::create_image(
+            self.extensions.create_image(
                 self.egl_display.as_ptr(),
                 EGL_NATIVE_BUFFER_ANDROID,
                 client_buffer,
@@ -289,11 +294,20 @@ impl AndroidRenderer {
             return;
         };
 
-        unsafe {
+        let bound = unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
                 .bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(self.oes_texture));
-            egl::image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
+            self.extensions
+                .image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image)
+        };
+        if !bound {
+            tracing::warn!("glEGLImageTargetTexture2DOES is not available");
+            unsafe {
+                self.extensions
+                    .destroy_image(self.egl_display.as_ptr(), egl_image)
+            };
+            return;
         }
 
         unsafe {
@@ -305,15 +319,17 @@ impl AndroidRenderer {
                 (video_w, video_h),
                 rotation_degrees,
             );
-            egl::destroy_image(self.egl_display.as_ptr(), egl_image);
+            self.extensions
+                .destroy_image(self.egl_display.as_ptr(), egl_image);
         }
     }
 
     /// Draws an NV12 frame from CPU memory, letterboxed and rotated.
     ///
     /// The planes are uploaded as textures and converted to RGB in the shader,
-    /// with no CPU color conversion. Strides are in bytes. Call
-    /// [`Self::swap_buffers`] afterwards.
+    /// with no CPU color conversion. Strides are in bytes. A plane shorter than
+    /// the picture is skipped with a warning. Call [`Self::swap_buffers`]
+    /// afterwards.
     ///
     /// # Safety
     ///
@@ -335,7 +351,7 @@ impl AndroidRenderer {
         rotation_degrees: u32,
     ) {
         let uv_h = height.div_ceil(2);
-        let uv_w = width / 2;
+        let uv_w = width.div_ceil(2);
 
         // GLES2 has no GL_UNPACK_ROW_LENGTH. Row padding must be stripped
         // before upload, or it shows up as a green stripe.
@@ -360,6 +376,19 @@ impl AndroidRenderer {
             );
             &uv_stripped
         };
+
+        if y_upload.len() < (width * height) as usize
+            || uv_upload.len() < (uv_row_bytes * uv_h) as usize
+        {
+            tracing::warn!(
+                width,
+                height,
+                y_len = y_upload.len(),
+                uv_len = uv_upload.len(),
+                "NV12 planes are shorter than the picture, skipping the frame"
+            );
+            return;
+        }
 
         unsafe {
             self.gl.active_texture(glow::TEXTURE0);
@@ -485,7 +514,7 @@ impl AndroidRenderer {
 
 /// Creates a texture with linear filtering and edge clamping.
 fn create_tex(gl: &glow::Context, target: u32) -> Result<glow::Texture> {
-    let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
+    let texture = unsafe { gl.create_texture() }.map_err(|e| anyerr!(e))?;
     unsafe {
         gl.bind_texture(target, Some(texture));
         gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
@@ -534,19 +563,19 @@ fn strip_stride(data: &[u8], row_bytes: usize, stride: usize, rows: usize) -> Ve
 }
 
 fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
-    let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyhow::anyhow!(e))?;
+    let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyerr!(e))?;
     unsafe { gl.shader_source(shader, source) };
     unsafe { gl.compile_shader(shader) };
     if !unsafe { gl.get_shader_compile_status(shader) } {
         let log = unsafe { gl.get_shader_info_log(shader) };
         unsafe { gl.delete_shader(shader) };
-        bail!("shader compile: {log}");
+        bail_any!("shader compile: {log}");
     }
     Ok(shader)
 }
 
 fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Result<glow::Program> {
-    let program = unsafe { gl.create_program() }.map_err(|e| anyhow::anyhow!(e))?;
+    let program = unsafe { gl.create_program() }.map_err(|e| anyerr!(e))?;
     unsafe {
         gl.attach_shader(program, vs);
         gl.attach_shader(program, fs);
@@ -555,7 +584,7 @@ fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Resul
     if !unsafe { gl.get_program_link_status(program) } {
         let log = unsafe { gl.get_program_info_log(program) };
         unsafe { gl.delete_program(program) };
-        bail!("shader link: {log}");
+        bail_any!("shader link: {log}");
     }
     Ok(program)
 }

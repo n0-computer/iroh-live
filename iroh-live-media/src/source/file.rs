@@ -14,7 +14,10 @@ use std::{
 
 use n0_error::AnyError;
 use symphonia::core::{
-    codecs::{CodecParameters, audio::AudioDecoderOptions},
+    codecs::{
+        CodecParameters,
+        audio::{AudioDecoder, AudioDecoderOptions},
+    },
     formats::{FormatOptions, FormatReader, Track, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
@@ -28,9 +31,8 @@ use crate::error::Error;
 /// Opens `path` and decodes it into `fanout` on its own thread.
 ///
 /// Decoding runs until the file ends or `stop` is cancelled. Returns the
-/// file's own sample rate and layout. Fails if the file cannot be read or
-/// holds no audio track. A codec that does not decode stops the thread with a
-/// warning.
+/// file's own sample rate and layout. Fails if the file cannot be read, holds
+/// no audio track, or uses a codec this build cannot decode.
 pub(crate) fn spawn(
     path: PathBuf,
     looping: bool,
@@ -127,8 +129,19 @@ fn audio_params(track: &Track) -> Option<&symphonia::core::codecs::audio::AudioC
     }
 }
 
+/// Creates a decoder for `track`.
+fn decoder(path: &Path, track: &Track) -> Result<Box<dyn AudioDecoder>, Error> {
+    let params =
+        audio_params(track).ok_or_else(|| file_error(path, "the file holds no audio track"))?;
+    symphonia::default::get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|source| file_error(path, source))
+}
+
+/// Reads the rate and layout of `path` and checks that its codec decodes.
 fn probe(path: &Path) -> Result<Probe, Error> {
     let (_, track) = open_track(path)?;
+    decoder(path, &track)?;
     Ok(Probe::of(&track))
 }
 
@@ -181,11 +194,7 @@ fn decode_once(
     } = Probe::of(&track);
     let channels = layout.channels();
 
-    let params =
-        audio_params(&track).ok_or_else(|| file_error(path, "the file holds no audio track"))?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(params, &AudioDecoderOptions::default())
-        .map_err(decode_err)?;
+    let mut decoder = decoder(path, &track)?;
     let mut interleaved: Vec<f32> = Vec::new();
     let mut sent = 0;
 
@@ -337,6 +346,36 @@ mod tests {
                 "frame {index} decoded as {pair:?}, expected [{expected}, -{expected}]",
             );
         }
+    }
+
+    /// A file whose codec this build cannot decode fails the probe.
+    #[test]
+    fn a_file_in_an_undecodable_codec_fails_the_probe() {
+        // An IMA ADPCM header: the WAV reader parses it, but the `adpcm`
+        // codec feature is off.
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(40u32 + 256).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&20u32.to_le_bytes());
+        wav.extend_from_slice(&0x11u16.to_le_bytes()); // IMA ADPCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&48_000u32.to_le_bytes());
+        wav.extend_from_slice(&24_000u32.to_le_bytes()); // bytes per second
+        wav.extend_from_slice(&256u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&4u16.to_le_bytes()); // bits per sample
+        wav.extend_from_slice(&2u16.to_le_bytes()); // extra size
+        wav.extend_from_slice(&505u16.to_le_bytes()); // samples per block
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&256u32.to_le_bytes());
+        wav.extend_from_slice(&[0; 256]);
+        let path = temp_file("adpcm", &wav);
+
+        let (_, track) = open_track(&path).expect("the container parses");
+        let probed = probe(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(audio_params(&track).is_some());
+        assert!(probed.is_err(), "the probe accepted an undecodable codec");
     }
 
     /// A looping file that decodes to nothing stops instead of retrying.

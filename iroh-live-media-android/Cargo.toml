@@ -2,28 +2,20 @@
 name = "iroh-live-media-android"
 version = "0.1.0"
 edition = "2024"
-description = "Android integration for iroh-live-media: camera sources, EGL HardwareBuffer rendering"
+description = "Android integration for iroh-live-media: EGL HardwareBuffer rendering and JNI handles"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-iroh-live-media = { workspace = true }
-moq-net = { workspace = true }
-moq-video = { workspace = true }
-n0-error = { version = "1", features = ["anyhow"] }
-n0-future = "0.3.2"
-n0-watcher = "1"
 tracing = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
-# `renderer` reports EGL and GL setup failures as plain messages.
-anyhow = "1"
 derive_more = { version = "2.1.1", features = ["debug"] }
 glow = "0.18"
 khronos-egl = { version = "6", features = ["dynamic"] }
-libc = "0.2"
+n0-error = "1"
 
 [lints]
 workspace = true

@@ -145,14 +145,18 @@ impl Recording {
     ///
     /// Fails on an export or write error. Once a failure has been returned,
     /// later calls return [`Error::Closed`].
+    ///
+    /// # Panics
+    ///
+    /// Passes on a panic of the recording task.
     pub async fn wait(&mut self) -> Result<u64, Error> {
         if let Some(finished) = self.finished {
             return finished.map_err(|()| n0_error::e!(Error::Closed));
         }
+        // The task is only aborted on drop, so a join error is a panic.
         let result = (&mut self.task)
             .await
-            .map_err(|err| Error::device_msg(format!("the recording task failed: {err}")))
-            .and_then(|result| result);
+            .unwrap_or_else(|err| std::panic::resume_unwind(err.into_panic()));
         self.finished = Some(result.as_ref().map(|written| *written).map_err(|_| ()));
         result
     }

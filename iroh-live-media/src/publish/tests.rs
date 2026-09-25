@@ -24,19 +24,23 @@ async fn audio_becomes(broadcast: &LocalBroadcast, state: SlotState) {
 /// A replacement waits for its predecessor's track names.
 ///
 /// The test holds the audio track lock itself. The new publish stays at
-/// `Starting` until the test releases it.
+/// `Starting` until the test releases it. A second broadcast without the lock
+/// shows that the first had time to start.
 #[tokio::test]
 async fn a_replacement_waits_for_the_track_names() {
     let broadcast = LocalBroadcast::new();
+    let control = LocalBroadcast::new();
     let held = broadcast.shared.audio_tracks.clone().lock_owned().await;
-    broadcast
-        .set_audio(
-            AudioSource::tone(440.0, audio::Layout::Mono),
-            AudioEncoding::voice(),
-        )
-        .expect("a valid encoding");
+    for target in [&broadcast, &control] {
+        target
+            .set_audio(
+                AudioSource::tone(440.0, audio::Layout::Mono),
+                AudioEncoding::voice(),
+            )
+            .expect("a valid encoding");
+    }
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    audio_becomes(&control, SlotState::Running).await;
     assert_eq!(
         broadcast.status().get().audio,
         SlotState::Starting,
@@ -151,4 +155,28 @@ async fn closing_finishes_the_broadcast() {
         ),
         Err(Error::Closed { .. })
     ));
+}
+
+/// A pushed audio source ends its slot once every sender is dropped.
+#[tokio::test]
+async fn a_pushed_audio_source_ends_when_its_senders_go() {
+    let format = crate::AudioFormat {
+        sample_rate: 48_000,
+        layout: audio::Layout::Mono,
+    };
+    let (sender, source) = AudioSource::push(format);
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_audio(source, AudioEncoding::voice())
+        .expect("valid");
+    audio_becomes(&broadcast, SlotState::Running).await;
+    let silence = bytes::Bytes::from(vec![0u8; 960 * 4]);
+    sender
+        .push(audio::Frame::new(
+            silence,
+            moq_net::Timestamp::from_micros(0).expect("0"),
+        ))
+        .expect("the source is open");
+    drop(sender);
+    audio_becomes(&broadcast, SlotState::Ended).await;
 }

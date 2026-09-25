@@ -261,10 +261,10 @@ async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
     let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("4k"))
         .await
         .expect("the wait ends");
-    assert!(
-        matches!(result, Err(SwitchError::UnknownRendition { .. })),
-        "{result:?}"
-    );
+    let Err(SwitchError::UnknownRendition { offered, .. }) = result else {
+        panic!("{result:?}");
+    };
+    assert_eq!(offered, ["high", "low"]);
 }
 
 /// A pin to a missing rendition falls back to automatic selection.
@@ -520,7 +520,7 @@ async fn audio_plays_through_a_null_output() {
         .expect("a valid encoding");
     let player = RemoteBroadcast::local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioOutput::null().clone()),
+            audio: Some(AudioOutput::null()),
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -537,6 +537,26 @@ async fn audio_plays_through_a_null_output() {
     assert_eq!(player.status().get().audio, SlotState::Running);
 }
 
+/// A broadcast with only audio ends the player's video.
+#[tokio::test]
+async fn an_audio_only_broadcast_ends_the_video() {
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_audio(
+            AudioSource::tone(440.0, audio::Layout::Mono),
+            AudioEncoding::voice(),
+        )
+        .expect("a valid encoding");
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(PlayerConfig {
+            audio: Some(AudioOutput::null()),
+            ..PlayerConfig::default()
+        })
+        .expect("valid");
+    let status = until(player.status(), |status| status.video == SlotState::Ended).await;
+    assert_eq!(status.audio, SlotState::Running);
+}
+
 /// Audio comes back after the publisher replaces it.
 #[tokio::test]
 async fn audio_comes_back_after_the_publisher_replaces_it() {
@@ -547,7 +567,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
         .expect("a valid encoding");
     let player = RemoteBroadcast::local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioOutput::null().clone()),
+            audio: Some(AudioOutput::null()),
             ..PlayerConfig::default()
         })
         .expect("valid");

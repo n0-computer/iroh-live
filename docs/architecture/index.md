@@ -13,7 +13,7 @@ This repository holds the layer that joins them.
 | `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, and the re-exports |
 | `iroh-live-media` | Sources, broadcasts and players over moq-video and moq-audio |
 | `iroh-live-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
-| `iroh-live-media-android` | The camera push bridge and the EGL renderer for Android |
+| `iroh-live-media-android` | The EGL renderer and JNI handle helpers for Android |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 

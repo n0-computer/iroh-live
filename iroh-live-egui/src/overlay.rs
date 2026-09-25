@@ -6,8 +6,7 @@
 //! current values, so the overlay keeps its own short history for the
 //! sparklines.
 //!
-//! [`overlay_bar`] and [`fit_to_aspect`] help callers that draw their own
-//! overlays.
+//! [`fit_to_aspect`] sizes a video to the space it has.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -21,22 +20,8 @@ use iroh_live_media::{
     PublishStatus, RenditionMode, RenditionState, SlotState,
 };
 
-/// Height of one overlay bar, text and padding included.
-pub const OVERLAY_BAR_H: f32 = 15.0;
-
-/// Paints a translucent bar with monospace text over `rect`.
-///
-/// Does not allocate layout space. Use [`OVERLAY_BAR_H`] as the bar height.
-pub fn overlay_bar(painter: &egui::Painter, rect: egui::Rect, text: &str) {
-    let font = egui::FontId::monospace(11.0);
-    let galley = painter.layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
-    painter.galley(
-        rect.min + egui::vec2(4.0, 1.0),
-        galley,
-        egui::Color32::WHITE,
-    );
-}
+/// Height of the overlay bar, text and padding included.
+const BAR_HEIGHT: f32 = 15.0;
 
 /// Computes the largest size that fits `available` while preserving `aspect` (width / height).
 pub fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
@@ -107,7 +92,6 @@ impl StatCategory {
 pub struct DebugOverlay {
     /// Enabled categories in bar order, each with whether its panel is open.
     categories: Vec<(StatCategory, bool)>,
-    visible: bool,
     history: History,
     /// Transport details such as path kind and address. The first line joins
     /// the NET summary.
@@ -129,7 +113,6 @@ impl DebugOverlay {
     pub fn new(categories: &[StatCategory]) -> Self {
         Self {
             categories: categories.iter().map(|&cat| (cat, false)).collect(),
-            visible: true,
             history: History::default(),
             link: Vec::new(),
             timeline_scroll: 0.0,
@@ -139,11 +122,6 @@ impl DebugOverlay {
                 OVERLAY_SALT.fetch_add(1, Ordering::Relaxed),
             )),
         }
-    }
-
-    /// Toggles overall visibility.
-    pub fn toggle(&mut self) {
-        self.visible = !self.visible;
     }
 
     /// Sets the link details shown in a player's NET section.
@@ -173,9 +151,6 @@ impl DebugOverlay {
         status: &PlayerStatus,
         timeline: &[FrameTiming],
     ) {
-        if !self.visible {
-            return;
-        }
         let sections: Vec<Section> = self
             .categories
             .iter()
@@ -195,7 +170,7 @@ impl DebugOverlay {
     /// Use it to decide whether to fetch the player's timeline for
     /// [`show_playback`](Self::show_playback).
     pub fn timeline_open(&self) -> bool {
-        self.visible && self.is_expanded(StatCategory::Time)
+        self.is_expanded(StatCategory::Time)
     }
 
     /// Draws the overlay for a local broadcast at the bottom of `video_rect`.
@@ -210,9 +185,6 @@ impl DebugOverlay {
         stats: &PublishStats,
         status: &PublishStatus,
     ) {
-        if !self.visible {
-            return;
-        }
         let sections: Vec<Section> = self
             .categories
             .iter()
@@ -244,12 +216,12 @@ impl DebugOverlay {
 
         // Open panels stack upward from the bar. Walking the sections in
         // reverse puts the first category's panel on top.
-        let mut y_cursor = video_rect.max.y - OVERLAY_BAR_H;
+        let mut y_cursor = video_rect.max.y - BAR_HEIGHT;
         for section in sections.iter().rev() {
             if section.lines.is_empty() || !self.is_expanded(section.category) {
                 continue;
             }
-            let height = OVERLAY_BAR_H * (section.lines.len() as f32 + 0.5);
+            let height = BAR_HEIGHT * (section.lines.len() as f32 + 0.5);
             y_cursor -= height;
             let rect = egui::Rect::from_min_size(
                 egui::pos2(video_rect.min.x, y_cursor),
@@ -267,8 +239,8 @@ impl DebugOverlay {
         }
 
         let bar_rect = egui::Rect::from_min_size(
-            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
-            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+            egui::pos2(video_rect.min.x, video_rect.max.y - BAR_HEIGHT),
+            egui::vec2(video_rect.width(), BAR_HEIGHT),
         );
         let painter = ui.painter();
         painter.rect_filled(bar_rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
@@ -281,7 +253,7 @@ impl DebugOverlay {
             let section_width = galley.size().x + 8.0;
             let section_rect = egui::Rect::from_min_size(
                 egui::pos2(x - 4.0, bar_rect.min.y),
-                egui::vec2(section_width, OVERLAY_BAR_H),
+                egui::vec2(section_width, BAR_HEIGHT),
             );
 
             let id = self.salt.with(("dbg_section", section.category.label()));
@@ -350,11 +322,11 @@ impl DebugOverlay {
             if let Some(values) = history {
                 let spark_rect = egui::Rect::from_min_size(
                     egui::pos2(rect.max.x - SPARK_W - 6.0, y + 2.0),
-                    egui::vec2(SPARK_W, OVERLAY_BAR_H - 4.0),
+                    egui::vec2(SPARK_W, BAR_HEIGHT - 4.0),
                 );
                 paint_sparkline(painter, spark_rect, values, line.color);
             }
-            y += OVERLAY_BAR_H;
+            y += BAR_HEIGHT;
         }
     }
 }
@@ -591,7 +563,7 @@ fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
         lines.push(Line::info(format!("min rtt: {:.1} ms", millis(min_rtt))));
     }
     if let Some(loss) = net.loss {
-        let pct = f64::from(loss) * 100.0;
+        let pct = loss * 100.0;
         parts.push(format!("loss:{pct:.1}%"));
         let color = lower_is_better(pct, 2.0, 10.0);
         lines.push(Line::metric(

@@ -105,7 +105,7 @@ downstream, copy the `[patch.crates-io]` block from [Cargo.toml](Cargo.toml).
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | [`iroh-live-egui`](iroh-live-egui) | egui video views and the debug overlay |
-| [`iroh-live-media-android`](iroh-live-media-android) | The Android camera bridge and the EGL renderer |
+| [`iroh-live-media-android`](iroh-live-media-android) | The Android EGL renderer and JNI handle helpers |
 | [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
 | [`iroh-live-relay`](iroh-live-relay) | Relay server that serves iroh-live broadcasts to browsers |
 

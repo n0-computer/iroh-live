@@ -12,9 +12,6 @@ for one by name.
 
 `iroh-live-media-android` has the parts that are specific to the app side:
 
-- `camera::camera(size, rate)` returns a `CameraSink` and a `VideoSource`.
-  Kotlin pushes RGBA or NV12 frames into the sink, and a broadcast encodes the
-  source. A new frame replaces one the encoder has not taken yet.
 - `renderer::AndroidRenderer` owns the EGL display, context, and surface.
   `render_hardware_buffer` draws an `AHardwareBuffer` through
   `GL_TEXTURE_EXTERNAL_OES`, which is the zero-copy path out of MediaCodec.

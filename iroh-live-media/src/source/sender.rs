@@ -69,6 +69,9 @@ impl Sink<video::Frame> for FrameSlot {
 /// Every attached broadcast reads it through its own receiver.
 pub(crate) type PcmFanout = tokio::sync::broadcast::Sender<audio::Frame>;
 
+/// A [`PcmFanout`] that does not keep the source alive.
+pub(crate) type WeakPcmFanout = tokio::sync::broadcast::WeakSender<audio::Frame>;
+
 impl Sink<audio::Frame> for PcmFanout {
     fn deliver(&self, frame: audio::Frame) {
         // An error only means no broadcast is attached, and the frame is

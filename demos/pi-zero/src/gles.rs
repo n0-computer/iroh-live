@@ -167,6 +167,10 @@ impl GlesRenderer {
         unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo)) };
         unsafe { gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW) };
 
+        // The I420 planes are packed rows. GL's default alignment of 4 would
+        // read past a row whose length is not a multiple of 4.
+        unsafe { gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1) };
+
         let rgba_texture = create_texture(&gl)?;
         let y_texture = create_texture(&gl)?;
         let u_texture = create_texture(&gl)?;

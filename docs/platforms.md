@@ -54,7 +54,7 @@ encodes and decodes, and the renderer imports decoded pictures through
 ## Android
 
 MediaCodec encode and decode are in moq-video. The app pushes Camera2 frames
-through `iroh_live_media_android::camera`, and
+through `VideoSource::push`, and
 `iroh_live_media_android::renderer` draws decoded `AHardwareBuffer` frames as
 an EGL external texture without a copy. See [Android](guide/android.md).
 

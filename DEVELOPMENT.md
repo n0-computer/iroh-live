@@ -80,7 +80,7 @@ In `iroh_live_media`:
   `status()` and `stats()` report per rendition.
 - `RemoteBroadcast` reads the catalog of a subscribed broadcast. `from_origin`
   and `from_resolved` build one that follows a path in a route table, and
-  `with_network` attaches the `NetworkSignals` that adaptation reads.
+  `with_network` attaches the network signals that adaptation reads.
   `closed()` resolves about three seconds after the publisher ends the
   broadcast, once the route table has no route left.
 - `RemoteBroadcast::play(PlayerConfig)` returns a `Player`. Each player has its

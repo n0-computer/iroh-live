@@ -53,8 +53,8 @@ so a test that waits for bytes would pass on a stalled pipeline.
 `AudioSource::tone` is a steady sine.
 
 `iroh-live-egui` draws the texture `moq_video::render` returns in an egui panel,
-and has the debug overlay. `iroh-live-media-android` has the camera push bridge
-and an EGL renderer for Android. `demos/pi-zero/src/gles.rs` is a GLES2
+and has the debug overlay. `iroh-live-media-android` has an EGL renderer for
+Android. `demos/pi-zero/src/gles.rs` is a GLES2
 renderer for the Pi Zero, which has no Vulkan.
 
 ## Feature flags

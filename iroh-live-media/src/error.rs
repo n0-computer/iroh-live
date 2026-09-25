@@ -125,10 +125,24 @@ impl Error {
         })
     }
 
+    /// Creates an [`Error::Encoder`] from a message.
+    pub(crate) fn encoder_msg(message: impl std::fmt::Display) -> Self {
+        n0_error::e!(Self::Encoder {
+            source: AnyError::from_display(message)
+        })
+    }
+
     /// Creates an [`Error::Decoder`] from an upstream error.
     pub(crate) fn decoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Decoder {
             source: AnyError::from_std(source)
+        })
+    }
+
+    /// Creates an [`Error::Decoder`] from a message.
+    pub(crate) fn decoder_msg(message: impl std::fmt::Display) -> Self {
+        n0_error::e!(Self::Decoder {
+            source: AnyError::from_display(message)
         })
     }
 
@@ -180,10 +194,12 @@ pub enum SwitchError {
         source: Arc<Error>,
     },
     /// The broadcast's catalog has no video rendition of that name.
-    #[error("the broadcast has no video rendition named {rendition}")]
+    #[error("no video rendition named {rendition}, the broadcast has [{}]", offered.join(", "))]
     UnknownRendition {
         /// The name that was asked for.
         rendition: String,
+        /// The names the catalog has, largest first.
+        offered: Vec<String>,
     },
     /// The player's video ended or was turned off.
     #[error("the video ended")]

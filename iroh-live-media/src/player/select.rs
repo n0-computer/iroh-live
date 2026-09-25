@@ -19,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace};
 
 use super::{
-    Controls, Latency, PlaybackRecorder, RenditionMode, StatusCell,
-    bound::{Adaptation, Bound, Constraints, Reading, Rung},
+    Controls, Latency, RenditionMode, StatusCell,
+    bound::{Adaptation, Bound, Constraints, Rung},
     switch::Target,
 };
 use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
@@ -106,7 +106,6 @@ pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
     pub controls: Arc<Controls>,
     pub status: StatusCell,
-    pub stats: PlaybackRecorder,
     /// What happened to the decoders, reported by the supervisor.
     pub reports: mpsc::Receiver<Report>,
     /// The target on screen, as the supervisor reports it.
@@ -170,7 +169,6 @@ pub(crate) async fn run(inputs: Inputs) {
         broadcast,
         controls,
         status,
-        stats,
         mut reports,
         mut playing,
         desired,
@@ -320,8 +318,7 @@ pub(crate) async fn run(inputs: Inputs) {
             max_age: latency.max,
         };
 
-        let sample = network.as_ref().map(|network| network.0.sample());
-        stats.network.update(|last| *last = sample);
+        let sample = network.as_ref().map(|network| network());
         let on_screen = status.get().rendition;
         let nothing_playing = on_screen.is_none();
         // The bound weighs its target against what this selector last asked
@@ -375,14 +372,18 @@ pub(crate) async fn run(inputs: Inputs) {
                 step_down,
             })
         });
-        let vanished =
-            next.is_none() && !matches!(mode, RenditionMode::Off) && desired.borrow().is_some();
+        // A catalog that never had video counts too, so an audio-only
+        // broadcast ends its video instead of starting forever.
+        let vanished = next.is_none()
+            && !matches!(mode, RenditionMode::Off)
+            && status.get().video != SlotState::Ended;
         if vanished {
             let since = *vanished_since.get_or_insert(now);
             if now.duration_since(since) < VANISH_GRACE {
                 continue;
             }
             debug!("the catalog has had no video for a while; the video is over");
+            status.update(|status| status.video = SlotState::Ended);
         }
         vanished_since = None;
         // Ask again for a target given up on once its backoff is over. A
@@ -450,10 +451,10 @@ fn choose(
             if excluded.contains(name) {
                 (
                     None,
-                    Some(Arc::new(Error::decoder(std::io::Error::other(format!(
+                    Some(Arc::new(Error::decoder_msg(format!(
                         "the decoder for {name} failed; playing another rendition until it \
                          is retried"
-                    ))))),
+                    )))),
                 )
             } else if let Err(err) = catalog.video_rendition(name) {
                 (None, Some(Arc::new(err)))
@@ -468,18 +469,7 @@ fn choose(
         excluded: excluded.clone(),
     };
     let choice = match sample {
-        Some(sample) => bound.decide(
-            &rungs,
-            current,
-            on_screen,
-            &constraints,
-            &Reading {
-                loss: sample.loss.map(f64::from),
-                delivery: sample.delivery.map(crate::Bitrate::as_bps),
-                path_generation: sample.path_generation,
-            },
-            now,
-        ),
+        Some(sample) => bound.decide(&rungs, current, on_screen, &constraints, sample, now),
         // Nothing to adapt to: the best rendition allowed plays.
         None => best(&rungs, &constraints),
     };
@@ -616,7 +606,6 @@ mod tests {
                 volume: watch::Sender::new(1.0),
             }),
             status: StatusCell::new(super::super::PlayerStatus::default()),
-            stats: PlaybackRecorder::default(),
             reports,
             playing,
             desired,

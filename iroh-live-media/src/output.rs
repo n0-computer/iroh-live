@@ -7,7 +7,9 @@
 
 use std::{sync::Arc, time::Duration};
 
-use crate::{audio, error::Error};
+#[cfg(feature = "playback")]
+use crate::audio;
+use crate::{AudioFormat, error::Error};
 
 /// An opened audio output: one device and one mixer, or nothing at all.
 ///
@@ -113,20 +115,20 @@ impl AudioOutput {
         matches!(*self.inner, Inner::Null)
     }
 
-    /// Adds a stream to the mix, taking PCM in the layout `input` describes.
-    pub(crate) fn sink(&self, input: SinkInput) -> Result<OutputSink, Error> {
+    /// Adds a stream to the mix, taking PCM in `format`.
+    pub(crate) fn sink(&self, format: AudioFormat) -> Result<OutputSink, Error> {
         match &*self.inner {
             #[cfg(feature = "playback")]
             Inner::Device(engine) => {
                 let mut device_input = audio::playback::Input::default();
                 device_input.format = audio::Format::F32;
-                device_input.sample_rate = input.sample_rate;
-                device_input.layout = input.layout;
+                device_input.sample_rate = format.sample_rate;
+                device_input.layout = format.layout;
                 let sink = engine.sink(device_input).map_err(Error::device)?;
                 Ok(OutputSink::Device(Box::new(sink)))
             }
             Inner::Null => {
-                let _ = input;
+                let _ = format;
                 Ok(OutputSink::Null)
             }
         }
@@ -165,19 +167,6 @@ impl AudioOutput {
     pub(crate) fn cancellers_requested(&self) -> u64 {
         self.cancellers.load(std::sync::atomic::Ordering::Relaxed)
     }
-}
-
-/// The PCM a player writes into an output.
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(
-    not(feature = "playback"),
-    expect(dead_code, reason = "only a device output reads the format")
-)]
-pub(crate) struct SinkInput {
-    /// Samples per second per channel.
-    pub sample_rate: u32,
-    /// The channels and their order.
-    pub layout: audio::Layout,
 }
 
 /// One player's stream into an output.
@@ -253,13 +242,14 @@ impl OutputControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio;
 
     #[test]
     fn a_null_output_takes_anything() {
         let output = AudioOutput::null();
         assert!(output.is_null());
         let mut sink = output
-            .sink(SinkInput {
+            .sink(AudioFormat {
                 sample_rate: 48_000,
                 layout: audio::Layout::Stereo,
             })

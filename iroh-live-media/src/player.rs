@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::{
-    AudioOutput, NetworkSample, RemoteBroadcast, SlotState,
+    AudioOutput, RemoteBroadcast, SlotState,
     error::{Error, SwitchError},
     frames::{FrameSlot, VideoFrames},
     stats::{Cell, FrameTiming, PlaybackStats, Timeline},
@@ -102,14 +102,6 @@ pub struct Latency {
 }
 
 impl Latency {
-    /// Returns a fixed latency: held for `latency`, skipped past it.
-    pub const fn fixed(latency: Duration) -> Self {
-        Self {
-            min: latency,
-            max: latency,
-        }
-    }
-
     /// No buffer and no pacing: a frame presents as soon as it decodes.
     ///
     /// Media older than 150 ms is still skipped: a player without a buffer
@@ -146,7 +138,7 @@ impl Default for Latency {
 }
 
 /// How a player plays.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
@@ -158,6 +150,27 @@ pub struct PlayerConfig {
     pub decoder: video::decode::Kind,
     /// How automatic selection follows the link.
     pub adaptation: Adaptation,
+    /// How long a replacement decoder has to take over before the switch is given up.
+    ///
+    /// It bounds every handover: automatic, pinned, or to another decoder. The
+    /// replacement subscribes to the other rendition, waits for its next
+    /// keyframe, and decodes until it catches up with the picture on screen.
+    /// On a two second GOP over an impaired link, the keyframe alone takes
+    /// seconds. The incumbent keeps playing either way. 15 s by default.
+    pub switch_deadline: Duration,
+}
+
+impl Default for PlayerConfig {
+    fn default() -> Self {
+        Self {
+            rendition: RenditionMode::default(),
+            latency: Latency::default(),
+            audio: None,
+            decoder: video::decode::Kind::default(),
+            adaptation: Adaptation::default(),
+            switch_deadline: Duration::from_secs(15),
+        }
+    }
 }
 
 /// The state of a player.
@@ -262,7 +275,6 @@ pub(crate) enum Abandon {
 pub(crate) struct PlaybackRecorder {
     pub(crate) video: Cell<Option<crate::stats::VideoPlaybackStats>>,
     pub(crate) audio: Cell<Option<crate::stats::AudioPlaybackStats>>,
-    pub(crate) network: Cell<Option<NetworkSample>>,
     /// Written by the video task as it presents pictures.
     pub(crate) video_timeline: Timeline,
     /// Written by the audio task as it writes to the output.
@@ -336,8 +348,8 @@ impl Player {
         // backed off.
         let (reports_tx, reports_rx) = mpsc::channel(8);
         let (desired_tx, desired_rx) = watch::channel(None);
-        // The exact target on screen, with its decoder configuration. The
-        // selector falls back to it when a decoder change fails.
+        // The exact target on screen. Once something plays, the selector stops
+        // asking again for video that ended.
         let (playing_tx, playing_rx) = watch::channel(None);
 
         let mut tasks = Vec::new();
@@ -346,7 +358,6 @@ impl Player {
                 broadcast: broadcast.clone(),
                 controls: controls.clone(),
                 status: status.clone(),
-                stats: stats.clone(),
                 reports: reports_rx,
                 playing: playing_rx,
                 desired: desired_tx,
@@ -367,7 +378,7 @@ impl Player {
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
-                switch_deadline: config.adaptation.switch_deadline,
+                switch_deadline: config.switch_deadline,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::info_span!(parent: &span, "video")),
@@ -442,7 +453,9 @@ impl Player {
     ///
     /// The replacement opens behind the picture and takes over once it has
     /// caught up. A backend that fails to open leaves the incumbent playing and
-    /// says so in [`PlayerStatus::switch_error`].
+    /// says so in [`PlayerStatus::switch_error`]. Automatic rendition switches
+    /// also open under the failing backend, so they fail until the next
+    /// `set_decoder`.
     pub fn set_decoder(&self, decoder: video::decode::Kind) {
         self.controls.decoder.send_replace(decoder);
     }
@@ -463,7 +476,7 @@ impl Player {
             video: self.stats.video.get(),
             audio: self.stats.audio.get(),
             latency: self.clock.latency(),
-            network: self.stats.network.get(),
+            network: self.broadcast.network().map(|signals| signals()),
         }
     }
 
@@ -527,10 +540,11 @@ impl Player {
                 _ => {}
             }
             if let Some(known) = catalog.get()
-                && !known.video.renditions.contains_key(name)
+                && let Err(Error::UnknownRendition { offered, .. }) = known.video_rendition(name)
             {
                 return Err(n0_error::e!(SwitchError::UnknownRendition {
-                    rendition: name.to_string()
+                    rendition: name.to_string(),
+                    offered,
                 }));
             }
             tokio::select! {
