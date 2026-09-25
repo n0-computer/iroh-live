@@ -9,15 +9,13 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-n0-future = "0.3.2"
 tracing = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
-# `renderer` reports EGL and GL setup failures as plain messages.
-anyhow = "1"
 derive_more = { version = "2.1.1", features = ["debug"] }
 glow = "0.18"
 khronos-egl = { version = "6", features = ["dynamic"] }
+n0-error = "1"
 
 [lints]
 workspace = true

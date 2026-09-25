@@ -4,9 +4,9 @@
 
 use std::ffi::c_void;
 
-use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 use khronos_egl as egl_api;
+use n0_error::{Result, StdResultExt, anyerr, bail_any};
 
 use crate::egl::{self, Egl, Extensions};
 
@@ -115,12 +115,11 @@ impl AndroidRenderer {
     ///
     /// `native_window` must be a valid `ANativeWindow*`.
     pub unsafe fn new(native_window: *mut c_void) -> Result<Self> {
-        let egl = unsafe { Egl::load_required().map_err(|e| anyhow::anyhow!("load EGL: {e}"))? };
+        let egl = unsafe { Egl::load_required().std_context("load EGL")? };
 
-        let egl_display =
-            unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }.context("eglGetDisplay failed")?;
-        egl.initialize(egl_display)
-            .map_err(|e| anyhow::anyhow!("eglInitialize: {e}"))?;
+        let egl_display = unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }
+            .std_context("eglGetDisplay failed")?;
+        egl.initialize(egl_display).std_context("eglInitialize")?;
 
         let config = egl
             .choose_first_config(
@@ -141,11 +140,11 @@ impl AndroidRenderer {
                     egl_api::NONE,
                 ],
             )
-            .map_err(|e| anyhow::anyhow!("eglChooseConfig: {e}"))?
-            .context("no matching EGL config")?;
+            .std_context("eglChooseConfig")?
+            .std_context("no matching EGL config")?;
 
         egl.bind_api(egl_api::OPENGL_ES_API)
-            .map_err(|e| anyhow::anyhow!("eglBindAPI: {e}"))?;
+            .std_context("eglBindAPI")?;
 
         let egl_context = egl
             .create_context(
@@ -154,7 +153,7 @@ impl AndroidRenderer {
                 None,
                 &[egl_api::CONTEXT_CLIENT_VERSION, 2, egl_api::NONE],
             )
-            .map_err(|e| anyhow::anyhow!("eglCreateContext: {e}"))?;
+            .std_context("eglCreateContext")?;
 
         let egl_surface = unsafe {
             egl.create_window_surface(
@@ -164,7 +163,7 @@ impl AndroidRenderer {
                 None,
             )
         }
-        .map_err(|e| anyhow::anyhow!("eglCreateWindowSurface: {e}"))?;
+        .std_context("eglCreateWindowSurface")?;
 
         egl.make_current(
             egl_display,
@@ -172,7 +171,7 @@ impl AndroidRenderer {
             Some(egl_surface),
             Some(egl_context),
         )
-        .map_err(|e| anyhow::anyhow!("eglMakeCurrent: {e}"))?;
+        .std_context("eglMakeCurrent")?;
 
         let gl = unsafe { egl::create_glow_context(&egl) };
         let extensions = Extensions::load(&egl);
@@ -184,7 +183,7 @@ impl AndroidRenderer {
         let oes_program = link_program(&gl, vs, oes_fs)?;
         unsafe { gl.delete_shader(oes_fs) };
         let oes_a_pos_loc = unsafe { gl.get_attrib_location(oes_program, "a_pos") }
-            .context("a_pos not found in OES program")?;
+            .std_context("a_pos not found in OES program")?;
         let oes_rotation_loc = unsafe { gl.get_uniform_location(oes_program, "u_rotation") };
 
         let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, NV12_FRAG_SRC)?;
@@ -194,7 +193,7 @@ impl AndroidRenderer {
             gl.delete_shader(vs);
         }
         let nv12_a_pos_loc = unsafe { gl.get_attrib_location(nv12_program, "a_pos") }
-            .context("a_pos not found in NV12 program")?;
+            .std_context("a_pos not found in NV12 program")?;
         let nv12_rotation_loc = unsafe { gl.get_uniform_location(nv12_program, "u_rotation") };
         // The Y plane goes on texture unit 0 and the UV plane on unit 1.
         unsafe { gl.use_program(Some(nv12_program)) };
@@ -217,7 +216,7 @@ impl AndroidRenderer {
                 vertices.len() * std::mem::size_of::<f32>(),
             )
         };
-        let vbo = unsafe { gl.create_buffer() }.map_err(|e| anyhow::anyhow!(e))?;
+        let vbo = unsafe { gl.create_buffer() }.map_err(|e| anyerr!(e))?;
         unsafe {
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW);
@@ -515,7 +514,7 @@ impl AndroidRenderer {
 
 /// Creates a texture with linear filtering and edge clamping.
 fn create_tex(gl: &glow::Context, target: u32) -> Result<glow::Texture> {
-    let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
+    let texture = unsafe { gl.create_texture() }.map_err(|e| anyerr!(e))?;
     unsafe {
         gl.bind_texture(target, Some(texture));
         gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
@@ -564,19 +563,19 @@ fn strip_stride(data: &[u8], row_bytes: usize, stride: usize, rows: usize) -> Ve
 }
 
 fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
-    let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyhow::anyhow!(e))?;
+    let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyerr!(e))?;
     unsafe { gl.shader_source(shader, source) };
     unsafe { gl.compile_shader(shader) };
     if !unsafe { gl.get_shader_compile_status(shader) } {
         let log = unsafe { gl.get_shader_info_log(shader) };
         unsafe { gl.delete_shader(shader) };
-        bail!("shader compile: {log}");
+        bail_any!("shader compile: {log}");
     }
     Ok(shader)
 }
 
 fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Result<glow::Program> {
-    let program = unsafe { gl.create_program() }.map_err(|e| anyhow::anyhow!(e))?;
+    let program = unsafe { gl.create_program() }.map_err(|e| anyerr!(e))?;
     unsafe {
         gl.attach_shader(program, vs);
         gl.attach_shader(program, fs);
@@ -585,7 +584,7 @@ fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Resul
     if !unsafe { gl.get_program_link_status(program) } {
         let log = unsafe { gl.get_program_info_log(program) };
         unsafe { gl.delete_program(program) };
-        bail!("shader link: {log}");
+        bail_any!("shader link: {log}");
     }
     Ok(program)
 }
