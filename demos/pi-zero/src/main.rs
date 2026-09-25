@@ -112,11 +112,12 @@ mod app {
     /// Watches a remote broadcast, rendering with EGL/GLES2.
     async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
         let ticket = match (&opts.ticket, &opts.endpoint_id, &opts.name) {
-            (Some(t), None, None) => t.clone(),
+            (Some(ticket), None, None) => ticket.clone(),
             (None, Some(id), Some(name)) => BroadcastTicket::new(*id, name.clone()),
             _ => {
-                eprintln!("Usage: watch --ticket <TICKET> or --endpoint-id <ID> --name <NAME>");
-                std::process::exit(1);
+                return Err(n0_error::anyerr!(
+                    "pass a <TICKET>, or --endpoint-id and --name"
+                ));
             }
         };
 
@@ -166,12 +167,9 @@ mod app {
             #[cfg(feature = "windowed")]
             watch::run_windowed(player, session, opts.fullscreen)?;
             #[cfg(not(feature = "windowed"))]
-            {
-                eprintln!(
-                    "windowed mode not compiled in - use --fb or build with --features windowed"
-                );
-                std::process::exit(1);
-            }
+            return Err(n0_error::anyerr!(
+                "this build has no windowed mode: use --fb, or build with --features windowed"
+            ));
         }
 
         Ok(())

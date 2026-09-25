@@ -16,6 +16,7 @@ use iroh_live::{
 use moq_video::Frame;
 #[cfg(feature = "windowed")]
 use n0_watcher::Watcher as _;
+use tracing::{info, warn};
 
 use crate::gles::GlesRenderer;
 
@@ -37,7 +38,7 @@ fn try_upload_frame(
     };
     *frame_count += 1;
     if *frame_count <= 3 {
-        tracing::info!(frame = *frame_count, size = %frame.size(), "decoding frame");
+        info!(frame = *frame_count, size = %frame.size(), "decoding frame");
     }
     unsafe { renderer.upload_frame(&frame) };
     true
@@ -104,7 +105,7 @@ impl VtGuard {
         // KD_GRAPHICS = 0x01, KDSETMODE = 0x4B3A
         let ret = unsafe { libc::ioctl(tty.as_raw_fd(), 0x4B3A, 0x01) };
         if ret != 0 {
-            tracing::warn!("KDSETMODE(KD_GRAPHICS) failed - console text may remain visible");
+            warn!("KDSETMODE(KD_GRAPHICS) failed - console text may remain visible");
         }
 
         Ok(Self(tty))
@@ -148,7 +149,7 @@ impl DrmDisplay {
                     .open(path)
                 {
                     found = Some(Card(f));
-                    tracing::info!(path, "opened DRM device");
+                    info!(path, "opened DRM device");
                     break;
                 }
             }
@@ -159,7 +160,7 @@ impl DrmDisplay {
         let vt = match VtGuard::activate() {
             Ok(vt) => Some(vt),
             Err(e) => {
-                tracing::warn!(%e, "VT switch failed - may need root or a linux console");
+                warn!(%e, "VT switch failed - may need root or a linux console");
                 None
             }
         };
@@ -182,7 +183,7 @@ impl DrmDisplay {
                     .context("get_encoder")?
                     .crtc()
                     .context("no CRTC")?;
-                tracing::info!(connector = ?ch, mode = ?mode.size(), "found output");
+                info!(connector = ?ch, mode = ?mode.size(), "found output");
                 result = Some((ch, crtc, mode));
                 break;
             }
@@ -278,7 +279,7 @@ impl DrmDisplay {
                     .unwrap_or(std::ptr::null())
             })
         };
-        tracing::info!(
+        info!(
             renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
             "GLES2 ready"
         );
@@ -291,7 +292,7 @@ impl DrmDisplay {
             .context("initial swap")?;
 
         let front_bo = unsafe { gbm_surface.lock_front_buffer() }.context("lock")?;
-        tracing::info!(
+        info!(
             bo_w = front_bo.width(), bo_h = front_bo.height(),
             stride = front_bo.stride(), modifier = ?front_bo.modifier(),
             format = ?front_bo.format(), "front BO"
@@ -303,7 +304,7 @@ impl DrmDisplay {
         // accepted it, and a connector mode can fail there with EINVAL.
         let crtc_info = gbm_device.get_crtc(crtc).context("get_crtc")?;
         let active_mode = crtc_info.mode().context("CRTC has no active mode")?;
-        tracing::info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
+        info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
         gbm_device
             .set_crtc(
                 crtc,
@@ -543,7 +544,7 @@ pub(crate) fn run_windowed(player: Player, session: Session, fullscreen: bool) -
             let gl = unsafe {
                 glow::Context::from_loader_function_cstr(|s| gl_display.get_proc_address(s))
             };
-            tracing::info!(
+            info!(
                 renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
                 "GLES2 windowed context ready"
             );

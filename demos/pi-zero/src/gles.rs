@@ -8,6 +8,7 @@
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 use moq_video::{Frame, Surface};
+use tracing::warn;
 
 const VERT_SRC: &str = "\
 #version 100
@@ -274,7 +275,7 @@ impl GlesRenderer {
                     self.upload_rgba(rgba.data(), rgba.width(), rgba.height());
                 },
                 Err(err) => {
-                    tracing::warn!(error = %err, %size, "failed to convert a frame for display");
+                    warn!(error = %err, %size, "failed to convert a frame for display");
                 }
             },
         }

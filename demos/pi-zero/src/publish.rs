@@ -8,6 +8,7 @@ use clap::Parser;
 use iroh::EndpointId;
 use iroh_live::{Live, LocalBroadcast};
 use iroh_live_media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size};
+use tracing::{debug, info, warn};
 
 use crate::epaper;
 
@@ -62,7 +63,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         bitrate: Bitrate::from_bps(u64::from(opts.bitrate)),
         ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
     };
-    tracing::info!(
+    info!(
         width = opts.width,
         height = opts.height,
         fps = opts.fps,
@@ -74,7 +75,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
 
     if let Some(relay_id) = opts.relay {
         live.moq().connect(relay_id).await?;
-        tracing::info!(%relay_id, "connected to relay");
+        info!(%relay_id, "connected to relay");
     }
 
     let ticket = live.ticket(&opts.name);
@@ -85,11 +86,11 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let has_epaper = if opts.epaper {
         match epaper::display_qr(&ticket_str) {
             Ok(()) => {
-                tracing::info!("QR code displayed on e-paper");
+                info!("QR code displayed on e-paper");
                 true
             }
             Err(e) => {
-                tracing::warn!(
+                warn!(
                     error = format!("{e:#}"),
                     "could not display QR on e-paper - is the HAT attached and SPI enabled? \
                      (the stream is publishing normally, use the ticket above to connect)"
@@ -107,9 +108,9 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
             loop {
                 tokio::time::sleep(EPAPER_REFRESH_INTERVAL).await;
                 match epaper::display_qr(&refresh_ticket) {
-                    Ok(()) => tracing::debug!("periodic e-paper refresh complete"),
+                    Ok(()) => debug!("periodic e-paper refresh complete"),
                     Err(e) => {
-                        tracing::warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
+                        warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
                     }
                 }
             }
@@ -127,8 +128,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // The datasheet asks to clear the display before storage.
     if has_epaper {
         match epaper::clear_display() {
-            Ok(()) => tracing::info!("e-paper cleared for storage"),
-            Err(e) => tracing::warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
+            Ok(()) => info!("e-paper cleared for storage"),
+            Err(e) => warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
         }
     }
 

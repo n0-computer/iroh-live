@@ -33,6 +33,7 @@ use embedded_graphics::{
 use gpio_cdev::{Chip, LineRequestFlags};
 use linux_embedded_hal::{CdevPin, SpidevDevice};
 use qrcode::QrCode;
+use tracing::{debug, info};
 
 use crate::epd_v4::{self, Epd2in13V4};
 
@@ -107,7 +108,7 @@ impl OriginDimensions for DisplayBuffer {
 
 /// Opens the SPI device and GPIO lines and initialises the display.
 fn open_epd() -> anyhow::Result<(SpidevDevice, Epd)> {
-    tracing::debug!(spi = SPI_DEV, "opening SPI device");
+    debug!(spi = SPI_DEV, "opening SPI device");
     let mut spi = SpidevDevice::open(SPI_DEV)?;
     use linux_embedded_hal::spidev::{SpiModeFlags, SpidevOptions};
     let opts = SpidevOptions::new()
@@ -116,33 +117,33 @@ fn open_epd() -> anyhow::Result<(SpidevDevice, Epd)> {
         .mode(SpiModeFlags::SPI_MODE_0)
         .build();
     spi.configure(&opts)?;
-    tracing::debug!("SPI configured: 4 MHz, mode 0");
+    debug!("SPI configured: 4 MHz, mode 0");
 
-    tracing::debug!(chip = GPIO_CHIP, "opening GPIO chip");
+    debug!(chip = GPIO_CHIP, "opening GPIO chip");
     let mut chip = Chip::new(GPIO_CHIP)?;
 
-    tracing::debug!(pin = PIN_DC, "requesting DC pin (output)");
+    debug!(pin = PIN_DC, "requesting DC pin (output)");
     let dc_line = chip
         .get_line(PIN_DC)?
         .request(LineRequestFlags::OUTPUT, 0, "epaper-dc")?;
     let dc = CdevPin::new(dc_line)?;
 
-    tracing::debug!(pin = PIN_RST, "requesting RST pin (output)");
+    debug!(pin = PIN_RST, "requesting RST pin (output)");
     let rst_line = chip
         .get_line(PIN_RST)?
         .request(LineRequestFlags::OUTPUT, 1, "epaper-rst")?;
     let rst = CdevPin::new(rst_line)?;
 
-    tracing::debug!(pin = PIN_BUSY, "requesting BUSY pin (input)");
+    debug!(pin = PIN_BUSY, "requesting BUSY pin (input)");
     let busy_line = chip
         .get_line(PIN_BUSY)?
         .request(LineRequestFlags::INPUT, 0, "epaper-busy")?;
     let busy = CdevPin::new(busy_line)?;
 
-    tracing::debug!("initialising EPD controller (V4 protocol)");
+    debug!("initialising EPD controller (V4 protocol)");
     let epd = Epd2in13V4::new(&mut spi, dc, rst, busy)
         .map_err(|e| anyhow::anyhow!("EPD init failed: {e}"))?;
-    tracing::debug!("EPD controller ready");
+    debug!("EPD controller ready");
 
     Ok((spi, epd))
 }
@@ -188,14 +189,14 @@ impl QrLayout {
 
 /// Generates a QR code from `data` and displays it on the e-paper HAT.
 pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
-    tracing::info!("display_qr: starting");
+    info!("display_qr: starting");
     let (mut spi, mut epd) = open_epd()?;
 
     let mut display = DisplayBuffer::new_white();
 
     let code = QrCode::new(data.as_bytes())?;
     let modules = code.width();
-    tracing::debug!(modules, data_len = data.len(), "QR code generated");
+    debug!(modules, data_len = data.len(), "QR code generated");
 
     let QrLayout {
         scale,
@@ -203,11 +204,11 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
         x_offset,
         y_offset,
     } = QrLayout::centred(modules);
-    tracing::debug!(scale, qr_px, x_offset, y_offset, "QR layout computed");
+    debug!(scale, qr_px, x_offset, y_offset, "QR layout computed");
 
     let colors = code.to_colors();
     let dark_count = colors.iter().filter(|&&c| c == qrcode::Color::Dark).count();
-    tracing::debug!(
+    debug!(
         total_modules = colors.len(),
         dark_modules = dark_count,
         "drawing QR modules"
@@ -235,18 +236,18 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
 
     let buf = display.buffer();
     let non_ff = buf.iter().filter(|&&b| b != 0xFF).count();
-    tracing::debug!(
+    debug!(
         buffer_len = buf.len(),
         non_white_bytes = non_ff,
         "display buffer ready"
     );
 
-    tracing::info!("sending frame to EPD (V4 full refresh, ~2 s)");
+    info!("sending frame to EPD (V4 full refresh, ~2 s)");
     epd.display(&mut spi, display.buffer())
         .map_err(|e| anyhow::anyhow!("display failed: {e}"))?;
-    tracing::info!("EPD refresh complete");
+    info!("EPD refresh complete");
 
-    tracing::debug!("putting EPD to sleep");
+    debug!("putting EPD to sleep");
     epd.sleep(&mut spi)
         .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
 
@@ -255,7 +256,7 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
 
 /// Fills the entire display with a checkerboard pattern for diagnostics.
 pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
-    tracing::info!("display_test_pattern: starting");
+    info!("display_test_pattern: starting");
     let (mut spi, mut epd) = open_epd()?;
 
     let mut display = DisplayBuffer::new_white();
@@ -283,17 +284,17 @@ pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
     let buf = display.buffer();
     let zeros = buf.iter().filter(|&&b| b == 0x00).count();
     let ffs = buf.iter().filter(|&&b| b == 0xFF).count();
-    tracing::debug!(
+    debug!(
         buffer_len = buf.len(),
         zero_bytes = zeros,
         ff_bytes = ffs,
         "test pattern buffer"
     );
 
-    tracing::info!("sending test pattern to EPD (V4 full refresh, ~2 s)");
+    info!("sending test pattern to EPD (V4 full refresh, ~2 s)");
     epd.display(&mut spi, display.buffer())
         .map_err(|e| anyhow::anyhow!("display failed: {e}"))?;
-    tracing::info!("test pattern refresh complete");
+    info!("test pattern refresh complete");
 
     epd.sleep(&mut spi)
         .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
@@ -303,13 +304,13 @@ pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
 
 /// Clears the display to white and puts it to sleep.
 pub(crate) fn clear_display() -> anyhow::Result<()> {
-    tracing::info!("clear_display: starting");
+    info!("clear_display: starting");
     let (mut spi, mut epd) = open_epd()?;
 
-    tracing::info!("clearing EPD to white (V4 full refresh, ~2 s)");
+    info!("clearing EPD to white (V4 full refresh, ~2 s)");
     epd.clear(&mut spi, 0xFF)
         .map_err(|e| anyhow::anyhow!("clear failed: {e}"))?;
-    tracing::info!("display cleared");
+    info!("display cleared");
 
     epd.sleep(&mut spi)
         .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
