@@ -9,9 +9,9 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{Controls, PlaybackRecorder, PlayoutClock, StatusCell};
 use crate::{
-    AudioOutput, RemoteBroadcast, SlotState,
+    AudioFormat, AudioOutput, RemoteBroadcast, SlotState,
     error::Error,
-    output::{OutputControl, SinkInput},
+    output::OutputControl,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
@@ -168,7 +168,7 @@ async fn open(
     let decoder = moq_audio::decode::Consumer::new(consumer, config, name, options)
         .await
         .map_err(Error::decoder)?;
-    let sink = output.sink(SinkInput {
+    let sink = output.sink(AudioFormat {
         sample_rate: decoder.sample_rate(),
         layout: decoder.layout(),
     })?;
