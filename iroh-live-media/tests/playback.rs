@@ -249,8 +249,13 @@ async fn a_pin_switches_without_ending_the_frames() {
 #[tokio::test]
 async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
     let (broadcast, _source) = ladder();
+    // The test ends within milliseconds. An `Auto` decoder may still be
+    // loading the VA-API driver then, which crashes the process as it exits.
     let player = RemoteBroadcast::local(&broadcast)
-        .play(PlayerConfig::default())
+        .play(PlayerConfig {
+            decoder: video::decode::Kind::Software,
+            ..Default::default()
+        })
         .expect("valid");
     let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("4k"))
         .await
