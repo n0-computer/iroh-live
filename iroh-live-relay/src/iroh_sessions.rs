@@ -10,11 +10,11 @@
 use std::sync::Arc;
 
 use iroh::{
-    Endpoint, EndpointId,
+    Endpoint,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use moq_net::{Pattern, Patterns};
+use moq_net::Pattern;
 use moq_relay::cluster::Cluster;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -81,7 +81,7 @@ impl IrohSessions {
         let publish = self
             .cluster
             .origin
-            .scope("", &publish_scope(remote))
+            .scope("", &iroh_live::grant(remote).publish)
             .map_err(AcceptError::from_err)?;
         let (session, driver) = handshake
             .with_publisher(self.cluster.origin.consume())
@@ -123,11 +123,6 @@ impl ProtocolHandler for IrohSessions {
     }
 }
 
-/// Returns the paths the iroh client `id` may publish at, as [`iroh_live::grant`] allows.
-pub fn publish_scope(id: EndpointId) -> Patterns {
-    iroh_live::grant(id).publish
-}
-
 /// Returns moq-relay's auth for browsers: subscribe anywhere, publish one segment.
 ///
 /// One segment keeps a browser out of `live/` and `rooms/`, whose paths name
@@ -154,7 +149,7 @@ mod tests {
     fn a_client_publishes_only_under_its_own_id() {
         let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
-        let scope = publish_scope(id);
+        let scope = iroh_live::grant(id).publish;
         assert!(scope.matches(&format!("live/{id}/cam")));
         assert!(scope.matches(&format!("rooms/topic/{id}/cam")));
         assert!(!scope.matches(&format!("live/{other}/cam")));

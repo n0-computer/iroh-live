@@ -51,10 +51,10 @@ use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
 
-pub mod iroh_sessions;
+mod iroh_sessions;
 pub mod pull;
 
-pub use self::iroh_sessions::{IrohSessions, browser_auth, publish_scope};
+pub use self::iroh_sessions::{IrohSessions, browser_auth};
 
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
