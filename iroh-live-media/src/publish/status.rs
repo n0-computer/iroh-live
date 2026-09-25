@@ -94,10 +94,9 @@ pub(crate) enum Medium {
     Audio,
 }
 
-/// The status, and the owner of each slot.
+/// The owner of each slot.
 #[derive(Debug, Default)]
-struct Guarded {
-    status: PublishStatus,
+struct Owners {
     video: Owner,
     audio: Owner,
 }
@@ -109,18 +108,20 @@ struct Owner {
     names: Vec<String>,
 }
 
-impl Guarded {
-    fn owner(&mut self, medium: Medium) -> &mut Owner {
+impl Owners {
+    fn get_mut(&mut self, medium: Medium) -> &mut Owner {
         match medium {
             Medium::Video => &mut self.video,
             Medium::Audio => &mut self.audio,
         }
     }
+}
 
-    fn state(&mut self, medium: Medium) -> &mut SlotState {
+impl PublishStatus {
+    fn slot(&mut self, medium: Medium) -> &mut SlotState {
         match medium {
-            Medium::Video => &mut self.status.video,
-            Medium::Audio => &mut self.status.audio,
+            Medium::Video => &mut self.video,
+            Medium::Audio => &mut self.audio,
         }
     }
 }
@@ -129,11 +130,11 @@ impl Guarded {
 ///
 /// A replaced publish task can still be finishing when its replacement starts.
 /// Every write goes through a [`Reporter`] that carries its task's generation.
-/// Under the same lock, the write is dropped unless that generation still owns
-/// the slot.
+/// The write is dropped unless that generation still owns the slot. The owners'
+/// lock is held across the check and the write, so the two are atomic.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StatusCell {
-    guarded: Arc<Mutex<Guarded>>,
+    owners: Arc<Mutex<Owners>>,
     watch: Watchable<PublishStatus>,
 }
 
@@ -153,25 +154,23 @@ impl StatusCell {
     ///
     /// The renditions of the previous owner are removed.
     pub(crate) fn begin(&self, medium: Medium, generation: u64, names: &[String]) -> Reporter {
-        let mut guarded = self.guarded.lock().expect("poisoned");
+        let mut owners = self.owners.lock().expect("poisoned");
         let previous = std::mem::replace(
-            guarded.owner(medium),
+            owners.get_mut(medium),
             Owner {
                 generation,
                 names: names.to_vec(),
             },
         );
+        let mut status = self.watch.get();
         for name in &previous.names {
-            guarded.status.renditions.remove(name);
+            status.renditions.remove(name);
         }
-        *guarded.state(medium) = SlotState::Starting;
+        *status.slot(medium) = SlotState::Starting;
         for name in names {
-            guarded
-                .status
-                .renditions
-                .insert(name.clone(), RenditionState::Idle);
+            status.renditions.insert(name.clone(), RenditionState::Idle);
         }
-        self.watch.set(guarded.status.clone()).ok();
+        self.watch.set(status).ok();
         Reporter {
             cell: self.clone(),
             medium,
@@ -181,25 +180,28 @@ impl StatusCell {
 
     /// Turns `medium` off if the task of `generation` still owns it.
     pub(crate) fn clear(&self, medium: Medium, generation: u64) {
-        let mut guarded = self.guarded.lock().expect("poisoned");
-        if guarded.owner(medium).generation != generation {
+        let mut owners = self.owners.lock().expect("poisoned");
+        let owner = owners.get_mut(medium);
+        if owner.generation != generation {
             return;
         }
-        let names = std::mem::take(&mut guarded.owner(medium).names);
+        let names = std::mem::take(&mut owner.names);
+        let mut status = self.watch.get();
         for name in &names {
-            guarded.status.renditions.remove(name);
+            status.renditions.remove(name);
         }
-        *guarded.state(medium) = SlotState::Off;
-        self.watch.set(guarded.status.clone()).ok();
+        *status.slot(medium) = SlotState::Off;
+        self.watch.set(status).ok();
     }
 
     fn write(&self, medium: Medium, generation: u64, f: impl FnOnce(&mut PublishStatus)) {
-        let mut guarded = self.guarded.lock().expect("poisoned");
-        if guarded.owner(medium).generation != generation {
+        let mut owners = self.owners.lock().expect("poisoned");
+        if owners.get_mut(medium).generation != generation {
             return;
         }
-        f(&mut guarded.status);
-        self.watch.set(guarded.status.clone()).ok();
+        let mut status = self.watch.get();
+        f(&mut status);
+        self.watch.set(status).ok();
     }
 }
 

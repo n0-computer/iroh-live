@@ -229,28 +229,31 @@ impl PlayerStatus {
 /// The player's status, written by its tasks.
 #[derive(Debug, Clone)]
 pub(crate) struct StatusCell {
-    value: Arc<Mutex<PlayerStatus>>,
+    /// Serializes updates: several tasks write, and `Watchable` has no atomic
+    /// update.
+    update: Arc<Mutex<()>>,
     watch: Watchable<PlayerStatus>,
 }
 
 impl StatusCell {
     fn new(status: PlayerStatus) -> Self {
         Self {
-            watch: Watchable::new(status.clone()),
-            value: Arc::new(Mutex::new(status)),
+            update: Arc::default(),
+            watch: Watchable::new(status),
         }
     }
 
     /// Changes the status in place and publishes the result.
     pub(crate) fn update(&self, f: impl FnOnce(&mut PlayerStatus)) {
-        let mut value = self.value.lock().expect("poisoned");
-        f(&mut value);
-        self.watch.set(value.clone()).ok();
+        let _update = self.update.lock().expect("poisoned");
+        let mut status = self.watch.get();
+        f(&mut status);
+        self.watch.set(status).ok();
     }
 
     /// Returns the current status.
     pub(crate) fn get(&self) -> PlayerStatus {
-        self.value.lock().expect("poisoned").clone()
+        self.watch.get()
     }
 }
 
