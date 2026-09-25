@@ -75,7 +75,7 @@ pub use moq_net as net;
 
 pub use self::{
     admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
-    endpoint::{EndpointOptions, Mdns, MoqPreset},
+    endpoint::{EndpointOptions, Mdns, MoqPreset, secret_key_file},
     error::Error,
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},

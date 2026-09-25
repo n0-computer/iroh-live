@@ -41,11 +41,9 @@ const BROADCAST: &str = "pi-cam";
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let mut options = EndpointOptions::default();
-    if let Ok(key) = std::env::var("IROH_SECRET") {
-        options.secret_key = Some(key.parse()?);
-    }
-    let live = Live::builder(options.bind().await?).with_router().spawn();
+    let live = Live::builder(EndpointOptions::from_env()?.bind().await?)
+        .with_router()
+        .spawn();
     let broadcast = LocalBroadcast::new();
     // A keyframe a second, which is how long a viewer waits for a first
     // picture after scanning the ticket.

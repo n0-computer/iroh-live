@@ -12,8 +12,9 @@ use std::path::Path;
 
 use iroh::SecretKey;
 use iroh_live::{
-    BroadcastTicket, Live,
+    BroadcastTicket, EndpointOptions, Live,
     media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
+    moq::secret_key_file,
 };
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
@@ -216,11 +217,14 @@ async fn run_session(config: RunConfig) -> Result {
     // Only a session that publishes needs to accept incoming connections; one
     // that only subscribes dials out and never has to be reachable.
     let serve = !config.send.is_empty();
-    let secret_key = match &config.secret_key_name {
-        Some(name) => load_or_create_secret_key(name)?,
-        None => transport::secret_key_from_env()?,
+    let options = match &config.secret_key_name {
+        Some(name) => EndpointOptions {
+            secret_key: Some(stored_secret_key(name)?),
+            ..EndpointOptions::default()
+        },
+        None => EndpointOptions::from_env()?,
     };
-    let live = transport::setup_live_with_key(secret_key, serve).await?;
+    let live = transport::setup_live_with(options, serve).await?;
     let result = run_streams(&live, &config).await;
     live.shutdown().await;
     println!("done");
@@ -457,7 +461,7 @@ fn check_key_name(name: &str) -> Result<()> {
 ///
 /// Fails if `name` is not a plain file name, if the config directory cannot be
 /// found or written, or if the stored key is not a key.
-fn load_or_create_secret_key(name: &str) -> Result<SecretKey> {
+fn stored_secret_key(name: &str) -> Result<SecretKey> {
     check_key_name(name)?;
     let dir = dirs::config_dir()
         .ok_or_else(|| anyerr!("cannot find this platform's config directory"))?
@@ -466,22 +470,9 @@ fn load_or_create_secret_key(name: &str) -> Result<SecretKey> {
     std::fs::create_dir_all(&dir)
         .map_err(|err| anyerr!("failed to create {}: {err}", dir.display()))?;
     let path = dir.join(format!("{name}.key"));
-
-    if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?;
-        let key: SecretKey = text
-            .trim()
-            .parse()
-            .map_err(|err| anyerr!("{} does not hold a secret key: {err}", path.display()))?;
-        info!(name, path = %path.display(), "loaded the session secret key");
-        return Ok(key);
-    }
-
-    let key = SecretKey::generate();
-    std::fs::write(&path, data_encoding::HEXLOWER.encode(&key.to_bytes()))
-        .map_err(|err| anyerr!("failed to write {}: {err}", path.display()))?;
-    info!(name, path = %path.display(), "generated a session secret key");
+    let key = secret_key_file(&path)
+        .map_err(|err| anyerr!("failed to load {}: {err}", path.display()))?;
+    info!(name, path = %path.display(), "session secret key ready");
     Ok(key)
 }
 

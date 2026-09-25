@@ -34,9 +34,7 @@
 //! stops accepting, the cluster and the HTTP server, while accepted
 //! connections run on until they close.
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-use std::{io::Write, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -257,39 +255,13 @@ fn secret_key() -> anyhow::Result<SecretKey> {
     };
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("iroh_secret_key");
-    if !path.try_exists()? {
-        let key = SecretKey::generate();
-        write_private(&path, &key.to_bytes())?;
-        info!(path = %path.display(), "generated the relay's iroh identity");
-        return Ok(key);
-    }
-    let stored = std::fs::read(&path)?;
-    read_secret_key(&stored).with_context(|| {
+    iroh_moq::secret_key_file(&path).with_context(|| {
         format!(
-            "{} holds {} bytes that are not an iroh secret key. Delete it to start \
-             over, which gives this relay a new endpoint id and invalidates every \
-             ticket that names the old one.",
-            path.display(),
-            stored.len(),
+            "cannot load the relay's identity. Deleting {} starts over, with a new \
+             endpoint id that invalidates every ticket naming the old one",
+            path.display()
         )
     })
-}
-
-/// Reads a stored iroh secret key: its 32 raw bytes.
-fn read_secret_key(stored: &[u8]) -> anyhow::Result<SecretKey> {
-    let bytes = <&[u8; 32]>::try_from(stored).map_err(|_| anyhow::anyhow!("not 32 bytes"))?;
-    Ok(SecretKey::from_bytes(bytes))
-}
-
-/// Writes `contents` to a new `path`, readable by this user alone.
-///
-/// Creates the file exclusively, so it never overwrites a key.
-fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    options.open(path)?.write_all(contents)
 }
 
 fn extract_name_from_url(request: &moq_tokio::server::Request) -> Option<String> {
@@ -328,25 +300,5 @@ fn mime_from_path(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A stored key reads back as the same identity.
-    #[test]
-    fn a_stored_key_reads_back() {
-        let key = SecretKey::generate();
-        let raw = key.to_bytes();
-        assert_eq!(read_secret_key(&raw).unwrap().to_bytes(), raw);
-    }
-
-    /// A file that is not a key is an error.
-    #[test]
-    fn a_file_that_is_not_a_key_is_refused() {
-        assert!(read_secret_key(b"").is_err());
-        assert!(read_secret_key(b"nowhere near a key").is_err());
     }
 }

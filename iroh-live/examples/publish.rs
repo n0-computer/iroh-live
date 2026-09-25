@@ -37,10 +37,7 @@ async fn main() -> n0_error::Result {
     let args = Args::parse();
 
     // A stable identity from `IROH_SECRET`, so the ticket survives a restart.
-    let mut options = EndpointOptions::default();
-    if let Ok(key) = std::env::var("IROH_SECRET") {
-        options.secret_key = Some(key.parse()?);
-    }
+    let options = EndpointOptions::from_env()?;
     let live = Live::builder(options.bind().await?).with_router().spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
 

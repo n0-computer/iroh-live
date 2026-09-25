@@ -128,7 +128,7 @@ mod app {
         // the same lookup services the publisher announces to: the media
         // preset's pkarr and DNS, and mDNS for a network with no route to the
         // internet.
-        let live = Live::builder(crate::endpoint_options()?.bind().await?).spawn();
+        let live = Live::builder(iroh_live::EndpointOptions::from_env()?.bind().await?).spawn();
         let sub = live
             .moq()
             .subscribe(ticket.path(), iroh_live::Reach::Both(ticket.peer()))
@@ -203,22 +203,4 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let cli = <app::Cli as clap::Parser>::parse();
     app::run(cli).await
-}
-
-/// Returns the endpoint options both commands bind with: the identity in
-/// `IROH_SECRET`, or a fresh one, and mDNS announcing this device.
-///
-/// # Errors
-///
-/// Fails if `IROH_SECRET` holds something that is not a secret key.
-#[cfg(target_os = "linux")]
-fn endpoint_options() -> n0_error::Result<iroh_live::EndpointOptions> {
-    let mut options = iroh_live::EndpointOptions::default();
-    if let Ok(key) = std::env::var("IROH_SECRET") {
-        let key = key
-            .parse()
-            .map_err(|err| n0_error::anyerr!("IROH_SECRET is not a secret key: {err}"))?;
-        options.secret_key = Some(key);
-    }
-    Ok(options)
 }

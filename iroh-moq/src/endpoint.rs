@@ -2,11 +2,12 @@
 //!
 //! [`MoqPreset`] is iroh's N0 preset with a QUIC transport tuned for MoQ, and
 //! [`EndpointOptions`] adds what a preset cannot: a secret key and mDNS.
+//! [`secret_key_file`] keeps a key across restarts.
 
-use std::sync::Arc;
+use std::{io::Write, path::Path, sync::Arc};
 
 use iroh::{
-    Endpoint, SecretKey,
+    Endpoint, KeyParsingError, SecretKey,
     endpoint::{Builder, QuicTransportConfig, presets},
 };
 use n0_error::{AnyError, e};
@@ -77,6 +78,24 @@ pub struct EndpointOptions {
 }
 
 impl EndpointOptions {
+    /// Returns the default options with the secret key in `IROH_SECRET`, if set.
+    ///
+    /// Set `IROH_SECRET` to keep one endpoint id, and so the same tickets,
+    /// across restarts.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `IROH_SECRET` is set to something that is not a secret key.
+    pub fn from_env() -> Result<Self, KeyParsingError> {
+        let secret_key = std::env::var_os("IROH_SECRET")
+            .map(|key| key.to_string_lossy().parse())
+            .transpose()?;
+        Ok(Self {
+            secret_key,
+            ..Self::default()
+        })
+    }
+
     /// Returns an endpoint builder with [`MoqPreset`], the key and mDNS applied.
     ///
     /// For a caller that sets more before binding. If mDNS cannot start, as in
@@ -124,5 +143,67 @@ impl EndpointOptions {
         })?;
         info!(id = %endpoint.id(), "endpoint bound");
         Ok(endpoint)
+    }
+}
+
+/// Loads the secret key stored at `path`, or generates one and stores it there.
+///
+/// The file holds the key's 32 bytes and is created readable by this user
+/// only.
+///
+/// # Errors
+///
+/// Fails if the file cannot be read or written, or holds something other than
+/// a key.
+pub fn secret_key_file(path: &Path) -> std::io::Result<SecretKey> {
+    match std::fs::read(path) {
+        Ok(stored) => {
+            let bytes = <[u8; 32]>::try_from(stored.as_slice()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} does not hold a secret key", path.display()),
+                )
+            })?;
+            Ok(SecretKey::from_bytes(&bytes))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let key = SecretKey::generate();
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            options.open(path)?.write_all(&key.to_bytes())?;
+            info!(path = %path.display(), id = %key.public(), "stored a new secret key");
+            Ok(key)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns a path in the temp dir that nothing else uses.
+    fn scratch() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("iroh-moq-key-{}", SecretKey::generate().public()))
+    }
+
+    #[test]
+    fn a_stored_key_reads_back() {
+        let path = scratch();
+        let created = secret_key_file(&path).expect("creates the key");
+        let loaded = secret_key_file(&path).expect("loads the key");
+        std::fs::remove_file(&path).expect("removes the scratch file");
+        assert_eq!(created.to_bytes(), loaded.to_bytes());
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_key_is_refused() {
+        let path = scratch();
+        std::fs::write(&path, b"nowhere near a key").expect("writes the scratch file");
+        let result = secret_key_file(&path);
+        std::fs::remove_file(&path).expect("removes the scratch file");
+        assert!(result.is_err());
     }
 }

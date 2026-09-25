@@ -109,10 +109,7 @@ fn runtime() -> &'static Runtime {
 /// An app keeps its identity in its own storage; the demo has none, so it
 /// takes a fresh one unless the environment says otherwise.
 async fn bind_live() -> Result<Live> {
-    let mut options = EndpointOptions::default();
-    if let Ok(key) = std::env::var("IROH_SECRET") {
-        options.secret_key = Some(key.parse().context("IROH_SECRET is not a key")?);
-    }
+    let options = EndpointOptions::from_env().context("IROH_SECRET is not a key")?;
     Ok(Live::builder(options.bind().await?).with_router().spawn())
 }
 

@@ -55,7 +55,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // carries an endpoint id and nothing else, so a viewer on the same network
     // resolves it over mDNS with no internet at all, and a viewer elsewhere
     // resolves it over pkarr and DNS.
-    let live = Live::builder(crate::endpoint_options()?.bind().await?)
+    let live = Live::builder(iroh_live::EndpointOptions::from_env()?.bind().await?)
         .with_router()
         .spawn();
 

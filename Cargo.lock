@@ -4452,7 +4452,6 @@ dependencies = [
  "bytes",
  "bytesize",
  "clap",
- "data-encoding",
  "derive_more",
  "dirs",
  "eframe",

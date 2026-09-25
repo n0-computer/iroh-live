@@ -2,13 +2,13 @@
 
 use std::time::Duration;
 
-use iroh::{EndpointId, SecretKey};
+use iroh::EndpointId;
 use iroh_live::{
     BroadcastTicket, EndpointOptions, Live, LiveBuilder, Mdns, RemoteBroadcast, Session,
     Subscription,
     moq::{RelayConfig, RelayLink},
 };
-use n0_error::{Result, StdResultExt, anyerr};
+use n0_error::{Result, StdResultExt};
 use tracing::{info, warn};
 
 use crate::args::TransportArgs;
@@ -30,44 +30,6 @@ pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// guessing whether the ticket was wrong.
 const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
-/// Loads the iroh secret key from `IROH_SECRET`, or generates a temporary one.
-///
-/// An endpoint's identity is its secret key, so a node that generates a fresh
-/// one on every start is a different node to its peers every time, and every
-/// ticket it handed out is stale. `IROH_SECRET` is how a user keeps one across
-/// runs; `irl run --config` stores its own under `secret_key_name`.
-///
-/// The generated key is never logged, only the endpoint id it yields: a log is
-/// not a key export.
-///
-/// # Errors
-///
-/// Fails if `IROH_SECRET` is set to something that is not a secret key,
-/// including a value that is not valid Unicode.
-pub fn secret_key_from_env() -> Result<SecretKey> {
-    Ok(match std::env::var("IROH_SECRET") {
-        Ok(key) => key.parse().std_context("IROH_SECRET is not a secret key")?,
-        // Distinguished from an unset variable, which is the one case that
-        // means "generate one": a value we cannot read is a value the caller
-        // meant us to use.
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err(anyerr!(
-                "IROH_SECRET is set to something that is not valid Unicode; it \
-                 takes 64 hex characters",
-            ));
-        }
-        Err(std::env::VarError::NotPresent) => {
-            let key = SecretKey::generate();
-            info!(
-                endpoint = %key.public(),
-                "generated a temporary endpoint identity; set IROH_SECRET to keep one \
-                 across restarts",
-            );
-            key
-        }
-    })
-}
-
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
 /// With `serve` set, a router accepts incoming subscribers. Without it only
@@ -78,10 +40,10 @@ pub fn secret_key_from_env() -> Result<SecretKey> {
 ///
 /// Fails if the endpoint cannot bind.
 pub async fn setup_live(serve: bool) -> Result<Live> {
-    setup_live_with_key(secret_key_from_env()?, serve).await
+    setup_live_with(EndpointOptions::from_env()?, serve).await
 }
 
-/// Binds an endpoint under `secret_key` and starts the MoQ transport on it.
+/// Binds an endpoint with `options` and starts the MoQ transport on it.
 ///
 /// The identity is what a ticket names, so a caller holding a stored key
 /// (`irl run` with a `secret_key_name`) hands back the same tickets on every
@@ -90,8 +52,8 @@ pub async fn setup_live(serve: bool) -> Result<Live> {
 /// # Errors
 ///
 /// Fails if the endpoint cannot bind.
-pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<Live> {
-    Ok(bind(secret_key, serve).await?.spawn())
+pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Live> {
+    Ok(bind(options, serve).await?.spawn())
 }
 
 /// Binds an endpoint that also runs rooms, and starts the MoQ transport on it.
@@ -105,12 +67,7 @@ pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<L
 /// Fails if the endpoint cannot bind.
 #[cfg(feature = "render")]
 pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
-    let endpoint = EndpointOptions {
-        secret_key: Some(secret_key_from_env()?),
-        ..Default::default()
-    }
-    .bind()
-    .await?;
+    let endpoint = EndpointOptions::from_env()?.bind().await?;
     let moq = iroh_live::Moq::new(endpoint.clone(), iroh_live::moq_config());
     let rooms = iroh_live::rooms::Rooms::new(&moq);
     let live = Live::builder(endpoint)
@@ -136,14 +93,9 @@ pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> 
 /// # Errors
 ///
 /// Fails if the endpoint cannot bind.
-pub async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
+pub async fn bind(options: EndpointOptions, serve: bool) -> Result<LiveBuilder> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
-    let endpoint = EndpointOptions {
-        secret_key: Some(secret_key),
-        mdns,
-    }
-    .bind()
-    .await?;
+    let endpoint = EndpointOptions { mdns, ..options }.bind().await?;
     let mut builder = Live::builder(endpoint);
     if serve {
         builder = builder.with_router();
