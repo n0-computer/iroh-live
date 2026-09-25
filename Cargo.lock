@@ -4486,7 +4486,6 @@ dependencies = [
  "derive_more",
  "egui",
  "egui-wgpu",
- "epaint",
  "iroh-live-media",
  "n0-future",
  "pollster",

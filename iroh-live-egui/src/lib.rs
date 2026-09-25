@@ -39,9 +39,6 @@ pub mod overlay;
 #[cfg(feature = "wgpu-render")]
 pub use egui_wgpu;
 #[cfg(feature = "wgpu-render")]
-pub use epaint;
-pub use iroh_live_media;
-#[cfg(feature = "wgpu-render")]
 use iroh_live_media::VideoFrames;
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
@@ -63,29 +60,24 @@ pub fn format_bitrate(rate: iroh_live_media::Bitrate) -> String {
 #[cfg(feature = "wgpu-render")]
 pub use iroh_live_media::video::render::wgpu;
 
-/// Renderer that draws decoded [`iroh_live_media::video::Frame`]s into an egui texture.
+/// Renderer that draws decoded frames into an egui texture.
 ///
-/// It is bound to one `wgpu` device and queue. Keep it alive across frames.
-/// Most callers want [`FrameView`] or [`VideoView`] instead.
+/// It is bound to one `wgpu` device and queue.
 #[cfg(feature = "wgpu-render")]
 #[derive(derive_more::Debug)]
-pub struct EguiVideoRenderer {
+struct EguiVideoRenderer {
     #[debug(skip)]
     renderer: iroh_live_media::video::render::Renderer,
     #[debug(skip)]
     render_state: egui_wgpu::RenderState,
     /// The registered texture and its size, once a frame is drawn.
-    texture: Option<(epaint::TextureId, (u32, u32))>,
+    texture: Option<(egui::TextureId, (u32, u32))>,
 }
 
 #[cfg(feature = "wgpu-render")]
 impl EguiVideoRenderer {
     /// Creates a renderer bound to `render_state`'s device and queue.
-    ///
-    /// Fails if the `wgpu` pipeline cannot be built on the device.
-    pub fn new(
-        render_state: &egui_wgpu::RenderState,
-    ) -> Result<Self, iroh_live_media::video::Error> {
+    fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, iroh_live_media::video::Error> {
         let renderer = iroh_live_media::video::render::Renderer::new(
             &render_state.device,
             &render_state.queue,
@@ -99,13 +91,10 @@ impl EguiVideoRenderer {
     }
 
     /// Draws `frame` and registers or updates its egui texture.
-    ///
-    /// Returns the texture id and its size in pixels. Fails if the frame
-    /// cannot be drawn, for example on an unsupported GPU format.
-    pub fn render(
+    fn render(
         &mut self,
         frame: &iroh_live_media::video::Frame,
-    ) -> Result<(epaint::TextureId, (u32, u32)), iroh_live_media::video::Error> {
+    ) -> Result<(), iroh_live_media::video::Error> {
         let texture = self.renderer.render(frame)?;
         let view = texture.create_view(&Default::default());
         let dims = (texture.width(), texture.height());
@@ -125,14 +114,7 @@ impl EguiVideoRenderer {
             None => egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
         };
         self.texture = Some((id, dims));
-        Ok((id, dims))
-    }
-
-    /// Returns the last drawn texture id and its size in pixels.
-    ///
-    /// Returns `None` before the first frame.
-    pub fn last_texture(&self) -> Option<(epaint::TextureId, (u32, u32))> {
-        self.texture
+        Ok(())
     }
 }
 
@@ -202,20 +184,11 @@ impl FrameView {
         }
     }
 
-    /// Returns the current texture id and its size in pixels.
-    ///
-    /// Returns `None` until a frame is drawn.
-    pub fn texture_info(&self) -> Option<(egui::TextureId, egui::Vec2)> {
-        self.renderer
-            .as_ref()
-            .and_then(EguiVideoRenderer::last_texture)
-            .map(|(id, (w, h))| (id, egui::vec2(w as f32, h as f32)))
-    }
-
     /// Returns an [`egui::Image`] of the current frame, or of the placeholder.
     pub fn image(&self) -> egui::Image<'_> {
-        match self.texture_info() {
-            Some((id, size)) => {
+        match self.renderer.as_ref().and_then(|renderer| renderer.texture) {
+            Some((id, (width, height))) => {
+                let size = egui::vec2(width as f32, height as f32);
                 egui::Image::from_texture(egui::load::SizedTexture::new(id, size)).shrink_to_fit()
             }
             None => egui::Image::from_texture(&self.placeholder).shrink_to_fit(),
@@ -299,11 +272,6 @@ impl VideoView {
         if let Some(frame) = self.frames.as_mut().and_then(VideoFrames::try_next) {
             self.frame_view.render_frame(&frame);
         }
-        self.frame_view.image()
-    }
-
-    /// Returns the image of the last drawn frame.
-    pub fn image(&self) -> egui::Image<'_> {
         self.frame_view.image()
     }
 }
