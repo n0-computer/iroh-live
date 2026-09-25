@@ -146,7 +146,7 @@ mod preview {
     use eframe::egui;
     use iroh_live::{
         Live,
-        media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
+        media::{LocalBroadcast, VideoSource},
     };
     use iroh_live_egui::{
         VideoView,
@@ -158,7 +158,11 @@ mod preview {
     use tokio::sync::oneshot;
     use tracing::{info, warn};
 
-    use crate::{args::PublishArgs, source::Opened, source_spec::VideoSourceSpec};
+    use crate::{
+        args::{CaptureArgs, PublishArgs},
+        source::{self, Opened},
+        source_spec::VideoSourceSpec,
+    };
 
     /// Opens the preview window and runs it until it closes.
     pub(super) fn run(
@@ -168,7 +172,7 @@ mod preview {
         ticket: String,
         args: &PublishArgs,
     ) -> Result {
-        let flag = args.capture.video.clone();
+        let capture = args.capture.clone();
         eframe::run_native(
             "irl publish",
             crate::ui::native_options(args.fullscreen),
@@ -185,7 +189,7 @@ mod preview {
                     broadcast,
                     ticket,
                     view,
-                    picker: SourcePicker::new(&flag, sources),
+                    picker: SourcePicker::new(capture, sources),
                     overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
                 }))
             }),
@@ -239,6 +243,7 @@ mod preview {
     /// A source the picker can switch to.
     ///
     /// Only defaults are offered. Use `--video` to pick a specific device.
+    /// The other capture and encoding flags apply to every entry.
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     enum PickedSource {
         Camera,
@@ -256,6 +261,16 @@ mod preview {
                 Self::Screen => "Screen",
                 Self::Test => "Test pattern",
                 Self::None => "No video",
+            }
+        }
+
+        /// Returns the `--video` specifier of this entry.
+        fn spec(self) -> &'static str {
+            match self {
+                Self::Camera => "cam",
+                Self::Screen => "screen",
+                Self::Test => "test",
+                Self::None => "none",
             }
         }
 
@@ -282,8 +297,9 @@ mod preview {
     #[derive(Debug)]
     struct SourcePicker {
         selected: Option<PickedSource>,
-        /// The `--video` text, shown while no entry matches it.
-        flag: String,
+        /// The capture flags. `video` is the `--video` text, shown while no
+        /// entry matches it.
+        capture: CaptureArgs,
         error: Option<String>,
         /// The sources publishing now, held to keep them running.
         sources: Opened,
@@ -299,14 +315,15 @@ mod preview {
     }
 
     impl SourcePicker {
-        fn new(flag: &str, sources: Opened) -> Self {
-            let selected = VideoSourceSpec::parse(flag)
+        fn new(capture: CaptureArgs, sources: Opened) -> Self {
+            let selected = capture
+                .video_source()
                 .ok()
                 .as_ref()
                 .and_then(PickedSource::from_spec);
             Self {
                 selected,
-                flag: flag.to_string(),
+                capture,
                 error: None,
                 sources,
                 opening: None,
@@ -317,7 +334,7 @@ mod preview {
             ui.label("Video");
             let label = match self.selected {
                 Some(source) => source.label(),
-                None => self.flag.as_str(),
+                None => self.capture.video.as_str(),
             };
             let mut changed = false;
             egui::ComboBox::from_id_salt("preview-source")
@@ -372,11 +389,24 @@ mod preview {
         ///
         /// A new switch aborts one still opening.
         fn apply(&mut self, broadcast: &LocalBroadcast) {
-            let selected = self.selected;
+            let Some(selected) = self.selected else {
+                return;
+            };
+            let capture = CaptureArgs {
+                video: selected.spec().to_string(),
+                test_source: false,
+                ..self.capture.clone()
+            };
             let broadcast = broadcast.clone();
             let (done, report) = oneshot::channel();
             let task = tokio::spawn(async move {
-                let result = open_and_set(&broadcast, selected).await;
+                let result = match selected {
+                    PickedSource::None => {
+                        broadcast.clear_video();
+                        Ok(None)
+                    }
+                    _ => source::configure_video(&broadcast, &capture).await,
+                };
                 let _ = done.send(result);
             });
             self.opening = Some(Opening {
@@ -384,32 +414,5 @@ mod preview {
                 _task: AbortOnDropHandle::new(task),
             });
         }
-    }
-
-    /// Opens `selected` and sets it on `broadcast`, or clears the video.
-    async fn open_and_set(
-        broadcast: &LocalBroadcast,
-        selected: Option<PickedSource>,
-    ) -> Result<Option<VideoSource>> {
-        let source = match selected {
-            None | Some(PickedSource::None) => {
-                broadcast.clear_video();
-                return Ok(None);
-            }
-            Some(PickedSource::Camera) => {
-                VideoSource::capture(video::capture::Config::default()).await?
-            }
-            Some(PickedSource::Screen) => {
-                let mut config = video::capture::Config::default();
-                config.source = video::capture::Source::Display(None);
-                VideoSource::capture(config).await?
-            }
-            Some(PickedSource::Test) => crate::source::default_test_pattern(),
-        };
-        broadcast.set_video(
-            source.clone(),
-            VideoEncoding::single(VideoRendition::new("video")),
-        )?;
-        Ok(Some(source))
     }
 }

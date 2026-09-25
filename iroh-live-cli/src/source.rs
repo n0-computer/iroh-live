@@ -246,14 +246,6 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
     Ok(())
 }
 
-/// Returns the test pattern at its default size and rate.
-pub fn default_test_pattern() -> VideoSource {
-    VideoSource::test_pattern(
-        TEST_SIZE,
-        video::Rate::new(rendition::DEFAULT_FRAMERATE, 1).expect("a valid rate"),
-    )
-}
-
 /// Starts the test pattern `pattern` names, at the size the flags ask for.
 fn test_pattern(
     args: &CaptureArgs,
