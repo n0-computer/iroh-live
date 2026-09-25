@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::{Live, LocalBroadcast};
+use iroh_live::{Live, LocalBroadcast, moq::RelayConfig};
 use iroh_live_media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size};
 use tracing::{debug, info, warn};
 
@@ -23,7 +23,7 @@ pub(crate) struct PublishOpts {
     #[clap(long)]
     epaper: bool,
 
-    /// Relay endpoint ID to also connect to, so browsers can subscribe there.
+    /// Relay endpoint ID to also push to, so browsers can watch there.
     #[clap(long)]
     pub relay: Option<EndpointId>,
 
@@ -73,10 +73,18 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
     live.publish(opts.name.as_str(), &broadcast)?;
 
-    if let Some(relay_id) = opts.relay {
-        live.moq().connect(relay_id).await?;
-        info!(%relay_id, "connected to relay");
-    }
+    // The link redials the relay if the session drops. It only pushes: the
+    // relay's routes stay out of the Pi's route table.
+    let _relay = match opts.relay {
+        Some(relay) => {
+            info!(%relay, "pushing to relay");
+            Some(live.moq().attach_relay(RelayConfig {
+                consume: false,
+                ..RelayConfig::iroh(relay)
+            })?)
+        }
+        None => None,
+    };
 
     let ticket = live.ticket(&opts.name);
     let ticket_str = ticket.to_string();

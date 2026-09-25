@@ -26,8 +26,8 @@ goes to the terminal only.
 
 `publish` runs `rpicam-vid`, publishes the H.264 it writes, and prints a
 ticket. `--epaper` also draws the ticket as a QR code on the HAT. `--relay`
-opens a session to a relay as well, and the relay serves the broadcast to
-viewers that cannot reach the Pi, browsers included.
+also pushes the broadcast to a relay and redials it if the session drops, so
+browsers can watch it there.
 
 `watch` subscribes and renders. Without `--fb` it opens a window through glutin and winit, which needs the
 `windowed` feature (on by default). With `--fb` it renders through DRM/KMS,

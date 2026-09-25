@@ -133,9 +133,10 @@ same ticket, across restarts.
 The demo has four subcommands.
 
 `publish` streams the camera and prints the ticket. With `--epaper` it also
-shows the ticket as a QR code on the HAT. Flags: `--epaper`,
-`--relay <ENDPOINT_ID>`, `--name` (default `pi-zero`), `--width` (640),
-`--height` (360), `--fps` (30), `--bitrate` (500000).
+shows the ticket as a QR code on the HAT. With `--relay <ENDPOINT_ID>` it also
+pushes the broadcast to a relay, for browsers. The other flags: `--name`
+(default `pi-zero`), `--width` (640), `--height` (360), `--fps` (30),
+`--bitrate` (500000).
 
 `watch <TICKET>` subscribes and draws. Without `--fb` it opens a window through
 glutin and winit, which needs the `windowed` feature (on by default).
