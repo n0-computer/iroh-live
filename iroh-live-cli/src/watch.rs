@@ -248,7 +248,7 @@ async fn connect(
     // itself is an error here rather than a black window.
     let catalog = crate::playback::catalog(sub.broadcast()).await?;
     if let Some(name) = &options.rendition {
-        check_rendition(&catalog, name)?;
+        catalog.video_rendition(name)?;
     }
 
     #[cfg(feature = "render")]
@@ -271,33 +271,6 @@ async fn connect(
     };
     let player = sub.broadcast().play(config)?;
     Ok((sub, player))
-}
-
-/// Checks `--rendition` against what the broadcast actually offers.
-///
-/// A name nothing matches would otherwise play something else while saying it
-/// could not play what was asked for, which on a terminal nobody reads.
-///
-/// # Errors
-///
-/// Fails if the catalog has no video rendition of that name, listing the ones
-/// it does have.
-fn check_rendition(catalog: &iroh_live::media::Catalog, name: &str) -> Result<()> {
-    if catalog.video.renditions.contains_key(name) {
-        return Ok(());
-    }
-    let offered: Vec<&str> = catalog
-        .ranked_video()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    Err(anyerr!(
-        "the broadcast has no video rendition named '{name}'; it offers {}",
-        match offered.is_empty() {
-            true => "no video at all".to_string(),
-            false => offered.join(", "),
-        }
-    ))
 }
 
 /// Plays until the user interrupts, with no window.

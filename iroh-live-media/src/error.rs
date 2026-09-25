@@ -52,11 +52,13 @@ pub enum Error {
         #[error(source)]
         source: AnyError,
     },
-    /// The broadcast's catalog has no rendition of that name.
-    #[error("no rendition named {name}")]
+    /// The broadcast's catalog has no video rendition of that name.
+    #[error("no video rendition named {name}, the broadcast has [{}]", offered.join(", "))]
     UnknownRendition {
         /// The name that was asked for.
         name: String,
+        /// The names the catalog has, largest first.
+        offered: Vec<String>,
     },
     /// The catalog could not be read or written.
     #[error("catalog failed")]

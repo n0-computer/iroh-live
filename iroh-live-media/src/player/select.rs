@@ -455,13 +455,8 @@ fn choose(
                          is retried"
                     ))))),
                 )
-            } else if !catalog.video.renditions.contains_key(name) {
-                (
-                    None,
-                    Some(Arc::new(n0_error::e!(Error::UnknownRendition {
-                        name: name.clone()
-                    }))),
-                )
+            } else if let Err(err) = catalog.video_rendition(name) {
+                (None, Some(Arc::new(err)))
             } else {
                 return (Some(name.clone()), None);
             }

@@ -148,7 +148,7 @@ pub async fn start(
     options: &RecordOptions,
 ) -> Result<Recording> {
     if let Some(name) = &options.rendition {
-        check_rendition(catalog, name)?;
+        catalog.video_rendition(name)?;
     }
     let file = tokio::fs::File::create(&options.path)
         .await
@@ -213,33 +213,6 @@ fn unknown_extension(path: &Path) -> n0_error::AnyError {
          the extensions recognised here are .mp4, .m4v, .m4s, .mkv, and .webm",
         path.display()
     )
-}
-
-/// Checks a requested rendition against what the broadcast offers.
-///
-/// The exporter would otherwise select nothing and write a file with no video
-/// in it, which only shows up when the recording is played back.
-///
-/// # Errors
-///
-/// Fails if the catalog has no video rendition of that name, listing the ones
-/// it does have.
-fn check_rendition(catalog: &Catalog, name: &str) -> Result<()> {
-    if catalog.video.renditions.contains_key(name) {
-        return Ok(());
-    }
-    let offered: Vec<&str> = catalog
-        .ranked_video()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    Err(anyerr!(
-        "the broadcast has no video rendition named '{name}'; it offers {}",
-        match offered.is_empty() {
-            true => "no video at all".to_string(),
-            false => offered.join(", "),
-        }
-    ))
 }
 
 /// Resolves when the user interrupts, or once `duration` has elapsed.

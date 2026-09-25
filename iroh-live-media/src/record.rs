@@ -104,9 +104,8 @@ impl Recording {
     ) -> Result<Self, Error> {
         if let Some(name) = &config.rendition
             && let Some(catalog) = broadcast.catalog().get()
-            && !catalog.video.renditions.contains_key(name)
         {
-            return Err(n0_error::e!(Error::UnknownRendition { name: name.clone() }));
+            catalog.video_rendition(name)?;
         }
         let stop = CancellationToken::new();
         let written = Arc::new(AtomicU64::new(0));

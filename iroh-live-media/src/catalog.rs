@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use hang::catalog::VideoConfig;
 
+use crate::Error;
+
 /// A broadcast's catalog, as hang describes it.
 ///
 /// Cheap to clone, and derefs to [`hang::catalog::Catalog`]. Two catalogs are
@@ -48,6 +50,23 @@ impl Catalog {
                 .then(right.bitrate.cmp(&left.bitrate))
         });
         ranked
+    }
+
+    /// Returns the video rendition named `name`.
+    ///
+    /// Fails with [`Error::UnknownRendition`], which lists the names the
+    /// catalog has.
+    pub fn video_rendition(&self, name: &str) -> Result<&VideoConfig, Error> {
+        self.video.renditions.get(name).ok_or_else(|| {
+            n0_error::e!(Error::UnknownRendition {
+                name: name.to_string(),
+                offered: self
+                    .ranked_video()
+                    .into_iter()
+                    .map(|(name, _)| name.to_string())
+                    .collect(),
+            })
+        })
     }
 }
 
