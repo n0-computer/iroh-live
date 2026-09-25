@@ -86,6 +86,9 @@ impl BroadcastTicket {
         let (id, name) = rest
             .split_once('/')
             .ok_or_else(|| invalid("missing / separator"))?;
+        if name.is_empty() {
+            return Err(invalid("empty broadcast name"));
+        }
         let bytes = data_encoding::BASE64URL_NOPAD
             .decode(id.as_bytes())
             .map_err(|_| invalid("invalid base64url"))?;
@@ -161,6 +164,8 @@ mod tests {
         assert!("not-a-ticket".parse::<BroadcastTicket>().is_err());
         assert!("hello".parse::<BroadcastTicket>().is_err());
         assert!("my-stream-360p".parse::<BroadcastTicket>().is_err());
+        let nameless = BroadcastTicket::new(test_endpoint_id(), "");
+        assert!(nameless.to_string().parse::<BroadcastTicket>().is_err());
     }
 
     #[test]
