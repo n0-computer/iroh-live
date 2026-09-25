@@ -102,13 +102,6 @@ impl Grant {
     }
 }
 
-impl Default for Grant {
-    /// Returns [`Grant::everything`].
-    fn default() -> Self {
-        Self::everything()
-    }
-}
-
 /// What a peer asked for when it opened a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionRequest {
