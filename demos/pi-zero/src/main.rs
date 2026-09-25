@@ -1,8 +1,8 @@
-//! Raspberry Pi Zero 2 demo: publish a camera stream over iroh and display
-//! the connection ticket as a QR code on a Waveshare 2.13" e-paper HAT.
-//! Also supports watching a remote stream with EGL/GLES2 rendering.
+//! Raspberry Pi Zero 2 demo.
 //!
-//! This binary only builds and runs on Linux (ARM64 target).
+//! Publishes a camera stream over iroh and shows the ticket as a QR code on a
+//! Waveshare 2.13" e-paper HAT. It can also watch a remote stream with
+//! EGL/GLES2. Builds on Linux only.
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("pi-zero-demo only supports Linux");
@@ -41,9 +41,7 @@ mod app {
         Publish(publish::PublishOpts),
         /// Watch a remote stream, rendering with EGL/GLES2.
         Watch(WatchOpts),
-        /// Render a generated test pattern directly to HDMI (no network, no
-        /// window system, no camera) - a hardware sanity check for the
-        /// DRM/KMS + GLES2 display path.
+        /// Render a test pattern to HDMI to check the DRM/KMS and GLES2 path.
         FbDemo,
     }
 
@@ -100,8 +98,7 @@ mod app {
         std::io::stdin().read_line(&mut buf).ok();
     }
 
-    /// Renders a generated test pattern directly to HDMI - no network, no
-    /// window system, no camera needed.
+    /// Renders a test pattern straight to HDMI, without network or camera.
     async fn cmd_fb_demo() -> n0_error::Result {
         use iroh_live_media::VideoSource;
         use moq_video::{Rate, Size};
@@ -124,10 +121,9 @@ mod app {
         };
 
         println!("connecting to {ticket} ...");
-        // A ticket names an endpoint id and no addresses, so the viewer needs
-        // the same lookup services the publisher announces to: the media
-        // preset's pkarr and DNS, and mDNS for a network with no route to the
-        // internet.
+        // The ticket has no addresses. The viewer finds the publisher through
+        // the same lookups it announces to: pkarr and DNS, plus mDNS on a
+        // network without internet.
         let live = Live::builder(iroh_live::EndpointOptions::from_env()?.bind().await?).spawn();
         let sub = live
             .moq()
@@ -139,10 +135,9 @@ mod app {
             .ok_or_else(|| n0_error::anyerr!("the broadcast is not served by a direct session"))?;
         println!("connected!");
 
-        // Waited for, so a publisher that never describes its broadcast, or
-        // describes it in a way this build cannot read, is an error here
-        // rather than a black screen. A broadcast that closes sends no catalog
-        // update to wake on.
+        // Wait for a readable catalog, so a bad publisher gives an error and
+        // not a black screen. Also watch for close: a closed broadcast sends
+        // no catalog update.
         let mut catalog = remote.catalog();
         let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             tokio::select! {
@@ -161,8 +156,8 @@ mod app {
             }
         }
 
-        // `remote_broadcast` attached the serving link's signals, so the
-        // player adapts the rendition on its own.
+        // `remote_broadcast` attached the link's signals, so the player picks
+        // the rendition on its own.
         let player = remote.play(iroh_live_media::PlayerConfig::default())?;
 
         if opts.fb {

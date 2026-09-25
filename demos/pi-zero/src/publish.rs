@@ -1,5 +1,7 @@
-/// Publish command: run the camera's hardware H.264 encoder through
-/// `rpicam-vid` and stream the result over iroh.
+//! Publish command: streams the camera's hardware H.264 over iroh.
+//!
+//! The encoder output is read through `rpicam-vid`.
+
 use std::time::Duration;
 
 use clap::Parser;
@@ -9,9 +11,9 @@ use iroh_live_media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size};
 
 use crate::epaper;
 
-/// Per the datasheet, e-paper must be refreshed at least once every 24 h.
-/// We re-display the QR every 12 h to stay well within that limit while
-/// respecting the minimum 180 s interval between refreshes.
+/// How often to redraw the QR code.
+///
+/// The datasheet asks for a refresh at least every 24 h and at most every 180 s.
 const EPAPER_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Parser, Debug)]
@@ -20,10 +22,7 @@ pub(crate) struct PublishOpts {
     #[clap(long)]
     epaper: bool,
 
-    /// Relay's iroh endpoint ID - additionally connects to the relay so
-    /// browser and non-P2P clients can subscribe there. Publishing is
-    /// node-wide, so nothing further has to be done once connected: the relay
-    /// sees the same announced broadcasts as every other peer.
+    /// Relay endpoint ID to also connect to, so browsers can subscribe there.
     #[clap(long)]
     pub relay: Option<EndpointId>,
 
@@ -50,19 +49,15 @@ pub(crate) struct PublishOpts {
 
 /// Publishes the camera stream and shows the ticket QR on e-paper.
 pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
-    // --- iroh endpoint ---
-    // Bound under `IROH_SECRET` with the media preset and mDNS. The Pi's ticket
-    // carries an endpoint id and nothing else, so a viewer on the same network
-    // resolves it over mDNS with no internet at all, and a viewer elsewhere
-    // resolves it over pkarr and DNS.
+    // The ticket carries only the endpoint id. A viewer on the same network
+    // finds the Pi over mDNS, a viewer elsewhere over pkarr and DNS.
     let live = Live::builder(iroh_live::EndpointOptions::from_env()?.bind().await?)
         .with_router()
         .spawn();
 
-    // --- media broadcast ---
     let broadcast = LocalBroadcast::new();
 
-    // A keyframe a second, the config's default.
+    // Keeps the default of one keyframe per second.
     let config = RpicamConfig {
         bitrate: Bitrate::from_bps(u64::from(opts.bitrate)),
         ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
@@ -77,18 +72,16 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
     live.publish(opts.name.as_str(), &broadcast)?;
 
-    // --- relay (optional) ---
     if let Some(relay_id) = opts.relay {
         live.moq().connect(relay_id).await?;
         tracing::info!(%relay_id, "connected to relay");
     }
 
-    // --- ticket (always printed, regardless of e-paper) ---
     let ticket = live.ticket(&opts.name);
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 
-    // --- QR code on e-paper (optional, non-fatal) ---
+    // The e-paper is optional: a failure only logs a warning.
     let has_epaper = if opts.epaper {
         match epaper::display_qr(&ticket_str) {
             Ok(()) => {
@@ -108,8 +101,6 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         false
     };
 
-    // Datasheet requires a refresh at least every 24 h. Re-display the QR
-    // periodically if the initial display succeeded.
     let refresh_ticket = ticket_str.clone();
     let refresh_handle = if has_epaper {
         Some(tokio::spawn(async move {
@@ -127,14 +118,13 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         None
     };
 
-    // Wait for ctrl-c and then shutdown.
     tokio::signal::ctrl_c().await?;
 
     if let Some(handle) = refresh_handle {
         handle.abort();
     }
 
-    // Clear the e-paper before exit (datasheet: clear before storage).
+    // The datasheet asks to clear the display before storage.
     if has_epaper {
         match epaper::clear_display() {
             Ok(()) => tracing::info!("e-paper cleared for storage"),
