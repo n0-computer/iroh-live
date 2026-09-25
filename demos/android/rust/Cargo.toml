@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 iroh = { workspace = true }
-iroh-live = { workspace = true }
+iroh-live = { workspace = true, features = ["media"] }
 # `capture` for the microphone source, `playback` for the speaker. Video capture
 # comes from Kotlin's Camera2, not from a device this crate opens.
 # `aec` implies `capture` and `playback`: a handset on speakerphone has to
