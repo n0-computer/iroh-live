@@ -24,7 +24,7 @@ use iroh_live::media::{EncodedVideoSource, RpicamConfig};
 use n0_error::{Result, anyerr};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use crate::{args::VideoCodecArg, backend::EncoderArg, source_spec::RpicamMode};
+use crate::{args::VideoCodecArg, backend::Backend, source_spec::RpicamMode};
 use crate::{
     args::{AudioCodecArg, CaptureArgs},
     rendition::{self, CaptureFramerate},
@@ -296,7 +296,7 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
              rpicam:raw takes the pictures instead and encodes them here"
         ));
     }
-    if args.encoder != EncoderArg::Auto {
+    if args.encoder != Backend::Auto {
         return Err(anyerr!(
             "--encoder {} has nothing to do under --video rpicam: rpicam-vid \
              has already encoded the picture, and no encoder of ours runs. \

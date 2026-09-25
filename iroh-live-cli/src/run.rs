@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::{
     args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
-    backend::EncoderArg,
+    backend::Backend,
     record::RecordOptions,
     source,
     transport::{self, Subscribed},
@@ -85,8 +85,8 @@ pub struct SendConfig {
 
     /// Encoder backend: `auto`, `hardware`, `software`, or the name of one
     /// backend, such as `vaapi`.
-    #[serde(default)]
-    pub encoder: EncoderArg,
+    #[serde(default, deserialize_with = "Backend::deserialize_encoder")]
+    pub encoder: Backend,
 
     /// The simulcast ladder, one entry per rung, in `--renditions`' grammar,
     /// including its `@<fps>` suffix. Empty publishes a single unscaled
@@ -501,7 +501,7 @@ mod tests {
         let send = &config.send[0];
         assert_eq!(send.video, DEFAULT_VIDEO);
         assert_eq!(send.audio, DEFAULT_AUDIO);
-        assert_eq!(send.encoder, EncoderArg::Auto);
+        assert_eq!(send.encoder, Backend::Auto);
         assert_eq!(send.codec, VideoCodecArg::H264);
         assert_eq!(send.audio_codec, AudioCodecArg::Opus);
         assert!(send.renditions.is_empty());
@@ -528,7 +528,7 @@ mod tests {
         let capture = config.send[0].capture();
         assert_eq!(capture.video, "screen");
         assert_eq!(capture.codec, VideoCodecArg::H265);
-        assert_eq!(capture.encoder, EncoderArg::Vaapi);
+        assert_eq!(capture.encoder, Backend::Named("vaapi"));
         assert_eq!(capture.renditions, ["low:320x180", "720p"]);
         assert_eq!(capture.bitrate, Some(3_000_000));
         assert!(capture.no_cursor);

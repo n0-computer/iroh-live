@@ -1,279 +1,160 @@
 //! Backend selection for `--encoder` and `--decoder`.
 //!
-//! Both flags name either a strategy (try everything, hardware only, software
-//! only) or one backend and nothing else. The backend names are moq-video's
-//! own, spelled out here because upstream keeps its `NAME` constants
-//! crate-private: one per file under `moq-video/src/encode/backend/` and
-//! `moq-video/src/decode/backend/`. When upstream gains a backend, this is the
-//! list that has to learn about it.
-//!
-//! Spelling them out is also what makes an unknown name a parse error. Passed
-//! through, it reaches moq-video as `Kind::Named` that no candidate answers to,
-//! and comes back as "no encoder available" naming nothing, long after the
-//! capture devices are open.
-//!
-//! A name that exists but is not in this build, `vaapi` without the `vaapi`
-//! feature or `videotoolbox` anywhere but macOS, is a different failure and
-//! still comes from the media stack. Which backends a build has is a
-//! compile-time question the flag cannot answer.
+//! Both flags take a strategy (`auto`, `hardware`, `software`) or the name of
+//! one backend, from moq-video's own lists (`encode::NAMES`,
+//! `decode::NAMES`). An unknown name fails at parse time. A known name that
+//! this build lacks, such as `vaapi` without the `vaapi` feature, fails when
+//! the encoder or decoder opens.
 
-use std::fmt;
-
-use clap::ValueEnum;
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use iroh_live::media::video::{decode, encode};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
-/// The video encoder `--encoder` selects.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EncoderArg {
-    /// Try the platform's hardware encoders in turn, then software.
+/// A backend choice: a strategy, or one backend by name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::Display)]
+pub enum Backend {
+    /// Tries the hardware backends in turn, then software.
     #[default]
+    #[display("auto")]
     Auto,
-    /// Hardware only: fail rather than fall back to the CPU.
-    #[value(alias = "hw")]
-    #[serde(alias = "hw")]
+    /// Hardware only: fails rather than fall back to the CPU.
+    #[display("hardware")]
     Hardware,
     /// Software only, which is openh264.
-    #[value(alias = "sw")]
-    #[serde(alias = "sw")]
+    #[display("software")]
     Software,
-    /// Apple VideoToolbox, on macOS.
-    Videotoolbox,
-    /// Media Foundation, on Windows.
-    Mediafoundation,
-    /// MediaCodec, on Android.
-    Mediacodec,
-    /// NVENC, on an NVIDIA GPU.
-    Nvenc,
-    /// VA-API, on an Intel or AMD GPU under Linux.
-    Vaapi,
-    /// A V4L2 memory-to-memory codec node, on an ARM SoC.
-    V4l2,
-    /// openh264, the software encoder, by name.
-    Openh264,
+    /// Only the backend of this name.
+    #[display("{_0}")]
+    Named(&'static str),
 }
 
-/// The video decoder `--decoder` selects.
-///
-/// The same shape as [`EncoderArg`] over a different set of backends: NVIDIA
-/// decodes through NVDEC rather than NVENC, and the rest happen to be named the
-/// same on both sides.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DecoderArg {
-    /// Try the platform's hardware decoders in turn, then software.
-    #[default]
-    Auto,
-    /// Hardware only: fail rather than fall back to the CPU.
-    #[value(alias = "hw")]
-    #[serde(alias = "hw")]
-    Hardware,
-    /// Software only, which is openh264.
-    #[value(alias = "sw")]
-    #[serde(alias = "sw")]
-    Software,
-    /// Apple VideoToolbox, on macOS.
-    Videotoolbox,
-    /// Media Foundation, on Windows.
-    Mediafoundation,
-    /// MediaCodec, on Android.
-    Mediacodec,
-    /// NVDEC, on an NVIDIA GPU.
-    Nvdec,
-    /// VA-API, on an Intel or AMD GPU under Linux.
-    Vaapi,
-    /// A V4L2 memory-to-memory codec node, on an ARM SoC.
-    V4l2,
-    /// openh264, the software decoder, by name.
-    Openh264,
-}
+impl Backend {
+    /// Returns every decoder choice.
+    pub fn decoders() -> impl Iterator<Item = Self> {
+        Self::choices(decode::NAMES)
+    }
 
-impl fmt::Display for EncoderArg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = self.to_possible_value().expect(SPELLED_OUT);
-        f.write_str(value.get_name())
+    /// Returns the clap parser for `--encoder`.
+    pub fn encoder_parser() -> impl TypedValueParser<Value = Self> {
+        Self::parser(encode::NAMES)
+    }
+
+    /// Returns the clap parser for `--decoder`.
+    pub fn decoder_parser() -> impl TypedValueParser<Value = Self> {
+        Self::parser(decode::NAMES)
+    }
+
+    /// Deserializes an encoder choice, for `irl run`'s session file.
+    pub fn deserialize_encoder<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value, encode::NAMES)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown encoder '{value}'")))
+    }
+
+    fn choices(names: &'static [&'static str]) -> impl Iterator<Item = Self> {
+        [Self::Auto, Self::Hardware, Self::Software]
+            .into_iter()
+            .chain(names.iter().map(|name| Self::Named(name)))
+    }
+
+    fn parse(value: &str, names: &'static [&'static str]) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "hardware" | "hw" => Some(Self::Hardware),
+            "software" | "sw" => Some(Self::Software),
+            other => names
+                .iter()
+                .find(|name| **name == other)
+                .map(|name| Self::Named(name)),
+        }
+    }
+
+    fn parser(names: &'static [&'static str]) -> impl TypedValueParser<Value = Self> {
+        let values = Self::choices(names).map(|choice| match choice {
+            Self::Hardware => PossibleValue::new("hardware").alias("hw"),
+            Self::Software => PossibleValue::new("software").alias("sw"),
+            Self::Auto => PossibleValue::new("auto"),
+            Self::Named(name) => PossibleValue::new(name),
+        });
+        PossibleValuesParser::new(values)
+            .map(move |value| Self::parse(&value, names).expect("clap checked the value"))
     }
 }
 
-impl fmt::Display for DecoderArg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = self.to_possible_value().expect(SPELLED_OUT);
-        f.write_str(value.get_name())
-    }
-}
-
-/// Why a variant always has a name: none of them is `#[value(skip)]`, so clap
-/// generated one for every one.
-const SPELLED_OUT: &str = "every variant of a backend flag has a name";
-
-impl From<EncoderArg> for encode::Kind {
-    fn from(arg: EncoderArg) -> Self {
-        match arg {
-            EncoderArg::Auto => Self::Auto,
-            EncoderArg::Hardware => Self::Hardware,
-            EncoderArg::Software => Self::Software,
-            named => Self::Named(named.to_string()),
+impl From<Backend> for encode::Kind {
+    fn from(backend: Backend) -> Self {
+        match backend {
+            Backend::Auto => Self::Auto,
+            Backend::Hardware => Self::Hardware,
+            Backend::Software => Self::Software,
+            Backend::Named(name) => Self::Named(name.to_string()),
         }
     }
 }
 
-impl From<DecoderArg> for decode::Kind {
-    fn from(arg: DecoderArg) -> Self {
-        match arg {
-            DecoderArg::Auto => Self::Auto,
-            DecoderArg::Hardware => Self::Hardware,
-            DecoderArg::Software => Self::Software,
-            named => Self::Named(named.to_string()),
-        }
-    }
-}
-
-impl DecoderArg {
-    /// The selection `kind` stands for, or [`Auto`](Self::Auto) for anything
-    /// this flag cannot spell.
-    ///
-    /// Reads back what [`From`] wrote, so a window can seed its picker from the
-    /// policy the broadcast is already playing under rather than tracking the
-    /// choice alongside it. `moq_video::decode::Kind` is `#[non_exhaustive]` and
-    /// its `Named` carries a free-form string, so not every value it can hold
-    /// has a variant here.
-    pub fn from_kind(kind: &decode::Kind) -> Self {
-        match kind {
-            decode::Kind::Hardware => Self::Hardware,
-            decode::Kind::Software => Self::Software,
-            decode::Kind::Named(name) => Self::from_str(name, true).unwrap_or(Self::Auto),
-            _ => Self::Auto,
+impl From<Backend> for decode::Kind {
+    fn from(backend: Backend) -> Self {
+        match backend {
+            Backend::Auto => Self::Auto,
+            Backend::Hardware => Self::Hardware,
+            Backend::Software => Self::Software,
+            Backend::Named(name) => Self::Named(name.to_string()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
 
-    #[test]
-    fn backend_names_match_upstream() {
-        // The names moq-video's backends are registered under. Change these
-        // only alongside `moq-video/src/{encode,decode}/backend/`.
-        let expected = [
-            (EncoderArg::Auto, "auto"),
-            (EncoderArg::Hardware, "hardware"),
-            (EncoderArg::Software, "software"),
-            (EncoderArg::Videotoolbox, "videotoolbox"),
-            (EncoderArg::Mediafoundation, "mediafoundation"),
-            (EncoderArg::Mediacodec, "mediacodec"),
-            (EncoderArg::Nvenc, "nvenc"),
-            (EncoderArg::Vaapi, "vaapi"),
-            (EncoderArg::V4l2, "v4l2"),
-            (EncoderArg::Openh264, "openh264"),
-        ];
-        for (arg, name) in expected {
-            assert_eq!(arg.to_string(), name);
-            assert_eq!(EncoderArg::from_str(name, true), Ok(arg));
-        }
+    #[derive(Parser)]
+    struct Flags {
+        #[arg(long, value_parser = Backend::encoder_parser(), default_value = "auto")]
+        encoder: Backend,
+        #[arg(long, value_parser = Backend::decoder_parser(), default_value = "auto")]
+        decoder: Backend,
+    }
 
-        let expected = [
-            (DecoderArg::Auto, "auto"),
-            (DecoderArg::Hardware, "hardware"),
-            (DecoderArg::Software, "software"),
-            (DecoderArg::Videotoolbox, "videotoolbox"),
-            (DecoderArg::Mediafoundation, "mediafoundation"),
-            (DecoderArg::Mediacodec, "mediacodec"),
-            (DecoderArg::Nvdec, "nvdec"),
-            (DecoderArg::Vaapi, "vaapi"),
-            (DecoderArg::V4l2, "v4l2"),
-            (DecoderArg::Openh264, "openh264"),
-        ];
-        for (arg, name) in expected {
-            assert_eq!(arg.to_string(), name);
-            assert_eq!(DecoderArg::from_str(name, true), Ok(arg));
-        }
+    fn parse(args: &[&str]) -> Result<Flags, clap::Error> {
+        Flags::try_parse_from(std::iter::once("irl").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn strategies_and_backend_names_parse() {
+        let flags = parse(&["--encoder", "hw", "--decoder", "nvdec"]).expect("valid choices");
+        assert_eq!(flags.encoder, Backend::Hardware);
+        assert_eq!(flags.decoder, Backend::Named("nvdec"));
+        assert_eq!(parse(&[]).expect("defaults").encoder, Backend::Auto);
+        assert_eq!(
+            encode::Kind::from(Backend::Named("vaapi")),
+            encode::Kind::Named("vaapi".to_string())
+        );
     }
 
     #[test]
     fn a_name_no_backend_answers_to_is_rejected() {
-        assert!(EncoderArg::from_str("nvdec", true).is_err());
-        assert!(EncoderArg::from_str("x264", true).is_err());
-        assert!(DecoderArg::from_str("nvenc", true).is_err());
-        assert!(DecoderArg::from_str("", true).is_err());
+        assert!(parse(&["--encoder", "nvdec"]).is_err());
+        assert!(parse(&["--encoder", "x264"]).is_err());
+        assert!(parse(&["--decoder", "nvenc"]).is_err());
     }
 
     #[test]
-    fn the_short_spellings_are_accepted() {
-        assert_eq!(EncoderArg::from_str("hw", true), Ok(EncoderArg::Hardware));
-        assert_eq!(EncoderArg::from_str("sw", true), Ok(EncoderArg::Software));
-        assert_eq!(DecoderArg::from_str("HW", true), Ok(DecoderArg::Hardware));
-        assert_eq!(DecoderArg::from_str("Sw", true), Ok(DecoderArg::Software));
-    }
-
-    #[test]
-    fn a_strategy_maps_to_a_strategy_and_a_backend_to_its_name() {
-        assert_eq!(encode::Kind::from(EncoderArg::Auto), encode::Kind::Auto);
-        assert_eq!(
-            encode::Kind::from(EncoderArg::Hardware),
-            encode::Kind::Hardware
-        );
-        assert_eq!(
-            encode::Kind::from(EncoderArg::Vaapi),
-            encode::Kind::Named("vaapi".to_string())
-        );
-        assert_eq!(decode::Kind::from(DecoderArg::Auto), decode::Kind::Auto);
-        assert_eq!(
-            decode::Kind::from(DecoderArg::Software),
-            decode::Kind::Software
-        );
-        assert_eq!(
-            decode::Kind::from(DecoderArg::Nvdec),
-            decode::Kind::Named("nvdec".to_string())
-        );
-    }
-
-    #[test]
-    fn a_decoder_selection_survives_the_round_trip_through_a_policy() {
-        for arg in DecoderArg::value_variants() {
-            let kind = decode::Kind::from(*arg);
-            assert_eq!(DecoderArg::from_kind(&kind), *arg);
+    fn every_choice_parses_back_from_its_name() {
+        for choice in Backend::choices(encode::NAMES) {
+            assert_eq!(
+                Backend::parse(&choice.to_string(), encode::NAMES),
+                Some(choice)
+            );
         }
-    }
-
-    #[test]
-    fn a_backend_the_flag_cannot_spell_reads_back_as_auto() {
-        let kind = decode::Kind::Named("something-upstream-added".to_string());
-        assert_eq!(DecoderArg::from_kind(&kind), DecoderArg::Auto);
-    }
-
-    /// The strategy names are ours; every other value has to be a name
-    /// `moq-video` answers to, and upstream now publishes that vocabulary.
-    ///
-    /// The test beside this one compares the enum against string literals in
-    /// this same file, which proves only that the file agrees with itself. A
-    /// backend renamed upstream would pass it and then fail at the moment
-    /// somebody selected the name, as `NoEncoder`. This compares against the
-    /// list upstream keeps, and upstream asserts that list covers every backend
-    /// it compiled, so a rename fails here and an addition fails there.
-    #[test]
-    fn every_backend_upstream_names_is_offered() {
-        let ours: Vec<String> = EncoderArg::value_variants()
-            .iter()
-            .map(ToString::to_string)
-            .filter(|name| !matches!(name.as_str(), "auto" | "hardware" | "software"))
-            .collect();
-        let mut theirs: Vec<&str> = iroh_live_media::video::encode::NAMES.to_vec();
-        theirs.sort_unstable();
-        let mut ours: Vec<&str> = ours.iter().map(String::as_str).collect();
-        ours.sort_unstable();
-        assert_eq!(ours, theirs, "the encoder list has drifted from moq-video");
-
-        let ours: Vec<String> = DecoderArg::value_variants()
-            .iter()
-            .map(ToString::to_string)
-            .filter(|name| !matches!(name.as_str(), "auto" | "hardware" | "software"))
-            .collect();
-        let mut theirs: Vec<&str> = iroh_live_media::video::decode::NAMES.to_vec();
-        theirs.sort_unstable();
-        let mut ours: Vec<&str> = ours.iter().map(String::as_str).collect();
-        ours.sort_unstable();
-        assert_eq!(ours, theirs, "the decoder list has drifted from moq-video");
+        for choice in Backend::decoders() {
+            assert_eq!(
+                Backend::parse(&choice.to_string(), decode::NAMES),
+                Some(choice)
+            );
+        }
     }
 }

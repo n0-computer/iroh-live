@@ -1033,7 +1033,7 @@ mod tests {
         let line = ["irl", "watch"].into_iter().chain(args.iter().copied());
         let cli = crate::Cli::try_parse_from(line).expect("the flags are accepted");
         match cli.command {
-            crate::Command::Watch(args) => args,
+            crate::Command::Watch(args) => *args,
             other => panic!("expected watch, got {other:?}"),
         }
     }

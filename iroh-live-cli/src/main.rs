@@ -58,7 +58,7 @@ enum Command {
     Run(args::RunArgs),
     /// Subscribe to a remote broadcast and play it.
     #[command(visible_alias = "play")]
-    Watch(args::WatchArgs),
+    Watch(Box<args::WatchArgs>),
 }
 
 fn main() -> n0_error::Result {
@@ -82,7 +82,7 @@ fn main() -> n0_error::Result {
         #[cfg(feature = "render")]
         Command::Room(args) => room::run(*args, &rt),
         Command::Run(args) => run::run(args, &rt),
-        Command::Watch(args) => watch::run(args, &rt),
+        Command::Watch(args) => watch::run(*args, &rt),
     }
 }
 

@@ -4,7 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use clap::ValueEnum;
 use eframe::egui;
 use iroh_live::{
     Live,
@@ -18,7 +17,7 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::Watcher as _;
 use tracing::{info, warn};
 
-use crate::{args::PlaybackArgs, backend::DecoderArg};
+use crate::{args::PlaybackArgs, backend::Backend};
 
 /// The player config a window wants: the decoder `--decoder` asked for, the
 /// latency `--latency` names, and audio through `output`.
@@ -280,7 +279,7 @@ pub struct RemoteView {
     /// The decoder the picker last asked for, which is not necessarily the one
     /// running: `Auto` names a strategy, and a backend that fails to open leaves
     /// the incumbent playing.
-    decoder: DecoderArg,
+    decoder: Backend,
     /// The output gain the slider last set.
     volume: f32,
     /// The subscription the broadcast arrives over, for the overlay's link
@@ -347,7 +346,7 @@ impl RemoteView {
         ctx: &egui::Context,
         name: &str,
         player: Player,
-        decoder: DecoderArg,
+        decoder: Backend,
         render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
         let video = VideoView::new(ctx, name, player.video(), render_state);
@@ -392,7 +391,7 @@ impl RemoteView {
     ///
     /// The replacement opens alongside the incumbent and takes over once it has
     /// caught up, leaving the picture up across the change.
-    pub fn set_decoder(&mut self, choice: DecoderArg) {
+    pub fn set_decoder(&mut self, choice: Backend) {
         self.decoder = choice;
         info!(decoder = %choice, "decoder selected");
         self.player.set_decoder(choice.into());
@@ -478,13 +477,13 @@ impl RemoteView {
         egui::ComboBox::from_id_salt(format!("{id}-decoder"))
             .selected_text(label)
             .show_ui(ui, |ui| {
-                for candidate in DecoderArg::value_variants() {
-                    let selected = self.decoder == *candidate;
+                for candidate in Backend::decoders() {
+                    let selected = self.decoder == candidate;
                     if ui
                         .selectable_label(selected, candidate.to_string())
                         .clicked()
                     {
-                        chosen = Some(*candidate);
+                        chosen = Some(candidate);
                     }
                 }
             });

@@ -15,10 +15,8 @@ use iroh_live::rooms::RoomTicket;
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
-#[cfg(feature = "render")]
-use crate::backend::DecoderArg;
 use crate::{
-    backend::EncoderArg,
+    backend::Backend,
     source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
 };
 
@@ -95,8 +93,8 @@ pub struct CaptureArgs {
 
     /// Encoder to use. A backend named here is the only one tried, so a
     /// machine without it fails rather than quietly encoding on the CPU.
-    #[arg(long, value_enum, default_value_t = EncoderArg::Auto)]
-    pub encoder: EncoderArg,
+    #[arg(long, value_parser = Backend::encoder_parser(), default_value = "auto")]
+    pub encoder: Backend,
 
     /// Simulcast ladder, comma-separated. Each rung is `<height>p`,
     /// `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at
@@ -159,7 +157,7 @@ impl Default for CaptureArgs {
             audio: DEFAULT_AUDIO.to_string(),
             test_source: false,
             codec: VideoCodecArg::default(),
-            encoder: EncoderArg::default(),
+            encoder: Backend::default(),
             renditions: Vec::new(),
             keyframe_interval: DEFAULT_KEYFRAME_SECONDS,
             bitrate: None,
@@ -292,8 +290,8 @@ pub enum ImportFormat {
 pub struct PlaybackArgs {
     /// Decoder to use. A backend named here is the only one tried, so a
     /// machine without it fails rather than quietly falling back to software.
-    #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
-    pub decoder: DecoderArg,
+    #[arg(long, value_parser = Backend::decoder_parser(), default_value = "auto")]
+    pub decoder: Backend,
 
     /// How much slack the player keeps against a link that delivers unevenly.
     #[arg(long, value_enum, default_value_t = LatencyArg::default())]
