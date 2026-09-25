@@ -127,9 +127,10 @@ impl VideoFrames {
     /// For a render loop that draws only when the picture changed.
     pub fn try_next(&mut self) -> Option<Arc<video::Frame>> {
         let frame = self.rx.borrow_and_update();
-        match frame.has_changed() {
-            true => frame.clone(),
-            false => None,
+        if frame.has_changed() {
+            frame.clone()
+        } else {
+            None
         }
     }
 

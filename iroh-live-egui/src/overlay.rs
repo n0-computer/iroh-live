@@ -1085,12 +1085,11 @@ impl DebugOverlay {
             .windows(2)
             .map(|pair| signed_ms(pair[1].presented, pair[0].presented))
             .collect();
-        let expected = match gaps.len() >= 2 {
-            true => {
-                gaps.sort_by(f32::total_cmp);
-                gaps[gaps.len() / 2]
-            }
-            false => 1000.0 / 30.0,
+        let expected = if gaps.len() >= 2 {
+            gaps.sort_by(f32::total_cmp);
+            gaps[gaps.len() / 2]
+        } else {
+            1000.0 / 30.0
         };
         for (index, timing) in video.iter().enumerate() {
             let x = lanes.x(timing.presented);
@@ -1120,9 +1119,10 @@ impl DebugOverlay {
                 .get(index + 1)
                 .map_or(x + 4.0, |next| lanes.x(next.presented));
             let width = (next - x - 0.5).clamp(2.0, 10.0);
-            let color = match signed_ms(timing.presented, timing.decoded) > 100.0 {
-                true => COLOR_BAD,
-                false => COLOR_AUDIO,
+            let color = if signed_ms(timing.presented, timing.decoded) > 100.0 {
+                COLOR_BAD
+            } else {
+                COLOR_AUDIO
             };
             let block = egui::Rect::from_min_size(
                 egui::pos2(x, audio_rect.min.y + 5.0),

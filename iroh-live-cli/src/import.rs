@@ -216,9 +216,10 @@ async fn read_header(
                 "reached the end of {} after {read} bytes without finding a {:?} header{}",
                 source.path.display(),
                 source.format,
-                match source.transcode {
-                    true => "",
-                    false => "; if this is a plain MP4, re-run with --transcode",
+                if source.transcode {
+                    ""
+                } else {
+                    "; if this is a plain MP4, re-run with --transcode"
                 }
             ));
         }

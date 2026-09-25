@@ -117,12 +117,13 @@ impl Latency {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        match self.min > self.max {
-            true => Err(Error::invalid(format!(
+        if self.min > self.max {
+            Err(Error::invalid(format!(
                 "a latency's minimum ({:?}) is above its maximum ({:?})",
                 self.min, self.max
-            ))),
-            false => Ok(()),
+            )))
+        } else {
+            Ok(())
         }
     }
 }

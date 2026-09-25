@@ -205,9 +205,10 @@ impl AudioSourceSpec {
 
 /// Splits the `:loop` suffix off a file path, if it carries one.
 fn split_loop(rest: &str) -> (&str, bool) {
-    match rest.to_lowercase().ends_with(":loop") {
-        true => (&rest[..rest.len() - ":loop".len()], true),
-        false => (rest, false),
+    if rest.to_lowercase().ends_with(":loop") {
+        (&rest[..rest.len() - ":loop".len()], true)
+    } else {
+        (rest, false)
     }
 }
 

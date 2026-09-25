@@ -477,13 +477,12 @@ fn pace(
         }
     });
     let paced = controls.latency.borrow().paced();
-    let due = match paced {
-        true => {
-            clock.received(pts);
-            let clock = clock.clone();
-            async move { clock.wait_async(pts).await }.boxed()
-        }
-        false => std::future::ready(true).boxed(),
+    let due = if paced {
+        clock.received(pts);
+        let clock = clock.clone();
+        async move { clock.wait_async(pts).await }.boxed()
+    } else {
+        std::future::ready(true).boxed()
     };
     Delivery {
         frame,

@@ -295,12 +295,13 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
 
     // `--bitrate` is for the largest rung. An unsized rung is at source size,
     // which is unknown here, so there is nothing to scale against.
-    let largest = match rungs.iter().any(|rung| rung.size.is_none()) {
-        true => None,
-        false => rungs
+    let largest = if rungs.iter().any(|rung| rung.size.is_none()) {
+        None
+    } else {
+        rungs
             .iter()
             .filter_map(|rung| rung.size)
-            .max_by_key(Size::pixels),
+            .max_by_key(Size::pixels)
     };
 
     rungs

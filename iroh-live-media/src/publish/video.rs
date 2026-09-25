@@ -358,13 +358,14 @@ impl Encoder {
                 }
                 // A frame of another size than the track advertises is scaled
                 // to it, for example after a phone camera turns to portrait.
-                let frame = match frame.size() == target {
-                    true => frame,
-                    false => Arc::new(
+                let frame = if frame.size() == target {
+                    frame
+                } else {
+                    Arc::new(
                         frame
                             .resize(target, &Default::default())
                             .map_err(Error::encoder)?,
-                    ),
+                    )
                 };
 
                 let started = Instant::now();

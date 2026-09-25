@@ -44,15 +44,16 @@ async fn main() -> n0_error::Result {
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
     let source = VideoSource::capture(capture).await?;
-    let encoding = match args.simulcast {
-        false => VideoEncoding::single(VideoRendition::new("video")),
-        true => VideoEncoding::ladder([
+    let encoding = if args.simulcast {
+        VideoEncoding::ladder([
             VideoRendition::new("high"),
             VideoRendition {
                 size: Some(video::Size::new(320, 180)),
                 ..VideoRendition::new("low")
             },
-        ]),
+        ])
+    } else {
+        VideoEncoding::single(VideoRendition::new("video"))
     };
     broadcast.set_video(source, encoding)?;
 

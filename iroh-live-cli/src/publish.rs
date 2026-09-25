@@ -51,9 +51,10 @@ async fn setup_capture(
         live.publish(&args.transport.name, &broadcast)?;
         let ticket = transport::advertise(live, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.
-        let (video, audio) = match args.capture.test_source {
-            true => ("test", "test"),
-            false => (args.capture.video.as_str(), args.capture.audio.as_str()),
+        let (video, audio) = if args.capture.test_source {
+            ("test", "test")
+        } else {
+            (args.capture.video.as_str(), args.capture.audio.as_str())
         };
         info!(
             name = %args.transport.name,

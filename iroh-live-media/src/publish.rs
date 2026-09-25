@@ -363,9 +363,10 @@ impl LocalBroadcast {
     }
 
     fn check_open(&self) -> Result<(), Error> {
-        match self.shared.closed.is_cancelled() {
-            true => Err(n0_error::e!(Error::Closed)),
-            false => Ok(()),
+        if self.shared.closed.is_cancelled() {
+            Err(n0_error::e!(Error::Closed))
+        } else {
+            Ok(())
         }
     }
 

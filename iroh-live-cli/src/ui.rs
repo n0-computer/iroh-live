@@ -68,9 +68,10 @@ fn fullscreen_button(ui: &mut egui::Ui, ctx: &egui::Context, bar: egui::Rect) {
         size,
     );
     let response = ui.interact(rect, egui::Id::new("fullscreen"), egui::Sense::click());
-    let color = match response.hovered() {
-        true => egui::Color32::from_white_alpha(200),
-        false => egui::Color32::from_white_alpha(140),
+    let color = if response.hovered() {
+        egui::Color32::from_white_alpha(200)
+    } else {
+        egui::Color32::from_white_alpha(140)
     };
     ui.painter_at(bar).text(
         rect.center(),
@@ -371,9 +372,10 @@ impl RemoteView {
             self.overlay.set_link(lines);
         }
         // Copy the timeline only while the TIME panel is open.
-        let timeline = match self.overlay.timeline_open() {
-            true => self.player.timeline(),
-            false => Vec::new(),
+        let timeline = if self.overlay.timeline_open() {
+            self.player.timeline()
+        } else {
+            Vec::new()
         };
         self.overlay
             .show_playback(ui, rect, &stats, &status, &timeline);
@@ -420,9 +422,10 @@ impl RemoteView {
         ui.label("Decoder");
         // Show the running backend next to the choice when they differ, as
         // with `Auto` or a named backend that failed to open.
-        let label = match self.decoder.to_string() == running {
-            true => running,
-            false => format!("{} ({running})", self.decoder),
+        let label = if self.decoder.to_string() == running {
+            running
+        } else {
+            format!("{} ({running})", self.decoder)
         };
         let mut chosen = None;
         egui::ComboBox::from_id_salt(format!("{id}-decoder"))

@@ -159,13 +159,14 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     let mut receivers: Vec<Receiver> = Vec::new();
     let mut recordings: JoinSet<Result<()>> = JoinSet::new();
     let stop_recording = CancellationToken::new();
-    let output = match config
+    let output = if config
         .recv
         .iter()
         .any(|recv| recv.audio_output == AudioOutput::Default)
     {
-        true => Some(crate::playback::output(None).await?),
-        false => None,
+        Some(crate::playback::output(None).await?)
+    } else {
+        None
     };
 
     for send in &config.send {

@@ -385,9 +385,10 @@ async fn scan(
         };
 
         // Warn once. The screen shows every failure.
-        match said_so {
-            false => warn!(%problem, "the scan camera is unusable"),
-            true => debug!(%problem, "the scan camera is still unusable"),
+        if said_so {
+            debug!(%problem, "the scan camera is still unusable");
+        } else {
+            warn!(%problem, "the scan camera is unusable");
         }
         said_so = true;
         report(state, ctx, ScanState::Failed(problem));
@@ -573,16 +574,17 @@ fn still_skipped(skip: Option<&Skip>, ticket: &BroadcastTicket) -> Option<Durati
 
 /// Returns the error for a camera that opened and delivered no frames.
 fn no_frames(device: &str, rpicam: bool) -> String {
-    match rpicam {
-        true => format!(
+    if rpicam {
+        format!(
             "{device} opened but sent no pictures within {}s; check the ribbon cable",
             FIRST_FRAME_GRACE.as_secs()
-        ),
-        false => format!(
+        )
+    } else {
+        format!(
             "{device} opened but sent no pictures within {}s. A Raspberry Pi camera is not \
              reachable this way: pass --scan-camera rpicam",
             FIRST_FRAME_GRACE.as_secs()
-        ),
+        )
     }
 }
 
@@ -731,9 +733,10 @@ fn gaussian_blur(image: &Luma, sigma: f64) -> Luma {
                     .enumerate()
                     .map(|(index, weight)| {
                         let offset = index as i64 - radius;
-                        match horizontal {
-                            true => weight * at(source, x + offset, y),
-                            false => weight * at(source, x, y + offset),
+                        if horizontal {
+                            weight * at(source, x + offset, y)
+                        } else {
+                            weight * at(source, x, y + offset)
                         }
                     })
                     .sum();
@@ -870,10 +873,7 @@ mod tests {
         }
         while high - low > 1 {
             let mid = (low + high) / 2;
-            match reads(mid) {
-                true => low = mid,
-                false => high = mid,
-            }
+            if reads(mid) { low = mid } else { high = mid }
         }
         f64::from(low) / 10.0
     }

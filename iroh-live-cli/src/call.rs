@@ -98,9 +98,10 @@ impl Camera {
             None => true,
             Some(scan) => same_device(&publishing, scan),
         };
-        match holds_a_camera && shared {
-            true => Self::Publisher,
-            false => Self::Free,
+        if holds_a_camera && shared {
+            Self::Publisher
+        } else {
+            Self::Free
         }
     }
 }
@@ -1020,9 +1021,10 @@ mod window {
             .clicked();
         let submitted =
             ready && response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
-        match clicked || submitted {
-            true => Some(waiting.input.trim().to_string()),
-            false => None,
+        if clicked || submitted {
+            Some(waiting.input.trim().to_string())
+        } else {
+            None
         }
     }
 

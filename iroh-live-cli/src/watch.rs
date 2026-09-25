@@ -28,16 +28,6 @@ enum Start {
     Scan,
 }
 
-/// Which tracks a subscription opens.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum TrackSelection {
-    /// Video and audio.
-    #[default]
-    Both,
-    /// Audio only, for `--no-video`.
-    AudioOnly,
-}
-
 /// The parts of [`WatchArgs`] a subscription needs, owned so a task can hold them.
 #[derive(Debug, Clone)]
 struct Options {
@@ -45,7 +35,8 @@ struct Options {
     rendition: Option<String>,
     /// The camera the scan screen opens.
     scan_camera: Option<crate::source_spec::VideoSourceSpec>,
-    tracks: TrackSelection,
+    /// Plays audio only, for `--no-video`.
+    no_video: bool,
     /// How the video is decoded.
     playback: crate::args::PlaybackArgs,
     /// Where the audio plays.
@@ -58,10 +49,7 @@ impl From<&WatchArgs> for Options {
             rendition: args.rendition.clone(),
             // Parsed by the caller, which can report a bad specifier.
             scan_camera: None,
-            tracks: match args.no_video {
-                true => TrackSelection::AudioOnly,
-                false => TrackSelection::Both,
-            },
+            no_video: args.no_video,
             playback: args.playback,
             // Opened by the async `setup`.
             output: AudioOutput::null(),
@@ -187,11 +175,11 @@ async fn connect(
     }
 
     let config = crate::ui::player_config(&options.playback, Some(&options.output));
-    let rendition = match (options.tracks, &options.rendition) {
+    let rendition = match (options.no_video, &options.rendition) {
         // An unused video decoder would still cost a core.
-        (TrackSelection::AudioOnly, _) => RenditionMode::Off,
-        (TrackSelection::Both, Some(name)) => RenditionMode::pinned(name.clone()),
-        (TrackSelection::Both, None) => config.rendition.clone(),
+        (true, _) => RenditionMode::Off,
+        (false, Some(name)) => RenditionMode::pinned(name.clone()),
+        (false, None) => config.rendition.clone(),
     };
     let config = PlayerConfig {
         rendition,

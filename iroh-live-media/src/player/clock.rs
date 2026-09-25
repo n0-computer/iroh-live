@@ -165,9 +165,10 @@ impl PlayoutClock {
         };
 
         let sleep_ms = (current_ref - (self.now_ms() - timestamp_ms)) + state.latency_ms();
-        match sleep_ms > 0 {
-            true => Delay::After(Duration::from_millis(sleep_ms as u64)),
-            false => Delay::Now,
+        if sleep_ms > 0 {
+            Delay::After(Duration::from_millis(sleep_ms as u64))
+        } else {
+            Delay::Now
         }
     }
 
