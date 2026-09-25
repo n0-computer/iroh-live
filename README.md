@@ -30,12 +30,8 @@ irl watch <TICKET>
 Without a camera, `irl publish --test-source` publishes a generated pattern and
 a beeping tone.
 
-To reach browsers, attach to a relay. The node redials the relay if the
-session drops. Browsers watch on the relay's page, and a Rust node reads
-through the relay by attaching to it as well (`Reach::Relays`); `irl watch`
-dials the publisher only. Use a relay that keeps each publisher to its own
-paths, as `iroh-live-relay` does: on one where anyone may publish anywhere, a
-viewer can be served a forgery.
+To reach browsers, attach to a relay. The
+[relay guide](docs/guide/browser-relay.md) explains how.
 
 ```sh
 irl publish --relay <RELAY_ENDPOINT_ID>
@@ -105,8 +101,9 @@ Every codec compiles upstream, so there are no per-codec features. The
 features gate devices and graphics. `iroh-live-media` defines them, and its
 [README](iroh-live-media/README.md#feature-flags) lists them. `iroh-live`
 passes them through and turns on `capture`, `render`, and `sound-server` by
-default. `irl` also turns on `playback` and `aec`. `iroh-live` adds `rooms`,
-which re-exports `iroh-live-rooms`.
+default. `irl` also turns on `playback` and `aec`. `iroh-live` adds `media`
+(default), which turns the media stack on, and each device feature implies
+it. It also adds `rooms`, which re-exports `iroh-live-rooms`.
 
 ### Cross-compiling for aarch64
 

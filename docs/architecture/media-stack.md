@@ -62,5 +62,6 @@ renderer for the Pi Zero, which has no Vulkan.
 `iroh-live-media` defines the device and graphics features, and its
 [README](../../iroh-live-media/README.md#feature-flags) lists them.
 `iroh-live` forwards them and defaults to `capture`, `render` and
-`sound-server`. `iroh-live-cli` always renders and defaults to `aec`,
-`playback` and `sound-server`.
+`sound-server`. Its `media` feature (default) turns the media stack on, and
+each device feature implies it. `iroh-live-cli` always renders and defaults to
+`aec`, `playback` and `sound-server`.

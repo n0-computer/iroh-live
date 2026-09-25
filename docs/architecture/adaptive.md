@@ -34,8 +34,8 @@ Every `iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that
 reads its MoQ session's statistics every 200 ms and keeps the latest
 `LinkSample`. A direct session starts the history over when the connection
 selects another path, and a relay link on every reconnect. Both bump
-`path_generation`. `Live::subscribe` and `Live::remote_broadcast` attach a
-closure (`iroh-live/src/network.rs`) that reads `Subscription::link()` for
+`path_generation`. `Live::remote_broadcast` attaches a closure
+(`iroh-live/src/network.rs`) that reads `Subscription::link()` for
 whichever link serves the subscription at that moment. It converts the sample
 into a `NetworkSample` and counts a change of serving link as a new path too.
 

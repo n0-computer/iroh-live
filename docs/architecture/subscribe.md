@@ -29,10 +29,10 @@ gone closes the broadcast. `RemoteBroadcast::local(&broadcast)` reads a
 `Catalog` is hang's catalog behind an `Arc` and derefs to it.
 `ranked_video()` lists the video renditions largest first.
 
-`Live::subscribe` resolves the path, builds the `RemoteBroadcast` with
-`from_resolved`, and attaches the serving link's measurements with
-`with_network`. `Live::remote_broadcast` does the same for a `Subscription`
-from a room or from `Moq::subscribe`. See [adaptive bitrate](adaptive.md).
+`Live::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
+`from_resolved` and attaches the serving link's measurements, whether the
+subscription came from `Live::subscribe`, a room or `Moq::subscribe`. See
+[adaptive bitrate](adaptive.md).
 
 ## Video decoding
 
@@ -129,7 +129,8 @@ let config = PlayerConfig {
 ```
 
 It carries the `rendition` mode, the `latency`, the `audio` output, the
-`decoder` backend and the `adaptation` thresholds and timers.
+`decoder` backend, the `adaptation` thresholds and timers, and the
+`switch_deadline` of a decoder handover.
 `Latency { min, max }` sets how far behind live to run. The playout clock holds
 each picture for `min`, and `max` becomes `max_age` on the video and audio
 decode options, where upstream drops stale groups. The default holds for
