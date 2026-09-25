@@ -37,6 +37,7 @@ use jni::{
 use moq_net::Timestamp;
 use moq_video::{Frame, I420, Rate, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
+use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher as _;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
@@ -215,7 +216,7 @@ struct SessionHandle {
     /// The task waiting for somebody to call, for a handle from `answer`.
     /// Aborted when this handle drops, which is what stops an unanswered wait
     /// outliving the screen that started it.
-    waiting: Option<AbortOnDrop>,
+    waiting: Option<AbortOnDropHandle<()>>,
     /// Set by `disconnect` under the lock, so an answer that lands while the
     /// handle is being torn down closes its call rather than installing it on
     /// a handle nobody will close again.
@@ -226,19 +227,6 @@ struct SessionHandle {
 }
 
 type SharedHandle = Arc<Mutex<SessionHandle>>;
-
-/// A spawned task that is cancelled when this is dropped.
-///
-/// `tokio::task::JoinHandle` detaches on drop, which for the answering task
-/// would mean an endpoint and a camera held open by a wait nobody is watching.
-#[derive(Debug)]
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
 
 impl SessionHandle {
     /// An empty handle: no session, nothing to draw, counters at zero.
@@ -550,7 +538,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
             error!("answering failed: {err:#}");
         }
     });
-    shared.lock().expect("poisoned").waiting = Some(AbortOnDrop(task));
+    shared.lock().expect("poisoned").waiting = Some(AbortOnDropHandle::new(task));
 
     Ok(handle::to_i64(shared))
 }

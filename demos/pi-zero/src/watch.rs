@@ -15,6 +15,7 @@ use iroh_live::{
     media::{Player, VideoFrames},
 };
 use moq_video::Frame;
+#[cfg(feature = "windowed")]
 use n0_watcher::Watcher as _;
 
 use crate::gles::GlesRenderer;
@@ -46,7 +47,7 @@ fn try_upload_frame(
 }
 
 /// Prints FPS and RTT stats every second.
-#[allow(dead_code, reason = "useful for debugging but not called in release")]
+#[cfg(feature = "windowed")]
 fn print_stats(session: &Session, player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
     let elapsed = fps_last.elapsed();
     if elapsed < Duration::from_secs(1) {

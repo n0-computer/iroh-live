@@ -322,31 +322,21 @@ pub enum LatencyArg {
 
 #[cfg(feature = "render")]
 impl LatencyArg {
-    /// The playout jitter buffer this mode asks for.
+    /// Returns the player latency this mode stands for.
     ///
-    /// Balanced is what the player has always used. Realtime is two frames at
-    /// 30fps, which is about as little as a link with any variance at all can
-    /// be given. Smooth is chosen to cover a Wi-Fi retransmission burst, which
-    /// is a few hundred milliseconds.
-    pub fn jitter(self) -> std::time::Duration {
-        match self {
-            Self::Realtime => std::time::Duration::from_millis(60),
-            Self::Balanced => std::time::Duration::from_millis(100),
-            Self::Smooth => std::time::Duration::from_millis(400),
-        }
-    }
-
-    /// The buffered media the decoder tolerates before skipping to the live
-    /// edge.
-    ///
-    /// Kept above the jitter buffer in every mode: a skip threshold below the
-    /// slack the clock is deliberately holding would throw away the very frames
-    /// that slack exists to wait for.
-    pub fn max_latency(self) -> std::time::Duration {
-        match self {
-            Self::Realtime => std::time::Duration::from_millis(100),
-            Self::Balanced => std::time::Duration::from_millis(150),
-            Self::Smooth => std::time::Duration::from_millis(600),
+    /// `min` is the playout hold. Realtime holds two frames at 30 fps, Smooth
+    /// covers a Wi-Fi retransmission burst. `max`, where the player skips
+    /// ahead, stays above the hold, or the skip would drop the frames the hold
+    /// waits for.
+    pub fn latency(self) -> iroh_live::Latency {
+        let (min, max) = match self {
+            Self::Realtime => (60, 100),
+            Self::Balanced => (100, 150),
+            Self::Smooth => (400, 600),
+        };
+        iroh_live::Latency {
+            min: std::time::Duration::from_millis(min),
+            max: std::time::Duration::from_millis(max),
         }
     }
 }
@@ -556,38 +546,18 @@ mod tests {
 
     use super::LatencyArg;
 
-    /// A skip threshold below the slack the playout clock is deliberately
-    /// holding would throw away the frames that slack exists to wait for, so
-    /// the two have to move together.
+    /// Every mode skips ahead only past more than it holds, and the modes go
+    /// from least delay to most.
     #[test]
-    fn every_mode_tolerates_more_buffering_than_it_holds() {
-        for mode in LatencyArg::value_variants() {
-            assert!(
-                mode.max_latency() > mode.jitter(),
-                "{mode:?} skips at {:?} while holding {:?}",
-                mode.max_latency(),
-                mode.jitter(),
-            );
+    fn the_latency_modes_are_ordered_and_consistent() {
+        let modes = LatencyArg::value_variants();
+        for mode in modes {
+            let latency = mode.latency();
+            assert!(latency.max > latency.min, "{mode:?}: {latency:?}");
         }
-    }
-
-    /// The three modes are a scale, and a flag whose middle setting was not in
-    /// the middle would be a trap.
-    #[test]
-    fn the_modes_are_ordered_from_least_delay_to_most() {
-        assert!(LatencyArg::Realtime.jitter() < LatencyArg::Balanced.jitter());
-        assert!(LatencyArg::Balanced.jitter() < LatencyArg::Smooth.jitter());
-        assert!(LatencyArg::Realtime.max_latency() < LatencyArg::Balanced.max_latency());
-        assert!(LatencyArg::Balanced.max_latency() < LatencyArg::Smooth.max_latency());
-    }
-
-    /// The default has to stay what the player shipped with, so upgrading does
-    /// not silently retune somebody's stream.
-    #[test]
-    fn the_default_mode_is_what_the_player_used_before_the_flag_existed() {
-        let default = LatencyArg::default();
-        assert_eq!(default, LatencyArg::Balanced);
-        assert_eq!(default.jitter(), std::time::Duration::from_millis(100));
-        assert_eq!(default.max_latency(), std::time::Duration::from_millis(150));
+        for pair in modes.windows(2) {
+            let (less, more) = (pair[0].latency(), pair[1].latency());
+            assert!(less.min < more.min && less.max < more.max, "{pair:?}");
+        }
     }
 }

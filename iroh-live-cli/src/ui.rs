@@ -8,7 +8,7 @@ use clap::ValueEnum;
 use eframe::egui;
 use iroh_live::{
     Live,
-    media::{AudioOutput, Latency, LocalBroadcast, Player, PlayerConfig, RenditionMode},
+    media::{AudioOutput, LocalBroadcast, Player, PlayerConfig, RenditionMode},
 };
 use iroh_live_egui::{
     VideoView,
@@ -25,10 +25,7 @@ use crate::{args::PlaybackArgs, backend::DecoderArg};
 pub fn player_config(args: &PlaybackArgs, output: Option<&AudioOutput>) -> PlayerConfig {
     PlayerConfig {
         decoder: args.decoder.into(),
-        latency: Latency {
-            min: args.latency.jitter(),
-            max: args.latency.max_latency(),
-        },
+        latency: args.latency.latency(),
         audio: output.cloned(),
         ..PlayerConfig::default()
     }

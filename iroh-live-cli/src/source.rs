@@ -73,6 +73,7 @@ pub struct Opened {
 }
 
 /// A video source a specifier opened.
+#[derive(Debug)]
 enum Video {
     /// Raw pictures, encoded into the ladder.
     Raw(VideoSource),
@@ -100,7 +101,7 @@ pub async fn configure(
     let video = configure_video(broadcast, args).await?;
     let audio = match audio_source(&args.audio_source()?, output).await? {
         Some(source) => {
-            broadcast.set_audio(source.clone(), audio_encoding(args, &source))?;
+            broadcast.set_audio(source.clone(), audio_encoding(args))?;
             Some(source)
         }
         None => None,
@@ -131,15 +132,10 @@ pub async fn configure_video(
 /// Opening awaits a device, and setting is one synchronous call, so a caller
 /// that has to decide at the last moment whether the source still goes on the
 /// broadcast can make that decision and the set in one step.
+#[derive(Debug)]
 pub struct OpenedVideo {
     source: Video,
     ladder: rendition::Ladder,
-}
-
-impl std::fmt::Debug for OpenedVideo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpenedVideo").finish_non_exhaustive()
-    }
 }
 
 /// Opens the video `args` asks for, without setting it, or `None` for
@@ -463,18 +459,17 @@ async fn audio_source(
     Ok(Some(source))
 }
 
-/// The encoding `--audio-codec` and `--audio-bitrate` imply for `source`.
+/// The encoding `--audio-codec` and `--audio-bitrate` imply.
 ///
 /// A microphone is speech and gets the voice preset; anything else may be
 /// music and keeps its channels. PCM's bitrate follows from its sample rate
 /// and channel count, so only Opus takes `--audio-bitrate`.
-fn audio_encoding(args: &CaptureArgs, source: &AudioSource) -> AudioEncoding {
+fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
     let mut encoding = match (args.audio_codec, is_microphone(args)) {
         (AudioCodecArg::Pcm, _) => return AudioEncoding::pcm(),
         (AudioCodecArg::Opus, true) => AudioEncoding::voice(),
         (AudioCodecArg::Opus, false) => AudioEncoding::music(),
     };
-    let _ = source;
     if let Some(bps) = args.audio_bitrate {
         encoding.bitrate = Some(Bitrate::from_bps(bps.into()));
     }
