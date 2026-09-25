@@ -338,6 +338,16 @@ impl Room {
     }
 }
 
+impl Drop for Inner {
+    /// Unpublishes this member's broadcasts when the last handle goes
+    /// without [`Room::leave`], so rejoining can publish the same names.
+    fn drop(&mut self) {
+        for local in self.local.get_mut().expect("poisoned").values() {
+            local.publication.unpublish();
+        }
+    }
+}
+
 impl Inner {
     /// Forgets the local publication `name`, if it is still `publication`.
     ///

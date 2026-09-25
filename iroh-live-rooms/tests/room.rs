@@ -353,3 +353,23 @@ async fn a_member_that_leaves_is_cut_off() {
     peer_a.shutdown().await;
     peer_b.shutdown().await;
 }
+
+/// Dropping a room without leaving frees its names for a rejoin.
+#[tokio::test]
+#[traced_test]
+async fn dropping_a_room_frees_its_names() {
+    let peer = Peer::spawn().await;
+    let ticket = RoomTicket::generate();
+    let room = peer.join(&ticket, "alice").await;
+    let (cam, _writer) = counter_broadcast();
+    let publication = room.publish("cam", &cam).expect("publish");
+
+    drop(room);
+    tokio::time::timeout(TIMEOUT, publication.withdrawn())
+        .await
+        .expect("the dropped room's broadcast stayed published");
+    let room = peer.join(&ticket, "alice").await;
+    room.publish("cam", &cam).expect("publish after rejoining");
+
+    peer.shutdown().await;
+}
