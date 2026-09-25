@@ -20,8 +20,8 @@ use tokio::{
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication,
-    SessionRequest, Subscription,
+    ConnectOptions, Error, Grant, LinkKind, LinkSample, OfferGuard, Publication, SessionRequest,
+    Subscription,
     link::{self, LinkState},
     node::Shared,
     route,
@@ -99,14 +99,6 @@ impl Session {
     /// Returns the peer's endpoint id.
     pub fn remote_id(&self) -> EndpointId {
         self.inner.remote
-    }
-
-    /// Returns this session's link id.
-    ///
-    /// It is the [`ServingLink::id`](crate::ServingLink::id) of what this
-    /// session serves. A later session with the same peer gets a new id.
-    pub fn link_id(&self) -> LinkId {
-        LinkId(self.inner.link)
     }
 
     /// Reports whether this node dialed the session.
