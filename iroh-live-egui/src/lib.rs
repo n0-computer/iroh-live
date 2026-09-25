@@ -141,6 +141,8 @@ pub struct FrameView {
     renderer: Option<EguiVideoRenderer>,
     #[debug(skip)]
     placeholder: egui::TextureHandle,
+    /// Whether the last frame failed to draw, so a run of failures warns once.
+    failing: bool,
 }
 
 #[cfg(feature = "wgpu-render")]
@@ -167,20 +169,25 @@ impl FrameView {
         Self {
             renderer,
             placeholder,
+            failing: false,
         }
     }
 
     /// Draws `frame`, replacing what the view showed before.
     ///
-    /// Logs a warning and keeps the old picture if drawing fails or the view
-    /// has no renderer.
+    /// Keeps the old picture if drawing fails, and warns once per run of
+    /// failures. A view without a renderer ignores the frame.
     pub fn render_frame(&mut self, frame: &iroh_live_media::video::Frame) {
         let Some(renderer) = &mut self.renderer else {
-            tracing::warn!("frame dropped: view has no wgpu renderer to draw it with");
             return;
         };
-        if let Err(err) = renderer.render(frame) {
-            tracing::warn!(error = %err, "video render failed");
+        match renderer.render(frame) {
+            Ok(()) => self.failing = false,
+            Err(err) if !self.failing => {
+                self.failing = true;
+                tracing::warn!(error = %err, "video render failed, keeping the last picture");
+            }
+            Err(_) => {}
         }
     }
 
