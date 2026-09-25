@@ -37,20 +37,21 @@
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::{
-    io::Write,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{io::Write, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use axum::{extract::State, response::IntoResponse, routing::get};
+use anyhow::Context;
+use axum::{
+    extract::{Path, State},
+    response::IntoResponse,
+    routing::get,
+};
 use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::SecretKey;
 use iroh_live::BroadcastTicket;
 use iroh_moq::{EndpointOptions, Mdns};
 use moq_relay::{Connection, cluster::Cluster};
+use moq_tokio::tls::Certificates;
 use tokio_util::task::AbortOnDropHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
@@ -88,30 +89,15 @@ pub struct RelayConfig {
 /// Call `rustls::crypto::aws_lc_rs::default_provider().install_default()`
 /// before calling this if no crypto provider has been installed yet.
 pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
-    let relay = RelayServer::from_env()?;
-
-    // Shared by both directions: moq-tokio keeps one QUIC configuration where
-    // the server and the client used to carry one each.
     let mut quic = moq_tokio::quic::Config::default();
     quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
     let connect = moq_tokio::connect::Config::default();
 
-    let iroh_secret = relay.iroh_secret_key()?;
-    // Every MoQ-lite/IETF version plus WebTransport over HTTP/3, which is what
-    // iroh-native MoQ clients (`irl`, `subscribe_test`) dial with.
-    // `IrohSessions`' router accepts under the same set.
-    let alpns = IrohSessions::alpns();
-    // mDNS, for the same reason `irl` takes it: a ticket names an endpoint id and
-    // no addresses, and pull mode's whole job is turning one of those into a
-    // connection. Pkarr and DNS cover a publisher with internet, and they take a
-    // few seconds to propagate after it starts; mDNS covers the publisher on this
-    // machine or this LAN, and covers it immediately. Without it the relay was the
-    // one component that could not resolve a ticket `irl watch` resolves fine,
-    // and a pull of a just-started local publisher failed with "No addressing
-    // information available" until pkarr caught up.
-    //
-    // `Announce` rather than `Lookup`: the relay accepts sessions, and a
-    // publisher reaches it by endpoint id, so it has an address worth publishing.
+    let iroh_secret = secret_key()?;
+    let alpns = iroh_moq::alpns().into_iter().map(<[u8]>::to_vec).collect();
+    // mDNS finds a ticket's publisher on this machine or LAN at once, where
+    // pkarr and DNS take seconds and need internet. `Announce`, since clients
+    // reach the relay by endpoint id.
     let iroh_endpoint = EndpointOptions {
         secret_key: Some(iroh_secret),
         mdns: Mdns::Announce,
@@ -166,22 +152,23 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let iroh_router =
         IrohSessions::new(cluster.clone(), Some(pull_state.clone())).router(iroh_endpoint.clone());
 
-    let http_state = Arc::new(HttpState { certificates });
-
     let quic_addr = server.local_addr()?;
     let quic_port = quic_addr.port();
     info!(bind = %quic_addr, "quic listening");
 
     let static_router = axum::Router::new()
         .route("/certificate.sha256", get(serve_fingerprint))
-        .route("/", get(serve_index))
-        .route("/{*path}", get(serve_static))
+        .route("/", get(|| async { serve_embedded_file("index.html") }))
+        .route(
+            "/{*path}",
+            get(|Path(path): Path<String>| async move { serve_embedded_file(&path) }),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([http::Method::GET]),
+                .allow_methods([axum::http::Method::GET]),
         )
-        .with_state(http_state);
+        .with_state(certificates);
 
     let http_bind = if config.http_bind == config.bind {
         quic_addr
@@ -293,64 +280,35 @@ pub(crate) fn pull_for(
     })))
 }
 
-// -- Internal helpers --------------------------------------------------------
-
-struct RelayServer {
-    data_dir: PathBuf,
-}
-
-impl RelayServer {
-    fn new(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
-        let data_dir = path.into();
-        std::fs::create_dir_all(&data_dir)?;
-        Ok(Self { data_dir })
-    }
-
-    fn from_env() -> anyhow::Result<Self> {
-        let path = match std::env::var("IROH_LIVE_RELAY_DATA") {
-            Ok(p) => PathBuf::from(p),
-            Err(_) => dirs::data_dir()
-                .expect("no platform data directory")
-                .join("iroh-live-relay"),
-        };
-        Self::new(path)
-    }
-
-    fn iroh_secret_key_path(&self) -> PathBuf {
-        self.data_dir.join("iroh_secret_key")
-    }
-
-    /// Loads the relay's iroh identity, generating and storing one on first run.
-    ///
-    /// The relay's endpoint id is what every published ticket names, so losing
-    /// this file renames the relay and strands every ticket anyone is holding.
-    /// An unreadable file is therefore an error rather than a reason to generate
-    /// a new identity over the top of it.
-    fn iroh_secret_key(&self) -> anyhow::Result<SecretKey> {
-        let path = self.iroh_secret_key_path();
-        if path.try_exists()? {
-            return self.stored_secret_key();
-        }
+/// Loads the relay's iroh identity, generating and storing one on first run.
+///
+/// Every ticket through this relay names its endpoint id, so a file that does
+/// not hold a key is an error, and never a reason to make a new identity.
+fn secret_key() -> anyhow::Result<SecretKey> {
+    let dir = match std::env::var_os("IROH_LIVE_RELAY_DATA") {
+        Some(dir) => PathBuf::from(dir),
+        None => dirs::data_dir()
+            .context("no platform data directory")?
+            .join("iroh-live-relay"),
+    };
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("iroh_secret_key");
+    if !path.try_exists()? {
         let key = SecretKey::generate();
         write_private(&path, &key.to_bytes())?;
         info!(path = %path.display(), "generated the relay's iroh identity");
-        Ok(key)
+        return Ok(key);
     }
-
-    /// Reads the identity that is already on disk.
-    fn stored_secret_key(&self) -> anyhow::Result<SecretKey> {
-        let path = self.iroh_secret_key_path();
-        let stored = std::fs::read(&path)?;
-        read_secret_key(&stored).map_err(|err| {
-            anyhow::anyhow!(
-                "{} holds {} bytes that are not an iroh secret key ({err}). Delete it to \
-                 start over, which gives this relay a new endpoint id and invalidates \
-                 every ticket that names the old one.",
-                path.display(),
-                stored.len(),
-            )
-        })
-    }
+    let stored = std::fs::read(&path)?;
+    read_secret_key(&stored).with_context(|| {
+        format!(
+            "{} holds {} bytes that are not an iroh secret key. Delete it to start \
+             over, which gives this relay a new endpoint id and invalidates every \
+             ticket that names the old one.",
+            path.display(),
+            stored.len(),
+        )
+    })
 }
 
 /// Reads a stored iroh secret key: its 32 raw bytes.
@@ -361,12 +319,8 @@ fn read_secret_key(stored: &[u8]) -> anyhow::Result<SecretKey> {
 
 /// Writes `contents` to a new `path`, readable by this user alone.
 ///
-/// A secret key under the default umask is world readable, and every other user
-/// on the machine can then be this relay.
-///
-/// Created exclusively rather than truncated, so it never writes over a key
-/// another process wrote.
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+/// Creates the file exclusively, so it never overwrites a key.
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -374,35 +328,16 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     options.open(path)?.write_all(contents)
 }
 
-struct HttpState {
-    certificates: moq_tokio::tls::Certificates,
-}
-
 fn extract_name_from_url(request: &moq_tokio::server::Request) -> Option<String> {
-    let url = request.url()?;
-    debug!("url: {url}");
-    if url.path().len() > 1 {
-        Some(url.path()[1..].to_string())
-    } else {
-        None
-    }
+    iroh_sessions::requested_name(request.url()?.path())
 }
 
-async fn serve_fingerprint(State(state): State<Arc<HttpState>>) -> impl IntoResponse {
-    state
-        .certificates
+async fn serve_fingerprint(State(certificates): State<Certificates>) -> impl IntoResponse {
+    certificates
         .fingerprints()
         .first()
         .cloned()
         .unwrap_or_default()
-}
-
-async fn serve_index() -> impl IntoResponse {
-    serve_embedded_file("index.html")
-}
-
-async fn serve_static(axum::extract::Path(path): axum::extract::Path<String>) -> impl IntoResponse {
-    serve_embedded_file(&path)
 }
 
 fn serve_embedded_file(path: &str) -> axum::response::Response {

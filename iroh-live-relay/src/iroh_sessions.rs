@@ -58,22 +58,10 @@ impl IrohSessions {
         }
     }
 
-    /// Returns every ALPN an iroh MoQ client may dial with: each MoQ version,
-    /// and WebTransport over HTTP/3.
-    pub fn alpns() -> Vec<Vec<u8>> {
-        let mut alpns: Vec<Vec<u8>> = moq_net::ALPNS
-            .iter()
-            .map(|alpn| alpn.as_bytes().to_vec())
-            .collect();
-        alpns.push(web_transport_iroh::ALPN_H3.as_bytes().to_vec());
-        alpns
-    }
-
-    /// Spawns a router on `endpoint` that accepts iroh clients with this
-    /// handler.
+    /// Spawns a router on `endpoint` with this handler.
     pub fn router(self, endpoint: Endpoint) -> Router {
         let mut router = Router::builder(endpoint);
-        for alpn in Self::alpns() {
+        for alpn in iroh_moq::alpns() {
             router = router.accept(alpn, self.clone());
         }
         router.spawn()
@@ -159,7 +147,7 @@ pub fn browser_auth() -> moq_relay::auth::Config {
 }
 
 /// Returns the broadcast name a session asked for in its path, if any.
-fn requested_name(path: &str) -> Option<String> {
+pub(crate) fn requested_name(path: &str) -> Option<String> {
     let path = path.split('?').next().unwrap_or_default();
     let name = path.trim_start_matches('/');
     (!name.is_empty()).then(|| name.to_owned())

@@ -205,7 +205,7 @@ impl PullState {
         // under, so a claim and a retirement can never both believe they won: an
         // entry found here is guaranteed to outlive this call.
         let (pull, dial) = {
-            let mut pulls = self.pulls.lock().expect("lock");
+            let mut pulls = self.pulls.lock().expect("poisoned");
             let (pull, dial) = match pulls.get(&local_name) {
                 Some(pull) => (Arc::clone(pull), false),
                 None => {
@@ -397,16 +397,11 @@ impl PullState {
             // Quiet for now. Wait out the linger, then confirm under the lock.
             tokio::time::sleep(self.linger).await;
 
-            let mut pulls = self.pulls.lock().expect("lock");
+            let mut pulls = self.pulls.lock().expect("poisoned");
             if pull.claimed() || demand.as_ref().is_some_and(broadcast::Demand::is_used) {
                 continue;
             }
-            if pulls
-                .get(local_name)
-                .is_some_and(|entry| Arc::ptr_eq(entry, pull))
-            {
-                pulls.remove(local_name);
-            }
+            remove_current(&mut pulls, local_name, pull);
             return;
         }
     }
@@ -417,13 +412,17 @@ impl PullState {
     /// by a fresh dial for the same ticket, and that one belongs to its own
     /// holder task.
     fn retire(&self, local_name: &str, pull: &Arc<Pull>) {
-        let mut pulls = self.pulls.lock().expect("lock");
-        if pulls
-            .get(local_name)
-            .is_some_and(|entry| Arc::ptr_eq(entry, pull))
-        {
-            pulls.remove(local_name);
-        }
+        remove_current(&mut self.pulls.lock().expect("poisoned"), local_name, pull);
+    }
+}
+
+/// Removes the entry for `local_name` if it is `pull`.
+fn remove_current(pulls: &mut HashMap<String, Arc<Pull>>, local_name: &str, pull: &Arc<Pull>) {
+    if pulls
+        .get(local_name)
+        .is_some_and(|entry| Arc::ptr_eq(entry, pull))
+    {
+        pulls.remove(local_name);
     }
 }
 
@@ -442,7 +441,7 @@ impl PublisherClaim {
         *state
             .publishers
             .lock()
-            .expect("lock")
+            .expect("poisoned")
             .entry(publisher)
             .or_default() += 1;
         Self {
@@ -458,7 +457,7 @@ impl Drop for PublisherClaim {
         // Decided and done under the lock a new claim takes, so a pull that
         // starts now either counts before this and keeps the session, or
         // counts after the close and dials anew.
-        let mut publishers = self.publishers.lock().expect("lock");
+        let mut publishers = self.publishers.lock().expect("poisoned");
         let Some(count) = publishers.get_mut(&self.publisher) else {
             return;
         };
@@ -473,36 +472,5 @@ impl Drop for PublisherClaim {
                 session.close("no pull left");
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use iroh_live::BroadcastTicket;
-
-    #[test]
-    fn ticket_round_trip() {
-        let key = iroh::SecretKey::from_bytes(&[23u8; 32]);
-        let ticket = BroadcastTicket::new(key.public(), "test-stream");
-        let ticket_str = ticket.to_string();
-
-        let parsed: BroadcastTicket = ticket_str.parse().expect("parse ticket");
-        assert_eq!(parsed.name(), "test-stream");
-        assert_eq!(parsed, ticket);
-    }
-
-    #[test]
-    fn reject_invalid_ticket() {
-        let result: Result<BroadcastTicket, _> = "not-a-valid-ticket".parse();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn non_ticket_name_does_not_parse() {
-        // Regular broadcast names should NOT parse as tickets.
-        let result: Result<BroadcastTicket, _> = "hello".parse();
-        assert!(result.is_err());
-        let result: Result<BroadcastTicket, _> = "my-stream-360p".parse();
-        assert!(result.is_err());
     }
 }

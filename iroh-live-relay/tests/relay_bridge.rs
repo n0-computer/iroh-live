@@ -69,14 +69,7 @@ impl TestRelay {
         quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
         let connect = moq_tokio::connect::Config::default();
 
-        // Build the relay's iroh endpoint with Minimal preset + MemoryLookup
-        // instead of presets::N0, which uses real DNS discovery. This makes
-        // tests reliable in CI without network access.
-        let mut alpns: Vec<Vec<u8>> = moq_net::ALPNS
-            .iter()
-            .map(|alpn| alpn.as_bytes().to_vec())
-            .collect();
-        alpns.push(web_transport_iroh::ALPN_H3.as_bytes().to_vec());
+        let alpns = iroh_moq::alpns().into_iter().map(<[u8]>::to_vec).collect();
 
         let iroh = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .address_lookup(shared_lookup())
@@ -161,20 +154,7 @@ impl TestRelay {
     }
 }
 
-/// Creates an origin and runs its driver for as long as the handle lives.
-///
-/// An origin makes no progress without its driver: announcements, route
-/// resolution and closing all happen there.
-fn test_origin() -> (origin::Producer, AbortOnDropHandle<()>) {
-    let (origin, driver) = origin::Producer::new(origin::Config::default());
-    let task = AbortOnDropHandle::new(tokio::spawn(async move {
-        let _ = moq_net::time::run(driver).await;
-    }));
-    (origin, task)
-}
-
-/// Builds a one-shot noq client that trusts the relay's self-signed certificate,
-/// as the browser does by pinning its fingerprint.
+/// Builds a noq client that trusts the relay's self-signed certificate.
 fn noq_client() -> moq_tokio::Client {
     let mut connect = moq_tokio::connect::Config::default();
     connect.tls.insecure = Some(true);
@@ -265,7 +245,7 @@ async fn noq_publish_noq_subscribe() {
     let relay = TestRelay::start().await;
 
     // Publisher
-    let (pub_origin, _pub_driver) = test_origin();
+    let pub_origin = moq_tokio::origin::spawn();
     let broadcast = pub_origin
         .publish("test", origin::Route::default())
         .expect("create bc");
@@ -284,7 +264,7 @@ async fn noq_publish_noq_subscribe() {
     .await;
 
     // Subscriber
-    let (sub_origin, _sub_driver) = test_origin();
+    let sub_origin = moq_tokio::origin::spawn();
     let _sub_session = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
@@ -377,9 +357,9 @@ async fn noq_publish_iroh_subscribe() {
     let relay = TestRelay::start().await;
     let relay_id = relay.iroh_id;
 
-    // ── Publisher (noq, simulating browser) ──
-    // Publish a broadcast with a hang-compatible catalog and video track.
-    let (pub_origin, _pub_driver) = test_origin();
+    // Publisher: noq, standing in for a browser, with a hang catalog and a
+    // video track.
+    let pub_origin = moq_tokio::origin::spawn();
     let broadcast = pub_origin
         .publish("browser-stream", origin::Route::default())
         .expect("bc");
@@ -508,8 +488,8 @@ async fn pull_remote_broadcast_via_ticket() {
         .expect("pull timeout")
         .expect("pull");
 
-    // ── Subscriber (noq, simulating browser) ──
-    let (sub_origin, _sub_driver) = test_origin();
+    // Subscriber: noq, standing in for a browser.
+    let sub_origin = moq_tokio::origin::spawn();
     let _sub_session = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
@@ -558,7 +538,7 @@ async fn iroh_publish_noq_subscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Subscriber (noq)
-    let (sub_origin, _sub_driver) = test_origin();
+    let sub_origin = moq_tokio::origin::spawn();
     let _sub_session = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
@@ -873,7 +853,7 @@ async fn a_relay_link_publishes_and_consumes() {
     // Publishing: a browser finds the node's public broadcast at the path
     // that names the node.
     let broadcast = publish_video(&live, "studio");
-    let (sub_origin, _sub_driver) = test_origin();
+    let sub_origin = moq_tokio::origin::spawn();
     let _browser = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
@@ -885,7 +865,7 @@ async fn a_relay_link_publishes_and_consumes() {
     first_frame(&seen, "catalog.json").await;
 
     // Consuming: a browser's broadcast resolves through the relay.
-    let (pub_origin, _pub_driver) = test_origin();
+    let pub_origin = moq_tokio::origin::spawn();
     let browser_broadcast = pub_origin
         .publish("browser-stream", origin::Route::default())
         .expect("broadcast");
@@ -1115,7 +1095,7 @@ async fn a_relay_gets_public_publications_only() {
         .publish(live.ticket("manual").path(), &manual, Audience::Manual)
         .expect("publish");
 
-    let (sub_origin, _sub_driver) = test_origin();
+    let sub_origin = moq_tokio::origin::spawn();
     let _browser = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
@@ -1406,7 +1386,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
 
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start_shipped().await;
-    let (sub_origin, _sub_driver) = test_origin();
+    let sub_origin = moq_tokio::origin::spawn();
     let _viewer = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
@@ -1436,7 +1416,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     let _link = attached(&mallory, &relay, RelayOffer::Public).await;
 
     // A browser tries the same, and publishes a name of its own.
-    let (browser, _browser_driver) = test_origin();
+    let browser = moq_tokio::origin::spawn();
     let browser_forged = browser
         .publish(
             format!("live/{alice}/screen").as_str(),
@@ -1626,7 +1606,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     let cam_path = format!("rooms/{topic}/{}/cam", bob_endpoint.id());
 
     // Mallory publishes Bob's camera into the relay before Bob is there.
-    let (mallory, _mallory_driver) = test_origin();
+    let mallory = moq_tokio::origin::spawn();
     let forged = mallory
         .publish(cam_path.as_str(), origin::Route::default())
         .expect("forged broadcast");

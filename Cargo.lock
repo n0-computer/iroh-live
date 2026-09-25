@@ -4541,7 +4541,6 @@ dependencies = [
  "clap",
  "derive_more",
  "dirs",
- "http",
  "include_dir",
  "iroh",
  "iroh-live",
@@ -4553,7 +4552,6 @@ dependencies = [
  "moq-tokio",
  "n0-future",
  "n0-watcher",
- "rand 0.10.2",
  "rustls",
  "serial_test",
  "tokio",
@@ -4562,7 +4560,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "web-transport-iroh",
 ]
 
 [[package]]
