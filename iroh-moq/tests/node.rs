@@ -636,10 +636,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
         let mut sessions = Vec::new();
         while let Some(incoming) = moq.accept().await {
-            let grant = Grant {
-                subscribe: Patterns::from(Pattern::all()),
-                publish: Patterns::from(within.clone()),
-            };
+            let grant = Grant::publish_under(within.clone());
             sessions.push(incoming.admit(grant).await.expect("admit"));
         }
     }));

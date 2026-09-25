@@ -37,10 +37,7 @@ pub fn grant(peer: EndpointId) -> Grant {
     let mut publish = Patterns::from(publish_scope(peer));
     #[cfg(feature = "rooms")]
     publish.insert(iroh_live_rooms::publish_scope(peer));
-    Grant {
-        subscribe: Patterns::from(Pattern::all()),
-        publish,
-    }
+    Grant::publish_under(publish)
 }
 
 /// Returns the [`MoqConfig`] of a live node: admission open, with [`grant`].

@@ -15,7 +15,7 @@ use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
 use iroh_moq::{Grant, Moq, MoqConfig};
-use moq_net::{Pattern, Patterns, Timestamp, announce, broadcast, bytes::Bytes, track};
+use moq_net::{Pattern, Timestamp, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -85,10 +85,7 @@ impl Node {
 /// Returns a grant to subscribe anywhere and publish under `live/<peer>/` only.
 pub(crate) fn own_paths(peer: EndpointId) -> Grant {
     let own: Pattern = format!("live/{peer}/**").parse().expect("pattern");
-    Grant {
-        subscribe: Patterns::from(Pattern::all()),
-        publish: Patterns::from(own),
-    }
+    Grant::publish_under(own)
 }
 
 /// A broadcast whose one track writes a counter every few milliseconds.

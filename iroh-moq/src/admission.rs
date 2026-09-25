@@ -72,6 +72,17 @@ impl Grant {
         }
     }
 
+    /// Returns a grant to subscribe to everything and publish only at `publish`.
+    ///
+    /// With a pattern that names the peer, such as `live/<peer id>/**`, no peer
+    /// can publish at another's paths.
+    pub fn publish_under(publish: impl Into<Patterns>) -> Self {
+        Self {
+            subscribe: Patterns::from(Pattern::all()),
+            publish: publish.into(),
+        }
+    }
+
     /// Reports whether the peer may subscribe to `path`.
     pub fn allows_subscribe(&self, path: &str) -> bool {
         self.subscribe.matches(path)
