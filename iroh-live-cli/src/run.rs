@@ -10,7 +10,7 @@ use iroh::SecretKey;
 use iroh_live::{
     BroadcastTicket, EndpointOptions, Live,
     media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
-    moq::secret_key_file,
+    secret_key_file,
 };
 use n0_error::{Result, anyerr};
 use serde::Deserialize;

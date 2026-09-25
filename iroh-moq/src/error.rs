@@ -69,18 +69,6 @@ pub enum Error {
         #[error(source, std_err)]
         source: moq_net::Error,
     },
-    /// `IROH_SECRET` does not hold a secret key.
-    #[error("IROH_SECRET does not hold a secret key")]
-    SecretKey {
-        #[error(source)]
-        source: iroh::KeyParsingError,
-    },
-    /// The endpoint could not be bound.
-    #[error("failed to bind the endpoint")]
-    Bind {
-        #[error(source, std_err)]
-        source: AnyError,
-    },
     /// A relay link could not be set up.
     #[error("the relay link failed")]
     Relay {

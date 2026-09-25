@@ -52,17 +52,16 @@
 //! | [`Moq::connect`], [`Moq::connect_with`], [`Moq::subscribe`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
 //! | [`Moq::accept`] | yes | loses nothing |
 //! | [`Incoming::admit`] | yes | rejects the session before the handshake completes, admits it after |
-//! | [`EndpointOptions::bind`], [`EndpointOptions::builder`] | yes | binds nothing |
 //! | [`transport::dial`], [`transport::accept`] | yes | drops the connection |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
 //! | [`Moq::shutdown`] | no | call it again to finish |
 
 mod admission;
-mod endpoint;
 mod error;
 mod link;
 mod node;
+mod preset;
 mod publish;
 mod relay;
 mod route;
@@ -77,10 +76,10 @@ pub use self::{
     admission::{
         Admission, ConnectOptions, Grant, GrantFn, HANDSHAKE_TIMEOUT, Incoming, SessionRequest,
     },
-    endpoint::{EndpointOptions, Mdns, MoqPreset, secret_key_file},
     error::Error,
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},
+    preset::MoqPreset,
     publish::{Audience, OfferGuard, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::{LinkId, LinkKind, Subscription},

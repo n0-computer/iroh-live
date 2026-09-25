@@ -1,54 +1,16 @@
-//! Binding an endpoint for MoQ.
+//! Binding an endpoint: [`MoqPreset`] plus a secret key and mDNS.
 //!
-//! [`MoqPreset`] is iroh's N0 preset with a QUIC transport tuned for MoQ, and
-//! [`EndpointOptions`] adds what a preset cannot: a secret key and mDNS.
-//! [`secret_key_file`] keeps a key across restarts.
+//! [`EndpointOptions`] adds what a preset cannot. [`secret_key_file`] keeps a
+//! key across restarts.
 
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
-use iroh::{
-    Endpoint, SecretKey,
-    endpoint::{Builder, QuicTransportConfig, presets},
-};
-use n0_error::{AnyError, e};
-use noq_proto::congestion::Bbr3Config;
+use iroh::{Endpoint, SecretKey, endpoint::Builder};
+use iroh_moq::MoqPreset;
+use n0_error::e;
 use tracing::{debug, info, warn};
 
 use crate::Error;
-
-/// iroh's [`N0`](presets::N0) preset with BBR3 congestion control.
-///
-/// Works anywhere iroh takes a preset:
-///
-/// ```no_run
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let endpoint = iroh::Endpoint::bind(iroh_moq::MoqPreset).await?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// moq-net sends every subscriber the publisher's send-rate estimate,
-/// `cwnd / rtt`. A live publisher sends less than the link could take, and
-/// under CUBIC, iroh's default, its window grows until something is lost, so
-/// the estimate shows room to spare on a full link. BBR3 sizes the window from
-/// the delivery rate it measures, so the estimate tracks the link.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MoqPreset;
-
-impl presets::Preset for MoqPreset {
-    fn apply(self, builder: Builder) -> Builder {
-        presets::N0
-            .apply(builder)
-            .transport_config(transport_config())
-    }
-}
-
-/// Returns the QUIC transport configuration [`MoqPreset`] installs.
-fn transport_config() -> QuicTransportConfig {
-    QuicTransportConfig::builder()
-        .congestion_controller_factory(Arc::new(Bbr3Config::default()))
-        .build()
-}
 
 /// How an endpoint uses mDNS on the local network.
 ///
@@ -138,11 +100,12 @@ impl EndpointOptions {
     ///
     /// Fails with [`Error::Bind`] if the endpoint's sockets cannot be bound.
     pub async fn bind(self) -> Result<Endpoint, Error> {
-        let endpoint = self.builder().await.bind().await.map_err(|err| {
-            e!(Error::Bind {
-                source: AnyError::from_std(err)
-            })
-        })?;
+        let endpoint = self
+            .builder()
+            .await
+            .bind()
+            .await
+            .map_err(|source| e!(Error::Bind { source }))?;
         info!(id = %endpoint.id(), "endpoint bound");
         Ok(endpoint)
     }
@@ -188,7 +151,7 @@ mod tests {
 
     /// Returns a path in the temp dir that nothing else uses.
     fn scratch() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("iroh-moq-key-{}", SecretKey::generate().public()))
+        std::env::temp_dir().join(format!("iroh-live-key-{}", SecretKey::generate().public()))
     }
 
     #[test]

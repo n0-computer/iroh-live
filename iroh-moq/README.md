@@ -57,9 +57,7 @@ subscription.
 ## Endpoints and transport
 
 `MoqPreset` is iroh's N0 preset with BBR3, so the send-rate estimate moq-net
-gives subscribers tracks the link. `EndpointOptions` adds a secret key and mDNS;
-`EndpointOptions::from_env` takes the key from `IROH_SECRET`, and
-`secret_key_file` keeps one in a file.
+gives subscribers tracks the link.
 `iroh_moq::transport::{dial, accept}` do the ALPN negotiation and HTTP/3
 handling for applications that run moq-net's client or server themselves, as
 `iroh-live-relay` does.

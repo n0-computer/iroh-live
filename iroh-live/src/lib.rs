@@ -81,6 +81,7 @@
 //! codecs to [`media`]. `rooms` re-exports `iroh-live-rooms`.
 
 mod call;
+mod endpoint;
 mod error;
 mod live;
 mod network;
@@ -95,12 +96,12 @@ pub use iroh_live_media::{
 pub use iroh_live_rooms as rooms;
 pub use iroh_moq as moq;
 pub use iroh_moq::{
-    Audience, EndpointOptions, Mdns, Moq, MoqConfig, MoqPreset, Publication, Reach, Session,
-    Subscription,
+    Audience, Moq, MoqConfig, MoqPreset, Publication, Reach, Session, Subscription,
 };
 
 pub use self::{
     call::{CALL, Call},
+    endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
     live::{Live, LiveBuilder, grant, moq_config, publish_scope},
     ticket::BroadcastTicket,

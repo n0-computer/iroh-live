@@ -44,8 +44,7 @@ use axum::{
 use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::SecretKey;
-use iroh_live::BroadcastTicket;
-use iroh_moq::{EndpointOptions, Mdns};
+use iroh_live::{BroadcastTicket, EndpointOptions, Mdns};
 use moq_relay::{Connection, cluster::Cluster};
 use moq_tokio::tls::Certificates;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
@@ -256,7 +255,7 @@ fn secret_key() -> anyhow::Result<SecretKey> {
     };
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("iroh_secret_key");
-    iroh_moq::secret_key_file(&path).with_context(|| {
+    iroh_live::secret_key_file(&path).with_context(|| {
         format!(
             "cannot load the relay's identity. Deleting {} starts over, with a new \
              endpoint id that invalidates every ticket naming the old one",

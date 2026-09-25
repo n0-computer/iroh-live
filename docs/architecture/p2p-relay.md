@@ -37,7 +37,7 @@ browser can pin it. There is no ACME support.
 
 The relay keeps its iroh secret key in `iroh_secret_key` under
 `IROH_LIVE_RELAY_DATA`, or under `iroh-live-relay` in the platform data
-directory. It loads the key with `iroh_moq::secret_key_file`, so the relay's
+directory. It loads the key with `iroh_live::secret_key_file`, so the relay's
 endpoint id survives a restart.
 
 **There is no authentication.** Anyone may connect and subscribe to every path.
