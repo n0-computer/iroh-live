@@ -390,7 +390,7 @@ const FORGED: u32 = 1_000_000;
 /// A member cannot publish at another member's room path.
 ///
 /// Each member's grant keeps it to its own room scope, so the forgery never
-/// enters the table, and the room reads the real broadcast.
+/// enters c's route table, and c reads the real broadcast through it.
 #[tokio::test]
 #[traced_test]
 async fn a_member_cannot_forge_anothers_broadcast() {
@@ -425,7 +425,8 @@ async fn a_member_cannot_forge_anothers_broadcast() {
             .is_some_and(|peer| peer.broadcasts.contains("cam"))
     })
     .await;
-    let subscription = tokio::time::timeout(TIMEOUT, room_c.subscribe(b, "cam"))
+    // Through the table, where a forgery would land, not the session with b.
+    let subscription = tokio::time::timeout(TIMEOUT, peer_c.moq.subscribe(path, Reach::Direct(b)))
         .await
         .expect("timed out subscribing")
         .expect("subscribe");
