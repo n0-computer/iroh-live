@@ -4523,14 +4523,9 @@ dependencies = [
  "anyhow",
  "derive_more",
  "glow 0.18.0",
- "iroh-live-media",
  "khronos-egl",
  "libc",
- "moq-net",
- "moq-video",
- "n0-error",
  "n0-future",
- "n0-watcher",
  "tracing",
 ]
 

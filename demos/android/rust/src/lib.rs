@@ -18,14 +18,11 @@ use std::{
 
 use iroh_live::{BroadcastTicket, CALL, Call, EndpointOptions, Live, Session, Subscription};
 use iroh_live_media::{
-    AudioEncoding, AudioOutput, AudioSource, Catalog, LocalBroadcast, MicrophoneConfig, Player,
-    PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFrames, VideoRendition,
+    AudioEncoding, AudioOutput, AudioSource, Catalog, FrameSender, LocalBroadcast,
+    MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
+    VideoFormat, VideoFrames, VideoRendition, VideoSource,
 };
-use iroh_live_media_android::{
-    camera::{CameraSink, camera},
-    handle,
-    renderer::AndroidRenderer,
-};
+use iroh_live_media_android::{handle, renderer::AndroidRenderer};
 use jni::{
     JNIEnv, JavaVM,
     objects::{JByteArray, JClass, JObject, JString},
@@ -140,7 +137,7 @@ struct SessionHandle {
     /// The broadcast this node publishes, for a subscriber or a call.
     broadcast: Option<LocalBroadcast>,
     /// Where the camera frames Kotlin pushes go.
-    camera: Option<CameraSink>,
+    camera: Option<FrameSender<Frame>>,
     /// What the render loop draws.
     ///
     /// The player's decoded frames, or the local camera frames on their way to
@@ -261,9 +258,9 @@ fn read_jstring(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
 /// Returns the sink for those frames and a stream of the same frames on their
 /// way to the encoder. A local preview draws that stream without any encode or
 /// decode.
-fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(CameraSink, VideoFrames)> {
+fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Frame>, VideoFrames)> {
     let rate = Rate::new(CAMERA_FPS, 1).std_context("camera frame rate")?;
-    let (sink, source) = camera(size, rate);
+    let (sink, source) = VideoSource::push(VideoFormat { size, rate });
     let preview = source.frames();
     broadcast.set_video(
         source,
@@ -712,7 +709,7 @@ fn open_loopback(broadcast: &LocalBroadcast) -> Result<Player> {
 /// Converting a camera buffer copies the whole picture, and the render loop
 /// needs the lock back sooner.
 struct CameraTarget {
-    sink: CameraSink,
+    sink: FrameSender<Frame>,
     timestamp: Timestamp,
     /// How many frames were pushed before this one.
     pushed: u64,
@@ -757,8 +754,19 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
     let Some(target) = camera_target(&session) else {
         return;
     };
-    if let Err(err) = target.sink.push_rgba(&rgba, target.timestamp) {
-        warn!(width, height, "rejected RGBA camera frame: {err}");
+    let size = Size::new(width as u32, height as u32);
+    let surface = match Surface::rgba(&rgba, size) {
+        Ok(surface) => surface,
+        Err(err) => {
+            warn!(%size, "rejected RGBA camera frame: {err}");
+            return;
+        }
+    };
+    if target
+        .sink
+        .push(Frame::new(surface, target.timestamp))
+        .is_err()
+    {
         return;
     }
     count_camera_frame(&session);
@@ -816,8 +824,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
         }
     };
     let frame = Frame::new(Surface::I420(planes), target.timestamp);
-    if let Err(err) = target.sink.push(frame) {
-        warn!(%size, "rejected NV12 camera frame: {err}");
+    if target.sink.push(frame).is_err() {
         return;
     }
     count_camera_frame(&session);
