@@ -507,14 +507,16 @@ impl AudioSource {
 
     /// Decodes an audio file in real time.
     ///
-    /// Restarts at the beginning when `looping`. Reads WAV and MP3. The file
-    /// is probed before this returns, and decoding starts on its own thread.
+    /// Restarts at the beginning when `looping`, and ends with the file
+    /// otherwise. Reads WAV and MP3. The file is probed before this returns,
+    /// and decoding starts on its own thread.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read or holds no audio track.
+    /// Fails if the file cannot be read, holds no audio track, or uses a codec
+    /// this build cannot decode.
     pub async fn file(path: impl AsRef<Path>, looping: bool) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
