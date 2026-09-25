@@ -100,11 +100,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Device`] from an upstream error.
-    #[cfg(any(
-        feature = "capture",
-        feature = "playback",
-        all(target_os = "linux", feature = "rpicam")
-    ))]
+    #[cfg(any(feature = "capture", feature = "playback"))]
     pub(crate) fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_std(source)
