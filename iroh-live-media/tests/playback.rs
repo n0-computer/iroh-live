@@ -255,10 +255,13 @@ async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
     let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("4k"))
         .await
         .expect("the wait ends");
-    let Err(SwitchError::UnknownRendition { offered, .. }) = result else {
+    let Err(SwitchError::Failed { source, .. }) = result else {
         panic!("{result:?}");
     };
-    assert_eq!(offered, ["high", "low"]);
+    let Error::UnknownRendition { offered, .. } = &*source else {
+        panic!("{source:?}");
+    };
+    assert_eq!(offered, &["high", "low"]);
 }
 
 /// A pin to a missing rendition falls back to automatic selection.

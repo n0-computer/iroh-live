@@ -512,11 +512,11 @@ impl Player {
                 _ => {}
             }
             if let Some(known) = catalog.borrow_and_update().clone()
-                && let Err(Error::UnknownRendition { offered, .. }) = known.video_rendition(name)
+                && let Err(err) = known.video_rendition(name)
             {
-                return Err(n0_error::e!(SwitchError::UnknownRendition {
+                return Err(n0_error::e!(SwitchError::Failed {
                     rendition: name.to_string(),
-                    offered,
+                    source: Arc::new(err),
                 }));
             }
             tokio::select! {

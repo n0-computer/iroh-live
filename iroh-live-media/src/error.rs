@@ -180,7 +180,8 @@ pub enum SwitchError {
         /// The rendition the switch was for.
         rendition: String,
     },
-    /// The decoder did not open, the track ended, or the switch timed out.
+    /// The decoder did not open, the track ended, the switch timed out, or the
+    /// catalog has no such rendition ([`Error::UnknownRendition`]).
     #[error("the switch to {rendition} failed")]
     Failed {
         /// The rendition the switch was for.
@@ -188,14 +189,6 @@ pub enum SwitchError {
         /// Why it failed.
         #[error(source, std_err)]
         source: Arc<Error>,
-    },
-    /// The broadcast's catalog has no video rendition of that name.
-    #[error("no video rendition named {rendition}, the broadcast has [{}]", offered.join(", "))]
-    UnknownRendition {
-        /// The name that was asked for.
-        rendition: String,
-        /// The names the catalog has, largest first.
-        offered: Vec<String>,
     },
     /// The player's video ended or was turned off.
     #[error("the video ended")]
