@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, Live, LocalBroadcast};
+use iroh_live::{Live, LocalBroadcast};
 use iroh_live_media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size};
 
 use crate::epaper;
@@ -62,11 +62,9 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // --- media broadcast ---
     let broadcast = LocalBroadcast::new();
 
-    // A keyframe a second, which is how long a subscriber waits before the
-    // picture starts.
+    // A keyframe a second, the config's default.
     let config = RpicamConfig {
         bitrate: Bitrate::from_bps(u64::from(opts.bitrate)),
-        keyframe_interval: opts.fps,
         ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
     };
     tracing::info!(
@@ -86,7 +84,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     }
 
     // --- ticket (always printed, regardless of e-paper) ---
-    let ticket = BroadcastTicket::new(live.endpoint().id(), &opts.name);
+    let ticket = live.ticket(&opts.name);
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 

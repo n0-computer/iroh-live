@@ -47,10 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let broadcast = LocalBroadcast::new();
     // A keyframe a second, which is how long a viewer waits for a first
     // picture after scanning the ticket.
-    let config = RpicamConfig {
-        keyframe_interval: 30,
-        ..RpicamConfig::new(Size::new(640, 360), 30)
-    };
+    let config = RpicamConfig::new(Size::new(640, 360), 30);
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
 
     // Held for as long as the broadcast should stay published.

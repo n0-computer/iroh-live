@@ -621,7 +621,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     set_microphone(&broadcast, None).await;
     live.publish(&name, &broadcast)?;
 
-    let ticket = BroadcastTicket::new(live.endpoint().id(), name.as_str()).to_string();
+    let ticket = live.ticket(&name).to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();

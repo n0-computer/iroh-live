@@ -141,39 +141,25 @@ mod app {
 
         // Waited for, so a publisher that never describes its broadcast, or
         // describes it in a way this build cannot read, is an error here
-        // rather than a black screen.
-        // Waited for until it lists video: audio or metadata can land first.
-        let broadcast = &remote;
-        let mut catalog = broadcast.catalog();
+        // rather than a black screen. A broadcast that closes sends no catalog
+        // update to wake on.
+        let mut catalog = remote.catalog();
         let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            loop {
-                if let Some(known) = n0_watcher::Watcher::get(&mut catalog)
-                    && !known.video.renditions.is_empty()
-                {
-                    return Ok(known);
-                }
-                // A broadcast that closes sends no update to wake on.
-                tokio::select! {
-                    updated = n0_watcher::Watcher::updated(&mut catalog) => {
-                        if updated.is_err() {
-                            return Err(n0_error::anyerr!("the broadcast closed"));
-                        }
-                    }
-                    () = broadcast.closed() => {
-                        return Err(n0_error::anyerr!("the broadcast closed"));
-                    }
-                }
+            tokio::select! {
+                catalog = n0_watcher::Watcher::initialized(&mut catalog) => Some(catalog),
+                () = remote.closed() => None,
             }
         })
         .await;
-        let _described = match described {
-            Ok(result) => result?,
+        match described {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(n0_error::anyerr!("the broadcast closed")),
             Err(_) => {
                 return Err(n0_error::anyerr!(
-                    "the broadcast listed no video this build could read within 15s"
+                    "the broadcast sent no catalog this build could read within 15s"
                 ));
             }
-        };
+        }
 
         // `remote_broadcast` attached the serving link's signals, so the
         // player adapts the rendition on its own.

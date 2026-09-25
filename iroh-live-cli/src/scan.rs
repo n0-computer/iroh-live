@@ -213,23 +213,10 @@ fn resolve(choice: Option<&VideoSourceSpec>) -> VideoSourceSpec {
         return spec.clone();
     }
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    if rpicam_on_path() {
+    if crate::devices::rpicam::installed() {
         return VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Raw);
     }
     VideoSourceSpec::Camera(None)
-}
-
-/// Whether `rpicam-vid` is installed.
-///
-/// Checked by looking for the binary rather than by enumerating:
-/// `--list-cameras` probes the I2C buses the CSI connector sits on and takes
-/// seconds, which is a long time to hold a screen somebody is pointing at a QR
-/// code.
-#[cfg(all(target_os = "linux", feature = "rpicam"))]
-fn rpicam_on_path() -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| dir.join("rpicam-vid").is_file())
-    })
 }
 
 /// What the scan screen tells the user to do.

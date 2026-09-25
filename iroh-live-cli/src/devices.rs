@@ -141,14 +141,14 @@ async fn list() {
 }
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-mod rpicam {
+pub mod rpicam {
     //! What `irl devices` can say about the Raspberry Pi camera.
     //!
     //! The libcamera stack is reachable only through `rpicam-vid`, so there is
     //! no device list to read: the two things worth reporting are whether the
     //! binary is installed and which sensors it can see.
 
-    use std::{path::PathBuf, time::Duration};
+    use std::time::Duration;
 
     /// The subprocess we drive, the same one `iroh_live_media::VideoSource::rpicam`
     /// starts.
@@ -172,7 +172,7 @@ mod rpicam {
     /// Returns a note for the section when `rpicam-vid` is not installed, will
     /// not run, or does not finish enumerating.
     pub(super) async fn cameras() -> Result<Vec<String>, String> {
-        if on_path(RPICAM_VID).is_none() {
+        if !installed() {
             return Err(format!("{RPICAM_VID} is not on PATH"));
         }
         let listing = tokio::process::Command::new(RPICAM_VID)
@@ -206,11 +206,14 @@ mod rpicam {
         Some(format!("rpicam  {}", description.trim()))
     }
 
-    /// The first entry of `PATH` holding a file named `name`.
-    fn on_path(name: &str) -> Option<PathBuf> {
-        std::env::split_paths(&std::env::var_os("PATH")?)
-            .map(|dir| dir.join(name))
-            .find(|path| path.is_file())
+    /// Returns whether `rpicam-vid` is on `PATH`.
+    ///
+    /// Looks for the binary rather than enumerating: `--list-cameras` probes
+    /// the I2C buses the CSI connector sits on and takes seconds.
+    pub fn installed() -> bool {
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join(RPICAM_VID).is_file())
+        })
     }
 
     #[cfg(test)]

@@ -260,7 +260,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     for send in &config.send {
         match setup_send(live, send).await {
             Ok(published) => {
-                let ticket = BroadcastTicket::new(live.endpoint().id(), &send.name);
+                let ticket = live.ticket(&send.name);
                 println!("[send] {}: {ticket}", send.name);
                 broadcasts.push(published);
             }

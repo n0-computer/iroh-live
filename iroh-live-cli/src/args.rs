@@ -327,14 +327,14 @@ impl LatencyArg {
     /// ahead, stays above the hold, or the skip would drop the frames the hold
     /// waits for.
     pub fn latency(self) -> iroh_live::Latency {
-        let (min, max) = match self {
-            Self::Realtime => (60, 100),
-            Self::Balanced => (100, 150),
-            Self::Smooth => (400, 600),
-        };
-        iroh_live::Latency {
+        let latency = |min, max| iroh_live::Latency {
             min: std::time::Duration::from_millis(min),
             max: std::time::Duration::from_millis(max),
+        };
+        match self {
+            Self::Realtime => latency(60, 100),
+            Self::Balanced => iroh_live::Latency::default(),
+            Self::Smooth => latency(400, 600),
         }
     }
 }

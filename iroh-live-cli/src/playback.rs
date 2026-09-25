@@ -17,30 +17,23 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 /// Fails if the broadcast closes before sending one, or sends none in time.
 pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
     let mut catalog = broadcast.catalog();
-    let closed = || anyerr!("the broadcast closed before it described itself");
-    tokio::time::timeout(CATALOG_TIMEOUT, async {
-        loop {
-            if let Some(known) = catalog.get() {
-                return Ok(known);
-            }
-            // The close is waited for beside the update: a broadcast that
-            // closes without a word sends no update to wake on.
-            tokio::select! {
-                updated = catalog.updated() => if updated.is_err() {
-                    return Err(closed());
-                },
-                () = broadcast.closed() => return Err(closed()),
-            }
+    let first = async {
+        // A broadcast that closes sends no catalog update to wake on.
+        tokio::select! {
+            catalog = catalog.initialized() => Some(catalog),
+            () = broadcast.closed() => None,
         }
-    })
-    .await
-    .map_err(|_| {
-        anyerr!(
-            "the broadcast sent no catalog within {}s, or sent one this build \
-             could not read (the log says which)",
-            CATALOG_TIMEOUT.as_secs()
-        )
-    })?
+    };
+    tokio::time::timeout(CATALOG_TIMEOUT, first)
+        .await
+        .map_err(|_| {
+            anyerr!(
+                "the broadcast sent no catalog within {}s, or sent one this build \
+                 could not read (the log says which)",
+                CATALOG_TIMEOUT.as_secs()
+            )
+        })?
+        .ok_or_else(|| anyerr!("the broadcast closed before it described itself"))
 }
 
 /// Opens the speaker players play through.

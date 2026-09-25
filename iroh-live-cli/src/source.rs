@@ -263,12 +263,8 @@ async fn rpicam_source(
     // `rpicam-vid` delivers the rate it is told to, so there is no device mode
     // to fall back on and the default stands in for one.
     let framerate = framerate.generated();
-    // A keyframe a second. The subprocess owns the encode, so this is the only
-    // place the join latency can be set.
-    let mut config = RpicamConfig {
-        keyframe_interval: framerate,
-        ..RpicamConfig::new(size, framerate)
-    };
+    // A keyframe a second, the config's default.
+    let mut config = RpicamConfig::new(size, framerate);
     match mode {
         RpicamMode::Raw => Ok(Video::Raw(VideoSource::rpicam(config).await?)),
         RpicamMode::Encoded => {
