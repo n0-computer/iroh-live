@@ -141,8 +141,7 @@ pushes the broadcast to a relay, for browsers. The other flags: `--name`
 `watch <TICKET>` subscribes and draws. Without `--fb` it opens a window through
 glutin and winit, which needs the `windowed` feature (on by default).
 `--fullscreen` makes the window borderless. With `--fb` it draws straight to
-HDMI through DRM/KMS, GBM, and EGL, without a window system. `--endpoint-id`
-with `--name` works instead of a ticket.
+HDMI through DRM/KMS, GBM, and EGL, without a window system.
 
 `fb-demo` draws a test pattern to HDMI without network or camera, to check the
 display path on its own.

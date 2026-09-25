@@ -31,8 +31,7 @@ browsers can watch it there.
 
 `watch` subscribes and renders. Without `--fb` it opens a window through glutin and winit, which needs the
 `windowed` feature (on by default). With `--fb` it renders through DRM/KMS,
-GBM, and EGL straight to HDMI, with no window system. `--endpoint-id` plus
-`--name` works in place of a ticket.
+GBM, and EGL straight to HDMI, with no window system.
 
 `fb-demo` renders a test pattern to HDMI with no network and no camera, to check
 the display path alone. `epaper-demo` shows a checkerboard, then a QR code,

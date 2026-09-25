@@ -21,7 +21,6 @@ mod watch;
 #[cfg(target_os = "linux")]
 mod app {
     use clap::{Parser, Subcommand};
-    use iroh::EndpointId;
     use iroh_live::{BroadcastTicket, Live};
 
     use crate::{epaper, publish, watch};
@@ -47,15 +46,8 @@ mod app {
 
     #[derive(Parser, Debug)]
     struct WatchOpts {
-        /// Connection ticket (alternative to --endpoint-id + --name).
-        #[clap(conflicts_with = "endpoint_id")]
-        ticket: Option<BroadcastTicket>,
-        /// Remote endpoint ID (requires --name).
-        #[clap(long, conflicts_with = "ticket", requires = "name")]
-        endpoint_id: Option<EndpointId>,
-        /// Broadcast name.
-        #[clap(long, conflicts_with = "ticket", requires = "endpoint_id")]
-        name: Option<String>,
+        /// The broadcast ticket.
+        ticket: BroadcastTicket,
         /// Render direct to HDMI framebuffer via DRM/KMS (no window system).
         #[clap(long)]
         fb: bool,
@@ -111,16 +103,7 @@ mod app {
 
     /// Watches a remote broadcast, rendering with EGL/GLES2.
     async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
-        let ticket = match (&opts.ticket, &opts.endpoint_id, &opts.name) {
-            (Some(ticket), None, None) => ticket.clone(),
-            (None, Some(id), Some(name)) => BroadcastTicket::new(*id, name.clone()),
-            _ => {
-                return Err(n0_error::anyerr!(
-                    "pass a <TICKET>, or --endpoint-id and --name"
-                ));
-            }
-        };
-
+        let ticket = opts.ticket;
         println!("connecting to {ticket} ...");
         // The ticket has no addresses. The viewer finds the publisher through
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
