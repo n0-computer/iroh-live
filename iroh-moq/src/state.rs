@@ -353,42 +353,6 @@ mod tests {
         (served, subscriber)
     }
 
-    /// A spliced route keeps serving after it retracts, and new requests join it.
-    ///
-    /// This is why [`serve`] has a gate. If a moq-net release changes it, the
-    /// gate can go.
-    #[tokio::test]
-    async fn a_retracted_splice_serves_on_without_a_gate() {
-        let origin = origin();
-        let (broadcast, _writer) = writing();
-        let path = Path::new("live/publisher/cam");
-        let route = origin
-            .dynamic(&path, origin::Route::default())
-            .expect("route");
-        let consumer = broadcast.consume();
-        let answer = AbortOnDropHandle::new(tokio::spawn(async move {
-            while let Ok(request) = route.requested_broadcast().await {
-                request.accept(&consumer);
-            }
-        }));
-        let (served, mut subscriber) = read(&origin, &path).await;
-
-        drop(answer);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        for _ in 0..3 {
-            tokio::time::timeout(TIMEOUT, subscriber.recv_group())
-                .await
-                .expect("the subscription stalled")
-                .expect("track failed")
-                .expect("the subscription ended");
-        }
-        assert!(!served.is_closed());
-        let again = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(&path))
-            .await
-            .expect("timed out resolving again");
-        assert!(again.is_ok(), "a new request no longer joins the front");
-    }
-
     /// Measures what the gate in [`serve`] costs, per offer and per group.
     ///
     /// Run it with `cargo nextest run -p iroh-moq --run-ignored only gate_cost`.
@@ -466,28 +430,22 @@ mod tests {
         }
     }
 
-    /// Withdrawing an offer ends what a peer reads, and the path stops resolving.
+    /// Withdrawing an offer closes what it served, and the path stops resolving.
     ///
-    /// Read at the session's publish origin, so a peer that ignores the
-    /// retraction is cut off all the same.
+    /// Tracks already read keep running, as moq-lite wants: a retraction does
+    /// not disturb subscriptions in flight.
     #[tokio::test]
-    async fn a_withdrawn_offer_ends_its_subscriptions() {
+    async fn a_withdrawn_offer_stops_resolving() {
         let origin = origin();
         let (broadcast, _writer) = writing();
         let path = Path::new("live/publisher/cam");
         let offer = serve(&origin, &path, &broadcast.consume()).expect("offer");
-        let (served, mut subscriber) = read(&origin, &path).await;
+        let (served, _subscriber) = read(&origin, &path).await;
 
         drop(offer);
-        tokio::time::timeout(TIMEOUT, async {
-            while let Ok(Some(_)) = subscriber.recv_group().await {}
-        })
-        .await
-        .expect("the subscription outlived the offer");
-        assert!(
-            served.is_closed(),
-            "the served broadcast outlived the offer"
-        );
+        tokio::time::timeout(TIMEOUT, served.closed())
+            .await
+            .expect("the served broadcast outlived the offer");
         let again = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(&path))
             .await
             .expect("timed out resolving again");

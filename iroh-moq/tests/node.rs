@@ -129,7 +129,7 @@ async fn a_peers_audience_follows_its_set() {
     )
     .await
     .expect("bob is a member");
-    let mut bob_reading = reading(&for_bob.as_moq()).await;
+    reading(&for_bob.as_moq()).await;
 
     // Carol has a session, but nothing is offered on it.
     let session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
@@ -152,16 +152,27 @@ async fn a_peers_audience_follows_its_set() {
     )
     .await
     .expect("carol after joining the set");
-    let mut carol_reading = reading(&for_carol.as_moq()).await;
+    reading(&for_carol.as_moq()).await;
 
-    // Taking her out again ends what she reads, and only for her.
+    // Taking her out again withdraws the path from her, and only from her.
+    let path = publication.path().as_str();
+    let mut carol_updates = session.origin().announced();
+    announced(&mut carol_updates, path).await;
     members.set(BTreeSet::from([bob.id()])).ok();
-    ends("carol after leaving the set", &mut carol_reading).await;
+    retracted(&mut carol_updates, path).await;
+    stays_pending(
+        "carol resolved the path after leaving the set",
+        QUIET,
+        session.subscribe(publication.path()),
+    )
+    .await;
     read_counter(&for_bob.as_moq()).await;
 
     // An empty set offers to nobody.
+    let mut bob_updates = bob.moq.origin().announced();
+    announced(&mut bob_updates, path).await;
     members.set(BTreeSet::new()).ok();
-    ends("bob after the set was emptied", &mut bob_reading).await;
+    retracted(&mut bob_updates, path).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -208,7 +219,7 @@ async fn offers_show_in_the_route_table() {
     carol.shutdown().await;
 }
 
-/// A manual publication needs an offer, and withdrawing it ends what the peer reads.
+/// A manual publication needs an offer, and withdrawing it takes the path away.
 #[tokio::test]
 #[traced_test]
 async fn a_manual_audience_needs_an_offer() {
@@ -239,12 +250,11 @@ async fn a_manual_audience_needs_an_offer() {
     )
     .await
     .expect("subscribe after the offer");
-    let mut bob_reading = reading(&subscription.as_moq()).await;
+    reading(&subscription.as_moq()).await;
     let mut updates = bob.moq.origin().announced();
     announced(&mut updates, publication.path().as_str()).await;
 
     drop(offer);
-    ends("bob after the offer was withdrawn", &mut bob_reading).await;
     retracted(&mut updates, publication.path().as_str()).await;
     stays_pending(
         "bob resolved it again after the withdrawal",
@@ -257,10 +267,44 @@ async fn a_manual_audience_needs_an_offer() {
     bob.shutdown().await;
 }
 
-/// Unpublishing ends what peers read, and says so on the publication.
+/// Unpublishing takes the path away from peers, and says so on the publication.
 #[tokio::test]
 #[traced_test]
-async fn unpublishing_ends_what_peers_read() {
+async fn unpublishing_withdraws_the_path() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+    let broadcast = TestBroadcast::start();
+    let publication = alice
+        .moq
+        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
+        .expect("publish");
+    let subscription = step(
+        "subscribe",
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
+    reading(&subscription.as_moq()).await;
+    let mut updates = bob.moq.origin().announced();
+    announced(&mut updates, publication.path().as_str()).await;
+    assert!(!publication.is_withdrawn());
+
+    publication.unpublish();
+    step("withdrawn", publication.withdrawn()).await;
+    retracted(&mut updates, publication.path().as_str()).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Closing a session ends what the peer reads.
+///
+/// Withdrawing a path leaves tracks already read running, as moq-lite wants,
+/// so this is how a peer is cut off at once.
+#[tokio::test]
+#[traced_test]
+async fn closing_a_session_cuts_the_peer_off() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
     let broadcast = TestBroadcast::start();
@@ -276,11 +320,10 @@ async fn unpublishing_ends_what_peers_read() {
     .await
     .expect("subscribe");
     let mut bob_reading = reading(&subscription.as_moq()).await;
-    assert!(!publication.is_withdrawn());
 
-    publication.unpublish();
-    step("withdrawn", publication.withdrawn()).await;
-    ends("bob after the unpublish", &mut bob_reading).await;
+    let session = step("alice sees bob", session_with(&alice, bob.id())).await;
+    session.close("cut off");
+    ends("bob after alice closed the session", &mut bob_reading).await;
 
     alice.shutdown().await;
     bob.shutdown().await;

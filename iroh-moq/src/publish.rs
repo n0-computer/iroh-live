@@ -111,8 +111,10 @@ impl Publication {
 
     /// Replaces who may see the publication.
     ///
-    /// Takes effect at once. Peers the new audience leaves out lose what they
-    /// were reading.
+    /// Takes effect at once. Peers the new audience leaves out lose the path,
+    /// but tracks they already read run on. [`Session::close`] cuts a peer off.
+    ///
+    /// [`Session::close`]: crate::Session::close
     pub fn set_audience(&self, audience: Audience) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
@@ -166,7 +168,7 @@ impl Publication {
 /// Keeps a publication offered on one session or relay.
 ///
 /// Dropping it withdraws the offer, unless the audience admits the link
-/// anyway, and ends what the peer read through it.
+/// anyway.
 #[derive(Debug)]
 #[must_use = "dropping the guard withdraws the offer"]
 pub struct OfferGuard {

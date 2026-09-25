@@ -60,8 +60,8 @@ let player = live
 ```
 
 `publish` puts the broadcast at `rooms/<topic>/<this member>/<name>`, and only
-the room's members can read it. A member that leaves or expires loses what it
-was reading. Unpublishing the returned `Publication` or ending the broadcast
+the room's members can read it. A member that leaves or expires loses the
+path, though tracks it already reads run on until its session closes. Unpublishing the returned `Publication` or ending the broadcast
 removes the name from this member's announcement. A name must not be empty or
 contain a slash.
 
@@ -73,7 +73,7 @@ does not close subscriptions. Errors are `iroh_live_rooms::Error`, and its
 
 A grid cannot follow the room state alone. A member can end a broadcast and
 publish it again before its announcement changes. A member can also drop this
-node from its membership for a moment, which cuts off what this node reads. In
+node from its membership for a moment, which retracts its paths from this node. In
 both cases the state stays the same and the tile freezes. So a grid also drops
 every tile whose `RemoteBroadcast::is_closed()` is true, on a timer, and
 subscribes again if the member still lists the name.

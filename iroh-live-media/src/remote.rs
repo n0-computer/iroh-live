@@ -41,7 +41,8 @@ enum Origin {
     Moq,
     /// A path in a route table, requested again when a change of route ends it.
     Routed {
-        origin: moq_net::origin::Consumer,
+        /// Boxed: a route table consumer is large.
+        origin: Box<moq_net::origin::Consumer>,
         path: moq_net::PathOwned,
     },
 }
@@ -94,7 +95,14 @@ impl RemoteBroadcast {
     pub fn from_origin(origin: moq_net::origin::Consumer, path: impl moq_net::AsPath) -> Self {
         let path = path.as_path().to_owned();
         let span = tracing::info_span!("remote", path = %path);
-        Self::spawn(Origin::Routed { origin, path }, None, span)
+        Self::spawn(
+            Origin::Routed {
+                origin: Box::new(origin),
+                path,
+            },
+            None,
+            span,
+        )
     }
 
     /// Follows `path` in a route table, starting from a resolved `broadcast`.
@@ -110,7 +118,14 @@ impl RemoteBroadcast {
     ) -> Self {
         let path = path.as_path().to_owned();
         let span = tracing::info_span!("remote", path = %path);
-        Self::spawn(Origin::Routed { origin, path }, Some(broadcast), span)
+        Self::spawn(
+            Origin::Routed {
+                origin: Box::new(origin),
+                path,
+            },
+            Some(broadcast),
+            span,
+        )
     }
 
     /// Reads a local broadcast in-process, without a transport.
@@ -203,7 +218,7 @@ impl RemoteBroadcast {
     /// Returns the route table and path, for a broadcast that follows one.
     pub(crate) fn routed(&self) -> Option<(moq_net::origin::Consumer, moq_net::PathOwned)> {
         match &self.shared.origin {
-            Origin::Routed { origin, path } => Some((origin.clone(), path.clone())),
+            Origin::Routed { origin, path } => Some((origin.as_ref().clone(), path.clone())),
             Origin::Moq => None,
         }
     }

@@ -12,7 +12,7 @@
 //!
 //! Room broadcasts are private to the members. [`Room::publish`] places a
 //! broadcast at `rooms/<topic>/<member>/<name>` with the membership as its
-//! audience, and a member that leaves loses what it was reading.
+//! audience, and a member that leaves loses the paths.
 //! [`Room::subscribe`] reads each member over the session with that member, so
 //! no other peer can stand in for it. Membership itself is open to anyone with
 //! the ticket.

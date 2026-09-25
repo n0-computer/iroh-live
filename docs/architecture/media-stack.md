@@ -19,9 +19,6 @@ our renderer links. This matters most for wgpu: `moq_video::render` returns a
 `wgpu::Texture` from its own wgpu build, and a texture from another wgpu major
 version is a different type.
 
-The workspace patches every moq crate to `Frando/moq@iroh-live-5` in its
-`[patch.crates-io]` block. See the comment there for why.
-
 ## Backends
 
 Upstream picks the codec backend: platform hardware first, then openh264 as

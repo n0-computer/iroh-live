@@ -76,12 +76,12 @@ path. The audience is `Everyone`, a watched set of `Peers`, or `Manual` with
 `Session::offer`. Offers change while the session runs, as audiences and grants
 change.
 
-A withdrawn offer ends what the peer was reading through it. moq keeps serving
-a spliced broadcast after its route is retracted, and new requests join it. So
-each offer answers through a gate, a small origin of its own (`serve` in
-`state.rs`). Withdrawing the offer tears the gate down and ends the peer's
-subscriptions. An offer is withdrawn when its `OfferGuard` drops, a `Peers` set
-shrinks, `set_audience` or `unpublish` is called, or the session ends.
+Withdrawing an offer retracts the path: the peer can no longer resolve it, and
+the broadcast it resolved closes. Tracks it already reads run on, since in
+moq-lite a retraction does not disturb subscriptions in flight. To cut a peer
+off at once, close its session. An offer is withdrawn when its `OfferGuard`
+drops, a `Peers` set shrinks, `set_audience` or `unpublish` is called, or the
+session ends.
 
 ## Sessions and admission
 

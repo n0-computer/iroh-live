@@ -320,10 +320,10 @@ async fn unpublishing_takes_the_name_out_of_the_room() {
     peer_b.shutdown().await;
 }
 
-/// A member that leaves is cut off from what it was reading.
+/// A member that leaves loses the paths the room offered it.
 #[tokio::test]
 #[traced_test]
-async fn a_member_that_leaves_is_cut_off() {
+async fn a_member_that_leaves_loses_the_paths() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let (a, b) = (peer_a.id(), peer_b.id());
     let (cam, _writer) = counter_broadcast();
@@ -339,29 +339,30 @@ async fn a_member_that_leaves_is_cut_off() {
         .await
         .expect("timed out subscribing")
         .expect("subscribe");
-    let mut reading = subscription
-        .as_moq()
-        .track(DATA_TRACK)
-        .expect("data track")
-        .subscribe(None)
-        .await
-        .expect("subscribe to the track");
-    tokio::time::timeout(TIMEOUT, reading.recv_group())
-        .await
-        .expect("timed out reading")
-        .expect("track failed")
-        .expect("a group");
+    let path = subscription.path().to_owned();
+    let mut updates = peer_b.moq.origin().announced();
+    until_announced(&mut updates, path.as_str(), true).await;
 
     room_b.leave().await;
     wait_for_state(&room_a, "b is gone", |state| !state.peers.contains_key(&b)).await;
-    tokio::time::timeout(TIMEOUT, async {
-        while let Ok(Some(_)) = reading.recv_group().await {}
-    })
-    .await
-    .expect("a member that left kept reading");
+    until_announced(&mut updates, path.as_str(), false).await;
 
     peer_a.shutdown().await;
     peer_b.shutdown().await;
+}
+
+/// Waits until `updates` shows `path` announced (`active`) or retracted.
+async fn until_announced(updates: &mut moq_net::announce::Consumer, path: &str, active: bool) {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let update = updates.next().await.expect("origin closed");
+            if update.prefix.as_str() == path && update.kind.is_active() == active {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {path} announced: {active}"));
 }
 
 /// Dropping a room without leaving frees its names for a rejoin.

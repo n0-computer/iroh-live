@@ -23,7 +23,7 @@ moq-net = { workspace = true }
 iroh-live-egui = { workspace = true }
 moq-mux = { workspace = true }
 # The room chat track: `moq-room`'s JSON window, which `@moq/room` reads too.
-moq-room = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-room = "0.2.3"
 n0-error = "1"
 n0-future = "0.3.2"
 n0-watcher = "1"

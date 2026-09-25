@@ -3487,13 +3487,16 @@ dependencies = [
 
 [[package]]
 name = "hang"
-version = "0.21.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68ebcdc6b8c070e4e606a8a799a352ed716158f96b6aa47b3da7fccdbda9a86f"
 dependencies = [
  "bytes",
  "derive_more",
  "hex",
+ "kio 0.6.0",
  "lazy_static",
+ "moq-json",
  "moq-net",
  "regex",
  "serde",
@@ -4949,7 +4952,8 @@ dependencies = [
 [[package]]
 name = "kio"
 version = "0.6.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b68395633c21277ff4030327ec49f4e528660cd747dd4146229b72012312ce85"
 dependencies = [
  "loom",
  "smallvec",
@@ -5354,8 +5358,9 @@ dependencies = [
 
 [[package]]
 name = "moq-audio"
-version = "0.0.26"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21d477e9865f3f6c76980cf9314b5a9ad515acbd50ca0a767d452a15cf2b2136"
 dependencies = [
  "block2 0.6.2",
  "bytes",
@@ -5386,8 +5391,9 @@ dependencies = [
 
 [[package]]
 name = "moq-auth"
-version = "0.1.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4642a22931092e111ef70c48e466cb603398f14e5e4b0afab19b1695fbdf6f1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -5411,8 +5417,9 @@ dependencies = [
 
 [[package]]
 name = "moq-binary"
-version = "0.1.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfb0d61ae2198d7cd0e511e45f6c02d383e611ad19f403fc1b994830412409f6"
 dependencies = [
  "bytes",
  "kio 0.6.0",
@@ -5424,8 +5431,9 @@ dependencies = [
 
 [[package]]
 name = "moq-flate"
-version = "0.1.3"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2348c8588b4a7ca841bbb78111f3bd5b09830bfebc2a58105e5c5105b67ecac6"
 dependencies = [
  "bytes",
  "flate2",
@@ -5434,8 +5442,9 @@ dependencies = [
 
 [[package]]
 name = "moq-json"
-version = "0.4.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96fae51a480e2591c3c98301714274577599970dd2fb3384367561d5246a5764"
 dependencies = [
  "bytes",
  "kio 0.6.0",
@@ -5450,8 +5459,9 @@ dependencies = [
 
 [[package]]
 name = "moq-loc"
-version = "0.2.9"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c10bf1893ced02347de4f8020e68ab210b045ca4b69555bd1be0e2dd63d20ea0"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5461,7 +5471,8 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.5.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9edf2ffefc53bf7f1554bc8460367fd1abf9dcb5e5349cffb4eca5f638a755ee"
 dependencies = [
  "serde",
  "serde_json",
@@ -5470,8 +5481,9 @@ dependencies = [
 
 [[package]]
 name = "moq-mux"
-version = "0.10.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d5bee13849ad314a019517e351620a3c118628a87dc8aa46af9028d711945c"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -5503,8 +5515,9 @@ dependencies = [
 
 [[package]]
 name = "moq-net"
-version = "0.3.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bbef457efd9610d6f6c15f4305307810891a167016b3b54faef3594e83cfa10"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -5587,8 +5600,9 @@ dependencies = [
 
 [[package]]
 name = "moq-nvenc"
-version = "0.0.6"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3ac277c79f0b1f39a30a7776ac0d8ac2ced032fbea7cd0f1f47a5c1a5ed3d77"
 dependencies = [
  "cudarc",
  "libloading 0.9.0",
@@ -5598,16 +5612,17 @@ dependencies = [
 [[package]]
 name = "moq-pattern"
 version = "0.1.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13afcbdcd32b4b7ee0d5220d64a05b139e88ee596c9f27a3cad28b6a201dcd0d"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "moq-relay"
-version = "0.15.0"
+version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c63af12160f05db352bec6486c88633c8292300b1f5c9dc4b041f94494ea968a"
+checksum = "10ba35b7ca1a074e8739f2f256dca8fae45eb51fec5b73609a7ad5f80513fffe"
 dependencies = [
  "anyhow",
  "axum",
@@ -5642,8 +5657,9 @@ dependencies = [
 
 [[package]]
 name = "moq-room"
-version = "0.2.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41f4b419ae8dc306367dc52c6f5b0682e9181e6550a40e2fce8d957bcec4b0f0"
 dependencies = [
  "kio 0.6.0",
  "moq-auth",
@@ -5655,8 +5671,9 @@ dependencies = [
 
 [[package]]
 name = "moq-sock"
-version = "0.0.1"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "259804c0f81cdf34be0055207f9853ad0d500c9c20423d9be14dc8e2dc64db40"
 dependencies = [
  "core_affinity",
  "libc",
@@ -5668,8 +5685,9 @@ dependencies = [
 
 [[package]]
 name = "moq-stats"
-version = "0.2.0"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3ca20e7becde8cd7797c38fcf0c0aba4b80396284feb8c7efab252d79586a8d"
 dependencies = [
  "moq-json",
  "moq-net",
@@ -5682,9 +5700,9 @@ dependencies = [
 
 [[package]]
 name = "moq-tokio"
-version = "0.19.11"
+version = "0.19.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eca11f65353e3d46730a653442b69d29a738cf8837eba1012df10a7ba233ae85"
+checksum = "cd638892ff1cdeb5ceef0c3f60113fd2a5887a63d773179dfb3872910f9dd8f6"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -5724,8 +5742,9 @@ dependencies = [
 
 [[package]]
 name = "moq-v4l"
-version = "0.0.1"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afd90478f95ee20123eb3c7ee3745d6f819cdafd649339dedd4fc974609cc400"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -5733,9 +5752,9 @@ dependencies = [
 
 [[package]]
 name = "moq-vaapi"
-version = "0.0.4"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "091df44de531fc6e5346da91f2dd7d1ebbb4a2e741ddadaf49aef017e659cb57"
+checksum = "a697143830ed57c5ce0e96016e845e0b097f607c536847c12890e3bd23ff4db9"
 dependencies = [
  "anyhow",
  "bindgen 0.70.1",
@@ -5748,8 +5767,9 @@ dependencies = [
 
 [[package]]
 name = "moq-video"
-version = "0.0.26"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "269ed0733d236386a4964fe8aafdfaeb3677e654aafc39db23ff47141c1f4299"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -10300,21 +10320,21 @@ dependencies = [
 
 [[package]]
 name = "usage-argv"
-version = "6.10.0"
+version = "6.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63c2a3a54aa7e19635115f1e0033d4f261fc03302dbf85aac898ff730a2e6678"
+checksum = "669a2fcdc2d909c0858fcf190d6135dd9fb303da3497f1b9fea8592bb414d74c"
 
 [[package]]
 name = "usage-config"
-version = "6.10.0"
+version = "6.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acaea558889366b1ac3e326559941a527a9104f0c99e508349b26680bd6dbacd"
+checksum = "7bf47002e31d27e4cad2326006ff50b88e726b6e8601f3a47cb2c2a3f4eb1357"
 
 [[package]]
 name = "usage-derive"
-version = "6.10.0"
+version = "6.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dbb659c9625a04d352f029cecaf61c138744977a665ff8375d996bbced79256"
+checksum = "fba1fef6ebefcad2733a1120567baf665b67b85382539de4b6187dd85b5eab12"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10323,9 +10343,9 @@ dependencies = [
 
 [[package]]
 name = "usage-rs"
-version = "6.10.0"
+version = "6.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3515698252935cabeda236242e07de36d0d64e0b67dd8075e631dc64937f41a"
+checksum = "3ba4af226b5e8186231f5fc83dc913522fab3b5accc7fc3811e940794d522407"
 dependencies = [
  "usage-argv",
  "usage-config",
@@ -10335,9 +10355,9 @@ dependencies = [
 
 [[package]]
 name = "usage-test"
-version = "6.10.0"
+version = "6.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8709086a13a13b3859acbf3eeb86088f0637eb5d0105c25c5309885a9015bcbd"
+checksum = "af670ae025049d131b1d16600e80fd6794cd83e69a3c84cb6605cdb8176f4957"
 dependencies = [
  "usage-argv",
 ]
