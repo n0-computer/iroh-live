@@ -72,14 +72,6 @@ impl Grant {
         }
     }
 
-    /// Returns a grant that allows nothing.
-    pub fn nothing() -> Self {
-        Self {
-            subscribe: Patterns::new(),
-            publish: Patterns::new(),
-        }
-    }
-
     /// Returns the grant verified moq-auth claims describe.
     ///
     /// Roots every pattern at the claims' root. A pattern that cannot be
@@ -397,8 +389,6 @@ mod tests {
         let everything = Grant::everything();
         assert!(everything.allows_subscribe("live/x/cam"));
         assert!(everything.allows_publish("anything"));
-        let nothing = Grant::nothing();
-        assert!(!nothing.allows_subscribe("live/x/cam"));
         let live: Pattern = "live/**".parse().expect("pattern");
         let scoped = Grant {
             subscribe: Patterns::from(live),
