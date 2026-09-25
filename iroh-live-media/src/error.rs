@@ -194,10 +194,12 @@ pub enum SwitchError {
         source: Arc<Error>,
     },
     /// The broadcast's catalog has no video rendition of that name.
-    #[error("the broadcast has no video rendition named {rendition}")]
+    #[error("no video rendition named {rendition}, the broadcast has [{}]", offered.join(", "))]
     UnknownRendition {
         /// The name that was asked for.
         rendition: String,
+        /// The names the catalog has, largest first.
+        offered: Vec<String>,
     },
     /// The player's video ended or was turned off.
     #[error("the video ended")]

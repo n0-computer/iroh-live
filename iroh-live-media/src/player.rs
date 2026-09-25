@@ -548,10 +548,11 @@ impl Player {
                 _ => {}
             }
             if let Some(known) = catalog.get()
-                && !known.video.renditions.contains_key(name)
+                && let Err(Error::UnknownRendition { offered, .. }) = known.video_rendition(name)
             {
                 return Err(n0_error::e!(SwitchError::UnknownRendition {
-                    rendition: name.to_string()
+                    rendition: name.to_string(),
+                    offered,
                 }));
             }
             tokio::select! {
