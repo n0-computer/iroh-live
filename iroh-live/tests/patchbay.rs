@@ -48,9 +48,6 @@ const FRAMERATE: u32 = 15;
 /// The frame interval at [`FRAMERATE`], the unit of the gap thresholds.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / FRAMERATE as u64);
 
-/// The default `Adaptation::downgrade_hold`.
-const DOWNGRADE_HOLD: Duration = Duration::from_millis(500);
-
 /// Returns adaptation timers short enough for a switch each way within a test.
 ///
 /// The thresholds stay at their defaults, because they are what the tests check.
@@ -63,9 +60,6 @@ fn quick() -> Adaptation {
         ..Adaptation::default()
     }
 }
-
-/// The default `Adaptation::loss_step_down`.
-const LOSS_STEP_DOWN: f64 = 0.10;
 
 /// Distinct round trip readings a queue has to show before a test counts it.
 const QUEUEING_SAMPLES: u32 = 2;
@@ -718,7 +712,7 @@ async fn adaptation_follows_a_rate_limit() {
     // Waits until the cap has shown in goodput and round trip for three
     // downgrade holds, backed by more than `QUEUEING_SAMPLES` distinct round
     // trip readings. The adaptation itself acts on the delivery estimate.
-    let held = DOWNGRADE_HOLD * 3;
+    let held = Adaptation::default().downgrade_hold * 3;
     let mut worst_loss: f64 = 0.0;
     let impaired = Instant::now();
     let (saw_the_cap, readings) = tokio::time::timeout(SIGNAL_LAG + RTT_CORROBORATION, async {
@@ -770,7 +764,7 @@ async fn adaptation_follows_a_rate_limit() {
     // Loss must not explain the downgrade. Checked against the step-down
     // threshold, not zero, since some loss can always happen.
     assert!(
-        worst_loss < LOSS_STEP_DOWN,
+        worst_loss < Adaptation::default().loss_step_down,
         "loss reached {worst_loss}, so the downgrade cannot be credited to the bandwidth signal",
     );
 

@@ -25,8 +25,9 @@ pub enum SlotState {
     Running,
     /// Stopped by an error.
     ///
-    /// Two things retry: the hardware-to-software encoder fallback, and a
-    /// microphone, which moq-audio reopens when the device returns.
+    /// On a broadcast, the hardware-to-software encoder fallback retries, and
+    /// moq-audio reopens a microphone when the device returns. On a player,
+    /// video and audio both try again after a pause.
     Failed(Arc<Error>),
     /// The source ended.
     Ended,

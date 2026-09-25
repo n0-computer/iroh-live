@@ -149,7 +149,6 @@ value. Tests shorten the timers there.
 | `trial` | 20 s | How long a step up has to play before it clears its rung's step downs |
 | `upgrade_hold_max` | 120 s | The longest hold before a step up |
 | `tick` | 200 ms | How often the network is read |
-| `switch_deadline` | 15 s | How long a replacement decoder has to take over |
 
 `adaptive_rendition_switching` in `iroh-live/tests/e2e.rs` drives a player
 with its own closure as the network signals, and feeds it 25% loss, an

@@ -72,7 +72,7 @@ a decoder or a network.
 - A replacement takes over on a picture it decoded, never on opening alone.
   With nothing playing, including after the incumbent ended, its first picture
   is enough.
-- A replacement has `Adaptation::switch_deadline` (15 s by default) from the
+- A replacement has `PlayerConfig::switch_deadline` (15 s by default) from the
   request to taking over. That covers the open, the wait for the track's next
   keyframe and the catch-up. Past it the replacement is given up and the
   incumbent keeps playing.

@@ -80,12 +80,9 @@ pub(crate) struct Reading {
 pub struct Adaptation {
     /// The multiple of a rung's advertised bitrate the estimate has to cover.
     ///
-    /// openh264 and VA-API were measured sending 82% of the advertised bitrate
-    /// on the patchbay suite's picture. The estimate an iroh publisher sends is
-    /// its congestion window over the round trip, and a capped link read at 0.8
-    /// to 1.6 times its cap in the patchbay lab. The sliding maximum keeps the
-    /// top of that range. At 1.25, a rung fits while the maximum covers 1.5
-    /// times what the rung sends.
+    /// The estimate reads up to 1.6 times a capped link's rate, and encoders
+    /// send about 82% of what they advertise. At 1.25, a rung fits while the
+    /// estimate covers 1.5 times what it sends.
     pub fit_ratio: f64,
     /// How long the estimate is remembered, as a sliding maximum.
     ///
@@ -119,14 +116,6 @@ pub struct Adaptation {
     pub upgrade_hold_max: Duration,
     /// How often the network is read while it can change the choice.
     pub tick: Duration,
-    /// How long a replacement decoder has to take over before the switch is given up.
-    ///
-    /// It covers a real handover. The replacement subscribes to the other
-    /// rendition, waits for its next keyframe, and decodes until it catches up
-    /// with the picture on screen. On a two second GOP over an impaired link,
-    /// the keyframe alone takes seconds. The incumbent keeps playing either
-    /// way.
-    pub switch_deadline: Duration,
 }
 
 impl Default for Adaptation {
@@ -142,7 +131,6 @@ impl Default for Adaptation {
             trial: Duration::from_secs(20),
             upgrade_hold_max: Duration::from_secs(120),
             tick: Duration::from_millis(200),
-            switch_deadline: Duration::from_secs(15),
         }
     }
 }

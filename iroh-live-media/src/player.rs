@@ -146,7 +146,7 @@ impl Default for Latency {
 }
 
 /// How a player plays.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
@@ -158,6 +158,27 @@ pub struct PlayerConfig {
     pub decoder: video::decode::Kind,
     /// How automatic selection follows the link.
     pub adaptation: Adaptation,
+    /// How long a replacement decoder has to take over before the switch is given up.
+    ///
+    /// It covers a real handover, automatic, pinned or to another decoder. The
+    /// replacement subscribes to the other rendition, waits for its next
+    /// keyframe, and decodes until it catches up with the picture on screen.
+    /// On a two second GOP over an impaired link, the keyframe alone takes
+    /// seconds. The incumbent keeps playing either way. 15 s by default.
+    pub switch_deadline: Duration,
+}
+
+impl Default for PlayerConfig {
+    fn default() -> Self {
+        Self {
+            rendition: RenditionMode::default(),
+            latency: Latency::default(),
+            audio: None,
+            decoder: video::decode::Kind::default(),
+            adaptation: Adaptation::default(),
+            switch_deadline: Duration::from_secs(15),
+        }
+    }
 }
 
 /// The state of a player.
@@ -335,8 +356,8 @@ impl Player {
         // backed off.
         let (reports_tx, reports_rx) = mpsc::channel(8);
         let (desired_tx, desired_rx) = watch::channel(None);
-        // The exact target on screen, with its decoder configuration. The
-        // selector falls back to it when a decoder change fails.
+        // The exact target on screen. Once something plays, the selector stops
+        // asking again for video that ended.
         let (playing_tx, playing_rx) = watch::channel(None);
 
         let mut tasks = Vec::new();
@@ -365,7 +386,7 @@ impl Player {
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
-                switch_deadline: config.adaptation.switch_deadline,
+                switch_deadline: config.switch_deadline,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::info_span!(parent: &span, "video")),
@@ -440,7 +461,9 @@ impl Player {
     ///
     /// The replacement opens behind the picture and takes over once it has
     /// caught up. A backend that fails to open leaves the incumbent playing and
-    /// says so in [`PlayerStatus::switch_error`].
+    /// says so in [`PlayerStatus::switch_error`]. Automatic rendition switches
+    /// also open under the failing backend, so they fail until the next
+    /// `set_decoder`.
     pub fn set_decoder(&self, decoder: video::decode::Kind) {
         self.controls.decoder.send_replace(decoder);
     }

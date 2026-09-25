@@ -249,8 +249,8 @@ impl PublishRecorder {
 
 /// How long a [`RateMeter`] counts events before it reports.
 ///
-/// Frame rates are quoted per second, and a second is short enough to show a
-/// stopped stream quickly.
+/// Frame rates are quoted per second. A meter reports only when an event
+/// arrives, so a stream that stops keeps its last rate.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
 /// Counts events and reports their rate once per window.
