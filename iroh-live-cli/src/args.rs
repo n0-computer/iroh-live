@@ -473,7 +473,7 @@ pub struct RecordArgs {
 
     /// How long to wait for a stalled group before skipping it.
     #[arg(long, value_name = "MILLISECONDS", default_value_t = 2_000)]
-    pub latency: u64,
+    pub max_age: u64,
 }
 
 /// Parses `--format` into the media crate's [`RecordFormat`].

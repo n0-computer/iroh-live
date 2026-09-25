@@ -150,7 +150,7 @@ pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) ->
 fn options(args: &RecordArgs) -> Result<RecordOptions> {
     let mut options = RecordOptions::new(&args.output, args.format)?;
     options.config.rendition = args.rendition.clone();
-    options.config.max_age = Duration::from_millis(args.latency);
+    options.config.max_age = Duration::from_millis(args.max_age);
     options.duration = args.duration.map(Duration::from_secs);
     Ok(options)
 }
@@ -205,7 +205,7 @@ mod tests {
             format: Some(RecordFormat::Mkv),
             rendition: None,
             duration: None,
-            latency: 500,
+            max_age: 500,
         };
         let options = options(&args).expect("--format names the container");
         assert_eq!(options.config.format, RecordFormat::Mkv);
@@ -220,7 +220,7 @@ mod tests {
             format: None,
             rendition: None,
             duration: None,
-            latency: 2_000,
+            max_age: 2_000,
         };
         let err = options(&args).expect_err("nothing names the container");
         assert!(err.to_string().contains("--format"), "unexpected: {err}");

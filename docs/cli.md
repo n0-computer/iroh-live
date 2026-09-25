@@ -251,7 +251,7 @@ encoded frames go straight into the container.
 | `--format <FMT>` | `fmp4` or `mkv`, overriding the extension of `--output` |
 | `--rendition <NAME>` | Record this video rendition only |
 | `--duration <SECONDS>` | Stop after this long. Omit to record until Ctrl+C |
-| `--latency <MILLISECONDS>` | How long to wait for a stalled group before skipping it (default: 2000) |
+| `--max-age <MILLISECONDS>` | How long to wait for a stalled group before skipping it (default: 2000) |
 
 The extension picks the container: `.mp4`, `.m4v`, and `.m4s` are fragmented
 MP4, and `.mkv` and `.webm` are Matroska. Other extensions need `--format`.
