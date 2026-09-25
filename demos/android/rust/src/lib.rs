@@ -102,7 +102,7 @@ fn runtime() -> &'static Runtime {
 /// The demo stores no key, so without `IROH_SECRET` every screen gets a new
 /// endpoint id.
 async fn bind_live() -> Result<Live> {
-    let options = EndpointOptions::from_env().context("IROH_SECRET is not a key")?;
+    let options = EndpointOptions::from_env()?;
     Ok(Live::builder(options.bind().await?).with_router().spawn())
 }
 

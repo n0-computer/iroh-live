@@ -7,7 +7,7 @@
 use std::{io::Write, path::Path, sync::Arc};
 
 use iroh::{
-    Endpoint, KeyParsingError, SecretKey,
+    Endpoint, SecretKey,
     endpoint::{Builder, QuicTransportConfig, presets},
 };
 use n0_error::{AnyError, e};
@@ -85,11 +85,13 @@ impl EndpointOptions {
     ///
     /// # Errors
     ///
-    /// Fails if `IROH_SECRET` is set to something that is not a secret key.
-    pub fn from_env() -> Result<Self, KeyParsingError> {
+    /// Fails with [`Error::SecretKey`] if `IROH_SECRET` is set to something
+    /// that is not a secret key.
+    pub fn from_env() -> Result<Self, Error> {
         let secret_key = std::env::var_os("IROH_SECRET")
             .map(|key| key.to_string_lossy().parse())
-            .transpose()?;
+            .transpose()
+            .map_err(|source| e!(Error::SecretKey { source }))?;
         Ok(Self {
             secret_key,
             ..Self::default()
