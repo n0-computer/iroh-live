@@ -86,11 +86,11 @@ task, and the supervisor's reader tasks drop their decoders with them.
 `CancellationToken` coordinates a broadcast-wide shutdown, and
 `AbortOnDropHandle` ties a task's life to a handle.
 
-Continuous state is an `n0_watcher::Watchable`, read through a `Direct<T>`
-watcher that always has a current value and can be awaited for changes. The
-catalog, a broadcast's `PublishStatus`, a player's `PlayerStatus` and the open
-sessions all work this way. Statistics are snapshots
-read on demand.
+Continuous state is watched: a watcher always has a current value and can be
+awaited for changes. A broadcast's `PublishStatus` and a player's
+`PlayerStatus` are tokio `watch` receivers. The catalog and the open sessions
+are `n0_watcher` watchers, as in iroh. Statistics are snapshots read on
+demand.
 
 Channels are bounded. Frames between the decoder and the renderer go through
 `VideoFrames`, a single-slot latest-wins stream with a cursor per handle. A

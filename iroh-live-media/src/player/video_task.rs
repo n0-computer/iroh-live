@@ -37,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
-    Abandon, Controls, PlaybackRecorder, PlayoutClock, StatusCell, SwitchEvent,
+    Abandon, Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
     select::{DecodeSettings, Desired, Failure, Report},
     switch::{Abandoned, Outcome, Switcher, Target, Verdict},
 };
@@ -45,6 +45,7 @@ use crate::{
     SlotState,
     error::Error,
     frames::FrameSlot,
+    publish::status::send_if_changed,
     stats::{FrameTiming, MediaKind, RateMeter, Smoothed, VideoPlaybackStats},
 };
 
@@ -80,7 +81,7 @@ pub(crate) struct Inputs {
     pub desired: watch::Receiver<Option<Desired>>,
     pub frames: FrameSlot,
     pub controls: Arc<Controls>,
-    pub status: StatusCell,
+    pub status: watch::Sender<PlayerStatus>,
     pub events: broadcast::Sender<SwitchEvent>,
     /// Where failed or ended decoders are reported, for the selector.
     pub reports: mpsc::Sender<Report>,
@@ -154,7 +155,7 @@ pub(crate) async fn run(inputs: Inputs) {
                 if changed.is_err() {
                     // The selector stops when the broadcast closes, so the
                     // video has ended.
-                    status.update(|status| {
+                    send_if_changed(&status, |status| {
                         let video = match &status.video {
                             SlotState::Running | SlotState::Starting => SlotState::Ended,
                             other => other.clone(),
@@ -186,7 +187,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         switcher = VideoSwitcher::new(switch_deadline);
                         delivery = None;
                         stats.video.update(|video| *video = None);
-                        status.update(|status| {
+                        send_if_changed(&status, |status| {
                             // The selector sets Off. Anything else means the
                             // catalog has no video left.
                             let video = match status.video {
@@ -277,7 +278,7 @@ pub(crate) async fn run(inputs: Inputs) {
             }
             changed
         });
-        status.update(|status| status.switching_to = switching);
+        send_if_changed(&status, |status| status.switching_to = switching);
         match outcome {
             Outcome::Idle => {}
             Outcome::Promoted(target) => {
@@ -294,7 +295,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     video.rendition = target.rendition.clone();
                     video.decoder = decoder.clone();
                 });
-                status.update(|status| {
+                send_if_changed(&status, |status| {
                     status.video = SlotState::Running;
                     status.failed_rendition = None;
                     status.rendition = Some(target.rendition.clone());
@@ -308,7 +309,7 @@ pub(crate) async fn run(inputs: Inputs) {
             Outcome::Abandoned(target, Abandoned::Ended) if replacement_failure.is_none() => {
                 debug!(rendition = %target.rendition, "replacement's track ended before it took over");
                 if switcher.current().is_none() {
-                    status.update(|status| status.video = SlotState::Starting);
+                    send_if_changed(&status, |status| status.video = SlotState::Starting);
                 }
                 let _ = reports.try_send(Report::Ended(target));
             }
@@ -351,7 +352,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     let config_only = playing
                         .as_ref()
                         .is_some_and(|playing| playing.rendition == target.rendition);
-                    status.update(|status| {
+                    send_if_changed(&status, |status| {
                         status.switch_error = Some(err.clone());
                         // Nothing on screen and nothing on its way: the video
                         // has failed until the selector finds something to try.
@@ -379,7 +380,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     // rendition.
                     Some((target, Some(err))) => {
                         warn!(error = %err, rendition = %target.rendition, "video failed");
-                        status.update(|status| {
+                        send_if_changed(&status, |status| {
                             status.clear_video(SlotState::Failed(err.clone()));
                             status.failed_rendition = Some(target.rendition.clone());
                             status.switch_error = Some(err.clone());
@@ -396,10 +397,12 @@ pub(crate) async fn run(inputs: Inputs) {
                     // video ends the video.
                     Some((target, None)) => {
                         info!(rendition = %target.rendition, "video track ended, waiting for what follows");
-                        status.update(|status| status.clear_video(SlotState::Starting));
+                        send_if_changed(&status, |status| status.clear_video(SlotState::Starting));
                         let _ = reports.try_send(Report::Ended(target));
                     }
-                    None => status.update(|status| status.clear_video(SlotState::Starting)),
+                    None => {
+                        send_if_changed(&status, |status| status.clear_video(SlotState::Starting))
+                    }
                 }
             }
         }

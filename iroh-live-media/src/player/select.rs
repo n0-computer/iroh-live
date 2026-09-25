@@ -19,11 +19,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace};
 
 use super::{
-    Controls, Latency, RenditionMode, StatusCell,
+    Controls, Latency, PlayerStatus, RenditionMode,
     bound::{Adaptation, Bound, Constraints, Rung},
     switch::Target,
 };
-use crate::{Catalog, RemoteBroadcast, SlotState, error::Error, video};
+use crate::{
+    Catalog, RemoteBroadcast, SlotState, error::Error, publish::status::send_if_changed, video,
+};
 
 /// How long a rendition whose decoder failed is left alone.
 const EXCLUSION: Duration = Duration::from_secs(10);
@@ -105,7 +107,7 @@ pub(crate) enum Report {
 pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
     pub controls: Arc<Controls>,
-    pub status: StatusCell,
+    pub status: watch::Sender<PlayerStatus>,
     /// What happened to the decoders, reported by the supervisor.
     pub reports: mpsc::Receiver<Report>,
     /// The target on screen, as the supervisor reports it.
@@ -181,7 +183,7 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut decoder = controls.decoder.subscribe();
     let mut catalog = broadcast.catalog();
     let mut epoch = broadcast.epoch();
-    let mut player = status.watch.watch();
+    let mut player = status.subscribe();
     let network = broadcast.network();
 
     let mut ticker = tokio::time::interval(adaptation.tick);
@@ -251,7 +253,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                     clock.restart();
                 }
-                updated = player.updated() => if updated.is_err() { return },
+                changed = player.changed() => if changed.is_err() { return },
                 () = async { tokio::time::sleep_until(revive_at.expect("guarded")).await },
                     if revive_at.is_some() =>
                 {
@@ -319,7 +321,7 @@ pub(crate) async fn run(inputs: Inputs) {
         };
 
         let sample = network.as_ref().map(|network| network());
-        let on_screen = status.get().rendition;
+        let on_screen = status.borrow().rendition.clone();
         let nothing_playing = on_screen.is_none();
         // The bound weighs its target against what this selector last asked
         // for, on screen or on its way. Weighed against the old rendition still
@@ -341,7 +343,7 @@ pub(crate) async fn run(inputs: Inputs) {
             now,
         );
         let why_changed = !same_error(&last_why, &why);
-        status.update(|status| {
+        send_if_changed(&status, |status| {
             if why_changed {
                 status.switch_error = why.clone();
             }
@@ -376,14 +378,14 @@ pub(crate) async fn run(inputs: Inputs) {
         // broadcast ends its video instead of starting forever.
         let vanished = next.is_none()
             && !matches!(mode, RenditionMode::Off)
-            && status.get().video != SlotState::Ended;
+            && status.borrow().video != SlotState::Ended;
         if vanished {
             let since = *vanished_since.get_or_insert(now);
             if now.duration_since(since) < VANISH_GRACE {
                 continue;
             }
             debug!("the catalog has had no video for a while; the video is over");
-            status.update(|status| status.video = SlotState::Ended);
+            send_if_changed(&status, |status| status.video = SlotState::Ended);
         }
         vanished_since = None;
         // Ask again for a target given up on once its backoff is over. A
@@ -605,7 +607,7 @@ mod tests {
                 decoder: watch::Sender::new(video::decode::Kind::Software),
                 volume: watch::Sender::new(1.0),
             }),
-            status: StatusCell::new(super::super::PlayerStatus::default()),
+            status: watch::Sender::default(),
             reports,
             playing,
             desired,

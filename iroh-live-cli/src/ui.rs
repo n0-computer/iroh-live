@@ -363,7 +363,7 @@ impl RemoteView {
     /// Draws the stats overlay over `rect`.
     pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let stats = self.player.stats();
-        let status = self.player.status().get();
+        let status = self.player.status().borrow().clone();
         if let Some(lines) = self
             .link
             .as_mut()
@@ -385,7 +385,7 @@ impl RemoteView {
     ///
     /// `id` salts the widget ids, so each tile needs its own.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
-        let status = self.player.status().get();
+        let status = self.player.status().borrow().clone();
         let catalog = self.player.broadcast().catalog().get();
         let Some(catalog) = catalog.filter(|catalog| !catalog.video.renditions.is_empty()) else {
             ui.label("no video");

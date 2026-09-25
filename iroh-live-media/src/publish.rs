@@ -15,6 +15,7 @@ use std::sync::{
 
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info};
 
@@ -312,8 +313,11 @@ impl LocalBroadcast {
     }
 
     /// Returns the state of both slots and of every rendition.
-    pub fn status(&self) -> n0_watcher::Direct<PublishStatus> {
-        self.shared.status.watch()
+    ///
+    /// A borrow of the receiver blocks the broadcast's writes, so keep it short
+    /// and do not hold it across a call into the broadcast.
+    pub fn status(&self) -> watch::Receiver<PublishStatus> {
+        self.shared.status.subscribe()
     }
 
     /// Returns what the broadcast is sending, per rendition.

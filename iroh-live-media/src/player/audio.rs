@@ -4,14 +4,16 @@ use std::{sync::Arc, time::Duration};
 
 use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::Watcher as _;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::{Controls, PlaybackRecorder, PlayoutClock, StatusCell};
+use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock};
 use crate::{
     AudioFormat, AudioOutput, RemoteBroadcast, SlotState,
     error::Error,
     output::OutputControl,
+    publish::status::send_if_changed,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
@@ -23,7 +25,7 @@ pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
     pub output: AudioOutput,
     pub controls: Arc<Controls>,
-    pub status: StatusCell,
+    pub status: watch::Sender<PlayerStatus>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
     pub shutdown: CancellationToken,
@@ -59,13 +61,13 @@ pub(crate) async fn run(inputs: Inputs) {
         };
         let mut reader = match opened {
             Some((name, config, consumer)) => {
-                status.update(|status| status.audio = SlotState::Starting);
+                send_if_changed(&status, |status| status.audio = SlotState::Starting);
                 let max_age = controls.latency.borrow().max;
                 match open(&name, &config, &consumer, max_age, &output).await {
                     Ok((decoder, sink, control)) => {
                         control.set_volume(*volume.borrow());
                         info!(rendition = %name, "audio playing");
-                        status.update(|status| status.audio = SlotState::Running);
+                        send_if_changed(&status, |status| status.audio = SlotState::Running);
                         let job = Job {
                             name: name.clone(),
                             decoder,
@@ -84,7 +86,9 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                     Err(err) => {
                         warn!(error = %err, rendition = %name, "audio failed to open");
-                        status.update(|status| status.audio = SlotState::Failed(Arc::new(err)));
+                        send_if_changed(&status, |status| {
+                            status.audio = SlotState::Failed(Arc::new(err))
+                        });
                         None
                     }
                 }
@@ -106,10 +110,10 @@ pub(crate) async fn run(inputs: Inputs) {
                     stats.audio.update(|audio| *audio = None);
                     retry.as_mut().reset(tokio::time::Instant::now() + RETRY_AFTER);
                     match result {
-                        Ok(Ok(())) => status.update(|status| status.audio = SlotState::Ended),
+                        Ok(Ok(())) => send_if_changed(&status, |status| status.audio = SlotState::Ended),
                         Ok(Err(err)) => {
                             warn!(error = %err, "audio stopped");
-                            status.update(|status| status.audio = SlotState::Failed(Arc::new(err)));
+                            send_if_changed(&status, |status| status.audio = SlotState::Failed(Arc::new(err)));
                         }
                         Err(err) => warn!(error = %err, "the audio task panicked"),
                     }

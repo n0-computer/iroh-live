@@ -11,13 +11,10 @@
 //! ([`switch`](self::switch)). The audio task decodes into the output and
 //! reports how much it has buffered. The video waits on that figure.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::{Watchable, Watcher as _};
+use n0_watcher::Watcher as _;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -26,6 +23,7 @@ use crate::{
     AudioOutput, RemoteBroadcast, SlotState,
     error::{Error, SwitchError},
     frames::{FrameSlot, VideoFrames},
+    publish::status::send_if_changed,
     stats::{Cell, FrameTiming, PlaybackStats, Timeline},
     video,
 };
@@ -197,6 +195,7 @@ pub struct PlayerStatus {
     pub(crate) failed_rendition: Option<String>,
 }
 
+/// Compares errors by identity, so a watcher tells an update from a repeat.
 impl PartialEq for PlayerStatus {
     fn eq(&self, other: &Self) -> bool {
         self.video == other.video
@@ -214,8 +213,6 @@ impl PartialEq for PlayerStatus {
     }
 }
 
-impl Eq for PlayerStatus {}
-
 impl PlayerStatus {
     /// Sets the video slot to `state` with nothing on screen or on its way.
     pub(crate) fn clear_video(&mut self, state: SlotState) {
@@ -223,37 +220,6 @@ impl PlayerStatus {
         self.rendition = None;
         self.switching_to = None;
         self.decoder = None;
-    }
-}
-
-/// The player's status, written by its tasks.
-#[derive(Debug, Clone)]
-pub(crate) struct StatusCell {
-    /// Serializes updates: several tasks write, and `Watchable` has no atomic
-    /// update.
-    update: Arc<Mutex<()>>,
-    watch: Watchable<PlayerStatus>,
-}
-
-impl StatusCell {
-    fn new(status: PlayerStatus) -> Self {
-        Self {
-            update: Arc::default(),
-            watch: Watchable::new(status),
-        }
-    }
-
-    /// Changes the status in place and publishes the result.
-    pub(crate) fn update(&self, f: impl FnOnce(&mut PlayerStatus)) {
-        let _update = self.update.lock().expect("poisoned");
-        let mut status = self.watch.get();
-        f(&mut status);
-        self.watch.set(status).ok();
-    }
-
-    /// Returns the current status.
-    pub(crate) fn get(&self) -> PlayerStatus {
-        self.watch.get()
     }
 }
 
@@ -302,7 +268,7 @@ pub(crate) struct Controls {
 pub struct Player {
     broadcast: RemoteBroadcast,
     frames: VideoFrames,
-    status: StatusCell,
+    status: watch::Sender<PlayerStatus>,
     controls: Arc<Controls>,
     events: broadcast::Sender<SwitchEvent>,
     clock: PlayoutClock,
@@ -323,7 +289,7 @@ impl Player {
     pub(crate) fn start(broadcast: RemoteBroadcast, config: PlayerConfig) -> Result<Self, Error> {
         config.latency.validate()?;
         let span = tracing::info_span!(parent: broadcast.span(), "player");
-        let status = StatusCell::new(PlayerStatus {
+        let status = watch::Sender::new(PlayerStatus {
             mode: config.rendition.clone(),
             video: match config.rendition {
                 RenditionMode::Off => SlotState::Off,
@@ -432,7 +398,7 @@ impl Player {
 
     /// Chooses how the video rendition is picked.
     pub fn set_rendition(&self, mode: RenditionMode) {
-        self.status.update(|status| status.mode = mode.clone());
+        send_if_changed(&self.status, |status| status.mode = mode.clone());
         self.controls.mode.send_replace(mode);
     }
 
@@ -469,9 +435,12 @@ impl Player {
         self.controls.volume.send_replace(volume.max(0.0));
     }
 
-    /// Returns a watcher over the player's state.
-    pub fn status(&self) -> n0_watcher::Direct<PlayerStatus> {
-        self.status.watch.watch()
+    /// Returns the player's state.
+    ///
+    /// A borrow of the receiver blocks the player's writes, so keep it short
+    /// and do not hold it across a call into the player.
+    pub fn status(&self) -> watch::Receiver<PlayerStatus> {
+        self.status.subscribe()
     }
 
     /// Returns the player's playback statistics.
@@ -515,10 +484,10 @@ impl Player {
     /// left playing, or when the player's video ended.
     pub async fn wait_for_rendition(&self, name: &str) -> Result<(), SwitchError> {
         let mut events = self.events.subscribe();
-        let mut status = self.status.watch.watch();
+        let mut status = self.status.subscribe();
         let mut catalog = self.broadcast.catalog();
         loop {
-            let current = status.get();
+            let current = status.borrow_and_update().clone();
             if current.rendition.as_deref() == Some(name) {
                 return Ok(());
             }
@@ -558,7 +527,7 @@ impl Player {
                     // still a switch to `name`.
                     Ok(SwitchEvent::Abandoned(rendition, Abandon::Superseded))
                         if rendition == name
-                            && status.get().switching_to.as_deref() == Some(name) => {}
+                            && status.borrow().switching_to.as_deref() == Some(name) => {}
                     Ok(SwitchEvent::Abandoned(rendition, reason)) if rendition == name => {
                         let rendition = rendition.clone();
                         return Err(match reason {
@@ -572,8 +541,8 @@ impl Player {
                         return Err(n0_error::e!(SwitchError::Ended));
                     }
                 },
-                updated = status.updated() => {
-                    if updated.is_err() {
+                changed = status.changed() => {
+                    if changed.is_err() {
                         return Err(n0_error::e!(SwitchError::Ended));
                     }
                 }

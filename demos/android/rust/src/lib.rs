@@ -230,7 +230,7 @@ impl SessionHandle {
 
     /// Returns the rendition the player is drawing.
     fn rendition(&self) -> Option<String> {
-        self.player.as_ref()?.status().get().rendition
+        self.player.as_ref()?.status().borrow().rendition.clone()
     }
 
     /// Returns the newest catalog of the watched broadcast, if one arrived.

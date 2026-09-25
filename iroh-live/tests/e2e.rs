@@ -332,13 +332,13 @@ async fn adaptive_rendition_switching() {
     // The `low` encoder starts only when subscribed, so the switch waits for
     // an openh264 open and a keyframe. That is slow under a parallel test run.
     let mut status = player.status();
-    tokio::time::timeout(TIMEOUT, async {
-        while status.get().rendition.as_deref() != Some("low") {
-            status.updated().await.expect("the player is alive");
-        }
-    })
+    tokio::time::timeout(
+        TIMEOUT,
+        status.wait_for(|status| status.rendition.as_deref() == Some("low")),
+    )
     .await
-    .expect("timed out waiting for a rendition downgrade to `low`");
+    .expect("timed out waiting for a rendition downgrade to `low`")
+    .expect("the player is alive");
 
     publisher.shutdown().await;
     subscriber.shutdown().await;
@@ -368,16 +368,18 @@ async fn changing_the_decoder_backend_rebuilds_it() {
     let mut status = player.status();
     player.set_decoder(decode::Kind::Software);
     tokio::time::timeout(TIMEOUT, async {
-        while status.get().switching_to.is_none() {
-            status.updated().await.expect("the player is alive");
-        }
-        while status.get().switching_to.is_some() {
-            status.updated().await.expect("the player is alive");
-        }
+        status
+            .wait_for(|status| status.switching_to.is_some())
+            .await
+            .expect("the player is alive");
+        status
+            .wait_for(|status| status.switching_to.is_none())
+            .await
+            .expect("the player is alive");
     })
     .await
     .expect("timed out waiting for the rebuilt decoder to take over");
-    let status = status.get();
+    let status = status.borrow().clone();
     assert!(status.switch_error.is_none(), "{:?}", status.switch_error);
     assert_eq!(status.decoder.as_deref(), Some("openh264"));
 

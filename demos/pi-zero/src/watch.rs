@@ -10,8 +10,6 @@ use std::{
 use anyhow::{Context as _, Result};
 use glow::HasContext;
 use iroh_live::media::{Player, VideoFrames, video::Frame};
-#[cfg(feature = "windowed")]
-use n0_watcher::Watcher as _;
 use tracing::{info, warn};
 
 use crate::gles::GlesRenderer;
@@ -58,7 +56,12 @@ fn print_stats(player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
         .map_or_else(|| "-".to_string(), |rtt| rtt.as_millis().to_string());
     println!(
         "fps: {fps:.0}  rtt: {rtt}ms  rendition: {}",
-        player.status().get().rendition.unwrap_or_default(),
+        player
+            .status()
+            .borrow()
+            .rendition
+            .clone()
+            .unwrap_or_default(),
     );
 }
 

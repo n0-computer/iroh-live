@@ -15,6 +15,7 @@ use iroh_live_media::{
     SlotState, SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource, audio, video,
 };
 use n0_watcher::Watcher;
+use tokio::sync::watch;
 
 /// How long any one wait may take.
 ///
@@ -34,8 +35,17 @@ fn software(encoding: VideoEncoding) -> VideoEncoding {
     }
 }
 
+/// Waits until `receiver` holds a value `done` accepts, and returns it.
+async fn until<T: Clone>(mut receiver: watch::Receiver<T>, done: impl FnMut(&T) -> bool) -> T {
+    tokio::time::timeout(TIMEOUT, receiver.wait_for(done))
+        .await
+        .expect("the awaited value never came")
+        .expect("the watched value is alive")
+        .clone()
+}
+
 /// Waits until `watcher` holds a value `done` accepts, and returns it.
-async fn until<W: Watcher>(mut watcher: W, done: impl Fn(&W::Value) -> bool) -> W::Value {
+async fn until_watched<W: Watcher>(mut watcher: W, done: impl Fn(&W::Value) -> bool) -> W::Value {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let value = watcher.get();
@@ -114,7 +124,7 @@ async fn a_local_broadcast_plays_in_process() {
         .expect("the pinned rendition lands");
     let mut frames = player.video();
     wait_for_size(&mut frames, video::Size::new(320, 180)).await;
-    let status = player.status().get();
+    let status = player.status().borrow().clone();
     assert_eq!(status.video, SlotState::Running);
     assert_eq!(status.rendition.as_deref(), Some("low"));
     assert!(status.decoder.is_some());
@@ -141,7 +151,7 @@ async fn a_local_broadcast_plays_in_process() {
 async fn a_player_started_after_the_catalog_plays() {
     let (broadcast, _source) = ladder();
     let remote = RemoteBroadcast::local(&broadcast);
-    until(remote.catalog(), |catalog| {
+    until_watched(remote.catalog(), |catalog| {
         catalog
             .as_ref()
             .is_some_and(|catalog| catalog.video.renditions.len() >= 2)
@@ -227,8 +237,8 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
     let mut low_frames = low.video();
     wait_for_size(&mut high_frames, video::Size::new(640, 360)).await;
     wait_for_size(&mut low_frames, video::Size::new(320, 180)).await;
-    assert_eq!(high.status().get().rendition.as_deref(), Some("high"));
-    assert_eq!(low.status().get().rendition.as_deref(), Some("low"));
+    assert_eq!(high.status().borrow().rendition.as_deref(), Some("high"));
+    assert_eq!(low.status().borrow().rendition.as_deref(), Some("low"));
 }
 
 #[tokio::test]
@@ -367,8 +377,9 @@ fn record_states(
     let written = states.clone();
     let task = tokio::spawn(async move {
         loop {
-            written.lock().expect("poisoned").push(status.get().video);
-            if status.updated().await.is_err() {
+            let video = status.borrow_and_update().video.clone();
+            written.lock().expect("poisoned").push(video);
+            if status.changed().await.is_err() {
                 return;
             }
         }
@@ -434,7 +445,7 @@ async fn a_player_keeps_playing_when_its_route_goes() {
         .expect("in time")
         .expect("the relayed broadcast plays");
     assert!(!remote.is_closed());
-    assert_eq!(player.status().get().video, SlotState::Running);
+    assert_eq!(player.status().borrow().video, SlotState::Running);
     recorder.abort();
     never_over(&states);
     relayed_route.abort();
@@ -534,7 +545,7 @@ async fn audio_plays_through_a_null_output() {
     })
     .await
     .expect("audio frames played");
-    assert_eq!(player.status().get().audio, SlotState::Running);
+    assert_eq!(player.status().borrow().audio, SlotState::Running);
 }
 
 /// A broadcast with only audio ends the player's video.
@@ -610,7 +621,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
     tokio::time::timeout(TIMEOUT, frames_past(10))
         .await
         .expect("the replacement never played");
-    assert_eq!(player.status().get().audio, SlotState::Running);
+    assert_eq!(player.status().borrow().audio, SlotState::Running);
 }
 
 /// The broadcast's status follows its video slot, back to off once cleared.
@@ -626,7 +637,7 @@ async fn the_publish_status_follows_the_video_slot() {
         ["high", "low"]
     );
     broadcast.clear_video();
-    let cleared = broadcast.status().get();
+    let cleared = broadcast.status().borrow().clone();
     assert_eq!(cleared.video, SlotState::Off);
     assert!(cleared.renditions.is_empty());
 }
@@ -686,7 +697,7 @@ async fn a_pushed_source_sees_demand_while_played() {
     let player = RemoteBroadcast::local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    until(sender.demand(), |wanted| *wanted).await;
+    until_watched(sender.demand(), |wanted| *wanted).await;
     drop(player);
     feeder.abort();
 }
@@ -704,7 +715,7 @@ async fn a_source_that_waits_for_demand_is_played() {
     let feeder = tokio::spawn({
         let sender = sender.clone();
         async move {
-            until(sender.demand(), |wanted| *wanted).await;
+            until_watched(sender.demand(), |wanted| *wanted).await;
             push_frames(sender, format).await;
         }
     });
@@ -745,7 +756,7 @@ async fn the_frames_end_when_the_broadcast_closes() {
     tokio::time::timeout(TIMEOUT, async { while frames.next().await.is_some() {} })
         .await
         .expect("the frames went on after the broadcast closed");
-    let status = player.status().get();
+    let status = player.status().borrow().clone();
     assert_eq!(status.video, SlotState::Ended, "{status:?}");
     assert_eq!(status.rendition, None);
 }

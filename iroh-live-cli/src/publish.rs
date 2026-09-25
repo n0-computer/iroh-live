@@ -155,7 +155,6 @@ mod preview {
     };
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
-    use n0_watcher::Watcher as _;
     use tokio::sync::oneshot;
     use tracing::{info, warn};
 
@@ -227,7 +226,7 @@ mod preview {
             ui.centered_and_justified(|ui| ui.add_sized(size, image));
 
             let stats = self.broadcast.stats();
-            let status = self.broadcast.status().get();
+            let status = self.broadcast.status().borrow().clone();
             self.overlay.show_publish(ui, video_rect, &stats, &status);
 
             crate::ui::control_panel(&ctx, "publish-controls", |ui| {

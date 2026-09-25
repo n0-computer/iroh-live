@@ -324,7 +324,12 @@ struct Viewer {
 impl Viewer {
     /// Returns the rendition on screen, or an empty string before the first.
     fn rendition(&self) -> String {
-        self.player.status().get().rendition.unwrap_or_default()
+        self.player
+            .status()
+            .borrow()
+            .rendition
+            .clone()
+            .unwrap_or_default()
     }
 
     /// Waits for the next frame.
@@ -335,24 +340,23 @@ impl Viewer {
 
 /// Waits until `rendition` is on screen.
 async fn switched_to(player: &Player, rendition: &str) {
-    let mut status = player.status();
-    while status.get().rendition.as_deref() != Some(rendition) {
-        status.updated().await.expect("the player is alive");
-    }
+    player
+        .status()
+        .wait_for(|status| status.rendition.as_deref() == Some(rendition))
+        .await
+        .expect("the player is alive");
 }
 
 /// Waits until the player is switching to `rendition`, or has.
 async fn requested(player: &Player, rendition: &str) {
-    let mut status = player.status();
-    loop {
-        let current = status.get();
-        if current.switching_to.as_deref() == Some(rendition)
-            || current.rendition.as_deref() == Some(rendition)
-        {
-            return;
-        }
-        status.updated().await.expect("the player is alive");
-    }
+    player
+        .status()
+        .wait_for(|status| {
+            status.switching_to.as_deref() == Some(rendition)
+                || status.rendition.as_deref() == Some(rendition)
+        })
+        .await
+        .expect("the player is alive");
 }
 
 /// Returns half the frames [`FRAMERATE`] delivers in `window`.
@@ -966,13 +970,14 @@ async fn adaptation_holds_steady_under_a_marginal_cap() {
     let watched = Duration::from_secs(60);
     let until = Instant::now() + watched;
     let mut status = viewer.player.status();
-    let mut last = status.get();
+    let mut last = status.borrow_and_update().clone();
     let (mut switches, mut requests) = (0u32, 0u32);
     let mut frames = 0u32;
     while let Some(left) = until.checked_duration_since(Instant::now()) {
         tokio::select! {
-            updated = status.updated() => {
-                let current = updated.expect("the player is alive");
+            changed = status.changed() => {
+                changed.expect("the player is alive");
+                let current = status.borrow_and_update().clone();
                 if current.rendition != last.rendition && current.rendition.is_some() {
                     info!(from = ?last.rendition, to = ?current.rendition, "rendition changed");
                     switches += 1;

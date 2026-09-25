@@ -448,12 +448,12 @@ mod window {
         let mut status = broadcast.status();
         let running = tokio::time::timeout(RESTORE_PATIENCE, async {
             loop {
-                match status.get().video {
+                match status.borrow_and_update().video.clone() {
                     SlotState::Running => return Ok(()),
                     SlotState::Failed(err) => return Err(anyerr!("the camera failed: {err}")),
                     _ => {}
                 }
-                if status.updated().await.is_err() {
+                if status.changed().await.is_err() {
                     return Err(anyerr!("the broadcast closed"));
                 }
             }

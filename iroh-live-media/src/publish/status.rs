@@ -5,9 +5,24 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use n0_watcher::Watchable;
+use tokio::sync::watch;
 
 use crate::error::Error;
+
+/// Changes the value in place, and wakes its receivers only if it changed.
+///
+/// The player's selector watches the status it writes, so a write that
+/// changes nothing must not wake it.
+pub(crate) fn send_if_changed<T: Clone + PartialEq>(
+    sender: &watch::Sender<T>,
+    change: impl FnOnce(&mut T),
+) {
+    sender.send_if_modified(|value| {
+        let before = value.clone();
+        change(value);
+        *value != before
+    });
+}
 
 /// The state of one media slot, on a broadcast or on a player.
 ///
@@ -135,19 +150,19 @@ impl PublishStatus {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StatusCell {
     owners: Arc<Mutex<Owners>>,
-    watch: Watchable<PublishStatus>,
+    status: watch::Sender<PublishStatus>,
 }
 
 impl StatusCell {
-    /// Returns a watcher over the status.
-    pub(crate) fn watch(&self) -> n0_watcher::Direct<PublishStatus> {
-        self.watch.watch()
+    /// Returns a receiver of the status.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<PublishStatus> {
+        self.status.subscribe()
     }
 
     /// Returns the current status.
     #[cfg(test)]
     fn get(&self) -> PublishStatus {
-        self.watch.get()
+        self.status.borrow().clone()
     }
 
     /// Hands `medium` to the task of `generation` and returns its reporter.
@@ -162,15 +177,15 @@ impl StatusCell {
                 names: names.to_vec(),
             },
         );
-        let mut status = self.watch.get();
-        for name in &previous.names {
-            status.renditions.remove(name);
-        }
-        *status.slot(medium) = SlotState::Starting;
-        for name in names {
-            status.renditions.insert(name.clone(), RenditionState::Idle);
-        }
-        self.watch.set(status).ok();
+        send_if_changed(&self.status, |status| {
+            for name in &previous.names {
+                status.renditions.remove(name);
+            }
+            *status.slot(medium) = SlotState::Starting;
+            for name in names {
+                status.renditions.insert(name.clone(), RenditionState::Idle);
+            }
+        });
         Reporter {
             cell: self.clone(),
             medium,
@@ -186,12 +201,12 @@ impl StatusCell {
             return;
         }
         let names = std::mem::take(&mut owner.names);
-        let mut status = self.watch.get();
-        for name in &names {
-            status.renditions.remove(name);
-        }
-        *status.slot(medium) = SlotState::Off;
-        self.watch.set(status).ok();
+        send_if_changed(&self.status, |status| {
+            for name in &names {
+                status.renditions.remove(name);
+            }
+            *status.slot(medium) = SlotState::Off;
+        });
     }
 
     fn write(&self, medium: Medium, generation: u64, f: impl FnOnce(&mut PublishStatus)) {
@@ -199,9 +214,7 @@ impl StatusCell {
         if owners.get_mut(medium).generation != generation {
             return;
         }
-        let mut status = self.watch.get();
-        f(&mut status);
-        self.watch.set(status).ok();
+        send_if_changed(&self.status, f);
     }
 }
 
@@ -234,8 +247,6 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use n0_watcher::Watcher as _;
-
     use super::*;
 
     fn names(names: &[&str]) -> Vec<String> {
@@ -298,10 +309,17 @@ mod tests {
     #[test]
     fn the_watcher_sees_each_change() {
         let cell = StatusCell::default();
-        let mut watch = cell.watch();
+        let mut status = cell.subscribe();
         let reporter = cell.begin(Medium::Audio, 1, &names(&["opus"]));
-        assert_eq!(watch.get().audio, SlotState::Starting);
+        assert!(status.has_changed().expect("alive"));
+        assert_eq!(status.borrow_and_update().audio, SlotState::Starting);
         reporter.slot(SlotState::Running);
-        assert_eq!(watch.get().audio, SlotState::Running);
+        assert!(status.has_changed().expect("alive"));
+        assert_eq!(status.borrow_and_update().audio, SlotState::Running);
+        reporter.slot(SlotState::Running);
+        assert!(
+            !status.has_changed().expect("alive"),
+            "a repeat woke the receiver"
+        );
     }
 }

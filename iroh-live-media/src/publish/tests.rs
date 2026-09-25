@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use n0_watcher::Watcher as _;
-
 use super::*;
 use crate::{AudioEncoding, audio};
 
@@ -12,13 +10,10 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// Waits until the broadcast's audio slot reads `state`.
 async fn audio_becomes(broadcast: &LocalBroadcast, state: SlotState) {
     let mut status = broadcast.status();
-    tokio::time::timeout(TIMEOUT, async {
-        while status.get().audio != state {
-            status.updated().await.expect("the broadcast is alive");
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("the audio slot never became {state:?}"));
+    tokio::time::timeout(TIMEOUT, status.wait_for(|status| status.audio == state))
+        .await
+        .unwrap_or_else(|_| panic!("the audio slot never became {state:?}"))
+        .expect("the broadcast is alive");
 }
 
 /// A replacement waits for its predecessor's track names.
@@ -42,7 +37,7 @@ async fn a_replacement_waits_for_the_track_names() {
 
     audio_becomes(&control, SlotState::Running).await;
     assert_eq!(
-        broadcast.status().get().audio,
+        broadcast.status().borrow().audio,
         SlotState::Starting,
         "the publish created its track while the name was held"
     );
@@ -125,7 +120,7 @@ async fn clearing_audio_turns_it_off() {
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
     broadcast.clear_audio();
-    assert_eq!(broadcast.status().get().audio, SlotState::Off);
+    assert_eq!(broadcast.status().borrow().audio, SlotState::Off);
     assert!(broadcast.stats().audio.is_none());
 }
 
