@@ -282,7 +282,7 @@ async fn setup_recv(
         None => None,
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
-            options.rendition = config.rendition.clone();
+            options.config.rendition = config.rendition.clone();
             let recording = crate::record::start(sub.broadcast(), &catalog, &options).await?;
             Some((recording, std::path::PathBuf::from(path)))
         }

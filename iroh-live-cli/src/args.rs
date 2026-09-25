@@ -5,9 +5,12 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, ValueEnum};
+use clap::{
+    Args, ValueEnum,
+    builder::{PossibleValuesParser, TypedValueParser},
+};
 use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, rooms::RoomTicket};
+use iroh_live::{BroadcastTicket, media::RecordFormat, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
@@ -455,8 +458,9 @@ pub struct RecordArgs {
     #[arg(short, long, default_value = "recording.mp4")]
     pub output: PathBuf,
 
-    /// Container format. Overrides the `--output` extension.
-    #[arg(long, value_enum)]
+    /// Container format, overriding the `--output` extension. `fmp4` is
+    /// fragmented MP4.
+    #[arg(long, value_parser = record_format())]
     pub format: Option<RecordFormat>,
 
     /// Record only this video rendition. Default: all of them.
@@ -472,13 +476,12 @@ pub struct RecordArgs {
     pub latency: u64,
 }
 
-/// The container `irl record` writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum RecordFormat {
-    /// Fragmented MP4 (CMAF). Picked by `.mp4`.
-    Fmp4,
-    /// Matroska. Picked by `.mkv` and `.webm`.
-    Mkv,
+/// Parses `--format` into the media crate's [`RecordFormat`].
+fn record_format() -> impl TypedValueParser<Value = RecordFormat> {
+    PossibleValuesParser::new(["fmp4", "mkv"]).map(|format| match format.as_str() {
+        "mkv" => RecordFormat::Mkv,
+        _ => RecordFormat::Fmp4,
+    })
 }
 
 #[cfg(test)]

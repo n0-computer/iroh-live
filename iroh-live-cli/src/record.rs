@@ -13,16 +13,13 @@ use std::{
 use bytesize::ByteSize;
 use iroh_live::{
     BroadcastTicket, Live,
-    media::{self, Catalog, RecordConfig, Recording, RemoteBroadcast},
+    media::{Catalog, RecordConfig, RecordFormat, Recording, RemoteBroadcast},
 };
 use n0_error::{Result, anyerr};
 use tokio::io::BufWriter;
 use tracing::{info, warn};
 
-use crate::{
-    args::{RecordArgs, RecordFormat},
-    transport,
-};
+use crate::{args::RecordArgs, transport};
 
 /// How often the progress line is printed while a recording runs.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
@@ -74,17 +71,13 @@ async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOption
     Ok(())
 }
 
-/// Where a recording goes and which tracks it keeps.
+/// Where a recording goes, what it keeps, and for how long.
 #[derive(Debug, Clone)]
 pub struct RecordOptions {
     /// The file to write.
     pub path: PathBuf,
-    /// The container format.
-    pub format: RecordFormat,
-    /// The video rendition to keep, or `None` for all of them.
-    pub rendition: Option<String>,
-    /// How long the exporter waits for a stalled group before skipping it.
-    pub latency: Duration,
+    /// The container, rendition and stall limit.
+    pub config: RecordConfig,
     /// How long to record, or `None` to record until interrupted.
     pub duration: Option<Duration>,
 }
@@ -98,28 +91,16 @@ impl RecordOptions {
         let path = path.into();
         let format = match format {
             Some(format) => format,
-            None => format_from_extension(&path).ok_or_else(|| unknown_extension(&path))?,
+            None => RecordFormat::from_path(&path).ok_or_else(|| unknown_extension(&path))?,
         };
         Ok(Self {
             path,
-            format,
-            rendition: None,
-            latency: RecordConfig::default().max_age,
+            config: RecordConfig {
+                format,
+                ..RecordConfig::default()
+            },
             duration: None,
         })
-    }
-
-    /// Returns the media crate's config for these options.
-    fn config(&self) -> RecordConfig {
-        let format = match self.format {
-            RecordFormat::Fmp4 => media::RecordFormat::Fmp4,
-            RecordFormat::Mkv => media::RecordFormat::Mkv,
-        };
-        RecordConfig {
-            format,
-            rendition: self.rendition.clone(),
-            max_age: self.latency,
-        }
     }
 }
 
@@ -132,14 +113,14 @@ pub async fn start(
     catalog: &Catalog,
     options: &RecordOptions,
 ) -> Result<Recording> {
-    if let Some(name) = &options.rendition {
+    if let Some(name) = &options.config.rendition {
         catalog.video_rendition(name)?;
     }
     let file = tokio::fs::File::create(&options.path)
         .await
         .map_err(|err| anyerr!("failed to create {}: {err}", options.path.display()))?;
     info!(path = %options.path.display(), "recording started");
-    Ok(broadcast.record(BufWriter::new(file), options.config())?)
+    Ok(broadcast.record(BufWriter::new(file), options.config.clone())?)
 }
 
 /// Runs `recording` until it ends or `stop` resolves, and returns the bytes written.
@@ -168,18 +149,10 @@ pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) ->
 /// Builds the options from the command-line arguments.
 fn options(args: &RecordArgs) -> Result<RecordOptions> {
     let mut options = RecordOptions::new(&args.output, args.format)?;
-    options.rendition = args.rendition.clone();
-    options.latency = Duration::from_millis(args.latency);
+    options.config.rendition = args.rendition.clone();
+    options.config.max_age = Duration::from_millis(args.latency);
     options.duration = args.duration.map(Duration::from_secs);
     Ok(options)
-}
-
-/// Returns the container the extension of `path` names, if any.
-fn format_from_extension(path: &Path) -> Option<RecordFormat> {
-    match media::RecordFormat::from_path(path)? {
-        media::RecordFormat::Fmp4 => Some(RecordFormat::Fmp4),
-        media::RecordFormat::Mkv => Some(RecordFormat::Mkv),
-    }
 }
 
 /// Returns the error for a path whose extension names no container.
@@ -225,21 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn extensions_name_containers() {
-        assert_eq!(
-            format_from_extension(Path::new("out.mp4")),
-            Some(RecordFormat::Fmp4)
-        );
-        // Extensions match case-insensitively.
-        assert_eq!(
-            format_from_extension(Path::new("out.MKV")),
-            Some(RecordFormat::Mkv)
-        );
-        assert_eq!(format_from_extension(Path::new("out.avi")), None);
-        assert_eq!(format_from_extension(Path::new("recording")), None);
-    }
-
-    #[test]
     fn options_prefer_the_flag_over_the_extension() {
         let args = RecordArgs {
             remote: remote_args(),
@@ -250,8 +208,8 @@ mod tests {
             latency: 500,
         };
         let options = options(&args).expect("--format names the container");
-        assert_eq!(options.format, RecordFormat::Mkv);
-        assert_eq!(options.latency, Duration::from_millis(500));
+        assert_eq!(options.config.format, RecordFormat::Mkv);
+        assert_eq!(options.config.max_age, Duration::from_millis(500));
     }
 
     #[test]
