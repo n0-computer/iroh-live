@@ -79,7 +79,7 @@ Withdrawing an offer retracts the path: the peer can no longer resolve it, and
 the broadcast it resolved closes. Tracks it already reads run on, since in
 moq-lite a retraction does not disturb subscriptions in flight. To cut a peer
 off at once, close its session. An offer is withdrawn when a `Peers` set
-shrinks, `set_audience` or `unpublish` is called, or the session ends.
+shrinks, `unpublish` is called, or the session ends.
 
 ## Sessions and admission
 

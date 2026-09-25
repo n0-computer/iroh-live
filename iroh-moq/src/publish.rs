@@ -98,33 +98,6 @@ impl Publication {
         &self.inner.path
     }
 
-    /// Replaces who may see the publication.
-    ///
-    /// Takes effect at once. Peers the new audience leaves out lose the path,
-    /// but tracks they already read run on. [`Session::close`] cuts a peer off.
-    ///
-    /// [`Session::close`]: crate::Session::close
-    pub fn set_audience(&self, audience: Audience) {
-        let Some(shared) = self.inner.shared.upgrade() else {
-            return;
-        };
-        let mut state = shared.state.lock().expect("poisoned");
-        let Some(entry) = state.publications.get_mut(&self.inner.id) else {
-            return;
-        };
-        info!(path = %entry.path, ?audience, "audience changed");
-        entry.audience = AudienceKind::from(&audience);
-        entry.peers_task = peers_task(&audience, self.inner.id, &self.inner.shared);
-        entry.local = match entry.audience {
-            AudienceKind::Everyone => entry
-                .local
-                .take()
-                .or_else(|| state::serve(&shared.table, &entry.path, &entry.broadcast)),
-            _ => None,
-        };
-        state.reconcile_publication(self.inner.id);
-    }
-
     /// Waits until the publication is withdrawn.
     pub async fn withdrawn(&self) {
         self.inner.withdrawn.cancelled().await;
@@ -243,8 +216,8 @@ pub(crate) fn publish(
             path: path.clone(),
             broadcast,
             audience: AudienceKind::from(&audience),
-            local,
-            peers_task: peers_task(&audience, id, &weak),
+            _local: local,
+            _peers_task: peers_task(&audience, id, &weak),
             _closed_task: AbortOnDropHandle::new(closed_task),
             withdrawn: withdrawn.clone(),
         },

@@ -1,7 +1,7 @@
 //! The node's bookkeeping: publications, links, and what each link is offered.
 //!
 //! Everything here changes under one lock and never awaits, so `publish`,
-//! `publish` and `set_audience` are synchronous.
+//! `publish` and `unpublish` are synchronous.
 //!
 //! Each link has its own publish origin. Offering a publication on a link adds
 //! a dynamic route at its path there (see [`serve`]).
@@ -41,9 +41,9 @@ pub(crate) struct PubEntry {
     /// The publication's route in the node's own route table.
     ///
     /// Only for an `Everyone` publication, so a local subscriber resolves it.
-    pub(crate) local: Option<Serve>,
+    pub(crate) _local: Option<Serve>,
     /// Follows a `Peers` audience's set.
-    pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
+    pub(crate) _peers_task: Option<AbortOnDropHandle<()>>,
     /// Withdraws the publication once its broadcast ends.
     pub(crate) _closed_task: AbortOnDropHandle<()>,
     /// Cancelled when the entry goes, for [`Publication::withdrawn`](crate::Publication::withdrawn).
