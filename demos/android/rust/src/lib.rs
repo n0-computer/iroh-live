@@ -18,11 +18,13 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_live::{Audience, BroadcastTicket, CALL, EndpointOptions, Live, Publication, Reach};
-use iroh_live_media::{
-    AudioEncoding, AudioOutput, AudioSource, Catalog, FrameSender, LocalBroadcast,
-    MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
-    VideoFormat, VideoFrames, VideoRendition, VideoSource,
+use iroh_live::{
+    Audience, BroadcastTicket, CALL, EndpointOptions, Live, Publication, Reach,
+    media::{
+        AudioEncoding, AudioOutput, AudioSource, Catalog, FrameSender, LocalBroadcast,
+        MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
+        VideoFormat, VideoFrames, VideoRendition, VideoSource,
+    },
 };
 use iroh_live_media_android::{handle, renderer::AndroidRenderer};
 use jni::{

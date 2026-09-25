@@ -71,9 +71,9 @@ process.
 
 ## Features and audio
 
-`demos/android/rust/Cargo.toml` enables the `aec` feature of
-`iroh-live-media`, which implies `capture` and `playback`. Without echo
-cancellation, a phone on speaker sends its own output back to the peer.
+`demos/android/rust/Cargo.toml` enables the `aec` feature of `iroh-live`,
+which implies `capture` and `playback`. Without echo cancellation, a phone on
+speaker sends its own output back to the peer.
 
 Video comes from Kotlin, but the Rust side opens the microphone with
 `AudioSource::microphone`. It opens one `AudioOutput` for the speaker and

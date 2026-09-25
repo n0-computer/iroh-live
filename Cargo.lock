@@ -4406,7 +4406,6 @@ version = "0.1.0"
 dependencies = [
  "iroh",
  "iroh-live",
- "iroh-live-media",
  "iroh-live-media-android",
  "jni 0.21.1",
  "moq-net",

@@ -13,20 +13,19 @@ crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 iroh = { workspace = true }
-iroh-live = { workspace = true, features = ["media"] }
-# `capture` for the microphone source, `playback` for the speaker. Video capture
-# comes from Kotlin's CameraX, not from a device this crate opens.
-# `aec` implies `capture` and `playback`: a handset on speakerphone has to
-# subtract its own output from the microphone or it publishes itself back.
-iroh-live-media = { workspace = true, features = ["aec"] }
+# `aec` implies `capture` for the microphone and `playback` for the speaker: a
+# handset on speakerphone has to subtract its own output from the microphone
+# or it publishes itself back. Video capture comes from Kotlin's CameraX.
+iroh-live = { workspace = true, features = ["aec"] }
 iroh-live-media-android = { workspace = true }
 # `Timestamp`, which camera frames are stamped with.
 moq-net = { workspace = true }
 # `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
-# `mediacodec` is what gates `Surface::HardwareBuffer` and the `ndk` re-export
-# below, and the workspace turns moq-video's default features off, so this crate
-# has to ask for it. Safe here and not in `iroh-live-media-android`, because every
-# dependency in this section is already `cfg(target_os = "android")`.
+# `mediacodec` gates `Surface::HardwareBuffer` and `moq_video::ndk`, which this
+# crate uses for `NativeWindow`. The workspace turns moq-video's default
+# features off, so this crate asks for it. Safe here and not in
+# `iroh-live-media-android`, because every dependency in this section is
+# already `cfg(target_os = "android")`.
 moq-video = { workspace = true, features = ["mediacodec"] }
 # Held at 0.21. jni 0.22 splits `JNIEnv` into an owned `Env` and an
 # `EnvUnowned` that carries no JNI API of its own, which is a safety model

@@ -68,12 +68,13 @@ demos/android/
 
 Kotlin captures camera frames with CameraX and pushes them into Rust through
 `IrohBridge.pushCameraNv12`. The Rust side publishes them with `iroh-live`, and
-a call follows the same convention as `irl call`. The home screen also has two diagnostics that
-need no network: camera passthrough, and an H.264 encode and decode loop.
+a call follows the same convention as `irl call`. The home screen also has two
+diagnostics that need no network: camera passthrough, and an H.264 encode and
+decode loop.
 
 Codecs come from `moq-video` and `moq-audio`, which choose a backend at
 runtime: MediaCodec for H.264, with openh264 in software as the fallback. The
-bridge crate turns on `aec` in `iroh-live-media`, which brings in the
+bridge crate turns on `aec` in `iroh-live`, which brings in the
 microphone and the speaker. Echo cancellation keeps a phone on speaker from
 sending the peer's audio back to it.
 
