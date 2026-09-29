@@ -658,23 +658,23 @@ mod tests {
             let stop = stop.clone();
             std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, fanout, stop))
         };
-        // Timed from the first frame, so the thread's start does not count.
+        // Compares media time with arrival time between the first and the last
+        // frame, so starting and stopping the thread do not count.
         let started = Instant::now();
-        let mut first = None;
-        let mut first_at = started;
-        let mut last = Duration::ZERO;
+        let mut first: Option<(Duration, Instant)> = None;
+        let mut last = first;
         let mut peak = 0.0f32;
-        while started.elapsed() < Duration::from_millis(600) {
+        while first.map_or_else(
+            || started.elapsed() < Duration::from_secs(5),
+            |(_, at)| at.elapsed() < Duration::from_millis(600),
+        ) {
             let Ok(frame) = frames.try_recv() else {
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             };
-            let at = Duration::from(frame.timestamp);
-            if first.is_none() {
-                first = Some(at);
-                first_at = Instant::now();
-            }
-            last = at + TONE_FRAME;
+            let arrival = (Duration::from(frame.timestamp), Instant::now());
+            first.get_or_insert(arrival);
+            last = Some(arrival);
             peak = frame
                 .data
                 .as_chunks::<4>()
@@ -685,8 +685,9 @@ mod tests {
         }
         stop.cancel();
         thread.join().expect("the tone thread exits");
-        let media = last - first.expect("the tone produced frames");
-        let ratio = media.as_secs_f64() / first_at.elapsed().as_secs_f64();
+        let (first_media, first_at) = first.expect("the tone produced frames");
+        let (last_media, last_at) = last.expect("the tone produced frames");
+        let ratio = (last_media - first_media).as_secs_f64() / (last_at - first_at).as_secs_f64();
         assert!(
             ratio > 0.9,
             "the tone ran at {:.0}% of real time",
