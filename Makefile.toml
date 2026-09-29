@@ -44,10 +44,28 @@ workspace = false
 command = "cargo"
 args = ["check", "--locked", "--workspace", "--all-targets"]
 
-[tasks.check]
-description = "cargo check: all features, no-default-features, and default features"
+# Workspace builds unify features, and the CLI turns `media` on. These build
+# the relay and the facade without it, on their own.
+[tasks.check-relay]
 workspace = false
-dependencies = ["check-all-features", "check-no-default", "check-default-features"]
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live-relay"]
+
+[tasks.check-facade-no-media]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--all-targets", "--no-default-features", "--features", "rooms"]
+
+[tasks.check]
+description = "cargo check: all features, no-default-features, default features, relay and facade without media"
+workspace = false
+dependencies = [
+    "check-all-features",
+    "check-no-default",
+    "check-default-features",
+    "check-relay",
+    "check-facade-no-media",
+]
 
 [tasks.clippy-all-features]
 workspace = false
@@ -70,12 +88,14 @@ workspace = false
 dependencies = ["clippy-all-features", "clippy-no-default", "clippy-default-features"]
 
 [tasks.check-all]
-description = "Full pre-commit check: cargo check (3 configs), clippy -D warnings (3 configs), fmt"
+description = "Full pre-commit check: cargo check (5 configs), clippy -D warnings (3 configs), fmt"
 workspace = false
 dependencies = [
     "check-all-features",
     "check-no-default",
     "check-default-features",
+    "check-relay",
+    "check-facade-no-media",
     "clippy-all-features",
     "clippy-no-default",
     "clippy-default-features",

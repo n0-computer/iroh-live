@@ -1,26 +1,22 @@
-//! Publishes a camera and a microphone.
+//! Publishes the default camera and microphone, and prints a ticket.
 //!
-//! Captures the default camera and, when one is available, the default
-//! microphone, publishes both over iroh, and prints a ticket.
-//!
-//! Watch it with `irl play TICKET`.
+//! Run it with `cargo run -p iroh-live --example publish` and watch with
+//! `irl watch TICKET`. Without a microphone it publishes video only.
 
 use clap::Parser;
 use iroh_live::{
-    Live,
+    EndpointOptions, Live, LocalBroadcast,
     media::{
-        audio,
-        publish::{VideoRendition, VideoSource},
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
         video,
     },
-    ticket::LiveTicket,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(about = "Publishes the default camera and microphone over iroh-live")]
 struct Args {
-    /// The path to publish on.
+    /// The broadcast name.
     #[clap(long, default_value = "demo")]
     name: String,
 
@@ -38,31 +34,37 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    let live = Live::from_env().await?.with_router().spawn();
+    // Set `IROH_SECRET` to keep the same ticket across restarts.
+    let options = EndpointOptions::from_env()?;
+    let live = Live::builder(options.bind().await?).with_router().spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
 
-    let broadcast = live.publish(&args.name)?;
+    let broadcast = LocalBroadcast::new();
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
-    let source = VideoSource::Capture(capture);
-    match args.simulcast {
-        false => broadcast.video().set(source)?,
-        true => broadcast.video().set_renditions(
-            source,
-            vec![
-                VideoRendition::new("high"),
-                VideoRendition::new("low").with_size(video::Size::new(320, 180)),
-            ],
-        )?,
+    let source = VideoSource::capture(capture).await?;
+    let encoding = if args.simulcast {
+        VideoEncoding::ladder([
+            VideoRendition::new("high"),
+            VideoRendition {
+                size: Some(video::Size::new(320, 180)),
+                ..VideoRendition::new("low")
+            },
+        ])
+    } else {
+        VideoEncoding::single(VideoRendition::new("video"))
+    };
+    broadcast.set_video(source, encoding)?;
+
+    match AudioSource::microphone(MicrophoneConfig::default()).await {
+        Ok(microphone) => broadcast.set_audio(microphone, AudioEncoding::voice())?,
+        Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    // A machine with no microphone still publishes video: the device opens
-    // inside the publish task, which logs and ends the audio track on failure.
-    broadcast.audio().set(audio::capture::Config::default());
-
-    let ticket = LiveTicket::new(live.endpoint().id(), &args.name);
-    println!("{ticket}");
+    // The broadcast stays published while this is held.
+    let _publication = live.publish(&args.name, &broadcast)?;
+    println!("{}", live.ticket(&args.name));
     info!(name = %args.name, "publishing");
 
     tokio::signal::ctrl_c().await?;

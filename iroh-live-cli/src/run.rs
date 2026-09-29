@@ -1,31 +1,28 @@
 //! `irl run`: a multi-stream session described by a TOML file.
 //!
 //! One endpoint publishes every `[[send]]` block and subscribes to every
-//! `[[recv]]` block, which is what `irl publish` and `irl watch` cannot do
-//! between them: they own a process each, and each binds its own endpoint.
-//!
-//! The session is headless. A `[[recv]]` block plays audio and can record to a
-//! file, but it never opens a window, because a window owns the main thread and
-//! there is only one of those to go around.
+//! `[[recv]]` block. The session is headless: a `[[recv]]` block plays audio
+//! and can record, but opens no window.
 
 use std::path::Path;
 
 use iroh::SecretKey;
 use iroh_live::{
-    Live, Subscription,
-    media::{publish::LocalBroadcast, subscribe::AudioTrack},
-    ticket::LiveTicket,
+    BroadcastTicket, EndpointOptions, Live,
+    media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
+    secret_key_file,
 };
 use n0_error::{Result, anyerr};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
-    backend::EncoderArg,
-    record::{RecordOptions, Recorder},
-    source, transport,
+    args::{CaptureArgs, RunArgs},
+    record::RecordOptions,
+    source,
+    transport::{self, Subscribed},
 };
 
 /// Runs the `run` command.
@@ -40,14 +37,14 @@ pub fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> Result {
     rt.block_on(run_session(config))
 }
 
-/// A session: an optional persistent identity, the broadcasts to publish, and
-/// the broadcasts to subscribe to.
+/// A session file.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunConfig {
-    /// A name for this session's endpoint identity, stored under
-    /// `<config dir>/iroh-live/secret_keys/<name>.key` and generated on first
-    /// use, so the tickets a session prints survive a restart.
+    /// Name of a stored secret key, so the session's tickets survive a restart.
+    ///
+    /// The key lives in `<config dir>/iroh-live/secret_keys/<name>.key` and is
+    /// generated on first use.
     pub secret_key_name: Option<String>,
 
     /// The broadcasts this session publishes.
@@ -59,85 +56,27 @@ pub struct RunConfig {
     pub recv: Vec<RecvConfig>,
 }
 
-/// One broadcast to publish.
+/// One broadcast to publish: `name` plus the `irl publish` capture flags.
 ///
-/// Every field but `name` is an `irl publish` capture flag under the flag's own
-/// name, and takes the flag's own default when it is left out.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Hand-deserialized, since `#[serde(flatten)]` cannot reject unknown keys.
+#[derive(Debug)]
 pub struct SendConfig {
-    /// Broadcast path, which is also the label the session reports under.
+    /// The broadcast name, also the label in output.
     pub name: String,
-
-    /// Video source: `cam`, `screen`, `test`, `none`, and the rest of
-    /// `--video`'s grammar. A `file:` source is not accepted here; publish it
-    /// with `irl publish`, which owns the import path.
-    #[serde(default = "default_video")]
-    pub video: String,
-
-    /// Audio source, in `--audio`'s grammar.
-    #[serde(default = "default_audio")]
-    pub audio: String,
-
-    /// Video codec: `h264` or `h265`.
-    #[serde(default)]
-    pub codec: VideoCodecArg,
-
-    /// Encoder backend: `auto`, `hardware`, `software`, or the name of one
-    /// backend, such as `vaapi`.
-    #[serde(default)]
-    pub encoder: EncoderArg,
-
-    /// The simulcast ladder, one entry per rung, in `--renditions`' grammar,
-    /// including its `@<fps>` suffix. Empty publishes a single unscaled
-    /// rendition named `video`.
-    #[serde(default)]
-    pub renditions: Vec<String>,
-
-    /// Target video bitrate for the largest rung, in bits per second.
-    pub bitrate: Option<u64>,
-
-    /// Requested capture width.
-    pub width: Option<u32>,
-
-    /// Requested capture height.
-    pub height: Option<u32>,
-
-    /// Requested capture framerate, and the ceiling on the ladder's `@<fps>`
-    /// rungs. Left out, the capture runs at 30 or at the highest rate a rung
-    /// asks for.
-    pub fps: Option<u32>,
-
-    /// Hide the mouse cursor in screen, window, and application capture.
-    #[serde(default)]
-    pub no_cursor: bool,
-
-    /// Audio codec: `opus` or `pcm`.
-    #[serde(default)]
-    pub audio_codec: AudioCodecArg,
-
-    /// Target audio bitrate in bits per second. Opus only.
-    pub audio_bitrate: Option<u32>,
+    /// The capture and encoding flags. `file:` sources need `irl publish`.
+    pub capture: CaptureArgs,
 }
 
-impl SendConfig {
-    /// The capture flags this block stands for.
-    fn capture(&self) -> CaptureArgs {
-        CaptureArgs {
-            video: self.video.clone(),
-            audio: self.audio.clone(),
-            codec: self.codec,
-            encoder: self.encoder,
-            renditions: self.renditions.clone(),
-            bitrate: self.bitrate,
-            width: self.width,
-            height: self.height,
-            fps: self.fps,
-            no_cursor: self.no_cursor,
-            audio_codec: self.audio_codec,
-            audio_bitrate: self.audio_bitrate,
-            ..CaptureArgs::default()
-        }
+impl<'de> Deserialize<'de> for SendConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut table = toml::Table::deserialize(deserializer)?;
+        let name = table
+            .remove("name")
+            .ok_or_else(|| de::Error::missing_field("name"))?
+            .try_into()
+            .map_err(de::Error::custom)?;
+        let capture = table.try_into().map_err(de::Error::custom)?;
+        Ok(Self { name, capture })
     }
 }
 
@@ -145,10 +84,10 @@ impl SendConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AudioOutput {
-    /// Play it through whatever the system calls its default output.
+    /// Play it through the system default output.
     #[default]
     Default,
-    /// Leave the speakers alone.
+    /// Do not play it.
     None,
 }
 
@@ -156,45 +95,28 @@ pub enum AudioOutput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecvConfig {
-    /// The label the session reports this subscription under.
+    /// Label for this subscription in output.
     pub name: String,
 
-    /// The ticket to subscribe to, as `irl publish` printed it.
+    /// Ticket that `irl publish` printed.
     pub ticket: String,
 
-    /// Whether this subscription's audio is played.
+    /// Whether to play the audio: `default` or `none`.
     ///
-    /// Unlike `irl watch --audio-output`, this does not name a device: the
-    /// playback engine is process-wide and a session has many subscriptions,
-    /// so there is no per-block device to choose.
+    /// All blocks share one output, so this cannot name a device.
     #[serde(default)]
     pub audio_output: AudioOutput,
 
-    /// A file to record the broadcast to, in the container its extension
-    /// names. Omit to only receive.
+    /// File to record to. Its extension picks the container.
     pub record: Option<String>,
 
-    /// The one video rendition to record, instead of every rung the catalog
-    /// offers. Only meaningful alongside `record`.
+    /// The only video rendition to record. Needs `record`.
     pub rendition: Option<String>,
-}
-
-/// The `video` default, which is `--video`'s.
-fn default_video() -> String {
-    DEFAULT_VIDEO.to_string()
-}
-
-/// The `audio` default, which is `--audio`'s.
-fn default_audio() -> String {
-    DEFAULT_AUDIO.to_string()
 }
 
 /// Reads and validates the session file at `path`.
 ///
-/// # Errors
-///
-/// Fails if the file cannot be read, is not the schema above, or describes no
-/// streams at all.
+/// Fails if it has no `[[send]]` and no `[[recv]]` blocks.
 fn parse_config(path: &Path) -> Result<RunConfig> {
     let text = std::fs::read_to_string(path)
         .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?;
@@ -210,44 +132,49 @@ fn parse_config(path: &Path) -> Result<RunConfig> {
     Ok(config)
 }
 
-/// Publishes and subscribes everything the session describes, then holds it
-/// open until the user interrupts.
+/// Runs the session until Ctrl+C, then closes the endpoint.
 async fn run_session(config: RunConfig) -> Result {
-    // Only a session that publishes needs to accept incoming connections; one
-    // that only subscribes dials out and never has to be reachable.
     let serve = !config.send.is_empty();
-    let secret_key = match &config.secret_key_name {
-        Some(name) => load_or_create_secret_key(name)?,
-        None => iroh_live::util::secret_key_from_env()?,
+    let options = match &config.secret_key_name {
+        Some(name) => EndpointOptions {
+            secret_key: Some(stored_secret_key(name)?),
+            ..EndpointOptions::default()
+        },
+        None => EndpointOptions::from_env()?,
     };
-    let live = transport::setup_live_with_key(secret_key, serve).await?;
+    let live = transport::setup_live_with(options, serve).await?;
     let result = run_streams(&live, &config).await;
     live.shutdown().await;
     println!("done");
     result
 }
 
-/// Sets up every block over `live` and holds the session open until the user
-/// interrupts. The caller closes the endpoint either way.
+/// Sets up every block and runs until Ctrl+C.
 ///
-/// # Errors
-///
-/// Fails if no block could be set up at all. A block that fails on its own is
-/// reported and the rest of the session runs without it.
+/// A block that fails is reported and skipped. Fails only if no block could be
+/// set up.
 async fn run_streams(live: &Live, config: &RunConfig) -> Result {
-    // Every handle is kept until shutdown, because dropping one is what stops
-    // it: a broadcast stops publishing when its handle goes, and a
-    // subscription cancels every task it started.
-    let mut broadcasts: Vec<LocalBroadcast> = Vec::new();
+    // Dropping a handle stops it, so all are kept until shutdown.
+    let mut broadcasts: Vec<(LocalBroadcast, source::Opened)> = Vec::new();
     let mut receivers: Vec<Receiver> = Vec::new();
     let mut recordings: JoinSet<Result<()>> = JoinSet::new();
+    let stop_recording = CancellationToken::new();
+    let output = if config
+        .recv
+        .iter()
+        .any(|recv| recv.audio_output == AudioOutput::Default)
+    {
+        Some(crate::playback::output(None).await?)
+    } else {
+        None
+    };
 
     for send in &config.send {
-        match setup_send(live, send) {
-            Ok(broadcast) => {
-                let ticket = LiveTicket::new(live.endpoint().id(), &send.name);
+        match setup_send(live, send).await {
+            Ok(published) => {
+                let ticket = live.ticket(&send.name);
                 println!("[send] {}: {ticket}", send.name);
-                broadcasts.push(broadcast);
+                broadcasts.push(published);
             }
             Err(err) => {
                 warn!(name = %send.name, error = %err, "publish failed");
@@ -256,24 +183,23 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
         }
     }
 
-    // Concurrently, because a subscription waits for the peer's first catalog
-    // and a peer that has not started publishing yet would otherwise hold up
-    // every block behind it.
-    let setups = config
-        .recv
-        .iter()
-        .map(|recv| async move { (recv, setup_recv(live, recv).await) });
+    // Concurrent, because each waits for its peer's catalog and a peer that
+    // has not started would hold up the rest.
+    let setups = config.recv.iter().map(|recv| {
+        let output = output.as_ref();
+        async move { (recv, setup_recv(live, recv, output).await) }
+    });
     for (recv, result) in n0_future::join_all(setups).await {
         match result {
-            Ok((receiver, recorder)) => {
+            Ok((receiver, recording)) => {
                 println!("[recv] {}: subscribed to {}", recv.name, recv.ticket);
-                if let Some(recorder) = recorder {
-                    let path = recorder.path().display().to_string();
+                if let Some((recording, path)) = recording {
+                    let path = path.display().to_string();
                     println!("[recv] {}: recording to {path}", recv.name);
-                    let stop = receiver.sub.broadcast().shutdown_token().cancelled_owned();
+                    let stop = stop_recording.clone().cancelled_owned();
                     let name = recv.name.clone();
                     recordings.spawn(async move {
-                        let written = recorder.run(stop).await?;
+                        let written = crate::record::finish(recording, stop).await?;
                         info!(name, bytes = written, path, "recording finished");
                         Ok(())
                     });
@@ -301,12 +227,8 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     tokio::signal::ctrl_c().await?;
     println!("stopping ...");
 
-    // Cancelling each subscription is what ends its recording: the recorder
-    // stops on the broadcast's shutdown token, and only then is the file
-    // flushed, so the recordings are awaited before anything else closes.
-    for receiver in &receivers {
-        receiver.sub.broadcast().shutdown();
-    }
+    // Finish recordings first, while their broadcasts are still open.
+    stop_recording.cancel();
     while let Some(finished) = recordings.join_next().await {
         match finished {
             Ok(Ok(())) => {}
@@ -315,116 +237,97 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
         }
     }
 
-    for broadcast in broadcasts {
-        broadcast.finish().await;
+    for (broadcast, _sources) in broadcasts {
+        broadcast.close();
+        broadcast.closed().await;
     }
     for receiver in &receivers {
-        receiver.sub.session().close(moq_net::Error::Cancel);
+        receiver.sub.close();
     }
     Ok(())
 }
 
 /// One live `[[recv]]` block.
-///
-/// The audio track is held rather than used: opening it starts playback, and
-/// dropping it stops it.
 struct Receiver {
-    sub: Subscription,
-    _audio: Option<AudioTrack>,
+    sub: Subscribed,
+    _player: Option<Player>,
 }
 
 /// Publishes one `[[send]]` block.
-///
-/// # Errors
-///
-/// Fails if the broadcast path is taken, or the block's sources or ladder do
-/// not parse. A device that will not open surfaces in the log and ends its
-/// track, not here.
-fn setup_send(live: &Live, config: &SendConfig) -> Result<LocalBroadcast> {
-    let broadcast = live.publish(&config.name)?;
-    source::configure(&broadcast, &config.capture())?;
-    Ok(broadcast)
+async fn setup_send(live: &Live, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
+    let broadcast = LocalBroadcast::new();
+    let sources = source::configure(&broadcast, &config.capture, None).await?;
+    live.publish(&config.name, &broadcast)?;
+    Ok((broadcast, sources))
 }
 
-/// Subscribes to one `[[recv]]` block, opening its audio and its recording if
-/// it asked for either.
+/// Subscribes to one `[[recv]]` block, playing and recording as it asks.
 ///
-/// The recorder comes back rather than running here: the caller owns the tasks,
-/// and starting one before every block has been set up would record a stretch
-/// of nothing while the rest are still connecting.
-///
-/// # Errors
-///
-/// Fails if the ticket does not parse, the peer cannot be reached, or the
-/// recording file cannot be created. Audio that will not open is reported and
-/// the subscription continues without it.
-async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Option<Recorder>)> {
-    let ticket: LiveTicket = config.ticket.parse().map_err(|err| {
+/// Returns the recording and its path for the caller to finish. Audio that
+/// fails to play is logged and skipped.
+async fn setup_recv(
+    live: &Live,
+    config: &RecvConfig,
+    output: Option<&media::AudioOutput>,
+) -> Result<(Receiver, Option<(Recording, std::path::PathBuf)>)> {
+    let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
             "invalid ticket: {err}; it should be the string `irl publish` \
              printed, starting with `iroh-live:`"
         )
     })?;
     let sub = transport::subscribe(live, &ticket).await?;
+    let catalog = crate::playback::catalog(sub.broadcast()).await?;
 
-    let recorder = match &config.record {
+    let recording = match &config.record {
         None => None,
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
-            options.rendition = config.rendition.clone();
-            Some(Recorder::open(sub.session(), sub.broadcast(), &options).await?)
+            options.config.rendition = config.rendition.clone();
+            let recording = crate::record::start(sub.broadcast(), &catalog, &options).await?;
+            Some((recording, std::path::PathBuf::from(path)))
         }
     };
 
-    let audio = match config.audio_output {
-        AudioOutput::None => None,
-        AudioOutput::Default => play_audio(&sub, &config.name).await,
+    let player = match (config.audio_output, output) {
+        (AudioOutput::Default, Some(output)) => play_audio(&sub, &catalog, &config.name, output),
+        _ => None,
     };
-    Ok((Receiver { sub, _audio: audio }, recorder))
+    Ok((
+        Receiver {
+            sub,
+            _player: player,
+        },
+        recording,
+    ))
 }
 
-/// Opens the broadcast's audio track, which starts playing it.
-// A build without `playback` has no sink to open, so nothing in that arm awaits.
-#[allow(
-    clippy::unused_async,
-    reason = "one arm of a feature-gated body awaits"
-)]
-async fn play_audio(sub: &Subscription, name: &str) -> Option<AudioTrack> {
-    #[cfg(feature = "playback")]
-    {
-        if !sub.broadcast().has_audio() {
-            info!(name, "the broadcast carries no audio");
-            return None;
-        }
-        sub.broadcast()
-            .audio()
-            .await
-            .inspect_err(|err| warn!(name, error = %err, "audio track failed to open"))
-            .ok()
+/// Plays the broadcast's audio through `output`, with no video.
+fn play_audio(
+    sub: &Subscribed,
+    catalog: &media::Catalog,
+    name: &str,
+    output: &media::AudioOutput,
+) -> Option<Player> {
+    if catalog.audio.renditions.is_empty() {
+        info!(name, "the broadcast carries no audio");
+        return None;
     }
-    #[cfg(not(feature = "playback"))]
-    {
-        let _ = sub;
-        warn!(
-            name,
-            "audio_output asks for playback, which this build was compiled without"
-        );
-        None
-    }
+    let config = PlayerConfig {
+        rendition: RenditionMode::Off,
+        audio: Some(output.clone()),
+        ..PlayerConfig::default()
+    };
+    sub.broadcast()
+        .play(config)
+        .inspect_err(|err| warn!(name, error = %err, "audio failed to play"))
+        .ok()
 }
 
-/// Checks that `name` names a file inside the key directory rather than a path
-/// out of it.
+/// Checks that `name` is a single, non-empty file name.
 ///
-/// `dir.join(name)` is not a way of building a path under `dir`: an absolute
-/// name replaces it outright, and `..` walks out of it. The session file is the
-/// user's own, so this is not a privilege boundary, but a config typo should
-/// report itself rather than write a key somewhere nobody thinks to look for
-/// it.
-///
-/// # Errors
-///
-/// Fails if `name` is empty, or is anything other than a single path component.
+/// `dir.join(name)` escapes `dir` for an absolute name or `..`. This catches
+/// config typos. It is not a security check.
 fn check_key_name(name: &str) -> Result<()> {
     if !name.is_empty() && Path::new(name).file_name() == Some(name.as_ref()) {
         return Ok(());
@@ -436,12 +339,7 @@ fn check_key_name(name: &str) -> Result<()> {
 }
 
 /// Loads the named secret key, generating and storing one on first use.
-///
-/// # Errors
-///
-/// Fails if `name` is not a plain file name, if the config directory cannot be
-/// found or written, or if the stored key is not a key.
-fn load_or_create_secret_key(name: &str) -> Result<SecretKey> {
+fn stored_secret_key(name: &str) -> Result<SecretKey> {
     check_key_name(name)?;
     let dir = dirs::config_dir()
         .ok_or_else(|| anyerr!("cannot find this platform's config directory"))?
@@ -450,28 +348,19 @@ fn load_or_create_secret_key(name: &str) -> Result<SecretKey> {
     std::fs::create_dir_all(&dir)
         .map_err(|err| anyerr!("failed to create {}: {err}", dir.display()))?;
     let path = dir.join(format!("{name}.key"));
-
-    if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?;
-        let key: SecretKey = text
-            .trim()
-            .parse()
-            .map_err(|err| anyerr!("{} does not hold a secret key: {err}", path.display()))?;
-        info!(name, path = %path.display(), "loaded the session secret key");
-        return Ok(key);
-    }
-
-    let key = SecretKey::generate();
-    std::fs::write(&path, data_encoding::HEXLOWER.encode(&key.to_bytes()))
-        .map_err(|err| anyerr!("failed to write {}: {err}", path.display()))?;
-    info!(name, path = %path.display(), "generated a session secret key");
+    let key = secret_key_file(&path)
+        .map_err(|err| anyerr!("failed to load {}: {err}", path.display()))?;
+    info!(name, path = %path.display(), "session secret key ready");
     Ok(key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        args::{AudioCodecArg, DEFAULT_AUDIO, DEFAULT_VIDEO, VideoCodecArg},
+        backend::Backend,
+    };
 
     #[test]
     fn a_send_block_takes_the_flag_defaults() {
@@ -482,10 +371,10 @@ mod tests {
             "#,
         )
         .expect("only `name` is required");
-        let send = &config.send[0];
+        let send = &config.send[0].capture;
         assert_eq!(send.video, DEFAULT_VIDEO);
         assert_eq!(send.audio, DEFAULT_AUDIO);
-        assert_eq!(send.encoder, EncoderArg::Auto);
+        assert_eq!(send.encoder, Backend::Auto);
         assert_eq!(send.codec, VideoCodecArg::H264);
         assert_eq!(send.audio_codec, AudioCodecArg::Opus);
         assert!(send.renditions.is_empty());
@@ -509,16 +398,15 @@ mod tests {
             "#,
         )
         .expect("a full send block");
-        let capture = config.send[0].capture();
+        let capture = &config.send[0].capture;
         assert_eq!(capture.video, "screen");
         assert_eq!(capture.codec, VideoCodecArg::H265);
-        assert_eq!(capture.encoder, EncoderArg::Vaapi);
+        assert_eq!(capture.encoder, Backend::Named("vaapi"));
         assert_eq!(capture.renditions, ["low:320x180", "720p"]);
         assert_eq!(capture.bitrate, Some(3_000_000));
         assert!(capture.no_cursor);
         assert_eq!(capture.audio_codec, AudioCodecArg::Pcm);
-        // `--test-source` is a flag with no config spelling: a session file
-        // says `video = "test"` instead.
+        // A session file has no `--test-source`. It uses `video = "test"`.
         assert!(!capture.test_source);
     }
 
@@ -571,9 +459,7 @@ mod tests {
         );
     }
 
-    /// `dir.join(name)` does not build a path under `dir` for every `name`, so
-    /// the ones it does not are refused rather than writing a key somewhere the
-    /// user will not think to look for it.
+    /// A key name that would escape the key directory is refused.
     #[test]
     fn a_key_name_is_one_file_name() {
         check_key_name("laptop").expect("an ordinary name");

@@ -1,145 +1,94 @@
 # Development guide
 
-Working notes for contributors. [README.md](README.md) has the project overview
-and the quick start, and [docs/](docs/index.md) has the architecture and the
-guides.
+[README.md](README.md) lists the crates and has the quick start.
+[docs/](docs/index.md) has the architecture and the guides, and the crate docs
+describe the main types.
 
-## Workspace
-
-| Crate | Role |
-|---|---|
-| `iroh-live` | `Live`, `Call`, `Subscription`, tickets. Depends on `moq-media` and `iroh-moq` |
-| `iroh-moq` | MoQ transport over iroh: the node origin, sessions, ALPN negotiation |
-| `iroh-rooms` | Gossip rooms. No media dependency |
-| `moq-media` | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
-| `moq-media-egui` | egui widget and debug overlay |
-| `moq-media-android` | Camera2 push bridge and EGL renderer |
-| `iroh-live-cli` | The `irl` binary |
-| `iroh-live-relay` | The browser bridge |
-
-Demos live in `demos/`: `android` and `pi-zero`. The shortest Pi publisher is
-an example instead, `iroh-live/examples/publish-pi.rs`.
-
-Codecs, capture, decoding, and the wgpu renderer are upstream in `moq-video` and
-`moq-audio`. Nothing here implements one. See
+Codecs, capture, decoding, and the wgpu renderer live upstream in `moq-video`
+and `moq-audio`. See
 [docs/architecture/media-stack.md](docs/architecture/media-stack.md).
-
-## The patch block
-
-`Cargo.toml` carries a `[patch.crates-io]` block pointing the moq crates at
-`Frando/moq@iroh-live`, a branch of five changes that have not reached a
-release. Every pinned version matches what `moq-dev/moq@main` publishes, so
-deleting the block is the whole revert once they land. `Cargo.lock` pins the
-revision, so a clean clone and CI build the same tree; to work against a local
-checkout instead, point the block at `../moq/rs/<crate>` and leave it
-uncommitted.
 
 ## Build and test
 
 ```sh
 cargo build --workspace                 # default features
 cargo build --workspace --all-features  # everything
-
-cargo make check-all   # check and clippy across three feature sets, then fmt
-cargo make test        # cargo nextest across the workspace
-cargo make test-e2e    # Playwright browser suite, building the relay and CLI first
-cargo make test-full   # all three
 ```
 
-Run `cargo make check-all` before committing code. It covers default features,
-`--all-features`, and `--no-default-features`, which is where feature-gated
-mistakes show up. Markdown-only changes can skip it.
+The [cargo-make](https://crates.io/crates/cargo-make) tasks in
+[Makefile.toml](Makefile.toml) match CI:
+
+| Task | What it runs |
+|---|---|
+| `cargo make check-all` | `cargo check` and `cargo clippy -D warnings` with all features, no default features, and default features, then `format-check` |
+| `cargo make check` | Only the three `cargo check` runs |
+| `cargo make clippy` | Only the three clippy runs |
+| `cargo make format` | `cargo fmt` with the import grouping the project uses |
+| `cargo make test` | `cargo nextest run --workspace` |
+| `cargo make test-patchbay` | The patchbay network simulation tests in `iroh-live`, ignored ones included. Linux only |
+| `cargo make test-e2e` | The Playwright browser suite in `tests/e2e-browser`, after building the relay, the CLI, and the `subscribe_test` example |
+| `cargo make test-full` | `check-all`, `test`, and `test-e2e` |
+
+Run `cargo make check-all` before you commit code. The `--no-default-features`
+run is where feature-gated mistakes show up. The browser suite needs
+`npm ci` and `npx playwright install chromium` in `tests/e2e-browser` once.
+
+A test that has to see a rendition switch within its timeout shortens the
+timers in `PlayerConfig::adaptation`, as the patchbay suite does.
 
 Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 `cargo make cross-build-aarch64 -- <cargo args>`. See
 [cross/README.md](cross/README.md).
 
+## The patch block
+
+`Cargo.toml` patches the moq crates, and the comment above its
+`[patch.crates-io]` block says why and when the block can go. `Cargo.lock` pins
+the revision. To work against a local moq checkout, point the block at
+`../moq/rs/<crate>` and do not commit that change.
+
 ## Commits
 
-Conventional prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`, `ci:`,
-`docs:`, `chore:`. Lead with why, then the reasoning, then what changed. Keep
-commits small enough that each one leaves the workspace compiling. New behaviour
-needs a test.
-
-## Key types
-
-Publishing, in `moq_media::publish`:
-
-- `LocalBroadcast` owns a `moq_net::broadcast::Producer` and the catalog.
-- `VideoPublisher::set_renditions(source, renditions)` opens the source once and
-  fans frames out to one encoder per rendition.
-- `VideoSource` is `Capture`, `Frames`, or `AnnexB`; `AudioSource` is `Device` or
-  `Frames`.
-- `LocalBroadcast::preview()` taps the raw frames on their way to the encoders.
-
-Subscribing, in `moq_media::subscribe`:
-
-- `RemoteBroadcast` watches the catalog and hands out tracks.
-- `VideoTrack::take()` polls the latest-wins frame slot; `recv()` awaits.
-- `VideoTrack::set_rendition` and `enable_adaptation` drive the same request
-  channel.
-- `AudioTrack` writes into the process-wide `moq_media::playback` engine.
-
-Transport, in `iroh_moq`: `Moq::publish(path)` returns a producer synchronously
-and announces it node-wide. `MoqSession::subscribe(path)` waits for the peer's
-announce. `MoqSession::conn()` is the iroh `Connection` behind it.
+Use conventional prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`,
+`ci:`, `docs:`, `chore:`. The message says why first, then what changed. Keep
+each commit small, and leave the workspace compiling after every one. New
+behaviour needs a test.
 
 ## Threading
 
 Codecs run on their own threads inside `moq_video::encode::Sink` and
-`moq_video::decode::Sink`, so this repository spawns almost none. The audio file
-reader is the exception: symphonia decoding is blocking, so it runs on a named OS
-thread and feeds a bounded channel. `iroh_live::util::spawn_thread` is the helper
-for that pattern and currently has no callers.
+`moq_video::decode::Sink`. Every source runs on a named thread of its own,
+since some platform capture objects are not `Send`. A capture device gets a
+thread with a current-thread runtime (`local_task`), and `VideoSource::spawn`
+gives application code the same. Only frames cross threads: video through a
+latest-wins slot, PCM through a bounded fan-out.
 
-`moq_video::decode::Consumer::read` is not cancel-safe. Never poll it from a
-`select!` arm. The video decode path gives each decoder a task that reads it in a
-plain loop and forwards over a bounded channel, and the supervisor selects only
-on cancel-safe things. See
+`moq_video::decode::Consumer::read` is not cancel safe. Never poll it from a
+`select!` arm. Each video decoder has a task that reads it in a plain loop and
+forwards over a bounded channel. See
 [docs/architecture/subscribe.md](docs/architecture/subscribe.md).
 
-Networking, adaptation, and the room actor are ordinary tokio tasks. Audio output
-is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
+Networking, adaptation, and rooms run as tokio tasks. Audio output is a cpal
+callback on a real-time thread that `moq_audio::playback::Engine` owns.
 
 ## Conventions
 
-- `n0_watcher::Watchable` and `Direct<T>` for continuous state, not `tokio::watch`.
-- `CancellationToken` for cooperative shutdown, `AbortOnDropHandle` to tie a task
-  to a handle.
-- Bounded channels only. Frames to a renderer go through the single-slot
-  latest-wins `frame_channel`, not a queue.
-- `tracing_subscriber::fmt::init()` for setup: it respects `RUST_LOG` with no
-  `EnvFilter` boilerplate. Use `throttled-tracing` for anything per-frame, and
-  structured fields rather than string interpolation.
-- Rust doc comments follow RFC 1574: third-person declarative sentences starting
-  with a verb, no headings in item docs, types linked with `[`Type`]`.
-- Prose follows the house style: full sentences, no em dashes, no emoji.
+The runtime conventions are in
+[the architecture overview](docs/architecture/index.md#conventions). For code
+and prose:
+
+- `tracing` with structured fields. Use `throttled-tracing` for anything that
+  logs per frame.
+- Doc comments follow RFC 1574: third-person sentences that start with a verb,
+  no headings in item docs besides `# Errors`, `# Panics` and `# Examples`,
+  and types linked as ``[`Type`]``.
+- Prose uses full sentences, no em dashes, and no emoji.
 
 ## Known gaps
 
-`TimingStats` and `Timeline` have no producer, so the overlay's timing panel and
-timeline read zero.
-
-`EncodeStats` has one set of fields and a simulcast ladder has a rung per
-encoder, all writing to it. The codec, resolution and encoder labels are
-whichever rung wrote last, and `bitrate_kbps` is a smoothed value sitting
-somewhere among the rungs rather than their sum.
-
-The adaptation upgrade gate compares the publisher's delivery estimate against
-the *advertised* bitrate of the next rung. That estimate is bounded by what the
-publisher is currently sending, so on a low rung it cannot reach the figure the
-gate asks for, and `Decision::StartProbe`, which exists for exactly that case,
-is unreachable whenever an estimate is present. This is what makes
-`adaptation_follows_a_real_link` fail about one run in three. See
+Adaptation compares the delivery estimate against each rung's advertised
+bitrate, which is a ceiling for the encoder rather than what it sends.
+`Adaptation::fit_ratio` (1.25) covers that gap. It was measured with openh264,
+VA-API, and one patchbay lab only. Loss on a subscriber is measured over its
+own packets, which are mostly acknowledgements. See
 [docs/architecture/adaptive.md](docs/architecture/adaptive.md).
-
-`SyncMode::Unmanaged` does no pacing at all, despite what its doc comment says.
-
-`iroh-moq` has no tests.
-
-## Where testing happens
-
-Linux on Intel Meteor Lake is the day-to-day platform. macOS builds in CI and has
-been run by hand. Android and the Raspberry Pi have been tested on device.
-Windows and iOS have never been built here. See
-[docs/platforms.md](docs/platforms.md).

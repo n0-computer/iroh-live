@@ -1,68 +1,71 @@
 # Desktop rendering
 
-The subscribe side hands you `moq_video::Frame` values and does not care what you
-do with them. There is one rendering path on the desktop, and it goes through
-wgpu.
+A player hands out decoded `moq_video::Frame` values through `VideoFrames`. On
+the desktop they are drawn through wgpu.
 
 ## The wgpu renderer
 
-`moq_video::render::Renderer` takes a `wgpu::Device` and `Queue` and returns a
-`wgpu::Texture` per frame. That texture is the whole integration point: present
-it, hand it to a UI toolkit, or copy it back. The renderer carries no windowing
-dependency and picks no surface format.
+`moq_video::render::Renderer::new(device, queue, config)` binds a renderer to a
+wgpu device and queue. `render(&frame)` returns a `wgpu::Texture`. You can
+present that texture, hand it to a UI toolkit, or copy it back. The renderer
+has no windowing dependency and picks no surface format.
 
-Backend selection, colour handling, and the zero-copy import matrix are
-documented upstream in [the moq-video
-page](https://doc.moq.dev/lib/rs/crate/moq-video). Two points matter when you
-wire it up here.
+Backend selection, colour handling, and zero-copy import are documented in
+[moq-video](https://doc.moq.dev/lib/rs/crate/moq-video). Two points matter
+here.
 
-The wgpu version is fixed by the renderer. `moq_video::render` re-exports the
-exact build it links, reachable as `moq_media::video::render::wgpu`, and a
-texture from a different wgpu major is a different type. This is why the
-workspace pins egui and eframe to versions that sit on the same wgpu major.
+The renderer fixes the wgpu version. `iroh_live_media::video::render::wgpu`
+re-exports the wgpu it links, and a texture from another wgpu major version is
+a different type. The workspace pins egui and eframe to versions on the same
+wgpu major.
 
 On Linux, request `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when you
-create the device, or every DMA-BUF frame from PipeWire screen capture takes the
-CPU upload path instead.
+create the device. Without it, DMA-BUF frames from PipeWire screen capture are
+uploaded through the CPU.
 
-Enable the `render` feature to get any of this. It is on by default in
-`iroh-live` and `iroh-live-cli`, and off in `moq-media`, since a build that never
-draws should not pull a graphics stack.
+All of this needs the `render` feature. It is on by default in `iroh-live`, and
+off in `iroh-live-media`.
 
 ## egui
 
-`moq-media-egui` is the ready-made integration. Two types matter.
+`iroh-live-egui` draws frames in egui.
 
-`VideoTrackView` wraps a `VideoTrack` and polls it. Call `render(ctx, size)` in
-your draw loop and it takes the newest frame, uploads it, requests a repaint if
-something arrived, and returns an `egui::Image` plus the frame's timestamp.
+`VideoView` draws a `VideoFrames` stream, such as a player's `video()` or a
+source's `frames()`:
 
-`FrameView` is the same upload machinery without the track, for an application
-that gets frames from somewhere else. `irl publish --preview` uses it to draw the
-local preview, which is raw camera frames rather than a decoded track.
+```rust
+use iroh_live_egui::VideoView;
 
-Both need a wgpu render state. Construct them with `new_wgpu(ctx, name,
-Some(render_state))`; a view built without one logs a warning and draws a
-placeholder, because upstream only exposes pixels through the wgpu pipeline.
+let mut view = VideoView::new(ctx, "video", player.video(), render_state);
+// in the update loop:
+ui.add(view.render());
+```
 
-`create_egui_wgpu_config()` builds the `egui_wgpu::WgpuConfiguration` to hand
-eframe. On Linux it selects the Vulkan backend and enables
-`VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter advertises it, which eframe
-would not otherwise request. Elsewhere it returns the default.
+`render_state` is an `Option<&egui_wgpu::RenderState>`. The view wakes the
+window when a frame arrives. `render()` draws the newest frame and returns an
+`egui::Image`. `set_frames` switches to another stream and keeps the last
+picture on screen until the new stream delivers one. `VideoView::new` must run
+inside a Tokio runtime.
+
+`FrameView` draws frames you hand it with `render_frame`. The QR scanner of
+`irl watch --scan` uses it for the frames it reads. Create it with
+`FrameView::new(ctx, name, render_state)`.
+
+Without a render state, both views show a black placeholder.
+
+`create_egui_wgpu_config()` returns the `egui_wgpu::WgpuConfiguration` to pass
+to eframe. On Linux it selects Vulkan and enables
+`VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter supports it. eframe does not
+request that feature on its own.
 
 `overlay::DebugOverlay` draws the stats panel described in [instrumentation and
 tests](../architecture/devtools.md).
 
 ## Other toolkits
 
-Anything that can share a wgpu device can draw the renderer's texture directly.
-Anything that cannot needs pixels, and `moq_video::Surface::into_rgba()` is the
-exit: it downloads a native surface as needed, honours its colour metadata, and
-returns an owned RGBA8 image.
+A toolkit that shares a wgpu device can draw the renderer's texture directly.
+Otherwise, `moq_video::Surface::to_rgba` converts a frame's surface to RGBA8
+pixels on the CPU, downloading it from the GPU where needed.
 
-There is no GLES renderer in a library crate. `demos/pi-zero/src/gles.rs` is one,
-but it lives in the demo because it had exactly one caller and moq's `render`
-module is wgpu-only. See [Raspberry Pi](raspberry-pi.md).
-
-The dioxus integration crate was removed. It had no users and it wrapped a
-renderer that no longer exists.
+No library crate has a GLES renderer. The Pi demo has one in
+`demos/pi-zero/src/gles.rs`, see [Raspberry Pi](raspberry-pi.md).

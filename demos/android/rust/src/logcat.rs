@@ -1,7 +1,4 @@
-//! Routes [`tracing`] output to Android logcat.
-//!
-//! Uses `__android_log_write` directly (no external crate) with proper
-//! level mapping and null-termination.
+//! Routes [`tracing`] output to Android logcat through `__android_log_write`.
 
 use std::io::Write;
 
@@ -22,8 +19,7 @@ const ERROR: i32 = 6;
 
 /// Initializes the global tracing subscriber with logcat output.
 ///
-/// The `filter` string follows [`EnvFilter`] syntax. Returns an error if
-/// a subscriber is already set.
+/// `filter` uses [`EnvFilter`] syntax. Fails if a subscriber is already set.
 pub(crate) fn init(filter: &str) -> Result<(), tracing_subscriber::util::TryInitError> {
     tracing_subscriber::registry()
         .with(EnvFilter::new(filter))
@@ -37,6 +33,7 @@ pub(crate) fn init(filter: &str) -> Result<(), tracing_subscriber::util::TryInit
         .try_init()
 }
 
+/// Makes a [`LogcatWriter`] with the logcat priority of each event's level.
 struct LogcatMakeWriter;
 
 impl<'a> MakeWriter<'a> for LogcatMakeWriter {
@@ -58,7 +55,7 @@ impl<'a> MakeWriter<'a> for LogcatMakeWriter {
     }
 }
 
-/// Buffers a single log line, writes to logcat on drop.
+/// Buffers one log line and writes it to logcat on drop.
 struct LogcatWriter {
     buf: Vec<u8>,
     priority: i32,
@@ -89,18 +86,17 @@ impl Drop for LogcatWriter {
         if self.buf.is_empty() {
             return;
         }
-        // Trim trailing newline from fmt layer.
         if self.buf.last() == Some(&b'\n') {
             self.buf.pop();
         }
-        // Replace interior nulls to avoid truncation.
+        // An interior null would cut the message short.
         for b in &mut self.buf {
             if *b == 0 {
                 *b = b'?';
             }
         }
         self.buf.push(0);
-        // SAFETY: TAG is null-terminated, buf was just null-terminated.
+        // SAFETY: `TAG` and `buf` are both null-terminated.
         unsafe {
             __android_log_write(self.priority, TAG.as_ptr().cast(), self.buf.as_ptr().cast());
         }

@@ -12,12 +12,17 @@ moq-relay = { workspace = true, default-features = false, features = ["noq", "ir
 moq-tokio = { workspace = true, default-features = false, features = ["noq", "iroh", "aws-lc-rs"] }
 moq-net = { workspace = true }
 iroh = { workspace = true }
-iroh-live = { workspace = true }
 iroh-moq = { workspace = true }
-web-transport-iroh = { workspace = true }
+# The `live/` layout: tickets, and the grant that keeps a peer to its own
+# paths. `rooms` for the room layout's part of that grant. No `media`.
+iroh-live = { workspace = true, features = ["rooms"] }
+n0-future = "0.3.2"
+# Watching the pull node's sessions, to close one whose last pull retired.
+n0-watcher = "1"
 axum = { version = "0.8", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+derive_more = { version = "2.1.1", features = ["debug"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -26,17 +31,15 @@ rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false 
 include_dir = "0.7"
 dirs = "7"
 tower-http = { version = "0.7", features = ["cors"] }
-http = "1"
 
 [dev-dependencies]
-# Only to write a key as hex in the identity-file test, the form older builds
-# stored and `IROH_SECRET` still takes.
-data-encoding = "2.11.1"
 iroh = { workspace = true }
-iroh-live = { workspace = true }
-moq-media = { workspace = true, features = ["test-source"] }
-n0-future = "0.3.2"
-rand = "0.10"
+# The tests publish and play real media through the relay.
+iroh-live = { workspace = true, features = ["media", "rooms"] }
+iroh-live-media = { workspace = true }
+# Rooms whose members attach to a relay, for forging a member through one.
+iroh-live-rooms = { workspace = true }
+n0-watcher = "1"
 serial_test = "4"
 url = "2"
 

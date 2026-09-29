@@ -8,43 +8,26 @@ repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-anyhow = "1.0.104"
 data-encoding = "2.11.1"
-derive_more = { version = "2.1.1", features = ["display", "debug", "eq"] }
-hang = { workspace = true }
+derive_more = { version = "2.1.1", features = ["debug"] }
 iroh = { workspace = true }
-# Rooms live in `iroh-rooms`, but `Live` still mounts the gossip protocol and
-# hands the instance out, since that is what a room needs from this crate.
-iroh-gossip = { workspace = true }
-# mDNS address lookup, so a ticket that names an endpoint id and no
-# addresses still resolves on a network with no route to the internet.
+# mDNS address lookup, for networks without internet access.
 iroh-mdns-peer-lookup = "0.1.2"
 iroh-moq = { workspace = true }
-iroh-tickets = { workspace = true }
+# Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
+# knows nothing about rooms.
+iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
-noq-proto = { workspace = true }
-moq-media = { workspace = true }
-n0-error = { version = "1", features = ["anyhow"] }
-n0-future = "0.3.2"
-n0-watcher = "1"
-postcard = "1.1.3"
-rand = "0.10"
-serde = { version = "1.0.229", features = ["derive"] }
-strum = { version = "0.28", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["sync"] }
-tokio-util = "0.7.19"
+iroh-live-media = { workspace = true, optional = true }
+n0-error = "1"
+serde = "1.0.229"
 tracing = "0.1.44"
-bytes = "1.12.1"
-throttled-tracing = "0.1.0"
-
 
 [dev-dependencies]
-# The `subscribe_test` example, which the browser end-to-end suite drives, and
-# the `publish` example.
-anyhow = "1.0.104"
+# The examples.
 clap = { version = "4.6", features = ["derive"] }
-moq-media = { workspace = true, features = ["test-source"] }
 n0-tracing-test = "0.3.0"
+n0-watcher = "1"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing-subscriber = "0.3.23"
 
@@ -59,28 +42,34 @@ patchbay = "0.7.0"
 workspace = true
 
 [features]
-default = ["capture", "render", "sound-server"]
+default = ["media", "capture", "render", "sound-server"]
+# The media stack: `iroh_live::media`, `Live::remote_broadcast`. Without it the
+# crate is the `live/` layout only (tickets, grant, endpoint options), as the
+# relay uses it.
+media = ["dep:iroh-live-media"]
+# Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
+rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.
-capture = ["moq-media/capture"]
+capture = ["media", "iroh-live-media/capture"]
 # Speaker output.
-playback = ["moq-media/playback"]
+playback = ["media", "iroh-live-media/playback"]
 # Reach audio devices through PipeWire or PulseAudio rather than through their
 # ALSA compatibility plugin.
-sound-server = ["moq-media/sound-server"]
+sound-server = ["media", "iroh-live-media/sound-server"]
 # Acoustic echo cancellation, for a call on a handset or a laptop speaker.
-aec = ["moq-media/aec"]
+aec = ["media", "iroh-live-media/aec"]
 # Linux screen capture through xdg-desktop-portal and PipeWire.
-pipewire = ["moq-media/pipewire"]
+pipewire = ["media", "iroh-live-media/pipewire"]
 # GPU rendering of decoded frames.
-render = ["moq-media/render"]
+render = ["media", "iroh-live-media/render"]
 # Raspberry Pi camera capture through `rpicam-vid`.
-rpicam = ["moq-media/rpicam"]
+rpicam = ["media", "iroh-live-media/rpicam"]
 # Intel and AMD hardware H.264 encoding and decoding.
-vaapi = ["moq-media/vaapi"]
+vaapi = ["media", "iroh-live-media/vaapi"]
 # NVIDIA hardware encode and decode.
-nvidia = ["moq-media/nvidia"]
+nvidia = ["media", "iroh-live-media/nvidia"]
 # The V4L2 stateful memory-to-memory H.264 encoder and decoder on ARM SoCs.
-v4l2 = ["moq-media/v4l2"]
+v4l2 = ["media", "iroh-live-media/v4l2"]
 
 # The example opens a camera and a microphone, so it needs the devices.
 [[example]]
@@ -94,3 +83,8 @@ required-features = ["capture"]
 name = "publish-pi"
 path = "examples/publish-pi.rs"
 required-features = ["rpicam"]
+
+[[example]]
+name = "subscribe_test"
+path = "examples/subscribe_test.rs"
+required-features = ["media"]

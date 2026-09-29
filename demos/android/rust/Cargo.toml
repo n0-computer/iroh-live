@@ -12,22 +12,20 @@ publish = false
 crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
-iroh-live = { workspace = true }
-# The microphone config handed to the audio publisher.
-moq-audio = { workspace = true }
-# `capture` for the microphone source, `playback` for the speaker. Video capture
-# comes from Kotlin's Camera2, not from a device this crate opens.
-# `aec` implies `capture` and `playback`: a handset on speakerphone has to
-# subtract its own output from the microphone or it publishes itself back.
-moq-media = { workspace = true, features = ["aec"] }
-moq-media-android = { workspace = true }
-# The broadcast model behind the offline demo pipelines, and `Timestamp`.
+iroh = { workspace = true }
+# `aec` implies `capture` for the microphone and `playback` for the speaker: a
+# handset on speakerphone has to subtract its own output from the microphone
+# or it publishes itself back. Video capture comes from Kotlin's CameraX.
+iroh-live = { workspace = true, features = ["aec"] }
+iroh-live-media-android = { workspace = true }
+# `Timestamp`, which camera frames are stamped with.
 moq-net = { workspace = true }
 # `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
-# `mediacodec` is what gates `Surface::HardwareBuffer` and the `ndk` re-export
-# below, and the workspace turns moq-video's default features off, so this crate
-# has to ask for it. Safe here and not in `moq-media-android`, because every
-# dependency in this section is already `cfg(target_os = "android")`.
+# `mediacodec` gates `Surface::HardwareBuffer` and `moq_video::ndk`, which this
+# crate uses for `NativeWindow`. The workspace turns moq-video's default
+# features off, so this crate asks for it. Safe here and not in
+# `iroh-live-media-android`, because every dependency in this section is
+# already `cfg(target_os = "android")`.
 moq-video = { workspace = true, features = ["mediacodec"] }
 # Held at 0.21. jni 0.22 splits `JNIEnv` into an owned `Env` and an
 # `EnvUnowned` that carries no JNI API of its own, which is a safety model
@@ -36,12 +34,11 @@ moq-video = { workspace = true, features = ["mediacodec"] }
 # a device, rather than blind.
 jni = "0.21"
 n0-error = "1"
-# `ANativeWindow_fromSurface`, for handing the Android surface to EGL. The
-# hardware-buffer types come from `moq_video::ndk` instead, so a version bump
-# upstream is a build error here rather than two incompatible `ndk` crates.
-ndk = { version = "0.9", features = ["api-level-26"] }
+n0-future = "0.3.2"
+# `Watchable`, for the peer a call is offered to.
+n0-watcher = "1"
 ndk-context = "0.1"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 

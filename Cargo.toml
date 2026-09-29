@@ -4,10 +4,10 @@ members = [
     "iroh-live-cli",
     "iroh-live-relay",
     "iroh-moq",
-    "iroh-rooms",
-    "moq-media",
-    "moq-media-android",
-    "moq-media-egui",
+    "iroh-live-rooms",
+    "iroh-live-media",
+    "iroh-live-media-android",
+    "iroh-live-egui",
     "demos/android/rust",
     "demos/pi-zero",
 ]
@@ -29,33 +29,31 @@ iroh-gossip = "0.101.0"
 noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = "0.21.3"
-moq-net = "0.3.2"
-moq-mux = "0.10.3"
+hang = "0.21.8"
+moq-net = "0.3.7"
+moq-mux = "0.10.8"
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
-moq-audio = { version = "0.1.2", default-features = false, features = ["aac"] }
-moq-video = { version = "0.1.2", default-features = false }
-moq-relay = { version = "0.15.3", default-features = false }
-moq-tokio = { version = "0.19.14", default-features = false }
+moq-audio = { version = "0.1.7", default-features = false, features = ["aac"] }
+moq-video = { version = "0.1.7", default-features = false }
+moq-relay = { version = "0.15.8", default-features = false }
+moq-tokio = { version = "0.19.19", default-features = false }
 web-transport-iroh = "0.7.0"
 
-# UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
-# `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
-# major is a different type, so these two versions have to move together.
+# UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back
+# a `wgpu::Texture` from its own build of wgpu 30. A texture from a different
+# wgpu major is a different type, so egui and moq-video have to move together.
 eframe = { version = "0.36.2", default-features = false }
 egui = "0.36.2"
 egui-wgpu = "0.36.2"
-wgpu = "30"
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
-iroh-live-relay = { path = "iroh-live-relay" }
 iroh-moq = { path = "iroh-moq" }
-iroh-rooms = { path = "iroh-rooms" }
-moq-media = { path = "moq-media", default-features = false }
-moq-media-android = { path = "moq-media-android" }
-moq-media-egui = { path = "moq-media-egui" }
+iroh-live-rooms = { path = "iroh-live-rooms" }
+iroh-live-media = { path = "iroh-live-media", default-features = false }
+iroh-live-media-android = { path = "iroh-live-media-android" }
+iroh-live-egui = { path = "iroh-live-egui" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
