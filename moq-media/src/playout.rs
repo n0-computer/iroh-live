@@ -72,7 +72,8 @@ pub struct PlaybackPolicy {
     pub max_latency: Duration,
 
     /// Whether decoded frames should be left on the GPU rather than downloaded
-    /// to CPU memory, passed to the decoder as `gpu_frames`.
+    /// to CPU memory: the decoder's native output when set, CPU output when
+    /// clear.
     ///
     /// Set it when the frames go to a renderer: a hardware decoder that can
     /// share its decode surface then hands one over, and the picture reaches a
@@ -81,9 +82,10 @@ pub struct PlaybackPolicy {
     /// since sharing a surface costs the decoder an allocation per picture and
     /// buys such a consumer nothing.
     ///
-    /// Best effort: only backends that can do it honor it, and a frame that
-    /// does come back on the GPU still converts to I420 on demand, so nothing
-    /// downstream has to know which happened.
+    /// Clear, every frame arrives as CPU I420, which a hardware decoder pays
+    /// for with a download per picture. Set, a software decoder still hands
+    /// back CPU frames, and a GPU frame converts to I420 on demand, so nothing
+    /// downstream has to know which it got.
     pub gpu_frames: bool,
 
     /// Which decoder backend opens for video, passed to the decoder as `kind`.

@@ -81,11 +81,7 @@ impl AudioFile {
         let path = path.as_ref().to_path_buf();
         let display = path.display().to_string();
         let probe = probe(&path)?;
-        let input = moq_audio::encode::Input {
-            format: moq_audio::Format::F32,
-            sample_rate: probe.sample_rate,
-            channels: probe.channels,
-        };
+        let input = moq_audio::encode::Input::new(probe.sample_rate, probe.layout);
 
         let (tx, frames) = mpsc::channel(QUEUE_DEPTH);
         std::thread::Builder::new()
@@ -128,7 +124,7 @@ impl AudioFile {
 /// What probing a file tells us before any of it is decoded.
 struct Probe {
     sample_rate: u32,
-    channels: u32,
+    layout: moq_audio::Layout,
 }
 
 impl Probe {
@@ -140,10 +136,15 @@ impl Probe {
             sample_rate: params
                 .and_then(|params| params.sample_rate)
                 .unwrap_or(48_000),
-            channels: params
+            // A declared count of zero is treated like no count at all, and
+            // both fall back to stereo. Zero is the only count `from_channels`
+            // refuses, so after the filter it cannot fail.
+            layout: params
                 .and_then(|params| params.channels.as_ref())
                 .map(|channels| channels.count() as u32)
-                .unwrap_or(2),
+                .filter(|&channels| channels > 0)
+                .and_then(|channels| moq_audio::Layout::from_channels(channels).ok())
+                .unwrap_or(moq_audio::Layout::Stereo),
         }
     }
 }
@@ -258,8 +259,9 @@ fn decode_once(
     let track_id = track.id;
     let Probe {
         sample_rate,
-        channels,
+        layout,
     } = Probe::of(&track);
+    let channels = layout.channels();
 
     let params = audio_params(&track).ok_or_else(|| {
         n0_error::e!(AudioFileError::NoTrack {
@@ -389,7 +391,7 @@ mod tests {
         let file = AudioFile::open(&path, false).expect("a valid stereo WAV opens");
         let input = file.input();
         assert_eq!(input.sample_rate, 48_000);
-        assert_eq!(input.channels, 2);
+        assert_eq!(input.layout, moq_audio::Layout::Stereo);
 
         let (tx, mut rx) = mpsc::channel(64);
         let decoded = std::thread::spawn({

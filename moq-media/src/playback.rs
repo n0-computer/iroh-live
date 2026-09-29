@@ -86,14 +86,16 @@ pub(crate) async fn engine() -> Result<&'static moq_audio::playback::Engine, Sub
 /// Hand it to [`moq_audio::capture::Config::aec`] on the microphone that shares
 /// a room with the speaker. Without it a handset on speakerphone publishes its
 /// own output back to the peer, which is the one audio failure everybody
-/// notices.
+/// notices. Keep a clone to toggle cancellation from a UI.
 ///
 /// # Errors
 ///
-/// Fails if the output device cannot be opened.
+/// Fails if the output device cannot be opened, or if a canceller built
+/// earlier is still alive: the engine has one echo reference, so a second
+/// canceller is refused until every clone of the first has been dropped.
 #[cfg(feature = "aec")]
 pub async fn canceller(
     config: moq_audio::aec::Config,
-) -> Result<moq_audio::aec::Canceller, SubscribeError> {
-    Ok(engine().await?.canceller(config))
+) -> Result<moq_audio::aec::Control, SubscribeError> {
+    Ok(engine().await?.canceller(config)?)
 }

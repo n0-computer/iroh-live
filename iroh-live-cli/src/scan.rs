@@ -28,7 +28,7 @@ use iroh_live::{
     media::{
         frame_channel::{FrameReceiver, FrameSender, frame_channel},
         local_task::{self, LocalTask},
-        video::{self, Frame, I420, Size, Surface, capture},
+        video::{self, Frame, Size, Surface, capture},
     },
     ticket::LiveTicket,
 };
@@ -133,7 +133,8 @@ impl ScanCamera {
         config.source = capture::Source::Camera(id);
         config.width = Some(SCAN_SIZE.width);
         config.height = Some(SCAN_SIZE.height);
-        config.framerate = Some(SCAN_FRAMERATE);
+        config.framerate =
+            Some(video::Rate::new(SCAN_FRAMERATE, 1).expect("the scan rate is a valid frame rate"));
         capture::open(&config)
             .await
             .map(Self::Capture)
@@ -197,6 +198,7 @@ impl ScanCamera {
             Self::Capture(stream) => stream
                 .read()
                 .await
+                .map(|frame| frame.map(|frame| frame.surface))
                 .map_err(|err| format!("the camera failed: {err}")),
             #[cfg(all(target_os = "linux", feature = "rpicam"))]
             Self::Rpicam { frames, .. } => {
@@ -714,41 +716,23 @@ struct Luma {
 /// Copies the luma plane out of `surface` and hands the surface back for
 /// drawing.
 ///
-/// A Linux or Windows camera hands over CPU-resident I420, so the usual path
-/// borrows the Y plane and copies it out. A macOS camera's `CVPixelBuffer`, and
-/// any other GPU-resident surface, has to be downloaded first, and downloading
-/// consumes the surface, so what comes back is rebuilt from the downloaded
-/// planes.
+/// A Linux or Windows camera hands over CPU-resident I420, which passes through
+/// untouched, so the only cost is copying the Y plane out. A macOS camera's
+/// `CVPixelBuffer`, and any other GPU-resident surface, is downloaded first,
+/// and what comes back for drawing is the downloaded I420.
 ///
 /// # Errors
 ///
 /// Fails if a GPU surface cannot be downloaded, in which case the frame is lost
 /// along with it.
 fn split_luma(surface: Surface) -> Result<(Surface, Luma), video::Error> {
-    let width = surface.width();
-    let height = surface.height();
-    if let Surface::I420(i420) = &surface {
-        let data = i420.y().to_vec();
-        return Ok((
-            surface,
-            Luma {
-                width,
-                height,
-                data,
-            },
-        ));
-    }
-
-    let planes = surface.into_i420()?;
+    let i420 = surface.into_i420()?;
     let luma = Luma {
-        width,
-        height,
-        data: planes[..width as usize * height as usize].to_vec(),
+        width: i420.width(),
+        height: i420.height(),
+        data: i420.y().to_vec(),
     };
-    Ok((
-        Surface::I420(I420::new(width, height, planes.to_vec())?),
-        luma,
-    ))
+    Ok((Surface::I420(i420), luma))
 }
 
 /// Reads the first QR code in `image`, if it holds one.

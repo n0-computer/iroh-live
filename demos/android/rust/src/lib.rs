@@ -854,7 +854,7 @@ fn nv12_to_i420(
         ));
     }
 
-    let mut data = vec![0u8; I420::len(size.width, size.height)];
+    let mut data = vec![0u8; I420::len(size).std_context("sizing I420 planes")?];
     let (luma, chroma) = data.split_at_mut(width * height);
     let (u_plane, v_plane) = chroma.split_at_mut(chroma_width * chroma_height);
 
@@ -872,7 +872,7 @@ fn nv12_to_i420(
         }
     }
 
-    I420::new(size.width, size.height, data).std_context("packing I420 planes")
+    I420::new(size, data).std_context("packing I420 planes")
 }
 
 // ── JNI: rendering ──────────────────────────────────────────────────
