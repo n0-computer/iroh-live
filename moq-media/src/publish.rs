@@ -408,7 +408,7 @@ impl LocalBroadcast {
         if let Err(err) = self.catalog.lock().expect("poisoned").finish() {
             warn!(error = %err, "catalog did not finish cleanly");
         }
-        self.broadcast.finish();
+        self.broadcast.close();
     }
 }
 
