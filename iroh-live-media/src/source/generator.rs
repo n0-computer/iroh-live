@@ -658,8 +658,10 @@ mod tests {
             let stop = stop.clone();
             std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, fanout, stop))
         };
+        // Timed from the first frame, so the thread's start does not count.
         let started = Instant::now();
         let mut first = None;
+        let mut first_at = started;
         let mut last = Duration::ZERO;
         let mut peak = 0.0f32;
         while started.elapsed() < Duration::from_millis(600) {
@@ -668,7 +670,10 @@ mod tests {
                 continue;
             };
             let at = Duration::from(frame.timestamp);
-            first.get_or_insert(at);
+            if first.is_none() {
+                first = Some(at);
+                first_at = Instant::now();
+            }
             last = at + TONE_FRAME;
             peak = frame
                 .data
@@ -681,7 +686,7 @@ mod tests {
         stop.cancel();
         thread.join().expect("the tone thread exits");
         let media = last - first.expect("the tone produced frames");
-        let ratio = media.as_secs_f64() / started.elapsed().as_secs_f64();
+        let ratio = media.as_secs_f64() / first_at.elapsed().as_secs_f64();
         assert!(
             ratio > 0.9,
             "the tone ran at {:.0}% of real time",

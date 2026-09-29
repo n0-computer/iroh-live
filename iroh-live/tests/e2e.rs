@@ -356,23 +356,32 @@ async fn changing_the_decoder_backend_rebuilds_it() {
         .expect("failed to play");
     first_frame(&player).await;
 
-    // `Auto` may already run openh264, so the decoder's name alone proves
-    // nothing. A rebuild warms up a replacement, which takes over on a decoded
-    // frame.
+    // A rebuild warms up a replacement, which takes over on a decoded frame.
+    // Where `Auto` runs a hardware decoder, the name changes. Where it already
+    // runs openh264, only the replacement on its way shows the rebuild.
     let mut status = player.status();
+    let was_software = status.borrow().decoder.as_deref() == Some("openh264");
     player.set_decoder(decode::Kind::Software);
-    tokio::time::timeout(TIMEOUT, async {
+    let rebuilt = tokio::time::timeout(TIMEOUT, async {
+        if was_software {
+            status
+                .wait_for(|status| status.switching_to.is_some())
+                .await
+                .expect("the player is alive");
+        }
         status
-            .wait_for(|status| status.switching_to.is_some())
-            .await
-            .expect("the player is alive");
-        status
-            .wait_for(|status| status.switching_to.is_none())
+            .wait_for(|status| {
+                status.switching_to.is_none() && status.decoder.as_deref() == Some("openh264")
+            })
             .await
             .expect("the player is alive");
     })
-    .await
-    .expect("timed out waiting for the rebuilt decoder to take over");
+    .await;
+    assert!(
+        rebuilt.is_ok(),
+        "timed out waiting for the rebuilt decoder to take over: {:?}",
+        *status.borrow()
+    );
     let status = status.borrow().clone();
     assert!(status.switch_error.is_none(), "{:?}", status.switch_error);
     assert_eq!(status.decoder.as_deref(), Some("openh264"));
