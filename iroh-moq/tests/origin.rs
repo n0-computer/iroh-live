@@ -250,7 +250,7 @@ async fn a_broadcast_is_spliced_at_two_paths() {
 
     // Finishing the source ends it at both paths, and the handlers retract
     // their routes so no new request is answered with a closed broadcast.
-    broadcast.producer.finish();
+    broadcast.producer.close();
     for consumer in [&at_live, &at_room] {
         tokio::time::timeout(TIMEOUT, consumer.closed())
             .await

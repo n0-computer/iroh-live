@@ -181,7 +181,7 @@ impl Drop for Shared {
         if let Err(err) = self.catalog.lock().expect("poisoned").finish() {
             debug!(error = %err, "catalog did not finish cleanly");
         }
-        self.producer.finish();
+        self.producer.close();
     }
 }
 
@@ -352,7 +352,7 @@ impl LocalBroadcast {
                 if let Err(err) = shared.catalog.lock().expect("poisoned").finish() {
                     debug!(error = %err, "catalog did not finish cleanly");
                 }
-                shared.producer.finish();
+                shared.producer.close();
             }
             finished.cancel();
         });

@@ -86,7 +86,7 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
 
     // A broadcast that ended frees its path at once, before the node has
     // noticed on its own.
-    first.producer.finish();
+    first.producer.close();
     alice
         .moq
         .publish(alice.path("cam"), &second.producer, Audience::Everyone)

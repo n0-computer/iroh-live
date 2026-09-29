@@ -140,7 +140,7 @@ async fn ending_a_broadcast_keeps_the_member() {
     .await;
 
     drop(writer);
-    cam.finish();
+    cam.close();
     let state = wait_for_state(&room_b, "a's cam is gone", |state| {
         state
             .peers
