@@ -3508,7 +3508,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "hex",
- "kio 0.6.1",
+ "kio 0.6.2",
  "lazy_static",
  "moq-json",
  "moq-net",
@@ -4958,9 +4958,9 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "895626bcff442ce7cccb4c1370c7220f0a8dc8c887eec861432ef5dde6e4ea45"
+checksum = "88b9d7b486bef9fdee1330ed216e35e8a170f840d407ccb20b5eb194af3d01a5"
 dependencies = [
  "loom",
  "smallvec",
@@ -5375,7 +5375,7 @@ dependencies = [
  "dispatch2",
  "fixed-resample",
  "hang",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-mux",
  "moq-net",
  "objc2 0.6.4",
@@ -5398,14 +5398,14 @@ dependencies = [
 
 [[package]]
 name = "moq-auth"
-version = "0.1.5"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91f4439295cd0948c1cb8c746e023981e92402c76f0b500f4b88b8f4dfddf95f"
+checksum = "eee68e814b2a98cf61d528e26c5555eeb13fd99f32e5bdbfeecc37db49c06719"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "jsonwebtoken",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-pattern",
  "p256",
  "p384",
@@ -5429,7 +5429,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f997e6219114d4ae22323e51422a74ccb9f9db415ee50a2dfe0e99b20ebbb43"
 dependencies = [
  "bytes",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-flate",
  "moq-net",
  "thiserror 2.0.20",
@@ -5449,12 +5449,12 @@ dependencies = [
 
 [[package]]
 name = "moq-json"
-version = "0.5.5"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afa79de0d7c01c77c9a4d33e9000b7cd8a7023b8efe1787a350ff4b0ad0a157b"
+checksum = "3c6da97b88c7cf69980b2bbd38457c66c2bc15914372fbe12b80903723e15a4a"
 dependencies = [
  "bytes",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-flate",
  "moq-net",
  "serde",
@@ -5552,7 +5552,7 @@ dependencies = [
  "bytes",
  "h264-parser",
  "hang",
- "kio 0.6.1",
+ "kio 0.6.2",
  "memchr",
  "moq-binary",
  "moq-json",
@@ -5577,14 +5577,14 @@ dependencies = [
 
 [[package]]
 name = "moq-net"
-version = "0.3.7"
+version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "787f2e97c3952a8f2455c9580f93106f66173b926726355ad65ba03afdbd754d"
+checksum = "df2c0eead236aa876f1347b5e313b4ff3d9c849812fee084b23ebc2253f13ee5"
 dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-pattern",
  "num_enum",
  "rand 0.10.2",
@@ -5598,9 +5598,9 @@ dependencies = [
 
 [[package]]
 name = "moq-noq"
-version = "1.3.2"
+version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f73dd3abdf1efa3b89f903494d93836968f4eb4040a29cde5a03a4c6451535b"
+checksum = "b87d97674919e237b1ba6a7d7b1c9bdf5ac39cf94a3a86a307f3a31cdd5d83e7"
 dependencies = [
  "bytes",
  "cfg_aliases",
@@ -5620,9 +5620,9 @@ dependencies = [
 
 [[package]]
 name = "moq-noq-proto"
-version = "1.3.2"
+version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8ede2ffc5008e6c53798802c257689475f01b12960f37a5f78e91cf4580159b"
+checksum = "0992aa7804dfc60c7c5a4ba4d1dc720f32de38cd06fc7b317284f1f3d5f0bdf5"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -5649,9 +5649,9 @@ dependencies = [
 
 [[package]]
 name = "moq-noq-udp"
-version = "1.3.2"
+version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1e67d81510e43c0a0ce67a310e35938aa1dbd4a34ccef32d10f752719269cf2"
+checksum = "e038634392b7255a76310bf2d20f169c945556344b87882b4b969dd11c25543e"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -5673,18 +5673,18 @@ dependencies = [
 
 [[package]]
 name = "moq-pattern"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36f3a2d5ebac9932400d60e4dd55b77be1a1364a7553d48d02b57a19c889dfe9"
+checksum = "5fc361de827f05fa2a1dfb6489cb73575a16ed5c56f3b1d218be9925176c7521"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "moq-relay"
-version = "0.15.8"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "144d4131ed52b8653c1d3a762ac57f3cca4861370e8743be85d80df975b4bcda"
+checksum = "a11154a69a19accabf901b072a41736dc1650775be5e557eb30699641643e04a"
 dependencies = [
  "anyhow",
  "axum",
@@ -5719,9 +5719,9 @@ dependencies = [
 
 [[package]]
 name = "moq-sock"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "259804c0f81cdf34be0055207f9853ad0d500c9c20423d9be14dc8e2dc64db40"
+checksum = "7a9dd03d6d2fd40a66e2b9f8e35dd31137694b0fd41b5652e97b56aa03705b29"
 dependencies = [
  "core_affinity",
  "libc",
@@ -5733,9 +5733,9 @@ dependencies = [
 
 [[package]]
 name = "moq-stats"
-version = "0.2.8"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97bdee6e7fc77a9290f4f0f1682f0ff61367d4ace85675f3a8978f8c005ed1cb"
+checksum = "9e2e90e6e1890b60604d7bb6f2cc79b029e2240d45cc50f46f0d59bc054abac2"
 dependencies = [
  "moq-json",
  "moq-net",
@@ -5748,9 +5748,9 @@ dependencies = [
 
 [[package]]
 name = "moq-tokio"
-version = "0.19.19"
+version = "0.19.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122023d49844bba6e2010fe02040695db2995d59b4bef13e520696d04a99b05b"
+checksum = "4dabaa6b7658d7eee293c38c19481f01e74e9bd1b9059b08501880bd43f29b7a"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -7925,9 +7925,9 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qmux"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af3a86f3c22d13c8b2159b795eced3fa4eee0316527be16b56626f3d063b02a1"
+checksum = "78229d7c17aefedb12668c8e28db3dc648b69fc80c025c4b899e48982671caf8"
 dependencies = [
  "bytes",
  "futures",
@@ -10950,9 +10950,9 @@ dependencies = [
 
 [[package]]
 name = "web-transport-moq"
-version = "1.3.2"
+version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2d0167f1b04c31eefb41262fd459b90d72d6f41eea0cbc35d7e2c6279190290"
+checksum = "6ba618c4bd4741eab697eb046515e34607e21b8cea28c762177ad897629887d8"
 dependencies = [
  "bytes",
  "futures",
