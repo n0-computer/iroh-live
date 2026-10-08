@@ -36,7 +36,7 @@ moq-mux = "0.10.3"
 # carries AAC, and dropping its audio track is a silent failure.
 moq-audio = { version = "0.1.2", default-features = false, features = ["aac"] }
 moq-video = { version = "0.1.2", default-features = false }
-moq-relay = { version = "0.15.3", default-features = false }
+moq-relay = { version = "0.16.0", default-features = false }
 moq-tokio = { version = "0.19.14", default-features = false }
 web-transport-iroh = "0.7.0"
 
