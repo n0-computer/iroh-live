@@ -4514,7 +4514,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "web-transport-iroh",
+ "web-transport-iroh 0.8.3",
 ]
 
 [[package]]
@@ -4581,7 +4581,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "web-transport-iroh",
+ "web-transport-iroh 0.8.3",
  "web-transport-proto",
 ]
 
@@ -5593,7 +5593,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "web-async",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -5714,7 +5714,7 @@ dependencies = [
  "tracing",
  "url",
  "usage-rs",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -5780,10 +5780,10 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "usage-rs",
- "web-transport-iroh",
+ "web-transport-iroh 0.7.0",
  "web-transport-moq",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
  "webpki-roots",
  "x509-parser",
 ]
@@ -7939,7 +7939,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -10945,7 +10945,26 @@ dependencies = [
  "tracing",
  "url",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
+]
+
+[[package]]
+name = "web-transport-iroh"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d523b1f4bbdde00b083fd99b429d1424f6d0c35882529ee05fc88a39355aa187"
+dependencies = [
+ "bytes",
+ "http",
+ "iroh",
+ "kio 0.5.8",
+ "n0-error",
+ "n0-future",
+ "tokio",
+ "tracing",
+ "url",
+ "web-transport-proto",
+ "web-transport-trait 0.5.0",
 ]
 
 [[package]]
@@ -10966,7 +10985,7 @@ dependencies = [
  "tracing",
  "url",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -10988,6 +11007,15 @@ name = "web-transport-trait"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a916df726e858e8e6cc21e852129f59e6277d3a01bb2254c0506dcf829fdd5d"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
+name = "web-transport-trait"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f1e801f997864ab0074afb1c7d3262df46d5d9ad9b78274c47694544db2dba7"
 dependencies = [
  "bytes",
 ]

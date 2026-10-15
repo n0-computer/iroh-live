@@ -38,7 +38,7 @@ moq-audio = { version = "0.1.2", default-features = false, features = ["aac"] }
 moq-video = { version = "0.1.2", default-features = false }
 moq-relay = { version = "0.15.3", default-features = false }
 moq-tokio = { version = "0.19.14", default-features = false }
-web-transport-iroh = "0.7.0"
+web-transport-iroh = "0.8.2"
 
 # UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
 # `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
