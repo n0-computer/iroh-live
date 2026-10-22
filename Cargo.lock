@@ -3508,7 +3508,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "hex",
- "kio 0.6.1",
+ "kio 0.6.2",
  "lazy_static",
  "moq-json",
  "moq-net",
@@ -4514,7 +4514,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "web-transport-iroh",
+ "web-transport-iroh 0.8.4",
 ]
 
 [[package]]
@@ -4581,7 +4581,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "web-transport-iroh",
+ "web-transport-iroh 0.8.4",
  "web-transport-proto",
 ]
 
@@ -4958,9 +4958,9 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "895626bcff442ce7cccb4c1370c7220f0a8dc8c887eec861432ef5dde6e4ea45"
+checksum = "88b9d7b486bef9fdee1330ed216e35e8a170f840d407ccb20b5eb194af3d01a5"
 dependencies = [
  "loom",
  "smallvec",
@@ -5375,7 +5375,7 @@ dependencies = [
  "dispatch2",
  "fixed-resample",
  "hang",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-mux",
  "moq-net",
  "objc2 0.6.4",
@@ -5405,7 +5405,7 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "jsonwebtoken",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-pattern",
  "p256",
  "p384",
@@ -5429,7 +5429,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f997e6219114d4ae22323e51422a74ccb9f9db415ee50a2dfe0e99b20ebbb43"
 dependencies = [
  "bytes",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-flate",
  "moq-net",
  "thiserror 2.0.20",
@@ -5454,7 +5454,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afa79de0d7c01c77c9a4d33e9000b7cd8a7023b8efe1787a350ff4b0ad0a157b"
 dependencies = [
  "bytes",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-flate",
  "moq-net",
  "serde",
@@ -5552,7 +5552,7 @@ dependencies = [
  "bytes",
  "h264-parser",
  "hang",
- "kio 0.6.1",
+ "kio 0.6.2",
  "memchr",
  "moq-binary",
  "moq-json",
@@ -5584,7 +5584,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.1",
+ "kio 0.6.2",
  "moq-pattern",
  "num_enum",
  "rand 0.10.2",
@@ -5593,7 +5593,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "web-async",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -5714,7 +5714,7 @@ dependencies = [
  "tracing",
  "url",
  "usage-rs",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -5780,10 +5780,10 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "usage-rs",
- "web-transport-iroh",
+ "web-transport-iroh 0.7.0",
  "web-transport-moq",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
  "webpki-roots",
  "x509-parser",
 ]
@@ -7939,7 +7939,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -10945,7 +10945,26 @@ dependencies = [
  "tracing",
  "url",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
+]
+
+[[package]]
+name = "web-transport-iroh"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70f38621accfacdba98b751e09e305420d04f4968af5b87a6e82af600f92ee77"
+dependencies = [
+ "bytes",
+ "http",
+ "iroh",
+ "kio 0.6.2",
+ "n0-error",
+ "n0-future",
+ "tokio",
+ "tracing",
+ "url",
+ "web-transport-proto",
+ "web-transport-trait 0.5.2",
 ]
 
 [[package]]
@@ -10966,7 +10985,7 @@ dependencies = [
  "tracing",
  "url",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -10988,6 +11007,15 @@ name = "web-transport-trait"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a916df726e858e8e6cc21e852129f59e6277d3a01bb2254c0506dcf829fdd5d"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
+name = "web-transport-trait"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60221f03172c9e8e8d19d1c038c87ef2804d05f8a71264817f60a28bbd03edab"
 dependencies = [
  "bytes",
 ]
