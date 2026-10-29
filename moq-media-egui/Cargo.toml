@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 egui = { workspace = true }
 egui-wgpu = { workspace = true, optional = true }
-epaint = { version = "0.36", optional = true }
+epaint = { version = "0.37", optional = true }
 moq-media = { workspace = true }
 # Spawning the one task that wakes the window when a picture lands, and the
 # abort-on-drop handle that stops it with the view.
