@@ -29,7 +29,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info};
 
-use crate::{RemoteBroadcast, error::Error};
+use crate::{RemoteBroadcast, catalog::VideoRenditions as _, error::Error};
 
 /// A container to record into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

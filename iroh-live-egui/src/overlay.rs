@@ -574,7 +574,7 @@ fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
         ));
     }
     if let Some(delivery) = net.delivery {
-        let delivery_text = crate::format_bitrate(iroh_live_media::Bitrate::from_bps(delivery));
+        let delivery_text = crate::format_bitrate(moq_net::bandwidth::Rate::from_bps(delivery));
         parts.push(format!("bw:{delivery_text}"));
         lines.push(Line::metric(
             "net.delivery",
@@ -828,7 +828,7 @@ fn net_publish(stats: &PublishStats) -> Section {
         );
     }
     let bps: u64 = rates.iter().sum();
-    let total = crate::format_bitrate(iroh_live_media::Bitrate::from_bps(bps));
+    let total = crate::format_bitrate(moq_net::bandwidth::Rate::from_bps(bps));
     let lines = vec![
         Line::metric(
             "net.out",

@@ -238,7 +238,7 @@ async fn announced_at(origin: &origin::Producer, path: &str) -> moq_net::broadca
 
 /// Publishes a generated video broadcast as `name` on `live`.
 fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::LocalBroadcast {
-    use iroh_live_media::{VideoEncoding, VideoRendition, VideoSource, video};
+    use iroh_live::media::{VideoEncoding, VideoRendition, VideoSource, video};
     let broadcast = iroh_live::LocalBroadcast::new();
     let source = VideoSource::test_pattern(
         video::Size::new(320, 240),
@@ -363,7 +363,7 @@ async fn iroh_publish_iroh_subscribe() {
     .expect("subscribe");
 
     let player = sub
-        .play(iroh_live_media::PlayerConfig::default())
+        .play(iroh_live::media::PlayerConfig::default())
         .expect("play");
     let frame = tokio::time::timeout(TIMEOUT, player.video().next())
         .await
@@ -597,7 +597,7 @@ async fn start_publisher(
 ) -> (
     iroh::Endpoint,
     iroh_live::Live,
-    iroh_live_media::LocalBroadcast,
+    iroh_live::media::LocalBroadcast,
     iroh_live::BroadcastTicket,
 ) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -1002,7 +1002,7 @@ async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
 #[tokio::test]
 #[serial]
 async fn a_relay_served_subscription_carries_link_samples() {
-    use iroh_live_media::PlayerConfig;
+    use iroh_live::media::PlayerConfig;
     use iroh_moq::{LinkKind, Reach, RelayOffer};
 
     let _ = tracing_subscriber::fmt::try_init();

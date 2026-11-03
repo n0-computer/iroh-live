@@ -1,7 +1,7 @@
 //! Live audio and video for iroh-live: sources, broadcasts and players.
 //!
-//! The codecs and devices come from `moq_video` and `moq_audio`, re-exported
-//! as [`video`] and [`audio`]. This crate adds what a live app needs on top:
+//! The codecs and devices come from `moq_video` and `moq_audio`, which callers
+//! name directly. This crate adds what a live app needs on top:
 //! a broadcast that encodes one source into several renditions, and a player
 //! that picks the rendition the link can carry and keeps audio and video in
 //! step.
@@ -19,8 +19,8 @@
 //! # async fn example() -> Result<(), iroh_live_media::Error> {
 //! use iroh_live_media::{
 //!     LocalBroadcast, PlayerConfig, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource,
-//!     video,
 //! };
+//! use moq_video as video;
 //!
 //! let source = VideoSource::test_pattern(
 //!     video::Size::new(1280, 720),
@@ -48,12 +48,12 @@
 //!   running on its own thread.
 //! - [`LocalBroadcast`]: encodes one video source into a ladder of renditions,
 //!   and one audio source.
-//! - [`RemoteBroadcast`]: a subscribed broadcast and its [`Catalog`].
+//! - [`RemoteBroadcast`]: a subscribed broadcast and its [`Catalog`] (hang's).
 //!   [`RemoteBroadcast::play`] starts a [`Player`].
 //! - [`VideoFrames`]: the frame stream every renderer reads, from a player or
 //!   from a source's preview.
-//! - [`AudioOutput`]: an opened speaker. Players play through it, and a
-//!   microphone can cancel its echo.
+//! - [`AudioTarget`]: where a player's audio goes, a `moq_audio::playback::Engine`
+//!   or nowhere. A microphone can cancel the echo of an engine's mix.
 //!
 //! A source fails where it opens: `VideoSource::capture` returns once the
 //! device produced a frame. A microphone is different, because moq-audio opens
@@ -72,8 +72,6 @@
 //! |---|---|---|
 //! | `VideoSource::capture`, `VideoSource::rpicam`, `EncodedVideoSource::rpicam`, [`AudioSource::file`] | yes | stops the thread or subprocess and releases the device |
 //! | `AudioSource::microphone` | yes | nothing is open yet |
-//! | `AudioOutput::open`, `AudioOutput::devices` | yes | closes the device, or abandons the query |
-//! | `AudioOutput::switch` | yes | the switch still completes, only its result is lost |
 //! | [`VideoFrames::next`], [`FrameSender::closed`], [`LocalBroadcast::closed`], [`RemoteBroadcast::closed`] | yes | loses nothing |
 //! | [`Player::wait_for_rendition`] | yes | the switch continues |
 //! | [`Recording::wait`], [`Recording::stop`] | yes, while the [`Recording`] is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
@@ -81,7 +79,6 @@
 mod catalog;
 mod error;
 mod network;
-mod output;
 mod player;
 mod publish;
 mod record;
@@ -93,20 +90,11 @@ use moq_ext_sources::frames;
 #[cfg(feature = "capture")]
 use moq_ext_sources::local_task;
 
-/// The upstream audio stack: capture, encode, decode and playback.
-pub use moq_audio as audio;
-/// A rate in bits per second, as moq-net measures it.
-pub use moq_net::bandwidth::Rate as Bitrate;
-/// The upstream video stack: capture, encode, decode, render and
-/// [`Frame`](moq_video::Frame).
-pub use moq_video as video;
-
 pub use self::{
-    catalog::Catalog,
+    catalog::VideoRenditions,
     error::{Closed, Error, SwitchError},
     network::NetworkSample,
-    output::AudioOutput,
-    player::{Adaptation, Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
+    player::{Adaptation, AudioTarget, Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
     publish::{
         AudioEncoding, LocalBroadcast, PublishStatus, RenditionState, SlotState, VideoEncoding,
         VideoRendition,
@@ -118,6 +106,7 @@ pub use self::{
         PublishStats, VideoPlaybackStats,
     },
 };
+pub use hang::catalog::Catalog;
 #[cfg(feature = "capture")]
 pub use moq_ext_sources::MicrophoneConfig;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]

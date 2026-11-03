@@ -19,7 +19,8 @@ use moq_ext_adaptive::{
 
 use super::{Controls, Latency, PlayerStatus, RenditionMode};
 use crate::{
-    Catalog, RemoteBroadcast, SlotState, error::Error, publish::status::send_if_changed, video,
+    RemoteBroadcast, SlotState, catalog::VideoRenditions as _, error::Error,
+    publish::status::send_if_changed,
 };
 
 /// What the decoder of a target is built with.
@@ -29,7 +30,7 @@ pub(crate) struct DecodeSettings {
     #[debug(skip)]
     pub consumer: moq_net::broadcast::Consumer,
     /// The backend to open.
-    pub decoder: video::decode::Kind,
+    pub decoder: moq_video::decode::Kind,
     /// The oldest media still worth decoding.
     pub max_age: Duration,
 }
@@ -105,7 +106,7 @@ pub(crate) struct Inputs {
 /// The decoder configuration a target was last built under.
 #[derive(Debug, Clone, PartialEq)]
 struct Config {
-    decoder: video::decode::Kind,
+    decoder: moq_video::decode::Kind,
     max_age: Duration,
     epoch: u64,
     /// Bumped to rebuild a video that ended.
@@ -284,7 +285,7 @@ pub(crate) async fn run(inputs: Inputs) {
             .map(|desired| desired.target.rendition.clone())
             .or_else(|| on_screen.clone());
 
-        let rungs = catalog.rungs();
+        let rungs = crate::catalog::rungs(&catalog);
         let chosen = moq_ext_adaptive::choose(
             &mode_of(&mode),
             &rungs,
@@ -388,7 +389,7 @@ fn mode_of(mode: &RenditionMode) -> Mode {
 }
 
 /// Explains a pin that could not be honoured.
-fn pin_error(problem: PinProblem, catalog: &Catalog) -> Arc<Error> {
+fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error> {
     Arc::new(match problem {
         PinProblem::Excluded(name) => Error::decoder_msg(format!(
             "the decoder for {name} failed; playing another rendition until it is retried"
@@ -419,8 +420,8 @@ mod tests {
         broadcast
             .set_video(
                 crate::VideoSource::test_pattern(
-                    video::Size::new(320, 180),
-                    video::FrameRate::new(30, 1).expect("a valid rate"),
+                    moq_video::Size::new(320, 180),
+                    moq_video::FrameRate::new(30, 1).expect("a valid rate"),
                 ),
                 crate::VideoEncoding {
                     prefer_hardware: false,
@@ -437,7 +438,7 @@ mod tests {
             controls: Arc::new(Controls {
                 mode: watch::Sender::new(RenditionMode::auto()),
                 latency: watch::Sender::new(Latency::default()),
-                decoder: watch::Sender::new(video::decode::Kind::Software),
+                decoder: watch::Sender::new(moq_video::decode::Kind::Software),
                 volume: watch::Sender::new(1.0),
             }),
             status: watch::Sender::default(),

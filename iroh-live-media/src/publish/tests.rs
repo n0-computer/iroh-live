@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{AudioEncoding, audio};
+use crate::AudioEncoding;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -29,7 +29,7 @@ async fn a_replacement_waits_for_the_track_names() {
     for target in [&broadcast, &control] {
         target
             .set_audio(
-                AudioSource::tone(440.0, audio::Layout::Mono),
+                AudioSource::tone(440.0, moq_audio::Layout::Mono),
                 AudioEncoding::voice(),
             )
             .expect("a valid encoding");
@@ -54,7 +54,7 @@ async fn a_replacement_waits_for_the_track_names() {
 #[tokio::test]
 async fn two_audio_sets_in_a_row_keep_publishing() {
     let broadcast = LocalBroadcast::new();
-    let tone = || AudioSource::tone(440.0, audio::Layout::Mono);
+    let tone = || AudioSource::tone(440.0, moq_audio::Layout::Mono);
     broadcast
         .set_audio(tone(), AudioEncoding::voice())
         .expect("valid");
@@ -86,8 +86,8 @@ async fn two_audio_sets_in_a_row_keep_publishing() {
 #[cfg(all(feature = "capture", feature = "aec"))]
 #[tokio::test]
 async fn a_microphone_publication_asks_for_its_canceller() {
-    use crate::{AudioOutput, MicrophoneConfig};
-    let output = AudioOutput::null();
+    use crate::{MicrophoneConfig, player::AudioTarget};
+    let output = AudioTarget::null();
     let config = MicrophoneConfig {
         echo_reference: Some(std::sync::Arc::new(output.clone())),
         ..MicrophoneConfig::default()
@@ -114,7 +114,7 @@ async fn clearing_audio_turns_it_off() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono),
             AudioEncoding::voice(),
         )
         .expect("valid");
@@ -130,7 +130,7 @@ async fn closing_finishes_the_broadcast() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono),
             AudioEncoding::voice(),
         )
         .expect("valid");
@@ -145,7 +145,7 @@ async fn closing_finishes_the_broadcast() {
         .expect("subscribers saw the end");
     assert!(matches!(
         broadcast.set_audio(
-            AudioSource::tone(1.0, audio::Layout::Mono),
+            AudioSource::tone(1.0, moq_audio::Layout::Mono),
             AudioEncoding::voice()
         ),
         Err(Error::Closed { .. })
@@ -157,7 +157,7 @@ async fn closing_finishes_the_broadcast() {
 async fn a_pushed_audio_source_ends_when_its_senders_go() {
     let format = crate::AudioFormat {
         sample_rate: 48_000,
-        layout: audio::Layout::Mono,
+        layout: moq_audio::Layout::Mono,
     };
     let (sender, source) = AudioSource::push(format);
     let broadcast = LocalBroadcast::new();
@@ -167,7 +167,7 @@ async fn a_pushed_audio_source_ends_when_its_senders_go() {
     audio_becomes(&broadcast, SlotState::Running).await;
     let silence = bytes::Bytes::from(vec![0u8; 960 * 4]);
     sender
-        .push(audio::Frame::new(
+        .push(moq_audio::Frame::new(
             silence,
             moq_net::Timestamp::from_micros(0).expect("0"),
         ))

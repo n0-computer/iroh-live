@@ -12,12 +12,13 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
-use iroh_live::{Audience, BroadcastTicket, CALL, Live, Publication, Reach, Subscription};
-use iroh_live_media::{
-    AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, NetworkSample, Player,
-    PlayerConfig, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
+use iroh_live::media::{
+    AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player, PlayerConfig,
+    RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
     video::{FrameRate, Size, decode},
 };
+use iroh_live::{Audience, BroadcastTicket, CALL, Live, Publication, Reach, Subscription};
+use moq_net::bandwidth::Rate;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher as _};
 use tracing::{Instrument, info_span};
@@ -239,7 +240,7 @@ async fn publish_subscribe_audio() {
 
     let subscriber = Live::builder(endpoint().await).spawn();
     let remote = subscribe(&subscriber, &publisher, "av-stream").await;
-    let output = AudioOutput::null();
+    let output = AudioTarget::null();
     let player = remote
         .play(PlayerConfig {
             audio: Some(output.clone()),
@@ -272,12 +273,12 @@ async fn adaptive_rendition_switching() {
             VideoSource::test_pattern(Size::new(640, 480), FrameRate::new(30, 1).expect("valid")),
             VideoEncoding::ladder([
                 VideoRendition {
-                    bitrate: Some(Bitrate::from_bps(2_000_000)),
+                    bitrate: Some(Rate::from_bps(2_000_000)),
                     ..VideoRendition::new("high")
                 },
                 VideoRendition {
                     size: Some(Size::new(320, 240)),
-                    bitrate: Some(Bitrate::from_bps(200_000)),
+                    bitrate: Some(Rate::from_bps(200_000)),
                     ..VideoRendition::new("low")
                 },
             ]),

@@ -36,7 +36,7 @@ pub use egui_wgpu;
 use iroh_live_media::VideoFrames;
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
-pub fn format_bitrate(rate: iroh_live_media::Bitrate) -> String {
+pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {
     let bps = rate.as_bps() as f64;
     if bps >= 1_000_000.0 {
         format!("{:.1} Mbps", bps / 1_000_000.0)
@@ -48,10 +48,10 @@ pub fn format_bitrate(rate: iroh_live_media::Bitrate) -> String {
 }
 
 /// The `wgpu` crate the renderer links, re-exported from
-/// [`iroh_live_media::video::render`].
+/// [`moq_video::render`].
 ///
 /// Use it to name `wgpu` types, so they always match the renderer's version.
-pub use iroh_live_media::video::render::wgpu;
+pub use moq_video::render::wgpu;
 
 /// Renderer that draws decoded frames into an egui texture.
 ///
@@ -59,7 +59,7 @@ pub use iroh_live_media::video::render::wgpu;
 #[derive(derive_more::Debug)]
 struct EguiVideoRenderer {
     #[debug(skip)]
-    renderer: iroh_live_media::video::render::Renderer,
+    renderer: moq_video::render::Renderer,
     #[debug(skip)]
     render_state: egui_wgpu::RenderState,
     /// The registered texture and its size, once a frame is drawn.
@@ -68,11 +68,11 @@ struct EguiVideoRenderer {
 
 impl EguiVideoRenderer {
     /// Creates a renderer bound to `render_state`'s device and queue.
-    fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, iroh_live_media::video::Error> {
-        let renderer = iroh_live_media::video::render::Renderer::new(
+    fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, moq_video::Error> {
+        let renderer = moq_video::render::Renderer::new(
             &render_state.device,
             &render_state.queue,
-            iroh_live_media::video::render::Config::new(),
+            moq_video::render::Config::new(),
         )?;
         Ok(Self {
             renderer,
@@ -82,10 +82,7 @@ impl EguiVideoRenderer {
     }
 
     /// Draws `frame` and registers or updates its egui texture.
-    fn render(
-        &mut self,
-        frame: &iroh_live_media::video::Frame,
-    ) -> Result<(), iroh_live_media::video::Error> {
+    fn render(&mut self, frame: &moq_video::Frame) -> Result<(), moq_video::Error> {
         let texture = self.renderer.render(frame)?;
         let view = texture.create_view(&Default::default());
         let dims = (texture.width(), texture.height());
@@ -165,7 +162,7 @@ impl FrameView {
     ///
     /// Keeps the old picture if drawing fails, and warns once per run of
     /// failures. A view without a renderer ignores the frame.
-    pub fn render_frame(&mut self, frame: &iroh_live_media::video::Frame) {
+    pub fn render_frame(&mut self, frame: &moq_video::Frame) {
         let Some(renderer) = &mut self.renderer else {
             return;
         };

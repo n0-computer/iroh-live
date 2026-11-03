@@ -22,12 +22,13 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter, SlotState},
 };
+use moq_video::encode;
+
 use crate::{
     EncodedVideoSource, VideoSource,
     error::Error,
     frames::VideoFrames,
     stats::{Cell, EncodeStats, RateMeter, Smoothed},
-    video::{self, encode},
 };
 
 /// The name of the one rendition a pre-encoded source publishes.
@@ -219,7 +220,7 @@ fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Opt
 /// Returns the gap between kept frames for a rendition slower than its source.
 fn frame_interval(
     rendition: &VideoRendition,
-    source: video::FrameRate,
+    source: moq_video::FrameRate,
 ) -> Option<std::time::Duration> {
     let rate = rendition.rate?;
     (rate.as_f64() < source.as_f64())
@@ -246,7 +247,7 @@ fn falls_back(kind: &encode::Kind) -> bool {
 /// Switches `config` to the software encoder if its backend allows a fallback.
 ///
 /// Returns whether it switched.
-fn fall_back(config: &mut encode::Config, err: &video::Error) -> bool {
+fn fall_back(config: &mut encode::Config, err: &moq_video::Error) -> bool {
     if !falls_back(&config.kind) {
         return false;
     }
@@ -256,10 +257,10 @@ fn fall_back(config: &mut encode::Config, err: &video::Error) -> bool {
 }
 
 /// Converts an encoder failure into the crate's error.
-fn encode_error(err: video::Error) -> Error {
+fn encode_error(err: moq_video::Error) -> Error {
     match err {
-        video::Error::NoEncoder(tried) => n0_error::e!(Error::NoEncoder { codec: tried }),
-        video::Error::UnknownEncoder { codec, .. } => n0_error::e!(Error::NoEncoder {
+        moq_video::Error::NoEncoder(tried) => n0_error::e!(Error::NoEncoder { codec: tried }),
+        moq_video::Error::UnknownEncoder { codec, .. } => n0_error::e!(Error::NoEncoder {
             codec: format!("{codec:?}")
         }),
         other => Error::encoder(other),
@@ -551,7 +552,7 @@ mod tests {
 
     #[test]
     fn a_slower_rendition_keeps_every_other_frame() {
-        let fps = |n| video::FrameRate::new(n, 1).expect("valid");
+        let fps = |n| moq_video::FrameRate::new(n, 1).expect("valid");
         let half = VideoRendition {
             rate: Some(fps(15)),
             ..VideoRendition::new("half")

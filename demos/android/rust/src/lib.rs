@@ -21,9 +21,9 @@ use iroh::EndpointId;
 use iroh_live::{
     Audience, BroadcastTicket, CALL, EndpointOptions, Live, Publication, Reach,
     media::{
-        AudioEncoding, AudioOutput, AudioSource, Catalog, FrameSender, LocalBroadcast,
+        AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
-        VideoFormat, VideoFrames, VideoRendition, VideoSource,
+        VideoFormat, VideoFrames, VideoRendition, VideoRenditions as _, VideoSource,
     },
 };
 use iroh_live_media_android::{handle, renderer::AndroidRenderer};
@@ -133,7 +133,7 @@ impl Drop for Offer {
 }
 
 /// Subscribes to `peer`'s side of a call and plays it.
-async fn play_call(live: &Live, peer: EndpointId, output: &AudioOutput) -> Result<Player> {
+async fn play_call(live: &Live, peer: EndpointId, output: &AudioTarget) -> Result<Player> {
     let path = BroadcastTicket::new(peer, CALL).path();
     let subscription = live.moq().subscribe(path, Reach::Direct(peer)).await?;
     play(&live.remote_broadcast(&subscription), output)
@@ -154,7 +154,7 @@ struct SessionHandle {
     ///
     /// `None` in the offline pipelines and in a publish-only session.
     #[allow(dead_code, reason = "dropping it closes the speaker")]
-    output: Option<AudioOutput>,
+    output: Option<AudioTarget>,
     /// The broadcast this node publishes, for a subscriber or a call.
     broadcast: Option<LocalBroadcast>,
     /// Where the camera frames Kotlin pushes go.
@@ -231,7 +231,7 @@ impl SessionHandle {
     }
 
     /// Returns the newest catalog of the watched broadcast, if one arrived.
-    fn catalog(&self) -> Option<Catalog> {
+    fn catalog(&self) -> Option<std::sync::Arc<Catalog>> {
         self.player.as_ref()?.broadcast().catalog().borrow().clone()
     }
 }
@@ -288,7 +288,7 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Fra
 /// A call passes its speaker here, or a phone on speaker sends the peer's
 /// voice straight back. If the microphone does not open, the session goes on
 /// with video only.
-async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) {
+async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) {
     let config = MicrophoneConfig {
         echo_reference: echo.map(|output| std::sync::Arc::new(output.clone()) as _),
         ..MicrophoneConfig::default()
@@ -302,18 +302,18 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) 
 }
 
 /// Opens the default speaker, or an output that discards audio if that fails.
-async fn open_output() -> AudioOutput {
-    match AudioOutput::open(None).await {
-        Ok(output) => output,
+async fn open_output() -> AudioTarget {
+    match iroh_live::media::audio::playback::Engine::open(Default::default()).await {
+        Ok(engine) => engine.into(),
         Err(err) => {
             warn!("playing audio nowhere, the speaker did not open: {err:#}");
-            AudioOutput::null()
+            AudioTarget::null()
         }
     }
 }
 
 /// Starts playing `remote`, with its audio through `output`.
-fn play(remote: &RemoteBroadcast, output: &AudioOutput) -> Result<Player> {
+fn play(remote: &RemoteBroadcast, output: &AudioTarget) -> Result<Player> {
     Ok(remote.play(PlayerConfig {
         audio: Some(output.clone()),
         ..PlayerConfig::default()
@@ -487,7 +487,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 async fn accept_one(
     live: Live,
     broadcast: LocalBroadcast,
-    output: AudioOutput,
+    output: AudioTarget,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
     let me = live.endpoint().id();

@@ -268,7 +268,7 @@ async fn setup_send(live: &Live, config: &SendConfig) -> Result<(LocalBroadcast,
 async fn setup_recv(
     live: &Live,
     config: &RecvConfig,
-    output: Option<&media::AudioOutput>,
+    output: Option<&media::AudioTarget>,
 ) -> Result<(Receiver, Option<(Recording, std::path::PathBuf)>)> {
     let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
@@ -307,7 +307,7 @@ fn play_audio(
     sub: &Subscribed,
     catalog: &media::Catalog,
     name: &str,
-    output: &media::AudioOutput,
+    output: &media::AudioTarget,
 ) -> Option<Player> {
     if catalog.audio.renditions.is_empty() {
         info!(name, "the broadcast carries no audio");

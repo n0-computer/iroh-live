@@ -10,9 +10,10 @@
 use std::time::Duration;
 
 use iroh_live::media::{
-    Bitrate, VideoEncoding, VideoRendition,
+    VideoEncoding, VideoRendition,
     video::{self, Size},
 };
+use moq_net::bandwidth::Rate;
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -320,7 +321,7 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
             // with each rung's bitrate, so the rungs must differ.
             rendition.bitrate = args
                 .bitrate
-                .map(|bitrate| Bitrate::from_bps(scaled_bitrate(bitrate, rung.size, largest)));
+                .map(|bitrate| Rate::from_bps(scaled_bitrate(bitrate, rung.size, largest)));
             rendition
         })
         .collect()

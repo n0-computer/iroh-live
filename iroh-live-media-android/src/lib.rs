@@ -7,7 +7,7 @@
 //! - [`handle`] passes an `Arc<Mutex<T>>` across JNI as an `i64`.
 //!
 //! `renderer` only exists on Android. Camera frames reach a broadcast
-//! through `iroh_live_media::VideoSource::push`.
+//! through `iroh_live::media::VideoSource::push`.
 
 #[cfg(target_os = "android")]
 mod egl;

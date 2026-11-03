@@ -4,12 +4,13 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, MicrophoneConfig,
-    VideoFormat, VideoSource, audio,
+    AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, MicrophoneConfig, VideoFormat,
+    VideoSource, audio,
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::media::{EncodedVideoSource, RpicamConfig};
+use moq_net::bandwidth::Rate;
 use n0_error::{Result, anyerr};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -70,7 +71,7 @@ enum Video {
 pub async fn configure(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
-    output: Option<&AudioOutput>,
+    output: Option<&AudioTarget>,
 ) -> Result<Opened> {
     let video = configure_video(broadcast, args).await?;
     let audio = match audio_source(&args.audio_source()?, output).await? {
@@ -210,7 +211,7 @@ async fn rpicam_source(
         RpicamMode::Encoded => {
             check_rpicam_flags(args)?;
             if let Some(bitrate) = args.bitrate {
-                config.bitrate = Bitrate::from_bps(bitrate);
+                config.bitrate = Rate::from_bps(bitrate);
             }
             Ok(Video::Encoded(EncodedVideoSource::rpicam(config).await?))
         }
@@ -316,7 +317,7 @@ fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
 /// Returns the config for microphone `id`, cancelling the echo of `output`.
 ///
 /// Without the `aec` feature, it warns and publishes the microphone as is.
-pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> MicrophoneConfig {
+pub fn microphone_config(id: Option<String>, output: Option<&AudioTarget>) -> MicrophoneConfig {
     let mut config = MicrophoneConfig::default();
     if let Some(id) = id {
         config = config.with_device(id);
@@ -341,7 +342,7 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> Mi
 /// Opens the audio source `spec` names, or `None` for `--audio none`.
 async fn audio_source(
     spec: &AudioSourceSpec,
-    output: Option<&AudioOutput>,
+    output: Option<&AudioTarget>,
 ) -> Result<Option<AudioSource>> {
     let source = match spec {
         AudioSourceSpec::None => return Ok(None),
@@ -371,7 +372,7 @@ fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
         (AudioCodecArg::Opus, false) => AudioEncoding::music(),
     };
     if let Some(bps) = args.audio_bitrate {
-        encoding.bitrate = Some(Bitrate::from_bps(bps.into()));
+        encoding.bitrate = Some(Rate::from_bps(bps.into()));
     }
     encoding
 }
@@ -389,7 +390,7 @@ mod tests {
     #[cfg(feature = "aec")]
     #[test]
     fn the_microphone_cancels_the_output_it_is_given() {
-        let output = AudioOutput::null();
+        let output = AudioTarget::null();
         let config = microphone_config(None, Some(&output));
         assert!(
             config.echo_reference.is_some(),

@@ -1,8 +1,8 @@
 //! Playback helpers shared by the commands that play media.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use iroh_live::media::{AudioOutput, Catalog, RemoteBroadcast};
+use iroh_live::media::{AudioTarget, Catalog, RemoteBroadcast};
 use n0_error::{Result, anyerr};
 use tracing::info;
 
@@ -12,7 +12,7 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 /// Waits for the broadcast's first catalog.
 ///
 /// Fails if the broadcast closes first or sends none in time.
-pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
+pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
     let mut catalog = broadcast.catalog();
     let first = async {
         // A broadcast that closes sends no catalog update to wake on.
@@ -41,26 +41,24 @@ pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
     clippy::unused_async,
     reason = "a build without playback opens nothing, which is not async"
 )]
-pub async fn output(device: Option<String>) -> Result<AudioOutput> {
+pub async fn output(device: Option<String>) -> Result<AudioTarget> {
     #[cfg(feature = "playback")]
     {
         if let Some(device) = device {
-            let output = AudioOutput::open(Some(device.clone()))
-                .await
-                .map_err(|err| {
-                    anyerr!(
-                        "cannot open audio output '{device}': {err:#}. \
+            let output = open_engine(Some(device.clone())).await.map_err(|err| {
+                anyerr!(
+                    "cannot open audio output '{device}': {err:#}. \
                      Run `irl devices` for the ids this machine accepts"
-                    )
-                })?;
+                )
+            })?;
             info!(%device, "audio output selected");
-            return Ok(output);
+            return Ok(output.into());
         }
-        match AudioOutput::open(None).await {
-            Ok(output) => Ok(output),
+        match open_engine(None).await {
+            Ok(output) => Ok(output.into()),
             Err(err) => {
                 tracing::warn!(error = %format!("{err:#}"), "no audio output, playing silently");
-                Ok(AudioOutput::null())
+                Ok(AudioTarget::null())
             }
         }
     }
@@ -68,6 +66,16 @@ pub async fn output(device: Option<String>) -> Result<AudioOutput> {
     {
         let _ = device;
         info!("this build has no playback support, so audio is decoded and discarded");
-        Ok(AudioOutput::null())
+        Ok(AudioTarget::null())
     }
+}
+
+/// Opens the speaker engine for `device`, or the system default for `None`.
+#[cfg(feature = "playback")]
+async fn open_engine(
+    device: Option<String>,
+) -> Result<iroh_live::media::audio::playback::Engine, iroh_live::media::audio::Error> {
+    let mut config = iroh_live::media::audio::playback::Config::default();
+    config.device = device;
+    iroh_live::media::audio::playback::Engine::open(config).await
 }

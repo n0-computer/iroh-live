@@ -18,7 +18,7 @@ use super::{
 use moq_ext_sources::AudioKind;
 
 use crate::{
-    AudioFormat, AudioSource, audio,
+    AudioFormat, AudioSource,
     error::Error,
     stats::{AudioEncodeStats, Cell},
 };
@@ -78,17 +78,17 @@ async fn pcm(
     job: &Job,
     stats: &Cell<AudioEncodeStats>,
     format: AudioFormat,
-    mut frames: broadcast::Receiver<audio::Frame>,
+    mut frames: broadcast::Receiver<moq_audio::Frame>,
     encoding: &AudioEncoding,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
-    let input = audio::encode::Input::new(format.sample_rate, format.layout);
-    let mut options = audio::encode::Options::default();
+    let input = moq_audio::encode::Input::new(format.sample_rate, format.layout);
+    let mut options = moq_audio::encode::Options::default();
     options.track = Some(encoding.track_name());
     options.config = encoding.settings(Some(format));
     let mut broadcast = job.producer.clone();
     let mut encoder =
-        audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
+        moq_audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
             .map_err(Error::encoder)?;
     info!(track = %encoding.track_name(), rate = format.sample_rate, "publishing audio");
     job.reporter.slot(SlotState::Running);
@@ -130,12 +130,12 @@ async fn pcm(
 #[cfg(feature = "capture")]
 async fn microphone(
     job: &Job,
-    capture: audio::capture::Config,
+    capture: moq_audio::capture::Config,
     encoding: &AudioEncoding,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
     let track = encoding.track_name();
-    let mut options = audio::encode::Capture::default();
+    let mut options = moq_audio::encode::Capture::default();
     options.capture = capture;
     options.encode.track = Some(track.clone());
     options.encode.config = encoding.settings(None);
@@ -149,7 +149,7 @@ async fn microphone(
         driver_stop.clone(),
         move |stop| async move {
             let (publication, driver) =
-                match audio::encode::Control::new(broadcast, catalog, options) {
+                match moq_audio::encode::Control::new(broadcast, catalog, options) {
                     Ok(created) => created,
                     Err(err) => {
                         let _ = handle_tx.send(Err(Error::device(err)));
@@ -182,7 +182,7 @@ async fn microphone(
 /// Reports the microphone's state changes until it ends or the slot stops.
 #[cfg(feature = "capture")]
 async fn follow(
-    handle: oneshot::Receiver<Result<audio::encode::Control, Error>>,
+    handle: oneshot::Receiver<Result<moq_audio::encode::Control, Error>>,
     reporter: &Reporter,
     track: &str,
     encoding: &AudioEncoding,
@@ -203,12 +203,12 @@ async fn follow(
             return Ok(());
         };
         match state.status() {
-            audio::encode::Status::Starting => reporter.slot(SlotState::Starting),
-            audio::encode::Status::Waiting | audio::encode::Status::Stopped => {
+            moq_audio::encode::Status::Starting => reporter.slot(SlotState::Starting),
+            moq_audio::encode::Status::Waiting | moq_audio::encode::Status::Stopped => {
                 reporter.slot(SlotState::Running);
                 reporter.rendition(track, RenditionState::Idle);
             }
-            audio::encode::Status::Live => {
+            moq_audio::encode::Status::Live => {
                 reporter.slot(SlotState::Running);
                 reporter.rendition(
                     track,
@@ -217,7 +217,7 @@ async fn follow(
                     },
                 );
             }
-            audio::encode::Status::Failed => {
+            moq_audio::encode::Status::Failed => {
                 let reason = state
                     .failure()
                     .map(ToString::to_string)
@@ -225,7 +225,7 @@ async fn follow(
                 warn!(%reason, "microphone failed; moq-audio retries when it can");
                 reporter.slot(SlotState::Failed(Arc::new(Error::device_msg(reason))));
             }
-            audio::encode::Status::Ended => return Ok(()),
+            moq_audio::encode::Status::Ended => return Ok(()),
             _ => {}
         }
     }

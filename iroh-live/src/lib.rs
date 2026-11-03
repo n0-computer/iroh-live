@@ -82,11 +82,16 @@ mod live;
 mod network;
 mod ticket;
 
+/// Sources, broadcasts and players, with the codec stacks they sit on.
 #[cfg(feature = "media")]
-pub use iroh_live_media as media;
+pub mod media {
+    pub use iroh_live_media::*;
+    pub use moq_audio as audio;
+    pub use moq_video as video;
+}
 #[cfg(feature = "media")]
 pub use iroh_live_media::{
-    AudioOutput, AudioSource, Latency, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
+    AudioSource, AudioTarget, Latency, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
     RenditionMode, VideoSource,
 };
 #[cfg(feature = "rooms")]

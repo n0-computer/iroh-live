@@ -1,127 +1,85 @@
-//! Audio outputs: an opened speaker, or one that discards.
+//! Where a player's audio goes: a `moq_audio::playback::Engine`, or nowhere.
 //!
-//! The application opens an output and passes it to every
-//! [`PlayerConfig`](crate::PlayerConfig) whose audio should play there, and to
-//! the `MicrophoneConfig` whose echo it should cancel. This keeps the choice of
-//! device explicit.
+//! The application opens an [`Engine`](moq_audio::playback::Engine) and passes
+//! it to every [`PlayerConfig`](crate::PlayerConfig) whose audio should play
+//! there, and to the `MicrophoneConfig` whose echo it should cancel. This keeps
+//! the choice of device explicit. [`AudioTarget::null`] is the output for
+//! headless runs and tests.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[cfg(feature = "playback")]
-use crate::audio;
+use moq_audio::playback;
+
 use crate::{AudioFormat, error::Error};
 
-/// An opened audio output: one device and one mixer, or nothing at all.
+/// Where a player writes its audio: an opened device engine, or nowhere.
 ///
-/// Every player writing to it is mixed into one device stream. Cloning is
-/// cheap. The device closes when the last clone and the last player using it
-/// are gone.
+/// Every player writing to one engine is mixed into one device stream. Cloning
+/// is cheap. The engine closes when the last clone and the last player using
+/// it are gone.
 #[derive(Debug, Clone)]
-pub struct AudioOutput {
-    inner: Arc<Inner>,
+pub struct AudioTarget {
+    inner: Inner,
     /// Counts canceller requests, so a test can see them without a device.
     #[cfg(all(test, feature = "aec"))]
-    cancellers: Arc<std::sync::atomic::AtomicU64>,
+    cancellers: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Clone)]
 enum Inner {
     #[cfg(feature = "playback")]
-    Device(#[debug(skip)] audio::playback::Engine),
+    Engine(#[debug(skip)] playback::Engine),
     Null,
 }
 
-impl AudioOutput {
-    /// Opens an output device, or the system default when `device` is `None`.
-    ///
-    /// `device` is an id as [`devices`](Self::devices) reports it, such as
-    /// `alsa:hw:0,0`. If the device fails later, it is reopened with backoff
-    /// and players keep writing.
-    ///
-    /// Cancellation safe. Dropping the future closes the device.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Device`] if there is no such device, or no device at all.
-    #[cfg(feature = "playback")]
-    pub async fn open(device: Option<String>) -> Result<Self, Error> {
-        let mut config = audio::playback::Config::default();
-        config.device = device;
-        let engine = audio::playback::Engine::open(config)
-            .await
-            .map_err(Error::device)?;
-        Ok(Self {
-            inner: Arc::new(Inner::Device(engine)),
+#[cfg(feature = "playback")]
+impl From<playback::Engine> for AudioTarget {
+    fn from(engine: playback::Engine) -> Self {
+        Self {
+            inner: Inner::Engine(engine),
             #[cfg(all(test, feature = "aec"))]
-            cancellers: Arc::default(),
-        })
+            cancellers: Default::default(),
+        }
     }
+}
 
-    /// Returns an output that discards what it is given, for headless use and tests.
+impl AudioTarget {
+    /// Returns a target that discards what it is given, for headless use and tests.
     ///
     /// Players still decode their audio and report it in their stats. Nothing
     /// is queued at a speaker, so audio is not paced and video is held for the
-    /// jitter allowance alone. A microphone asked to cancel a null output's
+    /// jitter allowance alone. A microphone asked to cancel a null target's
     /// echo gets no canceller.
     pub fn null() -> Self {
         Self {
-            inner: Arc::new(Inner::Null),
+            inner: Inner::Null,
             #[cfg(all(test, feature = "aec"))]
-            cancellers: Arc::default(),
+            cancellers: Default::default(),
         }
     }
 
-    /// Moves every player on this output to another device, or to the default for `None`.
-    ///
-    /// Players survive the move and are resampled to the new device's rate.
-    ///
-    /// Cancellation safe. The switch is queued before the first wait and
-    /// completes on the output's own thread, so dropping the future only loses
-    /// its result.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the device cannot be opened. The output then plays to no device
-    /// until a later switch succeeds. Fails at once for a [`null`](Self::null)
-    /// output.
+    /// Returns the engine behind this target, `None` for a [null](Self::null) one.
     #[cfg(feature = "playback")]
-    pub async fn switch(&self, device: Option<String>) -> Result<(), Error> {
-        match &*self.inner {
-            Inner::Device(engine) => {
-                let mut config = audio::playback::Config::default();
-                config.device = device;
-                engine.switch(config).await.map_err(Error::device)
-            }
-            Inner::Null => Err(Error::invalid(
-                "a null audio output has no device to switch",
-            )),
+    pub fn engine(&self) -> Option<&playback::Engine> {
+        match &self.inner {
+            Inner::Engine(engine) => Some(engine),
+            Inner::Null => None,
         }
     }
 
-    /// Lists the output devices the host offers.
-    ///
-    /// Cancellation safe. Dropping the future abandons the query.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the host audio API cannot be queried.
-    #[cfg(feature = "playback")]
-    pub async fn devices() -> Result<Vec<audio::playback::Device>, Error> {
-        audio::playback::devices().await.map_err(Error::device)
-    }
-
-    /// Reports whether this output discards what it is given.
+    /// Reports whether this target discards what it is given.
     pub fn is_null(&self) -> bool {
-        matches!(*self.inner, Inner::Null)
+        matches!(self.inner, Inner::Null)
     }
 
     /// Adds a stream to the mix, taking PCM in `format`.
     pub(crate) fn sink(&self, format: AudioFormat) -> Result<OutputSink, Error> {
-        match &*self.inner {
+        match &self.inner {
             #[cfg(feature = "playback")]
-            Inner::Device(engine) => {
-                let mut device_input = audio::playback::Input::default();
-                device_input.format = audio::Format::F32;
+            Inner::Engine(engine) => {
+                let mut device_input = playback::Input::default();
+                device_input.format = moq_audio::Format::F32;
                 device_input.sample_rate = format.sample_rate;
                 device_input.layout = format.layout;
                 let sink = engine.sink(device_input).map_err(Error::device)?;
@@ -134,7 +92,7 @@ impl AudioOutput {
         }
     }
 
-    /// Returns how many echo cancellers were asked of this output.
+    /// Returns how many echo cancellers were asked of this target.
     #[cfg(all(test, feature = "aec"))]
     pub(crate) fn cancellers_requested(&self) -> u64 {
         self.cancellers.load(std::sync::atomic::Ordering::Relaxed)
@@ -142,19 +100,19 @@ impl AudioOutput {
 }
 
 #[cfg(feature = "aec")]
-impl moq_ext_sources::EchoReference for AudioOutput {
-    /// Returns `None` for a null output, which plays nothing and has no echo.
-    fn canceller(&self) -> Result<Option<audio::aec::Control>, moq_ext_sources::Error> {
+impl moq_ext_sources::EchoReference for AudioTarget {
+    /// Returns `None` for a null target, which plays nothing and has no echo.
+    fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, moq_ext_sources::Error> {
         use moq_ext_sources::Error;
         #[cfg(test)]
         self.cancellers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match &*self.inner {
-            Inner::Device(engine) => engine
-                .canceller(audio::aec::Config::default())
+        match &self.inner {
+            Inner::Engine(engine) => engine
+                .canceller(moq_audio::aec::Config::default())
                 .map(Some)
                 .map_err(|err| match err {
-                    audio::Error::Busy(reason) => Error::invalid(format!(
+                    moq_audio::Error::Busy(reason) => Error::invalid(format!(
                         "this output already cancels the echo of another microphone ({reason})"
                     )),
                     other => Error::device(other),
@@ -165,13 +123,13 @@ impl moq_ext_sources::EchoReference for AudioOutput {
 }
 
 #[cfg(all(feature = "capture", not(feature = "aec")))]
-impl moq_ext_sources::EchoReference for AudioOutput {}
+impl moq_ext_sources::EchoReference for AudioTarget {}
 
 /// One player's stream into an output.
 #[derive(derive_more::Debug)]
 pub(crate) enum OutputSink {
     #[cfg(feature = "playback")]
-    Device(#[debug(skip)] Box<audio::playback::Sink>),
+    Device(#[debug(skip)] Box<playback::Sink>),
     Null,
 }
 
@@ -211,7 +169,7 @@ impl OutputSink {
 #[derive(derive_more::Debug, Clone)]
 pub(crate) enum OutputControl {
     #[cfg(feature = "playback")]
-    Device(#[debug(skip)] audio::playback::Control),
+    Device(#[debug(skip)] playback::Control),
     Null,
 }
 
@@ -239,17 +197,18 @@ impl OutputControl {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::audio;
 
     #[test]
     fn a_null_output_takes_anything() {
-        let output = AudioOutput::null();
+        let output = AudioTarget::null();
         assert!(output.is_null());
         let mut sink = output
             .sink(AudioFormat {
                 sample_rate: 48_000,
-                layout: audio::Layout::Stereo,
+                layout: moq_audio::Layout::Stereo,
             })
             .expect("a null sink always opens");
         sink.write(&[0; 64]).expect("discarded");
@@ -264,11 +223,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs an audio output device"]
     async fn echo_cancellation_attaches_the_canceller() {
-        let output = AudioOutput::open(None)
+        let engine = playback::Engine::open(playback::Config::default())
             .await
             .expect("an audio output device");
         let capture = crate::MicrophoneConfig {
-            echo_reference: Some(Arc::new(output.clone())),
+            echo_reference: Some(Arc::new(AudioTarget::from(engine))),
             ..crate::MicrophoneConfig::default()
         }
         .resolve()
@@ -287,7 +246,7 @@ mod tests {
     #[test]
     fn echo_cancellation_without_the_feature_is_refused() {
         let config = crate::MicrophoneConfig {
-            echo_reference: Some(Arc::new(AudioOutput::null().clone())),
+            echo_reference: Some(Arc::new(AudioTarget::null())),
             ..crate::MicrophoneConfig::default()
         };
         assert!(matches!(

@@ -16,8 +16,10 @@ derive_more = { version = "2.1.1", features = ["debug"] }
 egui = { workspace = true }
 egui-wgpu = { workspace = true }
 # No direct `wgpu` dependency: all `wgpu` types come from
-# `iroh_live_media::video::render::wgpu`, so they match the renderer's version.
+# `moq_video::render::wgpu`, so they match the renderer's version.
 iroh-live-media = { workspace = true, features = ["render"] }
+moq-net = { workspace = true }
+moq-video = { workspace = true, features = ["render"] }
 # Runs the task that wakes the window when a frame arrives.
 n0-future = "0.3.2"
 pollster = "1.0"

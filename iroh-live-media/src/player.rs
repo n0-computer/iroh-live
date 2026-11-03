@@ -19,18 +19,21 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::{
-    AudioOutput, RemoteBroadcast, SlotState,
+    RemoteBroadcast, SlotState,
+    catalog::VideoRenditions as _,
     error::{Error, SwitchError},
     frames::{FrameSlot, VideoFrames},
     publish::status::send_if_changed,
     stats::{Cell, FrameTiming, PlaybackStats, Timeline},
-    video,
 };
 
 mod audio;
 mod clock;
+mod output;
 mod select;
 mod video_task;
+
+pub use self::output::AudioTarget;
 
 pub(crate) use self::clock::PlayoutClock;
 pub use moq_ext_adaptive::Adaptation;
@@ -141,9 +144,9 @@ pub struct PlayerConfig {
     /// How far behind live to run.
     pub latency: Latency,
     /// Where audio plays. `None` does not subscribe to audio at all.
-    pub audio: Option<AudioOutput>,
+    pub audio: Option<AudioTarget>,
     /// The decoder backend to open, `Auto` by default.
-    pub decoder: video::decode::Kind,
+    pub decoder: moq_video::decode::Kind,
     /// How automatic selection follows the link.
     pub adaptation: Adaptation,
     /// How long a replacement decoder has to take over before the switch is given up.
@@ -162,7 +165,7 @@ impl Default for PlayerConfig {
             rendition: RenditionMode::default(),
             latency: Latency::default(),
             audio: None,
-            decoder: video::decode::Kind::default(),
+            decoder: moq_video::decode::Kind::default(),
             adaptation: Adaptation::default(),
             switch_deadline: Duration::from_secs(15),
         }
@@ -253,11 +256,11 @@ pub(crate) struct PlaybackRecorder {
 pub(crate) struct Controls {
     pub(crate) mode: watch::Sender<RenditionMode>,
     pub(crate) latency: watch::Sender<Latency>,
-    pub(crate) decoder: watch::Sender<video::decode::Kind>,
+    pub(crate) decoder: watch::Sender<moq_video::decode::Kind>,
     pub(crate) volume: watch::Sender<f32>,
 }
 
-/// One playback: video into [`VideoFrames`], audio into an [`AudioOutput`].
+/// One playback: video into [`VideoFrames`], audio into an [`AudioTarget`].
 ///
 /// Dropping it cancels its tasks and returns at once: decoders stop at their
 /// next await point and are not waited for, so a decoder thread may outlive
@@ -425,7 +428,7 @@ impl Player {
     /// says so in [`PlayerStatus::switch_error`]. Automatic rendition switches
     /// also open under the failing backend, so they fail until the next
     /// `set_decoder`.
-    pub fn set_decoder(&self, decoder: video::decode::Kind) {
+    pub fn set_decoder(&self, decoder: moq_video::decode::Kind) {
         self.controls.decoder.send_replace(decoder);
     }
 

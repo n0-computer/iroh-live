@@ -15,7 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{Bitrate, NetworkSample, video};
+use moq_net::bandwidth::Rate;
+
+use crate::NetworkSample;
 
 /// What a [`LocalBroadcast`](crate::LocalBroadcast) is sending.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -34,11 +36,11 @@ pub struct EncodeStats {
     /// The encoder backend that opened, such as `openh264` or `vaapi`.
     pub encoder: Option<String>,
     /// The encoded picture size.
-    pub size: Option<video::Size>,
+    pub size: Option<moq_video::Size>,
     /// Frames encoded per second, over the last second.
     pub fps: Option<f32>,
     /// Bits published per second, over the last second.
-    pub bitrate: Option<Bitrate>,
+    pub bitrate: Option<Rate>,
     /// How long one encode takes, smoothed.
     pub encode_time: Option<Duration>,
     /// Frames encoded since the rendition started.
@@ -56,7 +58,7 @@ impl EncodeStats {
         self.bytes += bytes;
         if let Some((fps, bytes_per_second)) = rates {
             self.fps = Some(fps as f32);
-            self.bitrate = Some(Bitrate::from_bps((bytes_per_second * 8.0) as u64));
+            self.bitrate = Some(Rate::from_bps((bytes_per_second * 8.0) as u64));
         }
     }
 }
@@ -95,7 +97,7 @@ pub struct VideoPlaybackStats {
     /// The decoder backend running, such as `vaapi`.
     pub decoder: String,
     /// The decoded picture size.
-    pub size: Option<video::Size>,
+    pub size: Option<moq_video::Size>,
     /// Frames shown per second, over the last second.
     pub fps: Option<u32>,
     /// How long one transport read and decode take together, smoothed.

@@ -1,31 +1,31 @@
-//! A broadcast's catalog, shared between the watchers of one broadcast.
+//! Reading a hang catalog the way a player does.
+//!
+//! A broadcast's catalog is [`hang::catalog::Catalog`], shared as an `Arc`
+//! between the watchers of one broadcast. [`VideoRenditions`] adds the ranking
+//! and the lookup that errors name the alternatives for.
 
-use std::sync::Arc;
-
-use hang::catalog::VideoConfig;
+use hang::catalog::{Catalog, VideoConfig};
 use moq_ext_adaptive::Rung;
 
 use crate::Error;
 
-/// A broadcast's catalog, as hang describes it.
-///
-/// Cheap to clone, and derefs to [`hang::catalog::Catalog`].
-#[derive(Debug, Clone, derive_more::Deref)]
-#[deref(forward)]
-pub struct Catalog(Arc<hang::catalog::Catalog>);
-
-impl From<hang::catalog::Catalog> for Catalog {
-    fn from(catalog: hang::catalog::Catalog) -> Self {
-        Self(Arc::new(catalog))
-    }
-}
-
-impl Catalog {
+/// The video renditions of a [`Catalog`], ranked.
+pub trait VideoRenditions {
     /// Returns the video renditions, largest first.
     ///
     /// Size is the coded pixel count. Between two of the same size, the higher
     /// bitrate comes first.
-    pub fn ranked_video(&self) -> Vec<(&str, &VideoConfig)> {
+    fn ranked_video(&self) -> Vec<(&str, &VideoConfig)>;
+
+    /// Returns the video rendition named `name`.
+    ///
+    /// Fails with [`Error::UnknownRendition`], which lists the names the
+    /// catalog has.
+    fn video_rendition(&self, name: &str) -> Result<&VideoConfig, Error>;
+}
+
+impl VideoRenditions for Catalog {
+    fn ranked_video(&self) -> Vec<(&str, &VideoConfig)> {
         let mut ranked: Vec<_> = self
             .video
             .renditions
@@ -40,25 +40,7 @@ impl Catalog {
         ranked
     }
 
-    /// Returns the video renditions as a ladder for rendition selection, largest
-    /// first.
-    pub(crate) fn rungs(&self) -> Vec<Rung> {
-        self.ranked_video()
-            .into_iter()
-            .map(|(name, config)| Rung {
-                name: name.to_string(),
-                bitrate: config.bitrate,
-                height: config.coded_height,
-                stalled: !config.enabled,
-            })
-            .collect()
-    }
-
-    /// Returns the video rendition named `name`.
-    ///
-    /// Fails with [`Error::UnknownRendition`], which lists the names the
-    /// catalog has.
-    pub fn video_rendition(&self, name: &str) -> Result<&VideoConfig, Error> {
+    fn video_rendition(&self, name: &str) -> Result<&VideoConfig, Error> {
         self.video.renditions.get(name).ok_or_else(|| {
             n0_error::e!(Error::UnknownRendition {
                 name: name.to_string(),
@@ -70,6 +52,21 @@ impl Catalog {
             })
         })
     }
+}
+
+/// Returns the video renditions as a ladder for rendition selection, largest
+/// first.
+pub(crate) fn rungs(catalog: &Catalog) -> Vec<Rung> {
+    catalog
+        .ranked_video()
+        .into_iter()
+        .map(|(name, config)| Rung {
+            name: name.to_string(),
+            bitrate: config.bitrate,
+            height: config.coded_height,
+            stalled: !config.enabled,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -99,7 +96,7 @@ mod tests {
         renditions.insert("high".into(), rendition(1920, 1080, 4_000_000));
         renditions.insert("720p-cheap".into(), rendition(1280, 720, 800_000));
         renditions.insert("720p-rich".into(), rendition(1280, 720, 3_000_000));
-        let catalog = Catalog::from(hang);
+        let catalog = hang;
         let names: Vec<&str> = catalog
             .ranked_video()
             .iter()

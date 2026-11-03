@@ -10,7 +10,7 @@
 
 use iroh_live::{
     CALL, Live,
-    media::{AudioOutput, LocalBroadcast},
+    media::{AudioTarget, LocalBroadcast},
 };
 use n0_error::Result;
 use tracing::info;
@@ -37,7 +37,7 @@ struct Local {
     live: Live,
     broadcast: LocalBroadcast,
     sources: source::Opened,
-    output: AudioOutput,
+    output: AudioTarget,
     ticket: String,
 }
 
@@ -130,7 +130,7 @@ mod window {
     use iroh::EndpointId;
     use iroh_live::{
         Audience, BroadcastTicket, CALL, Live, Publication, Reach,
-        media::{AudioOutput, LocalBroadcast, Player, SlotState, VideoSource},
+        media::{AudioTarget, LocalBroadcast, Player, SlotState, VideoSource},
     };
     use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
@@ -255,7 +255,7 @@ mod window {
         /// The local audio, kept alive with the window.
         _local_audio: Option<iroh_live::media::AudioSource>,
         /// Where the peer's voice plays, and what the microphone cancels.
-        output: AudioOutput,
+        output: AudioTarget,
         camera: Camera,
         /// The capture flags, kept to reopen the camera after a scan.
         capture: crate::args::CaptureArgs,
@@ -1067,7 +1067,7 @@ mod window {
         live: Live,
         peer: EndpointId,
         playback: PlaybackArgs,
-        output: AudioOutput,
+        output: AudioTarget,
     ) -> Answer {
         let path = BroadcastTicket::new(peer, CALL).path();
         let subscription = match tokio::time::timeout(

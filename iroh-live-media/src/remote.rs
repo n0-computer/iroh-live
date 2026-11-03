@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use hang::catalog::Catalog;
 use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
@@ -15,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::{
-    Catalog, LocalBroadcast, NetworkSample, Player, PlayerConfig, RecordConfig, Recording,
-    error::Error, network::NetworkSignals,
+    LocalBroadcast, NetworkSample, Player, PlayerConfig, RecordConfig, Recording, error::Error,
+    network::NetworkSignals,
 };
 
 /// How long to look for an ended broadcast again before it counts as gone.
@@ -54,7 +55,7 @@ struct Shared {
     #[debug("{:?}", epoch.borrow())]
     epoch: watch::Sender<Epoch>,
     #[debug(skip)]
-    catalog: watch::Sender<Option<Catalog>>,
+    catalog: watch::Sender<Option<Arc<Catalog>>>,
     closed: CancellationToken,
     #[debug(skip)]
     network: Mutex<Option<NetworkSignals>>,
@@ -163,7 +164,7 @@ impl RemoteBroadcast {
     ///
     /// A borrow of the receiver blocks the next catalog update, so keep it
     /// short.
-    pub fn catalog(&self) -> watch::Receiver<Option<Catalog>> {
+    pub fn catalog(&self) -> watch::Receiver<Option<Arc<Catalog>>> {
         self.shared.catalog.subscribe()
     }
 
@@ -272,7 +273,7 @@ async fn follow(
     origin: Origin,
     first: Option<moq_net::broadcast::Consumer>,
     epoch: watch::Sender<Epoch>,
-    catalog: watch::Sender<Option<Catalog>>,
+    catalog: watch::Sender<Option<Arc<Catalog>>>,
     closed: CancellationToken,
 ) {
     let mut generation = 0u64;
@@ -343,7 +344,7 @@ async fn follow(
 /// Reads catalog updates into `catalog` until the catalog track ends.
 async fn read_catalog(
     consumer: &moq_net::broadcast::Consumer,
-    catalog: &watch::Sender<Option<Catalog>>,
+    catalog: &watch::Sender<Option<Arc<Catalog>>>,
 ) {
     let mut reader = match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await
     {
@@ -357,7 +358,7 @@ async fn read_catalog(
         match reader.next().await {
             Ok(Some(next)) => {
                 trace!(catalog = ?next, "catalog");
-                catalog.send_replace(Some(Catalog::from(next)));
+                catalog.send_replace(Some(Arc::new(next)));
             }
             Ok(None) => {
                 debug!("catalog track ended");

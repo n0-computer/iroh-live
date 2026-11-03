@@ -19,6 +19,8 @@ iroh-moq = { workspace = true }
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 iroh-live-media = { workspace = true, optional = true }
+moq-audio = { workspace = true, optional = true }
+moq-video = { workspace = true, optional = true }
 n0-error = "1"
 serde = "1.0.229"
 tracing = "0.1.44"
@@ -46,7 +48,7 @@ default = ["media", "capture", "render", "sound-server"]
 # The media stack: `iroh_live::media`, `Live::remote_broadcast`. Without it the
 # crate is the `live/` layout only (tickets, grant, endpoint options), as the
 # relay uses it.
-media = ["dep:iroh-live-media"]
+media = ["dep:iroh-live-media", "dep:moq-audio", "dep:moq-video"]
 # Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.

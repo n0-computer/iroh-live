@@ -21,11 +21,11 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
-use iroh_live::{BroadcastTicket, Live, LocalBroadcast};
-use iroh_live_media::{
+use iroh_live::media::{
     Latency, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition, VideoSource,
     video::{Frame, FrameRate, Size, Surface, decode},
 };
+use iroh_live::{BroadcastTicket, Live, LocalBroadcast};
 use n0_tracing_test::traced_test;
 
 /// Generous, because tests run in parallel and openh264 encodes in software.

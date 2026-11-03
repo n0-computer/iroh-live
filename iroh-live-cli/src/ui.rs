@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use iroh_live::{
     Live,
-    media::{AudioOutput, LocalBroadcast, Player, PlayerConfig, RenditionMode},
+    media::{
+        AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoRenditions as _,
+    },
 };
 use iroh_live_egui::{
     VideoView,
@@ -17,7 +19,7 @@ use tracing::{info, warn};
 use crate::{args::PlaybackArgs, backend::Backend};
 
 /// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
-pub fn player_config(args: &PlaybackArgs, output: Option<&AudioOutput>) -> PlayerConfig {
+pub fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
     PlayerConfig {
         decoder: args.decoder.into(),
         latency: args.latency.latency(),
@@ -289,7 +291,7 @@ impl Link {
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",
-                iroh_live_egui::format_bitrate(iroh_live::media::Bitrate::from_bps(bps))
+                iroh_live_egui::format_bitrate(moq_net::bandwidth::Rate::from_bps(bps))
             ));
         }
         lines

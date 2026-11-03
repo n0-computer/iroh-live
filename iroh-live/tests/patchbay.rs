@@ -13,12 +13,13 @@
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, endpoint::presets};
-use iroh_live::{BroadcastTicket, Live, Reach, RemoteBroadcast, Subscription, moq::LinkSample};
-use iroh_live_media::{
-    Adaptation, Bitrate, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding,
-    VideoFormat, VideoFrames, VideoRendition, VideoSource,
+use iroh_live::media::{
+    Adaptation, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding, VideoFormat,
+    VideoFrames, VideoRendition, VideoSource,
     video::{Frame, FrameRate, Size, Surface},
 };
+use iroh_live::{BroadcastTicket, Live, Reach, RemoteBroadcast, Subscription, moq::LinkSample};
+use moq_net::bandwidth::Rate;
 use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, NodeId};
 use tracing::info;
@@ -475,12 +476,12 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
 fn ladder() -> Vec<VideoRendition> {
     vec![
         VideoRendition {
-            bitrate: Some(Bitrate::from_bps(800_000)),
+            bitrate: Some(Rate::from_bps(800_000)),
             ..VideoRendition::new("high")
         },
         VideoRendition {
             size: Some(Size::new(320, 240)),
-            bitrate: Some(Bitrate::from_bps(200_000)),
+            bitrate: Some(Rate::from_bps(200_000)),
             ..VideoRendition::new("low")
         },
     ]
@@ -506,7 +507,7 @@ async fn frames_survive_a_latency_ramp() {
     let fixture = Fixture::start(
         Size::new(320, 240),
         vec![VideoRendition {
-            bitrate: Some(Bitrate::from_bps(500_000)),
+            bitrate: Some(Rate::from_bps(500_000)),
             ..VideoRendition::new("video")
         }],
     )
@@ -571,7 +572,7 @@ async fn frames_survive_a_loss_spike() {
     let fixture = Fixture::start(
         Size::new(320, 240),
         vec![VideoRendition {
-            bitrate: Some(Bitrate::from_bps(500_000)),
+            bitrate: Some(Rate::from_bps(500_000)),
             ..VideoRendition::new("video")
         }],
     )

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, Live,
-    media::{AudioOutput, Player, PlayerConfig, RenditionMode},
+    media::{AudioTarget, Player, PlayerConfig, RenditionMode, VideoRenditions as _},
 };
 use n0_error::{Result, anyerr};
 
@@ -40,7 +40,7 @@ struct Options {
     /// How the video is decoded.
     playback: crate::args::PlaybackArgs,
     /// Where the audio plays.
-    output: AudioOutput,
+    output: AudioTarget,
 }
 
 impl From<&WatchArgs> for Options {
@@ -52,7 +52,7 @@ impl From<&WatchArgs> for Options {
             no_video: args.no_video,
             playback: args.playback,
             // Opened by the async `setup`.
-            output: AudioOutput::null(),
+            output: AudioTarget::null(),
         }
     }
 }
@@ -129,7 +129,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
 ///
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
-async fn setup(args: &WatchArgs) -> Result<(Live, AudioOutput)> {
+async fn setup(args: &WatchArgs) -> Result<(Live, AudioTarget)> {
     #[cfg(feature = "playback")]
     let device = args.audio_output.clone();
     #[cfg(not(feature = "playback"))]

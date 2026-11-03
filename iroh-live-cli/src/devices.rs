@@ -4,7 +4,6 @@
 //! `irl publish`.
 
 #[cfg(feature = "playback")]
-use iroh_live::media::AudioOutput;
 use iroh_live::media::{audio, video};
 
 /// Runs the `devices` command.
@@ -119,12 +118,16 @@ async fn list() {
     });
 
     #[cfg(feature = "playback")]
-    section("audio outputs", AudioOutput::devices().await, |device| {
-        // The id leads because it is what `irl watch --audio-output` takes.
-        // Names alone do not tell a card's subdevices apart.
-        let default = if device.default { " (default)" } else { "" };
-        format!("{}  {}{default}", device.id, device.name)
-    });
+    section(
+        "audio outputs",
+        audio::playback::devices().await,
+        |device| {
+            // The id leads because it is what `irl watch --audio-output` takes.
+            // Names alone do not tell a card's subdevices apart.
+            let default = if device.default { " (default)" } else { "" };
+            format!("{}  {}{default}", device.id, device.name)
+        },
+    );
 }
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]

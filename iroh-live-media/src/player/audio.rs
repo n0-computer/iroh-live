@@ -7,11 +7,11 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
+use super::output::{AudioTarget, OutputControl};
 use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock};
 use crate::{
-    AudioFormat, AudioOutput, RemoteBroadcast, SlotState,
+    AudioFormat, RemoteBroadcast, SlotState,
     error::Error,
-    output::OutputControl,
     publish::status::send_if_changed,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
@@ -22,7 +22,7 @@ const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// The audio task's inputs.
 pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
-    pub output: AudioOutput,
+    pub output: AudioTarget,
     pub controls: Arc<Controls>,
     pub status: watch::Sender<PlayerStatus>,
     pub clock: PlayoutClock,
@@ -154,11 +154,11 @@ async fn open(
     config: &hang::catalog::AudioConfig,
     consumer: &moq_net::broadcast::Consumer,
     max_age: std::time::Duration,
-    output: &AudioOutput,
+    output: &AudioTarget,
 ) -> Result<
     (
         moq_audio::decode::Consumer,
-        crate::output::OutputSink,
+        super::output::OutputSink,
         OutputControl,
     ),
     Error,
@@ -183,7 +183,7 @@ async fn open(
 struct Job {
     name: String,
     decoder: moq_audio::decode::Consumer,
-    sink: crate::output::OutputSink,
+    sink: super::output::OutputSink,
     control: OutputControl,
     /// Clears this track's contribution to the clock when dropped.
     latency: super::clock::AudioLatency,

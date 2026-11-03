@@ -8,9 +8,10 @@ use clap::Parser;
 use iroh::EndpointId;
 use iroh_live::{
     Live, LocalBroadcast,
-    media::{Bitrate, EncodedVideoSource, RpicamConfig, video::Size},
+    media::{EncodedVideoSource, RpicamConfig, video::Size},
     moq::RelayConfig,
 };
+use moq_net::bandwidth::Rate;
 use tracing::{debug, info, warn};
 
 use crate::epaper;
@@ -63,7 +64,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
 
     // Keeps the default of one keyframe per second.
     let config = RpicamConfig {
-        bitrate: Bitrate::from_bps(u64::from(opts.bitrate)),
+        bitrate: Rate::from_bps(u64::from(opts.bitrate)),
         ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
     };
     info!(

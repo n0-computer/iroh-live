@@ -13,7 +13,9 @@ use std::{
 use bytesize::ByteSize;
 use iroh_live::{
     BroadcastTicket, Live,
-    media::{Catalog, RecordConfig, RecordFormat, Recording, RemoteBroadcast},
+    media::{
+        Catalog, RecordConfig, RecordFormat, Recording, RemoteBroadcast, VideoRenditions as _,
+    },
 };
 use n0_error::{Result, anyerr};
 use tokio::io::BufWriter;

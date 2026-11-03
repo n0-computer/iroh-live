@@ -6,7 +6,7 @@
 
 use iroh_live::{
     Live, LocalBroadcast,
-    media::AudioOutput,
+    media::AudioTarget,
     rooms::{Room, RoomTicket, Rooms},
 };
 use n0_error::Result;
@@ -37,7 +37,7 @@ struct Joined {
     broadcast: LocalBroadcast,
     sources: source::Opened,
     /// The speaker every participant plays on, and what the microphone cancels.
-    output: AudioOutput,
+    output: AudioTarget,
     room: Room,
     chat: chat::Writer,
     ticket: String,
@@ -55,7 +55,7 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
 }
 
 /// Joins the room over `live`, which the caller closes if this fails.
-async fn join(live: &Live, rooms: &Rooms, args: &RoomArgs, output: AudioOutput) -> Result<Joined> {
+async fn join(live: &Live, rooms: &Rooms, args: &RoomArgs, output: AudioTarget) -> Result<Joined> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
     let display_name = args
         .display_name
@@ -98,7 +98,7 @@ mod window {
     use iroh::EndpointId;
     use iroh_live::{
         Live,
-        media::{AudioOutput, LocalBroadcast, Player, VideoSource},
+        media::{AudioTarget, LocalBroadcast, Player, VideoSource},
         rooms::{Room, RoomState},
     };
     use iroh_live_egui::{VideoView, egui_wgpu::RenderState};
@@ -229,7 +229,7 @@ mod window {
         /// The sources this node publishes, held for the window's life.
         _sources: crate::source::Opened,
         /// The speaker every peer plays on.
-        output: AudioOutput,
+        output: AudioTarget,
         render_state: Option<RenderState>,
         /// The playback flags for every peer's broadcast.
         playback: PlaybackArgs,
@@ -615,7 +615,7 @@ mod window {
         remote: EndpointId,
         name: String,
         playback: PlaybackArgs,
-        output: AudioOutput,
+        output: AudioTarget,
     ) -> (EndpointId, String, Option<Opened>) {
         let opened = open_inner(live, room, remote, &name, playback, output).await;
         (remote, name, opened)
@@ -627,7 +627,7 @@ mod window {
         remote: EndpointId,
         name: &str,
         playback: PlaybackArgs,
-        output: AudioOutput,
+        output: AudioTarget,
     ) -> Option<Opened> {
         // A member may announce a name it never publishes.
         let opened = tokio::time::timeout(PEER_TIMEOUT, async {
