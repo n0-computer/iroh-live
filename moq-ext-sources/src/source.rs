@@ -7,10 +7,11 @@
 //! threads.
 //!
 //! A source runs while any clone of it exists, including the clone a
-//! [`LocalBroadcast`](crate::LocalBroadcast) holds. Any number of broadcasts
-//! and previews can read it at once.
+//! broadcast holds. Any number of broadcasts and previews can read it at once.
 
-use std::{path::Path, sync::Arc};
+#[cfg(feature = "file")]
+use std::path::Path;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "capture")]
@@ -20,9 +21,7 @@ use tracing::{debug, warn};
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
 pub use self::sender::FrameSender;
-use self::sender::{Demand, DemandGuard, WeakPcmFanout};
-#[cfg(feature = "capture")]
-use crate::output::AudioOutput;
+pub use self::sender::{Demand, DemandGuard, PcmFanout, WeakPcmFanout};
 use crate::{
     audio,
     error::Error,
@@ -32,7 +31,9 @@ use crate::{
 
 #[cfg(feature = "capture")]
 mod capture;
+#[cfg(feature = "file")]
 mod file;
+#[cfg(feature = "pattern")]
 mod generator;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 mod rpicam;
@@ -157,8 +158,11 @@ impl VideoSource {
 
     /// Returns a generated test pattern at `size` and `rate`.
     ///
+    /// Needs the `pattern` feature.
+    ///
     /// The pattern shows a sweeping bar, a frame counter and a clock. A marker
     /// flashes in step with the beep of [`AudioSource::test_pattern`].
+    #[cfg(feature = "pattern")]
     pub fn test_pattern(size: video::Size, rate: video::FrameRate) -> Self {
         let slot = FrameSlot::new();
         let reader = slot.reader();
@@ -276,17 +280,17 @@ impl VideoSource {
     }
 
     /// Registers a consumer that wants frames, for [`FrameSender::demand`].
-    pub(crate) fn want(&self) -> DemandGuard {
+    pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
 
     /// Returns why the source stopped, if it failed.
-    pub(crate) fn failure(&self) -> Option<Arc<Error>> {
+    pub fn failure(&self) -> Option<Arc<Error>> {
         self.inner.frames.failure()
     }
 
     /// Returns the kind of source, for logs.
-    pub(crate) fn kind(&self) -> &str {
+    pub fn kind(&self) -> &str {
         &self.inner.kind
     }
 }
@@ -298,11 +302,18 @@ impl VideoSource {
 #[derive(derive_more::Debug)]
 pub struct EncodedVideoSource {
     #[debug(skip)]
-    pub(crate) bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
+    bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
     /// Keeps whatever produces the bytes alive, such as a subprocess.
     #[debug(skip)]
-    pub(crate) _guard: Option<Box<dyn std::any::Any + Send>>,
+    guard: Option<Box<dyn std::any::Any + Send>>,
 }
+
+/// What an [`EncodedVideoSource`] is made of, as [`EncodedVideoSource::into_parts`]
+/// returns it.
+pub type EncodedParts = (
+    n0_future::boxed::BoxStream<bytes::Bytes>,
+    Option<Box<dyn std::any::Any + Send>>,
+);
 
 impl EncodedVideoSource {
     /// Wraps an Annex-B H.264 byte stream.
@@ -313,8 +324,15 @@ impl EncodedVideoSource {
     pub fn annex_b(bytes: impl n0_future::Stream<Item = bytes::Bytes> + Send + 'static) -> Self {
         Self {
             bytes: Box::pin(bytes),
-            _guard: None,
+            guard: None,
         }
+    }
+
+    /// Splits the source into its byte stream and the guard that keeps the
+    /// producer of the bytes alive, such as a subprocess. Drop the guard to
+    /// stop the producer.
+    pub fn into_parts(self) -> EncodedParts {
+        (self.bytes, self.guard)
     }
 
     /// Starts the Raspberry Pi camera's hardware H.264 through `rpicam-vid`.
@@ -337,6 +355,25 @@ impl EncodedVideoSource {
     }
 }
 
+/// An audio output whose mix a microphone cancels from its signal.
+///
+/// Implemented by the application's output type. The source crate only asks it
+/// for a canceller, when a broadcast starts publishing the microphone.
+#[cfg(feature = "capture")]
+pub trait EchoReference: std::fmt::Debug + Send + Sync + 'static {
+    /// Builds an echo canceller tapped off this output's mix.
+    ///
+    /// Returns `None` for an output that plays nothing and so has no echo.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`] while another microphone's canceller
+    /// holds this output's reference, and [`Error::Device`] for other engine
+    /// failures.
+    #[cfg(feature = "aec")]
+    fn canceller(&self) -> Result<Option<audio::aec::Control>, Error>;
+}
+
 /// The microphone to open, and the output to cancel from it.
 #[cfg(feature = "capture")]
 #[derive(Debug, Clone, Default)]
@@ -351,7 +388,7 @@ pub struct MicrophoneConfig {
     /// feeds one canceller at a time, so the canceller is built when a
     /// broadcast starts publishing the microphone, after the publication it
     /// replaces has released its own.
-    pub echo_reference: Option<AudioOutput>,
+    pub echo_reference: Option<Arc<dyn EchoReference>>,
 }
 
 #[cfg(feature = "capture")]
@@ -366,7 +403,7 @@ impl MicrophoneConfig {
     }
 
     /// Checks that echo cancellation, if asked for, is compiled in.
-    pub(crate) fn check(&self) -> Result<(), Error> {
+    pub fn check(&self) -> Result<(), Error> {
         if self.echo_reference.is_some() && !cfg!(feature = "aec") {
             return Err(Error::invalid(
                 "echo cancellation needs the `aec` feature, which this build was \
@@ -380,7 +417,7 @@ impl MicrophoneConfig {
     ///
     /// Fails if echo cancellation is not compiled in, or if the output already
     /// feeds another canceller.
-    pub(crate) fn resolve(&self) -> Result<audio::capture::Config, Error> {
+    pub fn resolve(&self) -> Result<audio::capture::Config, Error> {
         self.check()?;
         #[cfg_attr(not(feature = "aec"), allow(unused_mut, reason = "only aec attaches"))]
         let mut capture = self.capture.clone();
@@ -394,7 +431,7 @@ impl MicrophoneConfig {
 
 /// What an audio source produces.
 #[derive(Debug)]
-pub(crate) enum AudioKind {
+pub enum AudioKind {
     /// A microphone, opened by the publication that encodes it.
     ///
     /// The publication also builds its echo canceller.
@@ -456,7 +493,7 @@ impl AudioSource {
     }
 
     /// Registers a broadcast that publishes this source.
-    pub(crate) fn want(&self) -> DemandGuard {
+    pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
 
@@ -465,7 +502,7 @@ impl AudioSource {
     /// This checks that the device exists and that echo cancellation, if asked
     /// for, is compiled in. The device itself opens when a broadcast first has
     /// a listener for it. A failure then shows in the broadcast's
-    /// [`PublishStatus`](crate::PublishStatus). The same source set on two
+    /// publish status. The same source set on two
     /// broadcasts captures the device twice.
     ///
     /// Cancellation safe: dropping the future only abandons the device query.
@@ -497,7 +534,7 @@ impl AudioSource {
 
     /// Wraps a microphone config without looking for the device.
     #[cfg(feature = "capture")]
-    pub(crate) fn microphone_unchecked(config: MicrophoneConfig) -> Self {
+    pub fn microphone_unchecked(config: MicrophoneConfig) -> Self {
         Self::new(
             "microphone",
             AudioKind::Microphone(config),
@@ -507,6 +544,8 @@ impl AudioSource {
     }
 
     /// Decodes an audio file in real time.
+    ///
+    /// Needs the `file` feature.
     ///
     /// Restarts at the beginning when `looping`, and ends with the file
     /// otherwise. Reads WAV and MP3. The file is probed before this returns,
@@ -518,6 +557,7 @@ impl AudioSource {
     ///
     /// Fails if the file cannot be read, holds no audio track, or uses a codec
     /// this build cannot decode.
+    #[cfg(feature = "file")]
     pub async fn file(path: impl AsRef<Path>, looping: bool) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
@@ -541,6 +581,7 @@ impl AudioSource {
     }
 
     /// Returns a steady sine tone at `hz`, at 48 kHz in `layout`.
+    #[cfg(feature = "pattern")]
     pub fn tone(hz: f32, layout: audio::Layout) -> Self {
         Self::generated("tone", f64::from(hz), layout, generator::Gate::Continuous)
     }
@@ -550,10 +591,12 @@ impl AudioSource {
     /// It beeps for a tenth of a second every second, on the timeline the
     /// pattern's marker flashes on. A viewer can see and hear whether the two
     /// line up.
+    #[cfg(feature = "pattern")]
     pub fn test_pattern(layout: audio::Layout) -> Self {
         Self::generated("test-pattern", generator::BEEP_HZ, layout, generator::BEEP)
     }
 
+    #[cfg(feature = "pattern")]
     fn generated(
         name: &'static str,
         hz: f64,
@@ -611,12 +654,12 @@ impl AudioSource {
     }
 
     /// Returns what the source produces.
-    pub(crate) fn kind(&self) -> &AudioKind {
+    pub fn kind(&self) -> &AudioKind {
         &self.inner.kind
     }
 
     /// Returns the kind of source, for logs.
-    pub(crate) fn kind_name(&self) -> &'static str {
+    pub fn kind_name(&self) -> &'static str {
         self.inner.kind_name
     }
 }
@@ -627,6 +670,7 @@ pub(crate) const FIRST_FRAME_PATIENCE: std::time::Duration = std::time::Duration
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "pattern")]
     use std::time::Duration;
 
     use super::*;
@@ -635,6 +679,7 @@ mod tests {
         video::FrameRate::new(fps, 1).expect("a valid rate")
     }
 
+    #[cfg(feature = "pattern")]
     #[tokio::test]
     async fn a_test_pattern_produces_frames_and_stops_with_its_source() {
         let source = VideoSource::test_pattern(video::Size::new(64, 48), rate(30));
@@ -703,42 +748,5 @@ mod tests {
         assert!(frames.next().await.is_none());
         let failure = source.failure().expect("the failure is kept");
         assert!(matches!(*failure, Error::Device { .. }));
-    }
-
-    /// The microphone config builds its echo canceller from its output.
-    ///
-    /// It needs an output device, so it runs by hand. `publish::tests` covers
-    /// the publication side without a device.
-    #[cfg(all(feature = "aec", feature = "playback"))]
-    #[tokio::test]
-    #[ignore = "needs an audio output device"]
-    async fn echo_cancellation_attaches_the_canceller() {
-        use crate::output::AudioOutput;
-        let output = AudioOutput::open(None)
-            .await
-            .expect("an audio output device");
-        let capture = MicrophoneConfig {
-            echo_reference: Some(output.clone()),
-            ..MicrophoneConfig::default()
-        }
-        .resolve()
-        .expect("the canceller builds");
-        assert!(
-            capture.aec.is_some(),
-            "the microphone config carries no canceller"
-        );
-        let plain = MicrophoneConfig::default().resolve().expect("resolves");
-        assert!(plain.aec.is_none());
-    }
-
-    #[cfg(all(feature = "capture", not(feature = "aec")))]
-    #[test]
-    fn echo_cancellation_without_the_feature_is_refused() {
-        use crate::output::AudioOutput;
-        let config = MicrophoneConfig {
-            echo_reference: Some(AudioOutput::null().clone()),
-            ..MicrophoneConfig::default()
-        };
-        assert!(matches!(config.resolve(), Err(Error::InvalidConfig { .. })));
     }
 }

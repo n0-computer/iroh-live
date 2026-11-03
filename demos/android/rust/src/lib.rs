@@ -290,7 +290,7 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Fra
 /// with video only.
 async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) {
     let config = MicrophoneConfig {
-        echo_reference: echo.cloned(),
+        echo_reference: echo.map(|output| std::sync::Arc::new(output.clone()) as _),
         ..MicrophoneConfig::default()
     };
     let published = AudioSource::microphone(config)

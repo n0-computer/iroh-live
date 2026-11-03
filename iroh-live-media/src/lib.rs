@@ -80,17 +80,18 @@
 
 mod catalog;
 mod error;
-mod frames;
-#[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
-mod local_task;
 mod network;
 mod output;
 mod player;
 mod publish;
 mod record;
 mod remote;
-mod source;
 mod stats;
+
+// The moved modules, under the paths the rest of the crate uses.
+use moq_ext_sources::frames;
+#[cfg(feature = "capture")]
+use moq_ext_sources::local_task;
 
 /// The upstream audio stack: capture, encode, decode and playback.
 pub use moq_audio as audio;
@@ -100,14 +101,9 @@ pub use moq_net::bandwidth::Rate as Bitrate;
 /// [`Frame`](moq_video::Frame).
 pub use moq_video as video;
 
-#[cfg(feature = "capture")]
-pub use self::source::MicrophoneConfig;
-#[cfg(all(target_os = "linux", feature = "rpicam"))]
-pub use self::source::RpicamConfig;
 pub use self::{
     catalog::Catalog,
     error::{Closed, Error, SwitchError},
-    frames::VideoFrames,
     network::NetworkSample,
     output::AudioOutput,
     player::{Adaptation, Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
@@ -117,9 +113,16 @@ pub use self::{
     },
     record::{RecordConfig, RecordFormat, Recording},
     remote::RemoteBroadcast,
-    source::{AudioFormat, AudioSource, EncodedVideoSource, FrameSender, VideoFormat, VideoSource},
     stats::{
         AudioEncodeStats, AudioPlaybackStats, EncodeStats, FrameTiming, MediaKind, PlaybackStats,
         PublishStats, VideoPlaybackStats,
     },
+};
+#[cfg(feature = "capture")]
+pub use moq_ext_sources::MicrophoneConfig;
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+pub use moq_ext_sources::RpicamConfig;
+pub use moq_ext_sources::{
+    AudioFormat, AudioSource, EncodedVideoSource, FrameSender, VideoFormat, VideoFrames,
+    VideoSource,
 };

@@ -89,7 +89,7 @@ async fn a_microphone_publication_asks_for_its_canceller() {
     use crate::{AudioOutput, MicrophoneConfig};
     let output = AudioOutput::null();
     let config = MicrophoneConfig {
-        echo_reference: Some(output.clone()),
+        echo_reference: Some(std::sync::Arc::new(output.clone())),
         ..MicrophoneConfig::default()
     };
     let broadcast = LocalBroadcast::new();

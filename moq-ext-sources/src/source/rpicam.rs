@@ -34,8 +34,7 @@ use tracing::{debug, info, warn};
 
 use super::VideoFormat;
 use crate::{
-    Bitrate,
-    error::Error,
+    Error,
     frames::FrameSlot,
     local_task::LocalTask,
     video::{Frame, I420, Size, Surface},
@@ -170,7 +169,7 @@ pub struct RpicamConfig {
     /// Frames per second.
     pub framerate: u32,
     /// The hardware encoder's target bitrate, for the encoded path.
-    pub bitrate: Bitrate,
+    pub bitrate: moq_net::bandwidth::Rate,
     /// The keyframe interval in frames, for the encoded path.
     ///
     /// A subscriber cannot start decoding before the next keyframe, so this
@@ -186,7 +185,7 @@ impl RpicamConfig {
         Self {
             size,
             framerate,
-            bitrate: Bitrate::from_bps(u64::from(DEFAULT_BITRATE)),
+            bitrate: moq_net::bandwidth::Rate::from_bps(u64::from(DEFAULT_BITRATE)),
             keyframe_interval: framerate.max(1),
         }
     }

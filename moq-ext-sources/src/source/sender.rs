@@ -5,21 +5,21 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::{audio, error::Closed, frames::FrameSlot, video};
+use crate::{Closed, audio, frames::FrameSlot, video};
 
 /// Whether anything currently wants a source's frames.
 ///
 /// Every running encoder holds a [`DemandGuard`]. The source is wanted while
 /// any guard lives.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Demand {
+pub struct Demand {
     count: Arc<Mutex<usize>>,
     wanted: watch::Sender<bool>,
 }
 
 impl Demand {
     /// Registers one consumer that wants frames, for as long as the guard lives.
-    pub(crate) fn acquire(&self) -> DemandGuard {
+    pub fn acquire(&self) -> DemandGuard {
         let mut count = self.count.lock().expect("poisoned");
         *count += 1;
         self.wanted
@@ -30,14 +30,14 @@ impl Demand {
     }
 
     /// Returns whether anything wants frames.
-    pub(crate) fn watch(&self) -> watch::Receiver<bool> {
+    pub fn watch(&self) -> watch::Receiver<bool> {
         self.wanted.subscribe()
     }
 }
 
 /// One consumer's claim on a source's frames, withdrawn on drop.
 #[derive(Debug)]
-pub(crate) struct DemandGuard {
+pub struct DemandGuard {
     demand: Demand,
 }
 
@@ -54,7 +54,7 @@ impl Drop for DemandGuard {
 /// Where pushed frames go.
 ///
 /// Video goes to a latest-wins slot, PCM to a bounded fan-out.
-pub(crate) trait Sink<T>: Send + Sync + 'static {
+pub(super) trait Sink<T>: Send + Sync + 'static {
     /// Hands one frame on without blocking.
     fn deliver(&self, frame: T);
 }
@@ -68,10 +68,10 @@ impl Sink<video::Frame> for FrameSlot {
 /// The fan-out a PCM source writes into.
 ///
 /// Every attached broadcast reads it through its own receiver.
-pub(crate) type PcmFanout = tokio::sync::broadcast::Sender<audio::Frame>;
+pub type PcmFanout = tokio::sync::broadcast::Sender<audio::Frame>;
 
 /// A [`PcmFanout`] that does not keep the source alive.
-pub(crate) type WeakPcmFanout = tokio::sync::broadcast::WeakSender<audio::Frame>;
+pub type WeakPcmFanout = tokio::sync::broadcast::WeakSender<audio::Frame>;
 
 impl Sink<audio::Frame> for PcmFanout {
     fn deliver(&self, frame: audio::Frame) {
@@ -111,7 +111,7 @@ impl<T> Clone for FrameSender<T> {
 }
 
 impl<T: 'static> FrameSender<T> {
-    pub(crate) fn new(sink: Arc<dyn Sink<T>>, closed: CancellationToken, demand: Demand) -> Self {
+    pub(super) fn new(sink: Arc<dyn Sink<T>>, closed: CancellationToken, demand: Demand) -> Self {
         Self {
             sink,
             closed,

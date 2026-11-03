@@ -9,22 +9,28 @@ use std::sync::{Arc, OnceLock};
 
 use tokio::sync::watch;
 
-use crate::{error::Error, video};
+use crate::{Error, video};
 
 /// The producing end of a frame stream.
 ///
 /// Dropping the last clone ends the stream: every reader's
 /// [`next`](VideoFrames::next) returns the last frame, then `None`.
 #[derive(derive_more::Debug, Clone)]
-pub(crate) struct FrameSlot {
+pub struct FrameSlot {
     #[debug(skip)]
     tx: watch::Sender<Option<Arc<video::Frame>>>,
     failure: Arc<OnceLock<Arc<Error>>>,
 }
 
+impl Default for FrameSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FrameSlot {
     /// Creates an empty slot.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             tx: watch::Sender::new(None),
             failure: Default::default(),
@@ -32,22 +38,22 @@ impl FrameSlot {
     }
 
     /// Replaces the current frame, waking every reader.
-    pub(crate) fn send(&self, frame: Arc<video::Frame>) {
+    pub fn send(&self, frame: Arc<video::Frame>) {
         self.tx.send_replace(Some(frame));
     }
 
     /// Records why the stream is about to end, for [`FrameReader::failure`].
-    pub(crate) fn fail(&self, failure: Arc<Error>) {
+    pub fn fail(&self, failure: Arc<Error>) {
         let _ = self.failure.set(failure);
     }
 
     /// Returns a reader starting at the current frame.
-    pub(crate) fn frames(&self) -> VideoFrames {
+    pub fn frames(&self) -> VideoFrames {
         VideoFrames::new(self.tx.subscribe())
     }
 
     /// Returns a handle that reads the slot without keeping it open.
-    pub(crate) fn reader(&self) -> FrameReader {
+    pub fn reader(&self) -> FrameReader {
         FrameReader {
             rx: self.tx.subscribe(),
             failure: self.failure.clone(),
@@ -60,7 +66,7 @@ impl FrameSlot {
 /// A source keeps this, so its stream ends when the frames stop even while
 /// handles to the source remain.
 #[derive(derive_more::Debug, Clone)]
-pub(crate) struct FrameReader {
+pub struct FrameReader {
     #[debug(skip)]
     rx: watch::Receiver<Option<Arc<video::Frame>>>,
     failure: Arc<OnceLock<Arc<Error>>>,
@@ -68,12 +74,12 @@ pub(crate) struct FrameReader {
 
 impl FrameReader {
     /// Returns a reader starting at the current frame.
-    pub(crate) fn frames(&self) -> VideoFrames {
+    pub fn frames(&self) -> VideoFrames {
         VideoFrames::new(self.rx.clone())
     }
 
     /// Returns why the stream ended, if it failed.
-    pub(crate) fn failure(&self) -> Option<Arc<Error>> {
+    pub fn failure(&self) -> Option<Arc<Error>> {
         self.failure.get().cloned()
     }
 }
@@ -81,7 +87,7 @@ impl FrameReader {
 /// Latest-frame-wins video frames.
 ///
 /// Returned by [`VideoSource::frames`](crate::VideoSource::frames) for a local
-/// preview and by [`Player::video`](crate::Player::video) for playback. Each
+/// preview and by a player for playback. Each
 /// clone keeps its own cursor. A frame comes as an `Arc` because upstream
 /// frames are not `Clone`: a GPU surface is shared, not copied.
 ///
@@ -135,7 +141,7 @@ impl VideoFrames {
     }
 
     /// Waits until the producer is gone. Cancellation safe.
-    pub(crate) async fn closed(&self) {
+    pub async fn closed(&self) {
         let mut rx = self.rx.clone();
         while rx.changed().await.is_ok() {}
     }

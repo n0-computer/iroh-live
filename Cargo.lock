@@ -4531,12 +4531,12 @@ dependencies = [
  "derive_more",
  "hang",
  "moq-audio",
+ "moq-ext-sources",
  "moq-mux",
  "moq-net",
  "moq-video",
  "n0-error",
  "n0-future",
- "symphonia",
  "tokio",
  "tokio-util",
  "tracing",
@@ -5572,6 +5572,24 @@ dependencies = [
  "kio 0.6.2",
  "rand",
  "rand_pcg",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-sources"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "derive_more",
+ "moq-audio",
+ "moq-mux",
+ "moq-net",
+ "moq-video",
+ "n0-error",
+ "n0-future",
+ "symphonia",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 

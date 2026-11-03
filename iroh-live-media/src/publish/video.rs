@@ -191,7 +191,8 @@ pub(super) async fn run_raw(
     match source.failure() {
         Some(failure) => {
             warn!(error = %failure, "video source failed");
-            reporter.slot(SlotState::Failed(failure));
+            let failure = Arc::try_unwrap(failure).map_or_else(Error::device, Error::from);
+            reporter.slot(SlotState::Failed(Arc::new(failure)));
         }
         None => {
             debug!("video source ended");
@@ -454,7 +455,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
         ..
     } = job;
     stats.clear_video();
-    let EncodedVideoSource { mut bytes, _guard } = source;
+    let (mut bytes, _guard) = source.into_parts();
     let result = async {
         let track = producer
             .create_track(

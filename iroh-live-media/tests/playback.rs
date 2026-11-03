@@ -687,7 +687,7 @@ async fn a_source_that_fails_shows_in_the_status() {
         rate: fps(30),
     };
     let source = VideoSource::spawn("failing", format, |_frames| {
-        Err(iroh_live_media::Error::from(std::io::Error::other(
+        Err(moq_ext_sources::Error::from(std::io::Error::other(
             "the camera caught fire",
         )))
     })

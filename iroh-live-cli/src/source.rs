@@ -324,7 +324,7 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> Mi
     if let Some(output) = output {
         #[cfg(feature = "aec")]
         {
-            config.echo_reference = Some(output.clone());
+            config.echo_reference = Some(std::sync::Arc::new(output.clone()));
         }
         // A null output plays nothing, so it has no echo.
         #[cfg(not(feature = "aec"))]

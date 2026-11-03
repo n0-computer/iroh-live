@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::{FIRST_FRAME_PATIENCE, VideoFormat};
-use crate::{error::Error, frames::FrameSlot, local_task::LocalTask, video};
+use crate::{Error, frames::FrameSlot, local_task::LocalTask, video};
 
 /// The rate assumed for a device that reports none.
 fn default_rate() -> video::FrameRate {

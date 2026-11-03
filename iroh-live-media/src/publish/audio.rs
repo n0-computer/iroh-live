@@ -15,10 +15,11 @@ use super::{
     encoding::AudioEncoding,
     status::{RenditionState, SlotState},
 };
+use moq_ext_sources::AudioKind;
+
 use crate::{
     AudioFormat, AudioSource, audio,
     error::Error,
-    source::AudioKind,
     stats::{AudioEncodeStats, Cell},
 };
 
@@ -43,7 +44,7 @@ pub(super) async fn run(
             // now let go of it.
             match config.resolve() {
                 Ok(capture) => microphone(&job, capture, &encoding, &stop).await,
-                Err(err) => Err(err),
+                Err(err) => Err(err.into()),
             }
         }
         AudioKind::Pcm { format, fanout } => match fanout.upgrade() {

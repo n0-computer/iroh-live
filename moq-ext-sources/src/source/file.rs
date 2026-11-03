@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::{AudioFormat, sender::PcmFanout};
-use crate::error::Error;
+use crate::Error;
 
 /// Opens `path` and decodes it into `fanout` on its own thread.
 ///

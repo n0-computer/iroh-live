@@ -134,18 +134,19 @@ impl AudioOutput {
         }
     }
 
-    /// Builds an echo canceller tapped off this output's mix.
-    ///
+    /// Returns how many echo cancellers were asked of this output.
+    #[cfg(all(test, feature = "aec"))]
+    pub(crate) fn cancellers_requested(&self) -> u64 {
+        self.cancellers.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(feature = "aec")]
+impl moq_ext_sources::EchoReference for AudioOutput {
     /// Returns `None` for a null output, which plays nothing and has no echo.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`] while another microphone's canceller
-    /// holds this output's reference, and [`Error::Device`] for other engine
-    /// failures.
-    #[cfg(feature = "aec")]
-    pub(crate) fn canceller(&self) -> Result<Option<audio::aec::Control>, Error> {
-        #[cfg(all(test, feature = "aec"))]
+    fn canceller(&self) -> Result<Option<audio::aec::Control>, moq_ext_sources::Error> {
+        use moq_ext_sources::Error;
+        #[cfg(test)]
         self.cancellers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match &*self.inner {
@@ -161,13 +162,10 @@ impl AudioOutput {
             Inner::Null => Ok(None),
         }
     }
-
-    /// Returns how many echo cancellers were asked of this output.
-    #[cfg(all(test, feature = "aec"))]
-    pub(crate) fn cancellers_requested(&self) -> u64 {
-        self.cancellers.load(std::sync::atomic::Ordering::Relaxed)
-    }
 }
+
+#[cfg(all(feature = "capture", not(feature = "aec")))]
+impl moq_ext_sources::EchoReference for AudioOutput {}
 
 /// One player's stream into an output.
 #[derive(derive_more::Debug)]
@@ -256,5 +254,45 @@ mod tests {
             .expect("a null sink always opens");
         sink.write(&[0; 64]).expect("discarded");
         assert_eq!(sink.buffered(), Duration::ZERO);
+    }
+
+    /// The microphone config builds its echo canceller from its output.
+    ///
+    /// It needs an output device, so it runs by hand. `publish::tests` covers
+    /// the publication side without a device.
+    #[cfg(all(feature = "aec", feature = "playback"))]
+    #[tokio::test]
+    #[ignore = "needs an audio output device"]
+    async fn echo_cancellation_attaches_the_canceller() {
+        let output = AudioOutput::open(None)
+            .await
+            .expect("an audio output device");
+        let capture = crate::MicrophoneConfig {
+            echo_reference: Some(Arc::new(output.clone())),
+            ..crate::MicrophoneConfig::default()
+        }
+        .resolve()
+        .expect("the canceller builds");
+        assert!(
+            capture.aec.is_some(),
+            "the microphone config carries no canceller"
+        );
+        let plain = crate::MicrophoneConfig::default()
+            .resolve()
+            .expect("resolves");
+        assert!(plain.aec.is_none());
+    }
+
+    #[cfg(all(feature = "capture", not(feature = "aec")))]
+    #[test]
+    fn echo_cancellation_without_the_feature_is_refused() {
+        let config = crate::MicrophoneConfig {
+            echo_reference: Some(Arc::new(AudioOutput::null().clone())),
+            ..crate::MicrophoneConfig::default()
+        };
+        assert!(matches!(
+            config.resolve(),
+            Err(moq_ext_sources::Error::InvalidConfig { .. })
+        ));
     }
 }
