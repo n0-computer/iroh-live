@@ -19,12 +19,8 @@ use tokio_util::sync::CancellationToken;
 /// A thread cannot be aborted like a tokio task, so dropping this cancels a
 /// token the task selects on.
 #[derive(Debug)]
-pub(crate) struct LocalTask {
+pub struct LocalTask {
     shutdown: CancellationToken,
-    #[cfg_attr(
-        not(any(feature = "capture", test)),
-        expect(dead_code, reason = "only a microphone waits for its thread")
-    )]
     joined: Option<oneshot::Receiver<()>>,
 }
 
@@ -42,11 +38,7 @@ impl LocalTask {
     ///
     /// Returns at once after that, on every later call. Cancellation safe: a
     /// later call waits again.
-    #[cfg_attr(
-        not(any(feature = "capture", test)),
-        expect(dead_code, reason = "only a microphone waits for its thread")
-    )]
-    pub(crate) async fn joined(&mut self) {
+    pub async fn joined(&mut self) {
         let Some(rx) = self.joined.as_mut() else {
             return;
         };
@@ -65,11 +57,7 @@ impl LocalTask {
 /// `make` gets to watch.
 ///
 /// Fails if the runtime or the thread cannot be started.
-pub(crate) fn spawn<F, Fut>(
-    name: &str,
-    stop: CancellationToken,
-    make: F,
-) -> std::io::Result<LocalTask>
+pub fn spawn<F, Fut>(name: &str, stop: CancellationToken, make: F) -> std::io::Result<LocalTask>
 where
     F: FnOnce(CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()>,

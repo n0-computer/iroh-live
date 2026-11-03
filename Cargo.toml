@@ -8,6 +8,7 @@ members = [
     "moq-ext-adaptive",
     "iroh-live-rooms",
     "iroh-live-media",
+    "moq-ext-sources",
     "iroh-live-media-android",
     "iroh-live-egui",
     "demos/android/rust",
@@ -58,6 +59,7 @@ moq-ext-adaptive = { path = "moq-ext-adaptive" }
 iroh-live-rooms = { path = "iroh-live-rooms" }
 iroh-live-media = { path = "iroh-live-media", default-features = false }
 iroh-live-media-android = { path = "iroh-live-media-android" }
+moq-ext-sources = { path = "moq-ext-sources", default-features = false }
 iroh-live-egui = { path = "iroh-live-egui" }
 
 [workspace.lints.rust]

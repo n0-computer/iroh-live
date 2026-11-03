@@ -4532,12 +4532,12 @@ dependencies = [
  "hang",
  "moq-audio",
  "moq-ext-adaptive",
+ "moq-ext-sources",
  "moq-mux",
  "moq-net",
  "moq-video",
  "n0-error",
  "n0-future",
- "symphonia",
  "tokio",
  "tokio-util",
  "tracing",
@@ -5591,6 +5591,24 @@ dependencies = [
  "moq-net",
  "n0-future",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-sources"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "derive_more",
+ "moq-audio",
+ "moq-mux",
+ "moq-net",
+ "moq-video",
+ "n0-error",
+ "n0-future",
+ "symphonia",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 

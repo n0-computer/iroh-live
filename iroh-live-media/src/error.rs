@@ -100,7 +100,6 @@ impl Error {
     }
 
     /// Creates an [`Error::Device`] from an upstream error.
-    #[cfg(any(feature = "capture", feature = "playback"))]
     pub(crate) fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_std(source)
@@ -157,6 +156,18 @@ impl Error {
     }
 }
 
+impl From<moq_ext_sources::Error> for Error {
+    fn from(err: moq_ext_sources::Error) -> Self {
+        use moq_ext_sources::Error as Source;
+        match err {
+            Source::Device { source, .. } => n0_error::e!(Self::Device { source }),
+            Source::InvalidConfig { reason, .. } => n0_error::e!(Self::InvalidConfig { reason }),
+            Source::Closed { .. } => n0_error::e!(Self::Closed),
+            Source::Io { source, .. } => n0_error::e!(Self::Io { source }),
+        }
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(source: std::io::Error) -> Self {
         n0_error::e!(Self::Io { source })
@@ -195,9 +206,4 @@ pub enum SwitchError {
     Ended,
 }
 
-/// The source a [`FrameSender`](crate::FrameSender) feeds has gone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
-#[display("the source has closed")]
-pub struct Closed;
-
-impl std::error::Error for Closed {}
+pub use moq_ext_sources::Closed;
