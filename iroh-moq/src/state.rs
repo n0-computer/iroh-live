@@ -4,12 +4,14 @@
 //! `publish` and `unpublish` are synchronous.
 //!
 //! Each link has its own publish origin. Offering a publication on a link adds
-//! a dynamic route at its path there (see [`serve`]).
+//! a route at its path there (see [`serve`]). What links announce goes straight
+//! into the node's route table instead, so the state only maps a route's source
+//! back to its link (see [`State::link_for`]).
 
 use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
-use moq_net::{Path, broadcast, origin};
+use moq_net::{Hop, Instance, Path, broadcast, origin, origin::Source};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -25,8 +27,6 @@ pub(crate) struct State {
     next_id: u64,
     pub(crate) publications: BTreeMap<u64, PubEntry>,
     pub(crate) links: BTreeMap<u64, LinkEntry>,
-    /// Which link last served each path a subscriber asked for.
-    served: HashMap<Path, u64>,
     /// Set once the node shuts down; nothing is added after that.
     pub(crate) closed: bool,
 }
@@ -38,6 +38,11 @@ pub(crate) struct PubEntry {
     #[debug(skip)]
     pub(crate) broadcast: broadcast::Consumer,
     pub(crate) audience: AudienceKind,
+    /// The stream every offer of the publication serves.
+    ///
+    /// One instance on every link and in the route table, so a reader moves
+    /// between a direct route and a relay's without a break.
+    pub(crate) instance: Instance,
     /// The publication's route in the node's own route table.
     ///
     /// Only for an `Everyone` publication, so a local subscriber resolves it.
@@ -61,6 +66,8 @@ impl Drop for PubEntry {
 pub(crate) struct LinkEntry {
     pub(crate) kind: LinkKind,
     pub(crate) remote: Option<EndpointId>,
+    /// The identity the link's routes are attributed to in the route table.
+    pub(crate) hop: Hop,
     pub(crate) grant: Grant,
     /// What this link's peer is offered.
     #[debug(skip)]
@@ -95,12 +102,10 @@ impl State {
         }
     }
 
-    /// Removes a link, withdrawing its offers and forgetting its routes.
+    /// Removes a link, withdrawing its offers. Its session takes its routes
+    /// out of the route table as it ends.
     pub(crate) fn remove_link(&mut self, id: u64) {
-        if self.links.remove(&id).is_none() {
-            return;
-        }
-        self.served.retain(|_, link| *link != id);
+        self.links.remove(&id);
     }
 
     /// Adds a publication and offers it on every link it should reach.
@@ -157,22 +162,30 @@ impl State {
         let offer = serve(
             &entry.publish,
             &publication_entry.path,
+            &publication_entry.instance,
             &publication_entry.broadcast,
         );
         entry.offers.insert(publication, offer);
     }
 
-    /// Records that link `link` served a subscriber's request for `path`.
-    pub(crate) fn set_served(&mut self, path: Path, link: u64) {
-        self.served.insert(path, link);
-    }
-
-    /// Returns the link that last served `path`, if it still exists.
-    pub(crate) fn served(&self, path: &Path) -> Option<u64> {
-        self.served
-            .get(path)
-            .copied()
-            .filter(|link| self.links.contains_key(link))
+    /// Returns the link whose peer announced a route from `source`.
+    ///
+    /// A route is attributed to the hop its session's peer declares, or else
+    /// to the hop this node assigned the session. The two agree for peers on
+    /// this crate. A relay that declares a hop of its own matches no link, and
+    /// stands for the oldest relay link that feeds the table. `None` for a
+    /// route published on this node.
+    pub(crate) fn link_for(&self, source: Source) -> Option<u64> {
+        let Source::Peer(hop) = source else {
+            return None;
+        };
+        let by_hop = self.links.iter().find(|(_, link)| link.hop == hop);
+        let relay = || {
+            self.links
+                .iter()
+                .find(|(_, link)| link.kind == LinkKind::Relay && link.consume)
+        };
+        by_hop.or_else(relay).map(|(id, _)| *id)
     }
 
     /// Reports whether a relay link feeds the route table.
@@ -203,13 +216,14 @@ fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
     }
 }
 
-/// Offers `broadcast` at `path` on `origin` until the handle drops.
+/// Offers `broadcast` at `path` on `origin`, as `instance`, until the handle drops.
 ///
 /// The offer also ends with the broadcast. Returns `None`, and logs why, if
 /// the origin refuses the path.
 pub(crate) fn serve(
     origin: &origin::Producer,
     path: &Path,
+    instance: &Instance,
     broadcast: &broadcast::Consumer,
 ) -> Option<Serve> {
     let publication = match origin.create_broadcast(path) {
@@ -220,7 +234,9 @@ pub(crate) fn serve(
         }
     };
     let copy = moq_ext_forward::forward(broadcast.clone(), publication.broadcast().clone());
-    if let Err(err) = publication.announce(origin::Route::default()) {
+    if let Err(err) =
+        publication.announce(origin::Route::default().with_instance(instance.clone(), 0))
+    {
         warn!(%path, %err, "could not announce the broadcast");
         return None;
     }
@@ -300,7 +316,8 @@ mod tests {
         let origin = origin();
         let (broadcast, _writer) = writing();
         let path = Path::new("live/publisher/cam").expect("a valid path");
-        let offer = serve(&origin, &path, &broadcast.consume()).expect("offer");
+        let offer =
+            serve(&origin, &path, &Instance::random(), &broadcast.consume()).expect("offer");
         let (served, _subscriber) = read(&origin, &path).await;
 
         drop(offer);

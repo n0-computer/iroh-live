@@ -6,7 +6,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use moq_net::{Path, broadcast};
+use moq_net::{Instance, Path, broadcast};
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
@@ -205,8 +205,9 @@ pub(crate) fn publish(
             }
         })
     };
+    let instance = Instance::random();
     let local = matches!(audience, Audience::Everyone)
-        .then(|| state::serve(&shared.table, &path, &broadcast))
+        .then(|| state::serve(&shared.table, &path, &instance, &broadcast))
         .flatten();
     info!(%path, ?audience, "published");
     let withdrawn = CancellationToken::new();
@@ -216,6 +217,7 @@ pub(crate) fn publish(
             path: path.clone(),
             broadcast,
             audience: AudienceKind::from(&audience),
+            instance,
             _local: local,
             _peers_task: peers_task(&audience, id, &weak),
             _closed_task: AbortOnDropHandle::new(closed_task),

@@ -31,18 +31,14 @@ use crate::{
 /// Returns the moq hop id of the node with endpoint id `id`.
 ///
 /// Derived from the id, so a relay recognizes this node's routes after a
-/// restart. The first eight bytes of an ed25519 key are already uniform.
+/// restart. The first eight bytes of an ed25519 key are already uniform. Masked
+/// below 2^53, since JavaScript clients read hop ids as numbers, and never
+/// zero, which moq reserves.
 pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
     let bytes: [u8; 8] = id.as_bytes()[..8]
         .try_into()
         .expect("an endpoint id is 32 bytes");
-    hop_from(u64::from_le_bytes(bytes))
-}
-
-/// Returns a hop from `value`, masked below 2^53 and never zero.
-///
-/// JavaScript clients read hop ids as numbers, and moq reserves zero.
-pub(crate) fn hop_from(value: u64) -> moq_net::Hop {
+    let value = u64::from_le_bytes(bytes);
     moq_net::Hop::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero and below 2^62")
 }
 
@@ -79,7 +75,8 @@ pub(crate) struct SessionInner {
     pub(crate) request: SessionRequest,
     pub(crate) connection: Connection,
     pub(crate) moq: moq_net::Session,
-    pub(crate) ingest: origin::Producer,
+    /// The identity the peer's routes are attributed to in the route table.
+    pub(crate) hop: moq_net::Hop,
     pub(crate) link_state: LinkState,
     pub(crate) shared: Weak<Shared>,
     /// Set by [`Session::close`], so a connect right after it dials anew.
@@ -117,9 +114,19 @@ impl Session {
         &self.inner.request
     }
 
-    /// Resolves `path` through this session only.
+    /// Resolves `path` through this session's peer, and not through a relay.
     ///
-    /// Waits for the peer to announce the path.
+    /// Waits for the peer to announce the path, then pins the subscription to
+    /// the stream the peer announced: moq may move it to another route of
+    /// that stream, but never to another stream at the path. A relay or a
+    /// third peer that serves the same path under another instance is never
+    /// resolved.
+    ///
+    /// The session is told from other links by the hop its routes carry: the
+    /// one derived from the peer's id, or a hop the peer declares that no other
+    /// link has (a relay does). Two sessions with one peer share it, and so do
+    /// peers that declare hops of their own; grants that name each peer keep a
+    /// path to one.
     ///
     /// # Errors
     ///
@@ -134,27 +141,42 @@ impl Session {
         if !self.inner.grant.allows_publish(path.as_str()) {
             return Err(e!(Error::NotGranted { path }));
         }
-        let ingest = self.inner.ingest.consume();
-        let broadcast = tokio::select! {
-            resolved = crate::route::routed(&ingest, &path) => match resolved {
-                Ok(broadcast) => broadcast,
+        let Some(shared) = self.inner.shared.upgrade() else {
+            return Err(e!(Error::ShutDown));
+        };
+        let view = route::direct_view(&shared.table);
+        let instance = tokio::select! {
+            found = route::announced_by(&view, &path, |hop| {
+                // A peer that declares a hop of its own, such as a relay, is
+                // not told by `hop_for`: it is this session's unless another
+                // link has that hop.
+                hop == self.inner.hop
+                    || !shared
+                        .state
+                        .lock()
+                        .expect("poisoned")
+                        .links
+                        .values()
+                        .any(|link| link.hop == hop)
+            }) => match found {
+                Ok(instance) => instance,
                 Err(moq_net::Error::Closed) => return Err(e!(Error::NotAnnounced { path })),
                 Err(source) => return Err(e!(Error::Unresolved { path, source })),
             },
             _ = self.inner.moq.closed() => return Err(e!(Error::NotAnnounced { path })),
         };
+        let broadcast = match view.request(&path, instance.clone()).await {
+            Ok(broadcast) => broadcast,
+            Err(moq_net::Error::Closed) => return Err(e!(Error::NotAnnounced { path })),
+            Err(source) => return Err(e!(Error::Unresolved { path, source })),
+        };
         Ok(Subscription::new(
             path,
-            ingest,
+            view,
             broadcast,
-            Some(self.inner.link),
+            Some((self.inner.link, instance)),
             self.inner.shared.clone(),
         ))
-    }
-
-    /// Returns what the peer announces on this session, within its grant.
-    pub fn origin(&self) -> origin::Consumer {
-        self.inner.ingest.consume()
     }
 
     /// Returns the connection monitor's latest reading of this session.
@@ -191,51 +213,47 @@ impl Session {
     }
 }
 
-/// A session's two origins: what its peer is offered, and what it announces.
+/// What a session's peer is offered, and the driver that runs it.
+///
+/// What the peer announces needs no origin of its own: it goes into the
+/// node's route table (see [`subscriber`]).
 pub(crate) struct Origins {
     pub(crate) publish: origin::Producer,
-    pub(crate) publish_driver: origin::Driver,
-    pub(crate) ingest: origin::Producer,
-    pub(crate) ingest_driver: origin::Driver,
+    driver: origin::Driver,
 }
 
 impl Origins {
-    /// Creates both origins under the node's identity.
+    /// Creates the publish origin under the node's identity.
     pub(crate) fn new(shared: &Shared) -> Self {
-        let (publish, publish_driver) = origin::Producer::new(shared.table.config());
-        let (ingest, ingest_driver) = origin::Producer::new(shared.table.config());
-        Self {
-            publish,
-            publish_driver,
-            ingest,
-            ingest_driver,
-        }
+        let (publish, driver) = origin::Producer::new(shared.table.config());
+        Self { publish, driver }
     }
 
-    /// Runs both drivers while the handles live, and returns the ingest origin.
-    pub(crate) fn run(self) -> (origin::Producer, [AbortOnDropHandle<()>; 2]) {
-        let run = |driver| {
-            AbortOnDropHandle::new(tokio::spawn(async move {
-                moq_net::time::run(driver).await;
-            }))
-        };
-        let drivers = [run(self.publish_driver), run(self.ingest_driver)];
-        (self.ingest, drivers)
+    /// Runs the driver while the handle lives.
+    pub(crate) fn run(self) -> AbortOnDropHandle<()> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            moq_net::time::run(self.driver).await;
+        }))
     }
+}
 
-    /// Returns the ingest origin scoped to what `grant` lets the peer publish.
-    ///
-    /// `None` if it lets the peer publish nothing.
-    pub(crate) fn subscriber(&self, grant: &Grant) -> Option<origin::Producer> {
-        if grant.publish.is_empty() {
-            return None;
-        }
-        match self.ingest.scope("", &grant.publish) {
-            Ok(scoped) => Some(scoped),
-            Err(err) => {
-                warn!(%err, "the grant's publish patterns fit no path; ingesting nothing");
-                None
-            }
+/// Returns where a session writes what its peer announces: the route table,
+/// tagged [`origin::Link::Peer`] and scoped to what `grant` lets the peer publish.
+///
+/// `None` if it lets the peer publish nothing.
+pub(crate) fn subscriber(table: &origin::Producer, grant: &Grant) -> Option<origin::Producer> {
+    if grant.publish.is_empty() {
+        return None;
+    }
+    match table
+        .clone()
+        .with_link(origin::Link::Peer)
+        .scope("", &grant.publish)
+    {
+        Ok(scoped) => Some(scoped),
+        Err(err) => {
+            warn!(%err, "the grant's publish patterns fit no path; ingesting nothing");
+            None
         }
     }
 }
@@ -269,7 +287,7 @@ pub(crate) async fn dial_session(
     let mut client = moq_net::Client::new()
         .with_publisher(origins.publish.consume())
         .with_peer_hop(hop_for(&remote_id));
-    if let Some(subscriber) = origins.subscriber(&grant) {
+    if let Some(subscriber) = subscriber(&shared.table, &grant) {
         client = client.with_subscriber(subscriber);
     }
     if let Some(cost) = options.cost {
@@ -553,7 +571,7 @@ impl Actor {
                 request,
                 connection: connection.clone(),
                 moq: moq.clone(),
-                ingest: origins.ingest.clone(),
+                hop: hop_for(&remote),
                 link_state: link_state.clone(),
                 shared: Arc::downgrade(&self.shared),
                 closing: Default::default(),
@@ -564,6 +582,7 @@ impl Actor {
             LinkEntry {
                 kind: LinkKind::Direct,
                 remote: Some(remote),
+                hop: hop_for(&remote),
                 grant,
                 publish: origins.publish.clone(),
                 public: true,
@@ -591,15 +610,11 @@ impl Actor {
         }
 
         info!(remote = %remote.fmt_short(), link, dialed, "session started");
-        let shared = self.shared.clone();
         let cancel = self.shared.shutdown.child_token();
         let task_session = session.clone();
         let handle = self.sessions.spawn(
             async move {
-                let (ingest, _drivers) = origins.run();
-                let _bridge = AbortOnDropHandle::new(tokio::spawn(
-                    route::bridge(shared, link, ingest, false).in_current_span(),
-                ));
+                let _driver = origins.run();
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
                     link::Source::Direct(moq.clone(), connection),
                     link_state,

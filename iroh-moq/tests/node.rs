@@ -156,7 +156,7 @@ async fn a_peers_audience_follows_its_set() {
 
     // Taking her out again withdraws the path from her, and only from her.
     let path = publication.path().as_str();
-    let mut carol_updates = session.origin().announced();
+    let mut carol_updates = carol.moq.origin().announced();
     announced(&mut carol_updates, path).await;
     members.set(BTreeSet::from([bob.id()])).ok();
     retracted(&mut carol_updates, path).await;
@@ -194,10 +194,10 @@ async fn offers_show_in_the_route_table() {
         .moq
         .publish(&path, &broadcast.producer, Audience::Peers(members.clone()))
         .expect("publish");
-    let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+    let _session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    announced(&mut session.origin().announced(), &path).await;
+    announced(&mut bob.moq.origin().announced(), &path).await;
     let mut updates = bob.moq.origin().announced();
     announced(&mut updates, &path).await;
 
@@ -438,13 +438,13 @@ async fn a_peer_cannot_route_another_publishers_path() {
     step("mallory connects", mallory.moq.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
-    let session = step("bob sees mallory", session_with(&bob, mallory.id())).await;
+    let _session = step("bob sees mallory", session_with(&bob, mallory.id())).await;
 
     // Her own path reaches bob's table, and the forged one does not even
     // reach her session: the grant refuses it.
     let mut table = bob.moq.origin().announced();
     announced(&mut table, own.path().as_str()).await;
-    let mut from_mallory = session.origin().announced();
+    let mut from_mallory = bob.moq.origin().announced();
     let path = publication.path().as_str();
     tokio::join!(
         stays_pending(
