@@ -219,7 +219,7 @@ pub(crate) fn serve(
             return None;
         }
     };
-    let copy = crate::forward::forward(broadcast.clone(), publication.broadcast().clone());
+    let copy = moq_ext_forward::forward(broadcast.clone(), publication.broadcast().clone());
     if let Err(err) = publication.announce(origin::Route::default()) {
         warn!(%path, %err, "could not announce the broadcast");
         return None;

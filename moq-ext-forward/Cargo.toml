@@ -1,0 +1,17 @@
+[package]
+name = "moq-ext-forward"
+version = "0.1.0"
+edition = "2024"
+description = "Serve a moq-net broadcast in one origin from a broadcast held elsewhere"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+moq-net = { workspace = true }
+n0-future = "0.3.2"
+tokio = { version = "1.53.1", features = ["macros"] }
+tracing = "0.1.44"

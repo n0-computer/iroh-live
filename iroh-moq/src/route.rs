@@ -274,7 +274,7 @@ fn subscription(
 /// Mirrors the routes in `ingest` into the node's route table.
 ///
 /// Each announced path enters the table as a broadcast of its own, with the
-/// route's hops and cost, served from `ingest` (see [`crate::forward`]). The
+/// route's hops and cost, served from `ingest` (see [`moq_ext_forward`]). The
 /// first track a reader asks for records which link served the path. A direct
 /// session's ingest holds only what its grant lets the peer publish.
 ///
@@ -367,7 +367,7 @@ async fn mirror(
             }
         }
     };
-    let copy = crate::forward::forward_with(broadcast, publication.broadcast().clone(), served);
+    let copy = moq_ext_forward::forward_with(broadcast, publication.broadcast().clone(), served);
     tokio::pin!(copy);
     if let Err(err) = publication.announce(routes.borrow_and_update().clone()) {
         warn!(link, %path, %err, "could not announce a mirrored route");

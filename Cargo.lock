@@ -4655,6 +4655,7 @@ dependencies = [
  "derive_more",
  "futures",
  "iroh",
+ "moq-ext-forward",
  "moq-net",
  "moq-tokio",
  "n0-error",
@@ -5572,6 +5573,16 @@ dependencies = [
  "kio 0.6.2",
  "rand",
  "rand_pcg",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-forward"
+version = "0.1.0"
+dependencies = [
+ "moq-net",
+ "n0-future",
+ "tokio",
  "tracing",
 ]
 

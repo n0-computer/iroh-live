@@ -4,6 +4,7 @@ members = [
     "iroh-live-cli",
     "iroh-live-relay",
     "iroh-moq",
+    "moq-ext-forward",
     "iroh-live-rooms",
     "iroh-live-media",
     "iroh-live-media-android",
@@ -51,6 +52,7 @@ egui-wgpu = "0.36.2"
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
 iroh-moq = { path = "iroh-moq" }
+moq-ext-forward = { path = "moq-ext-forward" }
 iroh-live-rooms = { path = "iroh-live-rooms" }
 iroh-live-media = { path = "iroh-live-media", default-features = false }
 iroh-live-media-android = { path = "iroh-live-media-android" }

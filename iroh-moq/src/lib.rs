@@ -62,7 +62,6 @@
 mod adapter;
 mod admission;
 mod error;
-pub mod forward;
 mod link;
 mod node;
 mod preset;
@@ -80,9 +79,11 @@ pub use moq_net as net;
 #[doc(hidden)]
 pub use adapter::Session as AdaptedTransport;
 
+/// Serves a broadcast created in one origin from one held elsewhere.
+pub use moq_ext_forward as forward;
 /// Copies a broadcast into another, for this crate's tests.
 #[doc(hidden)]
-pub use forward::forward as forward_broadcast;
+pub use moq_ext_forward::forward as forward_broadcast;
 
 pub use self::{
     admission::{

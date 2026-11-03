@@ -1,11 +1,12 @@
 //! Serves a broadcast created in one origin from a broadcast held elsewhere.
 //!
 //! moq-net creates every broadcast inside the origin that offers it, and only
-//! its own sessions can hand an origin a broadcast they already hold. The node
-//! offers one publication on several session origins, and answers route-table
-//! requests from a link's own origin, so it copies: each track a reader asks
-//! for in `dest` is subscribed in `source` and its groups and frames are
-//! written through. Frames share their payload, so a copy moves references, not
+//! its own sessions can hand an origin a broadcast they already hold. An
+//! application that offers one broadcast in several origins (say, one per
+//! peer, each seeing a different set), or re-serves what one origin learned in
+//! another, has to copy: [`forward`] subscribes each track a reader asks for in
+//! `dest` in `source`, and writes its groups and frames through. The readers'
+//! demand (delay, priority, ranges) travels upstream as it changes. Frames share their payload, so a copy moves references, not
 //! bytes. Nothing is read from `source` that no reader of `dest` asked for.
 
 use moq_net::{broadcast, group, track};
@@ -25,7 +26,7 @@ pub fn forward(source: broadcast::Consumer, dest: broadcast::Producer) -> impl F
 /// The request handler is registered when this is called, not when the future
 /// is first polled: a reader may ask for a track in between, and with no
 /// handler yet the broadcast would answer `NotFound`.
-pub(crate) fn forward_with(
+pub fn forward_with(
     source: broadcast::Consumer,
     dest: broadcast::Producer,
     requested: impl Fn(),
