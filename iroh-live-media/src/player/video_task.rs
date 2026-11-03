@@ -27,6 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use moq_ext_adaptive::{Abandoned, Outcome, Switcher, Target, Verdict};
 use n0_future::{
     FutureExt,
     boxed::BoxFuture,
@@ -39,7 +40,6 @@ use tracing::{Instrument, debug, error, error_span, info, warn};
 use super::{
     Abandon, Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
     select::{DecodeSettings, Desired, Failure, Report},
-    switch::{Abandoned, Outcome, Switcher, Target, Verdict},
 };
 use crate::{
     SlotState,
@@ -137,7 +137,7 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut shown = RateMeter::default();
 
     loop {
-        let deadline = switcher.deadline();
+        let deadline = switcher.deadline().map(tokio::time::Instant::from_std);
         let delivering = delivery.is_some();
         // Why a decoder's track stopped, read before the switcher drops the
         // reader.
@@ -168,7 +168,7 @@ pub(crate) async fn run(inputs: Inputs) {
                 match next {
                     Some(next) => {
                         let Desired { target, settings, config, step_down } = next;
-                        let outcome = switcher.request(target, tokio::time::Instant::now(), |_, target| {
+                        let outcome = switcher.request(target, tokio::time::Instant::now().into_std(), |_, target| {
                             open_replacement(target, &settings, &config, &stats)
                         });
                         if step_down && switcher.switching_to().is_some() && switcher.current().is_some() {
@@ -204,7 +204,7 @@ pub(crate) async fn run(inputs: Inputs) {
             () = async { tokio::time::sleep_until(deadline.expect("guarded")).await },
                 if deadline.is_some() =>
             {
-                switcher.expire(tokio::time::Instant::now())
+                switcher.expire(tokio::time::Instant::now().into_std())
             }
 
             due = async { delivery.as_mut().expect("guarded").due.as_mut().await },
@@ -234,7 +234,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     switcher.opened(generation, result)
                 }
                 Event::Replacement(Some(frame)) => {
-                    match switcher.replacement_frame(frame.timestamp.into(), tokio::time::Instant::now()) {
+                    match switcher.replacement_frame(frame.timestamp.into(), tokio::time::Instant::now().into_std()) {
                         (Verdict::Promote, outcome) => {
                             // The incumbent's pending picture is older, so it
                             // is replaced.

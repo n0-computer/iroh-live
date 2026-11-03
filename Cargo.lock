@@ -4531,6 +4531,7 @@ dependencies = [
  "derive_more",
  "hang",
  "moq-audio",
+ "moq-ext-adaptive",
  "moq-mux",
  "moq-net",
  "moq-video",
@@ -5573,6 +5574,13 @@ dependencies = [
  "kio 0.6.2",
  "rand",
  "rand_pcg",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-adaptive"
+version = "0.1.0"
+dependencies = [
  "tracing",
 ]
 

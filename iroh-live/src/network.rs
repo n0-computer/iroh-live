@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use iroh_live_media::{Bitrate, NetworkSample};
+use iroh_live_media::NetworkSample;
 use iroh_moq::{LinkId, Subscription};
 
 /// Returns the network signals of the link serving `subscription`.
@@ -31,7 +31,7 @@ pub(crate) fn signals(
             sample.rtt = link.sample.rtt;
             sample.min_rtt = link.sample.min_rtt;
             sample.loss = link.sample.loss_rate;
-            sample.delivery = link.sample.delivery_bps.map(Bitrate::from_bps);
+            sample.delivery = link.sample.delivery_bps;
         }
         sample
     }

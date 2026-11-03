@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use hang::catalog::VideoConfig;
+use moq_ext_adaptive::Rung;
 
 use crate::Error;
 
@@ -31,15 +32,26 @@ impl Catalog {
             .iter()
             .map(|(name, config)| (name.as_str(), config))
             .collect();
-        let pixels = |config: &VideoConfig| {
-            config.coded_width.unwrap_or(0) as u64 * config.coded_height.unwrap_or(0) as u64
-        };
-        ranked.sort_by(|(_, left), (_, right)| {
-            pixels(right)
-                .cmp(&pixels(left))
-                .then(right.bitrate.cmp(&left.bitrate))
+        moq_ext_adaptive::rank(&mut ranked, |(_, config)| {
+            let pixels =
+                config.coded_width.unwrap_or(0) as u64 * config.coded_height.unwrap_or(0) as u64;
+            (pixels, config.bitrate)
         });
         ranked
+    }
+
+    /// Returns the video renditions as a ladder for rendition selection, largest
+    /// first.
+    pub(crate) fn rungs(&self) -> Vec<Rung> {
+        self.ranked_video()
+            .into_iter()
+            .map(|(name, config)| Rung {
+                name: name.to_string(),
+                bitrate: config.bitrate,
+                height: config.coded_height,
+                stalled: !config.enabled,
+            })
+            .collect()
     }
 
     /// Returns the video rendition named `name`.

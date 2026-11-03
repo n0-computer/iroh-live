@@ -8,7 +8,7 @@
 //! catalog and the network into the rendition that should play. The video
 //! supervisor keeps one decoder playing and at most one replacement warming
 //! up, and hands over once the replacement has caught up
-//! ([`switch`](self::switch)). The audio task decodes into the output and
+//! (`moq_ext_adaptive::Switcher`). The audio task decodes into the output and
 //! reports how much it has buffered. The video waits on that figure.
 
 use std::{sync::Arc, time::Duration};
@@ -28,14 +28,12 @@ use crate::{
 };
 
 mod audio;
-mod bound;
 mod clock;
 mod select;
-pub(crate) mod switch;
 mod video_task;
 
-pub use self::bound::Adaptation;
 pub(crate) use self::clock::PlayoutClock;
+pub use moq_ext_adaptive::Adaptation;
 
 /// How to choose the video rendition.
 #[derive(Debug, Clone, PartialEq, Eq)]

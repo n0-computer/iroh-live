@@ -4,11 +4,7 @@
 //! failures into one [`Desired`] value for the video supervisor. It never
 //! opens a decoder.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, watch},
@@ -17,27 +13,14 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace};
 
-use super::{
-    Controls, Latency, PlayerStatus, RenditionMode,
-    bound::{Adaptation, Bound, Constraints, Rung},
-    switch::Target,
+use moq_ext_adaptive::{
+    Adaptation, Backoffs, Bound, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, Target, VANISH_GRACE,
 };
+
+use super::{Controls, Latency, PlayerStatus, RenditionMode};
 use crate::{
     Catalog, RemoteBroadcast, SlotState, error::Error, publish::status::send_if_changed, video,
 };
-
-/// How long a rendition whose decoder failed is left alone.
-const EXCLUSION: Duration = Duration::from_secs(10);
-
-/// How long after a track ended with no successor the target is asked for again.
-const REVIVE_AFTER: Duration = Duration::from_secs(2);
-
-/// How long a catalog may lack video before the video counts as over.
-///
-/// A publisher replacing its video removes the old renditions before it adds
-/// the new ones. A closing publisher empties its catalog before it ends, just
-/// before the next route in a route table serves the path. Both gaps are brief.
-const VANISH_GRACE: Duration = Duration::from_secs(3);
 
 /// What the decoder of a target is built with.
 #[derive(derive_more::Debug, Clone)]
@@ -119,41 +102,6 @@ pub(crate) struct Inputs {
     pub shutdown: CancellationToken,
 }
 
-/// The renditions whose decoders failed, and until when each is left alone.
-#[derive(Debug, Default)]
-struct Backoffs(BTreeMap<String, Instant>);
-
-impl Backoffs {
-    /// Leaves `rendition` alone for [`EXCLUSION`] from `now`.
-    fn fail(&mut self, rendition: &str, now: Instant) {
-        self.0.insert(rendition.to_string(), now + EXCLUSION);
-    }
-
-    /// Returns the renditions left alone at `now`.
-    fn excluded(&self, now: Instant) -> BTreeSet<String> {
-        self.0
-            .iter()
-            .filter(|(_, until)| **until > now)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-
-    /// Reports whether `rendition` is left alone at `now`.
-    fn is_excluded(&self, rendition: &str, now: Instant) -> bool {
-        self.0.get(rendition).is_some_and(|until| *until > now)
-    }
-
-    /// Reports whether any rendition is left alone at `now`.
-    fn any_excluded(&self, now: Instant) -> bool {
-        self.0.values().any(|until| *until > now)
-    }
-
-    /// Forgets every failure, for a new decoder configuration.
-    fn clear(&mut self) {
-        self.0.clear();
-    }
-}
-
 /// The decoder configuration a target was last built under.
 #[derive(Debug, Clone, PartialEq)]
 struct Config {
@@ -212,7 +160,7 @@ pub(crate) async fn run(inputs: Inputs) {
     loop {
         let auto = matches!(*mode.borrow(), RenditionMode::Auto { .. });
         let ticking = (auto && network.is_some())
-            || backoffs.any_excluded(Instant::now())
+            || backoffs.any_excluded(Instant::now().into_std())
             || vanished_since.is_some();
         if !std::mem::take(&mut first) {
             tokio::select! {
@@ -278,7 +226,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     Some(Report::Failed(reported)) => {
                         let rendition = &reported.target.rendition;
                         if reported.exclude && !reported.config_only {
-                            backoffs.fail(rendition, Instant::now());
+                            backoffs.fail(rendition, Instant::now().into_std());
                             info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
                         }
                         failed = Some(reported);
@@ -289,6 +237,7 @@ pub(crate) async fn run(inputs: Inputs) {
         }
 
         let now = Instant::now();
+        let std_now = now.into_std();
 
         let mode = mode.borrow().clone();
         let Some(catalog) = catalog.borrow_and_update().clone() else {
@@ -335,16 +284,19 @@ pub(crate) async fn run(inputs: Inputs) {
             .map(|desired| desired.target.rendition.clone())
             .or_else(|| on_screen.clone());
 
-        let (choice, why) = choose(
-            &mode,
-            &catalog,
-            &backoffs.excluded(now),
+        let rungs = catalog.rungs();
+        let chosen = moq_ext_adaptive::choose(
+            &mode_of(&mode),
+            &rungs,
+            &backoffs.excluded(std_now),
             current.as_deref(),
             on_screen.as_deref(),
             sample.as_ref(),
             &mut bound,
-            now,
+            std_now,
         );
+        let choice = chosen.rendition;
+        let why = chosen.pin.map(|problem| pin_error(problem, &catalog));
         let why_changed = !same_error(&last_why, &why);
         send_if_changed(&status, |status| {
             if why_changed {
@@ -361,13 +313,12 @@ pub(crate) async fn run(inputs: Inputs) {
         if why_changed {
             last_why = why;
         }
-        let ranked = catalog.ranked_video();
-        let rank = |name: &str| ranked.iter().position(|(known, _)| *known == name);
-        let step_down = matches!(mode, RenditionMode::Auto { .. })
-            && match (choice.as_deref(), on_screen.as_deref()) {
-                (Some(choice), Some(playing)) => rank(choice) > rank(playing),
-                _ => false,
-            };
+        let step_down = moq_ext_adaptive::step_down(
+            &mode_of(&mode),
+            &rungs,
+            choice.as_deref(),
+            on_screen.as_deref(),
+        );
         let next = choice.and_then(|name| {
             let config = catalog.video.renditions.get(&name)?.clone();
             Some(Desired {
@@ -397,7 +348,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let retry = match (&failed, &next) {
             (Some(failed), Some(next)) => {
                 failed.target == next.target
-                    && !backoffs.is_excluded(&failed.target.rendition, now)
+                    && !backoffs.is_excluded(&failed.target.rendition, std_now)
                     && (!failed.config_only || nothing_playing)
             }
             _ => false,
@@ -425,154 +376,33 @@ fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
     }
 }
 
-/// Picks the rendition to play, and why a pin could not be honoured.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the rendition asked for and the one on screen are both weighed"
-)]
-fn choose(
-    mode: &RenditionMode,
-    catalog: &Catalog,
-    excluded: &BTreeSet<String>,
-    current: Option<&str>,
-    on_screen: Option<&str>,
-    sample: Option<&crate::NetworkSample>,
-    bound: &mut Bound,
-    now: Instant,
-) -> (Option<String>, Option<Arc<Error>>) {
-    let rungs: Vec<Rung> = catalog
-        .ranked_video()
-        .into_iter()
-        .map(|(name, config)| Rung {
-            name: name.to_string(),
-            bitrate: config.bitrate,
-            height: config.coded_height,
-            stalled: !config.enabled,
-        })
-        .collect();
-    let (max_height, why) = match mode {
-        RenditionMode::Off => return (None, None),
-        RenditionMode::Pinned(name) => {
-            if excluded.contains(name) {
-                (
-                    None,
-                    Some(Arc::new(Error::decoder_msg(format!(
-                        "the decoder for {name} failed; playing another rendition until it \
-                         is retried"
-                    )))),
-                )
-            } else if let Err(err) = catalog.video_rendition(name) {
-                (None, Some(Arc::new(err)))
-            } else {
-                return (Some(name.clone()), None);
-            }
-        }
-        RenditionMode::Auto { max_height } => (*max_height, None),
-    };
-    let constraints = Constraints {
-        max_height,
-        excluded: excluded.clone(),
-    };
-    let choice = match sample {
-        Some(sample) => bound.decide(&rungs, current, on_screen, &constraints, sample, now),
-        // Nothing to adapt to: the best rendition allowed plays.
-        None => best(&rungs, &constraints),
-    };
-    (choice, why)
+/// Converts the player's rendition mode to the selector crate's.
+fn mode_of(mode: &RenditionMode) -> Mode {
+    match mode {
+        RenditionMode::Auto { max_height } => Mode::Auto {
+            max_height: *max_height,
+        },
+        RenditionMode::Pinned(name) => Mode::Pinned(name.clone()),
+        RenditionMode::Off => Mode::Off,
+    }
 }
 
-/// Returns the best rendition the constraints allow, or the smallest if none is.
-fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
-    rungs
-        .iter()
-        .find(|rung| constraints.allows(rung))
-        .or_else(|| rungs.last())
-        .map(|rung| rung.name.clone())
+/// Explains a pin that could not be honoured.
+fn pin_error(problem: PinProblem, catalog: &Catalog) -> Arc<Error> {
+    Arc::new(match problem {
+        PinProblem::Excluded(name) => Error::decoder_msg(format!(
+            "the decoder for {name} failed; playing another rendition until it is retried"
+        )),
+        PinProblem::Unknown(name) => catalog
+            .video_rendition(&name)
+            .err()
+            .unwrap_or_else(|| Error::decoder_msg(format!("no video rendition named {name}"))),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use hang::catalog::{H264, VideoCodec, VideoConfig};
-
     use super::*;
-
-    fn catalog() -> Catalog {
-        let mut hang = hang::catalog::Catalog::default();
-        for (name, height, bitrate) in [("1080p", 1080, 4_000_000), ("360p", 360, 500_000)] {
-            let mut config = VideoConfig::new(VideoCodec::H264(H264 {
-                inline: true,
-                profile: 0x64,
-                constraints: 0,
-                level: 0x1f,
-            }));
-            config.coded_width = Some(height * 16 / 9);
-            config.coded_height = Some(height);
-            config.bitrate = Some(bitrate);
-            hang.video.renditions.insert(name.to_string(), config);
-        }
-        Catalog::from(hang)
-    }
-
-    fn pick(mode: &RenditionMode, excluded: &[&str]) -> (Option<String>, Option<Arc<Error>>) {
-        let excluded = excluded.iter().map(|name| name.to_string()).collect();
-        let mut bound = Bound::new(Adaptation::default());
-        choose(
-            mode,
-            &catalog(),
-            &excluded,
-            None,
-            None,
-            None,
-            &mut bound,
-            Instant::now(),
-        )
-    }
-
-    #[test]
-    fn auto_without_signals_plays_the_best() {
-        assert_eq!(
-            pick(&RenditionMode::auto(), &[]).0.as_deref(),
-            Some("1080p")
-        );
-    }
-
-    #[test]
-    fn auto_respects_the_height_limit() {
-        assert_eq!(
-            pick(&RenditionMode::auto_below(720), &[]).0.as_deref(),
-            Some("360p")
-        );
-    }
-
-    #[test]
-    fn a_pin_plays_its_rendition() {
-        let (choice, why) = pick(&RenditionMode::pinned("360p"), &[]);
-        assert_eq!(choice.as_deref(), Some("360p"));
-        assert!(why.is_none());
-    }
-
-    /// A pin to a missing rendition falls back to automatic and says why.
-    #[test]
-    fn a_pin_to_a_missing_rendition_falls_back_and_says_why() {
-        let (choice, why) = pick(&RenditionMode::pinned("4k"), &[]);
-        assert_eq!(choice.as_deref(), Some("1080p"));
-        assert!(matches!(
-            why.as_deref(),
-            Some(Error::UnknownRendition { .. })
-        ));
-    }
-
-    #[test]
-    fn a_pin_to_a_failing_rendition_falls_back_until_it_is_retried() {
-        let (choice, why) = pick(&RenditionMode::pinned("1080p"), &["1080p"]);
-        assert_eq!(choice.as_deref(), Some("360p"));
-        assert!(why.is_some());
-    }
-
-    #[test]
-    fn off_plays_nothing() {
-        assert_eq!(pick(&RenditionMode::Off, &[]).0, None);
-    }
 
     /// A running selector and what drives it.
     struct Running {
@@ -668,13 +498,5 @@ mod tests {
         let again = next_target(&mut desired, Some(&first)).await;
         assert_eq!(again.rendition, first.rendition);
         assert!(again.config > first.config, "{again:?} after {first:?}");
-    }
-
-    #[test]
-    fn a_failing_rendition_is_skipped_by_auto() {
-        assert_eq!(
-            pick(&RenditionMode::auto(), &["1080p"]).0.as_deref(),
-            Some("360p")
-        );
     }
 }

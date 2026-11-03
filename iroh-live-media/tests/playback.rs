@@ -176,7 +176,7 @@ async fn a_held_shortfall_moves_the_player_down() {
         )
         .expect("a valid ladder");
     let sample = Arc::new(Mutex::new(NetworkSample {
-        delivery: Some(Bitrate::from_bps(10_000_000)),
+        delivery: Some(10_000_000),
         ..NetworkSample::default()
     }));
     let reader = sample.clone();
@@ -191,7 +191,7 @@ async fn a_held_shortfall_moves_the_player_down() {
     // Room for `low` but not for `high`, with no loss, so only the hold delays
     // the switch.
     *sample.lock().expect("poisoned") = NetworkSample {
-        delivery: Some(Bitrate::from_bps(300_000)),
+        delivery: Some(300_000),
         ..NetworkSample::default()
     };
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
