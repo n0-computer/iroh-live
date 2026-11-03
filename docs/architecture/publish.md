@@ -1,6 +1,6 @@
 # Publishing
 
-`iroh_live_media::LocalBroadcast` wraps a `moq_net::broadcast::Producer`. It
+`moq_ext_publisher::LocalBroadcast` wraps a `moq_net::broadcast::Producer`. It
 owns the catalog, a media clock, one video slot and one audio slot.
 `set_video`, `set_encoded_video` and `set_audio` fill a slot and replace what it
 held. `clear_video` and `clear_audio` empty it. `LocalBroadcast::new()` creates
@@ -11,7 +11,7 @@ it at `live/<this node's id>/<name>`.
 Encoding is upstream. `moq_video::encode` and `moq_audio::encode` own the
 codec, its thread and the catalog entry it writes. This crate adds a simulcast
 ladder over one source, and pre-encoded streams published without re-encoding.
-The code is in `iroh-live-media/src/publish/`.
+The code is in `moq-ext-publisher/src/publish/`.
 
 ## Sources
 

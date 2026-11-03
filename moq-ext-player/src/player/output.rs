@@ -11,7 +11,8 @@ use std::time::Duration;
 #[cfg(feature = "playback")]
 use moq_audio::playback;
 
-use crate::{AudioFormat, error::Error};
+use moq_ext_media_core::Error;
+use moq_ext_sources::AudioFormat;
 
 /// Where a player writes its audio: an opened device engine, or nowhere.
 ///
@@ -197,6 +198,7 @@ impl OutputControl {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "capture")]
     use std::sync::Arc;
 
     use super::*;
@@ -226,9 +228,9 @@ mod tests {
         let engine = playback::Engine::open(playback::Config::default())
             .await
             .expect("an audio output device");
-        let capture = crate::MicrophoneConfig {
+        let capture = moq_ext_sources::MicrophoneConfig {
             echo_reference: Some(Arc::new(AudioTarget::from(engine))),
-            ..crate::MicrophoneConfig::default()
+            ..moq_ext_sources::MicrophoneConfig::default()
         }
         .resolve()
         .expect("the canceller builds");
@@ -236,7 +238,7 @@ mod tests {
             capture.aec.is_some(),
             "the microphone config carries no canceller"
         );
-        let plain = crate::MicrophoneConfig::default()
+        let plain = moq_ext_sources::MicrophoneConfig::default()
             .resolve()
             .expect("resolves");
         assert!(plain.aec.is_none());
@@ -245,13 +247,43 @@ mod tests {
     #[cfg(all(feature = "capture", not(feature = "aec")))]
     #[test]
     fn echo_cancellation_without_the_feature_is_refused() {
-        let config = crate::MicrophoneConfig {
+        let config = moq_ext_sources::MicrophoneConfig {
             echo_reference: Some(Arc::new(AudioTarget::null())),
-            ..crate::MicrophoneConfig::default()
+            ..moq_ext_sources::MicrophoneConfig::default()
         };
         assert!(matches!(
             config.resolve(),
             Err(moq_ext_sources::Error::InvalidConfig { .. })
         ));
+    }
+
+    /// A microphone publication asks its echo reference output for a canceller.
+    ///
+    /// A null output counts the request without any device behind it.
+    #[cfg(feature = "aec")]
+    #[tokio::test]
+    async fn a_microphone_publication_asks_for_its_canceller() {
+        use moq_ext_publisher::{AudioEncoding, LocalBroadcast};
+        use moq_ext_sources::{AudioSource, MicrophoneConfig};
+        const TIMEOUT: Duration = Duration::from_secs(30);
+        let output = AudioTarget::null();
+        let config = MicrophoneConfig {
+            echo_reference: Some(std::sync::Arc::new(output.clone())),
+            ..MicrophoneConfig::default()
+        };
+        let broadcast = LocalBroadcast::new();
+        broadcast
+            .set_audio(
+                AudioSource::microphone_unchecked(config),
+                AudioEncoding::voice(),
+            )
+            .expect("a valid encoding");
+        tokio::time::timeout(TIMEOUT, async {
+            while output.cancellers_requested() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the publication never asked for an echo canceller");
     }
 }

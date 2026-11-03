@@ -1,7 +1,7 @@
 //! Remote broadcasts: a catalog and a subscription, not yet playing.
 //!
 //! [`RemoteBroadcast`] reads a broadcast's catalog and keeps the subscription
-//! open. Any number of [`Player`]s and [`Recording`]s can read it.
+//! open. Any number of [`Player`]s and recordings can read it.
 
 use std::{
     sync::{Arc, Mutex},
@@ -15,10 +15,11 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, trace, warn};
 
-use crate::{
-    LocalBroadcast, NetworkSample, Player, PlayerConfig, RecordConfig, Recording, error::Error,
-    network::NetworkSignals,
-};
+use moq_ext_media_core::Error;
+
+use crate::{NetworkSample, Player, PlayerConfig, network::NetworkSignals};
+#[cfg(feature = "record")]
+use crate::{RecordConfig, Recording};
 
 /// How long to look for an ended broadcast again before it counts as gone.
 ///
@@ -51,6 +52,10 @@ enum Origin {
 #[derive(derive_more::Debug)]
 struct Shared {
     #[debug(skip)]
+    #[cfg_attr(
+        not(feature = "record"),
+        allow(dead_code, reason = "only a recording asks for the route table")
+    )]
     origin: Origin,
     #[debug("{:?}", epoch.borrow())]
     epoch: watch::Sender<Epoch>,
@@ -77,8 +82,10 @@ pub struct RemoteBroadcast {
 impl RemoteBroadcast {
     /// Starts reading the catalog of `broadcast`.
     ///
-    /// The remote broadcast ends when `broadcast` ends.
-    pub(crate) fn from_moq(broadcast: moq_net::broadcast::Consumer) -> Self {
+    /// The remote broadcast ends when `broadcast` ends. This reads a broadcast
+    /// that lives in the same process too: pass it the consumer a publisher
+    /// hands out through `moq_net::Consume`.
+    pub fn from_consumer(broadcast: moq_net::broadcast::Consumer) -> Self {
         let span = tracing::info_span!("remote");
         Self::spawn(Origin::Moq, Some(broadcast), span)
     }
@@ -142,11 +149,6 @@ impl RemoteBroadcast {
         }
     }
 
-    /// Reads a local broadcast in-process, without a transport.
-    pub fn local(broadcast: &LocalBroadcast) -> Self {
-        Self::from_moq(moq_net::Consume::consume(broadcast))
-    }
-
     /// Attaches network signals for automatic rendition selection.
     ///
     /// `signals` returns the link as it is now. Players call it a few times a
@@ -178,11 +180,21 @@ impl RemoteBroadcast {
         Player::start(self.clone(), config)
     }
 
+    /// Returns the broadcast consumer players read right now.
+    ///
+    /// It is `None` while a broadcast that follows a route table waits for a
+    /// route, and once the broadcast has closed. A change of route replaces it,
+    /// so ask again rather than keeping it.
+    pub fn consumer(&self) -> Option<moq_net::broadcast::Consumer> {
+        self.shared.epoch.borrow().consumer.clone()
+    }
+
     /// Starts recording the broadcast into `out`, remuxed without decoding.
     ///
     /// # Errors
     ///
     /// Fails if the rendition the config names is not in the catalog.
+    #[cfg(feature = "record")]
     pub fn record(
         &self,
         out: impl tokio::io::AsyncWrite + Send + Unpin + 'static,
@@ -193,8 +205,8 @@ impl RemoteBroadcast {
 
     /// Waits until the broadcast has closed.
     ///
-    /// A broadcast read with [`local`](Self::local) closes when its local
-    /// broadcast does. One that follows a route table, from
+    /// A broadcast read with [`from_consumer`](Self::from_consumer) closes when
+    /// its consumer does. One that follows a route table, from
     /// [`from_origin`](Self::from_origin) or
     /// [`from_resolved`](Self::from_resolved), cannot tell a publisher that
     /// left from a change of route. It asks the table again and closes once no
@@ -230,6 +242,7 @@ impl RemoteBroadcast {
     }
 
     /// Returns the route table, for a broadcast that follows one.
+    #[cfg(feature = "record")]
     pub(crate) fn routed(&self) -> Option<moq_net::origin::Consumer> {
         match &self.shared.origin {
             Origin::Routed { origin, .. } => Some(origin.as_ref().clone()),
@@ -378,8 +391,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_local_broadcast_closes_its_remote() {
-        let broadcast = LocalBroadcast::new();
-        let remote = RemoteBroadcast::local(&broadcast);
+        let broadcast = moq_ext_publisher::LocalBroadcast::new();
+        let remote = RemoteBroadcast::from_consumer(moq_net::Consume::consume(&broadcast));
         broadcast.close();
         tokio::time::timeout(Duration::from_secs(5), remote.closed())
             .await

@@ -1,0 +1,58 @@
+[package]
+name = "moq-ext-player"
+version = "0.1.0"
+edition = "2024"
+description = "a player that picks a rendition and keeps audio and video in step, over moq-video and moq-audio"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1.12.1"
+derive_more = { version = "2.1.1", features = ["display", "debug", "eq", "deref"] }
+hang = { workspace = true }
+moq-audio = { workspace = true }
+moq-ext-adaptive = { workspace = true }
+moq-ext-media-core = { workspace = true }
+moq-ext-sources = { workspace = true }
+moq-mux = { workspace = true }
+moq-net = { workspace = true }
+# The software H.264 fallback. The workspace takes moq-video without defaults,
+# which would drop it.
+moq-video = { workspace = true, features = ["openh264"] }
+n0-error = "1"
+n0-future = "0.3.2"
+tokio = { version = "1.53.1", features = ["sync", "time"] }
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+
+[dev-dependencies]
+# The tests record too.
+moq-ext-player = { path = ".", features = ["record"] }
+# The tests publish what they play. Its `capture` matches the one above, since
+# `moq-ext-sources` is shared.
+moq-ext-publisher = { workspace = true, features = ["capture"] }
+moq-ext-sources = { workspace = true, features = ["pattern", "file"] }
+tokio = { version = "1.53.1", features = ["full"] }
+
+[features]
+default = []
+# Records a broadcast to a file.
+record = []
+# Lets an `AudioTarget` serve as the echo reference of a microphone.
+capture = ["moq-ext-sources/capture", "moq-audio/capture"]
+# Speaker output.
+playback = ["moq-audio/playback"]
+# GPU rendering of decoded frames, through wgpu.
+render = ["moq-video/render"]
+# NVIDIA hardware decoding. Off by default to keep CUDA out.
+nvidia = ["moq-video/nvidia"]
+# The V4L2 H.264 decoder of ARM SoCs such as the Raspberry Pi.
+v4l2 = ["moq-video/v4l2"]
+# Intel and AMD hardware H.264 decoding.
+vaapi = ["moq-video/vaapi"]
+# Echo cancellation reference output.
+aec = ["capture", "playback", "moq-ext-sources/aec", "moq-audio/aec"]

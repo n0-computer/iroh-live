@@ -2,7 +2,7 @@
 
 A publisher that offers several renditions lets each subscriber follow its own
 downlink. Every `Player` in `RenditionMode::Auto` runs a selector task
-(`iroh-live-media/src/player/select.rs`). It reads the broadcast's network
+(`moq-ext-player/src/player/select.rs`). It reads the broadcast's network
 signals every 200 ms, computes which rendition should play, and hands that to
 the video supervisor when it changes. The rule itself is in `player/bound.rs`.
 The decoder swap is the supervisor's job, described in
@@ -29,7 +29,7 @@ Every field is optional because transports measure different things, and
 afterwards reads them. Without signals, the player holds the best rendition its
 constraints allow.
 
-iroh-live-media does not depend on iroh, so it never produces these itself.
+moq-ext-player does not depend on iroh, so it never produces these itself.
 Every `iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that
 reads its MoQ session's statistics every 200 ms and keeps the latest
 `LinkSample`. A direct session starts the history over when the connection

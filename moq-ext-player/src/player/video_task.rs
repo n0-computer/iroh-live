@@ -41,13 +41,13 @@ use super::{
     Abandon, Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
     select::{DecodeSettings, Desired, Failure, Report},
 };
-use crate::{
-    SlotState,
-    error::Error,
-    frames::FrameSlot,
-    publish::status::send_if_changed,
-    stats::{FrameTiming, MediaKind, RateMeter, Smoothed, VideoPlaybackStats},
+use moq_ext_media_core::{
+    Error, SlotState, send_if_changed,
+    stats::{RateMeter, Smoothed},
 };
+use moq_ext_sources::frames::FrameSlot;
+
+use crate::stats::{FrameTiming, MediaKind, VideoPlaybackStats};
 
 /// How many decoded frames a reader may run ahead of the supervisor.
 ///
@@ -785,7 +785,7 @@ mod tests {
             decoder: moq_video::decode::Kind::Software,
             max_age: Duration::from_secs(60),
         };
-        let remote = RemoteBroadcast::from_moq(consumer);
+        let remote = RemoteBroadcast::from_consumer(consumer);
         // The catalog has its own track, so the first snapshot may not have
         // the rendition yet.
         let mut snapshots = remote.catalog();

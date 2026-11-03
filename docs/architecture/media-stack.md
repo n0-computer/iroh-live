@@ -13,8 +13,8 @@ upstream documentation covers them:
   [moq-mux](https://doc.moq.dev/lib/rs/crate/moq-mux): the catalog and the
   container formats.
 
-`iroh-live-media` re-exports them as `iroh_live_media::video` and
-`iroh_live_media::audio`. A crate that uses these paths gets the exact build
+`iroh_live::media` re-exports them as `iroh_live::media::video` and
+`iroh_live::media::audio`. A crate that uses these paths gets the exact build
 our renderer links. This matters most for wgpu: `moq_video::render` returns a
 `wgpu::Texture` from its own wgpu build, and a texture from another wgpu major
 version is a different type.
@@ -56,8 +56,8 @@ renderer for the Pi Zero, which has no Vulkan.
 
 ## Feature flags
 
-`iroh-live-media` defines the device and graphics features, and its
-[README](../../iroh-live-media/README.md#feature-flags) lists them.
+`moq-ext-publisher` and `moq-ext-player` define the device and graphics
+features, and `iroh-live` passes them through.
 `iroh-live` forwards them and defaults to `capture`, `render` and
 `sound-server`. Its `media` feature (default) turns the media stack on, and
 each device feature implies it. `iroh-live-cli` always renders and defaults to

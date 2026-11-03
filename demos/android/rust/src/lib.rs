@@ -46,7 +46,8 @@ const LOGCAT_FILTER: &str = "\
     iroh_live=debug,\
     iroh_live_android=debug,\
     iroh_moq=debug,\
-    iroh_live_media=debug,\
+    moq_ext_player=debug,\
+    moq_ext_publisher=debug,\
     moq_video=debug,\
     moq_audio=debug,\
     moq_net=debug,\
@@ -682,7 +683,8 @@ fn start_h264_impl(size: Size) -> Result<jlong> {
 /// The catalog appears only after the first camera frame. The player waits for
 /// it on its own.
 fn open_loopback(broadcast: &LocalBroadcast) -> Result<Player> {
-    let player = RemoteBroadcast::local(broadcast).play(PlayerConfig::default())?;
+    let player = RemoteBroadcast::from_consumer(moq_net::Consume::consume(broadcast))
+        .play(PlayerConfig::default())?;
     info!(broadcast = LOOPBACK_NAME, "loopback playing");
     Ok(player)
 }

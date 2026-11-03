@@ -69,7 +69,7 @@ while let Some(frame) = frames.next().await {
 //!
 //! # Features
 //!
-//! `media`, `capture`, `render` and `sound-server` are on by default. `media`
+//! `media`, `capture`, `render`, `record` and `sound-server` are on by default. `media`
 //! adds the `media` module and `Live::remote_broadcast`. Without it the crate
 //! is the `live/` layout only, as the relay uses it. `playback`, `aec`,
 //! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
@@ -85,12 +85,20 @@ mod ticket;
 /// Sources, broadcasts and players, with the codec stacks they sit on.
 #[cfg(feature = "media")]
 pub mod media {
-    pub use iroh_live_media::*;
     pub use moq_audio as audio;
+    pub use moq_ext_player::*;
+    pub use moq_ext_publisher::*;
+    #[cfg(feature = "capture")]
+    pub use moq_ext_sources::MicrophoneConfig;
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    pub use moq_ext_sources::RpicamConfig;
+    pub use moq_ext_sources::{
+        AudioFormat, AudioSource, EncodedVideoSource, FrameSender, VideoFormat, VideoSource,
+    };
     pub use moq_video as video;
 }
 #[cfg(feature = "media")]
-pub use iroh_live_media::{
+pub use self::media::{
     AudioSource, AudioTarget, Latency, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
     RenditionMode, VideoSource,
 };

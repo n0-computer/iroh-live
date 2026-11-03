@@ -1,7 +1,7 @@
-//! Video views for egui, on top of [`iroh_live_media`].
+//! Video views for egui, on top of [`moq_ext_player`].
 //!
 //! The views draw decoded frames through the `wgpu` renderer in
-//! `iroh_live_media`. They need an [`egui_wgpu::RenderState`]. A view without
+//! `moq_ext_player`. They need an [`egui_wgpu::RenderState`]. A view without
 //! one shows a black placeholder.
 //!
 //! This draws a player's video:
@@ -12,7 +12,7 @@
 //! # fn draw(
 //! #     ctx: &egui::Context,
 //! #     ui: &mut egui::Ui,
-//! #     player: &iroh_live_media::Player,
+//! #     player: &moq_ext_player::Player,
 //! #     render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
 //! # ) {
 //! let mut view = VideoView::new(ctx, "video", player.video(), render_state);
@@ -33,7 +33,7 @@
 pub mod overlay;
 
 pub use egui_wgpu;
-use iroh_live_media::VideoFrames;
+use moq_ext_player::VideoFrames;
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
 pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {

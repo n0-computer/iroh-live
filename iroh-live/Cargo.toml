@@ -18,7 +18,9 @@ iroh-moq = { workspace = true }
 # knows nothing about rooms.
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
-iroh-live-media = { workspace = true, optional = true }
+moq-ext-player = { workspace = true, optional = true }
+moq-ext-publisher = { workspace = true, optional = true }
+moq-ext-sources = { workspace = true, optional = true }
 moq-audio = { workspace = true, optional = true }
 moq-video = { workspace = true, optional = true }
 n0-error = "1"
@@ -44,34 +46,36 @@ patchbay = "0.7.0"
 workspace = true
 
 [features]
-default = ["media", "capture", "render", "sound-server"]
+default = ["media", "capture", "render", "sound-server", "record"]
 # The media stack: `iroh_live::media`, `Live::remote_broadcast`. Without it the
 # crate is the `live/` layout only (tickets, grant, endpoint options), as the
 # relay uses it.
-media = ["dep:iroh-live-media", "dep:moq-audio", "dep:moq-video"]
+media = ["dep:moq-ext-player", "dep:moq-ext-publisher", "dep:moq-ext-sources", "dep:moq-audio", "dep:moq-video"]
+# Recording a broadcast to a file.
+record = ["media", "moq-ext-player/record"]
 # Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.
-capture = ["media", "iroh-live-media/capture"]
+capture = ["media", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
 # Speaker output.
-playback = ["media", "iroh-live-media/playback"]
+playback = ["media", "moq-ext-player/playback"]
 # Reach audio devices through PipeWire or PulseAudio rather than through their
 # ALSA compatibility plugin.
-sound-server = ["media", "iroh-live-media/sound-server"]
+sound-server = ["media", "moq-ext-publisher/sound-server", "moq-ext-sources/sound-server"]
 # Acoustic echo cancellation, for a call on a handset or a laptop speaker.
-aec = ["media", "iroh-live-media/aec"]
+aec = ["media", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-sources/aec"]
 # Linux screen capture through xdg-desktop-portal and PipeWire.
-pipewire = ["media", "iroh-live-media/pipewire"]
+pipewire = ["media", "moq-ext-publisher/pipewire", "moq-ext-sources/pipewire"]
 # GPU rendering of decoded frames.
-render = ["media", "iroh-live-media/render"]
+render = ["media", "moq-ext-player/render"]
 # Raspberry Pi camera capture through `rpicam-vid`.
-rpicam = ["media", "iroh-live-media/rpicam"]
+rpicam = ["media", "moq-ext-publisher/rpicam", "moq-ext-sources/rpicam"]
 # Intel and AMD hardware H.264 encoding and decoding.
-vaapi = ["media", "iroh-live-media/vaapi"]
+vaapi = ["media", "moq-ext-player/vaapi", "moq-ext-publisher/vaapi"]
 # NVIDIA hardware encode and decode.
-nvidia = ["media", "iroh-live-media/nvidia"]
+nvidia = ["media", "moq-ext-player/nvidia", "moq-ext-publisher/nvidia"]
 # The V4L2 stateful memory-to-memory H.264 encoder and decoder on ARM SoCs.
-v4l2 = ["media", "iroh-live-media/v4l2"]
+v4l2 = ["media", "moq-ext-player/v4l2", "moq-ext-publisher/v4l2"]
 
 # The example opens a camera and a microphone, so it needs the devices.
 [[example]]

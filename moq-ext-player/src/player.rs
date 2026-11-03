@@ -18,13 +18,13 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use moq_ext_media_core::{Error, SlotState, send_if_changed, stats::Cell};
+
 use crate::{
-    RemoteBroadcast, SlotState,
+    RemoteBroadcast, SwitchError,
     catalog::VideoRenditions as _,
-    error::{Error, SwitchError},
     frames::{FrameSlot, VideoFrames},
-    publish::status::send_if_changed,
-    stats::{Cell, FrameTiming, PlaybackStats, Timeline},
+    stats::{FrameTiming, PlaybackStats, Timeline},
 };
 
 mod audio;

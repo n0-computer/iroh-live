@@ -98,7 +98,7 @@ pub enum TestPattern {
     /// The marker flashes with the test tone's beep.
     ///
     /// Shows smoothness, dropped frames, latency, and A/V sync. See
-    /// `iroh_live_media::VideoSource::test_pattern`.
+    /// `iroh_live::media::VideoSource::test_pattern`.
     #[default]
     Timing,
     /// A moving gradient. Cheap, and different in every frame.

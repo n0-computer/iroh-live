@@ -9,7 +9,7 @@ Hardware H.264 through MediaCodec lives in `moq-video` behind
 `cfg(target_os = "android")`, and backend selection picks it up on its own. The
 `renderer` module only builds on Android.
 
-Camera frames need no bridge: `iroh_live_media::VideoSource::push` returns a
+Camera frames need no bridge: `iroh_live::media::VideoSource::push` returns a
 `FrameSender` that Kotlin's frame callbacks push into through JNI.
 
 ## `renderer`

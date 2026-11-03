@@ -3,11 +3,9 @@
 //! One [`Error`] covers everything the crate does. Its variants group failures
 //! by what a caller can act on.
 
-use std::sync::Arc;
-
 use n0_error::{AnyError, stack_error};
 
-/// Errors raised by `iroh-live-media`.
+/// Errors raised by the media crates.
 ///
 /// A watched status holds it as `Arc<Error>`, as in
 /// [`SlotState::Failed`](crate::SlotState::Failed).
@@ -93,63 +91,63 @@ pub enum Error {
 
 impl Error {
     /// Creates an [`Error::InvalidConfig`] with `reason`.
-    pub(crate) fn invalid(reason: impl Into<String>) -> Self {
+    pub fn invalid(reason: impl Into<String>) -> Self {
         n0_error::e!(Self::InvalidConfig {
             reason: reason.into()
         })
     }
 
     /// Creates an [`Error::Device`] from an upstream error.
-    pub(crate) fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_std(source)
         })
     }
 
     /// Creates an [`Error::Device`] from a message.
-    pub(crate) fn device_msg(message: impl std::fmt::Display) -> Self {
+    pub fn device_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_display(message)
         })
     }
 
     /// Creates an [`Error::Encoder`] from an upstream error.
-    pub(crate) fn encoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn encoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Encoder {
             source: AnyError::from_std(source)
         })
     }
 
     /// Creates an [`Error::Encoder`] from a message.
-    pub(crate) fn encoder_msg(message: impl std::fmt::Display) -> Self {
+    pub fn encoder_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Encoder {
             source: AnyError::from_display(message)
         })
     }
 
     /// Creates an [`Error::Decoder`] from an upstream error.
-    pub(crate) fn decoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn decoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Decoder {
             source: AnyError::from_std(source)
         })
     }
 
     /// Creates an [`Error::Decoder`] from a message.
-    pub(crate) fn decoder_msg(message: impl std::fmt::Display) -> Self {
+    pub fn decoder_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Decoder {
             source: AnyError::from_display(message)
         })
     }
 
     /// Creates an [`Error::Catalog`] from an upstream error.
-    pub(crate) fn catalog(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn catalog(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Catalog {
             source: AnyError::from_std(source)
         })
     }
 
     /// Creates an [`Error::Broadcast`] from an upstream error.
-    pub(crate) fn broadcast(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn broadcast(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Broadcast {
             source: AnyError::from_std(source)
         })
@@ -173,37 +171,3 @@ impl From<std::io::Error> for Error {
         n0_error::e!(Self::Io { source })
     }
 }
-
-/// Why a rendition switch did not land.
-///
-/// Returned by [`Player::wait_for_rendition`](crate::Player::wait_for_rendition).
-#[stack_error(derive, add_meta)]
-pub enum SwitchError {
-    /// A newer request replaced it before it landed.
-    #[error("the switch to {rendition} was superseded")]
-    Superseded {
-        /// The rendition the switch was for.
-        rendition: String,
-    },
-    /// The request was withdrawn before it landed.
-    #[error("the switch to {rendition} was withdrawn")]
-    Withdrawn {
-        /// The rendition the switch was for.
-        rendition: String,
-    },
-    /// The decoder did not open, the track ended, the switch timed out, or the
-    /// catalog has no such rendition ([`Error::UnknownRendition`]).
-    #[error("the switch to {rendition} failed")]
-    Failed {
-        /// The rendition the switch was for.
-        rendition: String,
-        /// Why it failed.
-        #[error(source, std_err)]
-        source: Arc<Error>,
-    },
-    /// The player's video ended or was turned off.
-    #[error("the video ended")]
-    Ended,
-}
-
-pub use moq_ext_sources::Closed;

@@ -59,7 +59,10 @@ downstream, copy its `[patch.crates-io]` block.
 | [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and re-exports of the crates below |
 | [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, and grants |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
-| [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
+| [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording. No iroh dependency |
+| [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |
+| [`moq-ext-sources`](moq-ext-sources) | Video and audio sources: test pattern, files, capture, push senders |
+| [`moq-ext-media-core`](moq-ext-media-core) | The error, slot state and stats helpers the player and publisher share |
 | [`iroh-live-egui`](iroh-live-egui) | egui video views and the debug overlay |
 | [`iroh-live-media-android`](iroh-live-media-android) | The Android EGL renderer and JNI handle helpers |
 | [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
@@ -98,8 +101,8 @@ Codecs need no system libraries. Device access and graphics do, and
 [Getting started](docs/guide/index.md#system-dependencies) lists them.
 
 Every codec compiles upstream, so there are no per-codec features. The
-features gate devices and graphics. `iroh-live-media` defines them, and its
-[README](iroh-live-media/README.md#feature-flags) lists them. `iroh-live`
+features gate devices and graphics. `moq-ext-publisher` and `moq-ext-player` define them,
+and `iroh-live/Cargo.toml` lists them. `iroh-live`
 passes them through and turns on `capture`, `render`, and `sound-server` by
 default. `irl` also turns on `playback` and `aec`. `iroh-live` adds `media`
 (default), which turns the media stack on, and each device feature implies

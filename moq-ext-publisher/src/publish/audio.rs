@@ -10,18 +10,13 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "capture")]
 use super::status::Reporter;
-use super::{
-    Job, Rebase,
-    encoding::AudioEncoding,
-    status::{RenditionState, SlotState},
-};
+use super::{Job, Rebase, encoding::AudioEncoding, status::RenditionState};
 use moq_ext_sources::AudioKind;
 
-use crate::{
-    AudioFormat, AudioSource,
-    error::Error,
-    stats::{AudioEncodeStats, Cell},
-};
+use moq_ext_media_core::{Error, SlotState, stats::Cell};
+use moq_ext_sources::{AudioFormat, AudioSource};
+
+use crate::stats::AudioEncodeStats;
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
 pub(super) async fn run(
@@ -144,7 +139,7 @@ async fn microphone(
     let broadcast = job.producer.clone();
     let catalog = job.catalog.clone();
     let driver_stop = stop.child_token();
-    let mut driver = crate::local_task::spawn(
+    let mut driver = moq_ext_sources::local_task::spawn(
         "audio-capture",
         driver_stop.clone(),
         move |stop| async move {

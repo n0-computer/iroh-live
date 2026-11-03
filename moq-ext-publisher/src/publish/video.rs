@@ -20,16 +20,17 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use super::{
     Job, Rebase,
     encoding::{VideoEncoding, VideoRendition},
-    status::{RenditionState, Reporter, SlotState},
+    status::{RenditionState, Reporter},
 };
 use moq_video::encode;
 
-use crate::{
-    EncodedVideoSource, VideoSource,
-    error::Error,
-    frames::VideoFrames,
-    stats::{Cell, EncodeStats, RateMeter, Smoothed},
+use moq_ext_media_core::{
+    Error, SlotState,
+    stats::{Cell, RateMeter, Smoothed},
 };
+use moq_ext_sources::{EncodedVideoSource, VideoSource, frames::VideoFrames};
+
+use crate::stats::EncodeStats;
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";

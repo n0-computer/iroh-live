@@ -6,12 +6,12 @@ use iroh::{
     Endpoint, EndpointId,
     protocol::{DynProtocolHandler, ProtocolHandler, Router},
 };
-#[cfg(feature = "media")]
-use iroh_live_media::RemoteBroadcast;
 use iroh_moq::{
     Audience, Grant, Moq, MoqConfig, Publication, Reach, Subscription,
     net::{Pattern, Patterns},
 };
+#[cfg(feature = "media")]
+use moq_ext_player::RemoteBroadcast;
 use moq_net::{Consume, broadcast};
 use n0_error::e;
 use tracing::{error, info, instrument};

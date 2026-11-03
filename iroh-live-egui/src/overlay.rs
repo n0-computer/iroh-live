@@ -1,8 +1,8 @@
 //! Translucent stats bars painted over video.
 //!
 //! [`DebugOverlay`] draws a bar of clickable sections along the bottom of a
-//! video. It shows the stats of a [`Player`](iroh_live_media::Player) or a
-//! [`LocalBroadcast`](iroh_live_media::LocalBroadcast). The stats carry only
+//! video. It shows the stats of a [`Player`](moq_ext_player::Player) or a
+//! [`LocalBroadcast`](moq_ext_publisher::LocalBroadcast). The stats carry only
 //! current values, so the overlay keeps its own short history for the
 //! sparklines.
 //!
@@ -15,10 +15,10 @@ use std::{
 };
 
 use bytesize::ByteSize;
-use iroh_live_media::{
-    FrameTiming, MediaKind, NetworkSample, PlaybackStats, PlayerStatus, PublishStats,
-    PublishStatus, RenditionMode, RenditionState, SlotState,
+use moq_ext_player::{
+    FrameTiming, MediaKind, NetworkSample, PlaybackStats, PlayerStatus, RenditionMode, SlotState,
 };
+use moq_ext_publisher::{PublishStats, PublishStatus, RenditionState};
 
 /// Height of the overlay bar, text and padding included.
 const BAR_HEIGHT: f32 = 15.0;
@@ -140,7 +140,7 @@ impl DebugOverlay {
     /// Draws the overlay for a player at the bottom of `video_rect`.
     ///
     /// Shows the enabled NET, RENDER, AUDIO, and TIME categories. `timeline` is
-    /// what [`Player::timeline`](iroh_live_media::Player::timeline) returns.
+    /// what [`Player::timeline`](moq_ext_player::Player::timeline) returns.
     /// It is only read while the TIME panel is open, so you can pass an empty
     /// slice otherwise. See [`timeline_open`](Self::timeline_open).
     pub fn show_playback(

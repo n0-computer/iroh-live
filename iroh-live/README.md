@@ -63,7 +63,7 @@ let mut frames = player.video();
   publish only under the peer's own id. `moq_config` is the `MoqConfig` that
   uses it.
 - `Error` wraps an `iroh_moq::Error` as `Transport` and, with `media`, an
-  `iroh_live_media::Error` as `Media`. Its other variants come from binding an
+  `moq_ext_player::Error` as `Media`. Its other variants come from binding an
   endpoint and parsing a ticket.
 
 ## Features
@@ -72,7 +72,7 @@ let mut frames = player.video();
 the media stack. Without it the crate is the `live/` layout only (tickets, the
 grant, endpoint options), which is how the relay uses it. `playback`, `aec`,
 `pipewire`, `rpicam`, `vaapi`, `nvidia`, and `v4l2` add devices and codecs,
-imply `media`, and pass through to `iroh-live-media`.
+imply `media`, and pass through to `moq-ext-player` and `moq-ext-publisher`.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`, and adds the room paths to `grant`.

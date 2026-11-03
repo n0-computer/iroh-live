@@ -18,10 +18,9 @@ use moq_ext_adaptive::{
 };
 
 use super::{Controls, Latency, PlayerStatus, RenditionMode};
-use crate::{
-    RemoteBroadcast, SlotState, catalog::VideoRenditions as _, error::Error,
-    publish::status::send_if_changed,
-};
+use moq_ext_media_core::{Error, SlotState, send_if_changed};
+
+use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
 
 /// What the decoder of a target is built with.
 #[derive(derive_more::Debug, Clone)]
@@ -407,7 +406,7 @@ mod tests {
 
     /// A running selector and what drives it.
     struct Running {
-        _broadcast: crate::LocalBroadcast,
+        _broadcast: moq_ext_publisher::LocalBroadcast,
         reports: mpsc::Sender<Report>,
         desired: watch::Receiver<Option<Desired>>,
         _playing: watch::Sender<Option<Target>>,
@@ -416,16 +415,18 @@ mod tests {
 
     /// Starts a selector over a one-rendition broadcast.
     fn selector() -> Running {
-        let broadcast = crate::LocalBroadcast::new();
+        let broadcast = moq_ext_publisher::LocalBroadcast::new();
         broadcast
             .set_video(
-                crate::VideoSource::test_pattern(
+                moq_ext_sources::VideoSource::test_pattern(
                     moq_video::Size::new(320, 180),
                     moq_video::FrameRate::new(30, 1).expect("a valid rate"),
                 ),
-                crate::VideoEncoding {
+                moq_ext_publisher::VideoEncoding {
                     prefer_hardware: false,
-                    ..crate::VideoEncoding::single(crate::VideoRendition::new("video"))
+                    ..moq_ext_publisher::VideoEncoding::single(
+                        moq_ext_publisher::VideoRendition::new("video"),
+                    )
                 },
             )
             .expect("a valid encoding");
@@ -434,7 +435,7 @@ mod tests {
         let (playing_tx, playing) = watch::channel(None);
         let (desired, desired_rx) = watch::channel(None);
         let inputs = Inputs {
-            broadcast: RemoteBroadcast::local(&broadcast),
+            broadcast: RemoteBroadcast::from_consumer(moq_net::Consume::consume(&broadcast)),
             controls: Arc::new(Controls {
                 mode: watch::Sender::new(RenditionMode::auto()),
                 latency: watch::Sender::new(Latency::default()),

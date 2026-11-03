@@ -12,7 +12,7 @@ pub enum Error {
     /// A source, an encoder, a decoder or a recording failed.
     #[cfg(feature = "media")]
     #[error(transparent)]
-    Media(iroh_live_media::Error),
+    Media(moq_ext_player::Error),
     /// `IROH_SECRET` does not hold a secret key.
     #[error("IROH_SECRET does not hold a secret key")]
     SecretKey { source: iroh::KeyParsingError },

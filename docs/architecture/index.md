@@ -11,19 +11,22 @@ This repository holds the layer that joins them.
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions and relay links |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, endpoint setup, and the re-exports |
-| `iroh-live-media` | Sources, broadcasts and players over moq-video and moq-audio |
+| `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording |
+| `moq-ext-publisher` | A broadcast that encodes sources into renditions |
+| `moq-ext-sources` | Video and audio sources |
+| `moq-ext-media-core` | The error, slot state and stats helpers the two above share |
 | `iroh-live-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
 | `iroh-live-media-android` | The EGL renderer and JNI handle helpers for Android |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-`iroh-live-media` has no iroh dependency. A transport publishes a
+`moq-ext-player` and `moq-ext-publisher` have no iroh dependency, and neither depends on the other. A transport publishes a
 `LocalBroadcast` by reading it through `moq_net::Consume`, and builds a
 `RemoteBroadcast` from a route table with `from_origin` or `from_resolved`.
 `iroh-live-rooms` has no media dependency. `iroh-live` depends on both and is
 the only crate that joins them.
 
-## What iroh-live-media adds
+## What the moq-ext crates add
 
 Upstream covers one publisher with one rendition, and one subscriber that takes
 what it is given. This crate adds three things on top.
@@ -51,7 +54,7 @@ this build speaks. `accept(alpn, handler)` mounts another protocol on it, which
 is how rooms mount their gossip. `LiveBuilder::moq()` hands the transport to
 rooms before the router exists.
 
-`Live::publish(name, &broadcast)` publishes an `iroh_live_media::LocalBroadcast`
+`Live::publish(name, &broadcast)` publishes an `moq_ext_publisher::LocalBroadcast`
 at `live/<our id>/<name>` to everyone. `Live::ticket(name)` returns the
 `BroadcastTicket` to share. `Live::subscribe(&ticket)` resolves the ticket's
 path over whichever link serves it and returns the `Subscription`.
@@ -62,7 +65,7 @@ link's measurements, so `remote.play(config)` starts a player that adapts with
 nothing further to wire.
 
 The facade's error is `iroh_live::Error`: `Transport` wraps an
-`iroh_moq::Error`, `Media` an `iroh_live_media::Error`, and `SecretKey` and
+`iroh_moq::Error`, `Media` an `moq_ext_player::Error`, and `SecretKey` and
 `Bind` come from `EndpointOptions`. Audiences,
 admission, relays and routes belong to [`iroh-moq`](transport.md), reached
 through `live.moq()`.

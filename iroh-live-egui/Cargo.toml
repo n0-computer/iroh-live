@@ -2,7 +2,7 @@
 name = "iroh-live-egui"
 version = "0.1.0"
 edition = "2024"
-description = "egui integration for iroh-live-media video rendering"
+description = "egui integration for moq-ext-player video rendering"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
@@ -17,7 +17,8 @@ egui = { workspace = true }
 egui-wgpu = { workspace = true }
 # No direct `wgpu` dependency: all `wgpu` types come from
 # `moq_video::render::wgpu`, so they match the renderer's version.
-iroh-live-media = { workspace = true, features = ["render"] }
+moq-ext-player = { workspace = true, features = ["render"] }
+moq-ext-publisher = { workspace = true }
 moq-net = { workspace = true }
 moq-video = { workspace = true, features = ["render"] }
 # Runs the task that wakes the window when a frame arrives.

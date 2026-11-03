@@ -35,11 +35,11 @@ rendition's codec, resolution, and bitrate. A subscriber reads it before it
 subscribes to anything else, and watches it for changes.
 
 iroh-live publishes hang's catalog unchanged, so any hang player can read it.
-Applications read it as `iroh_live_media::Catalog`.
+Applications read it as `moq_ext_player::Catalog`.
 
 ## Where the boundary is
 
-`iroh-live-media` uses only `moq_net` types. A `LocalBroadcast` is published
+`moq-ext-player` and `moq-ext-publisher` use only `moq_net` types. A `LocalBroadcast` is published
 through `moq_net::Consume`, and a `RemoteBroadcast` is built from what a
 transport subscribed to. The media crate does not know whether that came over
 iroh, a relay, or a local loopback.

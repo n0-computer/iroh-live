@@ -29,7 +29,9 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info};
 
-use crate::{RemoteBroadcast, catalog::VideoRenditions as _, error::Error};
+use moq_ext_media_core::Error;
+
+use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
 
 /// A container to record into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -165,9 +167,9 @@ impl Recording {
     ///
     /// ```no_run
     /// # async fn example(
-    /// #     broadcast: iroh_live_media::RemoteBroadcast,
+    /// #     broadcast: moq_ext_player::RemoteBroadcast,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// use iroh_live_media::RecordConfig;
+    /// use moq_ext_player::RecordConfig;
     ///
     /// let file = tokio::fs::File::create("out.mp4").await?;
     /// let mut recording = broadcast.record(file, RecordConfig::default())?;

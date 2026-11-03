@@ -4442,11 +4442,13 @@ dependencies = [
  "data-encoding",
  "derive_more",
  "iroh",
- "iroh-live-media",
  "iroh-live-rooms",
  "iroh-mdns-peer-lookup",
  "iroh-moq",
  "moq-audio",
+ "moq-ext-player",
+ "moq-ext-publisher",
+ "moq-ext-sources",
  "moq-net",
  "moq-video",
  "n0-error",
@@ -4519,31 +4521,12 @@ dependencies = [
  "derive_more",
  "egui",
  "egui-wgpu",
- "iroh-live-media",
+ "moq-ext-player",
+ "moq-ext-publisher",
  "moq-net",
  "moq-video",
  "n0-future",
  "pollster",
- "tracing",
-]
-
-[[package]]
-name = "iroh-live-media"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "derive_more",
- "hang",
- "moq-audio",
- "moq-ext-adaptive",
- "moq-ext-sources",
- "moq-mux",
- "moq-net",
- "moq-video",
- "n0-error",
- "n0-future",
- "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -5594,6 +5577,58 @@ dependencies = [
  "moq-net",
  "n0-future",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-media-core"
+version = "0.1.0"
+dependencies = [
+ "moq-ext-sources",
+ "n0-error",
+ "tokio",
+]
+
+[[package]]
+name = "moq-ext-player"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "derive_more",
+ "hang",
+ "moq-audio",
+ "moq-ext-adaptive",
+ "moq-ext-media-core",
+ "moq-ext-player",
+ "moq-ext-publisher",
+ "moq-ext-sources",
+ "moq-mux",
+ "moq-net",
+ "moq-video",
+ "n0-error",
+ "n0-future",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-publisher"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "derive_more",
+ "hang",
+ "moq-audio",
+ "moq-ext-media-core",
+ "moq-ext-sources",
+ "moq-mux",
+ "moq-net",
+ "moq-video",
+ "n0-error",
+ "n0-future",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 

@@ -1,7 +1,7 @@
 //! Publishing and playing back in-process, with no transport.
 //!
 //! Each test builds a [`LocalBroadcast`] from a generated or pushed source and
-//! plays it through [`RemoteBroadcast::local`]. That covers the whole pipeline
+//! plays it through [`RemoteBroadcast::from_consumer`]. That covers the whole pipeline
 //! from source to decoded frame, encoders and decoders included.
 
 use std::{
@@ -9,13 +9,19 @@ use std::{
     time::Duration,
 };
 
-use iroh_live_media::{
-    AudioEncoding, AudioSource, AudioTarget, Error, FrameSender, LocalBroadcast, NetworkSample,
-    PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast, RenditionMode, SlotState,
-    SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource,
+use moq_ext_player::{
+    AudioTarget, Error, NetworkSample, PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast,
+    RenditionMode, SlotState, SwitchError,
 };
+use moq_ext_publisher::{AudioEncoding, LocalBroadcast, VideoEncoding, VideoRendition};
+use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
 use moq_net::bandwidth::Rate;
 use tokio::{sync::watch, task::JoinHandle};
+
+/// Reads `broadcast` in-process, without a transport.
+fn local(broadcast: &LocalBroadcast) -> RemoteBroadcast {
+    RemoteBroadcast::from_consumer(moq_net::Consume::consume(broadcast))
+}
 
 /// How long any one wait may take.
 ///
@@ -84,7 +90,7 @@ fn ladder() -> (LocalBroadcast, VideoSource) {
 }
 
 /// Waits until `frames` yields a picture of `size`.
-async fn wait_for_size(frames: &mut iroh_live_media::VideoFrames, size: moq_video::Size) {
+async fn wait_for_size(frames: &mut moq_ext_player::VideoFrames, size: moq_video::Size) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let frame = frames.next().await.expect("the player keeps playing");
@@ -100,7 +106,7 @@ async fn wait_for_size(frames: &mut iroh_live_media::VideoFrames, size: moq_vide
 #[tokio::test]
 async fn a_local_broadcast_plays_in_process() {
     let (broadcast, _source) = ladder();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             rendition: RenditionMode::pinned("low"),
             ..PlayerConfig::default()
@@ -121,7 +127,7 @@ async fn a_local_broadcast_plays_in_process() {
     assert!(
         timeline
             .iter()
-            .any(|timing| timing.kind == iroh_live_media::MediaKind::Video),
+            .any(|timing| timing.kind == moq_ext_player::MediaKind::Video),
         "no picture in the timeline"
     );
     assert!(
@@ -138,7 +144,7 @@ async fn a_local_broadcast_plays_in_process() {
 #[tokio::test]
 async fn a_player_started_after_the_catalog_plays() {
     let (broadcast, _source) = ladder();
-    let remote = RemoteBroadcast::local(&broadcast);
+    let remote = local(&broadcast);
     until(remote.catalog(), |catalog| {
         catalog
             .as_ref()
@@ -184,7 +190,7 @@ async fn a_held_shortfall_moves_the_player_down() {
         ..NetworkSample::default()
     }));
     let reader = sample.clone();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .with_network(move || *reader.lock().expect("poisoned"))
         .play(PlayerConfig::default())
         .expect("valid");
@@ -208,7 +214,7 @@ async fn a_held_shortfall_moves_the_player_down() {
 #[tokio::test]
 async fn two_players_of_one_broadcast_do_not_interfere() {
     let (broadcast, _source) = ladder();
-    let remote = RemoteBroadcast::local(&broadcast);
+    let remote = local(&broadcast);
     let high = remote
         .play(PlayerConfig {
             rendition: RenditionMode::pinned("high"),
@@ -232,7 +238,7 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
 #[tokio::test]
 async fn a_pin_switches_without_ending_the_frames() {
     let (broadcast, _source) = ladder();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             rendition: RenditionMode::pinned("high"),
             ..PlayerConfig::default()
@@ -255,7 +261,7 @@ async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
     let (broadcast, _source) = ladder();
     // The test ends within milliseconds. An `Auto` decoder may still be
     // loading the VA-API driver then, which crashes the process as it exits.
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             decoder: moq_video::decode::Kind::Software,
             ..Default::default()
@@ -279,7 +285,7 @@ async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
 #[tokio::test]
 async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
     let (broadcast, _source) = ladder();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             rendition: RenditionMode::pinned("4k"),
             ..PlayerConfig::default()
@@ -296,7 +302,7 @@ async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
 #[tokio::test]
 async fn a_decoder_that_will_not_open_fails_the_video() {
     let (broadcast, _source) = ladder();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             decoder: moq_video::decode::Kind::Named("no-such-decoder".to_string()),
             ..PlayerConfig::default()
@@ -330,7 +336,7 @@ async fn a_failed_first_decoder_is_tried_again() {
             software(VideoEncoding::single(VideoRendition::new("video"))),
         )
         .expect("valid");
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             decoder: moq_video::decode::Kind::Named("no-such-decoder".to_string()),
             ..PlayerConfig::default()
@@ -366,7 +372,7 @@ fn single(size: moq_video::Size) -> LocalBroadcast {
 
 /// Records every video state the player reports until dropped.
 fn record_states(
-    player: &iroh_live_media::Player,
+    player: &moq_ext_player::Player,
 ) -> (Arc<Mutex<Vec<SlotState>>>, tokio::task::JoinHandle<()>) {
     let states = Arc::new(Mutex::new(Vec::new()));
     let mut status = player.status();
@@ -501,7 +507,7 @@ async fn a_player_keeps_playing_when_its_route_goes() {
 #[tokio::test]
 async fn video_comes_back_after_the_publisher_replaces_it() {
     let broadcast = single(moq_video::Size::new(320, 180));
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
     let mut frames = player.video();
@@ -526,7 +532,7 @@ async fn video_comes_back_after_the_publisher_replaces_it() {
 #[tokio::test]
 async fn turning_video_off_leaves_nothing_decoding() {
     let (broadcast, _source) = ladder();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
     let mut frames = player.video();
@@ -548,13 +554,13 @@ async fn turning_video_off_leaves_nothing_decoding() {
 async fn a_latency_below_its_own_minimum_is_refused() {
     let (broadcast, _source) = ladder();
     let config = PlayerConfig {
-        latency: iroh_live_media::Latency {
+        latency: moq_ext_player::Latency {
             min: Duration::from_millis(500),
             max: Duration::from_millis(100),
         },
         ..PlayerConfig::default()
     };
-    let result = RemoteBroadcast::local(&broadcast).play(config);
+    let result = local(&broadcast).play(config);
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
 }
 
@@ -570,7 +576,7 @@ async fn audio_plays_through_a_null_output() {
             AudioEncoding::voice(),
         )
         .expect("a valid encoding");
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             audio: Some(AudioTarget::null()),
             ..PlayerConfig::default()
@@ -599,7 +605,7 @@ async fn an_audio_only_broadcast_ends_the_video() {
             AudioEncoding::voice(),
         )
         .expect("a valid encoding");
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             audio: Some(AudioTarget::null()),
             ..PlayerConfig::default()
@@ -617,7 +623,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
     broadcast
         .set_audio(tone(), AudioEncoding::voice())
         .expect("a valid encoding");
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig {
             audio: Some(AudioTarget::null()),
             ..PlayerConfig::default()
@@ -735,7 +741,7 @@ async fn a_pushed_source_sees_demand_while_played() {
         )
         .expect("valid");
     assert!(!*sender.demand().borrow(), "nobody watches yet");
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
     until(sender.demand(), |wanted| *wanted).await;
@@ -767,7 +773,7 @@ async fn a_source_that_waits_for_demand_is_played() {
             software(VideoEncoding::single(VideoRendition::new("video"))),
         )
         .expect("valid");
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
     let frame = tokio::time::timeout(TIMEOUT, player.video().next())
@@ -785,7 +791,7 @@ async fn a_source_that_waits_for_demand_is_played() {
 #[tokio::test]
 async fn the_frames_end_when_the_broadcast_closes() {
     let (broadcast, _source) = ladder();
-    let player = RemoteBroadcast::local(&broadcast)
+    let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
     let mut frames = player.video();
@@ -806,7 +812,7 @@ async fn the_frames_end_when_the_broadcast_closes() {
 #[tokio::test]
 async fn a_recording_writes_a_container() {
     let (broadcast, _source) = ladder();
-    let remote = RemoteBroadcast::local(&broadcast);
+    let remote = local(&broadcast);
     let dir = std::env::temp_dir().join(format!("iroh-live-media-record-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a temp dir");
     let path = dir.join("out.mp4");

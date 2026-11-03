@@ -19,7 +19,7 @@ sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
 
 macOS needs `libtool` and `automake` from Homebrew.
 
-`iroh-live-media` without its default features needs none of these. It
+`moq-ext-publisher` and `moq-ext-player` without their default features need none of these. It
 encodes and decodes, but it cannot open a device or draw.
 
 ## Building

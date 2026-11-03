@@ -14,7 +14,7 @@ Backend selection, colour handling, and zero-copy import are documented in
 [moq-video](https://doc.moq.dev/lib/rs/crate/moq-video). Two points matter
 here.
 
-The renderer fixes the wgpu version. `iroh_live_media::video::render::wgpu`
+The renderer fixes the wgpu version. `iroh_live::media::video::render::wgpu`
 re-exports the wgpu it links, and a texture from another wgpu major version is
 a different type. The workspace pins egui and eframe to versions on the same
 wgpu major.
@@ -24,7 +24,7 @@ create the device. Without it, DMA-BUF frames from PipeWire screen capture are
 uploaded through the CPU.
 
 All of this needs the `render` feature. It is on by default in `iroh-live`, and
-off in `iroh-live-media`.
+off in `moq-ext-player`.
 
 ## egui
 

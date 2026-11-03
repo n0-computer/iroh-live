@@ -1,7 +1,7 @@
 # Playout and A/V sync
 
 Audio and video decode separately, on their own tasks, from their own tracks.
-Each `Player` owns a `PlayoutClock` (`iroh-live-media/src/player/clock.rs`)
+Each `Player` owns a `PlayoutClock` (`moq-ext-player/src/player/clock.rs`)
 that keeps them aligned at playout time. It is a port of the moq/js player's
 `js/watch/src/sync.ts` at commit `53fe78d8`, with the same data model and the
 same arithmetic in `i64` milliseconds.
@@ -69,7 +69,7 @@ playback with audio.
 
 ```rust
 use std::time::Duration;
-use iroh_live_media::{Latency, PlayerConfig, video::decode};
+use iroh_live::media::{Latency, PlayerConfig, video::decode};
 
 let config = PlayerConfig {
     latency: Latency {

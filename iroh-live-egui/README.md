@@ -1,7 +1,7 @@
 # iroh-live-egui
 
 [egui](https://github.com/emilk/egui) video views for
-[`iroh-live-media`](../iroh-live-media), plus a debug overlay.
+[`moq-ext-player`](../moq-ext-player), plus a debug overlay.
 
 ## Video views
 

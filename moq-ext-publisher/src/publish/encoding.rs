@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use moq_net::bandwidth::Rate;
 
-use crate::{AudioFormat, error::Error};
+use moq_ext_media_core::Error;
+use moq_ext_sources::AudioFormat;
 
 /// How a video source is encoded: one or more renditions of the same picture.
 #[derive(Debug, Clone)]

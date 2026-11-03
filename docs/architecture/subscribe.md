@@ -1,13 +1,13 @@
 # Subscribing
 
-`iroh_live_media::RemoteBroadcast` reads a broadcast's catalog and holds the
+`moq_ext_player::RemoteBroadcast` reads a broadcast's catalog and holds the
 subscription. `RemoteBroadcast::play` starts a `Player`, which owns its
 decoders, its playout clock, its rendition choice and its statistics. Two
 players of one broadcast are two separate playbacks. Decoding is upstream:
 `moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a backend
 from the catalog entry and return frames. This crate adds rendition selection,
 the decoder swap, and the [playout clock](playout.md). The code is in
-`iroh-live-media/src/remote.rs` and `iroh-live-media/src/player/`.
+`moq-ext-player/src/remote.rs` and `moq-ext-player/src/player/`.
 
 ## Opening a broadcast
 
@@ -23,7 +23,7 @@ end. The broadcast closes once no route has served the path for three seconds
 publisher ends its broadcast. `RemoteBroadcast::from_resolved(origin, path,
 consumer)` does the same, starting from a consumer the caller already resolved
 in that table. Nothing waits for a first route, and a publisher that is already
-gone closes the broadcast. `RemoteBroadcast::local(&broadcast)` reads a
+gone closes the broadcast. `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
 `LocalBroadcast` in-process, without a transport.
 
 `Catalog` is hang's catalog behind an `Arc` and derefs to it.

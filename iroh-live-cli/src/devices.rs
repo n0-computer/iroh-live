@@ -139,7 +139,7 @@ pub mod rpicam {
 
     use std::time::Duration;
 
-    /// The binary that `iroh_live_media::VideoSource::rpicam` also runs.
+    /// The binary that `iroh_live::media::VideoSource::rpicam` also runs.
     const RPICAM_VID: &str = "rpicam-vid";
 
     /// How long `--list-cameras` may run.

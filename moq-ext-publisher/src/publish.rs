@@ -2,8 +2,8 @@
 //!
 //! A [`LocalBroadcast`] holds a catalog, a media clock, one video slot and one
 //! audio slot. A transport publishes it by reading it through
-//! [`moq_net::Consume`]. [`RemoteBroadcast::local`](crate::RemoteBroadcast::local)
-//! plays it in-process without a transport.
+//! [`moq_net::Consume`]. A player reads it in-process with
+//! `RemoteBroadcast::from_consumer(broadcast.consume())`.
 //!
 //! The video slot opens its source once and encodes it into every rendition of
 //! a ladder. Each rendition encodes only while someone watches it.
@@ -22,13 +22,12 @@ use tracing::{Instrument, debug, info};
 use self::status::{Medium, StatusCell};
 pub use self::{
     encoding::{AudioEncoding, VideoEncoding, VideoRendition},
-    status::{PublishStatus, RenditionState, SlotState},
+    status::{PublishStatus, RenditionState},
 };
-use crate::{
-    AudioSource, EncodedVideoSource, VideoSource,
-    error::Error,
-    stats::{PublishRecorder, PublishStats},
-};
+use moq_ext_media_core::Error;
+use moq_ext_sources::{AudioSource, EncodedVideoSource, VideoSource};
+
+use crate::stats::{PublishRecorder, PublishStats};
 
 mod audio;
 mod encoding;
