@@ -165,7 +165,7 @@ async fn open(
 > {
     let mut options = moq_audio::decode::Options::new();
     options.output.format = moq_audio::Format::F32;
-    options.max_age = max_age;
+    options.delay = moq_audio::decode::Delay::default().with_max(max_age);
     // Start at the live edge. The backlog a track holds is behind it.
     options.start = moq_audio::decode::Start::Latest;
     let decoder = moq_audio::decode::Consumer::new(consumer, config, name, options)
@@ -202,7 +202,12 @@ impl Job {
                 ..AudioPlaybackStats::default()
             });
         });
-        while let Some(frame) = self.decoder.read().await.map_err(Error::decoder)? {
+        while let Some(read) = self.decoder.read().await.map_err(Error::decoder)? {
+            // A gap or an end carries no samples. The sink plays on from what
+            // it has queued, so only decoded audio is written.
+            let moq_audio::decode::Read::Frame(frame) = read else {
+                continue;
+            };
             let decoded = std::time::Instant::now();
             // The playout clock holds video back by the audio buffered ahead
             // of the speaker. It is the only latency either side can measure.

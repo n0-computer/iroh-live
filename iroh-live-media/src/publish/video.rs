@@ -33,6 +33,17 @@ use crate::{
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
 
+/// Waits until a subscriber wants the track, or fails once it closes.
+async fn wanted(demand: &mut moq_net::track::Demand) -> Result<(), moq_net::Error> {
+    while demand.wanted_changed().await?.is_none() {}
+    Ok(())
+}
+
+/// Waits until no subscriber wants the track, or it closes.
+async fn unwanted(demand: &mut moq_net::track::Demand) {
+    while let Ok(Some(_)) = demand.wanted_changed().await {}
+}
+
 /// Encodes a raw source into every rendition of `encoding`.
 pub(super) async fn run_raw(
     mut job: Job,
@@ -93,13 +104,13 @@ pub(super) async fn run_raw(
         }
     }
     for (rendition, config, published) in probed {
-        let track_info = catalog.track_info(hang::catalog::PRIORITY.video);
+        let reserved = catalog.reserve();
+        let track_info = reserved.track_info(hang::catalog::PRIORITY.video);
         let publisher = producer
             .create_track(rendition.name.as_str(), Some(track_info))
             .map_err(Error::broadcast)
             .and_then(|track| {
-                encode::Producer::with_track(track, catalog.clone(), published)
-                    .map_err(Error::catalog)
+                encode::Producer::with_track(track, reserved, published).map_err(Error::catalog)
             });
         let producer = match publisher {
             Ok(producer) => producer,
@@ -115,7 +126,7 @@ pub(super) async fn run_raw(
             config,
             frames: source.frames(),
             source: source.clone(),
-            clock,
+            clock: clock.clone(),
             rebase: rebase.clone(),
             _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
@@ -205,7 +216,10 @@ fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Opt
 }
 
 /// Returns the gap between kept frames for a rendition slower than its source.
-fn frame_interval(rendition: &VideoRendition, source: video::Rate) -> Option<std::time::Duration> {
+fn frame_interval(
+    rendition: &VideoRendition,
+    source: video::FrameRate,
+) -> Option<std::time::Duration> {
     let rate = rendition.rate?;
     (rate.as_f64() < source.as_f64())
         .then(|| std::time::Duration::from_secs_f64(1.0 / rate.as_f64()))
@@ -289,7 +303,7 @@ impl Encoder {
     }
 
     async fn encode(&mut self) -> Result<(), Error> {
-        let demand = self.producer.demand();
+        let mut demand = self.producer.demand();
         let target = self.config.size();
         self.stats.update(|stats| stats.size = Some(target));
 
@@ -297,7 +311,7 @@ impl Encoder {
             // Idle until someone subscribes, the source ends, or the slot
             // stops. The track and its catalog entry are already advertised.
             tokio::select! {
-                used = demand.used() => {
+                used = wanted(&mut demand) => {
                     if let Err(err) = used {
                         debug!(error = %err, "rendition no longer watched");
                         break;
@@ -329,7 +343,7 @@ impl Encoder {
                 let frame = tokio::select! {
                     // The last viewer left. Mark the gap so the next timestamp
                     // does not stretch this frame across it.
-                    _ = demand.unused() => {
+                    _ = unwanted(&mut demand) => {
                         self.producer.discontinuity().map_err(Error::broadcast)?;
                         self.reporter.rendition(&self.name, RenditionState::Idle);
                         break;
@@ -346,7 +360,7 @@ impl Encoder {
                     self.producer.finish().map_err(Error::broadcast)?;
                     return Ok(());
                 };
-                let clock = self.clock;
+                let clock = self.clock.clone();
                 self.rebase
                     .get_or_init(|| Rebase::anchor(clock, frame.timestamp));
                 if let Some(interval) = self.interval {
@@ -536,7 +550,7 @@ mod tests {
 
     #[test]
     fn a_slower_rendition_keeps_every_other_frame() {
-        let fps = |n| video::Rate::new(n, 1).expect("valid");
+        let fps = |n| video::FrameRate::new(n, 1).expect("valid");
         let half = VideoRendition {
             rate: Some(fps(15)),
             ..VideoRendition::new("half")

@@ -15,7 +15,7 @@ use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
 use iroh_moq::{Grant, Moq, MoqConfig};
-use moq_net::{Pattern, Timestamp, announce, broadcast, bytes::Bytes, track};
+use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -23,6 +23,11 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long a test track keeps its groups, on both ends.
 pub(crate) const MAX_AGE: Duration = Duration::from_secs(5);
+
+/// The subscription the tests read with: it tolerates [`MAX_AGE`] of reordering.
+pub(crate) fn subscription() -> track::Subscription {
+    track::Subscription::default().with_delay(track::Delay::default().with_max(MAX_AGE))
+}
 
 /// Binds an endpoint against a shared in-memory address lookup.
 pub(crate) async fn endpoint() -> Endpoint {
@@ -105,7 +110,7 @@ impl TestBroadcast {
         let writer = tokio::spawn(async move {
             for n in first.. {
                 if track
-                    .write_frame(Timestamp::now(), Bytes::from(n.to_be_bytes().to_vec()))
+                    .write_frame(None, Bytes::from(n.to_be_bytes().to_vec()))
                     .is_err()
                 {
                     break;
@@ -126,7 +131,7 @@ pub(crate) async fn read_counter(broadcast: &broadcast::Consumer) -> u64 {
         let mut subscriber = broadcast
             .track("video")
             .expect("track")
-            .subscribe(track::Subscription::default().with_max_age(MAX_AGE))
+            .subscribe(subscription())
             .await
             .expect("subscribe to track");
         loop {
@@ -151,7 +156,7 @@ pub(crate) async fn reading(broadcast: &broadcast::Consumer) -> track::Subscribe
         let mut subscriber = broadcast
             .track("video")
             .expect("track")
-            .subscribe(track::Subscription::default().with_max_age(MAX_AGE))
+            .subscribe(subscription())
             .await
             .expect("subscribe to track");
         subscriber
@@ -208,8 +213,15 @@ pub(crate) async fn retracted(updates: &mut announce::Consumer, path: &str) {
 async fn wait_for(updates: &mut announce::Consumer, path: &str, active: bool) {
     step(&format!("{path} announced: {active}"), async {
         loop {
-            let update = updates.next().await.expect("origin closed");
-            if update.prefix.as_str() == path && update.kind.is_active() == active {
+            let event = updates.next().await.expect("origin closed");
+            let (announce, now_active) = match event {
+                announce::Event::End(announce) => (announce, false),
+                announce::Event::Start(announce)
+                | announce::Event::Update(announce)
+                | announce::Event::Restart(announce)
+                | announce::Event::Takeover { announce, .. } => (announce, true),
+            };
+            if announce.prefix.as_str() == path && now_active == active {
                 return;
             }
         }

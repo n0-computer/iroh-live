@@ -43,7 +43,7 @@ enum Origin {
     Routed {
         /// Boxed: a route table consumer is large.
         origin: Box<moq_net::origin::Consumer>,
-        path: moq_net::PathOwned,
+        path: moq_net::Path,
     },
 }
 
@@ -92,17 +92,11 @@ impl RemoteBroadcast {
     /// The first request waits without limit, since the publisher may not have
     /// announced the path yet. If you already resolved the path, use
     /// [`from_resolved`](Self::from_resolved).
-    pub fn from_origin(origin: moq_net::origin::Consumer, path: impl moq_net::AsPath) -> Self {
-        let path = path.as_path().to_owned();
-        let span = tracing::info_span!("remote", path = %path);
-        Self::spawn(
-            Origin::Routed {
-                origin: Box::new(origin),
-                path,
-            },
-            None,
-            span,
-        )
+    pub fn from_origin(
+        origin: moq_net::origin::Consumer,
+        path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
+    ) -> Self {
+        Self::routed_to(origin, path, None)
     }
 
     /// Follows `path` in a route table, starting from a resolved `broadcast`.
@@ -113,19 +107,38 @@ impl RemoteBroadcast {
     /// what `iroh-live` uses on subscribe, after resolving the path.
     pub fn from_resolved(
         origin: moq_net::origin::Consumer,
-        path: impl moq_net::AsPath,
+        path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
         broadcast: moq_net::broadcast::Consumer,
     ) -> Self {
-        let path = path.as_path().to_owned();
-        let span = tracing::info_span!("remote", path = %path);
-        Self::spawn(
-            Origin::Routed {
-                origin: Box::new(origin),
-                path,
-            },
-            Some(broadcast),
-            span,
-        )
+        Self::routed_to(origin, path, Some(broadcast))
+    }
+
+    /// Follows `path` in a route table, from `first` if given.
+    ///
+    /// A path that cannot be a route table path closes the broadcast at once.
+    fn routed_to(
+        origin: moq_net::origin::Consumer,
+        path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
+        first: Option<moq_net::broadcast::Consumer>,
+    ) -> Self {
+        match path.try_into() {
+            Ok(path) => {
+                let span = tracing::info_span!("remote", path = %path);
+                Self::spawn(
+                    Origin::Routed {
+                        origin: Box::new(origin),
+                        path,
+                    },
+                    first,
+                    span,
+                )
+            }
+            Err(err) => {
+                let span = tracing::info_span!("remote");
+                span.in_scope(|| info!(error = %err.into(), "the path is not valid"));
+                Self::spawn(Origin::Moq, None, span)
+            }
+        }
     }
 
     /// Reads a local broadcast in-process, without a transport.
@@ -215,10 +228,10 @@ impl RemoteBroadcast {
         &self.shared.span
     }
 
-    /// Returns the route table and path, for a broadcast that follows one.
-    pub(crate) fn routed(&self) -> Option<(moq_net::origin::Consumer, moq_net::PathOwned)> {
+    /// Returns the route table, for a broadcast that follows one.
+    pub(crate) fn routed(&self) -> Option<moq_net::origin::Consumer> {
         match &self.shared.origin {
-            Origin::Routed { origin, path } => Some((origin.as_ref().clone(), path.clone())),
+            Origin::Routed { origin, .. } => Some(origin.as_ref().clone()),
             Origin::Moq => None,
         }
     }
@@ -264,21 +277,32 @@ async fn follow(
 ) {
     let mut generation = 0u64;
     let mut next = first;
+    let mut routes = match &origin {
+        Origin::Moq => None,
+        Origin::Routed { origin, path } => match origin.follow(path.clone(), None) {
+            Ok(routes) => Some(routes),
+            Err(err) => {
+                info!(error = %err, "the broadcast cannot be followed");
+                None
+            }
+        },
+    };
+    if let (Some(_), Some(routes)) = (&next, &mut routes) {
+        // The caller resolved the first broadcast already, so the route table's
+        // answer for it is spent rather than a change of route.
+        let _ = tokio::time::timeout(REROUTE_PATIENCE, routes.available()).await;
+    }
     loop {
         let consumer = match next.take() {
             Some(consumer) => consumer,
-            None => match &origin {
-                Origin::Moq => break,
-                Origin::Routed { origin, path } => {
+            None => match &mut routes {
+                None => break,
+                Some(routes) => {
                     // The publisher may not have announced yet, so only a
                     // failover has a time limit.
                     let resolved = match generation {
-                        0 => origin.routed_broadcast(path).await,
-                        _ => match tokio::time::timeout(
-                            REROUTE_PATIENCE,
-                            origin.routed_broadcast(path),
-                        )
-                        .await
+                        0 => routes.available().await,
+                        _ => match tokio::time::timeout(REROUTE_PATIENCE, routes.available()).await
                         {
                             Ok(resolved) => resolved,
                             Err(_) => {
@@ -372,7 +396,7 @@ mod tests {
             .expect("published");
         let consumer = origin
             .consume()
-            .routed_broadcast("live/cam")
+            .request("live/cam", None)
             .await
             .expect("resolved");
         // The publisher leaves before the remote broadcast starts.

@@ -31,9 +31,6 @@ use tracing::{Instrument, debug, info};
 
 use crate::{RemoteBroadcast, error::Error};
 
-/// The path a recording serves a bare broadcast under on its private route table.
-const LOCAL_PATH: &str = "recorded";
-
 /// A container to record into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RecordFormat {
@@ -224,39 +221,27 @@ fn selection(rendition: Option<&str>) -> select::Broadcast {
         .audio(select::Audio::default())
 }
 
-/// Serves a bare broadcast on a private route table for the exporter.
+/// Runs an empty private route table for the exporter.
 ///
-/// The exporter resolves renditions through a route table. A rendition that
-/// names a sibling broadcast cannot resolve here, because a bare consumer has
-/// no siblings. A broadcast that follows a route table records through that
-/// table instead.
+/// The exporter resolves a rendition that names a sibling broadcast through a
+/// route table. A bare broadcast has no siblings, so nothing resolves here. A
+/// broadcast that follows a route table records through that table instead.
 struct LocalOrigin {
     origin: moq_net::origin::Producer,
-    _tasks: [AbortOnDropHandle<()>; 2],
+    _driver: AbortOnDropHandle<()>,
 }
 
 impl LocalOrigin {
-    fn serve(broadcast: moq_net::broadcast::Consumer) -> Result<Self, Error> {
+    fn new() -> Self {
         let (origin, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::default());
-        let dynamic = origin
-            .dynamic(LOCAL_PATH, moq_net::origin::Route::default())
-            .map_err(Error::broadcast)?;
         let driver = n0_future::task::spawn(async move {
             let err = moq_net::time::run(driver).await;
             debug!(error = %err, "the recording's route table stopped");
         });
-        let handler = n0_future::task::spawn(async move {
-            while let Ok(request) = dynamic.requested_broadcast().await {
-                request.accept(broadcast.clone());
-            }
-        });
-        Ok(Self {
+        Self {
             origin,
-            _tasks: [
-                AbortOnDropHandle::new(driver),
-                AbortOnDropHandle::new(handler),
-            ],
-        })
+            _driver: AbortOnDropHandle::new(driver),
+        }
     }
 }
 
@@ -278,10 +263,10 @@ async fn record(
         () = stop.cancelled() => return Ok(0),
     };
     let (_local, source) = match broadcast.routed() {
-        Some((origin, path)) => (None, moq_mux::Source::new(origin, path)),
+        Some(origin) => (None, moq_mux::Source::new(origin, consumer.clone())),
         None => {
-            let local = LocalOrigin::serve(consumer.clone())?;
-            let source = moq_mux::Source::new(local.origin.consume(), LOCAL_PATH);
+            let local = LocalOrigin::new();
+            let source = moq_mux::Source::new(local.origin.consume(), consumer.clone());
             (Some(local), source)
         }
     };
@@ -291,10 +276,10 @@ async fn record(
         .select(selection(config.rendition.as_deref()));
     let mut export = match config.format {
         RecordFormat::Fmp4 => Export::Fmp4(Box::new(
-            fmp4::Export::new(source, catalog).with_max_age(config.max_age),
+            fmp4::Export::new(source, catalog).with_max_delay(config.max_age),
         )),
         RecordFormat::Mkv => Export::Mkv(Box::new(
-            mkv::Export::new(source, catalog).with_max_age(config.max_age),
+            mkv::Export::new(source, catalog).with_delay(config.max_age),
         )),
     };
     info!(format = ?config.format, "recording started");

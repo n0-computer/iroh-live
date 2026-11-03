@@ -7,7 +7,6 @@
 use std::{fmt, str::FromStr};
 
 use iroh::EndpointId;
-use moq_net::{Path, PathOwned};
 use n0_error::e;
 use serde::{Deserialize, Serialize};
 
@@ -69,8 +68,11 @@ impl BroadcastTicket {
     }
 
     /// Returns the path the broadcast is published at: `live/<peer>/<name>`.
-    pub fn path(&self) -> PathOwned {
-        Path::new(&format!("live/{}/{}", self.peer, self.name)).to_owned()
+    ///
+    /// A string, since a name may not make a valid moq path; publishing or
+    /// subscribing at it says so.
+    pub fn path(&self) -> String {
+        format!("live/{}/{}", self.peer, self.name)
     }
 
     /// Returns the ticket of the broadcast at `path`, if it is a `live/<peer>/<name>` path.

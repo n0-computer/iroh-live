@@ -91,7 +91,7 @@ const RAMP: Duration = Duration::from_millis(2);
 /// One per process, so the flash and the beep agree whenever each was started.
 fn test_clock() -> Clock {
     static CLOCK: OnceLock<Clock> = OnceLock::new();
-    *CLOCK.get_or_init(Clock::new)
+    CLOCK.get_or_init(Clock::new).clone()
 }
 
 /// When a generated tone sounds.
@@ -155,7 +155,12 @@ fn sleep_until(due: Instant, stop: &CancellationToken) -> bool {
 }
 
 /// Paints the pattern into `slot` until `stop` is cancelled.
-pub(crate) fn run_pattern(size: Size, rate: video::Rate, slot: FrameSlot, stop: CancellationToken) {
+pub(crate) fn run_pattern(
+    size: Size,
+    rate: video::FrameRate,
+    slot: FrameSlot,
+    stop: CancellationToken,
+) {
     let clock = test_clock();
     let interval = Duration::from_secs_f64(1.0 / rate.as_f64());
     let mut canvas = Canvas::new(size);

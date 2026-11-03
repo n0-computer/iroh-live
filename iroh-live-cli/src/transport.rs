@@ -44,7 +44,9 @@ pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Li
 /// Always serves, since other participants dial in.
 pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
     let endpoint = EndpointOptions::from_env()?.bind().await?;
-    let builder = Live::builder(endpoint).with_router();
+    // Peers may publish their room broadcasts here, besides their own `live/` ones.
+    let config = iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope]);
+    let builder = Live::builder_with(endpoint, config).with_router();
     let rooms = iroh_live::rooms::Rooms::new(builder.moq());
     let live = builder
         .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())

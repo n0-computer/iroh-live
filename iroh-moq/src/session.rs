@@ -10,7 +10,7 @@ use std::{
 };
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
-use moq_net::{AsPath, origin};
+use moq_net::{Path, origin};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use tokio::{
@@ -50,15 +50,15 @@ pub(crate) fn hop_from(value: u64) -> moq_net::Hop {
 ///
 /// web-transport-iroh through moq-tokio's poll adapter, which costs an
 /// allocation per operation and a copy per write.
-pub(crate) type Transport = moq_tokio::transport::Session<web_transport_iroh::Session>;
+pub(crate) type Transport = crate::adapter::Session<web_transport_iroh::Session>;
 
 /// Returns the instant a session's driver starts from.
 ///
 /// Read from tokio's clock, which `moq_net::time::run` polls the driver with.
 /// Under `tokio::time::pause` std's clock runs ahead, and a driver refuses
 /// time that moves backwards.
-pub(crate) fn driver_now() -> std::time::Instant {
-    tokio::time::Instant::now().into_std()
+pub(crate) fn driver_now() -> moq_net::time::Instant {
+    moq_net::time::Instant::now()
 }
 
 /// A direct session with a peer.
@@ -126,14 +126,17 @@ impl Session {
     /// Fails with [`Error::NotGranted`] if the session's grant does not let
     /// the peer publish the path, and [`Error::NotAnnounced`] if the session
     /// ends before the peer announces it.
-    pub async fn subscribe(&self, path: impl AsPath) -> Result<Subscription, Error> {
-        let path = path.as_path().to_owned();
+    pub async fn subscribe(
+        &self,
+        path: impl TryInto<Path, Error: Into<moq_net::Error>>,
+    ) -> Result<Subscription, Error> {
+        let path = crate::error::to_path(path)?;
         if !self.inner.grant.allows_publish(path.as_str()) {
             return Err(e!(Error::NotGranted { path }));
         }
         let ingest = self.inner.ingest.consume();
         let broadcast = tokio::select! {
-            resolved = ingest.routed_broadcast(&path) => match resolved {
+            resolved = crate::route::routed(&ingest, &path) => match resolved {
                 Ok(broadcast) => broadcast,
                 Err(moq_net::Error::Closed) => return Err(e!(Error::NotAnnounced { path })),
                 Err(source) => return Err(e!(Error::Unresolved { path, source })),
@@ -245,7 +248,7 @@ pub(crate) struct SessionParts {
     pub(crate) grant: Grant,
     pub(crate) request: SessionRequest,
     pub(crate) moq: moq_net::Session,
-    pub(crate) driver: moq_net::Driver<Transport>,
+    pub(crate) driver: moq_net::Driver,
     pub(crate) origins: Origins,
 }
 
@@ -273,13 +276,18 @@ pub(crate) async fn dial_session(
         client = client.with_cost(cost);
     }
     // An H3 session carries the token in its CONNECT URL already.
-    if !transport.is_h3()
-        && let Some(path) = options.setup_path()
-    {
-        client = client.with_path(path);
-    }
+    let address = if transport.is_h3() {
+        moq_net::transport::Address::Uri
+    } else {
+        if let Some(path) = options.setup_path()
+            && let Ok(url) = url::Url::parse(&format!("moqt://iroh{path}"))
+        {
+            client = client.with_url(url);
+        }
+        moq_net::transport::Address::Setup
+    };
     let (moq, driver) = client
-        .connect(driver_now(), Transport::new(transport.session))
+        .connect(driver_now(), Transport::new(transport.session, address))
         .await
         .map_err(|source| match source {
             moq_net::Error::Unauthorized | moq_net::Error::App(_) => e!(Error::Refused { source }),

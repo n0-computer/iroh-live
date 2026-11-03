@@ -72,7 +72,7 @@ fn describe(mode: &video::capture::Mode) -> String {
 /// Drivers report exact ratios, and NTSC rates are fractions (24000/1001 is
 /// 23.976 fps). Whole rates print as "30", others with two decimals.
 /// `Rate`'s own `Display` would print "30/1".
-fn rate(rate: &video::Rate) -> String {
+fn rate(rate: &video::FrameRate) -> String {
     let fps = rate.as_f64();
     if (fps - fps.round()).abs() < 0.005 {
         format!("{}", fps.round() as u64)

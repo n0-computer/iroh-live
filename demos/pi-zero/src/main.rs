@@ -94,11 +94,13 @@ mod app {
     async fn cmd_fb_demo() -> n0_error::Result {
         use iroh_live::media::{
             VideoSource,
-            video::{Rate, Size},
+            video::{FrameRate, Size},
         };
 
-        let source =
-            VideoSource::test_pattern(Size::new(640, 480), Rate::new(30, 1).expect("a valid rate"));
+        let source = VideoSource::test_pattern(
+            Size::new(640, 480),
+            FrameRate::new(30, 1).expect("a valid rate"),
+        );
         watch::run_fb_demo(source.frames()).await?;
         Ok(())
     }

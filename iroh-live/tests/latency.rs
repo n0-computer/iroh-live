@@ -24,7 +24,7 @@ use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
 use iroh_live::{BroadcastTicket, Live, LocalBroadcast};
 use iroh_live_media::{
     Latency, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition, VideoSource,
-    video::{Frame, Rate, Size, Surface, decode},
+    video::{Frame, FrameRate, Size, Surface, decode},
 };
 use n0_tracing_test::traced_test;
 
@@ -69,7 +69,7 @@ fn stagger(index: u64) -> u64 {
 fn stamped_source(handed: Handed) -> VideoSource {
     let format = VideoFormat {
         size: SIZE,
-        rate: Rate::new(30, 1).expect("a valid rate"),
+        rate: FrameRate::new(30, 1).expect("a valid rate"),
     };
     VideoSource::spawn("stamped", format, move |sender| {
         let started = Instant::now();

@@ -25,7 +25,10 @@ fn counter_broadcast() -> (broadcast::Producer, AbortOnDropHandle<()>) {
 fn counting_from(first: u32) -> (broadcast::Producer, AbortOnDropHandle<()>) {
     let broadcast = broadcast::Info::new().produce();
     let mut track = broadcast
-        .create_track(DATA_TRACK, track::Info::default())
+        .create_track(
+            DATA_TRACK,
+            track::Info::default().with_timescale(moq_net::Timescale::MILLI),
+        )
         .expect("data track");
     let writer = tokio::spawn(async move {
         for counter in first.. {
@@ -356,7 +359,14 @@ async fn until_announced(updates: &mut moq_net::announce::Consumer, path: &str, 
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if update.prefix.as_str() == path && update.kind.is_active() == active {
+            let (announce, is_active) = match &update {
+                moq_net::announce::Event::End(announce) => (announce, false),
+                moq_net::announce::Event::Start(announce)
+                | moq_net::announce::Event::Update(announce)
+                | moq_net::announce::Event::Restart(announce)
+                | moq_net::announce::Event::Takeover { announce, .. } => (announce, true),
+            };
+            if announce.prefix.as_str() == path && is_active == active {
                 return;
             }
         }
@@ -410,11 +420,12 @@ async fn a_member_cannot_forge_anothers_broadcast() {
         .expect("timed out connecting")
         .expect("connect");
 
-    let routed = tokio::time::timeout(
-        Duration::from_secs(2),
-        peer_c.moq.origin().routed(path.as_str()),
-    )
-    .await;
+    let mut following = peer_c
+        .moq
+        .origin()
+        .follow(path.as_str(), None)
+        .expect("follow the path");
+    let routed = tokio::time::timeout(Duration::from_secs(2), following.available()).await;
     assert!(routed.is_err(), "the forgery reached c's table");
 
     let (cam, _writer) = counter_broadcast();

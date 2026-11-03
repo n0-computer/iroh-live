@@ -1,7 +1,7 @@
 //! Sessions from iroh clients, scoped by their endpoint id.
 //!
-//! moq-tokio's server can accept iroh connections, but the auth request it
-//! hands moq-relay carries no peer identity. So the relay accepts iroh sessions
+//! moq-tokio's server has no iroh backend, and an iroh session's auth
+//! request would carry no peer identity anyway. So the relay accepts iroh sessions
 //! itself with [`IrohSessions`], and lets each client publish only at the paths
 //! that name it, `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
 //! Browsers come in through moq-tokio's server, and [`browser_auth`] keeps them
@@ -67,8 +67,8 @@ impl IrohSessions {
                 .map_err(AcceptError::from_err)?;
             let handshake = moq_net::Server::new()
                 .accept_request(
-                    tokio::time::Instant::now().into_std(),
-                    moq_tokio::transport::Session::new(transport),
+                    moq_net::time::Instant::now(),
+                    iroh_moq::transport::poll_session(transport, target.is_some()),
                 )
                 .await
                 .map_err(AcceptError::from_err)?;
@@ -81,7 +81,7 @@ impl IrohSessions {
         let publish = self
             .cluster
             .origin
-            .scope("", &iroh_live::grant(remote).publish)
+            .scope("", &relay_grant(remote).publish)
             .map_err(AcceptError::from_err)?;
         let (session, driver) = handshake
             .with_publisher(self.cluster.origin.consume())
@@ -141,6 +141,12 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
+/// What an iroh peer may publish into the relay: its own `live/` broadcasts
+/// and its room broadcasts.
+pub(crate) fn relay_grant(peer: iroh::EndpointId) -> iroh_moq::Grant {
+    iroh_live::grant_with(peer, &[iroh_live::rooms::publish_scope])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,7 +155,7 @@ mod tests {
     fn a_client_publishes_only_under_its_own_id() {
         let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
-        let scope = iroh_live::grant(id).publish;
+        let scope = relay_grant(id).publish;
         assert!(scope.matches(&format!("live/{id}/cam")));
         assert!(scope.matches(&format!("rooms/topic/{id}/cam")));
         assert!(!scope.matches(&format!("live/{other}/cam")));

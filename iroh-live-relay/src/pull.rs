@@ -31,9 +31,6 @@ use tracing::{debug, info, warn};
 /// Long enough for a page reload to reuse the connection.
 const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 
-/// How long to wait for the mirror's announcement before watching guards alone.
-const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Shared state for pull operations.
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
@@ -103,7 +100,10 @@ impl PullState {
     /// Creates pull state that dials over `endpoint` and mirrors into `cluster`.
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         Self {
-            moq: Moq::new(endpoint, iroh_live::moq_config()),
+            moq: Moq::new(
+                endpoint,
+                iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope]),
+            ),
             cluster,
             linger: DEFAULT_LINGER,
             pulls: Arc::new(Mutex::new(HashMap::new())),
@@ -215,11 +215,19 @@ impl PullState {
             .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
             .await
             .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))?;
+        // The mirror is a broadcast of the cluster's own, whose tracks are
+        // copied from the subscription as readers ask for them.
         let mirror = self
             .cluster
             .origin
-            .dynamic(local_name, origin::Route::default())
+            .create_broadcast(local_name)
             .map_err(|err| anyhow::anyhow!("failed to mirror {local_name}: {err}"))?;
+        // Registered before the announcement, so no reader asks for a track
+        // while nothing serves it.
+        let copy = iroh_moq::forward::forward(subscription.as_moq(), mirror.broadcast().clone());
+        mirror
+            .announce(origin::Route::default())
+            .map_err(|err| anyhow::anyhow!("failed to announce {local_name}: {err}"))?;
         info!(
             local_name = %local_name,
             remote = %ticket.peer().fmt_short(),
@@ -231,6 +239,7 @@ impl PullState {
             Arc::clone(pull),
             subscription,
             mirror,
+            copy,
             publisher,
         ));
         Ok(())
@@ -242,26 +251,21 @@ impl PullState {
         local_name: String,
         pull: Arc<Pull>,
         subscription: Subscription,
-        mirror: origin::Dynamic,
+        mirror: origin::Publication,
+        copy: impl Future<Output = ()>,
         publisher: PublisherClaim,
     ) {
-        let serve = async {
-            // The broadcast the subscription resolves to now, so the next reader
-            // follows a route change upstream.
-            while let Ok(request) = mirror.requested_broadcast().await {
-                request.accept(subscription.as_moq());
-            }
-        };
+        let demand = mirror.broadcast().demand();
         tokio::select! {
             () = subscription.closed() => {
                 info!(local_name = %local_name, "the publisher ended the pulled broadcast");
                 self.retire(&local_name, &pull);
             }
-            () = self.wait_idle(&local_name, &pull) => {
+            () = self.wait_idle(&local_name, &pull, demand) => {
                 info!(local_name = %local_name, "pull went idle, retracting the mirror");
             }
-            () = serve => {
-                warn!(local_name = %local_name, "the cluster stopped serving the mirror");
+            () = copy => {
+                warn!(local_name = %local_name, "the pulled broadcast closed");
                 self.retire(&local_name, &pull);
             }
         }
@@ -277,23 +281,7 @@ impl PullState {
     /// the ticket but has not subscribed yet, and demand covers a reader that
     /// holds no guard. The final check runs under the lock [`Self::pull`]
     /// claims under, so a pull claimed during the linger keeps running.
-    async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
-        // Demand exists once the mirror is announced.
-        let demand = tokio::time::timeout(
-            ANNOUNCE_TIMEOUT,
-            self.cluster.origin.consume().routed_broadcast(local_name),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .map(|broadcast| broadcast.demand());
-        if demand.is_none() {
-            warn!(
-                local_name = %local_name,
-                "pulled broadcast was never announced; falling back to the guard count alone"
-            );
-        }
-
+    async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>, mut demand: broadcast::Demand) {
         loop {
             if pull.claimed() {
                 let mut claims = pull.claims.subscribe();
@@ -302,19 +290,23 @@ impl PullState {
                 continue;
             }
 
-            if let Some(demand) = &demand
-                && demand.is_used()
-                // `Err` means every producer is gone: retire.
-                && demand.unused().await.is_ok()
-            {
-                continue;
+            if demand.wanted() {
+                // Waits for the last reader to leave. `Err` means the
+                // broadcast closed: retire.
+                let gone = async {
+                    while demand.wanted_changed().await? {}
+                    Ok::<(), moq_net::Error>(())
+                };
+                if gone.await.is_ok() {
+                    continue;
+                }
             }
 
             // Quiet for now. Wait out the linger, then confirm under the lock.
             tokio::time::sleep(self.linger).await;
 
             let mut pulls = self.pulls.lock().expect("poisoned");
-            if pull.claimed() || demand.as_ref().is_some_and(broadcast::Demand::is_used) {
+            if pull.claimed() || demand.wanted() {
                 continue;
             }
             remove_current(&mut pulls, local_name, pull);

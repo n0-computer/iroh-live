@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
-use moq_net::{Path, PathOwned, broadcast, origin};
+use moq_net::{Path, broadcast, origin};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -26,7 +26,7 @@ pub(crate) struct State {
     pub(crate) publications: BTreeMap<u64, PubEntry>,
     pub(crate) links: BTreeMap<u64, LinkEntry>,
     /// Which link last served each path a subscriber asked for.
-    served: HashMap<PathOwned, u64>,
+    served: HashMap<Path, u64>,
     /// Set once the node shuts down; nothing is added after that.
     pub(crate) closed: bool,
 }
@@ -34,7 +34,7 @@ pub(crate) struct State {
 /// One publication.
 #[derive(derive_more::Debug)]
 pub(crate) struct PubEntry {
-    pub(crate) path: PathOwned,
+    pub(crate) path: Path,
     #[debug(skip)]
     pub(crate) broadcast: broadcast::Consumer,
     pub(crate) audience: AudienceKind,
@@ -119,7 +119,7 @@ impl State {
     }
 
     /// Returns the publication at `path`, if any.
-    pub(crate) fn publication_at(&self, path: &Path<'_>) -> Option<u64> {
+    pub(crate) fn publication_at(&self, path: &Path) -> Option<u64> {
         self.publications
             .iter()
             .find(|(_, publication)| publication.path == *path)
@@ -163,12 +163,12 @@ impl State {
     }
 
     /// Records that link `link` served a subscriber's request for `path`.
-    pub(crate) fn set_served(&mut self, path: PathOwned, link: u64) {
+    pub(crate) fn set_served(&mut self, path: Path, link: u64) {
         self.served.insert(path, link);
     }
 
     /// Returns the link that last served `path`, if it still exists.
-    pub(crate) fn served(&self, path: &Path<'_>) -> Option<u64> {
+    pub(crate) fn served(&self, path: &Path) -> Option<u64> {
         self.served
             .get(path)
             .copied()
@@ -206,42 +206,28 @@ fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
 /// Offers `broadcast` at `path` on `origin` until the handle drops.
 ///
 /// The offer also ends with the broadcast. Returns `None`, and logs why, if
-/// the origin refuses the route.
+/// the origin refuses the path.
 pub(crate) fn serve(
     origin: &origin::Producer,
-    path: &Path<'_>,
+    path: &Path,
     broadcast: &broadcast::Consumer,
 ) -> Option<Serve> {
-    let offered = match origin.dynamic(path, origin::Route::default()) {
-        Ok(dynamic) => dynamic,
+    let publication = match origin.create_broadcast(path) {
+        Ok(publication) => publication,
         Err(err) => {
             warn!(%path, %err, "could not offer the broadcast");
             return None;
         }
     };
-    let broadcast = broadcast.clone();
-    let path = path.to_owned();
-    let root = origin.root().to_owned();
+    let copy = crate::forward::forward(broadcast.clone(), publication.broadcast().clone());
+    if let Err(err) = publication.announce(origin::Route::default()) {
+        warn!(%path, %err, "could not announce the broadcast");
+        return None;
+    }
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                // A route must not outlive its broadcast.
-                _ = broadcast.closed() => break,
-                request = offered.requested_broadcast() => match request {
-                    // The route also catches paths below this one.
-                    Ok(request)
-                        if !request
-                            .path()
-                            .strip_prefix(&root)
-                            .is_some_and(|requested| requested == path) =>
-                    {
-                        request.reject(moq_net::Error::NotFound);
-                    }
-                    Ok(request) => request.accept(&broadcast),
-                    Err(_) => break,
-                },
-            }
-        }
+        // The publication stays announced while the copy runs.
+        let _publication = publication;
+        copy.await;
     })))
 }
 
@@ -249,7 +235,7 @@ pub(crate) fn serve(
 mod tests {
     use std::time::Duration;
 
-    use moq_net::{Hop, Timestamp, bytes::Bytes, track};
+    use moq_net::{Hop, bytes::Bytes, track};
 
     use super::*;
 
@@ -269,7 +255,7 @@ mod tests {
             .expect("create track");
         let task = tokio::spawn(async move {
             while track
-                .write_frame(Timestamp::now(), Bytes::from_static(b"frame"))
+                .write_frame(None, Bytes::from_static(b"frame"))
                 .is_ok()
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -281,18 +267,18 @@ mod tests {
     /// Resolves `path` on `origin`, and subscribes to its track until a group arrives.
     async fn read(
         origin: &origin::Producer,
-        path: &Path<'_>,
+        path: &Path,
     ) -> (broadcast::Consumer, track::Subscriber) {
-        let served = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(path))
+        let served = tokio::time::timeout(TIMEOUT, origin.consume().request(path, None))
             .await
             .expect("timed out resolving")
             .expect("the offered path resolves");
         let mut subscriber = tokio::time::timeout(
             TIMEOUT,
-            served
-                .track("video")
-                .expect("track")
-                .subscribe(track::Subscription::default().with_max_age(MAX_AGE)),
+            served.track("video").expect("track").subscribe(
+                track::Subscription::default()
+                    .with_delay(moq_net::track::Delay::default().with_max(MAX_AGE)),
+            ),
         )
         .await
         .expect("timed out subscribing")
@@ -313,7 +299,7 @@ mod tests {
     async fn a_withdrawn_offer_stops_resolving() {
         let origin = origin();
         let (broadcast, _writer) = writing();
-        let path = Path::new("live/publisher/cam");
+        let path = Path::new("live/publisher/cam").expect("a valid path");
         let offer = serve(&origin, &path, &broadcast.consume()).expect("offer");
         let (served, _subscriber) = read(&origin, &path).await;
 
@@ -321,7 +307,7 @@ mod tests {
         tokio::time::timeout(TIMEOUT, served.closed())
             .await
             .expect("the served broadcast outlived the offer");
-        let again = tokio::time::timeout(TIMEOUT, origin.consume().request_broadcast(&path))
+        let again = tokio::time::timeout(TIMEOUT, origin.consume().request(&path, None))
             .await
             .expect("timed out resolving again");
         assert!(again.is_err(), "a withdrawn path resolved again");

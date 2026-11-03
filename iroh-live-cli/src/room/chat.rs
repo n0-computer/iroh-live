@@ -133,7 +133,7 @@ async fn read_once(
         let Some(event) = event else {
             return Ok(());
         };
-        let Event::Push { index, value } = event else {
+        let Event::Push { index, value } = event.value else {
             continue;
         };
         let Some(text) = remember(delivered, index, value) else {
@@ -180,7 +180,7 @@ mod tests {
             .expect("timed out")
             .expect("read")
             .expect("an event");
-        assert!(matches!(event, Event::Push { value, .. } if value == "hello"));
+        assert!(matches!(event.value, Event::Push { value, .. } if value == "hello"));
     }
 
     /// A replayed window is skipped, and a restarted member is heard.

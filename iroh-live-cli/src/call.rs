@@ -1036,14 +1036,21 @@ mod window {
         let me = live.endpoint().id();
         let mut updates = live.moq().origin().announced();
         while let Some(update) = updates.next().await {
-            let Some(caller) = BroadcastTicket::from_path(update.prefix.as_str())
+            let (announce, active) = match &update {
+                moq_net::announce::Event::End(announce) => (announce, false),
+                moq_net::announce::Event::Start(announce)
+                | moq_net::announce::Event::Update(announce)
+                | moq_net::announce::Event::Restart(announce)
+                | moq_net::announce::Event::Takeover { announce, .. } => (announce, true),
+            };
+            let Some(caller) = BroadcastTicket::from_path(announce.prefix.as_str())
                 .filter(|ticket| ticket.name() == CALL && ticket.peer() != me)
                 .map(|ticket| ticket.peer())
             else {
                 continue;
             };
             let mut ringing = callers.get();
-            if update.kind.is_active() {
+            if active {
                 debug!(remote = %caller.fmt_short(), "ringing");
                 ringing.insert(caller);
             } else {

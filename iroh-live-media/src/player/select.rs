@@ -447,7 +447,7 @@ fn choose(
             name: name.to_string(),
             bitrate: config.bitrate,
             height: config.coded_height,
-            stalled: config.stalled.unwrap_or(false),
+            stalled: !config.enabled,
         })
         .collect();
     let (max_height, why) = match mode {
@@ -590,7 +590,7 @@ mod tests {
             .set_video(
                 crate::VideoSource::test_pattern(
                     video::Size::new(320, 180),
-                    video::Rate::new(30, 1).expect("a valid rate"),
+                    video::FrameRate::new(30, 1).expect("a valid rate"),
                 ),
                 crate::VideoEncoding {
                     prefer_hardware: false,

@@ -59,8 +59,10 @@
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
 //! | [`Moq::shutdown`] | no | call it again to finish |
 
+mod adapter;
 mod admission;
 mod error;
+pub mod forward;
 mod link;
 mod node;
 mod preset;
@@ -73,6 +75,14 @@ pub mod transport;
 
 /// The moq-net this crate builds against.
 pub use moq_net as net;
+
+/// The poll transport adapter sessions run over, for this crate's tests.
+#[doc(hidden)]
+pub use adapter::Session as AdaptedTransport;
+
+/// Copies a broadcast into another, for this crate's tests.
+#[doc(hidden)]
+pub use forward::forward as forward_broadcast;
 
 pub use self::{
     admission::{

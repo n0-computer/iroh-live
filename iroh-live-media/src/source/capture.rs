@@ -13,8 +13,8 @@ use super::{FIRST_FRAME_PATIENCE, VideoFormat};
 use crate::{error::Error, frames::FrameSlot, local_task::LocalTask, video};
 
 /// The rate assumed for a device that reports none.
-fn default_rate() -> video::Rate {
-    video::Rate::new(30, 1).expect("30/1 is a valid rate")
+fn default_rate() -> video::FrameRate {
+    video::FrameRate::new(30, 1).expect("30/1 is a valid rate")
 }
 
 /// Opens the device `config` names and starts reading it into `slot`.

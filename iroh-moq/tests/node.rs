@@ -466,12 +466,14 @@ async fn a_peer_cannot_route_another_publishers_path() {
     )
     .await
     .expect("subscribe");
+    // The serving link is recorded when the first track is requested, which
+    // moq-net's origin now only sees once a reader asks for one.
+    assert!(read_counter(&subscription.as_moq()).await < FORGED);
     assert_eq!(
         subscription.session().map(|session| session.remote_id()),
         Some(alice.id()),
         "served by someone other than the publisher"
     );
-    assert!(read_counter(&subscription.as_moq()).await < FORGED);
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -675,14 +677,14 @@ async fn the_route_table_carries_public_publications_only() {
 
     let served = step(
         "the table serves the public one",
-        origin.request_broadcast(public.path()),
+        origin.request(public.path(), None),
     )
     .await
     .expect("resolve");
     read_counter(&served).await;
     let unrouted = step(
         "the table does not serve the private one",
-        origin.request_broadcast(secret.path()),
+        origin.request(secret.path(), None),
     )
     .await;
     assert!(unrouted.is_err(), "a private publication reached the table");

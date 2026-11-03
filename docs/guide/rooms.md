@@ -12,13 +12,15 @@ implements moq-net's `Consume<broadcast::Consumer>`, and returns an
 
 `Rooms` owns the gossip instance. Create it on the builder's `Moq` before the
 router, so that the router can mount it. The node's grant must let members
-publish under `iroh_live_rooms::publish_scope(member)`.
-`iroh_live::moq_config()` does that when `iroh-live` has the `rooms` feature:
+publish under `iroh_live_rooms::publish_scope(member)`. The application says so
+at runtime with `iroh_live::moq_config_with`; enabling the `rooms` feature alone
+grants nothing:
 
 ```rust
 use iroh_live::{Live, rooms::{RoomTicket, Rooms}};
 
-let builder = Live::builder(endpoint).with_router();
+let config = iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope]);
+let builder = Live::builder_with(endpoint, config).with_router();
 let rooms = Rooms::new(builder.moq());
 let live = builder
     .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())

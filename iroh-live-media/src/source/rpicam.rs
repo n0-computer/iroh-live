@@ -217,7 +217,7 @@ pub(super) async fn open_raw(
     stop: CancellationToken,
 ) -> Result<(VideoFormat, LocalTask), Error> {
     let size = aligned(config.size);
-    let rate = crate::video::Rate::new(config.framerate.max(1), 1)
+    let rate = crate::video::FrameRate::new(config.framerate.max(1), 1)
         .map_err(|err| Error::invalid(err.to_string()))?;
     let format = VideoFormat { size, rate };
     let mut pictures = frames(size, config.framerate, moq_mux::Clock::new())?;

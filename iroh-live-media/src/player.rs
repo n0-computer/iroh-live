@@ -88,8 +88,8 @@ impl RenditionMode {
 ///
 /// The playout clock holds each picture for `min` past its arrival, plus the
 /// audio queued at the speaker. Media later than `max` is skipped. `max` also
-/// bounds what the transport keeps for the player (moq `max_age`). Setting
-/// `min == max` gives a fixed latency.
+/// bounds what the transport keeps for the player (the moq subscription's
+/// `delay.max`). Setting `min == max` gives a fixed latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Latency {
     /// The jitter allowance every picture is held for.
@@ -261,8 +261,10 @@ pub(crate) struct Controls {
 
 /// One playback: video into [`VideoFrames`], audio into an [`AudioOutput`].
 ///
-/// Dropping it stops its decoders. It is not `Clone`: a second view of the
-/// broadcast is a second player.
+/// Dropping it cancels its tasks and returns at once: decoders stop at their
+/// next await point and are not waited for, so a decoder thread may outlive
+/// the player briefly. It is not `Clone`: a second view of the broadcast is a
+/// second player.
 #[derive(Debug)]
 pub struct Player {
     broadcast: RemoteBroadcast,

@@ -13,11 +13,14 @@ use std::{
 };
 
 use moq_net::{
-    Hop, Hops, Path, PathOwned, announce, broadcast,
+    Hop, Hops, Path,
+    announce::Event as AnnounceEvent,
+    broadcast,
     origin::{self, Route},
 };
 use n0_error::e;
-use n0_future::task::{AbortOnDropHandle, JoinSet};
+use n0_future::task::AbortOnDropHandle;
+use tokio::sync::watch;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
@@ -64,7 +67,7 @@ pub struct Subscription {
 }
 
 struct SubscriptionInner {
-    path: PathOwned,
+    path: Path,
     origin: origin::Consumer,
     current: Mutex<broadcast::Consumer>,
     /// The link this subscription is pinned to, if it does not follow the table.
@@ -74,7 +77,7 @@ struct SubscriptionInner {
 
 impl Subscription {
     pub(crate) fn new(
-        path: PathOwned,
+        path: Path,
         origin: origin::Consumer,
         broadcast: broadcast::Consumer,
         link: Option<u64>,
@@ -92,7 +95,7 @@ impl Subscription {
     }
 
     /// Returns the path this subscription resolves.
-    pub fn path(&self) -> &Path<'_> {
+    pub fn path(&self) -> &Path {
         &self.inner.path
     }
 
@@ -161,7 +164,7 @@ impl Subscription {
                 tokio::time::sleep(REASK_PAUSE * quick.min(REASK_MAX_STEPS)).await;
             }
             quick += 1;
-            let next = match self.inner.origin.request_broadcast(&self.inner.path).await {
+            let next = match self.inner.origin.request(&self.inner.path, None).await {
                 Ok(next) if !next.is_closed() => next,
                 _ => return,
             };
@@ -172,18 +175,14 @@ impl Subscription {
 }
 
 /// Resolves `path` in the route table, for [`Moq::subscribe`](crate::Moq::subscribe).
-pub(crate) async fn subscribe(
-    moq: &Moq,
-    path: PathOwned,
-    reach: Reach,
-) -> Result<Subscription, Error> {
+pub(crate) async fn subscribe(moq: &Moq, path: Path, reach: Reach) -> Result<Subscription, Error> {
     check_path(&path)?;
     if moq.shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
     let table = moq.shared.table.consume();
     // A route the table already knows answers at once.
-    if let Ok(broadcast) = table.request_broadcast(&path).await {
+    if let Ok(broadcast) = table.request(&path, None).await {
         debug!(%path, "resolved through an existing route");
         return Ok(subscription(&moq.shared, path, table, broadcast));
     }
@@ -200,14 +199,14 @@ pub(crate) async fn subscribe(
             return Err(e!(Error::NoRoute { path }));
         }
         debug!(%path, "waiting for a relay to route the path");
-        let resolved = table.routed_broadcast(&path).await;
+        let resolved = routed(&table, &path).await;
         return outcome(&moq.shared, path, table, resolved);
     };
 
     debug!(%path, peer = %peer.fmt_short(), relays, "dialing the publisher");
     let routed = {
         let (table, path) = (table.clone(), path.clone());
-        async move { table.routed_broadcast(&path).await }
+        async move { routed(&table, &path).await }
     };
     tokio::pin!(routed);
     let connected = tokio::select! {
@@ -240,10 +239,18 @@ pub(crate) async fn subscribe(
     outcome(&moq.shared, path, table, resolved)
 }
 
+/// Waits until a route serves `path`, and resolves it.
+pub(crate) async fn routed(
+    table: &origin::Consumer,
+    path: &Path,
+) -> Result<broadcast::Consumer, moq_net::Error> {
+    table.follow(path, None)?.available().await
+}
+
 /// Returns the subscription `resolved` makes, or why there is none.
 fn outcome(
     shared: &Arc<Shared>,
-    path: PathOwned,
+    path: Path,
     table: origin::Consumer,
     resolved: Result<broadcast::Consumer, moq_net::Error>,
 ) -> Result<Subscription, Error> {
@@ -257,7 +264,7 @@ fn outcome(
 /// Returns a subscription to `path` that follows the route table.
 fn subscription(
     shared: &Arc<Shared>,
-    path: PathOwned,
+    path: Path,
     table: origin::Consumer,
     broadcast: broadcast::Consumer,
 ) -> Subscription {
@@ -266,8 +273,9 @@ fn subscription(
 
 /// Mirrors the routes in `ingest` into the node's route table.
 ///
-/// Each route enters the table with the same hops and cost. A request under
-/// it resolves through `ingest`, and records which link served it. A direct
+/// Each announced path enters the table as a broadcast of its own, with the
+/// route's hops and cost, served from `ingest` (see [`crate::forward`]). The
+/// first track a reader asks for records which link served the path. A direct
 /// session's ingest holds only what its grant lets the peer publish.
 ///
 /// A relay's routes (`relay` set) get a first hop of their own (see
@@ -276,18 +284,23 @@ fn subscription(
 /// that publishes someone else's path into a relay under that publisher's hop
 /// would be spliced into a direct subscription once the direct session drops.
 pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Producer, relay: bool) {
-    let mut announced = ingest.consume().announced();
-    let mut mirrors: HashMap<PathOwned, (Arc<origin::Dynamic>, AbortOnDropHandle<()>)> =
-        HashMap::new();
-    while let Some(update) = announced.next().await {
-        let prefix = update.prefix.clone();
-        if update.kind == announce::Kind::Retracted {
-            trace!(link, %prefix, "route retracted");
-            mirrors.remove(&prefix);
-            continue;
-        }
+    let source = ingest.consume();
+    let mut announced = source.announced();
+    let mut mirrors: HashMap<Path, (watch::Sender<Route>, AbortOnDropHandle<()>)> = HashMap::new();
+    while let Some(event) = announced.next().await {
+        let (announce, restart) = match event {
+            AnnounceEvent::End(announce) => {
+                trace!(link, prefix = %announce.prefix, "route retracted");
+                mirrors.remove(&announce.prefix);
+                continue;
+            }
+            AnnounceEvent::Update(announce) => (announce, false),
+            AnnounceEvent::Start(announce) | AnnounceEvent::Restart(announce) => (announce, true),
+            AnnounceEvent::Takeover { announce, .. } => (announce, true),
+        };
+        let prefix = announce.prefix.clone();
         let hops = if relay {
-            match relayed(&update.route.hops) {
+            match relayed(&announce.route.hops) {
                 Some(hops) => hops,
                 None => {
                     warn!(link, %prefix, "relay route with an unusable hop chain, not mirrored");
@@ -295,32 +308,84 @@ pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Produ
                 }
             }
         } else {
-            update.route.hops.clone()
+            announce.route.hops.clone()
         };
         let route = Route::default()
             .with_hops(hops)
-            .with_cost(update.route.cost);
-        trace!(link, %prefix, hops = route.hops.len(), cost = route.cost.warm, "route");
-        if let Some((dynamic, _)) = mirrors.get(&prefix) {
-            if let Err(err) = dynamic.update(route) {
-                warn!(link, %prefix, %err, "could not update a mirrored route");
-            }
+            .with_cost(announce.route.cost);
+        trace!(link, %prefix, hops = route.hops.len(), cost = route.cost.value(), "route");
+        if !restart && let Some((routes, _)) = mirrors.get(&prefix) {
+            routes.send_replace(route);
             continue;
         }
-        let dynamic = match shared.table.dynamic(&prefix, route) {
-            Ok(dynamic) => Arc::new(dynamic),
-            Err(err) => {
-                warn!(link, %prefix, %err, "could not mirror a route into the table");
-                continue;
-            }
-        };
-        let task = tokio::spawn(answer(
+        let (routes, watched) = watch::channel(route);
+        let task = tokio::spawn(mirror(
             Arc::downgrade(&shared),
             link,
-            dynamic.clone(),
-            ingest.consume(),
+            prefix.clone(),
+            watched,
+            source.clone(),
         ));
-        mirrors.insert(prefix, (dynamic, AbortOnDropHandle::new(task)));
+        mirrors.insert(prefix, (routes, AbortOnDropHandle::new(task)));
+    }
+}
+
+/// Serves one mirrored path in the route table from a link's ingest.
+async fn mirror(
+    shared: Weak<Shared>,
+    link: u64,
+    path: Path,
+    mut routes: watch::Receiver<Route>,
+    ingest: origin::Consumer,
+) {
+    let broadcast = match ingest.request(&path, None).await {
+        Ok(broadcast) => broadcast,
+        Err(err) => {
+            debug!(link, %path, %err, "link could not serve a mirrored path");
+            return;
+        }
+    };
+    let Some(table) = shared.upgrade().map(|shared| shared.table.clone()) else {
+        return;
+    };
+    let publication = match table.create_broadcast(&path) {
+        Ok(publication) => publication,
+        Err(err) => {
+            warn!(link, %path, %err, "could not mirror a route into the table");
+            return;
+        }
+    };
+    let served = {
+        let (shared, path) = (shared.clone(), path.clone());
+        move || {
+            if let Some(shared) = shared.upgrade() {
+                shared
+                    .state
+                    .lock()
+                    .expect("poisoned")
+                    .set_served(path.clone(), link);
+            }
+        }
+    };
+    let copy = crate::forward::forward_with(broadcast, publication.broadcast().clone(), served);
+    tokio::pin!(copy);
+    if let Err(err) = publication.announce(routes.borrow_and_update().clone()) {
+        warn!(link, %path, %err, "could not announce a mirrored route");
+        return;
+    }
+    loop {
+        tokio::select! {
+            _ = &mut copy => break,
+            changed = routes.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let route = routes.borrow_and_update().clone();
+                if let Err(err) = publication.announce(route) {
+                    warn!(link, %path, %err, "could not update a mirrored route");
+                }
+            }
+        }
     }
 }
 
@@ -352,44 +417,6 @@ fn relayed(hops: &Hops) -> Option<Hops> {
 
 /// Mixed into a claimed hop, so a relayed stand-in is no node's own hop.
 const RELAYED_SALT: u64 = 0x7265_6c61_7965_6421;
-
-/// Answers the requests one mirrored route receives.
-///
-/// Each request resolves through the link's ingest in its own task, so a slow
-/// path does not hold up the others under the prefix.
-async fn answer(
-    shared: Weak<Shared>,
-    link: u64,
-    dynamic: Arc<origin::Dynamic>,
-    ingest: origin::Consumer,
-) {
-    let mut pending = JoinSet::new();
-    loop {
-        tokio::select! {
-            request = dynamic.requested_broadcast() => {
-                let Ok(request) = request else { break };
-                let ingest = ingest.clone();
-                let shared = shared.clone();
-                pending.spawn(async move {
-                    let path = request.path().to_owned();
-                    match ingest.request_broadcast(&path).await {
-                        Ok(broadcast) => {
-                            if let Some(shared) = shared.upgrade() {
-                                shared.state.lock().expect("poisoned").set_served(path, link);
-                            }
-                            request.accept(broadcast);
-                        }
-                        Err(err) => {
-                            debug!(link, %path, %err, "link could not serve a request");
-                            request.reject(err);
-                        }
-                    }
-                });
-            }
-            Some(_) = pending.join_next(), if !pending.is_empty() => {}
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

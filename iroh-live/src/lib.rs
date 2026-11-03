@@ -23,7 +23,7 @@ let live = Live::builder(endpoint).with_router().spawn();
 let broadcast = LocalBroadcast::new();
 let source = VideoSource::test_pattern(
     video::Size::new(1280, 720),
-    video::Rate::new(30, 1).expect("a valid rate"),
+    video::FrameRate::new(30, 1).expect("a valid rate"),
 );
 broadcast.set_video(
     source,
@@ -99,6 +99,9 @@ pub use iroh_moq::{
 pub use self::{
     endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
-    live::{Live, LiveBuilder, grant, moq_config, publish_scope},
+    live::{
+        Live, LiveBuilder, PublishScope, grant, grant_with, moq_config, moq_config_with,
+        publish_scope,
+    },
     ticket::{BroadcastTicket, CALL},
 };

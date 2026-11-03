@@ -50,7 +50,7 @@ pub struct VideoFormat {
     /// The picture size.
     pub size: video::Size,
     /// The frame rate.
-    pub rate: video::Rate,
+    pub rate: video::FrameRate,
 }
 
 /// The sample rate and speaker layout of a raw audio source.
@@ -159,7 +159,7 @@ impl VideoSource {
     ///
     /// The pattern shows a sweeping bar, a frame counter and a clock. A marker
     /// flashes in step with the beep of [`AudioSource::test_pattern`].
-    pub fn test_pattern(size: video::Size, rate: video::Rate) -> Self {
+    pub fn test_pattern(size: video::Size, rate: video::FrameRate) -> Self {
         let slot = FrameSlot::new();
         let reader = slot.reader();
         let stop = CancellationToken::new();
@@ -631,8 +631,8 @@ mod tests {
 
     use super::*;
 
-    fn rate(fps: u32) -> video::Rate {
-        video::Rate::new(fps, 1).expect("a valid rate")
+    fn rate(fps: u32) -> video::FrameRate {
+        video::FrameRate::new(fps, 1).expect("a valid rate")
     }
 
     #[tokio::test]

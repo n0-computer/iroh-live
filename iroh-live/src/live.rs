@@ -27,26 +27,43 @@ pub fn publish_scope(peer: EndpointId) -> Pattern {
         .expect("an endpoint id is a valid path segment")
 }
 
+/// A function naming the paths a peer may publish under, given its id.
+///
+/// [`publish_scope`] is one; `rooms::publish_scope` is another.
+pub type PublishScope = fn(EndpointId) -> Pattern;
+
 /// Returns the grant a live node gives `peer`.
 ///
 /// The peer may subscribe to anything, and publish only under
-/// [`publish_scope`] and, with the `rooms` feature, `rooms::publish_scope`. So
-/// no peer can publish at a path that names another.
+/// [`publish_scope`], so no peer can publish at a path that names another.
+/// [`grant_with`] adds more scopes, such as rooms'.
 pub fn grant(peer: EndpointId) -> Grant {
-    #[cfg_attr(
-        not(feature = "rooms"),
-        allow(unused_mut, reason = "rooms add a scope")
-    )]
+    grant_with(peer, &[])
+}
+
+/// Returns [`grant`] widened by `scopes`, each applied to `peer`.
+///
+/// What a peer may publish is the application's choice: a node that runs
+/// rooms passes `rooms::publish_scope` here, and one that does not leaves it
+/// out, whatever features the build has.
+pub fn grant_with(peer: EndpointId, scopes: &[PublishScope]) -> Grant {
     let mut publish = Patterns::from(publish_scope(peer));
-    #[cfg(feature = "rooms")]
-    publish.insert(iroh_live_rooms::publish_scope(peer));
+    for scope in scopes {
+        publish.insert(scope(peer));
+    }
     Grant::publish_under(publish)
 }
 
 /// Returns the [`MoqConfig`] of a live node: admission open, with [`grant`].
 pub fn moq_config() -> MoqConfig {
+    moq_config_with(&[])
+}
+
+/// Returns the [`MoqConfig`] of a live node whose peers may also publish
+/// under `scopes`, as [`grant_with`] says.
+pub fn moq_config_with(scopes: &'static [PublishScope]) -> MoqConfig {
     MoqConfig {
-        grant: Some(Arc::new(grant)),
+        grant: Some(Arc::new(move |peer| grant_with(peer, scopes))),
         ..Default::default()
     }
 }
@@ -135,8 +152,17 @@ impl Live {
     /// # }
     /// ```
     pub fn builder(endpoint: Endpoint) -> LiveBuilder {
+        Self::builder_with(endpoint, moq_config())
+    }
+
+    /// Returns a builder for a node on `endpoint` with its own [`MoqConfig`].
+    ///
+    /// For a node whose peers may publish more than [`grant`] allows, such as
+    /// rooms (`moq_config_with(&[rooms::publish_scope])`), or one with its own
+    /// admission. Must be called within a tokio runtime.
+    pub fn builder_with(endpoint: Endpoint, config: MoqConfig) -> LiveBuilder {
         LiveBuilder {
-            moq: Moq::new(endpoint.clone(), moq_config()),
+            moq: Moq::new(endpoint.clone(), config),
             endpoint,
             router: false,
             protocols: Vec::new(),

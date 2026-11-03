@@ -8,8 +8,8 @@ name = "iroh-live-relay"
 path = "src/main.rs"
 
 [dependencies]
-moq-relay = { workspace = true, default-features = false, features = ["noq", "iroh"] }
-moq-tokio = { workspace = true, default-features = false, features = ["noq", "iroh", "aws-lc-rs"] }
+moq-relay = { workspace = true, default-features = false, features = ["quic", "websocket"] }
+moq-tokio = { workspace = true, default-features = false, features = ["net", "quic", "aws-lc-rs"] }
 moq-net = { workspace = true }
 iroh = { workspace = true }
 iroh-moq = { workspace = true }

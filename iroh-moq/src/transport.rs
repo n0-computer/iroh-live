@@ -110,6 +110,24 @@ pub async fn accept(
     Ok((session, h3.map(|(target, _headers)| target)))
 }
 
+/// Wraps `session` for moq-net, which drives sessions through a poll interface.
+///
+/// Hand the result to [`moq_net::Server::accept_request`] or
+/// [`moq_net::Client::connect`]. Pass `h3` as whether the session went through
+/// HTTP/3, as the CONNECT target [`accept`] returns says: its request path then
+/// travels in the CONNECT URL and not in the MoQ setup.
+pub fn poll_session(
+    session: web_transport_iroh::Session,
+    h3: bool,
+) -> impl moq_net::transport::poll::Boxable {
+    let address = if h3 {
+        moq_net::transport::Address::Uri
+    } else {
+        moq_net::transport::Address::Setup
+    };
+    crate::adapter::Session::new(session, address)
+}
+
 /// Completes the server half of the WebTransport handshake.
 ///
 /// As [`accept`], and also returns the CONNECT headers.

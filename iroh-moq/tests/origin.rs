@@ -7,31 +7,28 @@ mod common;
 
 use std::time::Duration;
 
-use common::{MAX_AGE, TIMEOUT, TestBroadcast, endpoint, read_counter, step};
+use common::{TIMEOUT, TestBroadcast, endpoint, read_counter, step, subscription};
 use iroh::{
     Endpoint, EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use moq_net::{
-    Hop,
-    announce::Kind as AnnounceKind,
-    broadcast,
+    Hop, announce, broadcast,
     origin::{self, Route},
-    track,
 };
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 
-type Transport = moq_tokio::transport::Session<web_transport_iroh::Session>;
+type Transport = iroh_moq::AdaptedTransport<web_transport_iroh::Session>;
 
 /// Creates an origin with hop `hop`, its driver spawned.
 fn origin(hop: u64) -> origin::Producer {
     moq_tokio::origin::spawn_config(origin::Config::new(Hop::new(hop).expect("a non-zero hop")))
 }
 
-fn now() -> std::time::Instant {
-    tokio::time::Instant::now().into_std()
+fn now() -> moq_net::time::Instant {
+    moq_net::time::Instant::now()
 }
 
 /// Hands every accepted connection to the test.
@@ -77,15 +74,19 @@ impl Server {
             .await
             .expect("timed out waiting for a connection")
             .expect("router gone");
-        let (transport, _target) = iroh_moq::transport::accept(connection)
+        let (transport, target) = iroh_moq::transport::accept(connection)
             .await
             .expect("transport handshake");
+        let address = match target {
+            Some(_) => moq_net::transport::Address::Uri,
+            None => moq_net::transport::Address::Setup,
+        };
         let mut server = moq_net::Server::new().with_publisher(publisher);
         if let Some(subscriber) = subscriber {
             server = server.with_subscriber(subscriber);
         }
         let (session, driver) = server
-            .accept(now(), Transport::new(transport))
+            .accept(now(), Transport::new(transport, address))
             .await
             .expect("handshake failed");
         Session::new(session, driver)
@@ -99,7 +100,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(session: moq_net::Session, driver: moq_net::Driver<Transport>) -> Self {
+    fn new(session: moq_net::Session, driver: moq_net::Driver) -> Self {
         let task = tokio::spawn(async move {
             moq_net::time::run(driver).await;
         });
@@ -125,42 +126,69 @@ async fn dial(
         client = client.with_publisher(publisher);
     }
     let (session, driver) = client
-        .connect(now(), Transport::new(transport))
+        .connect(
+            now(),
+            Transport::new(transport, moq_net::transport::Address::Setup),
+        )
         .await
         .expect("handshake failed");
     Session::new(session, driver)
 }
 
-/// Answers requests under `dynamic` with `broadcast`, and retracts when it ends.
-fn serve(dynamic: origin::Dynamic, broadcast: broadcast::Consumer) -> AbortOnDropHandle<()> {
+/// Offers `broadcast` at `path` on `origin` under `route`, and retracts when it ends.
+///
+/// moq-net creates a broadcast in the origin that announces it, so the offer
+/// is a copy of `broadcast`, as the node makes one.
+fn serve(
+    origin: &origin::Producer,
+    path: &str,
+    route: Route,
+    broadcast: broadcast::Consumer,
+) -> AbortOnDropHandle<()> {
+    let publication = origin.create_broadcast(path).expect("create broadcast");
+    let copy = iroh_moq::forward_broadcast(broadcast, publication.broadcast().clone());
+    publication.announce(route).expect("announce");
     AbortOnDropHandle::new(tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = broadcast.closed() => break,
-                request = dynamic.requested_broadcast() => match request {
-                    Ok(request) => request.accept(&broadcast),
-                    Err(_) => break,
-                },
-            }
-        }
-        drop(dynamic);
+        let _publication = publication;
+        copy.await;
     }))
 }
 
 /// Waits for `path` to be announced on `origin` and returns the route.
 async fn announced_route(origin: &origin::Producer, path: &str) -> Route {
-    tokio::time::timeout(TIMEOUT, origin.consume().routed(path))
-        .await
-        .unwrap_or_else(|_| panic!("{path} was never announced"))
-        .expect("origin closed")
+    let mut announced = origin.consume().announced();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            match announced.next().await.expect("origin closed") {
+                announce::Event::Start(a)
+                | announce::Event::Update(a)
+                | announce::Event::Restart(a)
+                | announce::Event::Takeover { announce: a, .. }
+                    if a.prefix.as_str() == path =>
+                {
+                    return a.route;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{path} was never announced"))
 }
 
 /// Resolves `path` through `origin`.
 async fn resolve(origin: &origin::Producer, path: &str) -> broadcast::Consumer {
-    tokio::time::timeout(TIMEOUT, origin.consume().routed_broadcast(path))
-        .await
-        .unwrap_or_else(|_| panic!("{path} did not resolve"))
-        .expect("resolve failed")
+    tokio::time::timeout(
+        TIMEOUT,
+        origin
+            .consume()
+            .follow(path, None)
+            .expect("follow")
+            .available(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{path} did not resolve"))
+    .expect("resolve failed")
 }
 
 /// Collects the paths currently announced on `origin`.
@@ -169,11 +197,18 @@ async fn announced_paths(origin: &origin::Producer) -> Vec<String> {
     let mut paths = Vec::new();
     // The replay of what is already there arrives without waiting, so a short
     // quiet period means the cursor has caught up.
-    while let Ok(Some(update)) =
+    while let Ok(Some(event)) =
         tokio::time::timeout(Duration::from_millis(300), announced.next()).await
     {
-        let path = update.prefix.as_str().to_owned();
-        if update.kind == AnnounceKind::Retracted {
+        let (announce, active) = match event {
+            announce::Event::End(announce) => (announce, false),
+            announce::Event::Start(announce)
+            | announce::Event::Update(announce)
+            | announce::Event::Restart(announce)
+            | announce::Event::Takeover { announce, .. } => (announce, true),
+        };
+        let path = announce.prefix.as_str().to_owned();
+        if !active {
             paths.retain(|p| *p != path);
         } else if !paths.contains(&path) {
             paths.push(path);
@@ -214,15 +249,15 @@ async fn a_broadcast_is_spliced_at_two_paths() {
     let broadcast = TestBroadcast::start();
     let session_origin = origin(PUBLISHER_HOP);
     let live = serve(
-        session_origin
-            .dynamic(&live_path, Route::default())
-            .expect("live route"),
+        &session_origin,
+        &live_path,
+        Route::default(),
         broadcast.producer.consume(),
     );
     let room = serve(
-        session_origin
-            .dynamic(&room_path, Route::default())
-            .expect("room route"),
+        &session_origin,
+        &room_path,
+        Route::default(),
         broadcast.producer.consume(),
     );
 
@@ -281,9 +316,9 @@ async fn per_session_origins_carry_different_offers() {
     let upstream_broadcast = TestBroadcast::start();
     let upstream_origin = origin(UPSTREAM_HOP);
     let _upstream_route = serve(
-        upstream_origin
-            .dynamic("live/upstream/cam", Route::default())
-            .expect("route"),
+        &upstream_origin,
+        "live/upstream/cam",
+        Route::default(),
         upstream_broadcast.producer.consume(),
     );
 
@@ -310,27 +345,27 @@ async fn per_session_origins_carry_different_offers() {
     let bob_view = origin(NODE_HOP);
     let carol_view = origin(NODE_HOP);
     let bob_public = serve(
-        bob_view
-            .dynamic("live/node/everyone", Route::default())
-            .expect("route"),
+        &bob_view,
+        "live/node/everyone",
+        Route::default(),
         everyone.producer.consume(),
     );
     let _bob_peers = serve(
-        bob_view
-            .dynamic("live/node/peers", Route::default())
-            .expect("route"),
+        &bob_view,
+        "live/node/peers",
+        Route::default(),
         peers.producer.consume(),
     );
     let _carol_public = serve(
-        carol_view
-            .dynamic("live/node/everyone", Route::default())
-            .expect("route"),
+        &carol_view,
+        "live/node/everyone",
+        Route::default(),
         everyone.producer.consume(),
     );
     let _carol_manual = serve(
-        carol_view
-            .dynamic("live/node/manual", Route::default())
-            .expect("route"),
+        &carol_view,
+        "live/node/manual",
+        Route::default(),
         manual.producer.consume(),
     );
 
@@ -353,10 +388,7 @@ async fn per_session_origins_carry_different_offers() {
     read_counter(&resolve(&carol_ingest, "live/node/manual").await).await;
 
     // A path Bob was never offered does not resolve for him: nothing covers it.
-    let refused = bob_ingest
-        .consume()
-        .request_broadcast("live/node/manual")
-        .await;
+    let refused = bob_ingest.consume().request("live/node/manual", None).await;
     assert!(
         matches!(refused, Err(moq_net::Error::Unroutable)),
         "{:?}",
@@ -367,25 +399,19 @@ async fn per_session_origins_carry_different_offers() {
     // publication was withdrawn from his view) and gains the forwarded one,
     // with the upstream hop chain kept.
     drop(bob_public);
-    let forwarded = bob_view
-        .dynamic(
-            "live/upstream/cam",
-            Route::default().with_hops(upstream_route.hops.clone()),
-        )
-        .expect("forwarded route");
     let _forwarded = {
         let learned = learned.clone();
+        let bob_view = bob_view.clone();
+        let route = Route::default().with_hops(upstream_route.hops.clone());
         AbortOnDropHandle::new(tokio::spawn(async move {
-            while let Ok(request) = forwarded.requested_broadcast().await {
-                match learned
-                    .consume()
-                    .request_broadcast(request.path().to_owned())
-                    .await
-                {
-                    Ok(broadcast) => request.accept(broadcast),
-                    Err(err) => request.reject(err),
-                }
-            }
+            let upstream = learned
+                .consume()
+                .request("live/upstream/cam", None)
+                .await
+                .expect("request upstream");
+            serve(&bob_view, "live/upstream/cam", route, upstream)
+                .await
+                .ok();
         }))
     };
     wait_for_paths(&bob_ingest, &["live/node/peers", "live/upstream/cam"]).await;
@@ -408,28 +434,28 @@ fn bridge(ingest: origin::Producer, table: origin::Producer) -> AbortOnDropHandl
     AbortOnDropHandle::new(tokio::spawn(async move {
         let mut announced = ingest.consume().announced();
         let mut routes = std::collections::HashMap::new();
-        while let Some(update) = announced.next().await {
-            let prefix = update.prefix.clone();
-            if update.kind == AnnounceKind::Retracted {
-                routes.remove(&prefix);
-                continue;
-            }
-            let route = Route::default()
-                .with_hops(update.route.hops.clone())
-                .with_cost(update.route.cost);
-            let dynamic = table.dynamic(&prefix, route).expect("mirror route");
-            let ingest = ingest.clone();
-            let task = AbortOnDropHandle::new(tokio::spawn(async move {
-                while let Ok(request) = dynamic.requested_broadcast().await {
-                    match ingest
-                        .consume()
-                        .request_broadcast(request.path().to_owned())
-                        .await
-                    {
-                        Ok(broadcast) => request.accept(broadcast),
-                        Err(err) => request.reject(err),
-                    }
+        while let Some(event) = announced.next().await {
+            let announce = match event {
+                announce::Event::End(announce) => {
+                    routes.remove(&announce.prefix);
+                    continue;
                 }
+                announce::Event::Update(_) => continue,
+                announce::Event::Start(announce)
+                | announce::Event::Restart(announce)
+                | announce::Event::Takeover { announce, .. } => announce,
+            };
+            let prefix = announce.prefix.clone();
+            let route = Route::default()
+                .with_hops(announce.route.hops.clone())
+                .with_cost(announce.route.cost);
+            let (ingest, table) = (ingest.clone(), table.clone());
+            let path = prefix.clone();
+            let task = AbortOnDropHandle::new(tokio::spawn(async move {
+                let Ok(source) = ingest.consume().request(&path, None).await else {
+                    return;
+                };
+                serve(&table, path.as_str(), route, source).await.ok();
             }));
             routes.insert(prefix, task);
         }
@@ -451,9 +477,9 @@ async fn a_route_table_fails_over_between_links() {
     let broadcast = TestBroadcast::start();
     let published = origin(PUBLISHER_HOP);
     let _route = serve(
-        published
-            .dynamic("live/p/cam", Route::default())
-            .expect("route"),
+        &published,
+        "live/p/cam",
+        Route::default(),
         broadcast.producer.consume(),
     );
 
@@ -494,7 +520,10 @@ async fn a_route_table_fails_over_between_links() {
                 let (session, driver) = moq_net::Client::new()
                     .with_subscriber(relay_ingest.clone())
                     .with_cost(RELAY_COST)
-                    .connect(now(), Transport::new(transport))
+                    .connect(
+                        now(),
+                        Transport::new(transport, moq_net::transport::Address::Setup),
+                    )
                     .await
                     .expect("relay handshake");
                 Session::new(session, driver)
@@ -535,7 +564,7 @@ async fn a_route_table_fails_over_between_links() {
         consumer
             .track("video")
             .expect("track")
-            .subscribe(track::Subscription::default().with_max_age(MAX_AGE)),
+            .subscribe(subscription()),
     )
     .await
     .expect("subscribe");
@@ -554,30 +583,45 @@ async fn a_route_table_fails_over_between_links() {
         }
     }
 
-    // The direct link goes; the relay's route takes over the same broadcast.
+    // The direct link goes. The table holds one broadcast per link, so what
+    // the direct route served ends with it (moq-net keeps an open subscription
+    // on its instance, and no longer splices it onto another instance), and a
+    // new resolve of the path is served through the relay's route, from the
+    // same source.
     drop(direct_link);
     drop(direct_server);
     tokio::time::timeout(TIMEOUT, async {
+        while let Ok(Some(_)) = subscriber.recv_group().await {}
+    })
+    .await
+    .expect("the direct route's subscription did not end with its link");
+    consumer.closed().await;
+
+    let rerouted = resolve(&table, "live/p/cam").await;
+    let mut resumed = step(
+        "subscribe through the relay",
+        rerouted
+            .track("video")
+            .expect("track")
+            .subscribe(subscription()),
+    )
+    .await
+    .expect("subscribe");
+    // A new subscription replays what the relay still holds, oldest first, so
+    // read on until the counter is past what the direct route delivered.
+    step("the relay continues the source", async {
         loop {
-            let group = subscriber
+            let mut group = resumed
                 .recv_group()
                 .await
-                .expect("track failed after failover")
-                .expect("track ended at failover");
-            let mut group = group;
-            if let Some(frame) = group.read_frame().await.expect("group") {
-                let n = u64::from_be_bytes(frame.payload[..].try_into().expect("u64"));
-                // Well past anything the direct link could still have had queued.
-                if n > last + 200 {
-                    break;
-                }
+                .expect("track failed")
+                .expect("track ended");
+            if let Some(frame) = group.read_frame().await.expect("group")
+                && u64::from_be_bytes(frame.payload[..].try_into().expect("u64")) > last
+            {
+                break;
             }
         }
     })
-    .await
-    .expect("the subscription did not continue through the relay");
-    assert!(
-        !consumer.is_closed(),
-        "failover within one first hop re-splices"
-    );
+    .await;
 }

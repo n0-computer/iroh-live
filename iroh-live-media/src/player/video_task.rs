@@ -517,7 +517,7 @@ fn decode_options(settings: &DecodeSettings) -> moq_video::decode::Options {
     // Frames stay on the GPU for the renderer to import. A frame converts to
     // CPU pixels on demand.
     options.decoder.output = moq_video::Output::Native;
-    options.max_age = settings.max_age;
+    options.delay = moq_video::decode::Delay::default().with_max(settings.max_age);
     // A player wants the live edge. Without this, a rebuilt decoder or one
     // reopened on an earlier rendition decodes the whole cached backlog first.
     options.start = moq_video::decode::Start::Latest;
@@ -557,7 +557,7 @@ async fn spawn_reader(
             loop {
                 let started = std::time::Instant::now();
                 match consumer.read().await {
-                    Ok(Some(frame)) => {
+                    Ok(Some(moq_video::decode::Read::Frame(frame))) => {
                         if failures > 0 {
                             info!(skipped = failures, "video decoding recovered");
                             failures = 0;
@@ -580,6 +580,9 @@ async fn spawn_reader(
                             return;
                         }
                     }
+                    // A gap or an end carries no picture. The next frame starts
+                    // a new run, so there is nothing to do for either.
+                    Ok(Some(_)) => {}
                     Ok(None) => {
                         debug!("video track ended");
                         return;
@@ -684,7 +687,7 @@ mod tests {
     /// The pattern moves so inter-coded pictures carry data. A decoder can
     /// conceal a break in a static picture, and the test would see no loss.
     fn encoded_stream() -> Vec<encode::Encoded> {
-        let framerate = moq_video::Rate::new(30, 1).expect("a valid frame rate");
+        let framerate = moq_video::FrameRate::new(30, 1).expect("a valid frame rate");
         let mut config = encode::Config::new(SIZE.width, SIZE.height, framerate);
         config.kind = encode::Kind::Software;
         config.gop = encode::Gop::Keyframe { interval: GOP };

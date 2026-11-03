@@ -24,7 +24,7 @@
 //!
 //! let source = VideoSource::test_pattern(
 //!     video::Size::new(1280, 720),
-//!     video::Rate::new(30, 1).expect("a valid rate"),
+//!     video::FrameRate::new(30, 1).expect("a valid rate"),
 //! );
 //! let broadcast = LocalBroadcast::new();
 //! broadcast.set_video(

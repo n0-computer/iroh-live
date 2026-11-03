@@ -214,7 +214,7 @@ impl LocalBroadcast {
         let clock = moq_mux::Clock::new();
         let config = moq_mux::catalog::Config::default()
             .with_catalog(hang::catalog::Catalog::default())
-            .with_clock(clock);
+            .with_clock(clock.clone());
         let catalog = moq_mux::catalog::Producer::new(&mut producer, config)
             .expect("a new broadcast has no catalog track yet");
         let span = tracing::info_span!("broadcast");
@@ -402,7 +402,7 @@ impl LocalBroadcast {
         let job = Job {
             producer: shared.producer.clone(),
             catalog: shared.catalog.lock().expect("poisoned").clone(),
-            clock: shared.clock,
+            clock: shared.clock.clone(),
             tracks: tracks.clone(),
             stats: shared.stats.clone(),
             reporter: shared.status.begin(medium, generation, &names),

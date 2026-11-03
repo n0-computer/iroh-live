@@ -17,7 +17,7 @@ use iroh_live::{BroadcastTicket, Live, Reach, RemoteBroadcast, Subscription, moq
 use iroh_live_media::{
     Adaptation, Bitrate, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding,
     VideoFormat, VideoFrames, VideoRendition, VideoSource,
-    video::{Frame, Rate, Size, Surface},
+    video::{Frame, FrameRate, Size, Surface},
 };
 use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, NodeId};
@@ -263,7 +263,7 @@ impl Fixture {
 fn gradient(size: Size) -> VideoSource {
     let format = VideoFormat {
         size,
-        rate: Rate::new(FRAMERATE, 1).expect("a valid rate"),
+        rate: FrameRate::new(FRAMERATE, 1).expect("a valid rate"),
     };
     VideoSource::spawn("gradient", format, move |sender| {
         let started = Instant::now();

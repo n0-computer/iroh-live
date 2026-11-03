@@ -14,7 +14,7 @@ use iroh_live_media::{
     NetworkSample, PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast, RenditionMode,
     SlotState, SwitchError, VideoEncoding, VideoFormat, VideoRendition, VideoSource, audio, video,
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, task::JoinHandle};
 
 /// How long any one wait may take.
 ///
@@ -22,8 +22,8 @@ use tokio::sync::watch;
 /// rest of the suite.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-fn fps(n: u32) -> video::Rate {
-    video::Rate::new(n, 1).expect("a valid rate")
+fn fps(n: u32) -> video::FrameRate {
+    video::FrameRate::new(n, 1).expect("a valid rate")
 }
 
 /// Returns `encoding` on the software encoder, which every build has.
@@ -390,6 +390,68 @@ fn never_over(states: &Mutex<Vec<SlotState>>) {
     );
 }
 
+/// Publishes a moving test pattern of `size` at `live/cam` on `origin`, as a
+/// transport would carry a remote publisher's broadcast.
+///
+/// The route costs `cost`. The broadcast and its route end when the task is
+/// aborted.
+fn serve(origin: &moq_net::origin::Producer, cost: u64, size: video::Size) -> JoinHandle<()> {
+    let publication = origin.create_broadcast("live/cam").expect("a broadcast");
+    tokio::spawn(async move {
+        let mut broadcast = publication.broadcast().clone();
+        let catalog: moq_mux::catalog::Producer = moq_mux::catalog::Producer::new(
+            &mut broadcast,
+            moq_mux::catalog::Config::default().with_catalog(hang::catalog::Catalog::default()),
+        )
+        .expect("a new broadcast has no catalog track yet");
+        let track = broadcast
+            .create_track(
+                "video",
+                Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+            )
+            .expect("a new track");
+        let mut import =
+            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
+                .expect("an importer");
+        let mut split = moq_mux::codec::h264::Split::new();
+        publication
+            .announce(moq_net::origin::Route::default().with_cost(cost))
+            .expect("announced");
+
+        let mut config = video::encode::Config::new(size.width, size.height, fps(30));
+        config.kind = video::encode::Kind::Software;
+        config.gop = video::encode::Gop::Keyframe { interval: 30 };
+        let mut encoder = video::encode::Sink::open(&config)
+            .await
+            .expect("the software encoder opens");
+        let mut tick = tokio::time::interval(Duration::from_millis(33));
+        for index in 0..u64::MAX {
+            tick.tick().await;
+            if index % 30 == 0 {
+                encoder
+                    .cut()
+                    .await
+                    .expect("the software encoder can cut a group");
+            }
+            let mut rgba = vec![0u8; size.pixels() as usize * 4];
+            for (offset, byte) in rgba.iter_mut().enumerate() {
+                *byte = (offset / 4 + index as usize * 37) as u8;
+            }
+            let surface = video::Surface::rgba(&rgba, size).expect("valid");
+            let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
+            let units = encoder
+                .encode(video::Frame::new(surface, timestamp))
+                .await
+                .expect("the software encoder takes every frame");
+            for unit in units {
+                let mut frames = split.decode(&unit.payload, unit.timestamp).expect("split");
+                frames.extend(split.flush(unit.timestamp).expect("flushed"));
+                import.decode(frames).expect("imported");
+            }
+        }
+    })
+}
+
 /// A player keeps playing when its route goes and another serves the path.
 ///
 /// The transport ends a broadcast when its session closes, so `from_origin`
@@ -401,24 +463,8 @@ async fn a_player_keeps_playing_when_its_route_goes() {
     let driver = tokio::spawn(moq_net::time::run(driver));
     // The same path twice, as a direct peer and a relay would carry it. The
     // cheaper direct route serves first.
-    let direct = single(video::Size::new(320, 180));
-    let relayed = single(video::Size::new(640, 360));
-    let serve = |cost: u64, broadcast: &LocalBroadcast| {
-        let route = origin
-            .dynamic(
-                "live/cam",
-                moq_net::origin::Route::default().with_cost(cost),
-            )
-            .expect("a route");
-        let consumer = moq_net::Consume::consume(broadcast);
-        tokio::spawn(async move {
-            while let Ok(request) = route.requested_broadcast().await {
-                request.accept(consumer.clone());
-            }
-        })
-    };
-    let direct_route = serve(1, &direct);
-    let relayed_route = serve(10, &relayed);
+    let direct_route = serve(&origin, 1, video::Size::new(320, 180));
+    let relayed_route = serve(&origin, 10, video::Size::new(640, 360));
 
     let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
     let player = remote.play(PlayerConfig::default()).expect("valid");
@@ -429,7 +475,6 @@ async fn a_player_keeps_playing_when_its_route_goes() {
     // The direct session goes: its route is withdrawn and its broadcast ends.
     direct_route.abort();
     let _ = direct_route.await;
-    direct.close();
 
     wait_for_size(&mut frames, video::Size::new(640, 360)).await;
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("video"))

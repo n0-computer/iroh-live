@@ -181,7 +181,7 @@ pub struct Incoming {
     #[debug(skip)]
     pub(crate) connection: Connection,
     #[debug(skip)]
-    pub(crate) handshake: Handshake<Transport>,
+    pub(crate) handshake: Handshake,
     #[debug(skip)]
     pub(crate) shared: Weak<Shared>,
 }
@@ -203,8 +203,9 @@ impl Incoming {
     ///
     /// # Errors
     ///
-    /// Fails if the MoQ handshake fails, and with [`Error::ShutDown`] once the
-    /// node has shut down, which refuses the peer.
+    /// Fails if the MoQ handshake fails or takes longer than
+    /// [`HANDSHAKE_TIMEOUT`], and with [`Error::ShutDown`] once the node has
+    /// shut down, which refuses the peer.
     pub async fn admit(self, grant: Grant) -> Result<Session, Error> {
         let Some(shared) = self
             .shared
@@ -223,9 +224,13 @@ impl Incoming {
         if let Some(subscriber) = origins.subscriber(&grant) {
             handshake = handshake.with_subscriber(subscriber);
         }
-        let (moq, driver) = handshake
-            .ok()
+        let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
             .await
+            .map_err(|_| {
+                e!(Error::Moq {
+                    source: moq_net::Error::Timeout
+                })
+            })?
             .map_err(|source| e!(Error::Moq { source }))?;
         let parts = SessionParts {
             remote: self.remote,
@@ -255,8 +260,12 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     let remote = connection.remote_id();
     let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let (transport, h3) = accept_transport(connection.clone()).await?;
+        let address = match h3 {
+            Some(_) => moq_net::transport::Address::Uri,
+            None => moq_net::transport::Address::Setup,
+        };
         let handshake = moq_net::Server::new()
-            .accept_request(driver_now(), Transport::new(transport))
+            .accept_request(driver_now(), Transport::new(transport, address))
             .await
             .map_err(|source| e!(Error::Moq { source }))?;
         Ok::<_, Error>((h3, handshake))

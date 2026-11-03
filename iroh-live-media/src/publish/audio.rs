@@ -84,7 +84,7 @@ async fn pcm(
     let input = audio::encode::Input::new(format.sample_rate, format.layout);
     let mut options = audio::encode::Options::default();
     options.track = Some(encoding.track_name());
-    options.settings = encoding.settings(Some(format));
+    options.config = encoding.settings(Some(format));
     let mut broadcast = job.producer.clone();
     let mut encoder =
         audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
@@ -113,7 +113,8 @@ async fn pcm(
             }
             Err(broadcast::error::RecvError::Closed) => break,
         };
-        let rebase = *rebase.get_or_insert_with(|| Rebase::anchor(job.clock, frame.timestamp));
+        let rebase =
+            *rebase.get_or_insert_with(|| Rebase::anchor(job.clock.clone(), frame.timestamp));
         frame.timestamp = rebase.map(frame.timestamp);
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
@@ -133,11 +134,10 @@ async fn microphone(
     stop: &CancellationToken,
 ) -> Result<(), Error> {
     let track = encoding.track_name();
-    let mut options = audio::encode::PublicationOptions::default();
+    let mut options = audio::encode::Capture::default();
     options.capture = capture;
     options.encode.track = Some(track.clone());
-    options.encode.settings = encoding.settings(None);
-    options.clock = job.clock;
+    options.encode.config = encoding.settings(None);
 
     let (handle_tx, handle) = oneshot::channel();
     let broadcast = job.producer.clone();
@@ -148,7 +148,7 @@ async fn microphone(
         driver_stop.clone(),
         move |stop| async move {
             let (publication, driver) =
-                match audio::encode::Publication::new(broadcast, catalog, options) {
+                match audio::encode::Control::new(broadcast, catalog, options) {
                     Ok(created) => created,
                     Err(err) => {
                         let _ = handle_tx.send(Err(Error::device(err)));
@@ -181,7 +181,7 @@ async fn microphone(
 /// Reports the microphone's state changes until it ends or the slot stops.
 #[cfg(feature = "capture")]
 async fn follow(
-    handle: oneshot::Receiver<Result<audio::encode::Publication, Error>>,
+    handle: oneshot::Receiver<Result<audio::encode::Control, Error>>,
     reporter: &Reporter,
     track: &str,
     encoding: &AudioEncoding,

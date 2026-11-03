@@ -6,7 +6,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::address_lookup::MemoryLookup;
-use moq_net::{Timestamp, origin};
+use moq_net::origin;
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use serial_test::serial;
@@ -25,8 +25,8 @@ fn shared_lookup() -> MemoryLookup {
 /// Its tasks end with it, so a test that panics takes its relay along.
 struct TestRelay {
     _server_task: AbortOnDropHandle<()>,
-    /// Accepts iroh clients, for a relay wired as the shipped one is.
-    _iroh_router: Option<iroh::protocol::Router>,
+    /// Accepts iroh clients.
+    _iroh_router: iroh::protocol::Router,
     _cluster_task: AbortOnDropHandle<()>,
     cluster: Cluster,
     noq_addr: std::net::SocketAddr,
@@ -70,15 +70,7 @@ impl TestRelay {
         ));
         server_config.listen.tls.generate = vec!["localhost".into()];
         server_config.quic = quic.clone();
-        if !shipped {
-            server_config.iroh = Some(iroh.clone());
-        }
         let server = server_config.init().expect("init server");
-        let client = connect
-            .clone()
-            .init(quic)
-            .expect("init client")
-            .with_iroh(iroh.clone());
 
         let auth_config = if shipped {
             iroh_live_relay::browser_auth()
@@ -88,33 +80,41 @@ impl TestRelay {
             auth_config
         };
         let auth = auth_config
-            .init("relay-bridge-test", &connect.tls)
+            .init("relay-bridge-test", &connect.tls, false)
             .expect("init auth");
 
-        let cluster = Cluster::new(moq_relay::cluster::Options::new(Default::default()))
-            .expect("init cluster")
-            .with_client(client);
+        let (cluster, driver) = Cluster::new(moq_relay::cluster::Options::new(Default::default()))
+            .expect("init cluster");
+        let cluster = cluster.with_connect(connect.clone(), quic);
         let started = cluster.clone().start().await.expect("start cluster");
         let cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            started.run().await.expect("cluster failed");
+            tokio::select! {
+                res = driver.run() => res.expect("cluster driver failed"),
+                res = started.run() => res.expect("cluster failed"),
+            }
         }));
-        let iroh_router =
-            shipped.then(|| iroh_live_relay::IrohSessions::new(cluster.clone(), None).router(iroh));
+        // moq-tokio's server has no iroh backend, so iroh clients always come
+        // in through a handler: the shipped admission, or one that admits all.
+        let iroh_router = if shipped {
+            iroh_live_relay::IrohSessions::new(cluster.clone(), None).router(iroh)
+        } else {
+            let mut router = iroh::protocol::Router::builder(iroh);
+            for alpn in iroh_moq::alpns() {
+                router = router.accept(alpn, OpenSessions(cluster.clone()));
+            }
+            router.spawn()
+        };
 
         let mut listener = server.listen().await.expect("listen");
         let noq_addr = listener.local_addr().expect("get noq addr");
         let cluster_clone = cluster.clone();
         let server_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut conn_id = 0u64;
-            while let Some(request) = listener.accept().await {
+            while let Ok(request) = listener.accept().await {
                 let conn = moq_relay::Connection::new(request, cluster_clone.clone(), auth.clone())
                     .with_id(conn_id);
                 conn_id += 1;
-                tokio::spawn(async move {
-                    if let Err(err) = conn.run().await {
-                        tracing::warn!(%err, "relay conn closed");
-                    }
-                });
+                tokio::spawn(conn.run());
             }
         }));
 
@@ -136,14 +136,48 @@ impl TestRelay {
     }
 }
 
+/// Admits every iroh client to publish and subscribe anywhere in the cluster.
+///
+/// The relay the forgery tests use as one a node must not trust.
+#[derive(derive_more::Debug, Clone)]
+struct OpenSessions(#[debug(skip)] Cluster);
+
+impl iroh::protocol::ProtocolHandler for OpenSessions {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        use iroh::protocol::AcceptError;
+        let (transport, target) = iroh_moq::transport::accept(connection)
+            .await
+            .map_err(AcceptError::from_err)?;
+        let handshake = moq_net::Server::new()
+            .accept_request(
+                moq_net::time::Instant::now(),
+                iroh_moq::transport::poll_session(transport, target.is_some()),
+            )
+            .await
+            .map_err(AcceptError::from_err)?;
+        let (_session, driver) = handshake
+            .with_publisher(self.0.origin.consume())
+            .with_subscriber(self.0.origin.clone())
+            .ok()
+            .await
+            .map_err(AcceptError::from_err)?;
+        let err = moq_net::time::run(driver).await;
+        tracing::debug!(%err, "iroh session ended");
+        Ok(())
+    }
+}
+
 /// Builds a noq client that trusts the relay's self-signed certificate.
 fn noq_client() -> moq_tokio::Client {
     let mut connect = moq_tokio::connect::Config::default();
     connect.tls.insecure = Some(true);
-    connect.once = Some(true);
     connect
         .init(moq_tokio::quic::Config::default())
         .expect("init client")
+        .with_reconnect(false)
 }
 
 /// Waits for a dialled connection to complete its MoQ handshake.
@@ -152,6 +186,26 @@ async fn established(connection: moq_tokio::Connection) -> moq_tokio::Connection
         .await
         .expect("connect timeout")
         .expect("connect")
+}
+
+/// Resolves the broadcast an origin serves at `path`, once it has a route.
+async fn routed_broadcast(
+    consumer: &origin::Consumer,
+    path: &str,
+) -> Result<moq_net::broadcast::Consumer, moq_net::Error> {
+    consumer.follow(path, None)?.available().await
+}
+
+/// The announcement an event carries.
+fn announce_of(event: &moq_net::announce::Event) -> &moq_net::announce::Announce {
+    use moq_net::announce::Event;
+    match event {
+        Event::Start(announce)
+        | Event::Update(announce)
+        | Event::End(announce)
+        | Event::Restart(announce)
+        | Event::Takeover { announce, .. } => announce,
+    }
 }
 
 /// Resolves the broadcast behind the next announcement on `origin`.
@@ -165,8 +219,8 @@ async fn next_announced(
         .await
         .unwrap_or_else(|_| panic!("announce timeout: {expect}"))
         .expect("closed");
-    let path = update.prefix.as_str().to_owned();
-    let broadcast = tokio::time::timeout(TIMEOUT, consumer.routed_broadcast(path.as_str()))
+    let path = announce_of(&update).prefix.as_str().to_owned();
+    let broadcast = tokio::time::timeout(TIMEOUT, routed_broadcast(&consumer, path.as_str()))
         .await
         .expect("resolve timeout")
         .expect("resolve");
@@ -176,7 +230,7 @@ async fn next_announced(
 /// Waits until `path` is announced on `origin`, and resolves it.
 async fn announced_at(origin: &origin::Producer, path: &str) -> moq_net::broadcast::Consumer {
     let consumer = origin.consume();
-    tokio::time::timeout(TIMEOUT, consumer.routed_broadcast(path))
+    tokio::time::timeout(TIMEOUT, routed_broadcast(&consumer, path))
         .await
         .unwrap_or_else(|_| panic!("{path} was never announced"))
         .expect("resolve")
@@ -188,7 +242,7 @@ fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::LocalBroadcas
     let broadcast = iroh_live::LocalBroadcast::new();
     let source = VideoSource::test_pattern(
         video::Size::new(320, 240),
-        video::Rate::new(30, 1).expect("a valid rate"),
+        video::FrameRate::new(30, 1).expect("a valid rate"),
     );
     broadcast
         .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
@@ -234,7 +288,7 @@ async fn noq_publish_noq_subscribe() {
     let track = broadcast.create_track("video", None).expect("track");
     let mut group = track.append_group().expect("group");
     group
-        .write_frame(Timestamp::ZERO, b"hello-noq".as_ref())
+        .write_frame(None, b"hello-noq".as_ref())
         .expect("write");
     group.finish().expect("finish");
 
@@ -350,14 +404,14 @@ async fn noq_publish_iroh_subscribe() {
         br#"{"video":{"renditions":{"video/h264":{"codec":"avc1.64001f","codedWidth":320,"codedHeight":240,"bitrate":500000,"framerate":30}}}}"#;
     let mut group = catalog_track.append_group().expect("group");
     group
-        .write_frame(Timestamp::ZERO, catalog_json.as_ref())
+        .write_frame(None, catalog_json.as_ref())
         .expect("write");
     group.finish().expect("finish");
 
     let video_track = broadcast.create_track("video/h264", None).expect("video");
     let mut vgroup = video_track.append_group().expect("group");
     vgroup
-        .write_frame(Timestamp::ZERO, b"keyframe-data".as_ref())
+        .write_frame(None, b"keyframe-data".as_ref())
         .expect("write");
     vgroup.finish().expect("finish");
 
@@ -581,11 +635,12 @@ async fn wait_for_broadcast(cluster: &Cluster, name: &str, present: bool) -> boo
     let deadline = tokio::time::Instant::now() + TIMEOUT;
     let consumer = cluster.origin.consume();
     loop {
-        let found = tokio::time::timeout(Duration::from_millis(50), consumer.routed(name))
-            .await
-            .ok()
-            .flatten()
-            .is_some();
+        let found =
+            tokio::time::timeout(Duration::from_millis(50), routed_broadcast(&consumer, name))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .is_some();
         if found == present {
             return true;
         }
@@ -715,11 +770,7 @@ async fn pull_survives_a_reader_holding_no_guard() {
     );
 
     // Read the mirror as a subscriber session does, holding no pull guard.
-    let mirrored = relay
-        .cluster
-        .origin
-        .consume()
-        .routed_broadcast(local_name.as_str())
+    let mirrored = routed_broadcast(&relay.cluster.origin.consume(), local_name.as_str())
         .await
         .expect("mirrored broadcast");
     let reader = tokio::time::timeout(
@@ -806,7 +857,7 @@ async fn a_relay_link_publishes_and_consumes() {
     let track = browser_broadcast.create_track("data", None).expect("track");
     let mut group = track.append_group().expect("group");
     group
-        .write_frame(Timestamp::ZERO, b"from-the-browser".as_ref())
+        .write_frame(None, b"from-the-browser".as_ref())
         .expect("write");
     group.finish().expect("finish");
     let _browser_publisher = established(
@@ -830,14 +881,18 @@ async fn a_relay_link_publishes_and_consumes() {
     let route = tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if update.prefix.as_str() == "browser-stream" {
-                return update.route;
+            let announce = announce_of(&update);
+            if announce.prefix.as_str() == "browser-stream" {
+                return announce.route.clone();
             }
         }
     })
     .await
     .expect("the relay's route never reached the table");
-    assert!(route.cost.warm >= iroh_moq::DEFAULT_RELAY_COST, "{route:?}");
+    assert!(
+        route.cost.value() >= iroh_moq::DEFAULT_RELAY_COST,
+        "{route:?}"
+    );
     link.detach().await;
     assert_eq!(link.status().get(), RelayStatus::Detached);
     retracted(&mut updates, "browser-stream").await;
@@ -898,10 +953,7 @@ fn counter(name: &str) -> (moq_net::broadcast::Producer, AbortOnDropHandle<()>) 
         .expect("track");
     let writer = AbortOnDropHandle::new(tokio::spawn(async move {
         for n in 0u64.. {
-            if track
-                .write_frame(Timestamp::now(), n.to_be_bytes().to_vec())
-                .is_err()
-            {
+            if track.write_frame(None, n.to_be_bytes().to_vec()).is_err() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -912,7 +964,7 @@ fn counter(name: &str) -> (moq_net::broadcast::Producer, AbortOnDropHandle<()>) 
 
 /// Waits until `origin` has a route to `path`.
 async fn routed(origin: &origin::Consumer, path: &str) {
-    tokio::time::timeout(TIMEOUT, origin.routed(path))
+    tokio::time::timeout(TIMEOUT, routed_broadcast(origin, path))
         .await
         .unwrap_or_else(|_| panic!("{path} was never routed"))
         .expect("the origin closed");
@@ -923,7 +975,9 @@ async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if update.prefix.as_str() == path && !update.kind.is_active() {
+            if matches!(update, moq_net::announce::Event::End(_))
+                && announce_of(&update).prefix.as_str() == path
+            {
                 return;
             }
         }
@@ -934,11 +988,14 @@ async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
 
 /// Reports whether `origin` routes `path` within a second.
 async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
-    tokio::time::timeout(Duration::from_secs(1), origin.consume().routed(path))
-        .await
-        .ok()
-        .flatten()
-        .is_some()
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        routed_broadcast(&origin.consume(), path),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .is_some()
 }
 
 /// A relay-served subscription carries the relay link's readings to the player.
@@ -964,6 +1021,9 @@ async fn a_relay_served_subscription_carries_link_samples() {
     .await
     .expect("subscribe timeout")
     .expect("subscribe through the relay");
+
+    // A link serves a path once a reader asks it for a track.
+    first_frame(&subscription.as_moq(), "catalog.json").await;
 
     // The transport: the relay link serves the path, and its monitor has
     // measured the link.
@@ -1166,7 +1226,8 @@ async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track:
     let mut reader = tokio::time::timeout(
         TIMEOUT,
         broadcast.track("data").expect("track").subscribe(
-            moq_net::track::Subscription::default().with_max_age(Duration::from_secs(5)),
+            moq_net::track::Subscription::default()
+                .with_delay(moq_net::track::Delay::default().with_max(Duration::from_secs(5))),
         ),
     )
     .await
@@ -1225,7 +1286,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
         for n in FORGED.. {
             if forged_track
-                .write_frame(Timestamp::now(), n.to_be_bytes().to_vec())
+                .write_frame(None, n.to_be_bytes().to_vec())
                 .is_err()
             {
                 return;
@@ -1348,7 +1409,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     let track = browser_own.create_track("data", None).expect("track");
     let mut group = track.append_group().expect("group");
     group
-        .write_frame(Timestamp::ZERO, b"from-the-browser".as_ref())
+        .write_frame(None, b"from-the-browser".as_ref())
         .expect("write");
     group.finish().expect("finish");
     let subscription = tokio::time::timeout(
@@ -1420,11 +1481,7 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
         wait_for_broadcast(&relay.cluster, &first_name, false).await,
         "the first pull was not retired"
     );
-    let mirrored = relay
-        .cluster
-        .origin
-        .consume()
-        .routed_broadcast(second_name.as_str())
+    let mirrored = routed_broadcast(&relay.cluster.origin.consume(), second_name.as_str())
         .await
         .expect("the second pull's mirror");
     first_frame(&mirrored, "catalog.json").await;
@@ -1468,7 +1525,10 @@ async fn room_node() -> (
         .await
         .expect("bind node");
     shared_lookup().add_endpoint_info(endpoint.addr());
-    let moq = iroh_moq::Moq::new(endpoint.clone(), iroh_live::moq_config());
+    let moq = iroh_moq::Moq::new(
+        endpoint.clone(),
+        iroh_live::moq_config_with(&[iroh_live_rooms::publish_scope]),
+    );
     let rooms = iroh_live_rooms::Rooms::new(&moq);
     let router = moq
         .mount(iroh::protocol::Router::builder(endpoint.clone()))
@@ -1512,7 +1572,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         )
         .expect("track");
     let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
-        while track.write_frame(Timestamp::now(), &b"forged"[..]).is_ok() {
+        while track.write_frame(None, &b"forged"[..]).is_ok() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }));

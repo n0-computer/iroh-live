@@ -6,7 +6,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use moq_net::{Path, PathOwned, broadcast};
+use moq_net::{Path, broadcast};
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
@@ -61,7 +61,7 @@ pub struct Publication {
 #[derive(derive_more::Debug)]
 struct PublicationInner {
     id: u64,
-    path: PathOwned,
+    path: Path,
     #[debug(skip)]
     shared: Weak<Shared>,
     #[debug(skip)]
@@ -79,7 +79,7 @@ impl Eq for Publication {}
 impl Publication {
     pub(crate) fn new(
         id: u64,
-        path: PathOwned,
+        path: Path,
         shared: Weak<Shared>,
         withdrawn: CancellationToken,
     ) -> Self {
@@ -94,7 +94,7 @@ impl Publication {
     }
 
     /// Returns the path the broadcast is published at.
-    pub fn path(&self) -> &Path<'_> {
+    pub fn path(&self) -> &Path {
         &self.inner.path
     }
 
@@ -170,7 +170,7 @@ pub(crate) fn peers_task(
 /// Publishes `broadcast` at `path`, for [`Moq::publish`](crate::Moq::publish).
 pub(crate) fn publish(
     shared: &Arc<Shared>,
-    path: PathOwned,
+    path: Path,
     broadcast: broadcast::Consumer,
     audience: Audience,
 ) -> Result<Publication, Error> {
@@ -226,7 +226,7 @@ pub(crate) fn publish(
 }
 
 /// Refuses a path that is empty or holds a segment only a pattern can spell.
-pub(crate) fn check_path(path: &Path<'_>) -> Result<(), Error> {
+pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
     if path.is_empty() || path.parts().any(|part| part == "*" || part == "**") {
         return Err(e!(Error::InvalidPath {
             path: path.as_str().to_owned()

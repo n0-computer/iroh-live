@@ -67,7 +67,7 @@ enum Importer {
         split: Box<moq_mux::codec::h264::Split>,
         import: Box<moq_mux::codec::h264::Import>,
     },
-    Container(Box<moq_mux::import::ContainerStream>),
+    Container(Box<moq_mux::import::Container>),
 }
 
 impl Importer {
@@ -145,10 +145,13 @@ impl FileImport {
                 }
             }
             ImportFormat::Fmp4 => Importer::Container(Box::new(
-                moq_mux::import::ContainerStream::new(
+                moq_mux::import::Container::new(
                     broadcast,
                     catalog.reserve(),
-                    moq_mux::import::ContainerFormat::Fmp4,
+                    &moq_mux::import::ContainerInit::new(
+                        moq_mux::import::ContainerFormat::Fmp4,
+                        bytes::Bytes::new(),
+                    ),
                 )
                 .anyerr()?,
             )),

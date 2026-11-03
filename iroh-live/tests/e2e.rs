@@ -16,7 +16,7 @@ use iroh_live::{Audience, BroadcastTicket, CALL, Live, Publication, Reach, Subsc
 use iroh_live_media::{
     AudioEncoding, AudioOutput, AudioSource, Bitrate, LocalBroadcast, NetworkSample, Player,
     PlayerConfig, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
-    video::{Rate, Size, decode},
+    video::{FrameRate, Size, decode},
 };
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher as _};
@@ -55,7 +55,7 @@ async fn subscribe(live: &Live, publisher: &Live, name: &str) -> RemoteBroadcast
 
 /// Sets a generated pattern of `size` on `broadcast`, as one rendition.
 fn set_pattern(broadcast: &LocalBroadcast, size: Size) {
-    let source = VideoSource::test_pattern(size, Rate::new(30, 1).expect("a valid rate"));
+    let source = VideoSource::test_pattern(size, FrameRate::new(30, 1).expect("a valid rate"));
     broadcast
         .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
         .expect("failed to set video");
@@ -129,7 +129,14 @@ async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active:
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("the route table closed");
-            if update.prefix == path && update.kind.is_active() == active {
+            let (announce, is_active) = match &update {
+                moq_net::announce::Event::End(announce) => (announce, false),
+                moq_net::announce::Event::Start(announce)
+                | moq_net::announce::Event::Update(announce)
+                | moq_net::announce::Event::Restart(announce)
+                | moq_net::announce::Event::Takeover { announce, .. } => (announce, true),
+            };
+            if announce.prefix.as_str() == path && is_active == active {
                 return;
             }
         }
@@ -262,7 +269,7 @@ async fn adaptive_rendition_switching() {
     let broadcast = publish(&publisher, "adaptive-stream");
     broadcast
         .set_video(
-            VideoSource::test_pattern(Size::new(640, 480), Rate::new(30, 1).expect("valid")),
+            VideoSource::test_pattern(Size::new(640, 480), FrameRate::new(30, 1).expect("valid")),
             VideoEncoding::ladder([
                 VideoRendition {
                     bitrate: Some(Bitrate::from_bps(2_000_000)),

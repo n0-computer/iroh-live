@@ -102,17 +102,21 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     // Not `server_config.iroh`: `IrohSessions` accepts iroh clients, since it
     // knows who they are.
     let server = server_config.init()?;
-    let client = connect.clone().init(quic)?.with_iroh(iroh_endpoint.clone());
-
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
     let certificates = server.certificates();
 
-    let auth = browser_auth().init(RELAY_NODE, &connect.tls)?;
+    let auth = browser_auth().init(RELAY_NODE, &connect.tls, false)?;
 
-    let cluster =
-        Cluster::new(moq_relay::cluster::Options::new(Default::default()))?.with_client(client);
+    let (cluster, driver) = Cluster::new(moq_relay::cluster::Options::new(Default::default()))?;
+    let cluster = cluster.with_connect(connect.clone(), quic);
+    // The origin makes no progress unless its driver runs.
+    let _driver_task = AbortOnDropHandle::new(tokio::spawn(async move {
+        if let Err(err) = driver.run().await {
+            error!(%err, "the cluster driver stopped");
+        }
+    }));
     // Started before the task, so a cluster that cannot bind fails `run`.
     let started = cluster.clone().start().await?;
     let _cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -179,8 +183,11 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     loop {
         let request = tokio::select! {
             request = listener.accept() => match request {
-                Some(request) => request,
-                None => break,
+                Ok(request) => request,
+                Err(err) => {
+                    warn!(%err, "the listener stopped accepting");
+                    break;
+                }
             },
             _ = &mut interrupted => {
                 info!("interrupted, closing the listeners");
@@ -198,9 +205,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         connections.spawn(async move {
             // Held by the task, so it lives exactly as long as this connection.
             let _pull = name.and_then(|name| pull_for(pull_state, name));
-            if let Err(err) = conn.run().await {
-                warn!(conn_id, %err, "connection closed");
-            }
+            conn.run().await;
         });
         conn_id += 1;
     }

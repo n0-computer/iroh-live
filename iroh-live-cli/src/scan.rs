@@ -108,8 +108,9 @@ impl Camera {
         config.source = capture::Source::Camera(id);
         config.width = Some(SCAN_SIZE.width);
         config.height = Some(SCAN_SIZE.height);
-        config.framerate =
-            Some(video::Rate::new(SCAN_FRAMERATE, 1).expect("the scan rate is a valid frame rate"));
+        config.framerate = Some(
+            video::FrameRate::new(SCAN_FRAMERATE, 1).expect("the scan rate is a valid frame rate"),
+        );
         // `capture` returns after the first frame, so the timeout catches a
         // camera that opens and then delivers nothing.
         let source = tokio::time::timeout(FIRST_FRAME_GRACE, VideoSource::capture(config))

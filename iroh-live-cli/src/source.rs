@@ -180,7 +180,8 @@ async fn capture(
     config.width = args.width;
     config.height = args.height;
     config.framerate = framerate.request().map(|fps| {
-        video::Rate::new(fps, 1).expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
+        video::FrameRate::new(fps, 1)
+            .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
     });
     config.cursor = !args.no_cursor;
     Ok(Video::Raw(VideoSource::capture(config).await?))
@@ -256,7 +257,7 @@ fn test_pattern(
         args.width.unwrap_or(TEST_SIZE.width),
         args.height.unwrap_or(TEST_SIZE.height),
     );
-    let rate = video::Rate::new(framerate.generated(), 1)
+    let rate = video::FrameRate::new(framerate.generated(), 1)
         .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE");
     match pattern {
         TestPattern::Timing => Ok(VideoSource::test_pattern(size, rate)),
@@ -269,7 +270,7 @@ fn test_pattern(
 /// A static image would compress to almost nothing, so a stalled pipeline
 /// would look the same as a working one.
 fn gradient(size: Size, fps: u32) -> Result<VideoSource> {
-    let rate = video::Rate::new(fps, 1).expect("the ladder settles only on valid rates");
+    let rate = video::FrameRate::new(fps, 1).expect("the ladder settles only on valid rates");
     let format = VideoFormat { size, rate };
     let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
     let source = VideoSource::spawn("gradient", format, move |sender| {

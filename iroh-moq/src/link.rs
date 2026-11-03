@@ -110,6 +110,11 @@ pub(crate) async fn monitor(source: Source, state: LinkState) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sampler = Sampler::default();
+    // Holding the estimate is what asks the peer to probe.
+    let recv = match &source {
+        Source::Direct(moq, _) => moq.recv_bandwidth(),
+        Source::Relay(_) => None,
+    };
     loop {
         interval.tick().await;
         let sample = match &source {
@@ -121,15 +126,19 @@ pub(crate) async fn monitor(source: Source, state: LinkState) {
                 let Some(selected) = paths.iter().find(|path| path.is_selected()) else {
                     continue;
                 };
-                let mut sample =
-                    sampler.sample(PathKey::Quic(selected.id()), &moq.stats(), Instant::now());
+                let mut sample = sampler.sample(
+                    PathKey::Quic(selected.id()),
+                    &moq.stats(),
+                    recv.as_ref().and_then(|recv| recv.peek()),
+                    Instant::now(),
+                );
                 sample.relayed = selected.is_relay();
                 sample
             }
             Source::Relay(connection) => match connection.stats() {
                 Some(stats) => {
                     let session = connection.presence().sessions_started;
-                    sampler.sample(PathKey::Session(session), &stats, Instant::now())
+                    sampler.sample(PathKey::Session(session), &stats, None, Instant::now())
                 }
                 // Between sessions nothing is measured.
                 None => LinkSample {
@@ -166,7 +175,13 @@ impl Sampler {
     ///
     /// A new path starts its history over, so no rate or minimum mixes two
     /// paths.
-    fn sample(&mut self, path: PathKey, stats: &Stats, now: Instant) -> LinkSample {
+    fn sample(
+        &mut self,
+        path: PathKey,
+        stats: &Stats,
+        recv: Option<moq_net::bandwidth::Rate>,
+        now: Instant,
+    ) -> LinkSample {
         if self.path != Some(path) {
             if self.path.is_some() {
                 self.path_generation += 1;
@@ -211,9 +226,7 @@ impl Sampler {
                 let bytes = latest.received_bytes.saturating_sub(base.received_bytes);
                 (bytes as f64 * 8.0 / now.duration_since(base.at).as_secs_f64()) as u64
             }),
-            delivery_bps: stats
-                .estimated_recv_rate
-                .map(moq_net::bandwidth::Rate::as_bps),
+            delivery_bps: recv.map(moq_net::bandwidth::Rate::as_bps),
             path_generation: self.path_generation,
             relayed: false,
         }
@@ -251,6 +264,7 @@ mod tests {
             last = sampler.sample(
                 DIRECT,
                 &stats(20, n * lost, n * sent, n * received),
+                None,
                 t0 + tick * SAMPLE_INTERVAL,
             );
         }
@@ -285,7 +299,7 @@ mod tests {
         let t0 = Instant::now();
         run(&mut sampler, t0, 12, (10, 5, 0));
         let later = t0 + 13 * SAMPLE_INTERVAL;
-        let backup = sampler.sample(BACKUP, &stats(40, 300, 400, 0), later);
+        let backup = sampler.sample(BACKUP, &stats(40, 300, 400, 0), None, later);
         assert_eq!(backup.path_generation, 1);
         assert_eq!(backup.min_rtt, Some(Duration::from_millis(40)));
         assert_eq!(backup.loss_rate, None);
@@ -295,10 +309,10 @@ mod tests {
     fn the_minimum_forgets_an_old_path_delay() {
         let mut sampler = Sampler::default();
         let t0 = Instant::now();
-        sampler.sample(DIRECT, &stats(2, 0, 0, 0), t0);
-        let within = sampler.sample(DIRECT, &stats(60, 0, 0, 0), t0 + MIN_RTT_WINDOW);
+        sampler.sample(DIRECT, &stats(2, 0, 0, 0), None, t0);
+        let within = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW);
         assert_eq!(within.min_rtt, Some(Duration::from_millis(2)));
-        let past = sampler.sample(DIRECT, &stats(60, 0, 0, 0), t0 + MIN_RTT_WINDOW * 2);
+        let past = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW * 2);
         assert_eq!(past.min_rtt, Some(Duration::from_millis(60)));
     }
 }

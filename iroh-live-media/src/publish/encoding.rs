@@ -31,7 +31,7 @@ impl VideoEncoding {
     }
 
     /// Checks everything that can be checked without opening an encoder.
-    pub(crate) fn validate(&self, source: video::Rate) -> Result<(), Error> {
+    pub(crate) fn validate(&self, source: video::FrameRate) -> Result<(), Error> {
         if self.renditions.is_empty() {
             return Err(Error::invalid(
                 "a video encoding needs at least one rendition",
@@ -97,7 +97,7 @@ pub struct VideoRendition {
     /// The target bitrate. `None` derives one from the size and rate.
     pub bitrate: Option<Bitrate>,
     /// The frame rate. `None` follows the source. It cannot exceed the source's rate.
-    pub rate: Option<video::Rate>,
+    pub rate: Option<video::FrameRate>,
     /// How often the encoder inserts a keyframe.
     ///
     /// A subscriber cannot draw anything before a keyframe. This interval
@@ -161,7 +161,7 @@ impl VideoRendition {
     pub(crate) fn encode_config(
         &self,
         size: video::Size,
-        rate: video::Rate,
+        rate: video::FrameRate,
         color: Option<video::Color>,
         prefer_hardware: bool,
     ) -> video::encode::Config {
@@ -258,12 +258,12 @@ impl AudioEncoding {
     /// Returns the codec settings for a source in `format`.
     ///
     /// Without a format, the codec's default rate applies.
-    pub(crate) fn settings(&self, format: Option<AudioFormat>) -> audio::encode::Settings {
+    pub(crate) fn settings(&self, format: Option<AudioFormat>) -> audio::encode::Config {
         let input = match format {
             Some(format) => audio::encode::Input::new(format.sample_rate, format.layout),
             None => audio::encode::Input::default(),
         };
-        let mut settings = audio::encode::Settings::from_input(self.codec, &input);
+        let mut settings = audio::encode::Config::from_input(self.codec, &input);
         if let Some(layout) = self.layout {
             settings.layout = layout;
         }
@@ -283,8 +283,8 @@ impl Default for AudioEncoding {
 mod tests {
     use super::*;
 
-    fn fps(n: u32) -> video::Rate {
-        video::Rate::new(n, 1).expect("valid")
+    fn fps(n: u32) -> video::FrameRate {
+        video::FrameRate::new(n, 1).expect("valid")
     }
 
     #[test]

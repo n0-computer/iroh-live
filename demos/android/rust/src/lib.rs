@@ -33,7 +33,7 @@ use jni::{
     sys::{jboolean, jint, jlong},
 };
 use moq_net::Timestamp;
-use moq_video::{Frame, I420, Rate, Size, Surface};
+use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::task::AbortOnDropHandle;
 use tokio::runtime::Runtime;
@@ -273,7 +273,7 @@ fn read_jstring(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
 /// way to the encoder. A local preview draws that stream without any encode or
 /// decode.
 fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Frame>, VideoFrames)> {
-    let rate = Rate::new(CAMERA_FPS, 1).std_context("camera frame rate")?;
+    let rate = FrameRate::new(CAMERA_FPS, 1).std_context("camera frame rate")?;
     let (sink, source) = VideoSource::push(VideoFormat { size, rate });
     let preview = source.frames();
     broadcast.set_video(

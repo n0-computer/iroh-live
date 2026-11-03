@@ -10,7 +10,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
-use moq_net::{AsPath, Consume, broadcast, origin};
+use moq_net::{Consume, Path, broadcast, origin};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
@@ -189,13 +189,13 @@ impl Moq {
     /// [`Error::ShutDown`] once the node has shut down.
     pub fn publish(
         &self,
-        path: impl AsPath,
+        path: impl TryInto<Path, Error: Into<moq_net::Error>>,
         broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
         publish::publish(
             &self.shared,
-            path.as_path().to_owned(),
+            crate::error::to_path(path)?,
             broadcast.consume(),
             audience,
         )
@@ -222,8 +222,12 @@ impl Moq {
     /// [`Error::NotAnnounced`] if the publisher's session ends before it
     /// announces the path, and [`Error::ShutDown`] once the node has shut
     /// down.
-    pub async fn subscribe(&self, path: impl AsPath, reach: Reach) -> Result<Subscription, Error> {
-        route::subscribe(self, path.as_path().to_owned(), reach).await
+    pub async fn subscribe(
+        &self,
+        path: impl TryInto<Path, Error: Into<moq_net::Error>>,
+        reach: Reach,
+    ) -> Result<Subscription, Error> {
+        route::subscribe(self, crate::error::to_path(path)?, reach).await
     }
 
     /// Returns the route table.

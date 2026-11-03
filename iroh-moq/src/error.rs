@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use moq_net::PathOwned;
+use moq_net::Path;
 use n0_error::{AnyError, stack_error};
 
 /// Errors of the transport.
@@ -42,7 +42,7 @@ pub enum Error {
     },
     /// A publication already exists at this path.
     #[error("a broadcast is already published at {path}")]
-    Duplicate { path: PathOwned },
+    Duplicate { path: Path },
     /// The path cannot be published or subscribed.
     ///
     /// It is empty, or holds a segment only a pattern can spell.
@@ -53,22 +53,22 @@ pub enum Error {
     /// For an offer, the peer may not subscribe to the path. For a subscribe,
     /// it may not publish it.
     #[error("the session's grant does not cover {path}")]
-    NotGranted { path: PathOwned },
+    NotGranted { path: Path },
     /// The path was not announced before its only link went away.
     #[error("{path} was not announced before the session ended")]
-    NotAnnounced { path: PathOwned },
+    NotAnnounced { path: Path },
     /// No link can serve the path.
     ///
     /// The reach asks for relays and none is attached, or names this node as
     /// the publisher of a path it does not publish.
     #[error("no link can reach {path}")]
-    NoRoute { path: PathOwned },
+    NoRoute { path: Path },
     /// The path could not be resolved.
     ///
     /// The peer refused it, or it lies outside what this node may see.
     #[error("{path} could not be resolved")]
     Unresolved {
-        path: PathOwned,
+        path: Path,
         #[error(source, std_err)]
         source: moq_net::Error,
     },
@@ -81,4 +81,15 @@ pub enum Error {
     /// The transport has shut down.
     #[error("the transport has shut down")]
     ShutDown,
+}
+
+/// Converts a caller's path, failing like moq-net's own entry points do.
+pub(crate) fn to_path(
+    path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
+) -> Result<moq_net::Path, Error> {
+    path.try_into().map_err(|source| {
+        n0_error::e!(Error::Moq {
+            source: source.into()
+        })
+    })
 }
