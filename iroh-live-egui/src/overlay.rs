@@ -574,12 +574,12 @@ fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
         ));
     }
     if let Some(delivery) = net.delivery {
-        let delivery_text = crate::format_bitrate(delivery);
+        let delivery_text = crate::format_bitrate(iroh_live_media::Bitrate::from_bps(delivery));
         parts.push(format!("bw:{delivery_text}"));
         lines.push(Line::metric(
             "net.delivery",
             format!("delivery estimate: {delivery_text}"),
-            delivery.as_bps() as f64,
+            delivery as f64,
             egui::Color32::WHITE,
         ));
     }

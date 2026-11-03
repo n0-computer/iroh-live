@@ -292,7 +292,7 @@ async fn adaptive_rendition_switching() {
         rtt: Some(Duration::from_millis(20)),
         min_rtt: Some(Duration::from_millis(20)),
         loss: Some(0.0),
-        delivery: Some(Bitrate::from_bps(10_000_000)),
+        delivery: Some(10_000_000),
         ..NetworkSample::default()
     }));
     let reader = sample.clone();
@@ -326,7 +326,7 @@ async fn adaptive_rendition_switching() {
         rtt: Some(Duration::from_millis(200)),
         min_rtt: Some(Duration::from_millis(20)),
         loss: Some(0.25),
-        delivery: Some(Bitrate::from_bps(100_000)),
+        delivery: Some(100_000),
         ..NetworkSample::default()
     };
 

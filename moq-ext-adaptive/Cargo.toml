@@ -1,0 +1,14 @@
+[package]
+name = "moq-ext-adaptive"
+version = "0.1.0"
+edition = "2024"
+description = "pure rendition choice and decoder handover state machines for adaptive video"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing = "0.1.44"

@@ -23,16 +23,14 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    time::Duration,
+    time::{Duration, Instant},
 };
-
-use tokio::time::Instant;
 
 use crate::NetworkSample;
 
 /// One rendition, as the bound sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Rung {
+pub struct Rung {
     /// The rendition's track name.
     pub name: String,
     /// The advertised bitrate in bits per second, if the catalog gives one.
@@ -45,7 +43,7 @@ pub(crate) struct Rung {
 
 /// What the caller rules out, whatever the network says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Constraints {
+pub struct Constraints {
     /// No rendition taller than this, if set.
     pub max_height: Option<u32>,
     /// Renditions whose decoders recently failed.
@@ -54,7 +52,7 @@ pub(crate) struct Constraints {
 
 impl Constraints {
     /// Reports whether `rung` is not stalled, not excluded and not too tall.
-    pub(crate) fn allows(&self, rung: &Rung) -> bool {
+    pub fn allows(&self, rung: &Rung) -> bool {
         !rung.stalled
             && !self.excluded.contains(&rung.name)
             && match (self.max_height, rung.height) {
@@ -128,7 +126,7 @@ impl Default for Adaptation {
 
 /// The selection state carried from one tick to the next.
 #[derive(Debug, Default)]
-pub(crate) struct Bound {
+pub struct Bound {
     adaptation: Adaptation,
     /// The path the history below was gathered on.
     path_generation: Option<u64>,
@@ -165,7 +163,7 @@ pub(crate) struct Bound {
 
 impl Bound {
     /// Creates a bound with nothing learned yet.
-    pub(crate) fn new(adaptation: Adaptation) -> Self {
+    pub fn new(adaptation: Adaptation) -> Self {
         Self {
             adaptation,
             ..Self::default()
@@ -184,7 +182,7 @@ impl Bound {
     /// Returns the sliding maximum of the estimate, if there is one.
     fn estimate(&mut self, reading: &NetworkSample, now: Instant) -> Option<u64> {
         if let Some(delivery) = reading.delivery {
-            self.estimates.push_back((now, delivery.as_bps()));
+            self.estimates.push_back((now, delivery));
         }
         while let Some((at, _)) = self.estimates.front()
             && now.duration_since(*at) > self.adaptation.estimate_window
@@ -242,7 +240,7 @@ impl Bound {
     /// the old rendition's, and a step on it would stack onto the first.
     ///
     /// Returns `None` only when `ranked` is empty.
-    pub(crate) fn decide(
+    pub fn decide(
         &mut self,
         ranked: &[Rung],
         current: Option<&str>,
@@ -393,7 +391,6 @@ impl Bound {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Bitrate;
 
     fn rung(name: &str, bitrate: u64, height: u32) -> Rung {
         Rung {
@@ -415,7 +412,7 @@ mod tests {
     fn estimate(bps: u64) -> NetworkSample {
         NetworkSample {
             loss: Some(0.0),
-            delivery: Some(Bitrate::from_bps(bps)),
+            delivery: Some(bps),
             ..NetworkSample::default()
         }
     }

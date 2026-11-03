@@ -15,6 +15,7 @@ bytes = "1.12.1"
 derive_more = { version = "2.1.1", features = ["display", "debug", "eq", "deref"] }
 hang = { workspace = true }
 moq-audio = { workspace = true }
+moq-ext-adaptive = { workspace = true }
 moq-mux = { workspace = true }
 moq-net = { workspace = true }
 # The software H.264 fallback. The workspace takes moq-video without defaults,

@@ -27,22 +27,20 @@
 //!   playing, so the caller can tell a failed first open from the end of the
 //!   video.
 
-use std::time::Duration;
-
-use tokio::time::Instant;
+use std::time::{Duration, Instant};
 
 /// How far a replacement may trail the incumbent's playhead when it takes over.
 ///
 /// The same slack `@moq/watch` uses. It absorbs scheduling noise, and it is the
 /// largest step backwards a switch can show.
-pub(crate) const CATCH_UP_SLACK: Duration = Duration::from_millis(100);
+pub const CATCH_UP_SLACK: Duration = Duration::from_millis(100);
 
 /// How long a replacement waits to catch up after its first picture.
 ///
 /// That is enough on a link with room, where a replacement catches up within a
 /// group. It is short against the switch deadline because on a saturated link
 /// the two tracks starve each other while they overlap.
-pub(crate) const CATCH_UP_PATIENCE: Duration = Duration::from_secs(1);
+pub const CATCH_UP_PATIENCE: Duration = Duration::from_secs(1);
 
 /// What a decoder is built for: a rendition, under one decoder configuration.
 ///
@@ -50,7 +48,7 @@ pub(crate) const CATCH_UP_PATIENCE: Duration = Duration::from_secs(1);
 /// rendition is then a different target, while asking for the playing
 /// rendition again is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Target {
+pub struct Target {
     /// The rendition's track name.
     pub rendition: String,
     /// The decoder settings generation, bumped on every change.
@@ -59,7 +57,7 @@ pub(crate) struct Target {
 
 impl Target {
     /// Creates a target for `rendition` under decoder configuration `config`.
-    pub(crate) fn new(rendition: impl Into<String>, config: u64) -> Self {
+    pub fn new(rendition: impl Into<String>, config: u64) -> Self {
         Self {
             rendition: rendition.into(),
             config,
@@ -69,7 +67,7 @@ impl Target {
 
 /// Why a replacement did not take over.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Abandoned<E> {
+pub enum Abandoned<E> {
     /// A newer request replaced it before it took over.
     Superseded,
     /// The request was withdrawn: the rendition asked for is the one playing.
@@ -84,7 +82,7 @@ pub(crate) enum Abandoned<E> {
 
 /// What a transition did, for the caller to act on.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Outcome<E> {
+pub enum Outcome<E> {
     /// Nothing the caller has to act on.
     Idle,
     /// A replacement took over, and the caller reports it as playing.
@@ -97,7 +95,7 @@ pub(crate) enum Outcome<E> {
 
 /// What to do with a picture the replacement decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Verdict {
+pub enum Verdict {
     /// Drop it: no replacement is warming, or it is still behind the playhead.
     Discard,
     /// Show it: the replacement has just taken over.
@@ -139,7 +137,7 @@ struct Playing<R> {
 /// stand-ins for both. Dropping a replacement drops its `O` and `R`, which
 /// cancels its work.
 #[derive(Debug)]
-pub(crate) struct Switcher<R, O> {
+pub struct Switcher<R, O> {
     incumbent: Option<Playing<R>>,
     replacement: Option<Replacement<R, O>>,
     generations: u64,
@@ -152,7 +150,7 @@ impl<R, O> Switcher<R, O> {
     ///
     /// `patience` is how long a replacement may take, from its request to
     /// taking over, before it is given up.
-    pub(crate) fn new(patience: Duration) -> Self {
+    pub fn new(patience: Duration) -> Self {
         Self {
             incumbent: None,
             replacement: None,
@@ -162,38 +160,38 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the target playing, if any.
-    pub(crate) fn current(&self) -> Option<&Target> {
+    pub fn current(&self) -> Option<&Target> {
         self.incumbent.as_ref().map(|playing| &playing.target)
     }
 
     /// Returns the target on its way in, if any.
-    pub(crate) fn switching_to(&self) -> Option<&Target> {
+    pub fn switching_to(&self) -> Option<&Target> {
         self.replacement
             .as_ref()
             .map(|replacement| &replacement.target)
     }
 
     /// Returns the moment the replacement is given up, if there is one.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
+    pub fn deadline(&self) -> Option<Instant> {
         self.replacement
             .as_ref()
             .map(|replacement| replacement.deadline)
     }
 
     /// Returns the generation of the replacement, if there is one.
-    pub(crate) fn replacement_generation(&self) -> Option<u64> {
+    pub fn replacement_generation(&self) -> Option<u64> {
         self.replacement
             .as_ref()
             .map(|replacement| replacement.generation)
     }
 
     /// Returns the running incumbent decoder.
-    pub(crate) fn incumbent_mut(&mut self) -> Option<&mut R> {
+    pub fn incumbent_mut(&mut self) -> Option<&mut R> {
         self.incumbent.as_mut().map(|playing| &mut playing.reader)
     }
 
     /// Returns the open task of a replacement that is still opening.
-    pub(crate) fn opening_mut(&mut self) -> Option<&mut O> {
+    pub fn opening_mut(&mut self) -> Option<&mut O> {
         match &mut self.replacement {
             Some(Replacement {
                 phase: Phase::Opening(task),
@@ -204,7 +202,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the decoder of a replacement that has opened.
-    pub(crate) fn warming_mut(&mut self) -> Option<&mut R> {
+    pub fn warming_mut(&mut self) -> Option<&mut R> {
         match &mut self.replacement {
             Some(Replacement {
                 phase: Phase::Warming(reader),
@@ -216,7 +214,7 @@ impl<R, O> Switcher<R, O> {
 
     /// Reports whether nothing is playing and nothing is on its way.
     #[cfg(test)]
-    pub(crate) fn is_idle(&self) -> bool {
+    pub fn is_idle(&self) -> bool {
         self.incumbent.is_none() && self.replacement.is_none()
     }
 
@@ -228,7 +226,7 @@ impl<R, O> Switcher<R, O> {
     /// generation and target, and builds the task that opens the decoder.
     ///
     /// Returns the replacement this request withdrew or superseded, if any.
-    pub(crate) fn request<E>(
+    pub fn request<E>(
         &mut self,
         target: Target,
         now: Instant,
@@ -264,7 +262,7 @@ impl<R, O> Switcher<R, O> {
     /// An opened replacement starts warming. It takes over on a picture, in
     /// [`replacement_frame`](Self::replacement_frame), and keeps its deadline
     /// until then.
-    pub(crate) fn opened<E>(&mut self, generation: u64, result: Result<R, E>) -> Outcome<E> {
+    pub fn opened<E>(&mut self, generation: u64, result: Result<R, E>) -> Outcome<E> {
         let Some(replacement) = self
             .replacement
             .as_mut()
@@ -287,7 +285,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Records that the incumbent decoded a picture at `pts`.
-    pub(crate) fn incumbent_frame(&mut self, pts: Duration) {
+    pub fn incumbent_frame(&mut self, pts: Duration) {
         if let Some(playing) = &mut self.incumbent {
             playing.playhead = Some(pts);
         }
@@ -299,11 +297,7 @@ impl<R, O> Switcher<R, O> {
     /// playhead, or once [`CATCH_UP_PATIENCE`] has passed since its first
     /// picture. The caller then shows this picture and drops any pending
     /// incumbent picture.
-    pub(crate) fn replacement_frame<E>(
-        &mut self,
-        pts: Duration,
-        now: Instant,
-    ) -> (Verdict, Outcome<E>) {
+    pub fn replacement_frame<E>(&mut self, pts: Duration, now: Instant) -> (Verdict, Outcome<E>) {
         let Some(replacement) = &mut self.replacement else {
             return (Verdict::Discard, Outcome::Idle);
         };
@@ -343,7 +337,7 @@ impl<R, O> Switcher<R, O> {
     /// overlap they share the link, and the replacement's groups age out before
     /// they arrive. Dropping the incumbent's reader drops its subscription. The
     /// caller keeps its last picture up.
-    pub(crate) fn release_incumbent(&mut self) {
+    pub fn release_incumbent(&mut self) {
         self.incumbent = None;
     }
 
@@ -351,7 +345,7 @@ impl<R, O> Switcher<R, O> {
     ///
     /// A replacement on its way keeps its deadline and takes over on its first
     /// picture. Without one, the video has ended.
-    pub(crate) fn incumbent_ended<E>(&mut self) -> Outcome<E> {
+    pub fn incumbent_ended<E>(&mut self) -> Outcome<E> {
         self.incumbent = None;
         match &self.replacement {
             Some(_) => Outcome::Idle,
@@ -360,7 +354,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Records that the replacement's track ended before it took over.
-    pub(crate) fn replacement_ended<E>(&mut self) -> Outcome<E> {
+    pub fn replacement_ended<E>(&mut self) -> Outcome<E> {
         match self.replacement.take() {
             Some(replacement) => Outcome::Abandoned(replacement.target, Abandoned::Ended),
             None => Outcome::Idle,
@@ -368,7 +362,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Gives the replacement up if its deadline has passed at `now`.
-    pub(crate) fn expire<E>(&mut self, now: Instant) -> Outcome<E> {
+    pub fn expire<E>(&mut self, now: Instant) -> Outcome<E> {
         match &self.replacement {
             Some(replacement) if replacement.deadline <= now => {
                 let target = self.replacement.take().expect("matched above").target;
