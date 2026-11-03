@@ -14,7 +14,7 @@ use tracing::{debug, info};
 use crate::{
     Error, Session,
     node::Shared,
-    session::{Origins, SessionParts, Transport, driver_now, hop_for},
+    session::{Origins, SessionParts, Transport, driver_now, hop_for, subscriber},
     transport::accept_transport,
 };
 
@@ -221,7 +221,7 @@ impl Incoming {
             .handshake
             .with_publisher(origins.publish.consume())
             .with_peer_hop(hop_for(&self.remote));
-        if let Some(subscriber) = origins.subscriber(&grant) {
+        if let Some(subscriber) = subscriber(&shared.table, &grant) {
             handshake = handshake.with_subscriber(subscriber);
         }
         let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())

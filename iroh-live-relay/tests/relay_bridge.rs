@@ -970,6 +970,15 @@ async fn routed(origin: &origin::Consumer, path: &str) {
         .expect("the origin closed");
 }
 
+/// Gives a relay's route to a path that a direct route already serves time to arrive.
+///
+/// The route table announces only the best route of a path, so a second one
+/// cannot be waited for. The relay link is connected, and a moment is plenty on
+/// loopback.
+async fn relay_route_arrives() {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
 /// Waits until `updates` retracts `path`.
 async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
     tokio::time::timeout(TIMEOUT, async {
@@ -1190,8 +1199,8 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     .expect("subscribe timeout")
     .expect("subscribe");
     let mut reader = subscribed(&subscription.as_moq()).await;
-    let bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
-    routed(&bob_link.origin(), publication.path().as_str()).await;
+    let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
+    relay_route_arrives().await;
 
     subscription
         .session()
@@ -1311,8 +1320,8 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     .expect("subscribe timeout")
     .expect("subscribe");
     let mut reader = subscribed(&subscription.as_moq()).await;
-    let bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
-    routed(&bob_link.origin(), publication.path().as_str()).await;
+    let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
+    relay_route_arrives().await;
 
     subscription
         .session()

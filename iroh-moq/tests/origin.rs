@@ -15,7 +15,7 @@ use iroh::{
 };
 use moq_net::{
     Hop, announce, broadcast,
-    origin::{self, Route},
+    origin::{self, Link, Route},
 };
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
@@ -429,42 +429,11 @@ async fn per_session_origins_carry_different_offers() {
     wait_for_paths(&carol_ingest, &["live/node/everyone", "live/node/manual"]).await;
 }
 
-/// Mirrors every route in `ingest` into `table`, as the node's bridge does.
-fn bridge(ingest: origin::Producer, table: origin::Producer) -> AbortOnDropHandle<()> {
-    AbortOnDropHandle::new(tokio::spawn(async move {
-        let mut announced = ingest.consume().announced();
-        let mut routes = std::collections::HashMap::new();
-        while let Some(event) = announced.next().await {
-            let announce = match event {
-                announce::Event::End(announce) => {
-                    routes.remove(&announce.prefix);
-                    continue;
-                }
-                announce::Event::Update(_) => continue,
-                announce::Event::Start(announce)
-                | announce::Event::Restart(announce)
-                | announce::Event::Takeover { announce, .. } => announce,
-            };
-            let prefix = announce.prefix.clone();
-            let route = Route::default()
-                .with_hops(announce.route.hops.clone())
-                .with_cost(announce.route.cost);
-            let (ingest, table) = (ingest.clone(), table.clone());
-            let path = prefix.clone();
-            let task = AbortOnDropHandle::new(tokio::spawn(async move {
-                let Ok(source) = ingest.consume().request(&path, None).await else {
-                    return;
-                };
-                serve(&table, path.as_str(), route, source).await.ok();
-            }));
-            routes.insert(prefix, task);
-        }
-    }))
-}
-
 /// A route table serves the cheaper of two routes, and moves to the other when it dies.
 ///
-/// The move needs both routes to share their first hop, the publisher.
+/// Both sessions announce straight into the table, tagged as links. The
+/// publisher's stream has one instance on the direct route and on the relay's,
+/// so a reader moves from one to the other without noticing.
 #[tokio::test]
 #[n0_tracing_test::traced_test]
 async fn a_route_table_fails_over_between_links() {
@@ -500,14 +469,9 @@ async fn a_route_table_fails_over_between_links() {
     .await;
     announced_route(&relayed, "live/p/cam").await;
 
-    // The node: one ingest origin per link, both mirrored into the table.
+    // The node: one route table, both links announce into it.
     let node = endpoint().await;
     let table = origin(NODE_HOP);
-    let direct_ingest = origin(NODE_HOP);
-    let relay_ingest = origin(NODE_HOP);
-    let _direct_bridge = bridge(direct_ingest.clone(), table.clone());
-    let _relay_bridge = bridge(relay_ingest.clone(), table.clone());
-
     let relay_addr = relay.endpoint.addr();
     // The client's driver has to run inside the join: from moq-lite-05 on the
     // SETUP a server waits for is written by the driver, not by `connect`.
@@ -518,7 +482,8 @@ async fn a_route_table_fails_over_between_links() {
                     .await
                     .expect("dial relay");
                 let (session, driver) = moq_net::Client::new()
-                    .with_subscriber(relay_ingest.clone())
+                    .with_subscriber(table.clone().with_link(Link::Upstream))
+                    .with_peer_hop(Hop::new(RELAY_HOP).expect("a hop"))
                     .with_cost(RELAY_COST)
                     .connect(
                         now(),
@@ -537,7 +502,7 @@ async fn a_route_table_fails_over_between_links() {
             dial(
                 &node,
                 publisher.endpoint.addr(),
-                direct_ingest.clone(),
+                table.clone().with_link(Link::Peer),
                 None
             ),
             publisher.accept(published.consume(), None),
@@ -545,18 +510,15 @@ async fn a_route_table_fails_over_between_links() {
     })
     .await;
 
-    // Both routes are in; the direct one is cheaper and serves.
-    let direct = announced_route(&direct_ingest, "live/p/cam").await;
-    let via_relay = announced_route(&relay_ingest, "live/p/cam").await;
-    let first = |route: &Route| route.hops.iter().next().map(|hop| hop.id());
-    assert_eq!(first(&direct), Some(PUBLISHER_HOP));
-    assert_eq!(first(&via_relay), Some(PUBLISHER_HOP));
-    assert!(
-        direct.cost < via_relay.cost,
-        "{:?} {:?}",
-        direct.cost,
-        via_relay.cost
+    // Both routes are in the table once they have had a moment to arrive, and
+    // it announces the best: the direct one, which is cheaper.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let best = announced_route(&table, "live/p/cam").await;
+    assert_eq!(
+        best.hops.iter().next().map(|hop| hop.id()),
+        Some(PUBLISHER_HOP)
     );
+    assert!(best.cost.value() < RELAY_COST, "{:?}", best.cost);
 
     let consumer = resolve(&table, "live/p/cam").await;
     let mut subscriber = step(
@@ -570,6 +532,30 @@ async fn a_route_table_fails_over_between_links() {
     .expect("subscribe");
     let mut last = 0;
     for _ in 0..3 {
+        last = next_counter(&mut subscriber).await;
+    }
+
+    // The direct link goes. Both routes serve one instance, so the table moves
+    // the same subscription to the relay's route, which continues the source.
+    drop(direct_link);
+    drop(direct_server);
+    step("the relay continues the source", async {
+        loop {
+            if next_counter(&mut subscriber).await > last {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        !consumer.is_closed(),
+        "the broadcast ended with the direct link"
+    );
+}
+
+/// Reads the next frame's counter from `subscriber`.
+async fn next_counter(subscriber: &mut moq_net::track::Subscriber) -> u64 {
+    loop {
         let mut group = tokio::time::timeout(TIMEOUT, subscriber.recv_group())
             .await
             .expect("no group")
@@ -579,49 +565,7 @@ async fn a_route_table_fails_over_between_links() {
             .await
             .expect("group")
         {
-            last = u64::from_be_bytes(frame.payload[..].try_into().expect("u64"));
+            return u64::from_be_bytes(frame.payload[..].try_into().expect("u64"));
         }
     }
-
-    // The direct link goes. The table holds one broadcast per link, so what
-    // the direct route served ends with it (moq-net keeps an open subscription
-    // on its instance, and no longer splices it onto another instance), and a
-    // new resolve of the path is served through the relay's route, from the
-    // same source.
-    drop(direct_link);
-    drop(direct_server);
-    tokio::time::timeout(TIMEOUT, async {
-        while let Ok(Some(_)) = subscriber.recv_group().await {}
-    })
-    .await
-    .expect("the direct route's subscription did not end with its link");
-    consumer.closed().await;
-
-    let rerouted = resolve(&table, "live/p/cam").await;
-    let mut resumed = step(
-        "subscribe through the relay",
-        rerouted
-            .track("video")
-            .expect("track")
-            .subscribe(subscription()),
-    )
-    .await
-    .expect("subscribe");
-    // A new subscription replays what the relay still holds, oldest first, so
-    // read on until the counter is past what the direct route delivered.
-    step("the relay continues the source", async {
-        loop {
-            let mut group = resumed
-                .recv_group()
-                .await
-                .expect("track failed")
-                .expect("track ended");
-            if let Some(frame) = group.read_frame().await.expect("group")
-                && u64::from_be_bytes(frame.payload[..].try_into().expect("u64")) > last
-            {
-                break;
-            }
-        }
-    })
-    .await;
 }
