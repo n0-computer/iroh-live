@@ -80,15 +80,25 @@ impl IrohSessions {
             .await
             .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))??;
         let path = target.unwrap_or_else(|| handshake.path().to_owned());
+        let name = requested_name(&path);
         let publish = self
             .cluster
             .origin
             .scope("", &relay_grant(remote).publish)
             .map_err(AcceptError::from_err)?;
+        // A session that names a ticket reads the pulled broadcast at that name.
+        let serving = name
+            .as_deref()
+            .filter(|_| self.pulls.is_some())
+            .and_then(|name| crate::pull::mounted(&self.cluster, name))
+            .map_or_else(
+                || self.cluster.origin.consume(),
+                |cluster| cluster.origin.consume(),
+            );
         let (session, driver) = tokio::time::timeout(
             iroh_moq::HANDSHAKE_TIMEOUT,
             handshake
-                .with_publisher(self.cluster.origin.consume())
+                .with_publisher(serving)
                 .with_subscriber(publish)
                 .ok(),
         )
@@ -101,7 +111,7 @@ impl IrohSessions {
         let _pull = self
             .pulls
             .as_ref()
-            .and_then(|pulls| crate::pull_for(pulls.clone(), requested_name(&path)?));
+            .and_then(|pulls| crate::pull_for(pulls.clone(), name.clone()?));
 
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
@@ -180,10 +190,10 @@ mod tests {
         assert!(!matches("rooms/topic/someone/cam"));
     }
 
-    /// Pull mirrors sit at the ticket's spelling, which always has a `/`
-    /// between the endpoint id and the name, so no browser can publish one.
+    /// Pulls are read at the ticket's spelling, which always has a `/`
+    /// between the endpoint id and the name, so no browser can publish there.
     #[test]
-    fn a_browser_cannot_publish_over_a_pull_mirror() {
+    fn a_browser_cannot_publish_at_a_pulled_name() {
         let ticket = iroh_live::BroadcastTicket::new(
             iroh::SecretKey::from_bytes(&[7; 32]).public(),
             "cam".to_owned(),

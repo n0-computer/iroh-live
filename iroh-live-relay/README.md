@@ -40,9 +40,10 @@ with a 404 on `ws://localhost:4443/<name>`.
 ## Pull mode
 
 1. A browser connects and asks for a broadcast by ticket.
-2. If the cluster does not have it, the relay dials the publisher over its own
-   iroh endpoint, subscribes, and splices the broadcast into the cluster under
-   the name the browser asked for.
+2. The relay dials the publisher over its own iroh endpoint and subscribes.
+   The publisher's session announces the broadcast straight into the cluster,
+   with no copy, and the browser's session reads it under the name it asked
+   for through a mount.
 3. The browser reads it through the relay.
 
 [Peer-to-peer and the relay](../docs/architecture/p2p-relay.md) describes how

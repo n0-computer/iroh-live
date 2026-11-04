@@ -207,7 +207,11 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         debug!(conn_id, %transport, ?name, "accepted connection");
 
         let pull_state = pull_state.clone();
-        let conn = Connection::new(request, cluster.clone(), auth.clone()).with_id(conn_id);
+        // A session that names a ticket reads the pulled broadcast at that name.
+        let serving = name
+            .as_deref()
+            .map_or_else(|| cluster.clone(), |name| pull::serving(&cluster, name));
+        let conn = Connection::new(request, serving, auth.clone()).with_id(conn_id);
         connections.spawn(async move {
             // Held by the task, so it lives exactly as long as this connection.
             let _pull = name.and_then(|name| pull_for(pull_state, name));

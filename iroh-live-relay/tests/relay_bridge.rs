@@ -111,8 +111,14 @@ impl TestRelay {
         let server_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut conn_id = 0u64;
             while let Ok(request) = listener.accept().await {
-                let conn = moq_relay::Connection::new(request, cluster_clone.clone(), auth.clone())
-                    .with_id(conn_id);
+                // As the shipped relay does: a session that names a ticket
+                // reads the pulled broadcast at that name.
+                let serving = request.url().map_or_else(
+                    || cluster_clone.clone(),
+                    |url| iroh_live_relay::pull::serving(&cluster_clone, url.path()),
+                );
+                let conn =
+                    moq_relay::Connection::new(request, serving, auth.clone()).with_id(conn_id);
                 conn_id += 1;
                 tokio::spawn(conn.run());
             }
@@ -239,7 +245,7 @@ async fn announced_at(origin: &origin::Producer, path: &str) -> moq_net::broadca
 /// Publishes a generated video broadcast as `name` on `live`.
 fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::media::LocalBroadcast {
     use iroh_live::media::{VideoEncoding, VideoRendition, VideoSource, video};
-    let broadcast = iroh_live::media::LocalBroadcast::new();
+    let broadcast: iroh_live::media::LocalBroadcast = live.publish(name).expect("publish");
     let source = VideoSource::test_pattern(
         video::Size::new(320, 240),
         video::FrameRate::new(30, 1).expect("a valid rate"),
@@ -247,7 +253,6 @@ fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::media::LocalB
     broadcast
         .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
         .expect("set video");
-    live.publish(name, &broadcast).expect("publish");
     broadcast
 }
 
@@ -508,17 +513,20 @@ async fn pull_remote_broadcast_via_ticket() {
         .expect("pull timeout")
         .expect("pull");
 
-    // Subscriber: noq, standing in for a browser.
+    // Subscriber: noq, standing in for a browser, which dials the ticket as
+    // its path and watches the broadcast at its root.
     let sub_origin = moq_tokio::origin::spawn();
+    let mut url = relay.url();
+    url.set_path(&local_name);
     let _sub_session = established(
         noq_client()
             .with_subscriber(sub_origin.clone())
-            .connect(relay.url()),
+            .connect(url),
     )
     .await;
 
-    // The pulled broadcast is announced under the full ticket string.
-    let bc = announced_at(&sub_origin, &local_name).await;
+    // The pulled broadcast, read without a copy at the name it asked for.
+    let bc = announced_at(&sub_origin, "").await;
     let _frame = first_frame(&bc, "catalog.json").await;
     tracing::info!("pull mode test: received catalog from pulled broadcast");
 
@@ -628,6 +636,11 @@ async fn pull_endpoint() -> iroh::Endpoint {
     endpoint
 }
 
+/// Returns the cluster as a session that named the ticket `name` reads it.
+fn pulled(cluster: &Cluster, name: &str) -> Cluster {
+    iroh_live_relay::pull::mounted(cluster, name).expect("a ticket the cluster mounts")
+}
+
 /// Waits until `name` is routable in the cluster, or no longer is, within [`TIMEOUT`].
 ///
 /// A route is what counts: `request_broadcast` resolves any covered path, live or not.
@@ -677,7 +690,7 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
         .expect("pull timeout")
         .expect("pull");
     assert!(
-        wait_for_broadcast(&relay.cluster, &bare, true).await,
+        wait_for_broadcast(&pulled(&relay.cluster, &bare), &bare, true).await,
         "the pull was announced somewhere other than the name that was asked for",
     );
 
@@ -706,14 +719,14 @@ async fn pull_retires_an_unwatched_session() {
         .expect("pull timeout")
         .expect("pull");
     assert!(
-        wait_for_broadcast(&relay.cluster, &local_name, true).await,
+        wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await,
         "the pulled broadcast should be announced in the cluster"
     );
 
     // Nothing wants the pull any more, so it retires and its mirror goes.
     drop(guard);
     assert!(
-        wait_for_broadcast(&relay.cluster, &local_name, false).await,
+        wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, false).await,
         "an unwatched pull should be retired"
     );
     // The relay closes its session with the publisher.
@@ -737,67 +750,11 @@ async fn pull_retires_an_unwatched_session() {
         .expect("re-pull timeout")
         .expect("re-pull");
     assert!(
-        wait_for_broadcast(&relay.cluster, &local_name, true).await,
+        wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await,
         "pulling a retired ticket should dial the publisher again"
     );
 
     drop(guard);
-    drop(broadcast);
-    publisher.shutdown().await;
-    pub_ep.close().await;
-}
-
-/// A reader that holds no pull guard keeps the pull alive through demand.
-#[tokio::test]
-#[serial]
-async fn pull_survives_a_reader_holding_no_guard() {
-    let _ = tracing_subscriber::fmt::try_init();
-    let relay = TestRelay::start().await;
-    let (pub_ep, publisher, broadcast, ticket) = start_publisher("watched-stream").await;
-    let local_name = ticket.to_string();
-
-    let pull_state =
-        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
-            .with_linger(PULL_LINGER);
-
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
-        .await
-        .expect("pull timeout")
-        .expect("pull");
-    assert!(
-        wait_for_broadcast(&relay.cluster, &local_name, true).await,
-        "the pulled broadcast should be announced in the cluster"
-    );
-
-    // Read the mirror as a subscriber session does, holding no pull guard.
-    let mirrored = routed_broadcast(&relay.cluster.origin.consume(), local_name.as_str())
-        .await
-        .expect("mirrored broadcast");
-    let reader = tokio::time::timeout(
-        TIMEOUT,
-        mirrored
-            .track("catalog.json")
-            .expect("track")
-            .subscribe(None),
-    )
-    .await
-    .expect("subscribe timeout")
-    .expect("subscribe");
-
-    drop(guard);
-    tokio::time::sleep(PULL_LINGER * 5).await;
-    assert!(
-        wait_for_broadcast(&relay.cluster, &local_name, true).await,
-        "a pull with a reader must outlive the last guard"
-    );
-
-    drop(reader);
-    assert!(
-        wait_for_broadcast(&relay.cluster, &local_name, false).await,
-        "the last reader leaving should retire the pull"
-    );
-
-    drop(mirrored);
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
@@ -819,7 +776,7 @@ async fn a_pull_survives_the_publisher_republishing() {
         .await
         .expect("pull timeout")
         .expect("pull");
-    assert!(wait_for_broadcast(&relay.cluster, &local_name, true).await);
+    assert!(wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await);
 
     drop(broadcast);
     let again = publish_video(&publisher, "republished");
@@ -827,10 +784,13 @@ async fn a_pull_survives_the_publisher_republishing() {
     // The held pull serves the new broadcast, not an orphan of the old one.
     let mut served = false;
     for _ in 0..20 {
-        if wait_for_broadcast(&relay.cluster, &local_name, true).await {
-            let mirrored = routed_broadcast(&relay.cluster.origin.consume(), local_name.as_str())
-                .await
-                .expect("mirrored broadcast");
+        if wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await {
+            let mirrored = routed_broadcast(
+                &pulled(&relay.cluster, &local_name).origin.consume(),
+                local_name.as_str(),
+            )
+            .await
+            .expect("mirrored broadcast");
             let track = mirrored.track("catalog.json").expect("track");
             if let Ok(Ok(_)) =
                 tokio::time::timeout(Duration::from_secs(2), track.subscribe(None)).await
@@ -988,24 +948,22 @@ async fn attached(
     link
 }
 
-/// A broadcast with one track that writes a counter every few milliseconds.
-fn counter(name: &str) -> (moq_net::broadcast::Producer, AbortOnDropHandle<()>) {
-    let broadcast = moq_net::broadcast::Info::new().produce();
+/// Writes a counter every few milliseconds into a track `name` of `broadcast`.
+fn counter(broadcast: &moq_net::broadcast::Producer, name: &str) -> AbortOnDropHandle<()> {
     let mut track = broadcast
         .create_track(
             name,
             moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
         )
         .expect("track");
-    let writer = AbortOnDropHandle::new(tokio::spawn(async move {
+    AbortOnDropHandle::new(tokio::spawn(async move {
         for n in 0u64.. {
             if track.write_frame(None, n.to_be_bytes().to_vec()).is_err() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }));
-    (broadcast, writer)
+    }))
 }
 
 /// Waits until `origin` has a route to `path`.
@@ -1135,21 +1093,22 @@ async fn a_relay_gets_public_publications_only() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (endpoint, live) = relay_node(false).await;
-    let (public, _public) = counter("data");
-    let (peers, _peers) = counter("data");
+    // The relay's own id in the set: a relay forwards to anyone, so it never
+    // sees a `Peers` publication, even one that names it.
     let members = Watchable::new(BTreeSet::from([relay.iroh_id]));
     let public = live
         .moq()
-        .publish(live.ticket("public").path(), &public, Audience::Everyone)
+        .publish(live.ticket("public").path(), Audience::Everyone)
         .expect("publish");
+    let _public = counter(public.broadcast(), "data");
     let peers = live
         .moq()
         .publish(
             live.ticket("peers").path(),
-            &peers,
             Audience::Peers(members.clone()),
         )
         .expect("publish");
+    let _peers = counter(peers.broadcast(), "data");
 
     let sub_origin = moq_tokio::origin::spawn();
     let _browser = established(
@@ -1228,11 +1187,11 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (_alice_endpoint, alice) = relay_node(true).await;
-    let (broadcast, _writer) = counter("data");
     let publication = alice
         .moq()
-        .publish(alice.ticket("cam").path(), &broadcast, Audience::Everyone)
+        .publish(alice.ticket("cam").path(), Audience::Everyone)
         .expect("publish");
+    let _writer = counter(publication.broadcast(), "data");
     let _alice_link = attached(&alice, &relay, RelayOffer::Public).await;
 
     let (_bob_endpoint, bob) = relay_node(false).await;
@@ -1316,11 +1275,11 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (alice_endpoint, alice) = relay_node(true).await;
-    let (broadcast, _writer) = counter("data");
     let publication = alice
         .moq()
-        .publish(alice.ticket("cam").path(), &broadcast, Audience::Everyone)
+        .publish(alice.ticket("cam").path(), Audience::Everyone)
         .expect("publish");
+    let _writer = counter(publication.broadcast(), "data");
 
     // Mallory, a browser-like client, publishes at Alice's path, declaring
     // Alice's hop.
@@ -1412,23 +1371,23 @@ async fn the_shipped_relay_refuses_forged_paths() {
 
     let alice = iroh::SecretKey::generate().public();
     let (mallory_endpoint, mallory) = relay_node(false).await;
-    let (own, _own) = counter("data");
-    let (forged, _forged) = counter("data");
-    let (room_forged, _room_forged) = counter("data");
     let own = mallory
         .moq()
-        .publish(mallory.ticket("cam").path(), &own, Audience::Everyone)
+        .publish(mallory.ticket("cam").path(), Audience::Everyone)
         .expect("publish");
+    let _own = counter(own.broadcast(), "data");
     let forged_path = format!("live/{alice}/cam");
     let room_path = format!("rooms/topic/{alice}/cam");
-    let _forged = mallory
+    let forged = mallory
         .moq()
-        .publish(forged_path.as_str(), &forged, Audience::Everyone)
+        .publish(forged_path.as_str(), Audience::Everyone)
         .expect("publish at alice's path");
-    let _room_forged = mallory
+    let _forged = counter(forged.broadcast(), "data");
+    let room_forged = mallory
         .moq()
-        .publish(room_path.as_str(), &room_forged, Audience::Everyone)
+        .publish(room_path.as_str(), Audience::Everyone)
         .expect("publish at alice's room path");
+    let _room_forged = counter(room_forged.broadcast(), "data");
     let _link = attached(&mallory, &relay, RelayOffer::Public).await;
 
     // A browser tries the same, and publishes a name of its own.
@@ -1512,7 +1471,7 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
         .expect("pull");
     for name in [&first_name, &second_name] {
         assert!(
-            wait_for_broadcast(&relay.cluster, name, true).await,
+            wait_for_broadcast(&pulled(&relay.cluster, name), name, true).await,
             "{name} was never mirrored"
         );
     }
@@ -1533,12 +1492,15 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
 
     drop(first_guard);
     assert!(
-        wait_for_broadcast(&relay.cluster, &first_name, false).await,
+        wait_for_broadcast(&pulled(&relay.cluster, &first_name), &first_name, false).await,
         "the first pull was not retired"
     );
-    let mirrored = routed_broadcast(&relay.cluster.origin.consume(), second_name.as_str())
-        .await
-        .expect("the second pull's mirror");
+    let mirrored = routed_broadcast(
+        &pulled(&relay.cluster, &second_name).origin.consume(),
+        second_name.as_str(),
+    )
+    .await
+    .expect("the second pull's mirror");
     first_frame(&mirrored, "catalog.json").await;
     assert_eq!(
         pull_sessions(),
@@ -1659,8 +1621,8 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         .join(&room_a.ticket(), Some("bob".into()))
         .await
         .expect("join");
-    let (cam, _writer) = counter("data");
-    room_b.publish("cam", &cam).expect("publish");
+    let cam: moq_net::broadcast::Producer = room_b.publish("cam").expect("publish");
+    let _writer = counter(&cam, "data");
     let subscription = tokio::time::timeout(TIMEOUT, room_a.subscribe(bob_endpoint.id(), "cam"))
         .await
         .expect("subscribe timeout")

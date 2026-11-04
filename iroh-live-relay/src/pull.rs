@@ -1,27 +1,33 @@
 //! Pull mode: serving a broadcast ticket's broadcast from the relay.
 //!
-//! When a session names a valid [`BroadcastTicket`], the relay subscribes to
-//! the ticket's broadcast through its own iroh-moq node, and splices it into
-//! the cluster under the name the session asked for.
+//! The relay's iroh-moq node uses the cluster origin as its route table. When
+//! a session names a valid [`BroadcastTicket`], the node subscribes to the
+//! ticket's broadcast, and the publisher's session announces it straight into
+//! the cluster at its own path, `live/<publisher>/<name>`. Nothing is copied:
+//! cluster readers read the session's broadcast. The session's grant lets the
+//! publisher announce exactly the pulled paths, so its other broadcasts stay
+//! out. A session that named the ticket reads it under the name it asked for
+//! through a mount, see [`mounted`].
 //!
-//! A pull retires once two signals have been quiet for the linger window. Each
-//! local session that named the ticket holds a [`PullGuard`], and the mirrored
-//! broadcast's [`Demand`](moq_net::broadcast::Demand) shows whether anything
-//! reads it. When the last pull of a publisher retires, the relay closes its
-//! session with that publisher. An idle timer on the connection cannot replace
-//! either signal, since iroh's keep-alives move its counters too.
+//! A pull retires once no local session that named the ticket has held its
+//! [`PullGuard`] for the linger window. Its path then leaves the publisher's
+//! grant, which takes the broadcast out of the cluster, and when the last pull
+//! of a publisher retires, the relay closes its session with that publisher.
+//! An idle timer on the connection cannot stand in for the guards, since
+//! iroh's keep-alives move its counters too. A reader that reaches the
+//! broadcast at its own path without naming the ticket holds no guard, and
+//! loses it when the pull retires.
 
 use std::{
     collections::HashMap,
-    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use iroh::EndpointId;
 use iroh_live::BroadcastTicket;
-use iroh_moq::{Moq, Reach, Subscription};
-use moq_net::{broadcast, origin};
+use iroh_moq::{Grant, Moq, MoqConfig, Subscription};
+use moq_net::{Pattern, Patterns};
 use moq_relay::cluster::Cluster;
 use n0_watcher::Watcher;
 use tokio::sync::watch;
@@ -35,40 +41,62 @@ const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 /// How long to wait for the publisher's broadcast to resolve.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The first wait before mirroring a broadcast again after it ended.
+/// The first wait before resolving a broadcast again after it ended.
 ///
-/// Doubles per failure, up to [`REMIRROR_BACKOFF_MAX`].
-const REMIRROR_BACKOFF: Duration = Duration::from_millis(500);
+/// Doubles per failure, up to [`RESOLVE_BACKOFF_MAX`].
+const RESOLVE_BACKOFF: Duration = Duration::from_millis(500);
 
-/// The longest wait between attempts to mirror a broadcast again.
-const REMIRROR_BACKOFF_MAX: Duration = Duration::from_secs(8);
+/// The longest wait between attempts to resolve a broadcast again.
+const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(8);
 
-/// How many times in a row mirroring again may fail before the pull retires.
-const MAX_REMIRRORS: u32 = 5;
+/// How many times in a row resolving again may fail before the pull retires.
+const MAX_RESOLVES: u32 = 5;
 
-/// A pulled broadcast and the mirror serving it from the cluster.
-struct Mirrored {
-    subscription: Subscription,
-    mirror: origin::Publication,
-    copy: Pin<Box<dyn Future<Output = ()> + Send>>,
+/// Returns `cluster` with `requested` reading the broadcast its ticket names.
+///
+/// Hand it to the session that named the ticket: under it, the session finds
+/// the pulled broadcast at `requested`, which moq resolves at the publisher's
+/// path. `None` if `requested` is no ticket, or the origin refuses the mount.
+pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
+    let ticket = requested.parse::<BroadcastTicket>().ok()?;
+    match cluster.origin.mount(requested, ticket.path()) {
+        Ok(origin) => {
+            let mut cluster = cluster.clone();
+            cluster.origin = origin;
+            Some(cluster)
+        }
+        Err(err) => {
+            warn!(%requested, %err, "cannot mount the ticket's broadcast");
+            None
+        }
+    }
+}
+
+/// Returns the cluster to serve a session that dialed `path`.
+///
+/// [`mounted`] at the name `path` asks for, if it names a ticket, and
+/// `cluster` as it is otherwise.
+pub fn serving(cluster: &Cluster, path: &str) -> Cluster {
+    crate::iroh_sessions::requested_name(path)
+        .and_then(|name| mounted(cluster, &name))
+        .unwrap_or_else(|| cluster.clone())
 }
 
 /// Shared state for pull operations.
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
     moq: Moq,
-    #[debug(skip)]
-    cluster: Cluster,
     linger: Duration,
     /// Live or dialing pulls, by local broadcast name.
     ///
     /// Claims and retirements happen under this lock, so an entry found here
     /// is still open.
     pulls: Arc<Mutex<HashMap<String, Arc<Pull>>>>,
-    /// How many pulls, live or dialing, each publisher has.
+    /// The paths pulled, live or dialing, from each publisher.
     ///
-    /// The last one to go closes the session with the publisher.
-    publishers: Arc<Mutex<HashMap<EndpointId, usize>>>,
+    /// They make up the grant of the session with the publisher, and the last
+    /// one to go closes that session.
+    publishers: Publishers,
 }
 
 /// How far a pull's dial has got.
@@ -76,7 +104,7 @@ pub struct PullState {
 enum Dial {
     /// Still in flight. Every caller for this ticket waits on it.
     Pending,
-    /// The session is up and the broadcast is mirroring into the cluster.
+    /// The session is up and the publisher announced the broadcast.
     Connected,
     /// The dial failed. A string, since every waiter gets a copy.
     Failed(String),
@@ -119,14 +147,17 @@ impl Drop for PullGuard {
 }
 
 impl PullState {
-    /// Creates pull state that dials over `endpoint` and mirrors into `cluster`.
+    /// Creates pull state that dials over `endpoint` into `cluster`.
+    ///
+    /// The node writes what publishers announce into the cluster origin
+    /// directly, each publisher kept to its own paths by the grant.
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
+        let config = MoqConfig {
+            table: Some(cluster.origin.clone()),
+            ..iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope])
+        };
         Self {
-            moq: Moq::new(
-                endpoint,
-                iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope]),
-            ),
-            cluster,
+            moq: Moq::new(endpoint, config),
             linger: DEFAULT_LINGER,
             pulls: Arc::new(Mutex::new(HashMap::new())),
             publishers: Arc::new(Mutex::new(HashMap::new())),
@@ -143,26 +174,27 @@ impl PullState {
         self
     }
 
-    /// Pulls the broadcast `ticket` names into the cluster under `requested`.
+    /// Pulls the broadcast `ticket` names into the cluster, for a session that asked for `requested`.
     ///
-    /// Hold the returned [`PullGuard`] while the session that asked runs.
-    /// Concurrent pulls of one name share a dial.
+    /// Hold the returned [`PullGuard`] while the session that asked runs, and
+    /// serve that session the cluster [`mounted`] at `requested`. Concurrent
+    /// pulls of one name share a dial.
     ///
     /// Cancellation safe: dropping this future only drops the caller's claim.
     /// The dial runs on, and the pull retires as usual.
     ///
     /// # Errors
     ///
-    /// Fails if the publisher cannot be reached, does not announce the
-    /// broadcast within [`SUBSCRIBE_TIMEOUT`], or the cluster refuses the name.
+    /// Fails if the publisher cannot be reached, or does not announce the
+    /// broadcast within [`SUBSCRIBE_TIMEOUT`].
     pub async fn pull(
         &self,
         requested: &str,
         ticket: &BroadcastTicket,
     ) -> anyhow::Result<PullGuard> {
-        // The name the client asked for, not `ticket.to_string()`: a subscriber
-        // is announced the exact path it subscribed to. Two spellings of one
-        // ticket pull twice.
+        // Keyed by the name the client asked for, as its mount is. Two
+        // spellings of one ticket share the publisher's session, but are
+        // claimed apart.
         let local_name = requested.to_owned();
 
         // Claimed under the lock retirement takes, so an entry found here
@@ -191,7 +223,7 @@ impl PullState {
                 // Counted for the whole of the pull, dial included, so a
                 // retiring pull cannot close the session this one is about to
                 // use.
-                let publisher = PublisherClaim::new(&state, ticket.peer());
+                let publisher = PublisherClaim::new(&state, &ticket);
                 let outcome = match state.do_connect(&ticket, &name, &pull, publisher).await {
                     Ok(()) => Dial::Connected,
                     Err(err) => {
@@ -224,9 +256,7 @@ impl PullState {
         Ok(guard)
     }
 
-    /// Subscribes to the ticket's broadcast and mirrors it into the cluster.
-    ///
-    /// Spawns the task that holds the pull until it retires.
+    /// Resolves the ticket's broadcast, and spawns the task that holds the pull until it retires.
     async fn do_connect(
         &self,
         ticket: &BroadcastTicket,
@@ -239,99 +269,86 @@ impl PullState {
             broadcast = %ticket.name(),
             "pulling remote broadcast"
         );
-        let mirrored = self.mirror(ticket, local_name).await?;
+        let subscription = self.resolve(ticket, &publisher).await?;
+        info!(
+            local_name = %local_name,
+            remote = %ticket.peer().fmt_short(),
+            path = %subscription.path(),
+            "remote broadcast available in the cluster"
+        );
         tokio::spawn(self.clone().hold(
             ticket.clone(),
             local_name.to_owned(),
             Arc::clone(pull),
-            mirrored,
+            subscription,
             publisher,
         ));
         Ok(())
     }
 
-    /// Resolves the ticket's broadcast and mirrors it into the cluster.
-    async fn mirror(&self, ticket: &BroadcastTicket, local_name: &str) -> anyhow::Result<Mirrored> {
+    /// Waits for the publisher to announce the ticket's broadcast into the cluster.
+    ///
+    /// Grants the session with the publisher the pulled paths before waiting,
+    /// so only those enter the cluster, and resolves the path through that
+    /// session, so no other peer can stand in for the publisher.
+    async fn resolve(
+        &self,
+        ticket: &BroadcastTicket,
+        claim: &PublisherClaim,
+    ) -> anyhow::Result<Subscription> {
         // A publisher that never announces the path to us would keep the
         // subscription waiting forever.
-        let subscription = tokio::time::timeout(
-            SUBSCRIBE_TIMEOUT,
-            self.moq
-                .subscribe(ticket.path(), Reach::Direct(ticket.peer())),
-        )
+        tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
+            let session = self
+                .moq
+                .connect(ticket.peer())
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to reach the remote: {err:#}"))?;
+            session.set_grant(claim.grant());
+            session
+                .subscribe(ticket.path())
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))
+        })
         .await
         .map_err(|_| anyhow::anyhow!("timed out subscribing to the remote"))?
-        .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))?;
-        // The mirror is a broadcast of the cluster's own, whose tracks are
-        // copied from the subscription as readers ask for them.
-        let mirror = self
-            .cluster
-            .origin
-            .create_broadcast(local_name)
-            .map_err(|err| anyhow::anyhow!("failed to mirror {local_name}: {err}"))?;
-        // Registered before the announcement, so no reader asks for a track
-        // while nothing serves it.
-        let copy = Box::pin(iroh_moq::forward::forward(
-            subscription.as_moq(),
-            mirror.broadcast().clone(),
-        ));
-        mirror
-            .announce(origin::Route::default())
-            .map_err(|err| anyhow::anyhow!("failed to announce {local_name}: {err}"))?;
-        info!(
-            local_name = %local_name,
-            remote = %ticket.peer().fmt_short(),
-            path = %subscription.path(),
-            "remote broadcast available locally"
-        );
-        Ok(Mirrored {
-            subscription,
-            mirror,
-            copy,
-        })
     }
 
-    /// Serves the mirror until nothing wants it, then retracts it.
+    /// Holds the session with the publisher until nothing wants the pull.
     ///
-    /// When the publisher's broadcast ends while sessions still want it (it
-    /// re-published, or moved to another route), the mirror is rebuilt from a
-    /// fresh resolution. The pull retires once nobody wants it, or once
-    /// resolving fails [`MAX_REMIRRORS`] times in a row.
+    /// When no route serves the publisher's broadcast any more while sessions
+    /// still want it (the session dropped, say), the pull resolves it again,
+    /// which redials. A publisher that re-publishes over a live session needs
+    /// nothing: its session announces the new broadcast into the cluster. The
+    /// pull retires once nobody wants it, or once resolving fails
+    /// [`MAX_RESOLVES`] times in a row.
     async fn hold(
         self,
         ticket: BroadcastTicket,
         local_name: String,
         pull: Arc<Pull>,
-        mut current: Mirrored,
+        mut current: Subscription,
         publisher: PublisherClaim,
     ) {
         loop {
-            let demand = current.mirror.broadcast().demand();
             let ended = tokio::select! {
-                () = current.subscription.closed() => {
-                    info!(local_name = %local_name, "the publisher ended the pulled broadcast");
+                () = current.closed() => {
+                    info!(local_name = %local_name, "nothing serves the pulled broadcast any more");
                     true
                 }
-                () = self.wait_idle(&local_name, &pull, demand.clone()) => {
-                    info!(local_name = %local_name, "pull went idle, retracting the mirror");
+                () = self.wait_idle(&local_name, &pull) => {
+                    info!(local_name = %local_name, "pull went idle, retiring it");
                     false
                 }
-                () = &mut current.copy => {
-                    warn!(local_name = %local_name, "the pulled broadcast closed");
-                    true
-                }
             };
-            let wanted = pull.claimed() || demand.wanted();
-            // Retracts the mirror.
-            drop(current);
             if !ended {
                 break;
             }
-            if !wanted {
+            if !pull.claimed() {
                 self.retire(&local_name, &pull);
                 break;
             }
-            match self.remirror(&ticket, &local_name).await {
+            match self.resolve_again(&ticket, &local_name, &publisher).await {
                 Some(next) => current = next,
                 None => {
                     self.retire(&local_name, &pull);
@@ -339,33 +356,37 @@ impl PullState {
                 }
             }
         }
-        // Closes the publisher's session if this was its last pull.
+        // Closes the publisher's session if this was its last pull, which
+        // takes the broadcast out of the cluster.
         drop(publisher);
     }
 
-    /// Mirrors the ticket's broadcast again, backing off between attempts.
-    async fn remirror(&self, ticket: &BroadcastTicket, local_name: &str) -> Option<Mirrored> {
-        let mut backoff = REMIRROR_BACKOFF;
-        for attempt in 1..=MAX_REMIRRORS {
+    /// Resolves the ticket's broadcast again, backing off between attempts.
+    async fn resolve_again(
+        &self,
+        ticket: &BroadcastTicket,
+        local_name: &str,
+        publisher: &PublisherClaim,
+    ) -> Option<Subscription> {
+        let mut backoff = RESOLVE_BACKOFF;
+        for attempt in 1..=MAX_RESOLVES {
             tokio::time::sleep(backoff).await;
-            match self.mirror(ticket, local_name).await {
+            match self.resolve(ticket, publisher).await {
                 Ok(next) => return Some(next),
                 Err(err) => {
-                    warn!(local_name = %local_name, attempt, %err, "could not mirror the pull again");
-                    backoff = (backoff * 2).min(REMIRROR_BACKOFF_MAX);
+                    warn!(local_name = %local_name, attempt, %err, "could not resolve the pull again");
+                    backoff = (backoff * 2).min(RESOLVE_BACKOFF_MAX);
                 }
             }
         }
         None
     }
 
-    /// Waits until the pull has nothing left to serve, then retires its entry.
+    /// Waits until no session has claimed the pull for the linger window, then retires its entry.
     ///
-    /// Both signals must be quiet: the guard count covers a session that named
-    /// the ticket but has not subscribed yet, and demand covers a reader that
-    /// holds no guard. The final check runs under the lock [`Self::pull`]
-    /// claims under, so a pull claimed during the linger keeps running.
-    async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>, mut demand: broadcast::Demand) {
+    /// The final check runs under the lock [`Self::pull`] claims under, so a
+    /// pull claimed during the linger keeps running.
+    async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
         loop {
             if pull.claimed() {
                 let mut claims = pull.claims.subscribe();
@@ -374,23 +395,11 @@ impl PullState {
                 continue;
             }
 
-            if demand.wanted() {
-                // Waits for the last reader to leave. `Err` means the
-                // broadcast closed: retire.
-                let gone = async {
-                    while demand.wanted_changed().await? {}
-                    Ok::<(), moq_net::Error>(())
-                };
-                if gone.await.is_ok() {
-                    continue;
-                }
-            }
-
             // Quiet for now. Wait out the linger, then confirm under the lock.
             tokio::time::sleep(self.linger).await;
 
             let mut pulls = self.pulls.lock().expect("poisoned");
-            if pull.claimed() || demand.wanted() {
+            if pull.claimed() {
                 continue;
             }
             remove_current(&mut pulls, local_name, pull);
@@ -416,29 +425,71 @@ fn remove_current(pulls: &mut HashMap<String, Arc<Pull>>, local_name: &str, pull
     }
 }
 
-/// One pull's share in the session with a publisher.
+/// The paths pulled from each publisher, with how many pulls want each.
+type Publishers = Arc<Mutex<HashMap<EndpointId, HashMap<String, usize>>>>;
+
+/// Returns the grant of a session with a publisher whose `paths` are pulled.
 ///
-/// Dropping the last share of a publisher closes every session the relay's
-/// node has with it.
+/// The publisher may put exactly those paths into the cluster, and sees
+/// nothing of it: its other broadcasts stay out, and a pull that retires takes
+/// its path out again.
+fn grant_for(paths: &HashMap<String, usize>) -> Grant {
+    Grant {
+        subscribe: Patterns::new(),
+        publish: paths
+            .keys()
+            .filter_map(|path| Pattern::literal(path).ok())
+            .collect(),
+    }
+}
+
+/// Re-grants every session with `publisher` for `paths`.
+fn regrant(moq: &Moq, publisher: EndpointId, paths: &HashMap<String, usize>) {
+    let grant = grant_for(paths);
+    for session in moq.sessions().get() {
+        if session.remote_id() == publisher {
+            session.set_grant(grant.clone());
+        }
+    }
+}
+
+/// One pull's share in the session with a publisher, and in the path it pulls.
+///
+/// Dropping the last share of a path takes it out of the session's grant, and
+/// so out of the cluster. Dropping the last share of a publisher closes every
+/// session the relay's node has with it.
 struct PublisherClaim {
     publisher: EndpointId,
-    publishers: Arc<Mutex<HashMap<EndpointId, usize>>>,
+    path: String,
+    publishers: Publishers,
     moq: Moq,
 }
 
 impl PublisherClaim {
-    fn new(state: &PullState, publisher: EndpointId) -> Self {
-        *state
-            .publishers
-            .lock()
-            .expect("poisoned")
-            .entry(publisher)
-            .or_default() += 1;
+    fn new(state: &PullState, ticket: &BroadcastTicket) -> Self {
+        let publisher = ticket.peer();
+        let path = ticket.path();
+        let mut publishers = state.publishers.lock().expect("poisoned");
+        let paths = publishers.entry(publisher).or_default();
+        *paths.entry(path.clone()).or_default() += 1;
+        // A session already up takes the path at once.
+        regrant(&state.moq, publisher, paths);
         Self {
             publisher,
+            path,
             publishers: Arc::clone(&state.publishers),
             moq: state.moq.clone(),
         }
+    }
+
+    /// Returns the grant of a session with this claim's publisher.
+    fn grant(&self) -> Grant {
+        self.publishers
+            .lock()
+            .expect("poisoned")
+            .get(&self.publisher)
+            .map(grant_for)
+            .unwrap_or_else(|| grant_for(&HashMap::new()))
     }
 }
 
@@ -448,11 +499,17 @@ impl Drop for PublisherClaim {
         // starts now either counts before this and keeps the session, or
         // counts after the close and dials anew.
         let mut publishers = self.publishers.lock().expect("poisoned");
-        let Some(count) = publishers.get_mut(&self.publisher) else {
+        let Some(paths) = publishers.get_mut(&self.publisher) else {
             return;
         };
-        *count -= 1;
-        if *count > 0 {
+        if let Some(count) = paths.get_mut(&self.path) {
+            *count -= 1;
+            if *count == 0 {
+                paths.remove(&self.path);
+            }
+        }
+        if !paths.is_empty() {
+            regrant(&self.moq, self.publisher, paths);
             return;
         }
         publishers.remove(&self.publisher);
