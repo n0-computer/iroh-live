@@ -97,7 +97,7 @@ mod tests {
     /// The next call still waits until the thread releases the device.
     #[tokio::test]
     async fn a_cancelled_join_still_waits_the_next_time() {
-        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::sync_channel::<()>(1);
         let task = spawn(
             "test-late-release",
             CancellationToken::new(),
