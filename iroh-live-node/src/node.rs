@@ -3,7 +3,10 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use iroh::{
@@ -17,7 +20,7 @@ use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
     Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, Publication, RelayConfig,
@@ -121,6 +124,10 @@ pub(crate) struct Shared {
     pub(crate) incoming_rx: tokio::sync::Mutex<mpsc::Receiver<Incoming>>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) done: Watchable<bool>,
+    /// Set by [`Node::mount`], or by the first session the node accepts.
+    mounted: AtomicBool,
+    /// Set once a publish has warned that no peer can connect.
+    warned_unreachable: AtomicBool,
 }
 
 /// The node's tasks, kept apart from [`Shared`] so the tasks can hold it.
@@ -170,6 +177,8 @@ impl Node {
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             shutdown: CancellationToken::new(),
             done: Watchable::new(false),
+            mounted: AtomicBool::new(false),
+            warned_unreachable: AtomicBool::new(false),
         });
         info!(id = %id.fmt_short(), hop = %shared.table.hop(), admission = ?config.admission, "moq node started");
         let actor = Actor::new(shared.clone());
@@ -189,7 +198,17 @@ impl Node {
     }
 
     /// Mounts the node on `router` under every ALPN in [`alpns`](crate::alpns).
+    ///
+    /// Without a router, or an accept loop of its own that hands connections
+    /// to the node, the endpoint refuses every incoming connection. The node
+    /// then serves only the sessions it dials and its attached relays.
     pub fn mount(&self, mut router: RouterBuilder) -> RouterBuilder {
+        debug_assert_eq!(
+            router.endpoint().id(),
+            self.shared.id,
+            "the router runs on another endpoint"
+        );
+        self.shared.mounted.store(true, Ordering::Relaxed);
         for alpn in crate::alpns() {
             router = router.accept(alpn, self.clone());
         }
@@ -223,6 +242,7 @@ impl Node {
         audience: Audience,
     ) -> Result<Publication, Error> {
         let path = crate::error::to_path(path)?;
+        self.warn_if_unreachable(&path);
         let (publication, ()) =
             publish::publish(&self.shared, path, audience, |_| Ok::<_, Infallible>(()))?;
         Ok(publication)
@@ -251,7 +271,27 @@ impl Node {
     where
         E: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        publish::publish(&self.shared, crate::error::to_path(path)?, audience, fill)
+        let path = crate::error::to_path(path)?;
+        self.warn_if_unreachable(&path);
+        publish::publish(&self.shared, path, audience, fill)
+    }
+
+    /// Warns once if no peer can connect to the node to read `path`.
+    ///
+    /// Forgetting to mount the node fails silently otherwise: dialers get an
+    /// ALPN error, and the publisher logs nothing.
+    fn warn_if_unreachable(&self, path: &Path) {
+        if self.shared.mounted.load(Ordering::Relaxed)
+            || !self.tasks.relays.lock().expect("poisoned").is_empty()
+            || self.shared.warned_unreachable.swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        warn!(
+            %path,
+            "publishing on a node that is neither mounted on a router nor attached to a relay: \
+             only peers this node dials can read it"
+        );
     }
 
     /// Resolves `path` in the route table.
@@ -393,6 +433,8 @@ impl Node {
 
 impl ProtocolHandler for Node {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        // Covers an accept loop of the caller's own, which skips `mount`.
+        self.shared.mounted.store(true, Ordering::Relaxed);
         admission::accept(&self.shared, connection)
             .await
             .map_err(AnyError::from)?;
