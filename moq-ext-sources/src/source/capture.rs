@@ -131,6 +131,11 @@ impl Releases {
                 .tasks
                 .retain(|tracked| tracked.id != task.id);
         }
+        self.state
+            .lock()
+            .expect("poisoned")
+            .tasks
+            .retain(|task| !task.released.is_cancelled());
     }
 }
 
