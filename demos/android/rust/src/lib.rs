@@ -248,6 +248,7 @@ impl SessionHandle {
 ///
 /// `h` must be a live handle from [`SessionHandle::into_shared`].
 unsafe fn borrow_handle(h: jlong) -> SharedHandle {
+    // SAFETY: the caller guarantees `h` is a live handle.
     unsafe { handle::from_i64(h) }
 }
 
@@ -257,6 +258,7 @@ unsafe fn borrow_handle(h: jlong) -> SharedHandle {
 ///
 /// `h` must be a live handle, and must not be used after this call.
 unsafe fn take_handle(h: jlong) -> SharedHandle {
+    // SAFETY: the caller guarantees `h` is live and not used again.
     unsafe { handle::take_i64(h) }
 }
 
@@ -265,7 +267,7 @@ fn read_jstring(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
     match env.get_string(s) {
         Ok(s) => Some(s.into()),
         Err(err) => {
-            error!("failed to read JNI string: {err}");
+            error!(error = %err, "failed to read JNI string");
             None
         }
     }
@@ -304,7 +306,7 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) 
         Err(err) => Err(err.into()),
     };
     if let Err(err) = published {
-        warn!("publishing without audio: {err:#}");
+        warn!(error = format!("{err:#}"), "publishing without audio");
     }
 }
 
@@ -313,7 +315,10 @@ async fn open_output() -> AudioTarget {
     match iroh_live::media::audio::playback::Engine::open(Default::default()).await {
         Ok(engine) => engine.into(),
         Err(err) => {
-            warn!("playing audio nowhere, the speaker did not open: {err:#}");
+            warn!(
+                error = format!("{err:#}"),
+                "playing audio nowhere, the speaker did not open"
+            );
             AudioTarget::null()
         }
     }
@@ -342,7 +347,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
     match runtime().block_on(connect_impl(ticket)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!("connect failed: {err:#}");
+            error!(error = format!("{err:#}"), "connect failed");
             0
         }
     }
@@ -392,7 +397,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_dial(
     match runtime().block_on(dial_impl(ticket, size)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!("dial failed: {err:#}");
+            error!(error = format!("{err:#}"), "dial failed");
             0
         }
     }
@@ -448,7 +453,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
     match runtime().block_on(answer_impl(size)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!("answer failed: {err:#}");
+            error!(error = format!("{err:#}"), "answer failed");
             0
         }
     }
@@ -483,7 +488,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
         if let Err(err) = accept_one(live, calls, output, waiting).await {
-            error!("answering failed: {err:#}");
+            error!(error = format!("{err:#}"), "answering failed");
         }
     });
     shared.lock().expect("poisoned").waiting = Some(AbortOnDropHandle::new(task));
@@ -549,6 +554,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
     if handle == 0 {
         return 0;
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let connected = session.lock().expect("poisoned").offer.is_some();
     jboolean::from(connected)
@@ -574,7 +580,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
     match runtime().block_on(publish_impl(name, size)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!("publish failed: {err:#}");
+            error!(error = format!("{err:#}"), "publish failed");
             0
         }
     }
@@ -613,6 +619,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getTicket<'a>(
     if handle == 0 {
         return empty_string(&mut env);
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else {
         return empty_string(&mut env);
@@ -638,7 +645,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
     match start_direct_impl(size) {
         Ok(handle) => handle,
         Err(err) => {
-            error!("startDirect failed: {err:#}");
+            error!(error = format!("{err:#}"), "startDirect failed");
             0
         }
     }
@@ -673,7 +680,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startH264(
     match start_h264_impl(size) {
         Ok(handle) => handle,
         Err(err) => {
-            error!("startH264 failed: {err:#}");
+            error!(error = format!("{err:#}"), "startH264 failed");
             0
         }
     }
@@ -754,6 +761,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
         return;
     };
 
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Some(target) = camera_target(&session) else {
         return;
@@ -762,7 +770,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
     let surface = match Surface::rgba(&rgba, size) {
         Ok(surface) => surface,
         Err(err) => {
-            warn!(%size, "rejected RGBA camera frame: {err}");
+            warn!(%size, error = %err, "rejected RGBA camera frame");
             return;
         }
     };
@@ -803,6 +811,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
         return;
     };
 
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Some(target) = camera_target(&session) else {
         return;
@@ -823,7 +832,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
     let planes = match nv12_to_i420(&y, y_stride as usize, &uv, uv_stride as usize, size) {
         Ok(planes) => planes,
         Err(err) => {
-            warn!(%size, "rejected NV12 camera frame: {err:#}");
+            warn!(%size, error = format!("{err:#}"), "rejected NV12 camera frame");
             return;
         }
     };
@@ -906,13 +915,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
         return;
     };
 
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return };
     // SAFETY: the window comes from a live surface and outlives this call. The
     // renderer takes its own reference.
     match unsafe { AndroidRenderer::new(native_window.ptr().as_ptr().cast()) } {
         Ok(renderer) => *guard.renderer.lock().expect("renderer lock") = Some(renderer),
-        Err(err) => error!("initSurface failed: {err:#}"),
+        Err(err) => error!(error = format!("{err:#}"), "initSurface failed"),
     }
 }
 
@@ -926,6 +936,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_teardownSurface(
     if handle == 0 {
         return;
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return };
     let Ok(mut renderer) = guard.renderer.lock() else {
@@ -952,6 +963,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     if handle == 0 {
         return false;
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
 
     // Hold the session lock only to take the frame. Drawing can be slow, and a
@@ -1006,7 +1018,7 @@ fn draw(
             let buffer = match surface.buffer() {
                 Ok(buffer) => buffer,
                 Err(err) => {
-                    warn!("decoded frame has no hardware buffer: {err}");
+                    warn!(error = %err, "decoded frame has no hardware buffer");
                     return false;
                 }
             };
@@ -1078,6 +1090,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
     if handle == 0 {
         return 0;
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return 0 };
 
@@ -1108,6 +1121,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
     if handle == 0 {
         return empty_string(&mut env);
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else {
         return empty_string(&mut env);
@@ -1143,6 +1157,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     let Some(name) = read_jstring(&mut env, &rendition_name) else {
         return;
     };
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return };
     let Some(player) = guard.player.as_ref() else {
@@ -1163,6 +1178,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getStatusLine<'a>(
     if handle == 0 {
         return empty_string(&mut env);
     }
+    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else {
         return empty_string(&mut env);
@@ -1209,6 +1225,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     if handle == 0 {
         return;
     }
+    // SAFETY: `disconnect` is the last call Kotlin makes with this handle.
     let session = unsafe { take_handle(handle) };
     // Release the lock before `block_on`. Holding it would stall every other
     // JNI call on this handle until the endpoint closes.
@@ -1225,7 +1242,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
             guard.router.take(),
         ),
         Err(_) => {
-            warn!("session handle was poisoned; skipping shutdown");
+            warn!("session handle was poisoned, skipping shutdown");
             return;
         }
     };
@@ -1246,7 +1263,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         if let Some(router) = router
             && let Err(err) = router.shutdown().await
         {
-            warn!("failed to shut down the router: {err:#}");
+            warn!(error = format!("{err:#}"), "failed to shut down the router");
         }
     });
     info!("disconnected");
@@ -1262,7 +1279,7 @@ fn new_string<'a>(env: &mut JNIEnv<'a>, value: &str) -> JString<'a> {
     match env.new_string(value) {
         Ok(string) => string,
         Err(err) => {
-            error!("failed to allocate a JNI string: {err}");
+            error!(error = %err, "failed to allocate a JNI string");
             empty_string(env)
         }
     }
