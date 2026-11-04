@@ -344,7 +344,9 @@ pub(crate) async fn dial_session(
 /// Completes the MoQ handshake as the client, over a transport this node dialed.
 ///
 /// Offers `publish` to the peer within what `auth` authorizes and, if given,
-/// writes what the peer announces to `subscriber`.
+/// writes what the peer announces to `subscriber`. Fails with
+/// [`moq_net::Error::Timeout`] after [`transport::HANDSHAKE_TIMEOUT`], as the
+/// accepting side does.
 pub(crate) async fn client_handshake(
     transport: transport::Transport,
     options: &ConnectOptions,
@@ -373,7 +375,15 @@ pub(crate) async fn client_handshake(
     {
         client = client.with_url(url);
     }
-    client.connect(driver_now(), transport).await
+    // moq-lite-06 starts without a round trip, but a version that exchanges
+    // SETUP on a stream waits for the peer's reply. A peer that never sends it
+    // would hold the dial, and every connect queued behind it, for good.
+    tokio::time::timeout(
+        transport::HANDSHAKE_TIMEOUT,
+        client.connect(driver_now(), transport),
+    )
+    .await
+    .map_err(|_| moq_net::Error::Timeout)?
 }
 
 /// How long [`Node::shutdown`] gives a session to tell its peer it is closing.

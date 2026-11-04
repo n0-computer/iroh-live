@@ -45,7 +45,7 @@ pub use self::{
     transport::{Transport, accept, dial},
 };
 
-/// How long an incoming connection may take to open its MoQ session.
+/// How long a connection may take to open its MoQ session, dialed or accepted.
 ///
 /// Without a bound, a peer that never sends its setup holds a task for as long
 /// as the connection lives.

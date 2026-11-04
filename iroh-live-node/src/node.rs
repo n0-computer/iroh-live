@@ -353,7 +353,9 @@ impl Node {
     ///
     /// Fails with [`Error::Connect`] if the dial fails, [`Error::Refused`] if
     /// a peer on an older protocol version refuses during the handshake, and
-    /// [`Error::ShutDown`] once the node has shut down.
+    /// [`Error::ShutDown`] once the node has shut down. A handshake that takes
+    /// longer than [`HANDSHAKE_TIMEOUT`](crate::HANDSHAKE_TIMEOUT) fails with
+    /// [`Error::Moq`].
     pub async fn connect(&self, peer: impl Into<EndpointAddr>) -> Result<Session, Error> {
         self.connect_with(peer, ConnectOptions::default()).await
     }
