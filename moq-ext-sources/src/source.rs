@@ -143,6 +143,11 @@ impl VideoSource {
     /// its device until the read returns. A V4L2 read waits for a frame
     /// without a timeout in the moq-video this crate builds against.
     ///
+    /// On Linux with the `pipewire` feature, the default camera
+    /// (`Source::Camera(None)`) is PipeWire's default camera, which shares the
+    /// device with other applications. If that does not open, for example
+    /// without a PipeWire session, the default V4L2 device opens instead.
+    ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
     ///
@@ -152,6 +157,24 @@ impl VideoSource {
     /// frame.
     #[cfg(feature = "capture")]
     pub async fn capture(config: video::capture::Config) -> Result<Self, Error> {
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        if config.source == video::capture::Source::Camera(None) {
+            let mut pipewire = config.clone();
+            pipewire.source = video::capture::Source::Camera(Some("pipewire".to_string()));
+            match Self::capture_device(pipewire).await {
+                Ok(source) => return Ok(source),
+                Err(err) => info!(
+                    error = %format!("{err:#}"),
+                    "PipeWire's default camera did not open; trying V4L2"
+                ),
+            }
+        }
+        Self::capture_device(config).await
+    }
+
+    /// Opens exactly the device `config` names.
+    #[cfg(feature = "capture")]
+    async fn capture_device(config: video::capture::Config) -> Result<Self, Error> {
         let slot = FrameSlot::new();
         let reader = slot.reader();
         let stop = CancellationToken::new();
