@@ -287,7 +287,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb 0.13.2",
 ]
 
@@ -2057,7 +2057,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2671,7 +2671,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3448,7 +3448,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.21.11"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bytes",
  "derive_more",
@@ -4952,7 +4952,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "kio"
 version = "0.6.2"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "crossbeam-epoch",
  "kio-macros",
@@ -4966,7 +4966,7 @@ dependencies = [
 [[package]]
 name = "kio-macros"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5450,7 +5450,7 @@ dependencies = [
 [[package]]
 name = "moq-audio"
 version = "0.1.10"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bitstream-io",
  "block2 0.6.2",
@@ -5482,12 +5482,12 @@ dependencies = [
 [[package]]
 name = "moq-auth"
 version = "0.2.1"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "base64 0.23.1",
- "data-encoding",
  "jsonwebtoken",
  "kio",
+ "moq-crypto",
  "moq-pattern",
  "pkcs1",
  "pkcs8 0.11.0",
@@ -5510,12 +5510,22 @@ dependencies = [
 [[package]]
 name = "moq-congestion"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "kio",
  "rand",
  "rand_pcg",
  "tracing",
+]
+
+[[package]]
+name = "moq-crypto"
+version = "0.0.11"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
+dependencies = [
+ "data-encoding",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -5643,7 +5653,7 @@ dependencies = [
 [[package]]
 name = "moq-json"
 version = "0.5.8"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bytes",
  "kio",
@@ -5658,7 +5668,7 @@ dependencies = [
 [[package]]
 name = "moq-loc"
 version = "0.2.19"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5668,7 +5678,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.5.1"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "serde",
  "serde_json",
@@ -5678,7 +5688,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.10.11"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -5714,7 +5724,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.3.10"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -5737,7 +5747,7 @@ dependencies = [
 [[package]]
 name = "moq-nvenc"
 version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "cudarc",
  "libloading 0.9.0",
@@ -5747,7 +5757,7 @@ dependencies = [
 [[package]]
 name = "moq-pattern"
 version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "serde",
 ]
@@ -5755,7 +5765,7 @@ dependencies = [
 [[package]]
 name = "moq-quic"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -5776,10 +5786,9 @@ dependencies = [
 [[package]]
 name = "moq-relay"
 version = "0.17.2"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "anyhow",
- "async-trait",
  "aws-lc-rs",
  "axum",
  "axum-server",
@@ -5789,7 +5798,6 @@ dependencies = [
  "hex",
  "http-body",
  "http-cache-reqwest",
- "humantime",
  "hyper",
  "hyper-util",
  "kio",
@@ -5817,14 +5825,12 @@ dependencies = [
  "tracing",
  "url",
  "usage-rs",
- "web-transport-trait",
- "x509-parser",
 ]
 
 [[package]]
 name = "moq-room"
 version = "0.2.11"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "kio",
  "moq-auth",
@@ -5836,7 +5842,7 @@ dependencies = [
 [[package]]
 name = "moq-sock"
 version = "0.2.0"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -5851,7 +5857,7 @@ dependencies = [
 [[package]]
 name = "moq-stats"
 version = "0.2.12"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "kio",
  "moq-json",
@@ -5868,7 +5874,7 @@ dependencies = [
 [[package]]
 name = "moq-tokio"
 version = "0.19.23"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -5886,7 +5892,6 @@ dependencies = [
  "moq-quic",
  "moq-sock",
  "notify",
- "pin-project-lite",
  "qmux",
  "rand",
  "rcgen",
@@ -5909,7 +5914,6 @@ dependencies = [
  "url",
  "usage-rs",
  "web-transport-proto",
- "web-transport-trait",
  "webpki-roots",
  "x509-parser",
 ]
@@ -5931,7 +5935,7 @@ dependencies = [
 [[package]]
 name = "moq-v4l"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -5955,7 +5959,7 @@ dependencies = [
 [[package]]
 name = "moq-video"
 version = "0.1.10"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "anyhow",
  "ash",
@@ -6679,7 +6683,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8022,7 +8026,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 [[package]]
 name = "qmux"
 version = "0.7.0"
-source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
+source = "git+https://github.com/moq-dev/moq?rev=02e82fdcd#02e82fdcdd5a702a2289df999a51b2e14702dd90"
 dependencies = [
  "bytes",
  "futures",
@@ -8133,7 +8137,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8637,7 +8641,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8696,7 +8700,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9860,10 +9864,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10888,15 +10892,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-transport-trait"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60221f03172c9e8e8d19d1c038c87ef2804d05f8a71264817f60a28bbd03edab"
-dependencies = [
- "bytes",
-]
-
-[[package]]
 name = "webm-iterable"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11150,7 +11145,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
