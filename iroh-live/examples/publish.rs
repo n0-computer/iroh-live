@@ -39,7 +39,8 @@ async fn main() -> n0_error::Result {
     let live = Live::builder(options.bind().await?).with_router().spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
 
-    let broadcast = LocalBroadcast::new();
+    // Published while `broadcast` lives, or until the node shuts down.
+    let broadcast: LocalBroadcast = live.publish(&args.name)?;
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
@@ -62,9 +63,6 @@ async fn main() -> n0_error::Result {
         Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    // Dropping the `Publication` leaves the broadcast published. It ends with
-    // `broadcast`, or when the node shuts down.
-    live.publish(&args.name, &broadcast)?;
     println!("{}", live.ticket(&args.name));
     info!(name = %args.name, "publishing");
 

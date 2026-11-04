@@ -7,7 +7,7 @@ mod common;
 use std::time::Duration;
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
-use iroh_live_rooms::{Error, RoomTicket};
+use iroh_live_rooms::{Error, Room, RoomTicket};
 use iroh_moq::Reach;
 use moq_net::{Timestamp, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
@@ -16,14 +16,20 @@ use n0_tracing_test::traced_test;
 /// The name of the data track.
 const DATA_TRACK: &str = "data";
 
-/// A broadcast whose data track writes a counter every 20 ms.
-fn counter_broadcast() -> (broadcast::Producer, AbortOnDropHandle<()>) {
-    counting_from(0)
+/// Publishes a broadcast into `room` as `name`, whose data track writes a counter.
+fn publish_counter(
+    room: &Room,
+    name: &str,
+) -> Result<(broadcast::Producer, AbortOnDropHandle<()>), Error> {
+    let broadcast: broadcast::Producer = room.publish(name)?;
+    let writer = counting_into(&broadcast, 0);
+    Ok((broadcast, writer))
 }
 
-/// A counter broadcast that starts at `first`, to tell two apart.
-fn counting_from(first: u32) -> (broadcast::Producer, AbortOnDropHandle<()>) {
-    let broadcast = broadcast::Info::new().produce();
+/// Writes a counter into `broadcast`'s data track every 20 ms, from `first`.
+///
+/// A distinct `first` tells two broadcasts apart.
+fn counting_into(broadcast: &broadcast::Producer, first: u32) -> AbortOnDropHandle<()> {
     let mut track = broadcast
         .create_track(
             DATA_TRACK,
@@ -41,7 +47,7 @@ fn counting_from(first: u32) -> (broadcast::Producer, AbortOnDropHandle<()>) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     });
-    (broadcast, AbortOnDropHandle::new(writer))
+    AbortOnDropHandle::new(writer)
 }
 
 /// Two members see each other, their display names, and what each publishes.
@@ -49,10 +55,8 @@ fn counting_from(first: u32) -> (broadcast::Producer, AbortOnDropHandle<()>) {
 #[traced_test]
 async fn members_see_each_other_and_their_broadcasts() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
-    let (cam_a, _writer_a) = counter_broadcast();
-    let (cam_b, _writer_b) = counter_broadcast();
-    room_a.publish("cam", &cam_a).expect("publish");
-    room_b.publish("cam", &cam_b).expect("publish");
+    let _cam_a = publish_counter(&room_a, "cam").expect("publish");
+    let _cam_b = publish_counter(&room_b, "cam").expect("publish");
 
     let (a, b) = (peer_a.id(), peer_b.id());
     let seen_by_b = wait_for_state(&room_b, "b sees a's cam", |state| {
@@ -84,8 +88,7 @@ async fn members_see_each_other_and_their_broadcasts() {
 #[traced_test]
 async fn a_member_subscribes_on_demand() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
-    let (cam, _writer) = counter_broadcast();
-    room_a.publish("cam", &cam).expect("publish");
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
     let a = peer_a.id();
     wait_for_state(&room_b, "b sees a's cam", |state| {
         state
@@ -131,8 +134,7 @@ async fn a_member_subscribes_on_demand() {
 #[traced_test]
 async fn ending_a_broadcast_keeps_the_member() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
-    let (cam, writer) = counter_broadcast();
-    room_a.publish("cam", &cam).expect("publish");
+    let (cam, writer) = publish_counter(&room_a, "cam").expect("publish");
     let a = peer_a.id();
     wait_for_state(&room_b, "b sees a's cam", |state| {
         state
@@ -154,8 +156,7 @@ async fn ending_a_broadcast_keeps_the_member() {
     assert!(state.peers.contains_key(&a), "a is still a member");
 
     // And the name is free to publish again, and comes back for the others.
-    let (again, _writer) = counter_broadcast();
-    room_a.publish("cam", &again).expect("publish again");
+    let _again = publish_counter(&room_a, "cam").expect("publish again");
     wait_for_state(&room_b, "a's cam is back", |state| {
         state
             .peers
@@ -179,10 +180,9 @@ async fn leaving_is_seen_at_once() {
     room_a.leave().await;
     wait_for_state(&room_b, "a is gone", |state| !state.peers.contains_key(&a)).await;
 
-    let (cam, _writer) = counter_broadcast();
-    let err = room_a
-        .publish("cam", &cam)
-        .expect_err("publish after leaving");
+    let Err(err) = publish_counter(&room_a, "cam") else {
+        panic!("publish after leaving")
+    };
     assert!(matches!(err, Error::Left { .. }), "{err:#}");
     // Idempotent.
     room_a.leave().await;
@@ -196,19 +196,18 @@ async fn leaving_is_seen_at_once() {
 #[traced_test]
 async fn room_broadcasts_are_private() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
-    let (cam, _writer) = counter_broadcast();
-    let publication = room_a.publish("cam", &cam).expect("publish");
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
     let a = peer_a.id();
+    let private_path = format!("rooms/{}/{a}/cam", room_a.ticket().topic_id());
     // In a's own scope, outside the room.
-    let (public, _public_writer) = counter_broadcast();
     let public = peer_a
         .moq
         .publish(
             format!("rooms/elsewhere/{a}/public"),
-            &public,
             iroh_moq::Audience::Everyone,
         )
         .expect("publish");
+    let _public_writer = counting_into(public.broadcast(), 0);
     wait_for_state(&room_b, "b sees a's cam", |state| {
         state
             .peers
@@ -231,7 +230,9 @@ async fn room_broadcasts_are_private() {
     .expect("the public broadcast is there for anyone");
     let private = tokio::time::timeout(
         Duration::from_secs(3),
-        outsider.moq.subscribe(publication.path(), Reach::Direct(a)),
+        outsider
+            .moq
+            .subscribe(private_path.as_str(), Reach::Direct(a)),
     )
     .await;
     assert!(
@@ -250,9 +251,10 @@ async fn room_broadcasts_are_private() {
 async fn invalid_names_are_refused() {
     let peer = Peer::spawn().await;
     let room = peer.join(&RoomTicket::generate(), "solo").await;
-    let (cam, _writer) = counter_broadcast();
     for name in ["", "someone/cam"] {
-        let err = room.publish(name, &cam).expect_err("an invalid name");
+        let Err(err) = publish_counter(&room, name) else {
+            panic!("an invalid name")
+        };
         assert!(matches!(err, Error::InvalidName { .. }), "{err:#}");
     }
     peer.shutdown().await;
@@ -283,10 +285,9 @@ async fn leaving_through_one_handle_leaves_for_all() {
     let (peer_a, room_a, peer_b, _room_b) = two_peers_in_room().await;
     let other = room_a.clone();
     room_a.leave().await;
-    let (cam, _writer) = counter_broadcast();
-    let err = other
-        .publish("cam", &cam)
-        .expect_err("publish after leaving");
+    let Err(err) = publish_counter(&other, "cam") else {
+        panic!("publish after leaving")
+    };
     assert!(matches!(err, Error::Left { .. }), "{err:#}");
     let err = other
         .subscribe(peer_b.id(), "cam")
@@ -303,8 +304,7 @@ async fn leaving_through_one_handle_leaves_for_all() {
 async fn unpublishing_takes_the_name_out_of_the_room() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let a = peer_a.id();
-    let (cam, _writer) = counter_broadcast();
-    let publication = room_a.publish("cam", &cam).expect("publish");
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
     let lists_cam = |state: &iroh_live_rooms::RoomState| {
         state
             .peers
@@ -313,10 +313,11 @@ async fn unpublishing_takes_the_name_out_of_the_room() {
     };
     wait_for_state(&room_b, "b sees a's cam", lists_cam).await;
 
-    publication.unpublish();
+    assert!(room_a.unpublish("cam"), "cam was published");
     wait_for_state(&room_b, "a's cam is gone", |state| !lists_cam(state)).await;
+    assert!(!room_a.unpublish("cam"), "cam was unpublished twice");
 
-    room_a.publish("cam", &cam).expect("publish again");
+    let _again = publish_counter(&room_a, "cam").expect("publish again");
     wait_for_state(&room_b, "a's cam is back", lists_cam).await;
 
     peer_a.shutdown().await;
@@ -329,8 +330,7 @@ async fn unpublishing_takes_the_name_out_of_the_room() {
 async fn a_member_that_leaves_loses_the_paths() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let (a, b) = (peer_a.id(), peer_b.id());
-    let (cam, _writer) = counter_broadcast();
-    room_a.publish("cam", &cam).expect("publish");
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
     wait_for_state(&room_b, "b sees a's cam", |state| {
         state
             .peers
@@ -382,15 +382,15 @@ async fn dropping_a_room_frees_its_names() {
     let peer = Peer::spawn().await;
     let ticket = RoomTicket::generate();
     let room = peer.join(&ticket, "alice").await;
-    let (cam, _writer) = counter_broadcast();
-    let publication = room.publish("cam", &cam).expect("publish");
+    let path = format!("rooms/{}/{}/cam", ticket.topic_id(), peer.id());
+    let mut updates = peer.moq.origin().announced();
+    let _cam = publish_counter(&room, "cam").expect("publish");
+    until_announced(&mut updates, &path, true).await;
 
     drop(room);
-    tokio::time::timeout(TIMEOUT, publication.withdrawn())
-        .await
-        .expect("the dropped room's broadcast stayed published");
+    until_announced(&mut updates, &path, false).await;
     let room = peer.join(&ticket, "alice").await;
-    room.publish("cam", &cam).expect("publish after rejoining");
+    let _again = publish_counter(&room, "cam").expect("publish after rejoining");
 
     peer.shutdown().await;
 }
@@ -410,11 +410,11 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let _room_m = mallory.join(&room_b.ticket(), "mallory").await;
     let b = peer_b.id();
     let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
-    let (forged, _forger) = counting_from(FORGED);
-    let _forgery = mallory
+    let forgery = mallory
         .moq
-        .publish(path.as_str(), &forged, iroh_moq::Audience::Everyone)
+        .publish(path.as_str(), iroh_moq::Audience::Everyone)
         .expect("publish at b's path");
+    let _forger = counting_into(forgery.broadcast(), FORGED);
     tokio::time::timeout(TIMEOUT, mallory.moq.connect(peer_c.endpoint.addr()))
         .await
         .expect("timed out connecting")
@@ -428,8 +428,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let routed = tokio::time::timeout(Duration::from_secs(2), following.available()).await;
     assert!(routed.is_err(), "the forgery reached c's table");
 
-    let (cam, _writer) = counter_broadcast();
-    room_b.publish("cam", &cam).expect("publish");
+    let _cam = publish_counter(&room_b, "cam").expect("publish");
     wait_for_state(&room_c, "c sees b's cam", |state| {
         state
             .peers

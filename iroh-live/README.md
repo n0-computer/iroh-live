@@ -19,13 +19,13 @@ use iroh_live::{
 };
 
 let live = Live::builder(EndpointOptions::default().bind().await?).with_router().spawn();
-let broadcast = LocalBroadcast::new();
+// Created in the node's route table: peers read it without a copy.
+let broadcast: LocalBroadcast = live.publish("hello")?;
 let camera = VideoSource::capture(video::capture::Config::default()).await?;
 broadcast.set_video(
     camera,
     VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
 )?;
-live.publish("hello", &broadcast)?;
 println!("{}", live.ticket("hello"));
 ```
 
@@ -46,15 +46,19 @@ let mut frames = player.video();
 - `Live` is the node. `Live::builder(endpoint)` creates it, `with_router()`
   lets peers connect, and `accept` mounts another protocol on the same router.
   `shutdown` closes the endpoint too.
-- `Live::publish` publishes to everyone, attached relays included, and returns
-  a `Publication`. The broadcast stays published until
-  `Publication::unpublish`, the end of the broadcast, or shutdown. To publish
-  for another audience, use `publish_at`.
-- `Live::publish_at(path, broadcast, audience)` and
-  `Live::subscribe_path(path, reach)` are the path-level calls under `publish`
-  and `subscribe`: any path, any `Audience`, any `Reach`. They apply no layout.
-- `Live::call(peer, broadcast)` offers a one-to-one call at `live/<id>/call`,
-  visible to `peer` only, and `Live::answer(peer)` resolves the other side.
+- `Live::publish(name)` creates a broadcast in the node's route table,
+  published to everyone, attached relays included, and returns it as a
+  `LocalBroadcast` or a raw `broadcast::Producer`. It stays published until
+  the broadcast closes, or shutdown. To publish for another audience, or to
+  unpublish without closing, use `publish_at`.
+- `Live::publish_at(path, audience)` and `Live::subscribe_path(path, reach)`
+  are the path-level calls under `publish` and `subscribe`: any path, any
+  `Audience`, any `Reach`. They apply no layout. `publish_at` returns the
+  `Publication`, whose `broadcast()` is the producer to fill.
+- `Live::call()` publishes this node's side of one-to-one calls at
+  `live/<id>/call`, visible to nobody. Its `CallOffer` rings a peer, which
+  makes the side visible to that peer only, and hangs up again.
+  `Live::answer(peer)` resolves the other side.
 - `EndpointOptions` binds an endpoint with `MoqPreset`, a secret key and mDNS.
   `EndpointOptions::apply` does the same on your own endpoint builder.
 - `BroadcastTicket` names a node and a broadcast. `Live::ticket(name)` returns

@@ -16,7 +16,7 @@ use iroh_live::media::{
     RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
     video::{FrameRate, Size, decode},
 };
-use iroh_live::{BroadcastTicket, CALL, Live, Publication, Subscription};
+use iroh_live::{BroadcastTicket, CALL, CallOffer, Live, Subscription};
 use moq_net::bandwidth::Rate;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher as _;
@@ -39,9 +39,7 @@ async fn endpoint() -> Endpoint {
 
 /// Publishes a new media broadcast as `name` on `live`.
 fn publish(live: &Live, name: &str) -> LocalBroadcast {
-    let broadcast = LocalBroadcast::new();
-    live.publish(name, &broadcast).expect("failed to publish");
-    broadcast
+    live.publish(name).expect("failed to publish")
 }
 
 /// Subscribes `live` to the broadcast `publisher` publishes as `name`.
@@ -145,10 +143,11 @@ async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active:
     .unwrap_or_else(|_| panic!("the ring never turned {active}"));
 }
 
-/// Offers `side` as `live`'s call side to `peer` only.
-fn offer(live: &Live, side: &LocalBroadcast, peer: &Live) -> Publication {
-    live.call(peer.endpoint().id(), side)
-        .expect("failed to offer")
+/// Publishes `live`'s call side, offered to nobody yet, with a test pattern.
+fn call_side(live: &Live) -> (LocalBroadcast, CallOffer) {
+    let (side, offer): (LocalBroadcast, CallOffer) = live.call().expect("failed to publish");
+    set_pattern(&side, Size::new(320, 240));
+    (side, offer)
 }
 
 /// Subscribes `live` to `peer`'s call side.
@@ -167,19 +166,20 @@ async fn answer(live: &Live, peer: &Live) -> Subscription {
 async fn a_call_rings_answers_and_hangs_up() {
     let alice = Live::builder(endpoint().await).with_router().spawn();
     let bob = Live::builder(endpoint().await).with_router().spawn();
-    let (alice_side, bob_side) = (LocalBroadcast::new(), LocalBroadcast::new());
-    set_pattern(&alice_side, Size::new(320, 240));
-    set_pattern(&bob_side, Size::new(320, 240));
+    let (_alice_side, alice_offer) = call_side(&alice);
+    let (_bob_side, bob_offer) = call_side(&bob);
+    let (alice_id, bob_id) = (alice.endpoint().id(), bob.endpoint().id());
     let mut bob_table = bob.moq().origin().announced();
 
+    // One call side serves both calls: each rings and hangs up by audience.
     for _ in 0..2 {
-        let alice_offer = offer(&alice, &alice_side, &bob);
+        alice_offer.ring(bob_id);
         let dialing = tokio::spawn({
             let (alice, bob) = (alice.clone(), bob.clone());
             async move { answer(&alice, &bob).await }
         });
         ringing(&mut bob_table, &alice, true).await;
-        let bob_offer = offer(&bob, &bob_side, &alice);
+        bob_offer.ring(alice_id);
         let at_bob = answer(&bob, &alice).await;
         let at_alice = dialing.await.expect("the dial panicked");
         let player = bob
@@ -189,7 +189,7 @@ async fn a_call_rings_answers_and_hangs_up() {
         first_frame(&player).await;
 
         // Alice hangs up: Bob's read ends and the ring stops.
-        alice_offer.unpublish();
+        alice_offer.hang_up(bob_id);
         tokio::time::timeout(TIMEOUT, async {
             while !at_bob.as_moq().is_closed() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -198,7 +198,7 @@ async fn a_call_rings_answers_and_hangs_up() {
         .await
         .expect("bob did not notice the hang-up");
         ringing(&mut bob_table, &alice, false).await;
-        bob_offer.unpublish();
+        bob_offer.hang_up(alice_id);
         drop((at_alice, player));
     }
     assert_eq!(

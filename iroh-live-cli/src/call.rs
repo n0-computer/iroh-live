@@ -9,7 +9,7 @@
 //! the camera. Whoever scans places the call, so no keyboard is needed.
 
 use iroh_live::{
-    CALL, Live,
+    CALL, CallOffer, Live,
     media::{AudioTarget, LocalBroadcast},
 };
 use n0_error::Result;
@@ -36,6 +36,8 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
 struct Local {
     live: Live,
     broadcast: LocalBroadcast,
+    /// Who this node's side is offered to.
+    calls: CallOffer,
     sources: source::Opened,
     output: AudioTarget,
     ticket: String,
@@ -46,19 +48,21 @@ async fn setup(args: &CallArgs) -> Result<Local> {
     // Opened first so the microphone can cancel its echo.
     let output = crate::playback::output(None).await?;
     let live = transport::setup_live(true).await?;
-    let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
-        let broadcast = LocalBroadcast::new();
+    let (live, (broadcast, calls, sources, ticket)) = transport::with_live(live, async |live| {
+        // Published once, to nobody: each call offers it to its peer.
+        let (broadcast, calls): (LocalBroadcast, CallOffer) = live.call()?;
         let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
         let ticket = live.ticket(CALL).to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
-        Ok((broadcast, sources, ticket))
+        Ok((broadcast, calls, sources, ticket))
     })
     .await?;
     Ok(Local {
         live,
         broadcast,
+        calls,
         sources,
         output,
         ticket,
@@ -129,7 +133,7 @@ mod window {
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        BroadcastTicket, CALL, Live, Publication,
+        BroadcastTicket, CALL, CallOffer, Live,
         media::{AudioTarget, LocalBroadcast, Player, SlotState, VideoSource},
     };
     use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
@@ -183,6 +187,7 @@ mod window {
         let Local {
             live,
             broadcast,
+            calls,
             sources,
             output,
             ticket,
@@ -226,6 +231,7 @@ mod window {
                     _watcher: AbortOnDropHandle::new(watcher),
                     live,
                     broadcast,
+                    calls,
                     ringing,
                     ended: BTreeSet::new(),
                     pending: None,
@@ -248,8 +254,10 @@ mod window {
         ticket: String,
         /// The ticket as a QR code, or `None` where it does not render.
         qr: Option<TicketQr>,
-        /// The local side, offered to one peer per call.
+        /// The local side, published once and offered to one peer per call.
         broadcast: LocalBroadcast,
+        /// Who the local side is offered to.
+        calls: CallOffer,
         /// The local video, which the preview draws and the scan screen may read.
         local_video: Option<VideoSource>,
         /// The local audio, kept alive with the window.
@@ -376,17 +384,24 @@ mod window {
     ///
     /// The peer sees the offer in its route table, which is how it learns it
     /// is called, and dropping the offer is how it learns of a hang-up.
-    struct Offer(Publication);
+    struct Offer {
+        calls: CallOffer,
+        peer: EndpointId,
+    }
 
     impl Offer {
-        fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
-            Ok(Self(live.call(peer, broadcast)?))
+        fn new(calls: &CallOffer, peer: EndpointId) -> Self {
+            calls.ring(peer);
+            Self {
+                calls: calls.clone(),
+                peer,
+            }
         }
     }
 
     impl Drop for Offer {
         fn drop(&mut self) {
-            self.0.unpublish();
+            self.calls.hang_up(self.peer);
         }
     }
 
@@ -663,17 +678,7 @@ mod window {
         /// Offers this node's side to the peer and waits for the peer's, as the pending attempt.
         fn start(&mut self, ctx: &egui::Context, direction: Direction) {
             let peer = direction.peer();
-            let offer = match Offer::new(&self.live, &self.broadcast, peer) {
-                Ok(offer) => offer,
-                Err(err) => {
-                    warn!(remote = %peer.fmt_short(), "cannot offer this side: {err:#}");
-                    self.ended.insert(peer);
-                    if let Direction::Outgoing(_) = direction {
-                        self.screen = Screen::reporting(format!("{err:#}"));
-                    }
-                    return;
-                }
-            };
+            let offer = Offer::new(&self.calls, peer);
             let attempt = reach(self.live.clone(), peer, self.playback, self.output.clone());
             let (tx, rx) = oneshot::channel();
             let ctx = ctx.clone();

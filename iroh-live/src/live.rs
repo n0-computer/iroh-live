@@ -12,7 +12,7 @@ use iroh_moq::{
 };
 #[cfg(feature = "media")]
 use moq_ext_player::RemoteBroadcast;
-use moq_net::{Consume, broadcast};
+use moq_net::broadcast;
 use n0_error::e;
 use n0_watcher::Watchable;
 use tracing::{error, info, instrument};
@@ -63,6 +63,49 @@ pub fn moq_config_with(scopes: &[PublishScope]) -> MoqConfig {
     MoqConfig {
         grant: Some(Arc::new(move |peer| grant_with(peer, &scopes))),
         ..Default::default()
+    }
+}
+
+/// Who this node's side of a call is offered to, from [`Live::call`].
+///
+/// Cheap to clone; every clone controls one offer. Dropping it leaves the
+/// offer as it is. The call side stays published until its broadcast closes.
+#[derive(Debug, Clone)]
+pub struct CallOffer {
+    publication: Publication,
+    peers: Watchable<BTreeSet<EndpointId>>,
+}
+
+impl CallOffer {
+    /// Offers the call side to `peer`, which then sees it as a call.
+    pub fn ring(&self, peer: EndpointId) {
+        let mut peers = self.peers.get();
+        if peers.insert(peer) {
+            self.peers.set(peers).ok();
+        }
+    }
+
+    /// Withdraws the call side from `peer`.
+    ///
+    /// The peer loses the path, which tells it the call is over, and what it
+    /// read there ends.
+    pub fn hang_up(&self, peer: EndpointId) {
+        let mut peers = self.peers.get();
+        if peers.remove(&peer) {
+            self.peers.set(peers).ok();
+        }
+    }
+
+    /// Returns the peers the call side is offered to.
+    #[must_use]
+    pub fn peers(&self) -> BTreeSet<EndpointId> {
+        self.peers.get()
+    }
+
+    /// Returns the publication of the call side.
+    #[must_use]
+    pub fn publication(&self) -> &Publication {
+        &self.publication
     }
 }
 
@@ -231,51 +274,56 @@ impl Live {
         &self.moq
     }
 
-    /// Publishes a broadcast as `live/<this node's id>/<name>` to everyone.
+    /// Publishes a broadcast as `live/<this node's id>/<name>` to everyone, and returns it.
     ///
-    /// Everyone includes attached relays. [`ticket`](Self::ticket) returns
-    /// what to share. Pass a `LocalBroadcast` by reference, so the application
-    /// keeps changing its sources. For another audience, publish through
-    /// [`moq`](Self::moq).
+    /// The broadcast is created in the node's route table, and peers read it
+    /// with nothing copied in between. `B` is what fills it, built from the
+    /// table's `broadcast::Producer`: a `LocalBroadcast`, or the producer
+    /// itself. Everyone includes attached relays. [`ticket`](Self::ticket)
+    /// returns what to share.
+    ///
+    /// The publication lasts until the broadcast closes: `LocalBroadcast`
+    /// closes when it is closed or its last clone drops, a producer when it is
+    /// closed. For another audience, or to unpublish without closing, use
+    /// [`publish_at`](Self::publish_at).
     ///
     /// # Errors
     ///
     /// Fails if something is already published under `name`, or the name is
     /// not a valid path.
-    pub fn publish(
-        &self,
-        name: &str,
-        broadcast: impl Consume<broadcast::Consumer>,
-    ) -> Result<Publication, Error> {
+    pub fn publish<B: From<broadcast::Producer>>(&self, name: &str) -> Result<B, Error> {
         if name.is_empty() {
             return Err(e!(iroh_moq::Error::InvalidPath {
                 path: name.to_owned()
             })
             .into());
         }
-        Ok(self
-            .moq
-            .publish(self.ticket(name).path(), broadcast, Audience::Everyone)?)
+        // Built before the broadcast is announced, so no reader finds it
+        // without the tracks `B` creates, such as a catalog.
+        let (_publication, broadcast) =
+            self.moq
+                .publish_with(self.ticket(name).path(), Audience::Everyone, |producer| {
+                    B::from(producer.clone())
+                })?;
+        Ok(broadcast)
     }
 
     /// Publishes a broadcast at `path` to `audience`.
     ///
     /// The path-level call under [`publish`](Self::publish): it applies no
-    /// layout, so `path` need not be under `live/`. Peers can subscribe only
-    /// where their grant on this node allows it, and a peer that publishes
-    /// into this node must be allowed `path` by its grant on the other side.
+    /// layout, so `path` need not be under `live/`. Fill the broadcast through
+    /// [`Publication::broadcast`], for example with
+    /// `LocalBroadcast::new_in(publication.broadcast().clone())`. Peers can
+    /// subscribe only where their grant on this node allows it, and a peer
+    /// that publishes into this node must be allowed `path` by its grant on
+    /// the other side.
     ///
     /// # Errors
     ///
     /// Fails if something is already published at `path`, or it is not a
     /// valid path.
-    pub fn publish_at(
-        &self,
-        path: &str,
-        broadcast: impl Consume<broadcast::Consumer>,
-        audience: Audience,
-    ) -> Result<Publication, Error> {
-        Ok(self.moq.publish(path, broadcast, audience)?)
+    pub fn publish_at(&self, path: &str, audience: Audience) -> Result<Publication, Error> {
+        Ok(self.moq.publish(path, audience)?)
     }
 
     /// Resolves the broadcast at `path` over the links `reach` names.
@@ -291,27 +339,26 @@ impl Live {
         Ok(self.moq.subscribe(path, reach).await?)
     }
 
-    /// Offers `broadcast` as this node's side of a call with `peer`.
+    /// Publishes this node's side of its calls, and returns it with its offer.
     ///
-    /// Publishes at `live/<this node's id>/call`, visible to `peer` only. The
-    /// peer learns it is called when that path appears in its route table, and
-    /// that it was hung up when the path ends: call
-    /// [`Publication::unpublish`] to hang up. Pair it with
-    /// [`answer`](Self::answer) on the other side.
+    /// The broadcast lives at `live/<this node's id>/call` and is visible to
+    /// nobody until [`CallOffer::ring`] offers it to a peer. The peer learns
+    /// it is called when that path appears in its route table, and that it
+    /// was hung up when the path goes: [`CallOffer::hang_up`]. One broadcast
+    /// serves every call in turn, so a camera and a preview keep running
+    /// between calls. Pair it with [`answer`](Self::answer) on the other side.
     ///
     /// # Errors
     ///
-    /// Fails if a call offer is already published.
-    pub fn call(
-        &self,
-        peer: EndpointId,
-        broadcast: impl Consume<broadcast::Consumer>,
-    ) -> Result<Publication, Error> {
-        self.publish_at(
-            &paths::call(self.endpoint.id()),
-            broadcast,
-            Audience::Peers(Watchable::new(BTreeSet::from([peer]))),
-        )
+    /// Fails if this node's call side is already published.
+    pub fn call<B: From<broadcast::Producer>>(&self) -> Result<(B, CallOffer), Error> {
+        let peers = Watchable::new(BTreeSet::new());
+        let (publication, broadcast) = self.moq.publish_with(
+            paths::call(self.endpoint.id()),
+            Audience::Peers(peers.clone()),
+            |producer| B::from(producer.clone()),
+        )?;
+        Ok((broadcast, CallOffer { publication, peers }))
     }
 
     /// Resolves `peer`'s side of a call over a direct session.

@@ -255,9 +255,8 @@ struct Receiver {
 
 /// Publishes one `[[send]]` block.
 async fn setup_send(live: &Live, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
-    let broadcast = LocalBroadcast::new();
+    let broadcast: LocalBroadcast = live.publish(&config.name)?;
     let sources = source::configure(&broadcast, &config.capture, None).await?;
-    live.publish(&config.name, &broadcast)?;
     Ok((broadcast, sources))
 }
 

@@ -60,7 +60,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         .with_router()
         .spawn();
 
-    let broadcast = LocalBroadcast::new();
+    // Published while `broadcast` lives.
+    let broadcast: LocalBroadcast = live.publish(opts.name.as_str())?;
 
     // Keeps the default of one keyframe per second.
     let config = RpicamConfig {
@@ -75,7 +76,6 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         "using pre-encoded H.264 from rpicam-vid"
     );
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
-    live.publish(opts.name.as_str(), &broadcast)?;
 
     // The link redials the relay if the session drops. It only pushes: the
     // relay's routes stay out of the Pi's route table.

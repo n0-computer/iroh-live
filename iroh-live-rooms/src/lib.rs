@@ -23,7 +23,7 @@
 //! `iroh_live::moq_config_with` does it for a config built by hand.
 //!
 //! ```no_run
-//! # async fn example(moq: iroh_moq::Moq, broadcast: moq_net::broadcast::Producer)
+//! # async fn example(moq: iroh_moq::Moq)
 //! # -> Result<(), Box<dyn std::error::Error>> {
 //! use iroh_live_rooms::{RoomTicket, Rooms};
 //!
@@ -32,7 +32,8 @@
 //! let room = rooms
 //!     .join(&RoomTicket::generate(), Some("ada".into()))
 //!     .await?;
-//! room.publish("cam", &broadcast)?;
+//! // Fill it with tracks, or build a `LocalBroadcast` in it instead.
+//! let _cam: moq_net::broadcast::Producer = room.publish("cam")?;
 //!
 //! let mut state = room.state();
 //! # use n0_watcher::Watcher;

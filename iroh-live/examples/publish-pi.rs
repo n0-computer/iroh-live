@@ -42,15 +42,12 @@ async fn main() -> n0_error::Result {
     let live = Live::builder(EndpointOptions::from_env()?.bind().await?)
         .with_router()
         .spawn();
-    let broadcast = LocalBroadcast::new();
+    // Published while `broadcast` lives, or until the node shuts down.
+    let broadcast: LocalBroadcast = live.publish(BROADCAST)?;
     // The default keyframe interval is one second, so a new viewer waits up
     // to a second for a picture.
     let config = RpicamConfig::new(Size::new(640, 360), 30);
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
-
-    // Dropping the `Publication` leaves the broadcast published. It ends with
-    // `broadcast`, or when the node shuts down.
-    live.publish(BROADCAST, &broadcast)?;
     println!("{}", live.ticket(BROADCAST));
 
     info!("publishing, press Ctrl-C to stop");

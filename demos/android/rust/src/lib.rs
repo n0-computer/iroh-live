@@ -18,7 +18,7 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live::{
-    BroadcastTicket, CALL, EndpointOptions, Live, Publication,
+    BroadcastTicket, CALL, CallOffer, EndpointOptions, Live,
     media::{
         AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
@@ -113,17 +113,24 @@ async fn bind_live() -> Result<Live> {
 ///
 /// The peer sees the offer in its route table, which is how it learns it is
 /// called, as `irl call` does.
-struct Offer(Publication);
+struct Offer {
+    calls: CallOffer,
+    peer: EndpointId,
+}
 
 impl Offer {
-    fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
-        Ok(Self(live.call(peer, broadcast)?))
+    fn new(calls: &CallOffer, peer: EndpointId) -> Self {
+        calls.ring(peer);
+        Self {
+            calls: calls.clone(),
+            peer,
+        }
     }
 }
 
 impl Drop for Offer {
     fn drop(&mut self) {
-        self.0.unpublish();
+        self.calls.hang_up(self.peer);
     }
 }
 
@@ -393,11 +400,12 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     let output = open_output().await;
-    let broadcast = LocalBroadcast::new();
+    // Published to nobody, then offered to the peer.
+    let (broadcast, calls): (LocalBroadcast, CallOffer) = live.call()?;
     let (camera, _preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
-    let offer = Offer::new(&live, &broadcast, ticket.peer())?;
+    let offer = Offer::new(&calls, ticket.peer());
     // A busy callee answers only once its call ends, so give up as `irl call`
     // does.
     let player = tokio::time::timeout(PEER_TIMEOUT, play_call(&live, ticket.peer(), &output))
@@ -448,7 +456,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // Start the camera now, so the preview runs while the ticket is on screen
     // and the peer's first frame does not wait for the device to open.
     let output = open_output().await;
-    let broadcast = LocalBroadcast::new();
+    let (broadcast, calls): (LocalBroadcast, CallOffer) = live.call()?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
@@ -466,7 +474,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // owns the task through `waiting`, so dropping the last `Arc` aborts it.
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
-        if let Err(err) = accept_one(live, broadcast, output, waiting).await {
+        if let Err(err) = accept_one(live, calls, output, waiting).await {
             error!("answering failed: {err:#}");
         }
     });
@@ -481,7 +489,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 /// path in the route table is the call.
 async fn accept_one(
     live: Live,
-    broadcast: LocalBroadcast,
+    calls: CallOffer,
     output: AudioTarget,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
@@ -505,7 +513,7 @@ async fn accept_one(
         }
     };
     info!(remote = %peer.fmt_short(), "answering");
-    let offer = Offer::new(&live, &broadcast, peer)?;
+    let offer = Offer::new(&calls, peer);
     let player = play_call(&live, peer, &output).await?;
     info!(remote = %peer.fmt_short(), "call answered");
 
@@ -569,11 +577,10 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     let live = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
-    let broadcast = LocalBroadcast::new();
+    let broadcast: LocalBroadcast = live.publish(&name)?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     // A publish-only session plays no sound, so there is no echo to cancel.
     set_microphone(&broadcast, None).await;
-    live.publish(&name, &broadcast)?;
 
     let ticket = live.ticket(&name).to_string();
     info!(%ticket, "broadcast published");

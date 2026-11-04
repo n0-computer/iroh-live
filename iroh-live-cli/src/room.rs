@@ -65,11 +65,9 @@ async fn join(live: &Live, rooms: &Rooms, args: &RoomArgs, output: AudioTarget) 
         .unwrap_or_else(|| live.endpoint().id().fmt_short().to_string());
     let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
-    let broadcast = LocalBroadcast::new();
+    let broadcast: LocalBroadcast = room.publish(BROADCAST_NAME)?;
     let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
-    room.publish(BROADCAST_NAME, &broadcast)?;
-    let chat = chat::Writer::new()?;
-    room.publish(chat::NAME, chat.broadcast())?;
+    let chat = chat::Writer::new(room.publish(chat::NAME)?)?;
 
     let ticket = room.ticket().to_string();
     println!("room ticket: {ticket}");

@@ -21,9 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let moq = Moq::new(endpoint.clone(), MoqConfig::default());
     let router = moq.mount(Router::builder(endpoint.clone())).spawn();
 
-    // An empty broadcast; a real one writes tracks into it.
-    let broadcast = iroh_live::moq::net::broadcast::Info::new().produce();
-    let _publication = moq.publish("demo/hello", &broadcast, Audience::Everyone)?;
+    // An empty broadcast in the route table; a real one writes tracks into
+    // `publication.broadcast()`.
+    let _publication = moq.publish("demo/hello", Audience::Everyone)?;
     println!("serving demo/hello as {}", endpoint.id());
 
     tokio::signal::ctrl_c().await?;

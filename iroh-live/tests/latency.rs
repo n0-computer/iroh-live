@@ -127,10 +127,7 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
     let publisher = Live::builder(endpoint().await).with_router().spawn();
-    let broadcast = LocalBroadcast::new();
-    publisher
-        .publish("latency", &broadcast)
-        .expect("failed to publish");
+    let broadcast: LocalBroadcast = publisher.publish("latency").expect("failed to publish");
     broadcast
         .set_video(
             stamped_source(handed.clone()),

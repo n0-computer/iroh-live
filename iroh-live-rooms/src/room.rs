@@ -13,7 +13,7 @@ use iroh_moq::{Audience, Moq, Publication, Subscription};
 use iroh_smol_kv::{
     ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
 };
-use moq_net::{Consume, Pattern, broadcast};
+use moq_net::{Pattern, broadcast};
 use n0_error::{e, stack_error};
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
@@ -233,22 +233,56 @@ impl Room {
         self.inner.state.watch()
     }
 
-    /// Publishes `broadcast` into the room as `name`, to its members only.
+    /// Publishes a broadcast into the room as `name`, to its members only, and returns it.
     ///
-    /// The path is `rooms/<topic>/<this member>/<name>`. The broadcast stays in
-    /// this member's announcement until it ends, is unpublished, or the room is
-    /// left.
+    /// The path is `rooms/<topic>/<this member>/<name>`. The broadcast is
+    /// created in the node's route table, and `B` fills it, built from its
+    /// `broadcast::Producer`: a `LocalBroadcast`, or the producer itself.
+    /// Members read it with nothing copied in between, and a member that
+    /// leaves loses it at once. The broadcast stays in this member's
+    /// announcement until it closes, [`unpublish`](Self::unpublish) takes it
+    /// out, or the room is left.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::InvalidName`] for an empty name or one holding a
     /// slash, [`Error::Transport`] if the name is already published, and
     /// [`Error::Left`] once the room was left.
-    pub fn publish(
+    pub fn publish<B: From<broadcast::Producer>>(&self, name: &str) -> Result<B, Error> {
+        // Built before the broadcast is announced, so no member finds it
+        // without the tracks `B` creates, such as a catalog.
+        self.publish_with(name, |producer| B::from(producer.clone()))
+    }
+
+    /// Takes `name` out of the room, if this member publishes it.
+    ///
+    /// Members lose the path, and what they read there ends. The broadcast
+    /// stays open for whoever holds it, unannounced. Returns whether `name`
+    /// was published.
+    pub fn unpublish(&self, name: &str) -> bool {
+        let publication = self
+            .inner
+            .local
+            .lock()
+            .expect("poisoned")
+            .get(name)
+            .map(|local| local.publication.clone());
+        match publication {
+            Some(publication) => {
+                // Its withdrawn task takes the name out of the announcement.
+                publication.unpublish();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Publishes `name` into the room, filled by `fill` before it is announced.
+    fn publish_with<T>(
         &self,
         name: &str,
-        broadcast: impl Consume<broadcast::Consumer>,
-    ) -> Result<Publication, Error> {
+        fill: impl FnOnce(&broadcast::Producer) -> T,
+    ) -> Result<T, Error> {
         if name.is_empty() || name.contains('/') {
             return Err(e!(Error::InvalidName {
                 name: name.to_owned()
@@ -258,10 +292,10 @@ impl Room {
             return Err(e!(Error::Left));
         }
         let topic = self.inner.ticket.topic_id();
-        let publication = self.inner.moq.publish(
+        let (publication, filled) = self.inner.moq.publish_with(
             room_path(topic, self.inner.me, name),
-            broadcast,
             Audience::Peers(self.inner.members.clone()),
+            fill,
         )?;
         info!(%name, path = %publication.path(), "published into the room");
         {
@@ -289,7 +323,7 @@ impl Room {
             );
         }
         self.inner.bump_local();
-        Ok(publication)
+        Ok(filled)
     }
 
     /// Resolves `peer`'s broadcast `name` over the session with that member.

@@ -46,9 +46,8 @@ async fn setup_capture(
 ) -> Result<(Live, LocalBroadcast, source::Opened, String)> {
     let live = setup_live(!args.transport.no_serve).await?;
     let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
-        let broadcast = LocalBroadcast::new();
+        let broadcast: LocalBroadcast = live.publish(&args.transport.name)?;
         let sources = source::configure(&broadcast, &args.capture, None).await?;
-        live.publish(&args.transport.name, &broadcast)?;
         let ticket = transport::advertise(live, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.
         let (video, audio) = if args.capture.test_source {
@@ -103,19 +102,29 @@ async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
 
 /// Publishes the file on `live`. The caller shuts `live` down.
 async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> Result {
-    let producer = broadcast::Info::new().produce();
-    let import = FileImport::open(producer.clone(), source).await?;
-    // Publish after the import created its tracks, so no subscriber sees the
-    // broadcast without them.
-    live.publish(&args.transport.name, producer.consume())?;
+    // The import creates its tracks once it has read the file's header, a
+    // moment after the broadcast is published. A reader that asks within that
+    // moment finds no catalog yet, and asks again.
+    let producer: broadcast::Producer = live.publish(&args.transport.name)?;
+    let import = match FileImport::open(producer.clone(), source).await {
+        Ok(import) => import,
+        Err(err) => {
+            // Withdraws the publication.
+            producer.close();
+            return Err(err);
+        }
+    };
     transport::advertise(live, &args.transport)?;
     info!(name = %args.transport.name, "publishing a file");
 
     println!("press Ctrl+C to stop");
-    tokio::select! {
-        result = import.run() => result?,
-        _ = tokio::signal::ctrl_c() => {}
-    }
+    let result = tokio::select! {
+        result = import.run() => result,
+        _ = tokio::signal::ctrl_c() => Ok(()),
+    };
+    // The node holds the broadcast open while it is published, so end it here.
+    producer.close();
+    result?;
     Ok(())
 }
 

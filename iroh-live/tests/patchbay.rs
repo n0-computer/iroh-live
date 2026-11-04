@@ -129,10 +129,7 @@ impl Fixture {
             .expect("failed to bind the subscriber endpoint");
 
         let publisher = Live::builder(publisher_endpoint).with_router().spawn();
-        let broadcast = LocalBroadcast::new();
-        publisher
-            .publish("patchbay", &broadcast)
-            .expect("failed to publish");
+        let broadcast: LocalBroadcast = publisher.publish("patchbay").expect("failed to publish");
         broadcast
             .set_video(gradient(size), VideoEncoding::ladder(renditions))
             .expect("failed to set video");
