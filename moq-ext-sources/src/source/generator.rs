@@ -13,7 +13,9 @@
 //!   when chroma detail is lost.
 //! - A frame counter makes dropped frames countable. A clock makes latency
 //!   measurable: photograph the publisher's and the player's screens together
-//!   and subtract the two stamps.
+//!   and subtract the two stamps. Both lines share one digit size and one left
+//!   edge, and the top sixteenth of the frame stays black, so an application
+//!   can paint a marker into the corner without covering a digit.
 //! - A marker lights for [`BEEP_LENGTH`] every [`BEEP_PERIOD`], at the same
 //!   media time as the beep, so a viewer sees and hears whether they agree.
 //!
@@ -252,7 +254,7 @@ impl Band {
 /// Where each element lands, for one frame size.
 ///
 /// Bands are cut in sixteenths of the height, so the pattern reads the same at
-/// every frame size.
+/// every frame size. The first sixteenth is left empty.
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     size: Size,
@@ -276,9 +278,9 @@ impl Layout {
         };
         Self {
             size,
-            counter: band(0, 3),
-            clock: band(3, 6),
-            sweep: band(6, 10),
+            counter: band(1, 3),
+            clock: band(3, 5),
+            sweep: band(5, 10),
             stripes: band(10, 13),
             marker: band(13, 16),
         }
@@ -390,14 +392,15 @@ impl Canvas {
             }
         }
 
-        draw_line(
+        draw_lines(
             &mut self.rgba,
             size,
-            layout.counter,
-            &counter_text(count),
+            &[
+                (layout.counter, counter_text(count)),
+                (layout.clock, clock_text(wall)),
+            ],
             WHITE,
         );
-        draw_line(&mut self.rgba, size, layout.clock, &clock_text(wall), WHITE);
         &self.rgba
     }
 }
@@ -501,22 +504,36 @@ const GLYPH_ROWS: usize = 7;
 /// Columns in one glyph. A blank column separates two of them.
 const GLYPH_COLS: u32 = 5;
 
-/// Draws `text` centred in `band`, as large as the band and the frame allow.
+/// Draws each `(band, text)` line in its band, all at one scale and one left edge.
 ///
-/// Large digits stay readable in a photo of a small screen.
-fn draw_line(rgba: &mut [u8], size: Size, band: Band, text: &str, ink: [u8; 3]) {
-    let columns = text.chars().count() as u32 * (GLYPH_COLS + 1);
-    // Leave a sixteenth of the width and two rows of the band as margin, so no
-    // glyph touches an edge the encoder blurs.
-    let from_width = (size.width * 15 / 16) / columns.max(1);
-    let from_height = band.height().saturating_sub(2) / GLYPH_ROWS as u32;
+/// The scale is the largest at which every line fits its band and the frame,
+/// and the block of lines is centred horizontally. Large digits stay readable
+/// in a photo of a small screen.
+fn draw_lines(rgba: &mut [u8], size: Size, lines: &[(Band, String)], ink: [u8; 3]) {
+    let columns = |text: &str| text.chars().count() as u32 * (GLYPH_COLS + 1);
+    let widest = lines
+        .iter()
+        .map(|(_, text)| columns(text))
+        .max()
+        .unwrap_or(0);
+    // Leave a sixteenth of the width and two rows of each band as margin, so
+    // no glyph touches an edge the encoder blurs.
+    let from_width = (size.width * 15 / 16) / widest.max(1);
+    let from_height = lines
+        .iter()
+        .map(|(band, _)| band.height().saturating_sub(2) / GLYPH_ROWS as u32)
+        .min()
+        .unwrap_or(0);
     let scale = from_width.min(from_height).max(1);
 
-    let mut x = (size.width.saturating_sub(columns * scale)) / 2;
-    let y = band.top + (band.height().saturating_sub(GLYPH_ROWS as u32 * scale)) / 2;
-    for ch in text.chars() {
-        draw_glyph(rgba, size, glyph(ch), x, y, scale, ink);
-        x += (GLYPH_COLS + 1) * scale;
+    let left = (size.width.saturating_sub(widest * scale)) / 2;
+    for (band, text) in lines {
+        let mut x = left;
+        let y = band.top + (band.height().saturating_sub(GLYPH_ROWS as u32 * scale)) / 2;
+        for ch in text.chars() {
+            draw_glyph(rgba, size, glyph(ch), x, y, scale, ink);
+            x += (GLYPH_COLS + 1) * scale;
+        }
     }
 }
 
@@ -629,6 +646,38 @@ mod tests {
         let wall = SystemTime::UNIX_EPOCH + Duration::from_millis(45_296_123);
         assert_eq!(clock_text(wall), "T 12:34:56.123");
         assert_eq!(counter_text(1_000_042), "F 000042");
+    }
+
+    /// Returns the leftmost column and the top and bottom rows with white ink in `band`.
+    fn ink_box(rgba: &[u8], band: Band) -> (u32, u32, u32) {
+        let lit: Vec<(u32, u32)> = band
+            .rows()
+            .flat_map(|y| (0..SIZE.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(rgba, x, y) == WHITE)
+            .collect();
+        let left = lit.iter().map(|p| p.0).min().expect("the band has ink");
+        let top = lit.iter().map(|p| p.1).min().expect("the band has ink");
+        let bottom = lit.iter().map(|p| p.1).max().expect("the band has ink");
+        (left, top, bottom)
+    }
+
+    /// The counter and the clock share a digit size and a left edge, and the
+    /// top sixteenth of the frame stays clear.
+    #[test]
+    fn the_counter_matches_the_clock() {
+        let layout = Layout::new(SIZE);
+        // 8s and 0s fill the glyph's first and last rows.
+        let wall = SystemTime::UNIX_EPOCH + Duration::from_millis(28_888_888);
+        let rgba = frame(888_888, Duration::ZERO, wall);
+        let (counter_left, counter_top, counter_bottom) = ink_box(&rgba, layout.counter);
+        let (clock_left, clock_top, clock_bottom) = ink_box(&rgba, layout.clock);
+        assert_eq!(counter_left, clock_left, "one left edge");
+        assert_eq!(
+            counter_bottom - counter_top,
+            clock_bottom - clock_top,
+            "one digit height"
+        );
+        assert!(counter_top >= SIZE.height / 16, "the top strip stays clear");
     }
 
     /// The marker is lit on the gate the tone beeps on, and dark otherwise.
