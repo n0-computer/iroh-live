@@ -1,9 +1,10 @@
 //! The player's own error type, beside the shared [`moq_ext_media_core::Error`].
 //!
 //! Also tells a session that closed from a track that failed. A peer hanging
-//! up ends every track read over the session with a cancel code. That is how
-//! playback normally ends, so it is logged at debug and never reported as a
-//! failed decoder.
+//! up ends every track read over the session with a cancel code, and a
+//! publisher in the same process that goes away ends its tracks as dropped.
+//! That is how playback normally ends, so it is logged at debug and never
+//! reported as a failed decoder.
 
 use std::sync::Arc;
 
@@ -50,7 +51,9 @@ pub(crate) trait CleanClose {
     /// Reports whether this error is a clean close rather than a failure.
     ///
     /// A clean close is a cancel from either side: the session closed with no
-    /// error, or the publisher or this side stopped the track.
+    /// error, or the publisher or this side stopped the track. A producer
+    /// dropped without a finish or an abort also counts: its publisher went
+    /// away, and the rendition is not to blame.
     fn is_clean_close(&self) -> bool;
 }
 
@@ -59,6 +62,7 @@ impl CleanClose for moq_net::Error {
         matches!(
             self,
             Self::Cancel
+                | Self::Dropped
                 | Self::Session(SessionError::Cancel)
                 | Self::Stream(StreamError::Cancel | StreamError::Session(SessionError::Cancel))
         )
@@ -107,6 +111,15 @@ mod tests {
     fn a_cancelled_stream_is_a_clean_close() {
         assert!(moq_net::Error::Stream(StreamError::Cancel).is_clean_close());
         assert!(moq_net::Error::Cancel.is_clean_close());
+    }
+
+    /// A publisher that drops its track without finishing it has gone away.
+    #[test]
+    fn a_dropped_producer_is_a_clean_close() {
+        let dropped = moq_net::Error::Dropped;
+        assert!(dropped.is_clean_close());
+        assert!(moq_video::Error::Net(dropped.clone()).is_clean_close());
+        assert!(moq_audio::Error::Mux(moq_mux::Error::Moq(dropped)).is_clean_close());
     }
 
     #[test]
