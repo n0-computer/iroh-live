@@ -2,6 +2,9 @@
 
 > **Early tech preview.** Expect frequent API changes. Windows has never been
 > run, on-device testing has been limited, and the relay accepts anyone.
+>
+> iroh-live depends on the unreleased `main` branch of moq, pinned by git rev,
+> so it is not on crates.io. See [the moq dependency](#the-moq-dependency).
 
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
 written in Rust. Connections are peer-to-peer, with no media server in the
@@ -48,6 +51,26 @@ has complete examples: publish, watch, calls, rooms, your own paths, relays and
 raw MoQ tracks. [Getting started](docs/guide/index.md) covers the setup, and
 [`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs) is a complete
 publisher.
+
+## The moq dependency
+
+iroh-live depends on the unreleased `main` branch of
+[moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
+`Cargo.toml`. The pinned rev is `02e82fdcd` (2026-11-04). The moq crates on
+crates.io come from moq's `release` branch, which lags `main` by weeks.
+iroh-live uses APIs that exist only on `main`. Examples are the waiter-based
+`moq_net::transport::poll` traits that `moq-transport-iroh` implements, and the
+shared microphone capture in `moq-audio`.
+
+A crate with git dependencies cannot be published to crates.io, so none of the
+iroh-live crates is there yet. Depend on them through git:
+
+```toml
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
+```
+
+Cargo then builds moq from the same pinned rev. When a moq release contains
+these APIs, crates.io versions will replace the git pins.
 
 ## Crates
 
@@ -109,17 +132,6 @@ through and has no default features. `full` turns on `media`, `capture`,
 `sound-server`. `media` turns the media stack on, and each device
 feature implies it. `rooms` re-exports `iroh-live-rooms` and adds
 `LiveBuilder::with_rooms`.
-
-### The moq dependency
-
-iroh-live depends on the unreleased `main` branch of
-[moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
-`Cargo.toml`. The pinned rev is `02e82fdcd` (2026-11-04). The moq crates on
-crates.io come from moq's `release` branch, which lags `main` by weeks.
-iroh-live uses APIs that exist only on `main`. Examples are the waiter-based
-`moq_net::transport::poll` traits that `moq-transport-iroh` implements, and the
-shared microphone capture in `moq-audio`. When a moq release contains these
-APIs, crates.io versions will replace the git pins.
 
 ### Cross-compiling for aarch64
 

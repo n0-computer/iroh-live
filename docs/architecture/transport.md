@@ -107,8 +107,10 @@ locally. Audiences bound peers, not the node.
 peer exists, it returns that one, and concurrent dials share one. Two peers
 that dial each other at the same moment keep both sessions.
 
-`Node` implements iroh's `ProtocolHandler`, so incoming connections arrive
-through it. Under `Admission::Open` (the default) every session is admitted
+`Node::mount` adds the node to the application's `RouterBuilder` under every
+ALPN in `alpns()`, and incoming connections arrive through its
+`ProtocolHandler`. A node that is never mounted refuses every incoming
+connection. Under `Admission::Open` (the default) every session is admitted
 with the grant `NodeConfig::grant` gives the peer, or `Grant::subscribe_only()` if
 none is set. Under `Admission::Manual` the handshake waits after the peer's
 setup, and the session shows up in `Node::accept()`. The application reads the
@@ -191,7 +193,9 @@ never reads a truncated stream as complete.
 
 ## Errors
 
-`iroh_live_node::Error` is the crate's one error type. It covers dial and handshake
-failures, refused sessions, a path that was never announced or cannot be
-resolved, a publication that already exists, a grant that does not cover a
-path, and shutdown.
+`iroh_live_node::Error` is the crate's one error type. It covers dial and
+handshake failures, refused sessions, a path that was never announced or cannot
+be resolved, a publication that already exists, a grant that does not cover a
+path, and shutdown. moq-net's own errors stay typed: `Error::Moq` holds a
+`moq_net::Error` when moq-net refuses an operation, such as a path that does
+not parse.

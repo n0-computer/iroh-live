@@ -5,10 +5,13 @@ nodes and plays theirs. Broadcasts are named by path, found through a route
 table, and carried over [Media over QUIC](https://moq.dev/). Direct sessions
 and relays both feed the table, so a viewer does not care which one serves it.
 
-Most programs need one crate, `iroh-live`, with the features you want:
+Most programs need one crate, `iroh-live`, with the features you want. It
+builds against moq's unreleased `main` branch, so it comes from git, not
+crates.io (see [the moq dependency](../../README.md#the-moq-dependency)):
 
 ```toml
-iroh-live = { version = "0.1", features = ["full"] }  # add "rooms" for rooms
+# Add "rooms" for rooms.
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
 ```
 
 | You want | Use | Crate |

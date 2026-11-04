@@ -12,7 +12,8 @@ the decoder swap, and the [playout clock](playout.md). The code is in
 ## Opening a broadcast
 
 Every constructor starts reading the catalog and returns at once. `catalog()`
-watches an `Option<Catalog>` that reads `None` until the first catalog arrives.
+watches an `Option<Arc<Catalog>>` that reads `None` until the first catalog
+arrives.
 A background task follows the catalog track and publishes each update.
 
 `RemoteBroadcast::from_origin(origin, path)` follows a path in a route table.
@@ -26,8 +27,9 @@ in that table. Nothing waits for a first route, and a publisher that is already
 gone closes the broadcast. `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
 `LocalBroadcast` in-process, without a transport.
 
-`Catalog` is hang's catalog behind an `Arc` and derefs to it.
-`ranked_video()` lists the video renditions largest first.
+`Catalog` is hang's catalog, re-exported. The `VideoRenditions` trait adds
+`ranked_video()`, which lists the video renditions largest first, and
+`video_rendition(name)`.
 
 `Live::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
 `from_resolved` and attaches the serving link's measurements, whether the
@@ -59,8 +61,8 @@ and counts what it skipped in the player's stats.
 A rendition switch and a decoder change are the same operation. The supervisor
 opens a replacement decoder beside the incumbent, keeps showing the
 incumbent's frames, and hands over once the replacement has caught up. The
-rules are plain transitions in `player/switch.rs`, so tests drive them without
-a decoder or a network.
+rules are plain transitions in `moq-ext-adaptive/src/switch.rs`, so tests
+drive them without a decoder or a network.
 
 - There is at most one replacement. A new request replaces it, so a switch to
   C while B is warming up never lands on B first.
