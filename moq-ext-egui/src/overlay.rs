@@ -23,7 +23,8 @@ use moq_ext_publisher::{PublishStats, PublishStatus, RenditionState};
 /// Height of the overlay bar, text and padding included.
 const BAR_HEIGHT: f32 = 15.0;
 
-/// Computes the largest size that fits `available` while preserving `aspect` (width / height).
+/// Returns the largest size that fits `available` and keeps `aspect`, width over height.
+#[must_use]
 pub fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
     let h_by_width = available.x / aspect;
     if h_by_width <= available.y {
@@ -523,7 +524,7 @@ fn slot_line(name: &str, state: &SlotState) -> Line {
         SlotState::Off => Line::info(format!("{name}: off")),
         SlotState::Starting => Line::colored(format!("{name}: starting"), COLOR_WARN),
         SlotState::Running => Line::colored(format!("{name}: running"), COLOR_GOOD),
-        SlotState::Failed(err) => Line::colored(format!("{name}: failed: {err}"), COLOR_BAD),
+        SlotState::Failed(err) => Line::colored(format!("{name}: failed: {err:#}"), COLOR_BAD),
         SlotState::Ended => Line::info(format!("{name}: ended")),
     }
 }
@@ -753,7 +754,7 @@ fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> Section {
                 COLOR_DIM
             }
             Some(RenditionState::Failed(err)) => {
-                text.push_str(&format!(" failed: {err}"));
+                text.push_str(&format!(" failed: {err:#}"));
                 COLOR_BAD
             }
             _ => egui::Color32::WHITE,
