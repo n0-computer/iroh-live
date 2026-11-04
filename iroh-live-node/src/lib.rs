@@ -82,9 +82,10 @@ mod state;
 /// The moq-net this crate builds against.
 pub use moq_net as net;
 
-/// The MoQ-over-iroh transport this node is built on: dial, accept, ALPNs and
-/// the poll adapter, for applications that run moq-net's client or server
-/// directly.
+/// The MoQ-over-iroh transport this node is built on.
+///
+/// It has dial, accept, the ALPNs and the poll adapter, for applications that
+/// run moq-net's client or server directly.
 pub use moq_transport_iroh as transport;
 /// The poll transport adapter sessions run over, for this crate's tests.
 #[doc(hidden)]

@@ -157,11 +157,11 @@ impl Incoming {
         let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
             .await
             .map_err(|_| {
-                e!(Error::Node {
+                e!(Error::Moq {
                     source: moq_net::Error::Timeout
                 })
             })?
-            .map_err(|source| e!(Error::Node { source }))?;
+            .map_err(|source| e!(Error::Moq { source }))?;
         let parts = SessionParts {
             remote: self.remote,
             connection: self.connection,
@@ -197,7 +197,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         let handshake = moq_net::Server::new()
             .accept_request(driver_now(), Transport::new(transport, address))
             .await
-            .map_err(|source| e!(Error::Node { source }))?;
+            .map_err(|source| e!(Error::Moq { source }))?;
         Ok::<_, Error>((h3, handshake))
     })
     .await;
@@ -205,7 +205,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         Ok(opened) => opened?,
         Err(_) => {
             debug!(remote = %remote.fmt_short(), "no session setup in time");
-            return Err(e!(Error::Node {
+            return Err(e!(Error::Moq {
                 source: moq_net::Error::Timeout
             }));
         }
@@ -243,7 +243,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
                 Err(_) => {
                     info!(remote = %remote.fmt_short(), "admission queue full, rejecting");
                     incoming.handshake.close(moq_net::Error::Timeout);
-                    return Err(e!(Error::Node {
+                    return Err(e!(Error::Moq {
                         source: moq_net::Error::Timeout
                     }));
                 }

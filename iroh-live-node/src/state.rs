@@ -44,6 +44,12 @@ pub(crate) struct PubEntry {
     pub(crate) audience: AudienceKind,
     /// Follows a `Peers` audience's set.
     pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
+    /// Counts the audiences set so far.
+    ///
+    /// A `peers_task` writes only while it matches the generation it was
+    /// started for, since aborting a task does not stop one that already
+    /// waits on the lock.
+    pub(crate) audience_generation: u64,
     /// Withdraws the publication once its broadcast ends.
     pub(crate) _closed_task: AbortOnDropHandle<()>,
     /// Cancelled when the entry goes, for [`Publication::withdrawn`](crate::Publication::withdrawn).
@@ -171,7 +177,9 @@ impl State {
     /// Returns the moq grant of a link, from the publications it may see.
     ///
     /// Its subscribe half lists the exact paths of the publications whose
-    /// audience admits the link, within `base`. Its publish half is what the
+    /// audience admits the link, within `base`, so it grows with them. See
+    /// [`moq_ext_access::visible_paths`] for the limits that puts on the
+    /// number of publications. Its publish half is what the
     /// peer may announce into the route table: `base`'s for a session, and
     /// anything for a relay, which is trusted with what it forwards.
     pub(crate) fn grant_for(
@@ -208,9 +216,10 @@ impl State {
     ///
     /// A route is attributed to the hop its session's peer declares, or else
     /// to the hop this node assigned the session. The two agree for peers on
-    /// this crate. `None` for a route published on this node, and for a hop no
-    /// link has, such as one a relay declares of its own: guessing a link
-    /// would mislabel a direct route.
+    /// this crate. A hop no link has is taken to be one a relay declares of
+    /// its own, as moq-relay does, and maps to the oldest relay link. `None`
+    /// for a route published on this node, and for an unknown hop while no
+    /// relay is attached.
     pub(crate) fn link_for(&self, source: Source) -> Option<u64> {
         let Source::Peer(hop) = source else {
             return None;

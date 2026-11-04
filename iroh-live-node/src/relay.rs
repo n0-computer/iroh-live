@@ -581,7 +581,7 @@ async fn dial_relay(
         auth.clone(),
     )
     .await
-    .map_err(|source| e!(Error::Node { source }))?;
+    .map_err(|source| e!(Error::Moq { source }))?;
     Ok((moq, driver, connection))
 }
 

@@ -82,6 +82,54 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     alice.shutdown().await;
 }
 
+/// A fill runs outside the node's lock: it may call back into the node, and a failed or refused one leaves nothing behind.
+#[tokio::test]
+#[traced_test]
+async fn a_fill_runs_outside_the_nodes_lock() {
+    let alice = Peer::spawn().await;
+    let moq = alice.moq.clone();
+
+    // A fill that calls back into the node does not deadlock.
+    let (first, inner) = alice
+        .moq
+        .publish_with(alice.path("outer"), Audience::Everyone, |_| {
+            moq.publish(alice.path("inner"), Audience::Everyone)
+        })
+        .expect("publish");
+    assert_eq!(inner.path().as_str(), alice.path("inner"));
+
+    // A failed fill closes its broadcast, and the path stays free.
+    let mut filled = None;
+    let err = alice
+        .moq
+        .publish_with(alice.path("failed"), Audience::Everyone, |producer| {
+            filled = Some(producer.consume());
+            Err::<(), _>(std::io::Error::other("no catalog"))
+        })
+        .expect_err("the fill failed");
+    assert!(matches!(err, Error::Fill { .. }), "{err:#}");
+    assert!(filled.expect("the fill ran").is_closed());
+    publish(&alice.moq, alice.path("failed"), Audience::Everyone).expect("the path is free");
+
+    // A fill for a taken path is closed when the clash is found.
+    let mut filled = None;
+    let err = alice
+        .moq
+        .publish_with(first.path().as_str(), Audience::Everyone, |producer| {
+            filled = Some(producer.consume());
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect_err("a second publication at one path");
+    assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
+    assert!(filled.expect("the fill ran").is_closed());
+    assert!(
+        !first.is_withdrawn(),
+        "the clash withdrew the first publication"
+    );
+
+    alice.shutdown().await;
+}
+
 /// How long a negative check waits for something that must not happen.
 const QUIET: Duration = Duration::from_secs(2);
 

@@ -328,7 +328,7 @@ pub(crate) async fn dial_session(
     .await
     .map_err(|source| match source {
         moq_net::Error::Unauthorized | moq_net::Error::App(_) => e!(Error::Refused { source }),
-        source => e!(Error::Node { source }),
+        source => e!(Error::Moq { source }),
     })?;
     Ok(SessionParts {
         remote: remote_id,
@@ -390,7 +390,7 @@ fn share(err: &Error) -> Error {
             source: source.clone()
         }),
         Error::UnsupportedAlpn { alpn, .. } => e!(Error::UnsupportedAlpn { alpn: alpn.clone() }),
-        Error::Node { source, .. } => e!(Error::Node {
+        Error::Moq { source, .. } => e!(Error::Moq {
             source: source.clone()
         }),
         Error::Refused { source, .. } => e!(Error::Refused {

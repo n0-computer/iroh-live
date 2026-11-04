@@ -69,7 +69,9 @@ table, and returns a `Publication` whose `broadcast()` is the
 `broadcast::Producer` to fill. moq-net creates every broadcast inside an
 origin, and the route table is the only one: peers read the broadcast itself,
 with nothing copied in between. `Node::publish_with` fills the broadcast before
-it is announced, so no reader finds it without its first tracks.
+it is announced, so no reader finds it without its first tracks. The fill
+runs before the node takes its lock, so it may fail or call back into the
+node without harm.
 `iroh_live::Live::publish` builds a `LocalBroadcast` in it this way. A
 publication stays until `unpublish`, until its broadcast closes, or until the
 node shuts down.

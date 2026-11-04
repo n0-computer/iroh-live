@@ -286,7 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Visible to `other` only. The set is watched, so it can change.
             let audience = Audience::Peers(Watchable::new(BTreeSet::from([other])));
             let publication = live.publish_at(&format!("stage/{me}/main"), audience)?;
-            let broadcast = LocalBroadcast::new_in(publication.broadcast().clone());
+            let broadcast = LocalBroadcast::new_in(publication.broadcast().clone())?;
             let rate = video::FrameRate::new(30, 1).expect("a valid rate");
             broadcast.set_video(
                 VideoSource::test_pattern(video::Size::new(640, 360), rate),

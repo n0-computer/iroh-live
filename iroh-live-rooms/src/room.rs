@@ -246,12 +246,15 @@ impl Room {
     /// # Errors
     ///
     /// Fails with [`Error::InvalidName`] for an empty name or one holding a
-    /// slash, [`Error::Transport`] if the name is already published, and
-    /// [`Error::Left`] once the room was left.
-    pub fn publish<B: From<broadcast::Producer>>(&self, name: &str) -> Result<B, Error> {
+    /// slash, [`Error::Transport`] if the name is already published or `B`
+    /// cannot be built, and [`Error::Left`] once the room was left.
+    pub fn publish<B>(&self, name: &str) -> Result<B, Error>
+    where
+        B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
+    {
         // Built before the broadcast is announced, so no member finds it
         // without the tracks `B` creates, such as a catalog.
-        self.publish_with(name, |producer| B::from(producer.clone()))
+        self.publish_with(name, |producer| B::try_from(producer.clone()))
     }
 
     /// Takes `name` out of the room, if this member publishes it.
@@ -278,11 +281,14 @@ impl Room {
     }
 
     /// Publishes `name` into the room, filled by `fill` before it is announced.
-    fn publish_with<T>(
+    fn publish_with<T, E>(
         &self,
         name: &str,
-        fill: impl FnOnce(&broadcast::Producer) -> T,
-    ) -> Result<T, Error> {
+        fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
+    ) -> Result<T, Error>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         if name.is_empty() || name.contains('/') {
             return Err(e!(Error::InvalidName {
                 name: name.to_owned()

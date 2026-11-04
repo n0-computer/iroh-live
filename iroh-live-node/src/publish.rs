@@ -1,16 +1,23 @@
 //! Publications: a broadcast created at a path in the route table, for an audience.
 
-use std::sync::{Arc, Weak};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Weak},
+};
 
 use iroh::EndpointId;
 use moq_net::{Path, broadcast, origin};
-use n0_error::e;
+use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{Instrument, debug, debug_span, info};
 
-use crate::{Error, node::Shared, state::PubEntry};
+use crate::{
+    Error,
+    node::Shared,
+    state::{PubEntry, State},
+};
 
 /// Who may see a publication.
 ///
@@ -94,7 +101,14 @@ impl Publication {
         let Some(entry) = state.publications.get_mut(&id) else {
             return;
         };
-        entry.peers_task = peers_task(&audience, id, &self.inner.shared);
+        entry.audience_generation += 1;
+        entry.peers_task = peers_task(
+            &audience,
+            id,
+            entry.audience_generation,
+            &entry.path,
+            &self.inner.shared,
+        );
         state.set_audience(id, AudienceKind::from(&audience));
     }
 
@@ -121,10 +135,13 @@ impl Publication {
 /// Returns a task that re-authorizes the node's links as a `Peers` set changes.
 ///
 /// `None` for any other audience. Holds the node weakly, since the task lives
-/// in the state it updates.
+/// in the state it updates. `generation` is the publication's audience
+/// generation the task was started for.
 fn peers_task(
     audience: &Audience,
     id: u64,
+    generation: u64,
+    path: &Path,
     shared: &Weak<Shared>,
 ) -> Option<AbortOnDropHandle<()>> {
     let Audience::Peers(set) = audience else {
@@ -132,7 +149,8 @@ fn peers_task(
     };
     let set = set.clone();
     let shared = shared.clone();
-    Some(AbortOnDropHandle::new(tokio::spawn(async move {
+    let span = debug_span!("audience", %path, generation);
+    let task = async move {
         let mut peers = set.watch();
         // Applied once up front too, for a change made while publishing.
         let mut current = peers.get();
@@ -142,11 +160,9 @@ fn peers_task(
                     return;
                 };
                 let mut state = shared.state.lock().expect("poisoned");
-                if !state.publications.contains_key(&id) {
+                if !apply_peers(&mut state, id, generation, current) {
                     return;
                 }
-                debug!(peers = current.len(), "audience peers set");
-                state.set_audience(id, AudienceKind::Peers(current));
             }
             // This task holds `set`, so the watcher stays connected.
             let Ok(next) = peers.updated().await else {
@@ -154,42 +170,84 @@ fn peers_task(
             };
             current = next;
         }
-    })))
+    };
+    Some(AbortOnDropHandle::new(tokio::spawn(task.instrument(span))))
+}
+
+/// Sets publication `id`'s audience to `peers`, for the peers task of `generation`.
+///
+/// Returns `false`, and changes nothing, once the publication is gone or a
+/// later [`Publication::set_audience`] replaced that task. The task then
+/// ends: it may have been aborted while it waited on the lock.
+fn apply_peers(state: &mut State, id: u64, generation: u64, peers: BTreeSet<EndpointId>) -> bool {
+    let Some(entry) = state.publications.get(&id) else {
+        return false;
+    };
+    if entry.audience_generation != generation {
+        debug!(path = %entry.path, generation, "audience replaced, peers task ends");
+        return false;
+    }
+    debug!(path = %entry.path, generation, peers = peers.len(), "audience peers set");
+    state.set_audience(id, AudienceKind::Peers(peers));
+    true
 }
 
 /// Publishes a broadcast at `path`, for [`Node::publish`](crate::Node::publish).
-pub(crate) fn publish<T>(
+///
+/// Creates the broadcast and runs `fill` before taking the node's lock, so a
+/// fill that panics or calls back into the node cannot poison or deadlock
+/// it. The broadcast stays unannounced until the lock is held.
+pub(crate) fn publish<T, E>(
     shared: &Arc<Shared>,
     path: Path,
     audience: Audience,
-    fill: impl FnOnce(&broadcast::Producer) -> T,
-) -> Result<(Publication, T), Error> {
+    fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
+) -> Result<(Publication, T), Error>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     check_path(&path)?;
+    if shared.shutdown.is_cancelled() {
+        return Err(e!(Error::ShutDown));
+    }
+    let publication = shared
+        .table
+        .create_broadcast(&path)
+        .map_err(|source| e!(Error::Moq { source }))?;
+    // Filled before the announcement, so no reader finds the broadcast
+    // without the tracks `fill` creates.
+    let filled = match fill(publication.broadcast()) {
+        Ok(filled) => filled,
+        Err(err) => {
+            publication.broadcast().close();
+            return Err(e!(Error::Fill {
+                source: AnyError::from_std(err)
+            }));
+        }
+    };
+    // Ends the broadcast `fill` may have spawned work on, if it is not published.
+    let refuse = |err: Error| {
+        publication.broadcast().close();
+        Err(err)
+    };
     let weak = Arc::downgrade(shared);
     let mut state = shared.state.lock().expect("poisoned");
     if state.closed {
-        return Err(e!(Error::ShutDown));
+        return refuse(e!(Error::ShutDown));
     }
     if let Some(existing) = state.publication_at(&path) {
         // An ended broadcast's closed task may not have run yet. Not a clash.
         let entry = &state.publications[&existing];
         if !entry.publication.broadcast().consume().is_closed() {
-            return Err(e!(Error::Duplicate { path }));
+            return refuse(e!(Error::Duplicate { path }));
         }
         state.remove_publication(existing);
     }
-    let publication = shared
-        .table
-        .create_broadcast(&path)
-        .map_err(|source| e!(Error::Node { source }))?;
-    // Filled before the announcement, so no reader finds the broadcast
-    // without the tracks `fill` creates.
-    let filled = fill(publication.broadcast());
     // Announced under the lock, before any link may see the path, so no peer
     // learns of it before the table has it.
-    publication
-        .announce(origin::Route::default())
-        .map_err(|source| e!(Error::Node { source }))?;
+    if let Err(source) = publication.announce(origin::Route::default()) {
+        return refuse(e!(Error::Moq { source }));
+    }
     let broadcast = publication.broadcast().clone();
     let id = state.next_id();
     let closed_task = {
@@ -217,7 +275,8 @@ pub(crate) fn publish<T>(
             path: path.clone(),
             publication,
             audience: AudienceKind::from(&audience),
-            peers_task: peers_task(&audience, id, &weak),
+            peers_task: peers_task(&audience, id, 0, &path, &weak),
+            audience_generation: 0,
             _closed_task: AbortOnDropHandle::new(closed_task),
             withdrawn: withdrawn.clone(),
         },
@@ -242,4 +301,46 @@ pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
         }));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::{Endpoint, SecretKey, endpoint::presets};
+    use n0_watcher::Watchable;
+
+    use super::*;
+    use crate::{Node, NodeConfig};
+
+    /// A peers task that set_audience replaced cannot write its old set back.
+    ///
+    /// Aborting the task does not stop one that already waits on the lock, so
+    /// this calls the step it takes under the lock with its old generation.
+    #[tokio::test]
+    async fn a_replaced_peers_task_does_not_restore_its_set() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");
+        let node = Node::new(endpoint.clone(), NodeConfig::default());
+        let (revoked, kept) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        let old = BTreeSet::from([revoked, kept]);
+        let publication = node
+            .publish(
+                "live/test/cam",
+                Audience::Peers(Watchable::new(old.clone())),
+            )
+            .expect("publish");
+        let new = BTreeSet::from([kept]);
+        publication.set_audience(Audience::Peers(Watchable::new(new.clone())));
+
+        let id = publication.inner.id;
+        {
+            let mut state = node.shared.state.lock().expect("poisoned");
+            assert!(!apply_peers(&mut state, id, 0, old), "the old task wrote");
+            assert_eq!(state.publications[&id].audience, AudienceKind::Peers(new));
+        }
+
+        node.shutdown().await;
+        endpoint.close().await;
+    }
 }

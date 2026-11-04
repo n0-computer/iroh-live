@@ -195,7 +195,7 @@ impl Drop for Shared {
 ///
 /// It holds a catalog, a media clock, one video slot and one audio slot. A
 /// transport that publishes it hands it the broadcast to fill: build it with
-/// [`new_in`](Self::new_in) or `From<broadcast::Producer>`, as `iroh-live`'s
+/// [`new_in`](Self::new_in) or `TryFrom<broadcast::Producer>`, as `iroh-live`'s
 /// `publish` does. A standalone one from [`new`](Self::new) reads in-process
 /// through `moq_net::Consume<broadcast::Consumer>`.
 ///
@@ -217,8 +217,11 @@ impl Default for LocalBroadcast {
     }
 }
 
-impl From<moq_net::broadcast::Producer> for LocalBroadcast {
-    fn from(producer: moq_net::broadcast::Producer) -> Self {
+impl TryFrom<moq_net::broadcast::Producer> for LocalBroadcast {
+    type Error = Error;
+
+    /// Fills `producer`, as [`LocalBroadcast::new_in`] does.
+    fn try_from(producer: moq_net::broadcast::Producer) -> Result<Self, Error> {
         Self::new_in(producer)
     }
 }
@@ -232,30 +235,31 @@ impl LocalBroadcast {
     #[must_use]
     pub fn new() -> Self {
         Self::new_in(moq_net::broadcast::Info::new().produce())
+            .expect("a new broadcast has no catalog track and is open")
     }
 
     /// Creates an empty broadcast that fills `producer`.
     ///
     /// Pass the broadcast a transport created for publishing, such as an
     /// `iroh_live_node::Publication`'s: its readers read what this writes, with
-    /// nothing copied in between. `producer` must hold no catalog track yet.
-    /// Closing this closes `producer`, which withdraws the publication.
+    /// nothing copied in between. Closing this closes `producer`, which
+    /// withdraws the publication.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `producer` already holds a catalog track.
-    #[must_use]
-    pub fn new_in(mut producer: moq_net::broadcast::Producer) -> Self {
+    /// Returns [`Error::Broadcast`] if `producer` already holds a catalog
+    /// track, or is closed.
+    pub fn new_in(mut producer: moq_net::broadcast::Producer) -> Result<Self, Error> {
         // The catalog advertises the clock's wall mapping, so it is built with
         // the clock that stamps the media.
         let clock = moq_mux::Clock::new();
         let config = moq_mux::catalog::Config::default()
             .with_catalog(hang::catalog::Catalog::default())
             .with_clock(clock.clone());
-        let catalog = moq_mux::catalog::Producer::new(&mut producer, config)
-            .expect("the broadcast has no catalog track yet");
+        let catalog =
+            moq_mux::catalog::Producer::new(&mut producer, config).map_err(Error::broadcast)?;
         let span = info_span!("broadcast");
-        Self {
+        Ok(Self {
             shared: Arc::new(Shared {
                 producer,
                 catalog: Mutex::new(catalog),
@@ -273,7 +277,7 @@ impl LocalBroadcast {
                 retiring: Mutex::new(n0_future::task::JoinSet::new()),
                 span,
             }),
-        }
+        })
     }
 
     /// Encodes `source` into every rendition of `encoding`, replacing the current video.

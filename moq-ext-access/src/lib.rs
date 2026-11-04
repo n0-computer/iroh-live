@@ -194,6 +194,13 @@ pub enum LinkRole {
 /// Each path is a literal pattern, so nothing beside the listed publications
 /// matches: not a path below one, and not a route the node learned from
 /// another link. A path no pattern can spell is left out.
+///
+/// The result grows with the number of visible publications, and moq bounds
+/// it. moq refuses an AUTH_OK larger than 64 KiB, which a session that
+/// reports its grant to the peer sends, and caps a union of patterns at
+/// [`Pattern::MAX_INTERSECTIONS`] (1024) members. A link that may see more
+/// publications than that, or whose paths add up to more bytes, cannot be
+/// granted them one by one.
 #[must_use]
 pub fn visible_paths<'a, P: PeerId>(
     publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,

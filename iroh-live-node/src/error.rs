@@ -21,11 +21,22 @@ pub enum Error {
     /// The peer negotiated an ALPN this build does not speak.
     #[error("the peer negotiated an ALPN this build does not speak: {alpn}")]
     UnsupportedAlpn { alpn: String },
-    /// The MoQ handshake or the session failed.
-    #[error("the MoQ session failed")]
-    Node {
+    /// moq-net refused an operation.
+    ///
+    /// The MoQ handshake or the session failed, a path did not parse, or the
+    /// route table refused to create or announce a broadcast.
+    #[error("moq-net failed")]
+    Moq {
         #[error(source, std_err)]
         source: moq_net::Error,
+    },
+    /// The fill passed to [`Node::publish_with`](crate::Node::publish_with) failed.
+    ///
+    /// The broadcast was closed and never announced.
+    #[error("failed to fill the broadcast")]
+    Fill {
+        #[error(source, std_err)]
+        source: AnyError,
     },
     /// The peer refused the session this node opened.
     #[error("the peer refused the session")]
@@ -100,7 +111,7 @@ pub(crate) fn to_path(
     path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
 ) -> Result<moq_net::Path, Error> {
     path.try_into().map_err(|source| {
-        n0_error::e!(Error::Node {
+        n0_error::e!(Error::Moq {
             source: source.into()
         })
     })

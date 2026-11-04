@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    convert::Infallible,
     sync::{Arc, Mutex},
 };
 
@@ -207,6 +208,10 @@ impl Node {
     /// grant lets the peer see exactly the publications whose audience admits
     /// it. Changing the audience re-authorizes every live session at once.
     ///
+    /// A grant lists each visible publication's path, so moq's limits on a
+    /// grant bound how many publications one peer can see, as
+    /// [`moq_ext_access::visible_paths`] describes.
+    ///
     /// # Errors
     ///
     /// Fails with [`Error::Duplicate`] if another publication has the path,
@@ -218,7 +223,8 @@ impl Node {
         audience: Audience,
     ) -> Result<Publication, Error> {
         let path = crate::error::to_path(path)?;
-        let (publication, ()) = publish::publish(&self.shared, path, audience, |_| ())?;
+        let (publication, ()) =
+            publish::publish(&self.shared, path, audience, |_| Ok::<_, Infallible>(()))?;
         Ok(publication)
     }
 
@@ -227,18 +233,23 @@ impl Node {
     /// `fill` runs once, with the broadcast before anyone can see it, and its
     /// result comes back with the publication. Create the tracks a reader
     /// needs first there, such as a catalog, so no reader finds the broadcast
-    /// without them. It runs under the node's lock: it must not call back into
-    /// the node.
+    /// without them. It runs before the node takes its lock, so it may call
+    /// back into the node. If the path turns out to be taken, the broadcast
+    /// is closed and what `fill` returned is dropped.
     ///
     /// # Errors
     ///
-    /// As [`publish`](Self::publish).
-    pub fn publish_with<T>(
+    /// As [`publish`](Self::publish), and [`Error::Fill`] if `fill` fails,
+    /// which closes the broadcast.
+    pub fn publish_with<T, E>(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
         audience: Audience,
-        fill: impl FnOnce(&broadcast::Producer) -> T,
-    ) -> Result<(Publication, T), Error> {
+        fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
+    ) -> Result<(Publication, T), Error>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         publish::publish(&self.shared, crate::error::to_path(path)?, audience, fill)
     }
 
