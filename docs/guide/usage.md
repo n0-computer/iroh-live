@@ -240,10 +240,11 @@ paths. A real application also resubscribes when a broadcast ends: see
 ## Publish at your own path
 
 `publish` and `subscribe` use the `live/<id>/<name>` layout and a ticket.
-`publish_at` and `subscribe_path` take any path, and `Audience::Peers` limits
+`publish_at` and `subscribe_path` take any path, and `Audience::peers` limits
 who sees the broadcast: moq enforces it on each live session, so a peer taken
-out of the set loses the path at once. Nothing here is a ticket: the subscriber
-needs the publisher's id and the path.
+out of the set loses the path at once. To change the set later, publish with
+`Audience::Peers(set)` and keep a clone of the `n0_watcher::Watchable` set.
+Nothing here is a ticket: the subscriber needs the publisher's id and the path.
 
 The subscriber's node also has to let the publisher announce that path. The
 default grant allows only `live/<id>/`, so this program widens it with a scope
@@ -251,8 +252,6 @@ that names the peer, `stage/<id>/**`. Run it with no argument to publish and
 print the id, and with that id to watch.
 
 ```rust
-use std::collections::BTreeSet;
-
 use iroh::EndpointId;
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
@@ -260,7 +259,6 @@ use iroh_live::{
     node::net::Pattern,
     node_config_with,
 };
-use n0_watcher::Watchable;
 
 /// What a peer may publish on this node: `stage/<its id>/**`.
 fn stage_scope(peer: EndpointId) -> Pattern {
@@ -283,8 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     match mode.as_deref() {
         Some("publish") => {
-            // Visible to `other` only. The set is watched, so it can change.
-            let audience = Audience::Peers(Watchable::new(BTreeSet::from([other])));
+            // Visible to `other` only.
+            let audience = Audience::peers([other]);
             let publication = live.publish_at(&format!("stage/{me}/main"), audience)?;
             let broadcast = LocalBroadcast::new_in(publication.broadcast().clone())?;
             let rate = video::FrameRate::new(30, 1).expect("a valid rate");

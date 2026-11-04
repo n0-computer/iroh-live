@@ -695,7 +695,7 @@ async fn the_route_table_serves_every_publication() {
     let alice = Peer::spawn().await;
     let origin = alice.moq.origin();
     let public = publish(&alice.moq, alice.path("public"), Audience::Everyone).expect("publish");
-    let nobody = Audience::Peers(Watchable::new(BTreeSet::new()));
+    let nobody = Audience::peers([]);
     let secret = publish(&alice.moq, alice.path("secret"), nobody).expect("publish");
 
     for publication in [&public, &secret] {
@@ -842,7 +842,7 @@ async fn a_changed_audience_retracts_and_grants_live() {
 
     // The audience can change wholesale, too.
     let mut carol_reading = reading(&for_carol.as_moq()).await;
-    publication.set_audience(Audience::Peers(Watchable::new(BTreeSet::new())));
+    publication.set_audience(Audience::peers([]));
     let err = reset(&mut carol_reading).await;
     assert!(unauthorized(&err), "carol's read ended with {err:#}");
     publication.set_audience(Audience::Everyone);

@@ -148,6 +148,23 @@ pub enum Audience<P: PeerId> {
     Peers(n0_watcher::Watchable<BTreeSet<P>>),
 }
 
+impl<P: PeerId> Audience<P> {
+    /// Returns an audience of `peers`, as a set nobody else holds.
+    ///
+    /// To change the set later, keep a clone of the watchable and build
+    /// [`Audience::Peers`] from it, or replace the whole audience.
+    ///
+    /// ```
+    /// use moq_ext_access::Audience;
+    ///
+    /// let only_bob: Audience<&str> = Audience::peers(["bob"]);
+    /// ```
+    #[must_use]
+    pub fn peers(peers: impl IntoIterator<Item = P>) -> Self {
+        Self::Peers(n0_watcher::Watchable::new(peers.into_iter().collect()))
+    }
+}
+
 #[allow(
     clippy::derivable_impls,
     reason = "a derived Default would require `P: Default`, which peer ids such as iroh's EndpointId are not"

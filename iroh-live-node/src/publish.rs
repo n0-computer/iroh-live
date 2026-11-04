@@ -306,7 +306,6 @@ pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use iroh::{Endpoint, SecretKey, endpoint::presets};
-    use n0_watcher::Watchable;
 
     use super::*;
     use crate::{Node, NodeConfig};
@@ -325,13 +324,10 @@ mod tests {
         );
         let old = BTreeSet::from([revoked, kept]);
         let publication = node
-            .publish(
-                "live/test/cam",
-                Audience::Peers(Watchable::new(old.clone())),
-            )
+            .publish("live/test/cam", Audience::peers(old.clone()))
             .expect("publish");
         let new = BTreeSet::from([kept]);
-        publication.set_audience(Audience::Peers(Watchable::new(new.clone())));
+        publication.set_audience(Audience::peers(new.clone()));
 
         let id = publication.inner.id;
         {
