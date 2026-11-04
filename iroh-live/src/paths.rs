@@ -23,8 +23,8 @@ pub const CALL: &str = "call";
 
 /// Returns the path of `peer`'s broadcast `name`: `live/<peer>/<name>`.
 ///
-/// A string, since a name may not make a valid moq path; publishing or
-/// subscribing at it says so.
+/// The path is a string, since a name may not make a valid moq path.
+/// Publishing or subscribing at such a path fails with an invalid path.
 ///
 /// ```
 /// let peer = iroh::SecretKey::generate().public();

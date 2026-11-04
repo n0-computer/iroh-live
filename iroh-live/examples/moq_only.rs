@@ -21,14 +21,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let moq = Node::new(endpoint.clone(), NodeConfig::default());
     let router = moq.mount(Router::builder(endpoint.clone())).spawn();
 
-    // An empty broadcast in the route table; a real one writes tracks into
+    // An empty broadcast in the route table. A real one writes tracks into
     // `publication.broadcast()`.
     let _publication = moq.publish("demo/hello", Audience::Everyone)?;
     println!("serving demo/hello as {}", endpoint.id());
 
     tokio::signal::ctrl_c().await?;
     moq.shutdown().await;
+    // Also closes the endpoint.
     router.shutdown().await?;
-    endpoint.close().await;
     Ok(())
 }

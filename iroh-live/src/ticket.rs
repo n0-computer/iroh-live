@@ -65,8 +65,8 @@ impl BroadcastTicket {
 
     /// Returns the path the broadcast is published at: `live/<peer>/<name>`.
     ///
-    /// A string, since a name may not make a valid moq path; publishing or
-    /// subscribing at it says so.
+    /// The path is a string, since a name may not make a valid moq path.
+    /// Publishing or subscribing at such a path fails with an invalid path.
     #[must_use]
     pub fn path(&self) -> String {
         paths::broadcast(self.peer, &self.name)
