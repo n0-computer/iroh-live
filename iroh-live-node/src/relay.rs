@@ -48,7 +48,7 @@ pub const DEFAULT_RELAY_COST: u64 = 10;
 pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
     pub url: Url,
-    /// Sent as `?jwt=` in the URL.
+    /// Sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
     pub token: Option<String>,
     /// Added to every route through this relay.
     ///
@@ -569,11 +569,10 @@ async fn dial_relay(
     ),
     Error,
 > {
-    let dialed =
-        transport::dial_with(&shared.endpoint, relay.into(), &options.dial_options()).await?;
-    let connection = dialed.conn().clone();
+    let transport = transport::dial(&shared.endpoint, relay).await?;
+    let connection = transport.conn().clone();
     let (moq, driver) = client_handshake(
-        dialed,
+        transport,
         options,
         relay,
         publish,

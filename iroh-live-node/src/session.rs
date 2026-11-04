@@ -42,12 +42,6 @@ pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
     moq_net::Hop::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero and below 2^62")
 }
 
-/// The transport a MoQ session runs over.
-///
-/// web-transport-iroh through moq-tokio's poll adapter, which costs an
-/// allocation per operation and a copy per write.
-pub(crate) type Transport = moq_transport_iroh::AdaptedTransport<web_transport_iroh::Session>;
-
 /// Returns the instant a session's driver starts from.
 ///
 /// Read from tokio's clock, which `moq_net::time::run` polls the driver with.
@@ -314,11 +308,11 @@ pub(crate) async fn dial_session(
         .grant
         .clone()
         .unwrap_or_else(|| shared.grant_for(remote_id));
-    let dialed = transport::dial_with(&shared.endpoint, remote, &options.dial_options()).await?;
-    let connection = dialed.conn().clone();
+    let transport = transport::dial(&shared.endpoint, remote).await?;
+    let connection = transport.conn().clone();
     let auth = authorized(&shared, remote_id, &grant);
     let (moq, driver) = client_handshake(
-        dialed,
+        transport,
         &options,
         remote_id,
         &served(&shared.table),
@@ -347,7 +341,7 @@ pub(crate) async fn dial_session(
 /// Offers `publish` to the peer within what `auth` authorizes and, if given,
 /// writes what the peer announces to `subscriber`.
 pub(crate) async fn client_handshake(
-    dialed: transport::Dialed,
+    transport: transport::Transport,
     options: &ConnectOptions,
     remote: EndpointId,
     publish: &origin::Consumer,
@@ -364,20 +358,17 @@ pub(crate) async fn client_handshake(
     if let Some(cost) = options.cost {
         client = client.with_cost(cost);
     }
-    // An H3 session carries the token in its CONNECT URL already.
-    let address = if dialed.is_h3() {
-        moq_net::transport::Address::Uri
-    } else {
-        if let Some(path) = options.setup_path()
-            && let Ok(url) = url::Url::parse(&format!("moqt://iroh{path}"))
-        {
-            client = client.with_url(url);
-        }
-        moq_net::transport::Address::Setup
-    };
-    client
-        .connect(driver_now(), Transport::new(dialed.session, address))
-        .await
+    if let Some(token) = options.setup_token() {
+        client = client.with_token(token);
+    }
+    // The SETUP of moq-lite-06, the newest version iroh peers negotiate, has no
+    // token field, so the token also rides the setup path.
+    if let Some(path) = options.setup_path()
+        && let Ok(url) = url::Url::parse(&format!("moqt://iroh{path}"))
+    {
+        client = client.with_url(url);
+    }
+    client.connect(driver_now(), transport).await
 }
 
 /// How long [`Node::shutdown`] gives a session to tell its peer it is closing.

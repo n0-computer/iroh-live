@@ -2,7 +2,7 @@
 name = "moq-transport-iroh"
 version = "0.1.0"
 edition = "2024"
-description = "MoQ sessions over iroh connections: dial, accept, a poll adapter and link statistics"
+description = "MoQ sessions over iroh connections: dial, accept, moq-net's poll transport and link statistics"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
@@ -12,6 +12,7 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
+bytes = "1"
 iroh = { workspace = true }
 moq-net = { workspace = true }
 n0-error = "1"
@@ -20,12 +21,7 @@ noq-proto = { workspace = true }
 # `time` drives the link sampler's interval.
 tokio = { version = "1.53.1", features = ["time"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
 url = "2.5.8"
-web-transport-iroh = { workspace = true }
-# The vendored async-to-poll adapter (`src/adapter.rs`).
-bytes = "1"
-futures = "0.3"
-thiserror = "2"
-web-transport-trait = "0.5"
-# The H3 CONNECT types, which web-transport-iroh uses but does not re-export.
-web-transport-proto = "0.6"

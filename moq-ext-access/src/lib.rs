@@ -85,13 +85,13 @@ impl Grant {
 pub struct SessionRequest {
     path: String,
     query: Vec<(String, String)>,
-    headers: Vec<(String, String)>,
+    token: Option<String>,
 }
 
 impl SessionRequest {
-    /// Parses a request target, `/<path>?<query>`, and its headers.
+    /// Parses a request target, `/<path>?<query>`.
     #[must_use]
-    pub fn new(target: &str, headers: Vec<(String, String)>) -> Self {
+    pub fn new(target: &str) -> Self {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let query = url::form_urlencoded::parse(query.as_bytes())
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -99,13 +99,18 @@ impl SessionRequest {
         Self {
             path: path.trim_matches('/').to_owned(),
             query,
-            headers,
+            token: None,
         }
     }
 
+    /// Sets the token the peer presented outside the target, such as in its MoQ SETUP.
+    #[must_use]
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
     /// Returns the request path, without its query.
-    ///
-    /// The setup path on a raw session, the CONNECT path on an HTTP/3 one.
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
@@ -120,15 +125,14 @@ impl SessionRequest {
             .map(|(_, value)| value.as_str())
     }
 
-    /// Returns an HTTP/3 CONNECT header, matched case-insensitively.
+    /// Returns the token the peer presented.
     ///
-    /// Always `None` on raw sessions.
+    /// That is the token set with [`with_token`](Self::with_token), or else the
+    /// `jwt` query parameter. A peer on a MoQ version whose SETUP cannot carry
+    /// a token sends it in the query.
     #[must_use]
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref().or_else(|| self.query("jwt"))
     }
 }
 
@@ -242,15 +246,20 @@ mod tests {
 
     #[test]
     fn a_request_splits_its_path_and_query() {
-        let request = SessionRequest::new(
-            "/studio?jwt=abc%2Bdef&x=1",
-            vec![("Authorization".into(), "Bearer t".into())],
-        );
+        let request = SessionRequest::new("/studio?jwt=abc%2Bdef&x=1");
         assert_eq!(request.path(), "studio");
         assert_eq!(request.query("jwt"), Some("abc+def"));
         assert_eq!(request.query("x"), Some("1"));
         assert_eq!(request.query("y"), None);
-        assert_eq!(request.header("authorization"), Some("Bearer t"));
+    }
+
+    #[test]
+    fn a_setup_token_wins_over_the_query() {
+        let request = SessionRequest::new("/studio?jwt=from-query");
+        assert_eq!(request.token(), Some("from-query"));
+        let request = request.with_token("from-setup");
+        assert_eq!(request.token(), Some("from-setup"));
+        assert_eq!(SessionRequest::new("/studio").token(), None);
     }
 
     #[test]

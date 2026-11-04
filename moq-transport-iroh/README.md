@@ -11,13 +11,13 @@ which is built on this crate.
 
 ## What is in it
 
-- `dial` and `accept`: negotiate raw QUIC or HTTP/3 by ALPN and complete the
-  WebTransport handshake. `dial_with` carries a token for an HTTP/3 CONNECT.
-- `poll_session`: wraps the result for `moq_net::Client` or `moq_net::Server`,
-  through a vendored copy of moq-tokio's async-to-poll adapter. It goes away
-  once web-transport-iroh speaks moq-net's poll traits itself.
+- `dial` and `accept`: check the negotiated ALPN and return a `Transport`.
+- `Transport`: moq-net's poll transport (`moq_net::transport::poll::Session`)
+  implemented on the iroh connection and its streams. Hand it to
+  `moq_net::Client::connect` or `moq_net::Server::accept_request`. MoQ runs on
+  raw QUIC, so the request path and any token travel in the MoQ SETUP.
 - `ALPN`, `alpns()`, `HANDSHAKE_TIMEOUT`: the protocol identifiers to mount a
-  handler under, newest MoQ version first, then HTTP/3.
+  handler under, newest MoQ version first.
 - `MoqPreset`: iroh's N0 preset with BBR3, so the send-rate estimate moq-net
   gives subscribers tracks the link.
 - `LinkSampler`, `LinkSample`, `watch`: sample a connection's selected path
@@ -25,12 +25,19 @@ which is built on this crate.
   peer's delivery estimate.
 
 ```rust
-use moq_transport_iroh::{MoqPreset, dial, poll_session};
+use moq_transport_iroh::{MoqPreset, dial};
 
 let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-let session = dial(&endpoint, peer).await?;
-// Hand `poll_session(session, false)` to `moq_net::Client::connect`.
+let transport = dial(&endpoint, peer).await?;
+let (session, driver) = moq_net::Client::new()
+    .connect(moq_net::time::Instant::now(), transport)
+    .await?;
 ```
+
+iroh has no send groups, so `send_group` returns `None` and streams order by
+their own priority. `probe` and `receive_window` return `None`: iroh's
+congestion controller takes no probe target, and iroh does not report its
+receive windows.
 
 See `iroh-live-relay/src/iroh_sessions.rs` for the server side.
 

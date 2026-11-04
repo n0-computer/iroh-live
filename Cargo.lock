@@ -3453,7 +3453,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "hex",
- "kio 0.6.2",
+ "kio",
  "moq-json",
  "moq-net",
  "serde",
@@ -4530,7 +4530,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "web-transport-iroh",
 ]
 
 [[package]]
@@ -4963,16 +4962,6 @@ dependencies = [
  "serde_with",
  "smallvec",
  "tokio",
-]
-
-[[package]]
-name = "kio"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18e98fd8a19fa1eea91cb422c970b27be82e941dfc51ecae704dd97bd315874d"
-dependencies = [
- "loom",
- "smallvec",
 ]
 
 [[package]]
@@ -5470,7 +5459,7 @@ dependencies = [
  "cpal",
  "dispatch2",
  "hang",
- "kio 0.6.2",
+ "kio",
  "moq-mux",
  "moq-net",
  "objc2 0.6.4",
@@ -5499,7 +5488,7 @@ dependencies = [
  "base64 0.23.1",
  "data-encoding",
  "jsonwebtoken",
- "kio 0.6.2",
+ "kio",
  "moq-pattern",
  "pkcs1",
  "pkcs8 0.11.0",
@@ -5524,7 +5513,7 @@ name = "moq-congestion"
 version = "0.1.0"
 source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
 dependencies = [
- "kio 0.6.2",
+ "kio",
  "rand",
  "rand_pcg",
  "tracing",
@@ -5658,7 +5647,7 @@ version = "0.5.8"
 source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
 dependencies = [
  "bytes",
- "kio 0.6.2",
+ "kio",
  "moq-net",
  "serde",
  "serde_json",
@@ -5700,7 +5689,7 @@ dependencies = [
  "ebml-iterable",
  "h264-reader",
  "hang",
- "kio 0.6.2",
+ "kio",
  "memchr",
  "moq-json",
  "moq-loc",
@@ -5734,7 +5723,7 @@ dependencies = [
  "futures",
  "hashbrown 0.17.1",
  "hashlink",
- "kio 0.6.2",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand",
@@ -5773,7 +5762,7 @@ dependencies = [
  "bytes",
  "fastbloom",
  "indexmap 2.14.2",
- "kio 0.6.2",
+ "kio",
  "lru-slab",
  "moq-congestion",
  "rand",
@@ -5804,7 +5793,7 @@ dependencies = [
  "humantime",
  "hyper",
  "hyper-util",
- "kio 0.6.2",
+ "kio",
  "moq-auth",
  "moq-net",
  "moq-quic",
@@ -5838,7 +5827,7 @@ name = "moq-room"
 version = "0.2.11"
 source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
 dependencies = [
- "kio 0.6.2",
+ "kio",
  "moq-auth",
  "moq-json",
  "moq-net",
@@ -5865,7 +5854,7 @@ name = "moq-stats"
 version = "0.2.12"
 source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa833d805620d97d372465"
 dependencies = [
- "kio 0.6.2",
+ "kio",
  "moq-json",
  "moq-net",
  "serde",
@@ -5891,7 +5880,7 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "jni 0.22.4",
- "kio 0.6.2",
+ "kio",
  "libc",
  "moq-congestion",
  "moq-net",
@@ -5931,18 +5920,13 @@ name = "moq-transport-iroh"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "futures",
  "iroh",
  "moq-net",
  "n0-error",
  "noq-proto",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "url",
- "web-transport-iroh",
- "web-transport-proto",
- "web-transport-trait",
 ]
 
 [[package]]
@@ -5986,7 +5970,7 @@ dependencies = [
  "fast_image_resize",
  "h264-reader",
  "hang",
- "kio 0.6.2",
+ "kio",
  "libc",
  "libloading 0.9.0",
  "linux-raw-sys 0.12.1",
@@ -8044,7 +8028,7 @@ source = "git+https://github.com/moq-dev/moq?rev=801fd9a2f#801fd9a2f2f5c88371fa8
 dependencies = [
  "bytes",
  "futures",
- "kio 0.6.2",
+ "kio",
  "libc",
  "moq-net",
  "moq-quic",
@@ -10889,25 +10873,6 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "web-transport-iroh"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70f38621accfacdba98b751e09e305420d04f4968af5b87a6e82af600f92ee77"
-dependencies = [
- "bytes",
- "http",
- "iroh",
- "kio 0.6.4",
- "n0-error",
- "n0-future",
- "tokio",
- "tracing",
- "url",
- "web-transport-proto",
- "web-transport-trait",
 ]
 
 [[package]]
