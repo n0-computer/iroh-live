@@ -1,7 +1,7 @@
 //! Pull mode: serving a broadcast ticket's broadcast from the relay.
 //!
-//! The relay's iroh-live-node node uses the cluster origin as its route table. When
-//! a session names a valid [`BroadcastTicket`], the node subscribes to the
+//! The relay's [`Node`] uses the cluster origin as its route table. When a
+//! session names a valid [`BroadcastTicket`], the node subscribes to the
 //! ticket's broadcast, and the publisher's session announces it straight into
 //! the cluster at its own path, `live/<publisher>/<name>`. Nothing is copied:
 //! cluster readers read the session's broadcast. The session's grant lets the
