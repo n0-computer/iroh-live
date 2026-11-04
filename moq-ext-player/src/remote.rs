@@ -28,6 +28,14 @@ use crate::{RecordConfig, Recording};
 /// late, as [`RemoteBroadcast::closed`] documents.
 const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 
+/// The first wait before asking again for a catalog track that is not there yet.
+///
+/// Doubles per attempt, up to [`CATALOG_RETRY_MAX`].
+const CATALOG_RETRY: Duration = Duration::from_millis(50);
+
+/// The longest wait between two requests for a catalog track that is not there yet.
+const CATALOG_RETRY_MAX: Duration = Duration::from_secs(2);
+
 /// The broadcast consumer a player reads, and how many times it has changed.
 #[derive(derive_more::Debug, Clone, Default)]
 pub(crate) struct Epoch {
@@ -368,16 +376,33 @@ async fn follow(
 }
 
 /// Reads catalog updates into `catalog` until the catalog track ends.
+///
+/// A broadcast may be announced before its publisher creates the catalog
+/// track, so a catalog that is not found yet is asked for again, with a
+/// growing wait, until it appears or the broadcast closes. Cancellation safe.
 async fn read_catalog(
     consumer: &moq_net::broadcast::Consumer,
     catalog: &watch::Sender<Option<Arc<Catalog>>>,
 ) {
-    let mut reader = match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await
-    {
-        Ok(reader) => reader,
-        Err(err) => {
-            warn!(error = %err, "the catalog track could not be read");
-            return;
+    let mut retry = CATALOG_RETRY;
+    let mut reader = loop {
+        match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await {
+            Ok(reader) => break reader,
+            Err(moq_mux::Error::Moq(moq_net::Error::NotFound)) => {
+                debug!(retry = ?retry, "no catalog track yet, asking again");
+                tokio::select! {
+                    () = tokio::time::sleep(retry) => {}
+                    () = consumer.closed() => {
+                        debug!("the broadcast closed before its catalog appeared");
+                        return;
+                    }
+                }
+                retry = (retry * 2).min(CATALOG_RETRY_MAX);
+            }
+            Err(err) => {
+                warn!(error = %err, "the catalog track could not be read");
+                return;
+            }
         }
     };
     loop {
@@ -403,6 +428,51 @@ mod tests {
     use moq_net::{Instance, origin::Route};
 
     use super::*;
+
+    /// A catalog track created after the broadcast is read is still found.
+    #[tokio::test]
+    async fn a_catalog_created_late_is_read() {
+        let producer = moq_net::broadcast::Info::new().produce();
+        let remote = RemoteBroadcast::from_consumer(producer.consume());
+        // Long enough for the first request to find no catalog.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(remote.catalog().borrow().is_none());
+
+        let broadcast =
+            moq_ext_publisher::LocalBroadcast::new_in(producer).expect("no catalog yet");
+        // An empty catalog is written once there is media to describe.
+        broadcast
+            .set_video(
+                moq_ext_sources::VideoSource::test_pattern(
+                    moq_video::Size::new(320, 180),
+                    moq_video::FrameRate::new(30, 1).expect("a valid rate"),
+                ),
+                moq_ext_publisher::VideoEncoding {
+                    prefer_hardware: false,
+                    ..moq_ext_publisher::VideoEncoding::single(
+                        moq_ext_publisher::VideoRendition::new("video"),
+                    )
+                },
+            )
+            .expect("a valid encoding");
+        let mut catalog = remote.catalog();
+        tokio::time::timeout(Duration::from_secs(5), catalog.wait_for(Option::is_some))
+            .await
+            .expect("the late catalog was read")
+            .expect("the remote is alive");
+    }
+
+    /// A broadcast that closes while its catalog is awaited closes its remote.
+    #[tokio::test]
+    async fn a_broadcast_closed_before_its_catalog_closes_its_remote() {
+        let producer = moq_net::broadcast::Info::new().produce();
+        let remote = RemoteBroadcast::from_consumer(producer.consume());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        producer.close();
+        tokio::time::timeout(Duration::from_secs(5), remote.closed())
+            .await
+            .expect("the remote saw the close");
+    }
 
     #[tokio::test]
     async fn a_closed_local_broadcast_closes_its_remote() {

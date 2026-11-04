@@ -104,7 +104,8 @@ async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
 async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> Result {
     // The import creates its tracks once it has read the file's header, a
     // moment after the broadcast is published. A reader that asks within that
-    // moment finds no catalog yet, and asks again.
+    // moment finds no catalog yet: `RemoteBroadcast` asks again until it
+    // appears, while other readers may give up.
     let producer: broadcast::Producer = live.publish(&args.transport.name)?;
     let import = match FileImport::open(producer.clone(), source).await {
         Ok(import) => import,
