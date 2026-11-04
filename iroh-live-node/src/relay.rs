@@ -114,7 +114,7 @@ pub enum RelayStatus {
     Connecting,
     /// A session with the relay is up.
     Connected,
-    /// The session dropped; redialing with backoff.
+    /// The session dropped, and the link redials with backoff.
     Reconnecting,
     /// The link was detached, or the node shut down.
     Detached,
@@ -393,8 +393,8 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
             status: status.clone(),
         },
     );
-    // A shutdown that ran between the check above and the insert found
-    // no task to stop; stop it here instead.
+    // A shutdown that ran between the check above and the insert found no
+    // task to stop, so stop it here instead.
     if shared.shutdown.is_cancelled() {
         moq.tasks.detach_relays();
         return Err(e!(Error::ShutDown));
@@ -459,6 +459,11 @@ async fn tokio_uplink(
                 status.set(RelayStatus::Reconnecting).ok();
             }
             Ok(other) => debug!(?other, "relay status"),
+            // A detach aborts the connection, which is no failure.
+            Err(moq_tokio::Error::Stopped) => {
+                debug!("relay link stopped");
+                break;
+            }
             Err(err) => {
                 warn!(%err, "relay link ended");
                 break;
@@ -584,7 +589,7 @@ async fn dial_relay(
     Ok((moq, driver, connection))
 }
 
-/// A uniform sample from `[0.5, 1)`, enough to spread redials.
+/// Returns a factor in `[0.5, 1)` from the clock, random enough to spread redials.
 fn rand_unit() -> f64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -599,5 +604,29 @@ struct StopOnDrop(moq_tokio::Connection);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
         self.0.abort(moq_net::Error::Cancel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    use super::*;
+
+    #[test]
+    fn dial_url_carries_the_token_as_jwt() {
+        let mut config = RelayConfig::new("https://relay.example/room".parse().expect("url"));
+        assert_eq!(config.dial_url().as_str(), "https://relay.example/room");
+        config.token = Some("a+b".into());
+        assert_eq!(config.dial_url().as_str(), "https://relay.example/room?jwt=a%2Bb");
+    }
+
+    #[test]
+    fn iroh_config_names_the_endpoint_id() {
+        let id = SecretKey::generate().public();
+        let config = RelayConfig::iroh(id);
+        assert_eq!(config.url.scheme(), "iroh");
+        assert_eq!(config.url.host_str(), Some(id.to_string().as_str()));
+        assert_eq!(config.cost, DEFAULT_RELAY_COST);
     }
 }
