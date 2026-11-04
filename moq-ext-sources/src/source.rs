@@ -23,8 +23,7 @@ pub use self::rpicam::RpicamConfig;
 pub use self::sender::FrameSender;
 pub use self::sender::{Demand, DemandGuard, PcmFanout, WeakPcmFanout};
 use crate::{
-    audio,
-    error::Error,
+    Error, audio,
     frames::{FrameReader, FrameSlot, VideoFrames},
     video,
 };

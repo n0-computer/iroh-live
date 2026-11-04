@@ -13,8 +13,6 @@ use moq_audio::playback;
 
 use moq_ext_media_core::Error;
 use moq_ext_sources::AudioFormat;
-#[cfg(feature = "aec")]
-use moq_ext_sources::Error as SourceError;
 
 /// Where a player writes its audio: an opened device engine, or nowhere.
 ///
@@ -105,7 +103,7 @@ impl AudioTarget {
 #[cfg(feature = "aec")]
 impl moq_ext_sources::EchoReference for AudioTarget {
     /// Returns `None` for a null target, which plays nothing and has no echo.
-    fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, moq_ext_sources::Error> {
+    fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, Error> {
         #[cfg(test)]
         self.cancellers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -114,10 +112,10 @@ impl moq_ext_sources::EchoReference for AudioTarget {
                 .canceller(moq_audio::aec::Config::default())
                 .map(Some)
                 .map_err(|err| match err {
-                    moq_audio::Error::Busy(reason) => SourceError::invalid(format!(
+                    moq_audio::Error::Busy(reason) => Error::invalid(format!(
                         "this output already cancels the echo of another microphone ({reason})"
                     )),
-                    other => SourceError::device(other),
+                    other => Error::device(other),
                 }),
             Inner::Null => Ok(None),
         }
