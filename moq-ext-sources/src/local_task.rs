@@ -11,7 +11,6 @@
 
 use std::future::Future;
 
-use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// A handle that stops its task when dropped.
@@ -21,7 +20,9 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 pub struct LocalTask {
     shutdown: CancellationToken,
-    joined: Option<oneshot::Receiver<()>>,
+    /// Cancelled once the thread has finished, also when it panicked or never
+    /// started.
+    released: CancellationToken,
 }
 
 impl Drop for LocalTask {
@@ -38,15 +39,16 @@ impl LocalTask {
     ///
     /// Returns at once after that, on every later call. Cancellation safe: a
     /// later call waits again.
-    pub async fn joined(&mut self) {
-        let Some(rx) = self.joined.as_mut() else {
-            return;
-        };
-        // By mutable reference, so dropping this future keeps the receiver.
-        let _ = rx.await;
-        // Cleared only after it resolves, because a resolved
-        // `oneshot::Receiver` must not be polled again.
-        self.joined = None;
+    pub async fn joined(&self) {
+        self.released.cancelled().await;
+    }
+
+    /// Returns a token that is cancelled once the thread has finished.
+    ///
+    /// It outlives this handle, so a caller can wait for the release after the
+    /// handle is gone.
+    pub(crate) fn released(&self) -> CancellationToken {
+        self.released.clone()
     }
 }
 
@@ -63,7 +65,10 @@ where
     Fut: Future<Output = ()>,
 {
     let token = stop.clone();
-    let (tx, rx) = oneshot::channel();
+    let released = CancellationToken::new();
+    // Dropped with the closure, so a panic or a thread that does not start
+    // also counts as released.
+    let release = released.clone().drop_guard();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -71,11 +76,13 @@ where
         .name(name.to_string())
         .spawn(move || {
             runtime.block_on(make(token));
-            let _ = tx.send(());
+            // The runtime may still own tasks that hold the device.
+            drop(runtime);
+            drop(release);
         })?;
     Ok(LocalTask {
         shutdown: stop,
-        joined: Some(rx),
+        released,
     })
 }
 
@@ -91,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_join_still_waits_the_next_time() {
         let (release, released) = std::sync::mpsc::channel::<()>();
-        let mut task = spawn(
+        let task = spawn(
             "test-late-release",
             CancellationToken::new(),
             move |_shutdown| async move {
@@ -122,5 +129,17 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), task.joined())
             .await
             .expect("a second call after completion returns");
+    }
+
+    /// A task that panics still releases, so nobody waits on it forever.
+    #[tokio::test]
+    async fn a_panicked_task_counts_as_released() {
+        let task = spawn("test-panic", CancellationToken::new(), |_shutdown| async {
+            panic!("the device driver crashed");
+        })
+        .expect("the thread starts");
+        tokio::time::timeout(Duration::from_secs(5), task.joined())
+            .await
+            .expect("the panic released the task");
     }
 }
