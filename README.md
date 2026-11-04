@@ -110,6 +110,17 @@ through and has no default features. `full` turns on `media`, `capture`,
 feature implies it. `rooms` re-exports `iroh-live-rooms` and adds
 `LiveBuilder::with_rooms`.
 
+### The moq dependency
+
+iroh-live depends on the unreleased `main` branch of
+[moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
+`Cargo.toml`. The pinned rev is `02e82fdcd` (2026-11-04). The moq crates on
+crates.io come from moq's `release` branch, which lags `main` by weeks.
+iroh-live uses APIs that exist only on `main`. Examples are the waiter-based
+`moq_net::transport::poll` traits that `moq-transport-iroh` implements, and the
+shared microphone capture in `moq-audio`. When a moq release contains these
+APIs, crates.io versions will replace the git pins.
+
 ### Cross-compiling for aarch64
 
 ```sh
