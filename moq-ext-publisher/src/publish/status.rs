@@ -7,10 +7,13 @@ use std::{
 
 use tokio::sync::watch;
 
-use moq_ext_media_core::{Error, SlotState, send_if_changed};
+use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
 
 /// Whether one rendition is encoding.
-#[derive(Debug, Clone, Default)]
+///
+/// Two `Failed` states are equal only when they hold the same error, as
+/// [`ByPtr`] says.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RenditionState {
     /// Advertised, but nobody is watching, so nothing is encoded.
     #[default]
@@ -21,21 +24,8 @@ pub enum RenditionState {
         encoder: String,
     },
     /// The encoder failed, and so did its fallback if there was one.
-    Failed(Arc<Error>),
+    Failed(ByPtr<Error>),
 }
-
-impl PartialEq for RenditionState {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Idle, Self::Idle) => true,
-            (Self::Encoding { encoder: left }, Self::Encoding { encoder: right }) => left == right,
-            (Self::Failed(left), Self::Failed(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for RenditionState {}
 
 /// The state of both slots of a broadcast, and of every rendition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -198,8 +188,6 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use moq_ext_media_core::ByPtr;
-
     use super::*;
 
     fn names(names: &[&str]) -> Vec<String> {

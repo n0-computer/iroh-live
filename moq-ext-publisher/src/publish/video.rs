@@ -98,8 +98,8 @@ pub(super) async fn run_raw(
     let mut last_failure = None;
     let mut fail = |rendition: &str, err: Error| {
         let err = Arc::new(err);
-        warn!(%rendition, error = %err, "rendition cannot encode");
-        reporter.rendition(rendition, RenditionState::Failed(err.clone()));
+        warn!(%rendition, error = %format!("{err:#}"), "rendition cannot encode");
+        reporter.rendition(rendition, RenditionState::Failed(err.clone().into()));
         last_failure = Some(err);
     };
     // Every rendition is probed before any is advertised, so the whole ladder
@@ -183,7 +183,7 @@ pub(super) async fn run_raw(
                 // published, and the slot must say so.
                 if failed == spawned {
                     let failure = last_failure.clone().expect("counted above");
-                    warn!(error = %failure, "no rendition can encode");
+                    warn!(error = %format!("{failure:#}"), "no rendition can encode");
                     reporter.slot(SlotState::Failed(failure.into()));
                     return;
                 }
@@ -297,13 +297,13 @@ impl Encoder {
     /// to count.
     async fn run(mut self) -> Option<Arc<Error>> {
         let err = self.encode().await.err()?;
-        warn!(error = %err, "rendition encoder failed");
+        warn!(error = %format!("{err:#}"), "rendition encoder failed");
         // Aborting the track shows a subscriber the cause instead of a bare
         // reset.
-        let cause = moq_net::Error::Transport(err.to_string());
+        let cause = moq_net::Error::Transport(format!("{err:#}"));
         let err = Arc::new(err);
         self.reporter
-            .rendition(&self.name, RenditionState::Failed(err.clone()));
+            .rendition(&self.name, RenditionState::Failed(err.clone().into()));
         self.producer.abort(cause);
         Some(err)
     }
@@ -555,7 +555,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
             reporter.slot(SlotState::Ended);
         }
         Err(err) => {
-            warn!(error = %err, "pre-encoded video failed");
+            warn!(error = %format!("{err:#}"), "pre-encoded video failed");
             reporter.slot(SlotState::Failed(ByPtr::new(err)));
         }
     }
