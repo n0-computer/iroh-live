@@ -23,8 +23,10 @@ while let Some(frame) = frames.next().await {
 
 `PlayerConfig::rendition` takes a `RenditionMode` (`moq_ext_adaptive::Mode`):
 automatic, pinned to one rendition, or off. `PlayerConfig::audio` takes an
-`AudioTarget`, which is a `moq_audio::playback::Engine` or nowhere. Dropping
-the `Player` aborts its tasks and returns at once.
+`AudioTarget`, which is a `moq_audio::playback::Engine` or `AudioTarget::null()`,
+and `None` skips audio. Dropping the `Player` aborts its tasks and returns at
+once. A session that closes ends playback quietly: a cancel from the peer is
+not a failed decoder.
 
 A broadcast published in the same process is read the same way: pass
 `broadcast.consume()` of a `moq_ext_publisher::LocalBroadcast`.

@@ -16,6 +16,7 @@ use moq_ext_sources::AudioFormat;
 
 use crate::{
     RemoteBroadcast,
+    error::CleanClose as _,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
@@ -84,8 +85,14 @@ pub(crate) async fn run(inputs: Inputs) {
                             control,
                         ))
                     }
+                    // The session closed while the track opened. The epoch
+                    // or the catalog changes next, and nothing failed.
+                    Err(err @ Error::Closed { .. }) => {
+                        debug!(error = %err, rendition = %name, "audio closed before it opened");
+                        None
+                    }
                     Err(err) => {
-                        warn!(error = %err, rendition = %name, "audio failed to open");
+                        warn!(error = %format!("{err:#}"), rendition = %name, "audio failed to open");
                         send_if_changed(&status, |status| {
                             status.audio = SlotState::Failed(ByPtr::new(err))
                         });
@@ -111,7 +118,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     match result {
                         Ok(Ok(())) => send_if_changed(&status, |status| status.audio = SlotState::Ended),
                         Ok(Err(err)) => {
-                            warn!(error = %err, "audio stopped");
+                            warn!(error = %format!("{err:#}"), "audio stopped");
                             send_if_changed(&status, |status| status.audio = SlotState::Failed(ByPtr::new(err)));
                         }
                         Err(err) => warn!(error = %err, "the audio task panicked"),
@@ -163,7 +170,13 @@ async fn open(
     options.start = moq_audio::decode::Start::Latest;
     let decoder = moq_audio::decode::Consumer::new(consumer, config, name, options)
         .await
-        .map_err(Error::decoder)?;
+        .map_err(|err| {
+            if err.is_clean_close() {
+                n0_error::e!(Error::Closed)
+            } else {
+                Error::decoder(err)
+            }
+        })?;
     let sink = output.sink(AudioFormat {
         sample_rate: decoder.sample_rate(),
         layout: decoder.layout(),
@@ -184,7 +197,7 @@ struct Job {
 }
 
 impl Job {
-    /// Decodes until the track ends.
+    /// Decodes until the track ends or is closed.
     ///
     /// The read is the only await, and only the task's end cancels it. The
     /// decoder is never polled again after a dropped read.
@@ -195,7 +208,16 @@ impl Job {
                 ..AudioPlaybackStats::default()
             });
         });
-        while let Some(read) = self.decoder.read().await.map_err(Error::decoder)? {
+        loop {
+            let read = match self.decoder.read().await {
+                Ok(Some(read)) => read,
+                Ok(None) => break,
+                Err(err) if err.is_clean_close() => {
+                    debug!(error = %err, "audio track closed");
+                    return Ok(());
+                }
+                Err(err) => return Err(Error::decoder(err)),
+            };
             // A gap or an end carries no samples. The sink plays on from what
             // it has queued, so only decoded audio is written.
             let moq_audio::decode::Read::Frame(frame) = read else {

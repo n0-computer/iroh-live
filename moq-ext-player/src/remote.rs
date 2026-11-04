@@ -17,7 +17,7 @@ use tracing::{Instrument, Span, debug, info, info_span, trace, warn};
 
 use moq_ext_media_core::Error;
 
-use crate::{NetworkSample, Player, PlayerConfig, network::NetworkSignals};
+use crate::{NetworkSample, Player, PlayerConfig, error::CleanClose as _, network::NetworkSignals};
 #[cfg(feature = "record")]
 use crate::{RecordConfig, Recording};
 
@@ -403,6 +403,10 @@ async fn read_catalog(
                 }
                 retry = (retry * 2).min(CATALOG_RETRY_MAX);
             }
+            Err(err) if err.is_clean_close() => {
+                debug!(error = %err, "the catalog track closed before it was read");
+                return;
+            }
             Err(err) => {
                 warn!(error = %err, "the catalog track could not be read");
                 return;
@@ -417,6 +421,10 @@ async fn read_catalog(
             }
             Ok(None) => {
                 debug!("catalog track ended");
+                return;
+            }
+            Err(err) if err.is_clean_close() => {
+                debug!(error = %err, "catalog track closed");
                 return;
             }
             Err(err) => {
