@@ -325,7 +325,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
             }
             let connection = client.connect(config.dial_url());
             let auth = connection.auth();
-            (Uplink::Tokio(connection), auth)
+            (Uplink::Tokio(Box::new(connection)), auth)
         }
     };
     let link_state = LinkState::default();
@@ -377,7 +377,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         (Uplink::Tokio(connection), _) => {
             let run = tokio_uplink(
                 shared.clone(),
-                connection.clone(),
+                moq_tokio::Connection::clone(connection),
                 link,
                 link_state.clone(),
                 status.clone(),
@@ -415,7 +415,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
 /// How a relay link reaches its relay.
 enum Uplink {
     /// A moq-tokio client connection, which redials itself.
-    Tokio(moq_tokio::Connection),
+    Tokio(Box<moq_tokio::Connection>),
     /// An iroh dial loop, stopped by cancelling the token.
     Iroh(CancellationToken),
 }

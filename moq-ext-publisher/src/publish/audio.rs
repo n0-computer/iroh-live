@@ -126,8 +126,9 @@ async fn pcm(
 
 /// Captures and encodes a microphone through moq-audio's publication.
 ///
-/// The publication owns the device and opens it only while someone listens.
-/// Its driver future is not `Send` on macOS, so it runs on its own thread.
+/// The capture producer owns the device and the publication encodes one of
+/// its consumers. Their futures are not `Send` on macOS, so they run on their
+/// own thread.
 #[cfg(feature = "capture")]
 async fn microphone(
     job: &Job,
@@ -136,10 +137,8 @@ async fn microphone(
     stop: &CancellationToken,
 ) -> Result<(), Error> {
     let track = encoding.track_name();
-    let mut options = moq_audio::encode::Capture::default();
-    options.capture = capture;
-    options.encode.track = Some(track.clone());
-    options.encode.config = encoding.settings(None);
+    let encode_track = track.clone();
+    let encode_config = encoding.settings(None);
 
     let (handle_tx, handle) = oneshot::channel();
     let broadcast = job.producer.clone();
@@ -149,6 +148,16 @@ async fn microphone(
         "audio-capture",
         driver_stop.clone(),
         move |stop| async move {
+            let capture = match moq_audio::capture::Producer::open(capture).await {
+                Ok(capture) => capture,
+                Err(err) => {
+                    let _ = handle_tx.send(Err(Error::device(err)));
+                    return;
+                }
+            };
+            let mut options = moq_audio::encode::Capture::new(capture.consume());
+            options.encode.track = Some(encode_track);
+            options.encode.config = encode_config;
             let (publication, driver) =
                 match moq_audio::encode::Control::new(broadcast, catalog, options) {
                     Ok(created) => created,
@@ -160,10 +169,19 @@ async fn microphone(
             if handle_tx.send(Ok(publication)).is_err() {
                 return;
             }
+            // A capture failure also reaches the publication, which reports it
+            // as `Status::Failed`, so the capture future only logs it.
+            let capture = async move {
+                if let Err(err) = capture.run().await {
+                    debug!(error = %err, "microphone capture stopped");
+                }
+                std::future::pending::<()>().await;
+            };
             let run = driver.run();
-            tokio::pin!(run);
+            tokio::pin!(capture, run);
             let result = tokio::select! {
                 result = &mut run => result,
+                () = &mut capture => return,
                 () = stop.cancelled() => return,
             };
             if let Err(err) = result {
@@ -172,9 +190,9 @@ async fn microphone(
         },
     )?;
     let result = follow(handle, &job.reporter, &track, encoding, stop).await;
-    // The capture thread holds the echo canceller. A publication replacing
-    // this one asks for it as soon as this returns, so the thread must let go
-    // first.
+    // The capture thread holds the device and the echo canceller. A
+    // publication replacing this one asks for them as soon as this returns,
+    // so the thread must let go first.
     driver_stop.cancel();
     driver.joined().await;
     result
@@ -219,12 +237,13 @@ async fn follow(
                 );
             }
             moq_audio::encode::Status::Failed => {
+                // moq-audio does not reopen a failed capture, so the
+                // publication ends here and the caller reports the failure.
                 let reason = state
                     .failure()
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "the microphone failed".to_string());
-                warn!(%reason, "microphone failed, and moq-audio retries when it can");
-                reporter.slot(SlotState::Failed(ByPtr::new(Error::device_msg(reason))));
+                return Err(Error::device_msg(reason));
             }
             moq_audio::encode::Status::Ended => return Ok(()),
             _ => {}
