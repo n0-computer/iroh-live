@@ -7,13 +7,13 @@
 //! This draws a player's video:
 //!
 //! ```no_run
-//! use iroh_live_egui::VideoView;
+//! use moq_ext_egui::VideoView;
 //!
 //! # fn draw(
 //! #     ctx: &egui::Context,
 //! #     ui: &mut egui::Ui,
 //! #     player: &moq_ext_player::Player,
-//! #     render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+//! #     render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
 //! # ) {
 //! let mut view = VideoView::new(ctx, "video", player.video(), render_state);
 //! // in the update loop:
@@ -297,7 +297,7 @@ fn device_descriptor(
     required_features: wgpu::Features,
 ) -> wgpu::DeviceDescriptor<'static> {
     wgpu::DeviceDescriptor {
-        label: Some("iroh-live-egui video device"),
+        label: Some("moq-ext-egui video device"),
         required_features,
         required_limits: adapter.limits(),
         ..Default::default()

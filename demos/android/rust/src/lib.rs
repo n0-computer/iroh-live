@@ -25,12 +25,12 @@ use iroh_live::{
         VideoFormat, VideoFrames, VideoRendition, VideoRenditions as _, VideoSource,
     },
 };
-use iroh_live_media_android::{handle, renderer::AndroidRenderer};
 use jni::{
     JNIEnv, JavaVM,
     objects::{JByteArray, JClass, JObject, JString},
     sys::{jboolean, jint, jlong},
 };
+use moq_ext_media_android::{handle, renderer::AndroidRenderer};
 use moq_net::Timestamp;
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};

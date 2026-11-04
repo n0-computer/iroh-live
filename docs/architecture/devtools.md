@@ -1,7 +1,7 @@
 # Instrumentation and tests
 
 Two pieces show what a running pipeline does: statistics snapshots in
-`moq-ext-player` and `moq-ext-publisher`, and an overlay in `iroh-live-egui`
+`moq-ext-player` and `moq-ext-publisher`, and an overlay in `moq-ext-egui`
 that draws them.
 
 ## Metrics
@@ -42,7 +42,7 @@ audio queued ahead of it.
 
 ## The debug overlay
 
-`iroh_live_egui::overlay::DebugOverlay` draws a bar along the bottom of a video
+`moq_ext_egui::overlay::DebugOverlay` draws a bar along the bottom of a video
 tile, with one clickable section per `StatCategory`: `Net`, `Capture`,
 `Render`, `Audio` and `Time`. Clicking a section opens a detail panel above the
 bar. Values that change over time get a sparkline. The overlay keeps the

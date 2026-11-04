@@ -4467,8 +4467,8 @@ version = "0.1.0"
 dependencies = [
  "iroh",
  "iroh-live",
- "iroh-live-media-android",
  "jni 0.21.1",
+ "moq-ext-media-android",
  "moq-net",
  "moq-video",
  "n0-error",
@@ -4492,7 +4492,7 @@ dependencies = [
  "hang",
  "iroh",
  "iroh-live",
- "iroh-live-egui",
+ "moq-ext-egui",
  "moq-mux",
  "moq-net",
  "moq-room",
@@ -4510,34 +4510,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "iroh-live-egui"
-version = "0.1.0"
-dependencies = [
- "bytesize",
- "derive_more",
- "egui",
- "egui-wgpu",
- "moq-ext-player",
- "moq-ext-publisher",
- "moq-net",
- "moq-video",
- "n0-future",
- "pollster",
- "tracing",
-]
-
-[[package]]
-name = "iroh-live-media-android"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "glow 0.18.0",
- "khronos-egl",
- "n0-error",
- "tracing",
 ]
 
 [[package]]
@@ -5571,6 +5543,34 @@ dependencies = [
 name = "moq-ext-adaptive"
 version = "0.1.0"
 dependencies = [
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-egui"
+version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "derive_more",
+ "egui",
+ "egui-wgpu",
+ "moq-ext-player",
+ "moq-ext-publisher",
+ "moq-net",
+ "moq-video",
+ "n0-future",
+ "pollster",
+ "tracing",
+]
+
+[[package]]
+name = "moq-ext-media-android"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "glow 0.18.0",
+ "khronos-egl",
+ "n0-error",
  "tracing",
 ]
 

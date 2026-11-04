@@ -1,4 +1,4 @@
-//! Android helpers for iroh-live apps: an EGL renderer and JNI handle helpers.
+//! Android helpers for moq media apps: an EGL renderer and JNI handle helpers.
 //!
 //! Hardware H.264 through MediaCodec lives in `moq-video`. This crate holds the
 //! other pieces an Android app needs:
@@ -7,7 +7,7 @@
 //! - [`handle`] passes an `Arc<Mutex<T>>` across JNI as an `i64`.
 //!
 //! `renderer` only exists on Android. Camera frames reach a broadcast
-//! through `iroh_live::media::VideoSource::push`.
+//! through `moq_ext_sources::VideoSource::push`.
 
 #[cfg(target_os = "android")]
 mod egl;

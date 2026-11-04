@@ -21,7 +21,7 @@ hang = { workspace = true }
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture", "file", "render", "rooms", "record"] }
 moq-net = { workspace = true }
-iroh-live-egui = { workspace = true }
+moq-ext-egui = { workspace = true }
 moq-mux = { workspace = true }
 # The room chat track: `moq-room`'s JSON window, which `@moq/room` reads too.
 moq-room = { workspace = true }

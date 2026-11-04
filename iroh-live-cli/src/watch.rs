@@ -216,7 +216,7 @@ mod window {
         BroadcastTicket, Live,
         media::{Player, RenditionMode},
     };
-    use iroh_live_egui::egui_wgpu::RenderState;
+    use moq_ext_egui::egui_wgpu::RenderState;
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
     use tokio::sync::oneshot;

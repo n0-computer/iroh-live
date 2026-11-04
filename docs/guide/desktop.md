@@ -28,13 +28,13 @@ All of this needs the `render` feature. `iroh-live` turns it on with `full`, and
 
 ## egui
 
-`iroh-live-egui` draws frames in egui.
+`moq-ext-egui` draws frames in egui.
 
 `VideoView` draws a `VideoFrames` stream, such as a player's `video()` or a
 source's `frames()`:
 
 ```rust
-use iroh_live_egui::VideoView;
+use moq_ext_egui::VideoView;
 
 let mut view = VideoView::new(ctx, "video", player.video(), render_state);
 // in the update loop:

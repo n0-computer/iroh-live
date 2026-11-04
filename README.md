@@ -63,8 +63,8 @@ publisher.
 | [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |
 | [`moq-ext-sources`](moq-ext-sources) | Video and audio sources: test pattern, files, capture, push senders |
 | [`moq-ext-media-core`](moq-ext-media-core) | The error, slot state and stats helpers the player and publisher share |
-| [`iroh-live-egui`](iroh-live-egui) | egui video views and the debug overlay |
-| [`iroh-live-media-android`](iroh-live-media-android) | The Android EGL renderer and JNI handle helpers |
+| [`moq-ext-egui`](moq-ext-egui) | egui video views and the debug overlay. No iroh dependency |
+| [`moq-ext-media-android`](moq-ext-media-android) | The Android EGL renderer and JNI handle helpers. No iroh dependency |
 | [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
 | [`iroh-live-relay`](iroh-live-relay) | Relay server that serves iroh-live broadcasts to browsers |
 

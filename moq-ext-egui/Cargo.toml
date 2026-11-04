@@ -1,5 +1,5 @@
 [package]
-name = "iroh-live-egui"
+name = "moq-ext-egui"
 version = "0.1.0"
 edition = "2024"
 description = "egui integration for moq-ext-player video rendering"

@@ -18,13 +18,15 @@ This repository holds the layer that joins them.
 | `moq-ext-adaptive` | Rendition choice and decoder handover as pure state machines |
 | `moq-ext-sources` | Video and audio sources: test pattern, files, capture, push senders |
 | `moq-ext-media-core` | The error, slot state and stats helpers the two above share |
-| `iroh-live-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
-| `iroh-live-media-android` | The EGL renderer and JNI handle helpers for Android |
+| `moq-ext-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
+| `moq-ext-media-android` | The EGL renderer and JNI handle helpers for Android |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-`moq-ext-player` and `moq-ext-publisher` have no iroh dependency, and neither
-depends on the other. A transport publishes a `LocalBroadcast` by reading it through `moq_net::Consume`, and builds a
+No `moq-ext-*` crate depends on iroh, so each could move upstream into moq;
+that includes the UI and platform crates `moq-ext-egui` and
+`moq-ext-media-android`. `moq-ext-player` and `moq-ext-publisher` do not
+depend on each other. A transport publishes a `LocalBroadcast` by reading it through `moq_net::Consume`, and builds a
 `RemoteBroadcast` from a route table with `from_origin` or `from_resolved`.
 `iroh-live-rooms` has no media dependency. `iroh-live` depends on both and is
 the only crate that joins them.

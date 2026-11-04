@@ -55,7 +55,7 @@ encodes and decodes, and the renderer imports decoded pictures through
 
 MediaCodec encode and decode are in moq-video. The app pushes CameraX frames
 through `VideoSource::push`, and
-`iroh_live_media_android::renderer` draws decoded `AHardwareBuffer` frames as
+`moq_ext_media_android::renderer` draws decoded `AHardwareBuffer` frames as
 an EGL external texture without a copy. See [Android](guide/android.md).
 
 ## Raspberry Pi

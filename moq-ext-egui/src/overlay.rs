@@ -121,7 +121,7 @@ impl DebugOverlay {
             timeline_scroll: 0.0,
             timeline_paused: None,
             salt: egui::Id::new((
-                "iroh-live-egui overlay",
+                "moq-ext-egui overlay",
                 OVERLAY_SALT.fetch_add(1, Ordering::Relaxed),
             )),
         }

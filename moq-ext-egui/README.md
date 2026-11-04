@@ -1,4 +1,4 @@
-# iroh-live-egui
+# moq-ext-egui
 
 [egui](https://github.com/emilk/egui) video views for
 [`moq-ext-player`](../moq-ext-player), plus a debug overlay.
@@ -10,7 +10,7 @@ the window when a frame arrives. Call `render` in the update loop to draw the
 newest frame and get an `egui::Image`:
 
 ```rust
-use iroh_live_egui::VideoView;
+use moq_ext_egui::VideoView;
 
 let mut view = VideoView::new(&ctx, "remote", player.video(), Some(&render_state));
 
@@ -41,4 +41,4 @@ stats. Clicking a section opens a detail panel with sparklines.
 ## wgpu
 
 The crate has no direct `wgpu` dependency. Use the re-exported
-`iroh_live_egui::wgpu` so your `wgpu` types match the renderer's.
+`moq_ext_egui::wgpu` so your `wgpu` types match the renderer's.

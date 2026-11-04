@@ -21,7 +21,7 @@ use iroh_live::{
         video::{self, Size, Surface, capture},
     },
 };
-use iroh_live_egui::FrameView;
+use moq_ext_egui::FrameView;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -228,7 +228,7 @@ impl ScanView {
     /// Returns at once. A camera that does not open is reported on the screen.
     pub fn new(
         ctx: &egui::Context,
-        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+        render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
         camera: Option<VideoSourceSpec>,
     ) -> Self {
@@ -241,7 +241,7 @@ impl ScanView {
     /// cannot be opened twice.
     pub fn from_frames(
         ctx: &egui::Context,
-        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+        render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
         frames: VideoFrames,
     ) -> Self {
@@ -250,7 +250,7 @@ impl ScanView {
 
     fn start(
         ctx: &egui::Context,
-        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+        render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
         pictures: Pictures,
     ) -> Self {

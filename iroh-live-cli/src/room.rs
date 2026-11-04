@@ -101,7 +101,7 @@ mod window {
         media::{AudioTarget, LocalBroadcast, Player, VideoSource},
         rooms::{Room, RoomState},
     };
-    use iroh_live_egui::{VideoView, egui_wgpu::RenderState};
+    use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
     use n0_watcher::Watcher;

@@ -9,7 +9,7 @@ use iroh_live::{
         AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoRenditions as _,
     },
 };
-use iroh_live_egui::{
+use moq_ext_egui::{
     VideoView,
     overlay::{DebugOverlay, StatCategory},
 };
@@ -230,7 +230,7 @@ pub fn shutdown_publish_blocking(live: &Live, broadcast: &LocalBroadcast) {
 pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: iroh_live_egui::create_egui_wgpu_config(),
+        wgpu_options: moq_ext_egui::create_egui_wgpu_config(),
         viewport: egui::ViewportBuilder::default().with_fullscreen(fullscreen),
         ..Default::default()
     }
@@ -291,7 +291,7 @@ impl Link {
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",
-                iroh_live_egui::format_bitrate(moq_net::bandwidth::Rate::from_bps(bps))
+                moq_ext_egui::format_bitrate(moq_net::bandwidth::Rate::from_bps(bps))
             ));
         }
         lines
@@ -307,7 +307,7 @@ impl RemoteView {
         name: &str,
         player: Player,
         decoder: Backend,
-        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
+        render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
     ) -> Self {
         let video = VideoView::new(ctx, name, player.video(), render_state);
         Self {

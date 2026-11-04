@@ -158,7 +158,7 @@ mod preview {
         Live,
         media::{LocalBroadcast, VideoSource},
     };
-    use iroh_live_egui::{
+    use moq_ext_egui::{
         VideoView,
         overlay::{DebugOverlay, StatCategory, fit_to_aspect},
     };

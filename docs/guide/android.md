@@ -10,7 +10,7 @@ The MediaCodec encoder and decoder are in `moq-video`. Automatic backend
 selection finds them, and `moq_video::encode::Kind::Named("mediacodec")` asks
 for one by name.
 
-`iroh-live-media-android` has the parts that are specific to the app side:
+`moq-ext-media-android` has the parts that are specific to the app side:
 
 - `renderer::AndroidRenderer` owns the EGL display, context, and surface.
   `render_hardware_buffer` draws an `AHardwareBuffer` through

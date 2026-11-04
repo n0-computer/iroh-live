@@ -136,7 +136,7 @@ mod window {
         BroadcastTicket, CALL, CallOffer, Live,
         media::{AudioTarget, LocalBroadcast, Player, SlotState, VideoSource},
     };
-    use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
+    use moq_ext_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
     use n0_watcher::{Watchable, Watcher as _};

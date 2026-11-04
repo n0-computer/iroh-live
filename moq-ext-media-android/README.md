@@ -1,7 +1,7 @@
-# iroh-live-media-android
+# moq-ext-media-android
 
-Android helpers for iroh-live apps: an EGL renderer for NV12 frames and
-`AHardwareBuffer`s, and JNI handle helpers. The
+Android helpers for moq media apps: an EGL renderer for NV12 frames and
+`AHardwareBuffer`s, and JNI handle helpers. It has no iroh dependency. The
 [Android demo](../demos/android/) uses it, and any Android Rust project can use
 it too.
 
@@ -9,7 +9,7 @@ Hardware H.264 through MediaCodec lives in `moq-video` behind
 `cfg(target_os = "android")`, and backend selection picks it up on its own. The
 `renderer` module only builds on Android.
 
-Camera frames need no bridge: `iroh_live::media::VideoSource::push` returns a
+Camera frames need no bridge: `moq_ext_sources::VideoSource::push` returns a
 `FrameSender` that Kotlin's frame callbacks push into through JNI.
 
 ## `renderer`

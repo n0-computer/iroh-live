@@ -1,8 +1,8 @@
 [package]
-name = "iroh-live-media-android"
+name = "moq-ext-media-android"
 version = "0.1.0"
 edition = "2024"
-description = "Android helpers for iroh-live apps: an EGL renderer for NV12 frames and HardwareBuffers, and JNI handles"
+description = "Android helpers for moq media apps: an EGL renderer for NV12 frames and HardwareBuffers, and JNI handles"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
