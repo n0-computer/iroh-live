@@ -6,6 +6,7 @@ members = [
     "iroh-moq",
     "moq-ext-access",
     "moq-ext-forward",
+    "moq-ext-sound-server",
     "moq-ext-adaptive",
     "iroh-live-rooms",
     "moq-ext-media-core",
@@ -59,6 +60,7 @@ iroh-live = { path = "iroh-live", default-features = false }
 iroh-moq = { path = "iroh-moq" }
 moq-ext-access = { path = "moq-ext-access" }
 moq-ext-forward = { path = "moq-ext-forward" }
+moq-ext-sound-server = { path = "moq-ext-sound-server" }
 moq-ext-adaptive = { path = "moq-ext-adaptive" }
 iroh-live-rooms = { path = "iroh-live-rooms" }
 moq-ext-media-core = { path = "moq-ext-media-core" }

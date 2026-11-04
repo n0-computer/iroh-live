@@ -25,13 +25,8 @@ tracing = "0.1.44"
 
 # Reads audio files. moq-audio has no container reader.
 symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav"], optional = true }
-
-# moq-audio's PipeWire and PulseAudio backends exist only on Linux, and its
-# PulseAudio code does not compile elsewhere. Reaching them through a
-# Linux-only dependency makes `sound-server` a no-op on other platforms, so
-# `--all-features` builds there. The same crate as `moq-audio` above, renamed.
-[target.'cfg(target_os = "linux")'.dependencies]
-moq-audio-linux = { package = "moq-audio", git = "https://github.com/moq-dev/moq", rev = "801fd9a2f", default-features = false, optional = true }
+# moq-audio's sound-server backends on Linux, nothing elsewhere.
+moq-ext-sound-server = { workspace = true, optional = true }
 
 [dev-dependencies]
 moq-mux = { workspace = true }
@@ -48,7 +43,7 @@ file = ["dep:symphonia"]
 capture = ["moq-video/capture", "moq-audio/capture"]
 # Audio devices through PipeWire or PulseAudio instead of ALSA. Linux only; a
 # no-op elsewhere.
-sound-server = ["dep:moq-audio-linux", "moq-audio-linux?/pipewire", "moq-audio-linux?/pulseaudio"]
+sound-server = ["dep:moq-ext-sound-server"]
 # Echo cancellation for the microphone.
 aec = ["capture", "moq-audio/aec"]
 # Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.

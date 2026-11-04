@@ -381,6 +381,29 @@ impl Encoder {
                     )
                 };
 
+                // The encoder labels the stream with one color space and
+                // refuses frames in another. A source that idled until watched
+                // had no frame to take it from when the track opened, so adopt
+                // the first frame's and reopen.
+                let labelled = self
+                    .config
+                    .color
+                    .unwrap_or_else(|| moq_video::Color::infer(target));
+                if let Some(color) = frame.surface.color()
+                    && color != labelled
+                {
+                    debug!(
+                        ?color,
+                        ?labelled,
+                        "reopening the encoder in the frames' color space"
+                    );
+                    self.config.color = Some(color);
+                    encoder = encode::Sink::open(&self.config)
+                        .await
+                        .map_err(encode_error)?;
+                    self.encoding(encoder.name());
+                }
+
                 let started = Instant::now();
                 let encoded = match encoder.encode(frame).await {
                     Ok(encoded) => encoded,
