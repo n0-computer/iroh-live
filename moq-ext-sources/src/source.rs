@@ -130,9 +130,10 @@ impl VideoSource {
 
     /// Opens the camera, display or window that `config.source` names.
     ///
-    /// Returns once the device has produced a frame. A device that produces
-    /// none within 30 seconds fails. A screen capture may wait that long on a
-    /// permission dialog.
+    /// Returns once the device has produced a frame. An opened camera that
+    /// produces none within 10 seconds fails, any other device within 30
+    /// seconds. A permission dialog the platform shows while the device opens
+    /// does not count against that time.
     ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.

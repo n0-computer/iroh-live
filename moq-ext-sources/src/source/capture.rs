@@ -3,7 +3,7 @@
 //! The device opens on a dedicated thread and never leaves it, because Apple
 //! capture streams are not `Send`. Only its format and its frames cross.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -11,6 +11,14 @@ use tracing::{debug, info, warn};
 
 use super::{FIRST_FRAME_PATIENCE, VideoFormat};
 use crate::{Error, frames::FrameSlot, local_task::LocalTask, video};
+
+/// How long an opened camera may take over its first frame.
+///
+/// A webcam streams within a second or two of opening. Until the first frame
+/// arrives, a caller that closed its old source shows a still picture, so a
+/// camera that will never stream should fail sooner than the general
+/// [`FIRST_FRAME_PATIENCE`].
+const CAMERA_FIRST_FRAME_PATIENCE: Duration = Duration::from_secs(10);
 
 /// The rate assumed for a device that reports none.
 fn default_rate() -> video::FrameRate {
@@ -26,6 +34,10 @@ pub(super) async fn open(
     slot: FrameSlot,
     stop: CancellationToken,
 ) -> Result<(VideoFormat, LocalTask), Error> {
+    let patience = match config.source {
+        video::capture::Source::Camera(_) => CAMERA_FIRST_FRAME_PATIENCE,
+        _ => FIRST_FRAME_PATIENCE,
+    };
     let (opened_tx, opened) = oneshot::channel::<Result<VideoFormat, Error>>();
     let task = crate::local_task::spawn("video-capture", stop.clone(), move |stop| async move {
         let opened = tokio::select! {
@@ -50,7 +62,7 @@ pub(super) async fn open(
         // opens and returns nothing, because only libcamera can drive its raw
         // Bayer, and would otherwise look like a slow camera.
         let first = tokio::select! {
-            first = tokio::time::timeout(FIRST_FRAME_PATIENCE, stream.read()) => first,
+            first = tokio::time::timeout(patience, stream.read()) => first,
             () = stop.cancelled() => return,
         };
         match first {
@@ -68,7 +80,7 @@ pub(super) async fn open(
             Err(_) => {
                 let _ = opened_tx.send(Err(Error::device_msg(format!(
                     "the capture device opened but produced no frame within {}s",
-                    FIRST_FRAME_PATIENCE.as_secs()
+                    patience.as_secs()
                 ))));
                 return;
             }
