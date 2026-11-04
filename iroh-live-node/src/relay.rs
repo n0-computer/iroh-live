@@ -618,7 +618,10 @@ mod tests {
         let mut config = RelayConfig::new("https://relay.example/room".parse().expect("url"));
         assert_eq!(config.dial_url().as_str(), "https://relay.example/room");
         config.token = Some("a+b".into());
-        assert_eq!(config.dial_url().as_str(), "https://relay.example/room?jwt=a%2Bb");
+        assert_eq!(
+            config.dial_url().as_str(),
+            "https://relay.example/room?jwt=a%2Bb"
+        );
     }
 
     #[test]
