@@ -46,7 +46,8 @@ capture = ["moq-video/capture", "moq-audio/capture"]
 sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
 # Echo cancellation for the microphone.
 aec = ["capture", "moq-audio/aec"]
-# Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.
+# Linux screen capture through xdg-desktop-portal, and PipeWire's camera as the
+# default camera. Links libpipewire-0.3.
 pipewire = ["capture", "moq-video/pipewire"]
 # The Raspberry Pi camera through `rpicam-vid`, which must be on PATH. Linux
 # only.

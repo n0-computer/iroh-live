@@ -37,7 +37,7 @@
 //! | `capture` | no | camera, screen and microphone, through `moq_video::capture` and `moq_audio::capture` |
 //! | `sound-server` | no | PipeWire and PulseAudio devices for the microphone |
 //! | `aec` | no | echo cancellation for the microphone, implies `capture` |
-//! | `pipewire` | no | Linux screen capture through the desktop portal, implies `capture` |
+//! | `pipewire` | no | Linux screen capture through the desktop portal, and PipeWire's default camera, implies `capture` |
 //! | `rpicam` | no | the Raspberry Pi camera, on Linux only (pulls `tokio/process`) |
 //!
 //! # Upstreaming candidates

@@ -297,7 +297,7 @@ impl VideoSource {
         ))
     }
 
-    /// Returns the captured frames, for a local preview or a QR scanner.
+    /// Returns the source's frames, for a local preview or a QR scanner.
     ///
     /// Every call returns a handle onto the same stream. Reading it does not
     /// encode and does not count as demand.
@@ -489,7 +489,9 @@ pub enum AudioKind {
     /// The fan-out is weak, so the source ends when its producer drops the
     /// sender.
     Pcm {
+        /// The sample rate and layout of every frame.
         format: AudioFormat,
+        /// The fan-out a broadcast subscribes to, held weakly.
         fanout: WeakPcmFanout,
     },
 }
@@ -547,10 +549,11 @@ impl AudioSource {
     /// Creates a microphone source.
     ///
     /// This checks that the device exists and that echo cancellation, if asked
-    /// for, is compiled in. The device itself opens when a broadcast first has
-    /// a listener for it. A failure then shows in the broadcast's
-    /// publish status. The same source set on two
-    /// broadcasts captures the device twice.
+    /// for, is compiled in. The device itself opens when
+    /// `LocalBroadcast::set_audio` publishes the source. A failure then shows
+    /// in that broadcast's status, and the audio slot stays failed until the
+    /// next `set_audio`: a failed microphone is not opened again. The same
+    /// source set on two broadcasts opens the device twice.
     ///
     /// Cancellation safe: dropping the future only abandons the device query.
     ///
@@ -580,6 +583,8 @@ impl AudioSource {
     }
 
     /// Wraps a microphone config without looking for the device.
+    ///
+    /// A missing device then shows only when a broadcast publishes the source.
     #[cfg(feature = "capture")]
     pub fn microphone_unchecked(config: MicrophoneConfig) -> Self {
         Self::new(
