@@ -186,7 +186,7 @@ impl PullState {
     /// # Errors
     ///
     /// Fails if the publisher cannot be reached, or does not announce the
-    /// broadcast within [`SUBSCRIBE_TIMEOUT`].
+    /// broadcast within 15 seconds.
     pub async fn pull(
         &self,
         requested: &str,
