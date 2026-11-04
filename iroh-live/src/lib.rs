@@ -4,9 +4,13 @@
 //! publishes broadcasts at `live/<its endpoint id>/<name>` and subscribes to
 //! other nodes' broadcasts over a direct session or an attached relay. The
 //! transport is re-exported as [`node`], and the moq-net it builds on as
-//! [`net`]. The `media` module gathers the media
-//! crates (sources, broadcasts, players, codecs), and `rooms` re-exports the
-//! rooms crate, each behind its feature.
+//! [`net`]. The `media` module gathers the media crates (sources, broadcasts,
+//! players, codecs), and `rooms` re-exports the rooms crate, each behind its
+//! feature.
+//!
+//! The moq crates come from the unreleased `main` branch of moq-dev/moq,
+//! pinned by git rev, so this crate cannot be published to crates.io yet.
+//! Depend on it through git.
 #![cfg_attr(
     feature = "media",
     doc = r#"

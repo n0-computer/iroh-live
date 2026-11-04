@@ -20,7 +20,7 @@ use crate::{BroadcastTicket, Error, paths};
 
 /// A function naming the paths a peer may publish under, given its id.
 ///
-/// [`paths::publish_scope`] is one; `rooms::publish_scope` is another.
+/// [`paths::publish_scope`] is one, and `rooms::publish_scope` is another.
 pub type PublishScope = fn(EndpointId) -> Pattern;
 
 /// Returns the grant a live node gives `peer`.
@@ -65,8 +65,9 @@ pub fn node_config_with(scopes: &[PublishScope]) -> NodeConfig {
 
 /// Who this node's side of a call is offered to, from [`Live::call`].
 ///
-/// Cheap to clone; every clone controls one offer. Dropping it leaves the
-/// offer as it is. The call side stays published until its broadcast closes.
+/// Cheap to clone, and every clone controls the same offer. Dropping it
+/// leaves the offer as it is. The call side stays published until its
+/// broadcast closes.
 #[derive(Debug, Clone)]
 pub struct CallOffer {
     publication: Publication,

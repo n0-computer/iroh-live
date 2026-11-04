@@ -2,11 +2,22 @@
 
 Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 
-`Live` is a node for live media. It runs the `iroh-live-node` node, over `moq-transport-iroh`, on an iroh
-endpoint, publishes broadcasts at `live/<endpoint id>/<name>`, and resolves
-other nodes' broadcasts over a direct session or an attached relay. The media
-crates are gathered in `iroh_live::media` and the transport is re-exported as
-`iroh_live::node`.
+`Live` is a node for live media. It runs the `iroh-live-node` node, over
+`moq-transport-iroh`, on an iroh endpoint. It publishes broadcasts at
+`live/<endpoint id>/<name>`, and resolves other nodes' broadcasts over a direct
+session or an attached relay. The media crates are gathered in
+`iroh_live::media`, the transport is re-exported as `iroh_live::node`, and the
+moq-net it builds on as `iroh_live::net`.
+
+The crate builds against the unreleased `main` branch of
+[moq](https://github.com/moq-dev/moq), pinned by git rev, so it is not on
+crates.io. Depend on it through git:
+
+```toml
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
+```
+
+The [top-level README](../README.md#the-moq-dependency) says why.
 
 ## Example
 
@@ -81,17 +92,21 @@ let mut frames = player.video();
 - `grant` is the grant a live node gives each peer: subscribe to anything,
   publish only under the peer's own id. `node_config` is the `NodeConfig` that
   uses it.
-- `Error` wraps an `iroh_live_node::Error` as `Transport` and, with `media`, an
-  `moq_ext_player::Error` as `Media`. Its other variants come from binding an
-  endpoint and parsing a ticket.
+- `Error` wraps an `iroh_live_node::Error` as `Transport` and, with `media`, a
+  `moq_ext_player::Error` as `Media`. A failure inside moq-net arrives as
+  `Transport` holding the node's `Error::Moq`. The other variants come from
+  binding an endpoint and parsing a ticket.
 
 ## Features
 
 No feature is on by default. `full` turns on `media`, `capture`, `render`,
-`sound-server` and `record`. `media` is the media stack. Without it the crate is the `live/` layout only (tickets, the
-grant, endpoint options), which is how the relay uses it. `playback`, `aec`,
-`pipewire`, `rpicam`, `vaapi`, `nvidia`, and `v4l2` add devices and codecs,
-imply `media`, and pass through to `moq-ext-player` and `moq-ext-publisher`.
+`sound-server` and `record`. `media` is the media stack. Without it the crate
+is the `live/` layout only (tickets, the grant, endpoint options), which is how
+the relay uses it. `playback`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia`,
+and `v4l2` add devices and codecs, imply `media`, and pass through to the
+media crates. `sound-server`
+reaches audio devices through PipeWire or PulseAudio, through moq-audio's
+`pipewire` and `pulseaudio` features.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node with `LiveBuilder::with_rooms`, which
