@@ -7,9 +7,18 @@
 //! A rendition encodes only while someone watches it. The source runs even
 //! when nobody watches, because a preview reads the same frames and a
 //! publisher expects to see itself before anyone tunes in.
+//!
+//! A task that `set_video` replaces hands its rendition tracks to the
+//! successor, which encodes the new source into the renditions of the same
+//! name. A subscriber keeps its track and sees the new source from the next
+//! keyframe on. Renditions the new ladder lacks finish.
 
 use std::{
-    sync::{Arc, OnceLock},
+    collections::{HashMap, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -18,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
-    Job, Rebase,
+    Job, Timeline,
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
@@ -34,6 +43,39 @@ use crate::stats::EncodeStats;
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
+
+/// How many frames an encoder may hold before their timestamps are forgotten.
+///
+/// A realtime encoder returns a frame's packets with that frame or a few
+/// frames later, so this is far more than one ever holds.
+const MAX_PENDING: usize = 64;
+
+/// A rendition's track, left open by a replaced video task for its successor.
+pub(super) struct HandedOver {
+    producer: encode::Producer,
+    /// The last timestamp published on the track.
+    last: Option<moq_net::Timestamp>,
+}
+
+/// The tracks a replaced video task left open, by rendition name.
+pub(super) type Handovers = Arc<Mutex<HashMap<String, HandedOver>>>;
+
+/// Finishes every track left in `handovers`.
+///
+/// For a task that stops without a successor, so subscribers see the end.
+pub(super) fn finish_handovers(handovers: &Handovers) {
+    finish_tracks(std::mem::take(&mut *handovers.lock().expect("poisoned")));
+}
+
+/// Finishes handed over tracks that nothing takes over.
+fn finish_tracks(tracks: HashMap<String, HandedOver>) {
+    for (rendition, mut handed) in tracks {
+        debug!(%rendition, "finishing a track nobody took over");
+        if let Err(err) = handed.producer.finish() {
+            debug!(%rendition, error = %err, "the track did not finish cleanly");
+        }
+    }
+}
 
 /// Waits until a subscriber wants the track, or fails once it closes.
 async fn wanted(demand: &mut moq_net::track::Demand) -> Result<(), moq_net::Error> {
@@ -68,6 +110,8 @@ pub(super) async fn run_raw(
         producer,
         catalog,
         clock,
+        handovers,
+        handing_over,
         stats,
         reporter,
         ..
@@ -92,7 +136,7 @@ pub(super) async fn run_raw(
     let rate = format.rate;
     // The first rendition to encode anchors it. It is shared so every
     // rendition carries the same timestamp for the same picture.
-    let rebase = Arc::new(OnceLock::new());
+    let timeline = Timeline::new(clock);
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
@@ -113,20 +157,38 @@ pub(super) async fn run_raw(
             Err(err) => fail(&rendition.name, err),
         }
     }
+    // A track the predecessor left goes on with the new source, and its
+    // catalog entry follows the parameter sets of the next keyframe. The
+    // tracks of renditions this ladder does not publish finish first, so no
+    // name is taken twice.
+    let (mut inherited, left): (HashMap<_, _>, HashMap<_, _>) =
+        std::mem::take(&mut *handovers.lock().expect("poisoned"))
+            .into_iter()
+            .partition(|(name, _)| probed.iter().any(|(rendition, ..)| rendition.name == *name));
+    finish_tracks(left);
     for (rendition, config, published) in probed {
-        let reserved = catalog.reserve();
-        let track_info = reserved.track_info(hang::catalog::PRIORITY.video);
-        let publisher = producer
-            .create_track(rendition.name.as_str(), Some(track_info))
-            .map_err(Error::broadcast)
-            .and_then(|track| {
-                encode::Producer::with_track(track, reserved, published).map_err(Error::catalog)
-            });
-        let producer = match publisher {
-            Ok(producer) => producer,
-            Err(err) => {
-                fail(&rendition.name, err);
-                continue;
+        let (producer, last) = match inherited.remove(&rendition.name) {
+            Some(HandedOver { producer, last }) => {
+                info!(rendition = %rendition.name, "taking over the rendition's track");
+                (producer, last)
+            }
+            None => {
+                let reserved = catalog.reserve();
+                let track_info = reserved.track_info(hang::catalog::PRIORITY.video);
+                let publisher = producer
+                    .create_track(rendition.name.as_str(), Some(track_info))
+                    .map_err(Error::broadcast)
+                    .and_then(|track| {
+                        encode::Producer::with_track(track, reserved, published)
+                            .map_err(Error::catalog)
+                    });
+                match publisher {
+                    Ok(producer) => (producer, None),
+                    Err(err) => {
+                        fail(&rendition.name, err);
+                        continue;
+                    }
+                }
             }
         };
         info!(rendition = %rendition.name, size = %config.size(), %rate, "publishing video rendition");
@@ -136,8 +198,10 @@ pub(super) async fn run_raw(
             config,
             frames: source.frames(),
             source: source.clone(),
-            clock: clock.clone(),
-            rebase: rebase.clone(),
+            timeline: timeline.clone().after(last),
+            pending: VecDeque::new(),
+            handovers: handovers.clone(),
+            handing_over: handing_over.clone(),
             _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
             reporter: reporter.clone(),
@@ -278,9 +342,14 @@ struct Encoder {
     config: encode::Config,
     frames: VideoFrames,
     source: VideoSource,
-    clock: moq_mux::Clock,
-    /// The broadcast's rebase, set by the first rendition to encode a frame.
-    rebase: Arc<OnceLock<Rebase>>,
+    /// Maps source timestamps onto the broadcast clock, shared with the other renditions.
+    timeline: Timeline,
+    /// The source and broadcast timestamps of frames in the encoder, oldest first.
+    pending: VecDeque<(moq_net::Timestamp, moq_net::Timestamp)>,
+    /// Where the track goes when a successor takes it over.
+    handovers: Handovers,
+    /// Set when a successor takes the slot's tracks over.
+    handing_over: Arc<AtomicBool>,
     /// The slot's hold on its track names.
     _tracks: Arc<tokio::sync::OwnedMutexGuard<()>>,
     /// The gap between kept frames, for a rendition slower than its source.
@@ -290,13 +359,47 @@ struct Encoder {
     stop: CancellationToken,
 }
 
+/// How an encoder stopped without failing.
+enum Stopped {
+    /// The track finished or closed.
+    Done,
+    /// The slot stopped for a successor, which takes the track over.
+    HandOver,
+}
+
+/// What an encoder waits for next.
+enum Next {
+    /// A frame from the source.
+    Frame(Arc<moq_video::Frame>),
+    /// The source ended.
+    Ended,
+    /// The slot stopped.
+    Stopped,
+}
+
 impl Encoder {
     /// Encodes while someone watches, until the source ends or the slot stops.
     ///
     /// Reports a failure in the rendition's state and returns it for the slot
-    /// to count.
+    /// to count. A slot that stops for a successor leaves the track open in
+    /// the handovers.
     async fn run(mut self) -> Option<Arc<Error>> {
-        let err = self.encode().await.err()?;
+        let err = match self.encode().await {
+            Ok(Stopped::Done) => return None,
+            Ok(Stopped::HandOver) => {
+                debug!(last = ?self.timeline.last(), "handing the track over");
+                let handed = HandedOver {
+                    producer: self.producer,
+                    last: self.timeline.last(),
+                };
+                self.handovers
+                    .lock()
+                    .expect("poisoned")
+                    .insert(self.name, handed);
+                return None;
+            }
+            Err(err) => err,
+        };
         warn!(error = %format!("{err:#}"), "rendition encoder failed");
         // Aborting the track shows a subscriber the cause instead of a bare
         // reset.
@@ -308,12 +411,21 @@ impl Encoder {
         Some(err)
     }
 
-    async fn encode(&mut self) -> Result<(), Error> {
-        let mut demand = self.producer.demand();
+    /// Leaves the track for a successor if the slot stops for one, and finishes it otherwise.
+    fn stopped(&mut self) -> Result<Stopped, Error> {
+        if self.stop.is_cancelled() && self.handing_over.load(Ordering::Acquire) {
+            return Ok(Stopped::HandOver);
+        }
+        self.producer.finish().map_err(Error::broadcast)?;
+        Ok(Stopped::Done)
+    }
+
+    async fn encode(&mut self) -> Result<Stopped, Error> {
         let target = self.config.size();
         self.stats.update(|stats| stats.size = Some(target));
 
         loop {
+            let mut demand = self.producer.demand();
             // Idle until someone subscribes, the source ends, or the slot
             // stops. The track and its catalog entry are already advertised.
             tokio::select! {
@@ -322,14 +434,11 @@ impl Encoder {
                     // there is nothing left to finish.
                     if let Err(err) = used {
                         debug!(error = %err, "the rendition's track closed");
-                        return Ok(());
+                        return Ok(Stopped::Done);
                     }
                 }
-                () = self.frames.closed() => {
-                    self.producer.finish().map_err(Error::broadcast)?;
-                    return Ok(());
-                }
-                () = self.stop.cancelled() => break,
+                () = self.frames.closed() => return self.stopped(),
+                () = self.stop.cancelled() => return self.stopped(),
             }
 
             // Counts as demand on the source while this encodes, so an
@@ -348,38 +457,45 @@ impl Encoder {
             let mut meter = RateMeter::default();
             let mut timing = Smoothed::default();
             loop {
-                let frame = tokio::select! {
+                let next = tokio::select! {
                     // The last viewer left. Mark the gap so the next timestamp
                     // does not stretch this frame across it.
                     open = unwanted(&mut demand) => {
                         if !open {
                             debug!("the rendition's track closed while it encoded");
-                            return Ok(());
+                            return Ok(Stopped::Done);
                         }
                         self.producer.discontinuity().map_err(Error::broadcast)?;
                         self.reporter.rendition(&self.name, RenditionState::Idle);
                         break;
                     }
-                    frame = self.frames.next() => frame,
-                    () = self.stop.cancelled() => None,
+                    frame = self.frames.next() => frame.map_or(Next::Ended, Next::Frame),
+                    () = self.stop.cancelled() => Next::Stopped,
                 };
-                // The source ended or the slot stopped. Drain the encoder and
-                // finish the track so subscribers see a clean end.
-                let Some(frame) = frame else {
-                    let mut tail = encoder.finish().await.map_err(Error::encoder)?;
-                    self.restamp(&mut tail);
-                    self.producer.publish(&tail).map_err(Error::broadcast)?;
-                    self.producer.finish().map_err(Error::broadcast)?;
-                    return Ok(());
+                // The source ended or the slot stopped. Drain the encoder, then
+                // finish the track so subscribers see a clean end, or leave it
+                // open for a successor.
+                let frame = match next {
+                    Next::Frame(frame) => frame,
+                    Next::Ended | Next::Stopped => {
+                        let mut tail = encoder.finish().await.map_err(Error::encoder)?;
+                        self.restamp(&mut tail);
+                        self.producer.publish(&tail).map_err(Error::broadcast)?;
+                        return self.stopped();
+                    }
                 };
-                let clock = self.clock.clone();
-                self.rebase
-                    .get_or_init(|| Rebase::anchor(clock, frame.timestamp));
+                let mapped = self.timeline.map(frame.timestamp);
+                if self.timeline.broke() {
+                    // A backend that cannot cut keys at its own interval.
+                    if let Err(err) = encoder.cut().await {
+                        debug!(error = %err, "no keyframe at the source's break");
+                    }
+                }
                 if let Some(interval) = self.interval {
-                    if due.is_some_and(|due| frame.timestamp < due) {
+                    if due.is_some_and(|due| mapped < due) {
                         continue;
                     }
-                    let next = frame.timestamp.as_micros() as u64 + interval.as_micros() as u64;
+                    let next = mapped.as_micros() as u64 + interval.as_micros() as u64;
                     due = moq_net::Timestamp::from_micros(next).ok();
                 }
                 // A frame of another size than the track advertises is scaled
@@ -417,6 +533,10 @@ impl Encoder {
                     self.encoding(encoder.name());
                 }
 
+                if self.pending.len() == MAX_PENDING {
+                    self.pending.pop_front();
+                }
+                self.pending.push_back((frame.timestamp, mapped));
                 let started = Instant::now();
                 let encoded = match encoder.encode(frame).await {
                     Ok(encoded) => encoded,
@@ -440,11 +560,13 @@ impl Encoder {
                     stats.encode_time = Some(smoothed);
                 });
                 self.producer.publish(&encoded).map_err(Error::broadcast)?;
+                // A keyframe with another decoder identity, such as a new
+                // level after a switch to a larger source, moves the rendition
+                // to a newly named track and finishes the old one. Its
+                // viewers are the new track's.
+                demand = self.producer.demand();
             }
         }
-
-        self.producer.finish().map_err(Error::broadcast)?;
-        Ok(())
     }
 
     /// Records which encoder is running.
@@ -461,13 +583,21 @@ impl Encoder {
     }
 
     /// Moves encoded timestamps onto the broadcast clock.
-    fn restamp(&self, encoded: &mut [encode::Encoded]) {
-        // Unset only before the first frame, when there is nothing to restamp.
-        let Some(rebase) = self.rebase.get() else {
-            return;
-        };
+    ///
+    /// An encoder stamps a packet with the source timestamp of its frame, so
+    /// each packet takes what its frame was mapped to. A packet of a frame
+    /// that is no longer pending, which a realtime encoder never returns, is
+    /// mapped on its own.
+    fn restamp(&mut self, encoded: &mut [encode::Encoded]) {
         for packet in encoded {
-            packet.timestamp = rebase.map(packet.timestamp);
+            let pending = self
+                .pending
+                .iter()
+                .position(|(source, _)| *source == packet.timestamp);
+            packet.timestamp = match pending.and_then(|index| self.pending.remove(index)) {
+                Some((_, mapped)) => mapped,
+                None => self.timeline.map(packet.timestamp),
+            };
         }
     }
 }
@@ -481,6 +611,8 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
     let Some(_tracks) = job.take_over(&stop).await else {
         return;
     };
+    // The stream describes itself, so it starts its own track.
+    finish_handovers(&job.handovers);
     let Job {
         producer,
         catalog,
@@ -565,14 +697,54 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
 mod tests {
     use super::*;
 
+    fn at(micros: u64) -> moq_net::Timestamp {
+        moq_net::Timestamp::from_micros(micros).expect("in range")
+    }
+
     #[test]
-    fn a_rebase_moves_every_timestamp_by_one_offset() {
+    fn a_timeline_keeps_the_source_cadence() {
+        let mut timeline = Timeline::new(moq_mux::Clock::new());
+        let first = timeline.map(at(1_000_000));
+        let later = timeline.map(at(1_033_333));
+        assert_eq!(later.as_micros() - first.as_micros(), 33_333);
+    }
+
+    /// A camera whose timestamps start at zero after a pattern on a later clock.
+    #[test]
+    fn a_timeline_that_goes_back_anchors_again_after_the_last_frame() {
+        let mut timeline = Timeline::new(moq_mux::Clock::new());
+        let pattern = timeline.map(at(80_000_000));
+        let camera = timeline.map(at(20_000));
+        assert!(camera > pattern, "{camera:?} is not after {pattern:?}");
+        assert!(camera.as_micros() - pattern.as_micros() < 1_000_000);
+        let next = timeline.map(at(53_333));
+        assert_eq!(next.as_micros() - camera.as_micros(), 33_333);
+    }
+
+    #[test]
+    fn a_timeline_that_jumps_ahead_anchors_at_the_clock() {
+        let mut timeline = Timeline::new(moq_mux::Clock::new());
+        let first = timeline.map(at(20_000));
+        let jumped = timeline.map(at(3_600_000_000));
+        assert!(jumped.as_micros() - first.as_micros() < 1_000_000);
+    }
+
+    /// Every rendition carries the same timestamp for the same picture.
+    #[test]
+    fn renditions_share_the_offset() {
+        let mut first = Timeline::new(moq_mux::Clock::new());
+        let mut second = first.clone();
+        assert_eq!(first.map(at(20_000)), second.map(at(20_000)));
+        assert_eq!(first.map(at(90_000_000)), second.map(at(90_000_000)));
+    }
+
+    /// A successor's first frame lands after what its predecessor published on the track.
+    #[test]
+    fn a_taken_over_track_goes_on_after_its_last_timestamp() {
         let clock = moq_mux::Clock::new();
-        let first = moq_net::Timestamp::from_micros(1_000_000).expect("in range");
-        let rebase = Rebase::anchor(clock, first);
-        let later = moq_net::Timestamp::from_micros(1_033_333).expect("in range");
-        let gap = rebase.map(later).as_micros() - rebase.map(first).as_micros();
-        assert_eq!(gap, 33_333, "the cadence survives the rebase");
+        let ahead = at(clock.now().as_micros() as u64 + 500_000);
+        let mut timeline = Timeline::new(clock).after(Some(ahead));
+        assert!(timeline.map(at(0)) > ahead);
     }
 
     #[test]

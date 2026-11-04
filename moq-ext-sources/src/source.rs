@@ -220,8 +220,13 @@ impl VideoSource {
     /// Returns a source fed by the returned sender.
     ///
     /// The source ends when every sender is dropped. `format` describes what
-    /// the sender will push. The broadcast encodes at the size of the frames
-    /// that arrive.
+    /// the sender will push, and a broadcast advertises its size. A frame of
+    /// another size is scaled to the rendition's.
+    ///
+    /// An application may push the frames of whatever device is selected, and
+    /// switch devices while it pushes. Timestamps only have to rise within one
+    /// device's run: a broadcast anchors a timeline that goes back or jumps far
+    /// ahead at its own clock again, and starts a new group there.
     #[must_use]
     pub fn push(format: VideoFormat) -> (FrameSender<video::Frame>, Self) {
         let slot = FrameSlot::new();
