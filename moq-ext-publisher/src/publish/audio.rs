@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "capture")]
 use super::status::Reporter;
-use super::{Job, Rebase, encoding::AudioEncoding, status::RenditionState};
+use super::{Job, Timeline, encoding::AudioEncoding, status::RenditionState};
 use moq_ext_media_core::{ByPtr, Error, SlotState, stats::Cell};
 use moq_ext_sources::{AudioFormat, AudioKind, AudioSource};
 
@@ -100,7 +100,7 @@ async fn pcm(
         },
     );
 
-    let mut rebase = None;
+    let mut timeline = Timeline::new(job.clock.clone());
     loop {
         let frame = tokio::select! {
             frame = frames.recv() => frame,
@@ -115,9 +115,7 @@ async fn pcm(
             }
             Err(broadcast::error::RecvError::Closed) => break,
         };
-        let rebase =
-            *rebase.get_or_insert_with(|| Rebase::anchor(job.clock.clone(), frame.timestamp));
-        frame.timestamp = rebase.map(frame.timestamp);
+        frame.timestamp = timeline.map(frame.timestamp);
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
     }

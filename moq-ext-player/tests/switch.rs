@@ -115,7 +115,7 @@ impl Look {
     }
 
     /// Returns whether `seen` shows this, allowing for coding loss.
-    fn matches(self, seen: Look) -> bool {
+    fn matches(self, seen: Self) -> bool {
         let luma = match (self.luma, seen.luma) {
             (Some(luma), Some(seen)) => luma.abs_diff(seen) <= 12,
             (None, None) => true,

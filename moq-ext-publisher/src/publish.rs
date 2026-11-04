@@ -12,7 +12,7 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -42,12 +42,22 @@ mod video;
 #[derive(Debug)]
 pub(crate) struct SlotTask {
     stop: CancellationToken,
+    /// Set before `stop` when a successor takes the task's tracks over.
+    handing_over: Arc<AtomicBool>,
     task: Option<AbortOnDropHandle<()>>,
 }
 
 impl SlotTask {
     /// Spawns `run` with a stop token that is a child of `closed`.
-    fn spawn<F, Fut>(span: Span, closed: &CancellationToken, run: F) -> Self
+    ///
+    /// `handing_over` is the flag [`hand_over`](Self::hand_over) sets, which
+    /// the task reads once stopped.
+    fn spawn<F, Fut>(
+        span: Span,
+        closed: &CancellationToken,
+        handing_over: Arc<AtomicBool>,
+        run: F,
+    ) -> Self
     where
         F: FnOnce(CancellationToken) -> Fut,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -56,8 +66,19 @@ impl SlotTask {
         let task = n0_future::task::spawn(run(stop.clone()).instrument(span));
         Self {
             stop,
+            handing_over,
             task: Some(AbortOnDropHandle::new(task)),
         }
+    }
+
+    /// Stops the task for a successor, and waits at most `patience` for it to finish.
+    ///
+    /// A video task leaves its rendition tracks open for the successor to take
+    /// over, so subscribers keep their tracks. Other tasks finish theirs, as
+    /// [`finish`](Self::finish) does.
+    async fn hand_over(self, patience: Duration) {
+        self.handing_over.store(true, Ordering::Release);
+        self.finish(patience).await;
     }
 
     /// Stops the task and waits at most `patience` for it to finish.
@@ -91,56 +112,144 @@ struct Job {
     clock: moq_mux::Clock,
     /// Held while the task owns its track names.
     tracks: Arc<tokio::sync::Mutex<()>>,
+    /// The tracks a replaced video task left open, for this one to take over.
+    handovers: video::Handovers,
+    /// Set when a successor takes this task's tracks over.
+    handing_over: Arc<AtomicBool>,
     stats: PublishRecorder,
     reporter: status::Reporter,
-    /// The task this one replaces. It finishes before the track names are taken.
+    /// The task this one replaces. It stops before the track names are taken.
     predecessor: Option<SlotTask>,
 }
 
 impl Job {
-    /// Finishes the predecessor, then locks the track names.
+    /// Stops the predecessor, then locks the track names.
     ///
-    /// Returns `None` once stopped.
+    /// Returns `None` once stopped. Tracks the predecessor left for this task
+    /// stay for the next successor if there is one, and finish otherwise.
     async fn take_over(
         &mut self,
         stop: &CancellationToken,
     ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        if let Some(predecessor) = self.predecessor.take() {
-            tokio::select! {
-                () = predecessor.finish(FINISH_PATIENCE) => {}
-                () = stop.cancelled() => return None,
+        let taken = async {
+            if let Some(predecessor) = self.predecessor.take() {
+                predecessor.hand_over(FINISH_PATIENCE).await;
             }
-        }
+            self.tracks.clone().lock_owned().await
+        };
         tokio::select! {
-            guard = self.tracks.clone().lock_owned() => Some(guard),
-            () = stop.cancelled() => None,
+            guard = taken => Some(guard),
+            () = stop.cancelled() => {
+                if !self.handing_over.load(Ordering::Acquire) {
+                    video::finish_handovers(&self.handovers);
+                }
+                None
+            }
         }
     }
 }
+
+/// How far past the broadcast clock a mapped timestamp may land before it counts as a break.
+///
+/// A source stamps a frame when it captures it, so its frames land at or
+/// before the clock's current time. One that lands later than this came from
+/// another timeline.
+const MAX_AHEAD: Duration = Duration::from_secs(1);
 
 /// Maps a source's timestamps onto the broadcast clock.
 ///
-/// It is anchored at the first frame, so the source keeps its own cadence. A
-/// video ladder shares one, so every rendition carries the same timestamp for
-/// the same picture.
-#[derive(Debug, Clone, Copy)]
-struct Rebase {
-    /// Broadcast micros minus source micros.
-    delta: i128,
+/// The first frame lands at the clock's current time, and later frames keep
+/// the source's own cadence. When the source's timeline breaks, the next frame
+/// lands at the current time again, so the broadcast never goes back. A
+/// timeline breaks when a frame would land at or before the previous one, or
+/// more than [`MAX_AHEAD`] past the clock. That happens when an application
+/// pushes another device into the same source, such as a camera whose
+/// timestamps start at zero after a test pattern on the process clock.
+///
+/// Clones share the anchor, so every rendition of a ladder carries the same
+/// timestamp for the same picture. Each clone keeps its own last timestamp.
+#[derive(Debug, Clone)]
+struct Timeline {
+    clock: moq_mux::Clock,
+    anchor: Arc<Mutex<Anchor>>,
+    /// The last timestamp this clone mapped.
+    last: Option<moq_net::Timestamp>,
+    /// The breaks this clone has seen, to tell it about a new one once.
+    breaks: u64,
 }
 
-impl Rebase {
-    /// Anchors the mapping so `first` lands at the clock's current time.
-    fn anchor(clock: moq_mux::Clock, first: moq_net::Timestamp) -> Self {
+/// Where a [`Timeline`] is anchored.
+#[derive(Debug, Default)]
+struct Anchor {
+    /// Broadcast micros minus source micros, unset before the first frame.
+    offset: Option<i128>,
+    /// How often the source's timeline broke.
+    breaks: u64,
+}
+
+impl Timeline {
+    /// Creates a timeline on `clock` that anchors at its first frame.
+    fn new(clock: moq_mux::Clock) -> Self {
         Self {
-            delta: clock.now().as_micros() as i128 - first.as_micros() as i128,
+            clock,
+            anchor: Default::default(),
+            last: None,
+            breaks: 0,
         }
     }
 
-    /// Returns `timestamp` on the broadcast clock.
-    fn map(self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
-        let micros = (timestamp.as_micros() as i128 + self.delta).max(0) as u64;
-        moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp)
+    /// Reports whether the source's timeline broke since this clone last asked.
+    ///
+    /// An encoder starts a new group there, so the new source starts with a
+    /// keyframe instead of a delta on a picture of another source.
+    fn broke(&mut self) -> bool {
+        let breaks = self.anchor.lock().expect("poisoned").breaks;
+        std::mem::replace(&mut self.breaks, breaks) != breaks
+    }
+
+    /// Continues after `last`, the last timestamp a predecessor published on the same track.
+    fn after(mut self, last: Option<moq_net::Timestamp>) -> Self {
+        self.last = last;
+        self
+    }
+
+    /// Returns the last timestamp this clone mapped.
+    fn last(&self) -> Option<moq_net::Timestamp> {
+        self.last
+    }
+
+    /// Returns `timestamp` on the broadcast clock, anchoring again if the source's timeline broke.
+    fn map(&mut self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
+        let now = self.clock.now().as_micros() as i128;
+        let source = timestamp.as_micros() as i128;
+        let last = self.last.map(|last| last.as_micros() as i128);
+        let fits = |offset: i128| {
+            let mapped = source + offset;
+            last.is_none_or(|last| mapped > last) && mapped <= now + MAX_AHEAD.as_micros() as i128
+        };
+        let offset = {
+            let mut anchor = self.anchor.lock().expect("poisoned");
+            match anchor.offset {
+                Some(offset) if fits(offset) => offset,
+                previous => {
+                    let at = last.map_or(now, |last| now.max(last + 1));
+                    if let Some(previous) = previous {
+                        info!(
+                            source_us = source,
+                            jump_us = at - (source + previous),
+                            "the source's timeline broke, anchoring it at the broadcast clock again"
+                        );
+                        anchor.breaks += 1;
+                    }
+                    anchor.offset = Some(at - source);
+                    at - source
+                }
+            }
+        };
+        let micros = u64::try_from(source + offset).unwrap_or(0);
+        let mapped = moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp);
+        self.last = Some(mapped);
+        mapped
     }
 }
 
@@ -165,6 +274,8 @@ struct Shared {
     video_tracks: Arc<tokio::sync::Mutex<()>>,
     /// The same for audio, whose track name does not change on replacement.
     audio_tracks: Arc<tokio::sync::Mutex<()>>,
+    /// The tracks a replaced video task left open for its successor.
+    video_handovers: video::Handovers,
     generations: AtomicU64,
     status: StatusCell,
     stats: PublishRecorder,
@@ -268,6 +379,7 @@ impl LocalBroadcast {
                 audio: Mutex::new(None),
                 video_tracks: Default::default(),
                 audio_tracks: Default::default(),
+                video_handovers: Default::default(),
                 generations: AtomicU64::new(0),
                 status: StatusCell::default(),
                 stats: PublishRecorder::default(),
@@ -283,8 +395,15 @@ impl LocalBroadcast {
     /// Encodes `source` into every rendition of `encoding`, replacing the current video.
     ///
     /// Returns once the encoding task has started. Its progress shows in
-    /// [`status`](Self::status). A replaced video gets a moment to finish its
-    /// tracks before the new one takes their names.
+    /// [`status`](Self::status).
+    ///
+    /// A rendition with the name of one the replaced video published goes on
+    /// in the same track, so its viewers see the new source from its first
+    /// keyframe without subscribing again. If the new encoder's stream needs
+    /// another decoder, for example a new H.264 level after a switch to a
+    /// larger source, the rendition moves to a newly named track such as
+    /// `video/1`, and a player in automatic mode follows the catalog to it.
+    /// Renditions the new ladder lacks end.
     ///
     /// # Errors
     ///
@@ -442,30 +561,36 @@ impl LocalBroadcast {
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let shared = &self.shared;
-        let (lock, tracks, span) = match medium {
+        let (lock, tracks, handovers, span) = match medium {
             Medium::Video => (
                 &shared.video,
                 &shared.video_tracks,
+                shared.video_handovers.clone(),
                 info_span!(parent: &shared.span, "video"),
             ),
+            // Audio finishes its track on replacement, so nothing is handed over.
             Medium::Audio => (
                 &shared.audio,
                 &shared.audio_tracks,
+                Default::default(),
                 info_span!(parent: &shared.span, "audio"),
             ),
         };
         let mut slot = lock.lock().expect("poisoned");
         let generation = shared.generations.fetch_add(1, Ordering::Relaxed) + 1;
+        let handing_over = Arc::new(AtomicBool::new(false));
         let job = Job {
             producer: shared.producer.clone(),
             catalog: shared.catalog.lock().expect("poisoned").clone(),
             clock: shared.clock.clone(),
             tracks: tracks.clone(),
+            handovers,
+            handing_over: handing_over.clone(),
             stats: shared.stats.clone(),
             reporter: shared.status.begin(medium, generation, &names),
             predecessor: slot.take().map(|previous| previous.task),
         };
-        let task = SlotTask::spawn(span, &shared.closed, |stop| run(job, stop));
+        let task = SlotTask::spawn(span, &shared.closed, handing_over, |stop| run(job, stop));
         *slot = Some(Slot { generation, task });
     }
 
