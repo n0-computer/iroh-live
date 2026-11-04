@@ -269,7 +269,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let accept_loop = AbortOnDropHandle::new(tokio::spawn(async move {
         let mut sessions = Vec::new();
         while let Some(incoming) = moq.accept().await {
-            if incoming.request().query("jwt") != Some("letmein") {
+            if incoming.request().token() != Some("letmein") {
                 incoming.reject(moq_net::Error::Unauthorized);
                 continue;
             }

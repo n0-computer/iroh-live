@@ -45,7 +45,6 @@ moq-audio = { git = "https://github.com/moq-dev/moq", rev = "801fd9a2f", default
 moq-video = { git = "https://github.com/moq-dev/moq", rev = "801fd9a2f", default-features = false }
 moq-relay = { git = "https://github.com/moq-dev/moq", rev = "801fd9a2f", default-features = false }
 moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "801fd9a2f", default-features = false }
-web-transport-iroh = "0.8.4"
 moq-room = { git = "https://github.com/moq-dev/moq", rev = "801fd9a2f" }
 
 # UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back

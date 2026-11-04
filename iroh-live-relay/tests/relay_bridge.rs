@@ -157,14 +157,9 @@ impl iroh::protocol::ProtocolHandler for OpenSessions {
         connection: iroh::endpoint::Connection,
     ) -> Result<(), iroh::protocol::AcceptError> {
         use iroh::protocol::AcceptError;
-        let (transport, target) = moq_transport_iroh::accept(connection)
-            .await
-            .map_err(AcceptError::from_err)?;
+        let transport = moq_transport_iroh::accept(connection).map_err(AcceptError::from_err)?;
         let handshake = moq_net::Server::new()
-            .accept_request(
-                moq_net::time::Instant::now(),
-                moq_transport_iroh::poll_session(transport, target.is_some()),
-            )
+            .accept_request(moq_net::time::Instant::now(), transport)
             .await
             .map_err(AcceptError::from_err)?;
         let (_session, driver) = handshake

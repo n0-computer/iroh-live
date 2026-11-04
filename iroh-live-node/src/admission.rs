@@ -13,7 +13,7 @@ use iroh::{EndpointId, endpoint::Connection};
 pub use moq_ext_access::Grant;
 /// What a peer asked for when it opened a session.
 pub use moq_ext_access::SessionRequest;
-use moq_net::server::Handshake;
+use moq_net::{server::Handshake, setup::Token};
 use n0_error::e;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
@@ -21,9 +21,9 @@ use tracing::{debug, info};
 use crate::{
     Error, LinkKind, Session,
     node::Shared,
-    session::{SessionParts, Transport, driver_now, hop_for, subscriber},
+    session::{SessionParts, driver_now, hop_for, subscriber},
     state::served,
-    transport::{HANDSHAKE_TIMEOUT, accept_with_headers},
+    transport::{self, HANDSHAKE_TIMEOUT},
 };
 
 /// A function that gives a peer its grant, from its endpoint id.
@@ -55,7 +55,9 @@ pub enum Admission {
 /// How to dial a peer with [`Node::connect_with`](crate::Node::connect_with).
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
-    /// A token to present, sent as `?jwt=` in the setup path or the CONNECT URL.
+    /// A token to present, sent in the MoQ SETUP and as `?jwt=` in the setup path.
+    ///
+    /// The accepting node reads it as [`SessionRequest::token`].
     pub token: Option<String>,
     /// The cost added to every route learned over this link.
     ///
@@ -68,11 +70,13 @@ pub struct ConnectOptions {
 }
 
 impl ConnectOptions {
-    /// Returns the transport's options for a dial.
-    pub(crate) fn dial_options(&self) -> moq_transport_iroh::DialOptions {
-        let mut options = moq_transport_iroh::DialOptions::default();
-        options.token.clone_from(&self.token);
-        options
+    /// Returns the token as the MoQ SETUP carries it, if there is one.
+    pub(crate) fn setup_token(&self) -> Option<Token> {
+        let token = self.token.as_ref()?;
+        Some(Token {
+            kind: Token::OUT_OF_BAND,
+            value: token.clone().into_bytes(),
+        })
     }
 
     /// Returns the setup path that carries the token, if there is one.
@@ -184,21 +188,14 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         return Err(e!(Error::ShutDown));
     }
     let remote = connection.remote_id();
-    let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-        let (transport, h3) = accept_with_headers(connection.clone()).await?;
-        let address = match h3 {
-            Some(_) => moq_net::transport::Address::Uri,
-            None => moq_net::transport::Address::Setup,
-        };
-        let handshake = moq_net::Server::new()
-            .accept_request(driver_now(), Transport::new(transport, address))
-            .await
-            .map_err(|source| e!(Error::Node { source }))?;
-        Ok::<_, Error>((h3, handshake))
-    })
+    let transport = transport::accept(connection.clone())?;
+    let opened = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        moq_net::Server::new().accept_request(driver_now(), transport),
+    )
     .await;
-    let (h3, handshake) = match opened {
-        Ok(opened) => opened?,
+    let handshake = match opened {
+        Ok(opened) => opened.map_err(|source| e!(Error::Node { source }))?,
         Err(_) => {
             debug!(remote = %remote.fmt_short(), "no session setup in time");
             return Err(e!(Error::Node {
@@ -206,10 +203,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
             }));
         }
     };
-    let request = match h3 {
-        Some((target, headers)) => SessionRequest::new(&target, headers),
-        None => SessionRequest::new(handshake.path(), Vec::new()),
-    };
+    let request = session_request(&handshake);
     debug!(remote = %remote.fmt_short(), path = request.path(), "session requested");
     let incoming = Incoming {
         remote,
@@ -249,6 +243,22 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     Ok(())
 }
 
+/// Returns what the peer asked for in its SETUP: a path, and maybe a token.
+///
+/// The SETUP of moq-lite-06 and older has no token field. On those versions
+/// [`SessionRequest::token`] reads the `jwt` query of the path instead.
+fn session_request(handshake: &Handshake) -> SessionRequest {
+    let request = SessionRequest::new(handshake.path());
+    let token = handshake
+        .token()
+        .filter(|token| token.kind == Token::OUT_OF_BAND)
+        .and_then(|token| std::str::from_utf8(&token.value).ok());
+    match token {
+        Some(token) => request.with_token(token),
+        None => request,
+    }
+}
+
 /// Waits for the next session that needs admission.
 pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
     let mut queue = shared.incoming_rx.lock().await;
@@ -271,8 +281,11 @@ mod tests {
             ..Default::default()
         };
         let path = options.setup_path().expect("a path");
-        let request = SessionRequest::new(&path, vec![]);
-        assert_eq!(request.query("jwt"), Some("a+b"));
+        let request = SessionRequest::new(&path);
+        assert_eq!(request.token(), Some("a+b"));
         assert_eq!(ConnectOptions::default().setup_path(), None);
+        let token = options.setup_token().expect("a token");
+        assert_eq!(token.value, b"a+b");
+        assert_eq!(ConnectOptions::default().setup_token(), None);
     }
 }

@@ -20,8 +20,6 @@ use moq_net::{
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 
-type Transport = iroh_live_node::AdaptedTransport<web_transport_iroh::Session>;
-
 /// Creates an origin with hop `hop`, its driver spawned.
 fn origin(hop: u64) -> origin::Producer {
     moq_tokio::origin::spawn_config(origin::Config::new(Hop::new(hop).expect("a non-zero hop")))
@@ -78,15 +76,9 @@ impl Server {
             .await
             .expect("timed out waiting for a connection")
             .expect("router gone");
-        let (transport, target) = iroh_live_node::transport::accept(connection)
-            .await
-            .expect("transport handshake");
-        let address = match target {
-            Some(_) => moq_net::transport::Address::Uri,
-            None => moq_net::transport::Address::Setup,
-        };
+        let transport = iroh_live_node::transport::accept(connection).expect("a MoQ ALPN");
         let handshake = moq_net::Server::new()
-            .accept_request(now(), Transport::new(transport, address))
+            .accept_request(now(), transport)
             .await
             .expect("handshake failed");
         if let Some(grant) = grant {
@@ -134,10 +126,7 @@ async fn dial(
         client = client.with_publisher(publisher);
     }
     let (session, driver) = client
-        .connect(
-            now(),
-            Transport::new(transport, moq_net::transport::Address::Setup),
-        )
+        .connect(now(), transport)
         .await
         .expect("handshake failed");
     Session::new(session, driver)
@@ -405,10 +394,7 @@ async fn a_route_table_fails_over_between_links() {
                     .with_subscriber(table.clone().with_link(Link::Upstream))
                     .with_peer_hop(Hop::new(RELAY_HOP).expect("a hop"))
                     .with_cost(RELAY_COST)
-                    .connect(
-                        now(),
-                        Transport::new(transport, moq_net::transport::Address::Setup),
-                    )
+                    .connect(now(), transport)
                     .await
                     .expect("relay handshake");
                 Session::new(session, driver)

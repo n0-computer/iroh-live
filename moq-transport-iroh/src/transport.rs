@@ -1,53 +1,38 @@
-//! The WebTransport layer under MoQ.
-//!
-//! For applications that run moq-net's client or server directly, such as a
-//! relay or the iroh-live node, and need the ALPN negotiation and HTTP/3
-//! handling.
+//! Dialing, accepting, and moq-net's poll transport over an iroh connection.
 
-use std::sync::Arc;
+use std::{
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Poll, ready},
+    time::Duration,
+};
 
+use bytes::Bytes;
 use iroh::{
     Endpoint, EndpointAddr,
-    endpoint::{ConnectOptions as IrohConnectOptions, Connection},
+    endpoint::{self, Connection, ConnectionError, ConnectionStats, PathStats},
+};
+use moq_net::{
+    kio::{Bridge, Waiter},
+    transport::{
+        Address, Wire,
+        poll::{self, BiStreams, SendOptions, Ungrouped},
+    },
 };
 use n0_error::{AnyError, e};
 use tracing::debug;
 
-use crate::{ALPN, Error, alpns};
+use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 
-/// What a dial may carry beyond the peer's address.
-#[derive(Debug, Clone, Default)]
-pub struct DialOptions {
-    /// A token for an HTTP/3 CONNECT, sent as the `jwt` query parameter.
-    pub token: Option<String>,
-}
-
-/// A dialed transport, and whether it went through HTTP/3.
-#[derive(Debug)]
-pub struct Dialed {
-    /// The WebTransport session.
-    pub session: web_transport_iroh::Session,
-    h3: bool,
-}
-
-impl Dialed {
-    /// Returns the underlying iroh connection.
-    #[must_use]
-    pub fn conn(&self) -> &Connection {
-        self.session.conn()
-    }
-
-    /// Returns whether the session went through an HTTP/3 CONNECT.
-    #[must_use]
-    pub fn is_h3(&self) -> bool {
-        self.h3
-    }
-}
-
-/// Dials `remote` and completes the WebTransport handshake.
+/// Dials `remote` and returns the MoQ transport over the connection.
 ///
-/// Offers every ALPN in [`alpns`], and opens a raw QUIC session or an HTTP/3
-/// CONNECT, whichever the peer picks.
+/// Offers only [`ALPN`], the newest MoQ version. iroh's
+/// [`Router`](iroh::protocol::Router) sorts the ALPNs it accepts, and TLS picks
+/// the first of the server's that the client offers, so offering older versions
+/// too would settle every dial on the oldest moq-lite. Hand the transport to
+/// [`moq_net::Client::connect`].
 ///
 /// # Errors
 ///
@@ -56,143 +41,603 @@ impl Dialed {
 pub async fn dial(
     endpoint: &Endpoint,
     remote: impl Into<EndpointAddr>,
-) -> Result<web_transport_iroh::Session, Error> {
-    Ok(dial_with(endpoint, remote.into(), &DialOptions::default())
-        .await?
-        .session)
+) -> Result<Transport, Error> {
+    let connection = endpoint
+        .connect(remote, ALPN)
+        .await
+        .map_err(connect_error)?;
+    Transport::new(connection)
 }
 
-/// Dials `remote` as [`dial`] does, with `options`.
+/// Returns the MoQ transport over an incoming `connection`.
+///
+/// Hand it to [`moq_net::Server::accept_request`].
 ///
 /// # Errors
 ///
-/// As [`dial`].
-pub async fn dial_with(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    options: &DialOptions,
-) -> Result<Dialed, Error> {
-    let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
-    let iroh_options = IrohConnectOptions::new().with_additional_alpns(others);
-    let mut connecting = endpoint
-        .connect_with_opts(remote, ALPN, iroh_options)
-        .await
-        .map_err(connect_error)?;
-    let alpn = connecting.alpn().await.map_err(connect_error)?;
-    let alpn = String::from_utf8_lossy(&alpn).into_owned();
-    let connection = connecting.await.map_err(connect_error)?;
-    debug!(%alpn, remote = %connection.remote_id().fmt_short(), "negotiated");
-    if alpn == web_transport_iroh::ALPN_H3 {
-        // iroh already dialed the peer, so the CONNECT URL only names it. The
-        // token goes in the query.
-        let mut url: url::Url = format!("https://{}/", connection.remote_id())
-            .parse()
-            .expect("an endpoint id is a valid host");
-        if let Some(token) = &options.token {
-            url.query_pairs_mut().append_pair("jwt", token);
+/// Fails if the connection negotiated an ALPN this build does not speak, which
+/// happens when the handler is mounted under an ALPN outside [`alpns`].
+pub fn accept(connection: Connection) -> Result<Transport, Error> {
+    Transport::new(connection)
+}
+
+/// moq-net's poll transport over one iroh connection.
+///
+/// Implements [`moq_net::transport::poll::Session`] on iroh's QUIC connection
+/// and streams directly. The request path and token travel in the MoQ SETUP,
+/// since raw QUIC has no request URI.
+///
+/// What it can and cannot back:
+///
+/// - Streams order by their priority alone: iroh has no send groups, so
+///   [`send_group`](poll::Session::send_group) returns `None`.
+/// - [`wire`](poll::Session::wire) holds the UDP byte counts, refreshed from
+///   the connection statistics whenever moq-net reads
+///   [`metrics`](poll::Session::metrics).
+/// - [`probe`](poll::Session::probe) is `None`: iroh's congestion controller
+///   takes no probe target.
+/// - [`receive_window`](poll::Session::receive_window) is `None`: iroh does not
+///   report the receive windows in force. moq-net then never pauses a stream.
+pub struct Transport {
+    conn: Connection,
+    // One slot per operation that may wait. iroh's futures for them borrow
+    // the connection, so each slot stores one built from a clone of it, which
+    // every task polling the operation shares.
+    accept_uni: OpSlot<Result<endpoint::RecvStream, ConnectionError>>,
+    accept_bi: OpSlot<Result<IrohBi, ConnectionError>>,
+    open_uni: OpSlot<Result<endpoint::SendStream, ConnectionError>>,
+    open_bi: OpSlot<Result<IrohBi, ConnectionError>>,
+    recv_datagram: OpSlot<Result<Bytes, ConnectionError>>,
+    closed: OpSlot<ConnectionError>,
+    wire: Wire,
+}
+
+/// The halves of a bidirectional stream as iroh hands them out.
+type IrohBi = (endpoint::SendStream, endpoint::RecvStream);
+
+impl Transport {
+    /// Wraps `connection`, which must have negotiated a MoQ ALPN.
+    fn new(connection: Connection) -> Result<Self, Error> {
+        let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
+        let remote = connection.remote_id().fmt_short();
+        if !moq_net::ALPNS.contains(&alpn.as_str()) {
+            debug!(%alpn, %remote, "unsupported ALPN");
+            return Err(e!(Error::UnsupportedAlpn { alpn }));
         }
-        let mut request = web_transport_proto::ConnectRequest::new(url);
-        for alpn in moq_net::ALPNS {
-            request = request.with_protocol(alpn.to_string());
-        }
-        let session = web_transport_iroh::Session::connect_h3(connection, request)
-            .await
-            .map_err(connect_error)?;
-        return Ok(Dialed { session, h3: true });
+        debug!(%alpn, %remote, side = ?connection.side(), "MoQ transport opened");
+        Ok(Self {
+            conn: connection,
+            accept_uni: OpSlot::default(),
+            accept_bi: OpSlot::default(),
+            open_uni: OpSlot::default(),
+            open_bi: OpSlot::default(),
+            recv_datagram: OpSlot::default(),
+            closed: OpSlot::default(),
+            wire: Wire::new(),
+        })
     }
-    if !moq_net::ALPNS.contains(&alpn.as_str()) {
-        return Err(e!(Error::UnsupportedAlpn { alpn }));
+
+    /// Returns the iroh connection the transport runs over.
+    #[must_use]
+    pub fn conn(&self) -> &Connection {
+        &self.conn
     }
-    Ok(Dialed {
-        session: web_transport_iroh::Session::raw(connection),
-        h3: false,
+
+    /// Starts an operation on a clone of the connection.
+    fn start<T, F>(&self, op: fn(Connection) -> F) -> impl FnOnce() -> OpFuture<T> + '_
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        move || Box::pin(op(self.conn.clone()))
+    }
+}
+
+impl fmt::Debug for Transport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Transport")
+            .field("remote", &self.conn.remote_id().fmt_short().to_string())
+            .field("alpn", &String::from_utf8_lossy(self.conn.alpn()))
+            .finish_non_exhaustive()
+    }
+}
+
+impl poll::Session for Transport {
+    type SendStream = SendStream;
+    type RecvStream = poll::Buffered<RecvStream>;
+    type Error = TransportError;
+
+    fn poll_accept_uni(&self, waiter: &Waiter) -> Poll<Result<Self::RecvStream, TransportError>> {
+        let start = self.start(|conn| async move { conn.accept_uni().await });
+        poll_op(&self.accept_uni, waiter, start)
+            .map_ok(RecvStream::buffered)
+            .map_err(Into::into)
+    }
+
+    fn poll_accept_bi(&self, waiter: &Waiter) -> Poll<Result<BiStreams<Self>, TransportError>> {
+        let start = self.start(|conn| async move { conn.accept_bi().await });
+        poll_op(&self.accept_bi, waiter, start)
+            .map_ok(|(send, recv)| (SendStream::new(send, 0), RecvStream::buffered(recv)))
+            .map_err(Into::into)
+    }
+
+    fn poll_open_uni(
+        &self,
+        waiter: &Waiter,
+        options: SendOptions<'_, Ungrouped>,
+    ) -> Poll<Result<SendStream, TransportError>> {
+        let start = self.start(|conn| async move { conn.open_uni().await });
+        poll_op(&self.open_uni, waiter, start)
+            .map_ok(|send| SendStream::new(send, options.priority))
+            .map_err(Into::into)
+    }
+
+    fn poll_open_bi(
+        &self,
+        waiter: &Waiter,
+        options: SendOptions<'_, Ungrouped>,
+    ) -> Poll<Result<BiStreams<Self>, TransportError>> {
+        let start = self.start(|conn| async move { conn.open_bi().await });
+        poll_op(&self.open_bi, waiter, start)
+            .map_ok(|(send, recv)| {
+                (
+                    SendStream::new(send, options.priority),
+                    RecvStream::buffered(recv),
+                )
+            })
+            .map_err(Into::into)
+    }
+
+    /// Opens a request stream, waiting for stream credit like any open.
+    ///
+    /// Never refuses: iroh cannot open a stream without waiting for the peer's
+    /// credit, and treating a full credit as a refusal would fail requests
+    /// whenever the peer's stream limit is reached.
+    fn poll_open_request(
+        &self,
+        waiter: &Waiter,
+        options: SendOptions<'_, Ungrouped>,
+    ) -> Poll<Result<Option<BiStreams<Self>>, TransportError>> {
+        self.poll_open_bi(waiter, options).map_ok(Some)
+    }
+
+    fn send_group(&self, _priority: i64) -> Option<Ungrouped> {
+        None
+    }
+
+    fn send_datagram(
+        &self,
+        payload: Bytes,
+        _options: SendOptions<'_, Ungrouped>,
+    ) -> Result<(), TransportError> {
+        self.conn.send_datagram(payload).map_err(Into::into)
+    }
+
+    fn poll_recv_datagram(&self, waiter: &Waiter) -> Poll<Result<Bytes, TransportError>> {
+        let start = self.start(|conn| async move { conn.read_datagram().await });
+        poll_op(&self.recv_datagram, waiter, start).map_err(Into::into)
+    }
+
+    fn max_datagram_size(&self) -> usize {
+        self.conn.max_datagram_size().unwrap_or(0)
+    }
+
+    fn protocol(&self) -> Option<&str> {
+        std::str::from_utf8(self.conn.alpn()).ok()
+    }
+
+    fn address(&self) -> Address {
+        Address::Setup
+    }
+
+    fn close(&self, code: u32, reason: &str) {
+        debug!(
+            remote = %self.conn.remote_id().fmt_short(),
+            code,
+            reason,
+            "closing the connection"
+        );
+        self.conn.close(code.into(), reason.as_bytes());
+    }
+
+    fn poll_closed(&self, waiter: &Waiter) -> Poll<TransportError> {
+        let start = self.start(|conn| async move { conn.closed().await });
+        poll_op(&self.closed, waiter, start).map(Into::into)
+    }
+
+    fn metrics(&self) -> impl moq_net::transport::Metrics {
+        let stats = self.conn.stats();
+        // moq-net reads the wire right after the metrics.
+        self.wire.set_sent_bytes(stats.udp_tx.bytes);
+        self.wire.set_received_bytes(stats.udp_rx.bytes);
+        let path = self
+            .conn
+            .paths()
+            .iter()
+            .find(|path| path.is_selected())
+            .map(|path| path.stats());
+        Metrics { stats, path }
+    }
+
+    fn wire(&self) -> Option<Wire> {
+        Some(self.wire.clone())
+    }
+}
+
+/// A connection's statistics, and its selected path's.
+struct Metrics {
+    stats: ConnectionStats,
+    path: Option<PathStats>,
+}
+
+impl moq_net::transport::Metrics for Metrics {
+    fn bytes_lost(&self) -> Option<u64> {
+        Some(self.stats.lost_bytes)
+    }
+
+    fn packets_sent(&self) -> Option<u64> {
+        Some(self.stats.udp_tx.datagrams)
+    }
+
+    fn packets_received(&self) -> Option<u64> {
+        Some(self.stats.udp_rx.datagrams)
+    }
+
+    fn packets_lost(&self) -> Option<u64> {
+        Some(self.stats.lost_packets)
+    }
+
+    fn rtt(&self) -> Option<Duration> {
+        self.path.map(|path| path.rtt)
+    }
+
+    /// Returns the congestion window over the round trip of the selected path.
+    fn estimated_send_rate(&self) -> Option<u64> {
+        let path = self.path?;
+        let rtt = path.rtt.as_secs_f64();
+        (path.cwnd > 0 && rtt > 0.0).then(|| (path.cwnd as f64 * 8.0 / rtt) as u64)
+    }
+}
+
+/// A stored operation future.
+pub(crate) type OpFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// An operation in flight, or `None` when idle, which every task polling it shares.
+pub(crate) type OpSlot<T> = Bridge<Option<OpFuture<T>>>;
+
+/// Polls the operation in `slot`, starting it first if the slot is idle.
+///
+/// Clears the slot once the operation resolves. The caller whose poll sees it
+/// resolve takes the output, so a stream it yields is never lost, and the next
+/// caller starts a new operation.
+pub(crate) fn poll_op<T>(
+    slot: &OpSlot<T>,
+    waiter: &Waiter,
+    start: impl FnOnce() -> OpFuture<T>,
+) -> Poll<T> {
+    slot.poll(waiter, |slot, cx| {
+        let op = slot.get_or_insert_with(start);
+        let output = ready!(op.as_mut().poll(cx));
+        *slot = None;
+        Poll::Ready(output)
     })
 }
 
-/// Completes the server half of the WebTransport handshake on `connection`.
-///
-/// Returns the session, and for HTTP/3 the CONNECT target with its query. A
-/// raw session carries its path in the MoQ setup instead.
-///
-/// # Errors
-///
-/// Fails if the HTTP/3 exchange fails, or the connection negotiated an ALPN
-/// this build does not speak.
-pub async fn accept(
-    connection: Connection,
-) -> Result<(web_transport_iroh::Session, Option<String>), Error> {
-    let (session, h3) = accept_with_headers(connection).await?;
-    Ok((session, h3.map(|(target, _headers)| target)))
-}
-
-/// Wraps `session` for moq-net, which drives sessions through a poll interface.
-///
-/// Hand the result to [`moq_net::Server::accept_request`] or
-/// [`moq_net::Client::connect`]. Pass `h3` as whether the session went through
-/// HTTP/3, as the CONNECT target [`accept`] returns says: its request path then
-/// travels in the CONNECT URL and not in the MoQ setup.
-pub fn poll_session(
-    session: web_transport_iroh::Session,
-    h3: bool,
-) -> impl moq_net::transport::poll::Boxable {
-    let address = if h3 {
-        moq_net::transport::Address::Uri
-    } else {
-        moq_net::transport::Address::Setup
-    };
-    crate::adapter::Session::new(session, address)
-}
-
-/// Completes the server half of the WebTransport handshake.
-///
-/// As [`accept`], and also returns the CONNECT headers.
-///
-/// # Errors
-///
-/// As [`accept`].
-pub async fn accept_with_headers(
-    connection: Connection,
-) -> Result<
-    (
-        web_transport_iroh::Session,
-        Option<(String, Vec<(String, String)>)>,
-    ),
-    Error,
-> {
-    let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
-    if alpn == web_transport_iroh::ALPN_H3 {
-        let request = web_transport_iroh::H3Request::accept(connection)
-            .await
-            .map_err(connect_error)?;
-        let mut target = request.url.path().to_owned();
-        if let Some(query) = request.url.query() {
-            target.push('?');
-            target.push_str(query);
-        }
-        let headers = request
-            .headers
-            .iter()
-            .filter_map(|(name, value)| {
-                Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
-            })
-            .collect();
-        let mut response = web_transport_proto::ConnectResponse::OK;
-        if let Some(protocol) = request.protocols.first() {
-            response = response.with_protocol(protocol);
-        }
-        let session = request.respond(response).await.map_err(connect_error)?;
-        return Ok((session, Some((target, headers))));
-    }
-    // The handler can be mounted on any ALPN.
-    if !moq_net::ALPNS.contains(&alpn.as_str()) {
-        return Err(e!(Error::UnsupportedAlpn { alpn }));
-    }
-    Ok((web_transport_iroh::Session::raw(connection), None))
-}
-
-/// Wraps a dial or accept failure.
+/// Wraps a dial failure.
 fn connect_error(err: impl std::error::Error + Send + Sync + 'static) -> Error {
     e!(Error::Connect {
         source: Arc::new(AnyError::from_std(err))
     })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use iroh::endpoint::presets;
+    use moq_net::{
+        kio,
+        transport::{
+            CloseKind, Error as _,
+            poll::{RecvStream as _, SendStream as _, Session as _},
+        },
+    };
+
+    use super::*;
+
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Returns a dialed and an accepted transport, and the endpoints that drive them.
+    ///
+    /// The accepting endpoint speaks only `server_alpns`. With `client_alpn`
+    /// the client connects with that ALPN instead of through [`dial`].
+    async fn pair_with(
+        client_alpn: Option<&[u8]>,
+        server_alpns: Vec<&[u8]>,
+    ) -> (Transport, Transport, [Endpoint; 2]) {
+        let client = Endpoint::builder(presets::Minimal)
+            .bind()
+            .await
+            .expect("bind client");
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(server_alpns.into_iter().map(<[u8]>::to_vec).collect())
+            .bind()
+            .await
+            .expect("bind server");
+        let incoming = async {
+            let connection = server
+                .accept()
+                .await
+                .expect("an incoming connection")
+                .await
+                .expect("handshake");
+            accept(connection).expect("a MoQ ALPN")
+        };
+        let outgoing = async {
+            match client_alpn {
+                Some(alpn) => accept(
+                    client
+                        .connect(server.addr(), alpn)
+                        .await
+                        .map_err(connect_error)?,
+                ),
+                None => dial(&client, server.addr()).await,
+            }
+        };
+        let (dialed, accepted) =
+            tokio::time::timeout(TIMEOUT, async { tokio::join!(outgoing, incoming) })
+                .await
+                .expect("connect in time");
+        (dialed.expect("dial"), accepted, [client, server])
+    }
+
+    /// Returns a dialed and an accepted transport, the server speaking every MoQ ALPN.
+    ///
+    /// The server's ALPNs are sorted, as iroh's `Router` sorts them.
+    pub(crate) async fn pair() -> (Transport, Transport, [Endpoint; 2]) {
+        let mut alpns = crate::alpns();
+        alpns.sort();
+        pair_with(None, alpns).await
+    }
+
+    /// Runs `fut` to completion, failing the test after [`TIMEOUT`].
+    async fn timely<F: Future>(what: &str, fut: F) -> F::Output {
+        tokio::time::timeout(TIMEOUT, fut)
+            .await
+            .unwrap_or_else(|_| panic!("{what} timed out"))
+    }
+
+    /// Reads `recv` to its end.
+    async fn read_to_end(recv: &mut poll::Buffered<RecvStream>) -> Result<Vec<u8>, TransportError> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = recv.read_chunk(usize::MAX).await? {
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+
+    /// Opens a unidirectional stream and sends `payload` on it, so the peer can accept it.
+    async fn open_with(transport: &Transport, payload: &'static [u8]) -> SendStream {
+        let mut send = transport
+            .open_uni(SendOptions::default())
+            .await
+            .expect("open uni");
+        send.write_chunk(Bytes::from_static(payload))
+            .await
+            .expect("write");
+        send
+    }
+
+    #[tokio::test]
+    async fn dial_negotiates_the_newest_alpn() {
+        let (client, server, _endpoints) = pair().await;
+        assert_eq!(client.protocol(), std::str::from_utf8(ALPN).ok());
+        assert_eq!(server.protocol(), client.protocol());
+        assert_eq!(client.address(), Address::Setup);
+    }
+
+    #[tokio::test]
+    async fn accept_refuses_a_foreign_alpn() {
+        let client = Endpoint::builder(presets::Minimal)
+            .bind()
+            .await
+            .expect("bind");
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![b"other".to_vec()])
+            .bind()
+            .await
+            .expect("bind");
+        let incoming = async {
+            server
+                .accept()
+                .await
+                .expect("incoming")
+                .await
+                .expect("handshake")
+        };
+        let (dialed, accepted) = timely("connect", async {
+            tokio::join!(client.connect(server.addr(), b"other"), incoming)
+        })
+        .await;
+        let _client = dialed.expect("connect");
+        assert!(matches!(
+            accept(accepted),
+            Err(Error::UnsupportedAlpn { alpn, .. }) if alpn == "other"
+        ));
+    }
+
+    #[tokio::test]
+    async fn uni_stream_carries_bytes_and_fin() {
+        let (client, server, _endpoints) = pair().await;
+        let mut send = open_with(&client, b"hello ").await;
+        send.write_chunk(Bytes::from_static(b"world"))
+            .await
+            .expect("write");
+        send.finish().expect("finish");
+        let mut recv = timely("accept", server.accept_uni()).await.expect("accept");
+        let bytes = timely("read", read_to_end(&mut recv)).await.expect("read");
+        assert_eq!(bytes, b"hello world");
+        timely("acknowledgement", send.closed())
+            .await
+            .expect("acknowledged");
+    }
+
+    #[tokio::test]
+    async fn bi_stream_carries_both_directions() {
+        let (client, server, _endpoints) = pair().await;
+        let (mut send, mut recv) = client
+            .open_bi(SendOptions::default())
+            .await
+            .expect("open bi");
+        send.write_chunk(Bytes::from_static(b"ping"))
+            .await
+            .expect("write");
+        send.finish().expect("finish");
+        let (mut reply, mut request) = timely("accept", server.accept_bi()).await.expect("accept");
+        assert_eq!(
+            timely("read", read_to_end(&mut request))
+                .await
+                .expect("read"),
+            b"ping"
+        );
+        reply
+            .write_chunk(Bytes::from_static(b"pong"))
+            .await
+            .expect("write");
+        reply.finish().expect("finish");
+        assert_eq!(
+            timely("read", read_to_end(&mut recv)).await.expect("read"),
+            b"pong"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_request_waits_for_credit_and_opens() {
+        let (client, _server, _endpoints) = pair().await;
+        let opened = kio::wait(|waiter| client.poll_open_request(waiter, SendOptions::default()));
+        assert!(timely("open", opened).await.expect("open").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_datagram_arrives() {
+        let (client, server, _endpoints) = pair().await;
+        assert!(client.max_datagram_size() > 0);
+        client
+            .send_datagram(Bytes::from_static(b"tick"), SendOptions::default())
+            .expect("send");
+        let datagram = timely("datagram", server.recv_datagram())
+            .await
+            .expect("receive");
+        assert_eq!(datagram, Bytes::from_static(b"tick"));
+    }
+
+    #[tokio::test]
+    async fn a_close_code_reaches_the_peer() {
+        let (client, server, _endpoints) = pair().await;
+        client.close(42, "bye");
+        let remote = timely("remote close", server.closed()).await;
+        assert_eq!(remote.session_error(), Some((42, "bye".to_owned())));
+        let local = timely("local close", client.closed()).await;
+        assert_eq!(local.close_kind(), CloseKind::Closed);
+        assert_eq!(local.session_error(), None);
+    }
+
+    #[tokio::test]
+    async fn a_stop_code_reaches_the_writer() {
+        let (client, server, _endpoints) = pair().await;
+        let send = open_with(&client, b"unwanted").await;
+        let mut recv = timely("accept", server.accept_uni()).await.expect("accept");
+        recv.stop(7);
+        let err = timely("stop", send.closed()).await.expect_err("stopped");
+        assert_eq!(err.stream_error(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn a_reset_code_reaches_the_reader() {
+        let (client, server, _endpoints) = pair().await;
+        let mut send = open_with(&client, b"partial").await;
+        let mut recv = timely("accept", server.accept_uni()).await.expect("accept");
+        send.reset(9);
+        let err = timely("read", read_to_end(&mut recv))
+            .await
+            .expect_err("reset");
+        assert_eq!(err.stream_error(), Some(9));
+    }
+
+    /// A writer that goes away mid-stream resets it, so the peer never reads it as complete.
+    #[tokio::test]
+    async fn dropping_an_unfinished_stream_resets_it() {
+        let (client, server, _endpoints) = pair().await;
+        let send = open_with(&client, b"cut off").await;
+        let mut recv = timely("accept", server.accept_uni()).await.expect("accept");
+        drop(send);
+        let err = timely("read", read_to_end(&mut recv))
+            .await
+            .expect_err("reset");
+        assert_eq!(err.stream_error(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn metrics_fill_the_wire_counters() {
+        let (client, server, _endpoints) = pair().await;
+        let mut send = open_with(&client, &[7; 4096]).await;
+        send.finish().expect("finish");
+        let mut recv = timely("accept", server.accept_uni()).await.expect("accept");
+        timely("read", read_to_end(&mut recv)).await.expect("read");
+        let metrics = client.metrics();
+        let wire = client.wire().expect("a wire");
+        assert!(wire.sent_bytes() >= 4096, "{}", wire.sent_bytes());
+        assert!(wire.received_bytes() > 0);
+        assert!(moq_net::transport::Metrics::packets_sent(&metrics).is_some_and(|sent| sent > 0));
+        assert!(moq_net::transport::Metrics::rtt(&metrics).is_some());
+        assert!(client.probe().is_none());
+        assert!(client.receive_window().is_none());
+    }
+
+    /// Completes a MoQ handshake: the client over `client`, the server over `server`.
+    ///
+    /// Returns the handshake the server saw before admitting the session.
+    async fn handshake(
+        client: Transport,
+        server: Transport,
+        builder: moq_net::Client,
+    ) -> (moq_net::Session, moq_net::server::Handshake) {
+        let now = moq_net::time::Instant::now();
+        // The client's driver writes the SETUP the server waits for, so it runs
+        // alongside the accept.
+        let connect = async {
+            let (session, driver) = builder.connect(now, client).await.expect("connect");
+            tokio::spawn(moq_net::time::run(driver));
+            session
+        };
+        let accept = async {
+            moq_net::Server::new()
+                .accept_request(now, server)
+                .await
+                .expect("accept request")
+        };
+        timely("handshake", async { tokio::join!(connect, accept) }).await
+    }
+
+    /// The request path travels in the SETUP, since raw QUIC has no request URI.
+    #[tokio::test]
+    async fn the_setup_carries_the_request_path() {
+        let (client, server, _endpoints) = pair().await;
+        let url = url::Url::parse("moqt://iroh/room?jwt=abc").expect("url");
+        let (_session, request) =
+            handshake(client, server, moq_net::Client::new().with_url(url)).await;
+        assert_eq!(request.path(), "/room?jwt=abc");
+        let (_session, _driver) = timely("admit", request.ok()).await.expect("admit");
+    }
+
+    /// A version that carries a SETUP token hands the client's token to the server.
+    #[tokio::test]
+    async fn the_setup_carries_the_token() {
+        let (client, server, _endpoints) = pair_with(Some(b"moqt-22"), vec![b"moqt-22"]).await;
+        assert_eq!(client.protocol(), Some("moqt-22"));
+        let token = moq_net::setup::Token {
+            kind: moq_net::setup::Token::OUT_OF_BAND,
+            value: b"letmein".to_vec(),
+        };
+        let builder = moq_net::Client::new().with_token(token.clone());
+        let (_session, request) = handshake(client, server, builder).await;
+        assert_eq!(request.token(), Some(&token));
+    }
 }

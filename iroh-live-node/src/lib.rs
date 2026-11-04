@@ -64,7 +64,7 @@
 //! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
 //! | [`Node::accept`] | yes | loses nothing |
 //! | [`Incoming::admit`] | yes | rejects the session before the handshake completes, admits it after |
-//! | [`transport::dial`], [`transport::accept`] | yes | drops the connection |
+//! | [`transport::dial`] | yes | drops the connection |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
 //! | [`Node::shutdown`] | no | call it again to finish |
@@ -83,12 +83,9 @@ mod state;
 pub use moq_net as net;
 
 /// The MoQ-over-iroh transport this node is built on: dial, accept, ALPNs and
-/// the poll adapter, for applications that run moq-net's client or server
-/// directly.
+/// moq-net's poll transport, for applications that run moq-net's client or
+/// server directly.
 pub use moq_transport_iroh as transport;
-/// The poll transport adapter sessions run over, for this crate's tests.
-#[doc(hidden)]
-pub use moq_transport_iroh::AdaptedTransport;
 
 pub use moq_transport_iroh::{ALPN, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
 

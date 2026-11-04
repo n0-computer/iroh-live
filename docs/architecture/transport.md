@@ -110,7 +110,7 @@ through it. Under `Admission::Open` (the default) every session is admitted
 with the grant `NodeConfig::grant` gives the peer, or `Grant::subscribe_only()` if
 none is set. Under `Admission::Manual` the handshake waits after the peer's
 setup, and the session shows up in `Node::accept()`. The application reads the
-`SessionRequest` (its path, a `jwt` query parameter, an HTTP/3 header) and
+`SessionRequest` (its path, its query, the token the peer presented) and
 admits it with a `Grant` or rejects it. `Node::sessions()` watches the open
 sessions.
 
@@ -153,27 +153,39 @@ each reconnect starts a new path generation.
 ## ALPN negotiation
 
 `moq_transport_iroh::ALPN` is `moq_net::ALPNS[0]`, the newest MoQ version this build
-speaks. `moq_transport_iroh::alpns()` returns all of `moq_net::ALPNS`, newest first, with
-HTTP/3 last. Mount the node under all of them. A dial offers the newest and
-lists the rest as additional ALPNs.
+speaks. `moq_transport_iroh::alpns()` returns all of `moq_net::ALPNS`, newest
+first. Mount the node under all of them. A dial offers only the newest: iroh's
+`Router` sorts the ALPNs it accepts and TLS picks the server's first match, so
+a dial that offered the older ones too would settle on moq-lite-03. An ALPN this build does not speak fails with
+`Error::UnsupportedAlpn`.
 
-Both sides branch on the negotiated ALPN. Raw QUIC carries the MoQ session
-directly. HTTP/3 answers a CONNECT first: the client sends a
-`web_transport_proto::ConnectRequest` that lists every moq-lite ALPN as a
-protocol, and the server replies `ConnectResponse::OK` with the first one. An
-ALPN this build does not speak fails with `Error::UnsupportedAlpn`.
+MoQ runs on raw QUIC. Raw QUIC has no request URI, so the request path and the
+token travel in the MoQ SETUP. The dialing node sets the token with moq-net's
+`Client::with_token`. The SETUP of moq-lite-06, the version iroh peers
+negotiate today, has no token field, so the token also rides the setup path as
+`?jwt=`. The accepting node reads `Handshake::token` and falls back to that
+query parameter, and `SessionRequest::token` returns the result.
 
 An application that runs moq-net's client or server itself gets the same
-negotiation from `moq_transport_iroh::{dial, accept}` (also `iroh_live_node::transport`), which return a
-`web_transport_iroh::Session`. `iroh-live-relay` accepts its iroh sessions
-through `accept`.
+negotiation from `moq_transport_iroh::{dial, accept}` (also
+`iroh_live_node::transport`). Both return a `moq_transport_iroh::Transport`.
+`iroh-live-relay` accepts its iroh sessions through `accept`.
 
-## The poll adapter
+## The poll transport
 
-moq-net runs sessions over a poll-based transport interface, and
-web-transport-iroh is async. `moq-transport-iroh/src/adapter.rs` is moq-tokio's adapter,
-vendored because moq-tokio's version takes only its own QUIC backends. It goes
-away once web-transport-iroh implements the poll interface itself.
+moq-net runs sessions over a poll-based transport interface
+(`moq_net::transport::poll`). `moq_transport_iroh::Transport` implements it on
+iroh's connection and streams directly. Stream reads and writes poll iroh's
+streams. Accepts, opens, datagram reads and the connection close are iroh
+futures that borrow the connection, so the transport stores one per operation,
+built on a clone of the connection and shared by every task that polls it.
+
+iroh has no send groups, so streams order by their own priority, saturated to
+iroh's 32 bits. The wire counters come from the connection's UDP statistics.
+The transport reports no probe target and no receive window: iroh's congestion
+controller takes no target, and iroh does not report the windows in force. A
+send stream dropped before it is finished is reset with code 0, so the peer
+never reads a truncated stream as complete.
 
 ## Errors
 

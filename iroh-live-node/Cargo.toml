@@ -27,7 +27,6 @@ tokio = { version = "1.53.1", features = ["sync", "time", "macros", "rt"] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
 url = "2.5.8"
-web-transport-iroh = { workspace = true }
 
 [dev-dependencies]
 n0-tracing-test = "0.3.0"

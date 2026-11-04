@@ -55,7 +55,7 @@ publisher.
 |---|---|
 | [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and the media, transport and rooms crates re-exported |
 | [`iroh-live-node`](iroh-live-node) | The node: one route table fed by direct sessions and relay links, publications, and grants |
-| [`moq-transport-iroh`](moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, the poll adapter, `MoqPreset`, link statistics. No node concepts |
+| [`moq-transport-iroh`](moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, moq-net's poll transport on iroh, `MoqPreset`, link statistics. No node concepts |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`moq-ext-access`](moq-ext-access) | Access control: grants, session requests, and who sees a publication. No iroh dependency |
 | [`moq-ext-adaptive`](moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines |
