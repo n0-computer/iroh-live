@@ -12,7 +12,7 @@ use crate::{
     import::{FileImport, FileSource},
     source,
     source_spec::VideoSourceSpec,
-    transport::{self, setup_live},
+    transport::{self, Transport, setup_live},
 };
 
 /// Runs the `publish` command.
@@ -43,7 +43,7 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// Opens the devices, publishes them, and prints the ticket.
 async fn setup_capture(
     args: &PublishArgs,
-) -> Result<(Live, LocalBroadcast, source::Opened, String)> {
+) -> Result<(Transport, LocalBroadcast, source::Opened, String)> {
     let live = setup_live(!args.transport.no_serve).await?;
     let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
         let broadcast: LocalBroadcast = live.publish(&args.transport.name)?;
@@ -132,7 +132,7 @@ async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> 
 /// Holds the broadcast and its sources open until the user interrupts.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
-    live: Live,
+    live: Transport,
     broadcast: LocalBroadcast,
     sources: source::Opened,
 ) -> Result {
@@ -155,10 +155,7 @@ mod preview {
     use std::time::Duration;
 
     use eframe::egui;
-    use iroh_live::{
-        Live,
-        media::{LocalBroadcast, VideoSource},
-    };
+    use iroh_live::media::{LocalBroadcast, VideoSource};
     use moq_ext_egui::{
         VideoView,
         overlay::{DebugOverlay, StatCategory, fit_to_aspect},
@@ -172,11 +169,12 @@ mod preview {
         args::{CaptureArgs, PublishArgs},
         source::{self, Opened},
         source_spec::VideoSourceSpec,
+        transport::Transport,
     };
 
     /// Opens the preview window and runs it until it closes.
     pub(super) fn run(
-        live: Live,
+        live: Transport,
         broadcast: LocalBroadcast,
         sources: Opened,
         ticket: String,
@@ -208,7 +206,7 @@ mod preview {
     }
 
     struct PreviewApp {
-        live: Live,
+        live: Transport,
         broadcast: LocalBroadcast,
         ticket: String,
         view: VideoView,

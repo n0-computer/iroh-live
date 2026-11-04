@@ -3,11 +3,8 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use iroh_live::{
-    Live,
-    media::{
-        AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoRenditions as _,
-    },
+use iroh_live::media::{
+    AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoRenditions as _,
 };
 use moq_ext_egui::{
     VideoView,
@@ -16,7 +13,7 @@ use moq_ext_egui::{
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tracing::{info, warn};
 
-use crate::{args::PlaybackArgs, backend::Backend};
+use crate::{args::PlaybackArgs, backend::Backend, transport::Transport};
 
 /// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
 pub fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
@@ -205,7 +202,7 @@ pub fn spawn_heartbeat(ctx: &egui::Context, period: Duration) -> AbortOnDropHand
 }
 
 /// Shuts the endpoint down from eframe's `on_exit`, outside any async context.
-pub fn shutdown_live_blocking(live: &Live) {
+pub fn shutdown_live_blocking(live: &Transport) {
     let live = live.clone();
     tokio::runtime::Handle::current().block_on(async move {
         live.shutdown().await;
@@ -213,7 +210,7 @@ pub fn shutdown_live_blocking(live: &Live) {
 }
 
 /// Closes `broadcast`, then shuts the endpoint down, from outside async context.
-pub fn shutdown_publish_blocking(live: &Live, broadcast: &LocalBroadcast) {
+pub fn shutdown_publish_blocking(live: &Transport, broadcast: &LocalBroadcast) {
     let live = live.clone();
     let broadcast = broadcast.clone();
     tokio::runtime::Handle::current().block_on(async move {

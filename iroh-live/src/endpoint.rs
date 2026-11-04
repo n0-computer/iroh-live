@@ -116,6 +116,10 @@ impl EndpointOptions {
 
     /// Binds an endpoint with [`MoqPreset`] and these options.
     ///
+    /// The endpoint accepts no ALPN until a router mounts handlers on it. The
+    /// caller owns it: close it, or shut down the router built on it, which
+    /// closes it.
+    ///
     /// # Errors
     ///
     /// Fails with [`Error::Bind`] if the endpoint's sockets cannot be bound.

@@ -9,7 +9,7 @@
 //! the camera. Whoever scans places the call, so no keyboard is needed.
 
 use iroh_live::{
-    CALL, CallOffer, Live,
+    CALL, CallOffer,
     media::{AudioTarget, LocalBroadcast},
 };
 use n0_error::Result;
@@ -19,7 +19,7 @@ use crate::{
     args::{CallArgs, CaptureArgs},
     source,
     source_spec::VideoSourceSpec as Spec,
-    transport,
+    transport::{self, Transport},
 };
 
 /// Runs the `call` command.
@@ -34,7 +34,7 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
 
 /// This node's side of the call, and the speaker the peer's side plays on.
 struct Local {
-    live: Live,
+    live: Transport,
     broadcast: LocalBroadcast,
     /// Who this node's side is offered to.
     calls: CallOffer,
@@ -147,7 +147,7 @@ mod window {
     use crate::{
         args::{CallArgs, PlaybackArgs},
         scan::ScanView,
-        transport::{PEER_TIMEOUT, Subscribed},
+        transport::{PEER_TIMEOUT, Subscribed, Transport},
         ui::{CursorIdle, RemoteView, TicketQr},
     };
 
@@ -204,7 +204,7 @@ mod window {
                 crate::ui::spawn_ctrl_c_handler(ctx);
                 let callers = Watchable::new(BTreeSet::new());
                 let ringing = callers.watch();
-                let watcher = spawn(watch_callers(live.clone(), callers));
+                let watcher = spawn(watch_callers(Live::clone(&live), callers));
                 let preview = VideoView::new(
                     ctx,
                     "call-preview",
@@ -249,7 +249,7 @@ mod window {
 
     /// The call window.
     struct CallApp {
-        live: Live,
+        live: Transport,
         /// This node's ticket, shown in the top bar and as a QR code.
         ticket: String,
         /// The ticket as a QR code, or `None` where it does not render.
@@ -679,7 +679,12 @@ mod window {
         fn start(&mut self, ctx: &egui::Context, direction: Direction) {
             let peer = direction.peer();
             let offer = Offer::new(&self.calls, peer);
-            let attempt = reach(self.live.clone(), peer, self.playback, self.output.clone());
+            let attempt = reach(
+                Live::clone(&self.live),
+                peer,
+                self.playback,
+                self.output.clone(),
+            );
             let (tx, rx) = oneshot::channel();
             let ctx = ctx.clone();
             let task = spawn(async move {

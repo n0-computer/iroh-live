@@ -13,6 +13,7 @@
 This publishes a test pattern and plays someone else's broadcast:
 
 ```no_run
+use iroh::protocol::Router;
 use iroh_live::{
     BroadcastTicket, Live, MoqPreset,
     media::{
@@ -22,7 +23,9 @@ use iroh_live::{
 
 # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
 let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-let live = Live::builder(endpoint).with_router().spawn();
+let live = Live::new(endpoint.clone());
+// Accepts the peers that read the broadcast. Keep the router alive.
+let router = live.mount(Router::builder(endpoint)).spawn();
 
 // Created in the node's route table: peers read it without a copy.
 let broadcast: LocalBroadcast = live.publish("studio")?;
@@ -45,6 +48,9 @@ while let Some(frame) = frames.next().await {
     // hand `frame` to a renderer
 #   drop(frame);
 }
+
+live.shutdown().await;
+router.shutdown().await?; // closes the endpoint
 # Ok(())
 # }
 ```
@@ -60,7 +66,8 @@ while let Some(frame) = frames.next().await {
 //!
 //! The main types:
 //!
-//! - [`Live`]: the node. [`LiveBuilder`] mounts more protocols on its router.
+//! - [`Live`]: the node. [`Live::mount`] mounts it on the application's
+//!   router, next to the application's own protocols.
 //! - [`BroadcastTicket`]: a publisher's endpoint id and a broadcast name.
 #![cfg_attr(
     feature = "media",
@@ -77,6 +84,9 @@ while let Some(frame) = frames.next().await {
 //! | [`Live::answer`] | yes | abandons the wait |
 //! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
 //! | [`Live::shutdown`] | no, idempotent | call again to finish |
+//!
+//! [`Live::shutdown`] does not close the endpoint. Whoever binds it closes
+//! it, directly or through `Router::shutdown`.
 //!
 //! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.

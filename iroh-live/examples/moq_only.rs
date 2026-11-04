@@ -1,8 +1,8 @@
 //! The transport without `Live`: a `Node` mounted on a router.
 //!
-//! `Live` is a convenience over `Node` and an endpoint. An application with its
-//! own path layout, grant or router mounts `Node` itself, and gets the same
-//! sessions, route table and relays. This one serves a broadcast at a path of
+//! `Live` is a convenience over `Node`. An application with its own path
+//! layout or grant uses `Node` itself, and gets the same sessions, route table
+//! and relays. This one serves a broadcast at a path of
 //! its own, `demo/hello`, to everyone.
 //!
 //! Run it with `cargo run -p iroh-live --example moq_only`.

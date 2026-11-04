@@ -13,12 +13,16 @@ crates are gathered in `iroh_live::media` and the transport is re-exported as
 Publish a camera, then share the ticket:
 
 ```rust
+use iroh::protocol::Router;
 use iroh_live::{
     EndpointOptions, Live,
     media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
 };
 
-let live = Live::builder(EndpointOptions::default().bind().await?).with_router().spawn();
+let endpoint = EndpointOptions::default().bind().await?;
+let live = Live::new(endpoint.clone());
+// Accepts the viewers. Keep it: dropping it stops accepting.
+let router = live.mount(Router::builder(endpoint)).spawn();
 // Created in the node's route table: peers read it without a copy.
 let broadcast: LocalBroadcast = live.publish("hello")?;
 let camera = VideoSource::capture(video::capture::Config::default()).await?;
@@ -43,9 +47,12 @@ let mut frames = player.video();
 
 ## Main types
 
-- `Live` is the node. `Live::builder(endpoint)` creates it, `with_router()`
-  lets peers connect, and `accept` mounts another protocol on the same router.
-  `shutdown` closes the endpoint too.
+- `Live` is the node. `Live::new(endpoint)` creates it. `Live::builder` adds
+  rooms, and `Live::builder_with` takes another `NodeConfig`.
+  `mount(router_builder)` adds it to the application's `Router`, so peers can
+  connect. Other protocols go on the same router. `shutdown` ends the node but
+  leaves the endpoint open: whoever binds the endpoint closes it, directly or
+  through `Router::shutdown`.
 - `Live::publish(name)` creates a broadcast in the node's route table,
   published to everyone, attached relays included, and returns it as a
   `LocalBroadcast` or a raw `broadcast::Producer`. It stays published until
@@ -88,7 +95,8 @@ imply `media`, and pass through to `moq-ext-player` and `moq-ext-publisher`.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node with `LiveBuilder::with_rooms`, which
-mounts the gossip protocol and adds the room paths to each peer's grant.
+adds the room paths to each peer's grant. `Live::mount` then mounts the gossip
+protocol as well.
 
 ## Examples
 
