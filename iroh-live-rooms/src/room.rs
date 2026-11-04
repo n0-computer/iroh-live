@@ -7,7 +7,11 @@ use std::{
 };
 
 use bytes::Bytes;
-use iroh::{EndpointId, protocol::ProtocolHandler};
+use iroh::{
+    EndpointId,
+    endpoint::Connection,
+    protocol::{AcceptError, ProtocolHandler},
+};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live_node::{Audience, Node, Publication, Subscription};
 use iroh_smol_kv::{
@@ -18,7 +22,7 @@ use n0_error::{e, stack_error};
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OnceCell, mpsc, oneshot};
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use crate::ticket::RoomTicket;
@@ -78,11 +82,14 @@ pub enum Error {
 
 /// Rooms on one endpoint.
 ///
-/// Owns the gossip instance all rooms on the endpoint share. Cheap to clone.
+/// Owns the gossip instance all rooms on the endpoint share. Cheap to clone,
+/// and [`shutdown`](Self::shutdown) ends it for every clone.
 #[derive(Debug, Clone)]
 pub struct Rooms {
     moq: Node,
     gossip: Gossip,
+    /// Set once the gossip has shut down, so the router's shutdown does not repeat it.
+    shut_down: Arc<OnceCell<()>>,
 }
 
 impl Rooms {
@@ -93,16 +100,38 @@ impl Rooms {
     }
 
     /// Creates the room service over an existing gossip instance.
+    ///
+    /// The service takes over the gossip: [`shutdown`](Self::shutdown) shuts
+    /// it down.
     pub fn with_gossip(moq: &Node, gossip: Gossip) -> Self {
         Self {
             moq: moq.clone(),
             gossip,
+            shut_down: Arc::default(),
         }
     }
 
     /// Returns the handler to mount under [`ALPN`] on the endpoint's router.
+    ///
+    /// The router's shutdown calls [`shutdown`](Self::shutdown).
     pub fn protocol_handler(&self) -> impl ProtocolHandler + use<> {
-        self.gossip.clone()
+        Handler(self.clone())
+    }
+
+    /// Shuts the gossip down for every clone.
+    ///
+    /// Leaves every gossip topic, so the rooms joined here stop. Call
+    /// [`Room::leave`] first to tell the other members at once. Idempotent,
+    /// and concurrent calls wait for the same shutdown.
+    pub async fn shutdown(&self) {
+        self.shut_down
+            .get_or_init(|| async {
+                if let Err(err) = self.gossip.shutdown().await {
+                    warn!(%err, "failed to shut down the rooms' gossip");
+                }
+                debug!("rooms shut down");
+            })
+            .await;
     }
 
     /// Joins the room `ticket` names, as `display_name` if given.
@@ -376,6 +405,20 @@ impl Room {
                 break;
             }
         }
+    }
+}
+
+/// The gossip handler of a [`Rooms`], which shuts the rooms down with the router.
+#[derive(Debug, Clone)]
+struct Handler(Rooms);
+
+impl ProtocolHandler for Handler {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        self.0.gossip.accept(connection).await
+    }
+
+    async fn shutdown(&self) {
+        self.0.shutdown().await;
     }
 }
 
