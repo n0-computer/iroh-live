@@ -34,7 +34,7 @@ pub mod overlay;
 
 pub use egui_wgpu;
 use moq_ext_player::VideoFrames;
-use tracing::{debug, info, warn};
+use tracing::warn;
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
 pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {
@@ -322,6 +322,8 @@ fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
 /// Builds a Vulkan device, with DMA-BUF import if the adapter supports it.
 #[cfg(target_os = "linux")]
 fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
+    use tracing::{debug, info};
+
     // DMA-BUF import needs Vulkan. If `WGPU_BACKEND` asks for another
     // backend, fall back to egui's setup, which reads the same variable.
     if let Some(requested) = wgpu::Backends::from_env()

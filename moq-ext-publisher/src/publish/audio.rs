@@ -57,8 +57,7 @@ pub(super) async fn run(
         )]
         _ => Err(Error::invalid(
             "publishing a microphone needs the `capture` feature of moq-ext-publisher",
-        )
-        .into()),
+        )),
     };
     if stop.is_cancelled() {
         return;
