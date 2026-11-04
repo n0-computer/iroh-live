@@ -239,7 +239,8 @@ paths. A real application also resubscribes when a broadcast ends: see
 
 ## Publish at your own path
 
-`publish` and `subscribe` use the `live/<id>/<name>` layout and a ticket.
+`publish` and `subscribe` use the `live/<id>/<name>` layout and a ticket, and
+`publish_to` is `publish` for an audience other than everyone.
 `publish_at` and `subscribe_path` take any path, and `Audience::peers` limits
 who sees the broadcast: moq enforces it on each live session, so a peer taken
 out of the set loses the path at once. To change the set later, publish with

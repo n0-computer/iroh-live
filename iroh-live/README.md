@@ -49,8 +49,9 @@ let mut frames = player.video();
 - `Live::publish(name)` creates a broadcast in the node's route table,
   published to everyone, attached relays included, and returns it as a
   `LocalBroadcast` or a raw `broadcast::Producer`. It stays published until
-  the broadcast closes, or shutdown. To publish for another audience, or to
-  unpublish without closing, use `publish_at`.
+  the broadcast closes, or shutdown. `publish_to(name, audience)` does the
+  same for another audience, such as `Audience::peers([peer])`. To unpublish
+  without closing, use `publish_at`.
 - `Live::publish_at(path, audience)` and `Live::subscribe_path(path, reach)`
   are the path-level calls under `publish` and `subscribe`: any path, any
   `Audience`, any `Reach`. They apply no layout. `publish_at` returns the

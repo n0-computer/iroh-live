@@ -286,8 +286,9 @@ impl Live {
     /// closes when it is closed or its last clone drops. A producer closes
     /// only when it is closed, since the node holds the broadcast open while
     /// it is published: dropping it leaves the name taken until the node
-    /// shuts down. To keep the [`Publication`], for another audience or to
-    /// unpublish without closing, use [`publish_at`](Self::publish_at), or
+    /// shuts down. [`publish_to`](Self::publish_to) publishes to another
+    /// audience. To keep the [`Publication`], for example to unpublish
+    /// without closing, use [`publish_at`](Self::publish_at), or
     /// [`Node::publish_with`] on [`node`](Self::node) to fill it first.
     ///
     /// # Errors
@@ -295,6 +296,23 @@ impl Live {
     /// Fails if something is already published under `name`, the name is not
     /// a valid path, or `B` cannot be built from the broadcast.
     pub fn publish<B>(&self, name: &str) -> Result<B, Error>
+    where
+        B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
+    {
+        self.publish_to(name, Audience::Everyone)
+    }
+
+    /// Publishes a broadcast as `live/<this node's id>/<name>` to `audience`, and returns it.
+    ///
+    /// As [`publish`](Self::publish), for an audience other than everyone,
+    /// such as `Audience::peers([peer])`. `B` is built before the broadcast is
+    /// announced, so no peer in the audience sees it empty. Attached relays
+    /// never see a [`Peers`](Audience::Peers) audience.
+    ///
+    /// # Errors
+    ///
+    /// As [`publish`](Self::publish).
+    pub fn publish_to<B>(&self, name: &str, audience: Audience) -> Result<B, Error>
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
@@ -308,7 +326,7 @@ impl Live {
         // without the tracks `B` creates, such as a catalog.
         let (_publication, broadcast) =
             self.moq
-                .publish_with(self.ticket(name).path(), Audience::Everyone, |producer| {
+                .publish_with(self.ticket(name).path(), audience, |producer| {
                     B::try_from(producer.clone())
                 })?;
         Ok(broadcast)
@@ -319,10 +337,12 @@ impl Live {
     /// The path-level call under [`publish`](Self::publish): it applies no
     /// layout, so `path` need not be under `live/`. Fill the broadcast through
     /// [`Publication::broadcast`], for example with
-    /// `LocalBroadcast::new_in(publication.broadcast().clone())?`. Peers can
-    /// subscribe only where their grant on this node allows it, and a peer
-    /// that publishes into this node must be allowed `path` by its grant on
-    /// the other side.
+    /// `LocalBroadcast::new_in(publication.broadcast().clone())?`. The path is
+    /// announced before that, so a peer may see the broadcast empty for a
+    /// moment. [`publish_to`](Self::publish_to) and [`Node::publish_with`]
+    /// fill it first. Peers can subscribe only where their grant on this node
+    /// allows it, and a peer that publishes into this node must be allowed
+    /// `path` by its grant on the other side.
     ///
     /// # Errors
     ///

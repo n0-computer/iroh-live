@@ -116,6 +116,8 @@ when it does.
 The paths, the grant and the endpoint are defaults, and each can be replaced:
 
 - `Live::builder_with(endpoint, NodeConfig)` sets the admission and the grant.
+- `Live::publish_to(name, Audience)` publishes under the layout to an
+  audience other than everyone, such as `Audience::peers([peer])`.
 - `Live::publish_at(path, Audience)` and
   `Live::subscribe_path(path, Reach)` work on any path, next to the ticket
   calls. `Live::remote_broadcast(&subscription)` reads the media of the result.
