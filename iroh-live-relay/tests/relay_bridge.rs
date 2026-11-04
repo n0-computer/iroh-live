@@ -3,12 +3,17 @@
 //! Endpoints use `presets::Minimal` and a shared `MemoryLookup`, so no test
 //! needs network discovery.
 
-use std::{sync::OnceLock, time::Duration};
+use std::{collections::BTreeSet, sync::OnceLock, time::Duration};
 
-use iroh::address_lookup::MemoryLookup;
-use moq_net::origin;
+use iroh::{address_lookup::MemoryLookup, protocol::AcceptError};
+use iroh_live::media::{PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video};
+use iroh_live_node::{
+    Audience, Error, LinkKind, Node, Reach, RelayConfig, RelayOffer, RelayStatus,
+};
+use moq_net::{announce::Event, origin};
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
+use n0_watcher::{Watchable, Watcher};
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -156,7 +161,6 @@ impl iroh::protocol::ProtocolHandler for OpenSessions {
         &self,
         connection: iroh::endpoint::Connection,
     ) -> Result<(), iroh::protocol::AcceptError> {
-        use iroh::protocol::AcceptError;
         let transport = moq_transport_iroh::accept(connection).map_err(AcceptError::from_err)?;
         let handshake = moq_net::Server::new()
             .accept_request(moq_net::time::Instant::now(), transport)
@@ -200,9 +204,8 @@ async fn routed_broadcast(
     consumer.follow(path, None)?.available().await
 }
 
-/// The announcement an event carries.
-fn announce_of(event: &moq_net::announce::Event) -> &moq_net::announce::Announce {
-    use moq_net::announce::Event;
+/// Returns the announcement an event carries.
+fn announce_of(event: &Event) -> &moq_net::announce::Announce {
     match event {
         Event::Start(announce)
         | Event::Update(announce)
@@ -242,7 +245,6 @@ async fn announced_at(origin: &origin::Producer, path: &str) -> moq_net::broadca
 
 /// Publishes a generated video broadcast as `name` on `live`.
 fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::media::LocalBroadcast {
-    use iroh_live::media::{VideoEncoding, VideoRendition, VideoSource, video};
     let broadcast: iroh_live::media::LocalBroadcast = live.publish(name).expect("publish");
     let source = VideoSource::test_pattern(
         video::Size::new(320, 240),
@@ -738,7 +740,6 @@ async fn pull_retires_an_unwatched_session() {
     // The relay closes its session with the publisher.
     let mut sessions = publisher.node().sessions();
     tokio::time::timeout(TIMEOUT, async {
-        use n0_watcher::Watcher;
         while sessions
             .get()
             .iter()
@@ -819,9 +820,6 @@ async fn a_pull_survives_the_publisher_republishing() {
 #[tokio::test]
 #[serial]
 async fn a_relay_link_publishes_and_consumes() {
-    use iroh_live_node::{LinkKind, Node, Reach, RelayConfig, RelayStatus};
-    use n0_watcher::Watcher;
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
 
@@ -934,7 +932,6 @@ async fn attached(
     relay: &TestRelay,
     offer: iroh_live_node::RelayOffer,
 ) -> iroh_live_node::RelayLink {
-    use n0_watcher::Watcher;
     let link = live
         .node()
         .attach_relay(iroh_live_node::RelayConfig {
@@ -993,7 +990,7 @@ async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if matches!(update, moq_net::announce::Event::End(_))
+            if matches!(update, Event::End(_))
                 && announce_of(&update).prefix.as_str() == path
             {
                 return;
@@ -1020,9 +1017,6 @@ async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
 #[tokio::test]
 #[serial]
 async fn a_relay_served_subscription_carries_link_samples() {
-    use iroh_live::media::PlayerConfig;
-    use iroh_live_node::{LinkKind, Reach, RelayOffer};
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (_publisher_endpoint, publisher) = relay_node().await;
@@ -1090,11 +1084,6 @@ async fn a_relay_served_subscription_carries_link_samples() {
 #[tokio::test]
 #[serial]
 async fn a_relay_gets_public_publications_only() {
-    use std::collections::BTreeSet;
-
-    use iroh_live_node::{Audience, RelayOffer};
-    use n0_watcher::Watchable;
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (endpoint, live) = relay_node().await;
@@ -1145,9 +1134,6 @@ async fn a_relay_gets_public_publications_only() {
 #[tokio::test]
 #[serial]
 async fn shutdown_detaches_relay_links() {
-    use iroh_live_node::{Error, Reach, RelayOffer, RelayStatus};
-    use n0_watcher::Watcher;
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (_endpoint, live) = relay_node().await;
@@ -1187,8 +1173,6 @@ async fn shutdown_detaches_relay_links() {
 #[tokio::test]
 #[serial]
 async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
-    use iroh_live_node::{Audience, LinkKind, Reach, RelayOffer};
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (_alice_endpoint, alice) = relay_node().await;
@@ -1261,7 +1245,7 @@ async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track:
     reader
 }
 
-/// The hop iroh-live-node derives for `id`, which anyone can compute.
+/// Returns the hop iroh-live-node derives for `id`, which anyone can compute.
 fn hop_of(id: iroh::EndpointId) -> moq_net::Hop {
     let bytes: [u8; 8] = id.as_bytes()[..8].try_into().expect("32 bytes");
     let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
@@ -1274,8 +1258,6 @@ fn hop_of(id: iroh::EndpointId) -> moq_net::Hop {
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
-    use iroh_live_node::{Audience, Reach, RelayOffer};
-
     const FORGED: u64 = 1_000_000;
 
     let _ = tracing_subscriber::fmt::try_init();
@@ -1364,8 +1346,6 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
 #[tokio::test]
 #[serial]
 async fn the_shipped_relay_refuses_forged_paths() {
-    use iroh_live_node::{Audience, RelayOffer};
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start_shipped().await;
     let sub_origin = moq_tokio::origin::spawn();
@@ -1455,8 +1435,6 @@ async fn the_shipped_relay_refuses_forged_paths() {
 #[tokio::test]
 #[serial]
 async fn a_publisher_session_outlives_all_but_its_last_pull() {
-    use n0_watcher::Watcher;
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (pub_ep, publisher, _router, first_broadcast, first) = start_publisher("first").await;
@@ -1585,7 +1563,7 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     pub_ep.close().await;
 }
 
-/// A node with rooms, accepting both MoQ and the rooms' gossip.
+/// Binds a node with rooms that accepts both MoQ and the rooms' gossip.
 async fn room_node() -> (
     iroh::Endpoint,
     iroh_live_node::Node,
@@ -1617,9 +1595,6 @@ async fn room_node() -> (
 #[tokio::test]
 #[serial]
 async fn a_relay_cannot_forge_a_room_members_broadcast() {
-    use iroh_live_node::{RelayConfig, RelayOffer, RelayStatus};
-    use n0_watcher::Watcher;
-
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
     let (alice_endpoint, alice_moq, alice_rooms, alice_router) = room_node().await;

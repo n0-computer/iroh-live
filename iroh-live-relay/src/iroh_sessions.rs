@@ -107,12 +107,17 @@ impl IrohSessions {
 
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
-        tokio::select! {
-            err = &mut run => debug!(%err, "iroh session ended"),
-            _ = self.shutdown.cancelled() => {
+        let ended = tokio::select! {
+            err = &mut run => Some(err),
+            () = self.shutdown.cancelled() => None,
+        };
+        match ended {
+            Some(err) => debug!(%err, "iroh session ended"),
+            // The driver keeps running, so the session can tell its peer.
+            None => {
                 session.abort(moq_net::Error::Cancel);
-                if tokio::time::timeout(CLOSE_GRACE, &mut run).await.is_err() {
-                    warn!("iroh session did not close in time");
+                if tokio::time::timeout(CLOSE_GRACE, run).await.is_err() {
+                    warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
                 }
             }
         }
@@ -191,9 +196,9 @@ mod tests {
             "cam".to_owned(),
         );
         let auth = browser_auth();
-        let matches = |path: &str| auth.public_publish.iter().any(|p| p.matches(path));
+        let matches = |path: &str| auth.public_publish.iter().any(|pattern| pattern.matches(path));
         let full = ticket.to_string();
-        let bare = full.strip_prefix("iroh-live:").unwrap();
+        let bare = full.strip_prefix("iroh-live:").expect("a ticket prefix");
         assert!(!matches(&full));
         assert!(!matches(bare));
     }
