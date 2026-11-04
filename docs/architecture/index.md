@@ -8,7 +8,8 @@ This repository holds the layer that joins them.
 
 | Crate | What it is |
 |---|---|
-| `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions and relay links |
+| `moq-transport-iroh` | MoQ sessions over iroh connections: dial, accept, ALPN negotiation, the poll adapter, link statistics. No node concepts |
+| `iroh-live-node` | The node over that transport: the route table, publications and audiences, sessions and relay links |
 | `moq-ext-access` | Access control: grants, session requests and audiences. No transport dependency |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, endpoint setup, and the re-exports |
@@ -64,22 +65,22 @@ route table, published to everyone, and returns it as an
 `BroadcastTicket` to share. `Live::subscribe(&ticket)` resolves the ticket's
 path over whichever link serves it and returns the `Subscription`.
 `Live::remote_broadcast(&subscription)` reads its media without waiting for the
-catalog, for a subscription from a ticket, a room or `Moq::subscribe`. The
+catalog, for a subscription from a ticket, a room or `Node::subscribe`. The
 broadcast follows the path through the route table and carries the serving
 link's measurements, so `remote.play(config)` starts a player that adapts with
 nothing further to wire.
 
 The facade's error is `iroh_live::Error`: `Transport` wraps an
-`iroh_moq::Error`, `Media` an `moq_ext_player::Error`, and `SecretKey` and
-`Bind` come from `EndpointOptions`. Audiences, admission, relays and routes belong to [`iroh-moq`](transport.md), reached
-through `live.moq()`.
+`iroh_live_node::Error`, `Media` an `moq_ext_player::Error`, and `SecretKey` and
+`Bind` come from `EndpointOptions`. Audiences, admission, relays and routes belong to [`iroh-live-node`](transport.md), reached
+through `live.node()`.
 
 `irl call` and the Android demo share a one-to-one call convention. Each side
 publishes one broadcast named `iroh_live::CALL` (`live/<id>/call`) with
 `Live::call`, visible to nobody, and its `CallOffer` rings a peer by adding it
 to the `Audience::Peers` set. Each side subscribes to the other's. A node
 learns it is called when a peer's `call` path appears in its route table
-(`Moq::origin`), and a hang-up takes the peer out of the set, which retracts
+(`Node::origin`), and a hang-up takes the peer out of the set, which retracts
 the path and ends the other side's read. The session stays open, and the
 broadcast keeps running for the next call.
 

@@ -3,7 +3,7 @@
 //! A publisher and a subscriber run in separate network namespaces with a
 //! router between them, and netem adds latency, jitter, loss or a rate limit.
 //! The adaptation reads the real link signals, from QUIC path stats through
-//! the connection monitor in `iroh-moq/src/link.rs`.
+//! the connection monitor in `iroh-live-node/src/link.rs`.
 //!
 //! Linux only, built on unprivileged user namespaces. Run with
 //! `cargo make test-patchbay`, which includes the ignored tests.
@@ -19,7 +19,7 @@ use iroh_live::media::{
     video::{Frame, FrameRate, Size, Surface},
 };
 use iroh_live::{
-    BroadcastTicket, Live, Reach, Subscription, media::RemoteBroadcast, moq::LinkSample,
+    BroadcastTicket, Live, Reach, Subscription, media::RemoteBroadcast, node::LinkSample,
 };
 use moq_net::bandwidth::Rate;
 use n0_tracing_test::traced_test;
@@ -138,13 +138,13 @@ impl Fixture {
         let publisher_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(subscriber_endpoint).spawn();
         subscriber
-            .moq()
+            .node()
             .connect(publisher_addr)
             .await
             .expect("failed to connect");
         let ticket = BroadcastTicket::new(publisher.endpoint().id(), "patchbay");
         let subscription = subscriber
-            .moq()
+            .node()
             .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
             .await
             .expect("failed to subscribe");

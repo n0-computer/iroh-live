@@ -23,7 +23,7 @@ pub enum Error {
     UnsupportedAlpn { alpn: String },
     /// The MoQ handshake or the session failed.
     #[error("the MoQ session failed")]
-    Moq {
+    Node {
         #[error(source, std_err)]
         source: moq_net::Error,
     },
@@ -82,12 +82,25 @@ pub enum Error {
     ShutDown,
 }
 
+impl From<moq_transport_iroh::Error> for Error {
+    fn from(err: moq_transport_iroh::Error) -> Self {
+        match err {
+            moq_transport_iroh::Error::Connect { source, .. } => {
+                n0_error::e!(Self::Connect { source })
+            }
+            moq_transport_iroh::Error::UnsupportedAlpn { alpn, .. } => {
+                n0_error::e!(Self::UnsupportedAlpn { alpn })
+            }
+        }
+    }
+}
+
 /// Converts a caller's path, failing like moq-net's own entry points do.
 pub(crate) fn to_path(
     path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
 ) -> Result<moq_net::Path, Error> {
     path.try_into().map_err(|source| {
-        n0_error::e!(Error::Moq {
+        n0_error::e!(Error::Node {
             source: source.into()
         })
     })

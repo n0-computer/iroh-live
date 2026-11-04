@@ -44,7 +44,7 @@ const LOGCAT_FILTER: &str = "\
     iroh=debug,\
     iroh_live=debug,\
     iroh_live_android=debug,\
-    iroh_moq=debug,\
+    iroh_live_node=debug,\
     moq_ext_player=debug,\
     moq_ext_publisher=debug,\
     moq_video=debug,\
@@ -494,17 +494,17 @@ async fn accept_one(
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
     let me = live.endpoint().id();
-    let mut updates = live.moq().origin().announced();
+    let mut updates = live.node().origin().announced();
     let peer = loop {
         let Some(update) = updates.next().await else {
             return Ok(());
         };
         let (announce, active) = match &update {
-            iroh_live::moq::net::announce::Event::End(announce) => (announce, false),
-            iroh_live::moq::net::announce::Event::Start(announce)
-            | iroh_live::moq::net::announce::Event::Update(announce)
-            | iroh_live::moq::net::announce::Event::Restart(announce)
-            | iroh_live::moq::net::announce::Event::Takeover { announce, .. } => (announce, true),
+            iroh_live::node::net::announce::Event::End(announce) => (announce, false),
+            iroh_live::node::net::announce::Event::Start(announce)
+            | iroh_live::node::net::announce::Event::Update(announce)
+            | iroh_live::node::net::announce::Event::Restart(announce)
+            | iroh_live::node::net::announce::Event::Takeover { announce, .. } => (announce, true),
         };
         let caller = BroadcastTicket::from_path(announce.prefix.as_str())
             .filter(|ticket| active && ticket.name() == CALL);

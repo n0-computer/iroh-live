@@ -75,7 +75,7 @@ After changing the client, rebuild the bundle and then the relay.
 TLS certificates are self-signed and generated at startup. There is no ACME
 and no token auth: anyone may connect and subscribe to anything. Publishing is
 scoped by identity. The relay accepts iroh sessions itself, through
-`iroh_moq::transport::accept`, so it knows each client's endpoint id and lets
+`moq_transport_iroh::accept`, so it knows each client's endpoint id and lets
 it publish only at paths that name it, `live/<its id>/...` and
 `rooms/<topic>/<its id>/...`. Browsers have no such identity and may publish
 only at names of one segment.

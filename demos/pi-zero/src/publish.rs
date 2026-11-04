@@ -9,7 +9,7 @@ use iroh::EndpointId;
 use iroh_live::{
     Live,
     media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
-    moq::RelayConfig,
+    node::RelayConfig,
 };
 use moq_net::bandwidth::Rate;
 use tracing::{debug, info, warn};
@@ -82,7 +82,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let _relay = match opts.relay {
         Some(relay) => {
             info!(%relay, "pushing to relay");
-            Some(live.moq().attach_relay(RelayConfig {
+            Some(live.node().attach_relay(RelayConfig {
                 consume: false,
                 ..RelayConfig::iroh(relay)
             })?)

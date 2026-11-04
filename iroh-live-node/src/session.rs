@@ -46,7 +46,7 @@ pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
 ///
 /// web-transport-iroh through moq-tokio's poll adapter, which costs an
 /// allocation per operation and a copy per write.
-pub(crate) type Transport = crate::adapter::Session<web_transport_iroh::Session>;
+pub(crate) type Transport = moq_transport_iroh::AdaptedTransport<web_transport_iroh::Session>;
 
 /// Returns the instant a session's driver starts from.
 ///
@@ -303,7 +303,7 @@ pub(crate) async fn dial_session(
         .grant
         .clone()
         .unwrap_or_else(|| shared.grant_for(remote_id));
-    let dialed = transport::dial_with(&shared.endpoint, remote, &options).await?;
+    let dialed = transport::dial_with(&shared.endpoint, remote, &options.dial_options()).await?;
     let connection = dialed.conn().clone();
     let auth = authorized(&shared, remote_id, &grant);
     let (moq, driver) = client_handshake(
@@ -317,7 +317,7 @@ pub(crate) async fn dial_session(
     .await
     .map_err(|source| match source {
         moq_net::Error::Unauthorized | moq_net::Error::App(_) => e!(Error::Refused { source }),
-        source => e!(Error::Moq { source }),
+        source => e!(Error::Node { source }),
     })?;
     Ok(SessionParts {
         remote: remote_id,
@@ -369,7 +369,7 @@ pub(crate) async fn client_handshake(
         .await
 }
 
-/// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
+/// How long [`Node::shutdown`] gives a session to tell its peer it is closing.
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Returns a copy of `err` for one of several callers waiting on one dial.
@@ -379,7 +379,7 @@ fn share(err: &Error) -> Error {
             source: source.clone()
         }),
         Error::UnsupportedAlpn { alpn, .. } => e!(Error::UnsupportedAlpn { alpn: alpn.clone() }),
-        Error::Moq { source, .. } => e!(Error::Moq {
+        Error::Node { source, .. } => e!(Error::Node {
             source: source.clone()
         }),
         Error::Refused { source, .. } => e!(Error::Refused {
@@ -482,7 +482,7 @@ impl Actor {
 
     /// Tears the node's state down and reports the shutdown done.
     ///
-    /// Runs from `Drop`, so [`Moq::shutdown`] returns even if the actor
+    /// Runs from `Drop`, so [`Node::shutdown`] returns even if the actor
     /// panicked.
     fn finish(&mut self) {
         // A panic may have poisoned the lock. Do not panic again while
@@ -667,9 +667,11 @@ impl Actor {
         let task_session = session.clone();
         let handle = self.sessions.spawn(
             async move {
-                let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
-                    link::Source::Direct(moq.clone(), connection),
+                let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor_direct(
+                    moq.clone(),
+                    connection,
                     link_state,
+                    link::SharedSampler::default(),
                 )));
                 let run = moq_net::time::run(driver);
                 tokio::pin!(run);
@@ -719,7 +721,7 @@ impl Actor {
         self.publish_sessions();
     }
 
-    /// Publishes the current sessions to the watchers of [`Moq::sessions`].
+    /// Publishes the current sessions to the watchers of [`Node::sessions`].
     fn publish_sessions(&self) {
         let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
         self.shared.sessions.set(sessions).ok();

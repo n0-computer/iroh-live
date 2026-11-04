@@ -2,6 +2,7 @@
 name = "iroh-live-cli"
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
 description = "CLI tool for iroh-live: publish and watch live media"
 publish = false
 

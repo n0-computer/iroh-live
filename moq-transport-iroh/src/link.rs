@@ -1,4 +1,4 @@
-//! Link measurement, from each MoQ session's statistics.
+//! Link measurement, from a MoQ session's statistics and its connection's paths.
 
 use std::{
     collections::VecDeque,
@@ -8,12 +8,9 @@ use std::{
 
 use iroh::endpoint::{Connection, PathId};
 use moq_net::session::Stats;
-use tracing::trace;
 
-use crate::{LinkId, LinkKind};
-
-/// How often the monitor reads the session.
-pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
+/// How often [`watch`] reads the session.
+pub const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 
 /// The span loss and goodput are measured across.
 ///
@@ -57,58 +54,6 @@ pub struct LinkSample {
     pub relayed: bool,
 }
 
-/// The link serving a subscription, and its latest reading.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ServingLink {
-    /// The session's or relay link's id.
-    pub id: LinkId,
-    /// What kind of link that is.
-    pub kind: LinkKind,
-    /// The link's latest reading.
-    pub sample: LinkSample,
-}
-
-/// The latest sample of a link, shared with every handle on it.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct LinkState(Arc<Mutex<LinkSample>>);
-
-impl LinkState {
-    /// Returns the latest reading.
-    pub(crate) fn get(&self) -> LinkSample {
-        self.0.lock().expect("poisoned").clone()
-    }
-
-    /// Empties the reading, as between sessions, keeping `path_generation`.
-    pub(crate) fn clear(&self, path_generation: u64) {
-        self.set(LinkSample {
-            path_generation,
-            ..LinkSample::default()
-        });
-    }
-
-    fn set(&self, sample: LinkSample) {
-        trace!(
-            path_generation = sample.path_generation,
-            relayed = sample.relayed,
-            rtt_ms = ?sample.rtt.map(|rtt| rtt.as_millis()),
-            min_rtt_ms = ?sample.min_rtt.map(|rtt| rtt.as_millis()),
-            loss_rate = ?sample.loss_rate,
-            goodput_kbps = ?sample.goodput_bps.map(|bps| bps / 1000),
-            delivery_kbps = ?sample.delivery_bps.map(|bps| bps / 1000),
-            "link sample",
-        );
-        *self.0.lock().expect("poisoned") = sample;
-    }
-}
-
-/// What a monitor reads.
-pub(crate) enum Source {
-    /// A direct session, and the connection whose selected path it rides.
-    Direct(moq_net::Session, Connection),
-    /// A relay link, across its reconnects.
-    Relay(moq_tokio::connection::Monitor),
-}
-
 /// Which path a reading is of: a QUIC path, or one session of a relay link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathKey {
@@ -116,66 +61,38 @@ enum PathKey {
     Session(u64),
 }
 
-/// Reads `source` into `state` every [`SAMPLE_INTERVAL`] until the connection closes.
-pub(crate) async fn monitor(source: Source, state: LinkState) {
-    monitor_with(source, state, Arc::new(Mutex::new(Sampler::default()))).await;
-}
-
-/// Reads `source` as [`monitor`] does, with a sampler the caller keeps.
+/// Reads `session`, riding `connection`, every [`SAMPLE_INTERVAL`] and hands each
+/// sample to `publish`, until the connection closes.
 ///
-/// A sampler that outlives the monitor carries the path generation on across
-/// the sessions of one link.
-pub(crate) async fn monitor_with(source: Source, state: LinkState, sampler: SharedSampler) {
+/// A sampler that outlives the call carries the path generation on across the
+/// sessions of one link. Holding the session's bandwidth estimate is what asks
+/// the peer to probe.
+pub async fn watch(
+    session: moq_net::Session,
+    connection: Connection,
+    sampler: Arc<Mutex<LinkSampler>>,
+    mut publish: impl FnMut(LinkSample),
+) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Holding the estimate is what asks the peer to probe.
-    let recv = match &source {
-        Source::Direct(moq, _) => moq.recv_bandwidth(),
-        Source::Relay(_) => None,
-    };
+    let recv = session.recv_bandwidth();
     loop {
         interval.tick().await;
-        let sample = match &source {
-            Source::Direct(moq, connection) => {
-                if connection.close_reason().is_some() {
-                    return;
-                }
-                let paths = connection.paths();
-                let Some(selected) = paths.iter().find(|path| path.is_selected()) else {
-                    continue;
-                };
-                let mut sample = sampler.lock().expect("poisoned").sample(
-                    PathKey::Quic(selected.id()),
-                    &moq.stats(),
-                    recv.as_ref().and_then(|recv| recv.peek()),
-                    Instant::now(),
-                );
-                sample.relayed = selected.is_relay();
-                sample
-            }
-            Source::Relay(connection) => match connection.stats() {
-                Some(stats) => {
-                    let session = connection.presence().sessions_started;
-                    sampler.lock().expect("poisoned").sample(
-                        PathKey::Session(session),
-                        &stats,
-                        None,
-                        Instant::now(),
-                    )
-                }
-                // Between sessions nothing is measured.
-                None => LinkSample {
-                    path_generation: sampler.lock().expect("poisoned").path_generation,
-                    ..LinkSample::default()
-                },
-            },
-        };
-        state.set(sample);
+        if connection.close_reason().is_some() {
+            return;
+        }
+        let delivery = recv.as_ref().and_then(|recv| recv.peek());
+        let sample = sampler.lock().expect("poisoned").sample_connection(
+            &session,
+            &connection,
+            delivery,
+            Instant::now(),
+        );
+        if let Some(sample) = sample {
+            publish(sample);
+        }
     }
 }
-
-/// A sampler shared by the monitors of one link's successive sessions.
-pub(crate) type SharedSampler = Arc<Mutex<Sampler>>;
 
 /// The counters one reading carries, and when it was taken.
 #[derive(Debug, Clone, Copy)]
@@ -188,20 +105,24 @@ struct Reading {
 }
 
 /// Turns readings of a session's statistics into [`LinkSample`]s.
+///
+/// Keeps the history rates and minimums are taken over, and the path
+/// generation. [`watch`] drives one on a timer; call the `sample_*` methods
+/// directly to read on your own schedule.
 #[derive(Debug, Default)]
-pub(crate) struct Sampler {
+pub struct LinkSampler {
     path: Option<PathKey>,
     path_generation: u64,
     /// This path's readings over the last [`MIN_RTT_WINDOW`], oldest first.
     readings: VecDeque<Reading>,
 }
 
-impl Sampler {
+impl LinkSampler {
     /// Starts a new session of the link.
     ///
     /// The next reading counts as a new path even if the QUIC path id repeats,
     /// and history starts over.
-    pub(crate) fn new_session(&mut self) {
+    pub fn new_session(&mut self) {
         if self.path.take().is_some() {
             self.path_generation += 1;
         }
@@ -209,8 +130,39 @@ impl Sampler {
     }
 
     /// Returns the generation the link is at.
-    pub(crate) fn generation(&self) -> u64 {
+    #[must_use]
+    pub fn generation(&self) -> u64 {
         self.path_generation
+    }
+
+    /// Reads a direct session and the connection whose selected path it rides.
+    ///
+    /// `delivery` is the peer's bandwidth estimate, as `peek` returns it.
+    /// Returns `None` while the connection has no selected path.
+    pub fn sample_connection(
+        &mut self,
+        session: &moq_net::Session,
+        connection: &Connection,
+        delivery: Option<moq_net::bandwidth::Rate>,
+        now: Instant,
+    ) -> Option<LinkSample> {
+        let paths = connection.paths();
+        let selected = paths.iter().find(|path| path.is_selected())?;
+        let mut sample = self.sample(
+            PathKey::Quic(selected.id()),
+            &session.stats(),
+            delivery,
+            now,
+        );
+        sample.relayed = selected.is_relay();
+        Some(sample)
+    }
+
+    /// Reads `stats` of session number `session` of a link that reconnects.
+    ///
+    /// A new session number starts a new path, as a new QUIC path does.
+    pub fn sample_session(&mut self, session: u64, stats: &Stats, now: Instant) -> LinkSample {
+        self.sample(PathKey::Session(session), stats, None, now)
     }
 
     /// Folds `stats`, read on `path` at `now`, into a sample.
@@ -294,7 +246,7 @@ mod tests {
 
     /// Feeds `ticks` readings that grow by `per_tick`, and returns the last sample.
     fn run(
-        sampler: &mut Sampler,
+        sampler: &mut LinkSampler,
         t0: Instant,
         ticks: u32,
         per_tick: (u64, u64, u64),
@@ -315,7 +267,7 @@ mod tests {
 
     #[test]
     fn rates_need_a_full_window() {
-        let mut sampler = Sampler::default();
+        let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         let early = run(&mut sampler, t0, 5, (20, 2, 20_000));
         assert_eq!(early.loss_rate, None);
@@ -329,7 +281,7 @@ mod tests {
 
     #[test]
     fn a_lost_packet_among_a_handful_is_not_loss() {
-        let mut sampler = Sampler::default();
+        let mut sampler = LinkSampler::default();
         let full = run(&mut sampler, Instant::now(), 12, (1, 0, 0));
         assert_eq!(full.loss_rate, Some(0.0), "{full:?}");
     }
@@ -337,7 +289,7 @@ mod tests {
     /// A new path starts over: generation, baseline and rate windows.
     #[test]
     fn a_new_path_starts_its_history_over() {
-        let mut sampler = Sampler::default();
+        let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         run(&mut sampler, t0, 12, (10, 5, 0));
         let later = t0 + 13 * SAMPLE_INTERVAL;
@@ -350,7 +302,7 @@ mod tests {
     /// A redial is a new path even when the QUIC path id repeats.
     #[test]
     fn a_new_session_bumps_the_generation() {
-        let mut sampler = Sampler::default();
+        let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         run(&mut sampler, t0, 3, (1, 0, 0));
         assert_eq!(sampler.generation(), 0);
@@ -365,7 +317,7 @@ mod tests {
 
     #[test]
     fn the_minimum_forgets_an_old_path_delay() {
-        let mut sampler = Sampler::default();
+        let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         sampler.sample(DIRECT, &stats(2, 0, 0, 0), None, t0);
         let within = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW);

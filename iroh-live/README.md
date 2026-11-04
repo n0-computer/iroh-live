@@ -2,11 +2,11 @@
 
 Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 
-`Live` is a node for live media. It runs the `iroh-moq` transport on an iroh
+`Live` is a node for live media. It runs the `iroh-live-node` node, over `moq-transport-iroh`, on an iroh
 endpoint, publishes broadcasts at `live/<endpoint id>/<name>`, and resolves
 other nodes' broadcasts over a direct session or an attached relay. The media
 crates are gathered in `iroh_live::media` and the transport is re-exported as
-`iroh_live::moq`.
+`iroh_live::node`.
 
 ## Example
 
@@ -65,15 +65,15 @@ let mut frames = player.video();
   the ticket for one of this node's broadcasts.
 - `Live::subscribe(&ticket)` returns the `Subscription` once a route is found.
 - `Live::remote_broadcast(&subscription)` reads its media without waiting for
-  the catalog, for a subscription from a ticket, a room or `Moq::subscribe`.
+  the catalog, for a subscription from a ticket, a room or `Node::subscribe`.
   The broadcast follows its path through the route table, so a change of route
   is a switch, not an end. Its players adapt to the link that serves it.
 - `paths::CALL`, also exported as `CALL`, is the broadcast name of the call
   convention that `irl call` and the Android demo share.
 - `grant` is the grant a live node gives each peer: subscribe to anything,
-  publish only under the peer's own id. `moq_config` is the `MoqConfig` that
+  publish only under the peer's own id. `node_config` is the `NodeConfig` that
   uses it.
-- `Error` wraps an `iroh_moq::Error` as `Transport` and, with `media`, an
+- `Error` wraps an `iroh_live_node::Error` as `Transport` and, with `media`, an
   `moq_ext_player::Error` as `Media`. Its other variants come from binding an
   endpoint and parsing a ticket.
 
@@ -94,7 +94,7 @@ mounts the gossip protocol and adds the room paths to each peer's grant.
 `examples/publish.rs` publishes a camera and a microphone, with a simulcast
 ladder behind `--simulcast`. `examples/publish-pi.rs` publishes a Raspberry Pi
 camera and needs `rpicam`. `examples/moq_only.rs` serves a broadcast with
-`Moq` alone, without `Live`. `examples/subscribe_test.rs` is the helper the
+`Node` alone, without `Live`. `examples/subscribe_test.rs` is the helper the
 browser test suite runs.
 
 [Using iroh-live](../docs/guide/usage.md) has complete programs for the common

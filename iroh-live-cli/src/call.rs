@@ -1034,7 +1034,7 @@ mod window {
     /// appearing in the route table is the ring. Runs for the window's life.
     async fn watch_callers(live: Live, callers: Watchable<BTreeSet<EndpointId>>) {
         let me = live.endpoint().id();
-        let mut updates = live.moq().origin().announced();
+        let mut updates = live.node().origin().announced();
         while let Some(update) = updates.next().await {
             let (announce, active) = match &update {
                 moq_net::announce::Event::End(announce) => (announce, false),

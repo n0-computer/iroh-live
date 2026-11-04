@@ -29,7 +29,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Moq,
+    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Node,
     link::{self, LinkState},
     node::{Shared, Tasks},
     session::{client_handshake, hop_for},
@@ -261,8 +261,8 @@ impl RelayTask {
     }
 }
 
-/// Attaches `moq` to a relay, for [`Moq::attach_relay`].
-pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error> {
+/// Attaches `moq` to a relay, for [`Node::attach_relay`].
+pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error> {
     let shared = &moq.shared;
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
@@ -437,7 +437,7 @@ async fn tokio_uplink(
     link_state: LinkState,
     status: Watchable<RelayStatus>,
 ) {
-    let monitor = link::monitor(link::Source::Relay(connection.monitor()), link_state);
+    let monitor = link::monitor_relay(connection.monitor(), link_state);
     let mut watch = connection.clone();
     // Aborts the connection for every clone when the task ends, so a
     // `RelayLink` handle held past shutdown does not keep redialing.
@@ -509,8 +509,9 @@ async fn iroh_uplink(
                 let _driver = AbortOnDropHandle::new(tokio::spawn(async move {
                     moq_net::time::run(driver).await;
                 }));
-                let monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor_with(
-                    link::Source::Direct(moq.clone(), connection),
+                let monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor_direct(
+                    moq.clone(),
+                    connection,
                     link_state.clone(),
                     sampler.clone(),
                 )));
@@ -568,7 +569,8 @@ async fn dial_relay(
     ),
     Error,
 > {
-    let dialed = transport::dial_with(&shared.endpoint, relay.into(), options).await?;
+    let dialed =
+        transport::dial_with(&shared.endpoint, relay.into(), &options.dial_options()).await?;
     let connection = dialed.conn().clone();
     let (moq, driver) = client_handshake(
         dialed,
@@ -579,7 +581,7 @@ async fn dial_relay(
         auth.clone(),
     )
     .await
-    .map_err(|source| e!(Error::Moq { source }))?;
+    .map_err(|source| e!(Error::Node { source }))?;
     Ok((moq, driver, connection))
 }
 

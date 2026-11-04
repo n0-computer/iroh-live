@@ -1,8 +1,8 @@
 //! The WebTransport layer under MoQ.
 //!
-//! A [`Moq`](crate::Moq) node dials and accepts on its own. These functions
-//! are for applications that run moq-net's client or server directly, such as
-//! a relay, and need the same ALPN negotiation and HTTP/3 handling.
+//! For applications that run moq-net's client or server directly, such as a
+//! relay or the iroh-live node, and need the ALPN negotiation and HTTP/3
+//! handling.
 
 use std::sync::Arc;
 
@@ -13,20 +13,33 @@ use iroh::{
 use n0_error::{AnyError, e};
 use tracing::debug;
 
-use crate::{ALPN, ConnectOptions, Error, alpns};
+use crate::{ALPN, Error, alpns};
+
+/// What a dial may carry beyond the peer's address.
+#[derive(Debug, Clone, Default)]
+pub struct DialOptions {
+    /// A token for an HTTP/3 CONNECT, sent as the `jwt` query parameter.
+    pub token: Option<String>,
+}
 
 /// A dialed transport, and whether it went through HTTP/3.
-pub(crate) struct Dialed {
-    pub(crate) session: web_transport_iroh::Session,
+#[derive(Debug)]
+pub struct Dialed {
+    /// The WebTransport session.
+    pub session: web_transport_iroh::Session,
     h3: bool,
 }
 
 impl Dialed {
-    pub(crate) fn conn(&self) -> &Connection {
+    /// Returns the underlying iroh connection.
+    #[must_use]
+    pub fn conn(&self) -> &Connection {
         self.session.conn()
     }
 
-    pub(crate) fn is_h3(&self) -> bool {
+    /// Returns whether the session went through an HTTP/3 CONNECT.
+    #[must_use]
+    pub fn is_h3(&self) -> bool {
         self.h3
     }
 }
@@ -44,18 +57,20 @@ pub async fn dial(
     endpoint: &Endpoint,
     remote: impl Into<EndpointAddr>,
 ) -> Result<web_transport_iroh::Session, Error> {
-    Ok(
-        dial_with(endpoint, remote.into(), &ConnectOptions::default())
-            .await?
-            .session,
-    )
+    Ok(dial_with(endpoint, remote.into(), &DialOptions::default())
+        .await?
+        .session)
 }
 
-/// Dials `remote` as [`dial`] does, with a token for an HTTP/3 CONNECT.
-pub(crate) async fn dial_with(
+/// Dials `remote` as [`dial`] does, with `options`.
+///
+/// # Errors
+///
+/// As [`dial`].
+pub async fn dial_with(
     endpoint: &Endpoint,
     remote: EndpointAddr,
-    options: &ConnectOptions,
+    options: &DialOptions,
 ) -> Result<Dialed, Error> {
     let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
     let iroh_options = IrohConnectOptions::new().with_additional_alpns(others);
@@ -106,7 +121,7 @@ pub(crate) async fn dial_with(
 pub async fn accept(
     connection: Connection,
 ) -> Result<(web_transport_iroh::Session, Option<String>), Error> {
-    let (session, h3) = accept_transport(connection).await?;
+    let (session, h3) = accept_with_headers(connection).await?;
     Ok((session, h3.map(|(target, _headers)| target)))
 }
 
@@ -131,7 +146,11 @@ pub fn poll_session(
 /// Completes the server half of the WebTransport handshake.
 ///
 /// As [`accept`], and also returns the CONNECT headers.
-pub(crate) async fn accept_transport(
+///
+/// # Errors
+///
+/// As [`accept`].
+pub async fn accept_with_headers(
     connection: Connection,
 ) -> Result<
     (

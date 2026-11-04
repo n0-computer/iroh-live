@@ -10,7 +10,7 @@ forwards opaque packets and adds its own round trip.
 The media pipeline does not see the change. It sees a different round trip and
 bandwidth, and the publisher's delivery estimate follows the bandwidth, which
 is what [adaptive rendition switching](adaptive.md) reads. The link monitor in
-`iroh-moq/src/link.rs` counts every change of selected path as a new path
+`moq-transport-iroh/src/link.rs` counts every change of selected path as a new path
 generation, and the selector forgets what it learned on the old path. The
 monitor's `link sample` TRACE log says whether the selected path is relayed.
 
@@ -36,8 +36,8 @@ running it: flags, the certificate, the key and the web client.
 
 The relay does not need to know a publisher in advance. When a session asks for
 a name that parses as a `BroadcastTicket`, the relay subscribes to the ticket's
-broadcast through its own iroh-moq node (`src/pull.rs`). That node uses the
-cluster origin as its route table (`MoqConfig::table`), so the publisher's
+broadcast through its own iroh-live-node node (`src/pull.rs`). That node uses the
+cluster origin as its route table (`NodeConfig::table`), so the publisher's
 session announces the broadcast straight into the cluster at its own path,
 `live/<publisher>/<name>`, with no copy. The session that named the ticket is
 served the cluster with a mount at that name (`origin::Producer::mount`), so it
@@ -56,7 +56,7 @@ closes its session with that publisher.
 ## Publishing to a relay
 
 A publisher reaches a relay through a relay link.
-`Moq::attach_relay(RelayConfig::new(url))` stays attached and redials with
+`Node::attach_relay(RelayConfig::new(url))` stays attached and redials with
 backoff, and every publication with the `Everyone` audience is visible to it.
 `irl publish --relay <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` this
 way. A relay link consumes by default: it feeds every route the relay knows

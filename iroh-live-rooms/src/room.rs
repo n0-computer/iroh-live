@@ -9,7 +9,7 @@ use std::{
 use bytes::Bytes;
 use iroh::{EndpointId, protocol::ProtocolHandler};
 use iroh_gossip::{Gossip, TopicId};
-use iroh_moq::{Audience, Moq, Publication, Subscription};
+use iroh_live_node::{Audience, Node, Publication, Subscription};
 use iroh_smol_kv::{
     ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
 };
@@ -67,7 +67,7 @@ pub enum Error {
     Gossip(iroh_gossip::api::ApiError),
     /// The transport failed a publication, a subscription or a dial.
     #[error(transparent)]
-    Transport(iroh_moq::Error),
+    Transport(iroh_live_node::Error),
     /// A broadcast name that is empty or holds a slash.
     #[error("invalid broadcast name {name:?}")]
     InvalidName { name: String },
@@ -81,19 +81,19 @@ pub enum Error {
 /// Owns the gossip instance all rooms on the endpoint share. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct Rooms {
-    moq: Moq,
+    moq: Node,
     gossip: Gossip,
 }
 
 impl Rooms {
     /// Creates the room service on `moq`'s endpoint, with its own gossip.
-    pub fn new(moq: &Moq) -> Self {
+    pub fn new(moq: &Node) -> Self {
         let gossip = Gossip::builder().spawn(moq.endpoint().clone());
         Self::with_gossip(moq, gossip)
     }
 
     /// Creates the room service over an existing gossip instance.
-    pub fn with_gossip(moq: &Moq, gossip: Gossip) -> Self {
+    pub fn with_gossip(moq: &Node, gossip: Gossip) -> Self {
         Self {
             moq: moq.clone(),
             gossip,
@@ -199,7 +199,7 @@ struct Inner {
     me: EndpointId,
     ticket: RoomTicket,
     #[debug(skip)]
-    moq: Moq,
+    moq: Node,
     state: Watchable<RoomState>,
     /// The members' ids, which every publication into the room is offered to.
     members: Watchable<BTreeSet<EndpointId>>,

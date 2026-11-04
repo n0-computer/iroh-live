@@ -31,7 +31,7 @@ gone closes the broadcast. `RemoteBroadcast::from_consumer(broadcast.consume())`
 
 `Live::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
 `from_resolved` and attaches the serving link's measurements, whether the
-subscription came from `Live::subscribe`, a room or `Moq::subscribe`. See
+subscription came from `Live::subscribe`, a room or `Node::subscribe`. See
 [adaptive bitrate](adaptive.md).
 
 ## Video decoding

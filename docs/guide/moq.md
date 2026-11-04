@@ -11,7 +11,7 @@ This page covers the terms the rest of these docs use.
 ## The model
 
 A **broadcast** is a named set of tracks that one endpoint publishes. It lives
-at a *path*. `iroh-moq` takes any path. `iroh-live` publishes at
+at a *path*. `iroh-live-node` takes any path. `iroh-live` publishes at
 `live/<endpoint id>/<name>`: `live/<id>/hello` from `irl publish`,
 `live/<id>/pi-zero` from the Pi demo, `live/<id>/call` from a call. Rooms use
 `rooms/<topic>/<endpoint id>/<name>`. A ticket holds the endpoint id and the
@@ -44,6 +44,6 @@ through `moq_net::Consume`, and a `RemoteBroadcast` is built from what a
 transport subscribed to. The media crate does not know whether that came over
 iroh, a relay, or a local loopback.
 
-`iroh-moq` is the iroh side. [The transport page](../architecture/transport.md)
+`iroh-live-node` is the iroh side. [The transport page](../architecture/transport.md)
 covers the route table, publications and their audiences, sessions, and relay
 links.

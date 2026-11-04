@@ -1,6 +1,6 @@
 //! MoQ over iroh.
 //!
-//! A [`Moq`] node publishes broadcasts at paths and subscribes to paths. It
+//! A [`Node`] publishes broadcasts at paths and subscribes to paths. It
 //! keeps one route table fed by every link it has: direct sessions with peers,
 //! and moq relays it is attached to. A path resolves to its cheapest route.
 //! When that route dies, moq moves to another route of the same instance
@@ -10,11 +10,11 @@
 //!
 //! ```no_run
 //! use iroh::EndpointId;
-//! use iroh_moq::{Audience, Moq, MoqConfig, MoqPreset, Reach};
+//! use iroh_live_node::{Audience, Node, NodeConfig, MoqPreset, Reach};
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-//! let moq = Moq::new(endpoint, MoqConfig::default());
+//! let moq = Node::new(endpoint, NodeConfig::default());
 //!
 //! // Publish a broadcast this process writes, created in the route table.
 //! let publication = moq.publish("demo/studio", Audience::Everyone)?;
@@ -30,8 +30,8 @@
 //!
 //! The main types:
 //!
-//! - [`Moq`]: the node. Mount it on a [`Router`](iroh::protocol::Router) with
-//!   [`Moq::mount`].
+//! - [`Node`]: the node. Mount it on a [`Router`](iroh::protocol::Router) with
+//!   [`Node::mount`].
 //! - [`Publication`]: a published broadcast. Its [`Audience`] says who sees it.
 //! - [`Subscription`]: a path resolved in the route table.
 //! - [`Session`]: a direct session with a peer. Its [`Grant`] says what the
@@ -48,7 +48,7 @@
 //! [`moq_net::Error::Unauthorized`]. This holds on both sides of a session,
 //! dialed or accepted, and on every protocol version.
 //!
-//! [`MoqConfig::grant`] gives each peer its grant from its endpoint id.
+//! [`NodeConfig::grant`] gives each peer its grant from its endpoint id.
 //! Without it, a peer may subscribe to anything and publish nothing.
 //! [`Grant::publish_under`] lets a peer publish only at paths that name it, so
 //! it cannot stand in for another peer.
@@ -61,62 +61,44 @@
 //!
 //! | Future | Safe | When dropped |
 //! |---|---|---|
-//! | [`Moq::connect`], [`Moq::connect_with`], [`Moq::subscribe`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
-//! | [`Moq::accept`] | yes | loses nothing |
+//! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
+//! | [`Node::accept`] | yes | loses nothing |
 //! | [`Incoming::admit`] | yes | rejects the session before the handshake completes, admits it after |
 //! | [`transport::dial`], [`transport::accept`] | yes | drops the connection |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
-//! | [`Moq::shutdown`] | no | call it again to finish |
+//! | [`Node::shutdown`] | no | call it again to finish |
 
-mod adapter;
 mod admission;
 mod error;
 mod link;
 mod node;
-mod preset;
 mod publish;
 mod relay;
 mod route;
 mod session;
 mod state;
-pub mod transport;
 
 /// The moq-net this crate builds against.
 pub use moq_net as net;
 
+/// The MoQ-over-iroh transport this node is built on: dial, accept, ALPNs and
+/// the poll adapter, for applications that run moq-net's client or server
+/// directly.
+pub use moq_transport_iroh as transport;
 /// The poll transport adapter sessions run over, for this crate's tests.
 #[doc(hidden)]
-pub use adapter::Session as AdaptedTransport;
+pub use moq_transport_iroh::AdaptedTransport;
+
+pub use moq_transport_iroh::{ALPN, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
 
 pub use self::{
-    admission::{
-        Admission, ConnectOptions, Grant, GrantFn, HANDSHAKE_TIMEOUT, Incoming, SessionRequest,
-    },
+    admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
     error::Error,
-    link::{LinkSample, ServingLink},
-    node::{Moq, MoqConfig, Reach},
-    preset::MoqPreset,
+    link::ServingLink,
+    node::{Node, NodeConfig, Reach},
     publish::{Audience, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::{LinkId, LinkKind, Subscription},
     session::Session,
 };
-
-/// The newest MoQ version this build speaks.
-///
-/// A dial offers every ALPN in [`alpns`], so a peer on an older version still
-/// connects.
-pub const ALPN: &[u8] = moq_net::ALPNS[0].as_bytes();
-
-/// Returns every ALPN a node accepts, newest MoQ version first, then HTTP/3.
-///
-/// [`Moq::mount`] mounts a node under all of them.
-#[must_use]
-pub fn alpns() -> Vec<&'static [u8]> {
-    moq_net::ALPNS
-        .iter()
-        .map(|alpn| alpn.as_bytes())
-        .chain(std::iter::once(web_transport_iroh::ALPN_H3.as_bytes()))
-        .collect()
-}

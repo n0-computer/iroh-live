@@ -27,7 +27,7 @@ use crate::{
     state::State,
 };
 
-/// How [`Moq::subscribe`] reaches a path the route table has no route to yet.
+/// How [`Node::subscribe`] reaches a path the route table has no route to yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
     /// Dials the publisher and waits for it to announce the path.
@@ -41,9 +41,9 @@ pub enum Reach {
     Both(EndpointId),
 }
 
-/// The configuration of a [`Moq`] node.
+/// The configuration of a [`Node`].
 #[derive(Clone, Default, derive_more::Debug)]
-pub struct MoqConfig {
+pub struct NodeConfig {
     /// How incoming sessions are admitted.
     pub admission: Admission,
     /// Returns the grant of a session with a peer, from its endpoint id.
@@ -84,11 +84,11 @@ pub struct MoqConfig {
 ///
 /// ```no_run
 /// use iroh::{Endpoint, endpoint::presets, protocol::Router};
-/// use iroh_moq::{Audience, Moq, MoqConfig};
+/// use iroh_live_node::{Audience, Node, NodeConfig};
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let endpoint = Endpoint::bind(presets::Minimal).await?;
-/// let moq = Moq::new(endpoint.clone(), MoqConfig::default());
+/// let moq = Node::new(endpoint.clone(), NodeConfig::default());
 /// let _router = moq.mount(Router::builder(endpoint)).spawn();
 ///
 /// let publication = moq.publish("demo/camera", Audience::Everyone)?;
@@ -98,8 +98,8 @@ pub struct MoqConfig {
 /// # }
 /// ```
 #[derive(Clone, derive_more::Debug)]
-#[debug("Moq({}, hop {})", shared.id.fmt_short(), shared.table.hop())]
-pub struct Moq {
+#[debug("Node({}, hop {})", shared.id.fmt_short(), shared.table.hop())]
+pub struct Node {
     pub(crate) shared: Arc<Shared>,
     /// Aborts the node's tasks when the last handle drops.
     pub(crate) tasks: Arc<Tasks>,
@@ -124,7 +124,7 @@ pub(crate) struct Shared {
 
 /// The node's tasks, kept apart from [`Shared`] so the tasks can hold it.
 ///
-/// Dropping the last [`Moq`] drops these, which ends the tasks and releases
+/// Dropping the last [`Node`] drops these, which ends the tasks and releases
 /// the shared state.
 pub(crate) struct Tasks {
     _actor: AbortOnDropHandle<()>,
@@ -134,11 +134,11 @@ pub(crate) struct Tasks {
     pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
 }
 
-impl Moq {
+impl Node {
     /// Creates a node on `endpoint`.
     ///
     /// Must be called within a tokio runtime.
-    pub fn new(endpoint: Endpoint, config: MoqConfig) -> Self {
+    pub fn new(endpoint: Endpoint, config: NodeConfig) -> Self {
         let id = endpoint.id();
         let (table, table_task) = match config.table {
             Some(table) => (table, None),
@@ -378,7 +378,7 @@ impl Moq {
     }
 }
 
-impl ProtocolHandler for Moq {
+impl ProtocolHandler for Node {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         admission::accept(&self.shared, connection)
             .await
@@ -386,7 +386,7 @@ impl ProtocolHandler for Moq {
         Ok(())
     }
 
-    /// Shuts the node down with the router, as [`Moq::shutdown`] does.
+    /// Shuts the node down with the router, as [`Node::shutdown`] does.
     async fn shutdown(&self) {
         // Resolves to the inherent method.
         Self::shutdown(self).await;
@@ -394,7 +394,7 @@ impl ProtocolHandler for Moq {
 }
 
 impl Shared {
-    /// Returns the grant [`MoqConfig::grant`] gives `peer`.
+    /// Returns the grant [`NodeConfig::grant`] gives `peer`.
     pub(crate) fn grant_for(&self, peer: EndpointId) -> Grant {
         self.grant
             .as_ref()

@@ -1,9 +1,9 @@
 //! Live audio and video over iroh.
 //!
-//! A [`Live`] node binds the [`Moq`] transport to an iroh endpoint. It
+//! A [`Live`] node binds the [`Node`] transport to an iroh endpoint. It
 //! publishes broadcasts at `live/<its endpoint id>/<name>` and subscribes to
 //! other nodes' broadcasts over a direct session or an attached relay. The
-//! transport is re-exported as [`moq`]. The `media` module gathers the media
+//! transport is re-exported as [`node`]. The `media` module gathers the media
 //! crates (sources, broadcasts, players, codecs), and `rooms` re-exports the
 //! rooms crate, each behind its feature.
 #![cfg_attr(
@@ -52,8 +52,8 @@ while let Some(frame) = frames.next().await {
 //!
 //! The `live/<id>/<name>` layout, the grant and the endpoint setup are
 //! defaults. [`Live::publish_at`] and [`Live::subscribe_path`] take any path,
-//! [`Live::builder_with`] takes any [`MoqConfig`], [`EndpointOptions::apply`]
-//! composes with your own endpoint builder, and [`Live::moq`] is the escape
+//! [`Live::builder_with`] takes any [`NodeConfig`], [`EndpointOptions::apply`]
+//! composes with your own endpoint builder, and [`Live::node`] is the escape
 //! hatch to the transport. [`Live::call`] publishes this node's side of
 //! one-to-one calls, and its [`CallOffer`] rings and hangs up each peer.
 //!
@@ -77,7 +77,7 @@ while let Some(frame) = frames.next().await {
 //! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
 //! | [`Live::shutdown`] | no, idempotent | call again to finish |
 //!
-//! `media`, [`moq`] and `rooms` list their own futures.
+//! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
 //!
 //! # Features
@@ -112,18 +112,19 @@ pub mod media {
     };
     pub use moq_video as video;
 }
+pub use iroh_live_node as node;
+pub use iroh_live_node::{
+    Audience, MoqPreset, Node, NodeConfig, Publication, Reach, Session, Subscription,
+};
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
-pub use iroh_moq as moq;
-pub use iroh_moq::{
-    Audience, Moq, MoqConfig, MoqPreset, Publication, Reach, Session, Subscription,
-};
 
 pub use self::{
     endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
     live::{
-        CallOffer, Live, LiveBuilder, PublishScope, grant, grant_with, moq_config, moq_config_with,
+        CallOffer, Live, LiveBuilder, PublishScope, grant, grant_with, node_config,
+        node_config_with,
     },
     paths::CALL,
     ticket::BroadcastTicket,

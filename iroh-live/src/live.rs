@@ -6,8 +6,8 @@ use iroh::{
     Endpoint, EndpointId,
     protocol::{DynProtocolHandler, ProtocolHandler, Router},
 };
-use iroh_moq::{
-    Audience, Grant, Moq, MoqConfig, Publication, Reach, Subscription,
+use iroh_live_node::{
+    Audience, Grant, Node, NodeConfig, Publication, Reach, Subscription,
     net::{Pattern, Patterns},
 };
 #[cfg(feature = "media")]
@@ -50,17 +50,17 @@ pub fn grant_with(peer: EndpointId, scopes: &[PublishScope]) -> Grant {
     Grant::publish_under(publish)
 }
 
-/// Returns the [`MoqConfig`] of a live node: admission open, with [`grant`].
+/// Returns the [`NodeConfig`] of a live node: admission open, with [`grant`].
 #[must_use]
-pub fn moq_config() -> MoqConfig {
-    moq_config_with(&[])
+pub fn node_config() -> NodeConfig {
+    node_config_with(&[])
 }
 
-/// Returns the [`MoqConfig`] of a live node with [`grant_with`] and `scopes`.
+/// Returns the [`NodeConfig`] of a live node with [`grant_with`] and `scopes`.
 #[must_use]
-pub fn moq_config_with(scopes: &[PublishScope]) -> MoqConfig {
+pub fn node_config_with(scopes: &[PublishScope]) -> NodeConfig {
     let scopes: Arc<[PublishScope]> = scopes.into();
-    MoqConfig {
+    NodeConfig {
         grant: Some(Arc::new(move |peer| grant_with(peer, &scopes))),
         ..Default::default()
     }
@@ -116,7 +116,7 @@ impl CallOffer {
 #[derive(Debug, Clone)]
 pub struct Live {
     endpoint: Endpoint,
-    moq: Moq,
+    moq: Node,
     router: Option<Router>,
     #[cfg(feature = "rooms")]
     rooms: Option<iroh_live_rooms::Rooms>,
@@ -130,7 +130,7 @@ pub struct Live {
 #[must_use]
 pub struct LiveBuilder {
     endpoint: Endpoint,
-    config: MoqConfig,
+    config: NodeConfig,
     router: bool,
     #[cfg(feature = "rooms")]
     rooms: bool,
@@ -191,7 +191,7 @@ impl LiveBuilder {
 
     /// Creates the node, spawning its router if asked to.
     pub fn spawn(self) -> Live {
-        let moq = Moq::new(self.endpoint.clone(), self.config);
+        let moq = Node::new(self.endpoint.clone(), self.config);
         #[cfg(feature = "rooms")]
         let rooms = self.rooms.then(|| iroh_live_rooms::Rooms::new(&moq));
         #[cfg(feature = "rooms")]
@@ -223,10 +223,10 @@ impl LiveBuilder {
 impl Live {
     /// Returns a builder for a node on `endpoint`.
     ///
-    /// The node's [`Moq`] has [`moq_config`]: open admission, and each peer
+    /// The node's [`Node`] has [`node_config`]: open admission, and each peer
     /// may publish only under `live/<its id>/`. Use
     /// [`builder_with`](Self::builder_with) to change that. [`spawn`](LiveBuilder::spawn)
-    /// creates the [`Moq`], so it must be called within a tokio runtime.
+    /// creates the [`Node`], so it must be called within a tokio runtime.
     ///
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -236,18 +236,18 @@ impl Live {
     /// # }
     /// ```
     pub fn builder(endpoint: Endpoint) -> LiveBuilder {
-        Self::builder_with(endpoint, moq_config())
+        Self::builder_with(endpoint, node_config())
     }
 
-    /// Returns a builder for a node on `endpoint` with its own [`MoqConfig`].
+    /// Returns a builder for a node on `endpoint` with its own [`NodeConfig`].
     ///
-    /// This is the override path for everything [`moq_config`] decides: a
+    /// This is the override path for everything [`node_config`] decides: a
     /// node whose peers may publish more or less than [`grant`] allows, with
-    /// its own admission, or with no grant at all (`MoqConfig::default()`
+    /// its own admission, or with no grant at all (`NodeConfig::default()`
     /// lets peers subscribe but not publish). Nothing else in [`Live`] depends
     /// on the grant. With rooms, prefer [`LiveBuilder::with_rooms`], which
     /// widens the grant for you.
-    pub fn builder_with(endpoint: Endpoint, config: MoqConfig) -> LiveBuilder {
+    pub fn builder_with(endpoint: Endpoint, config: NodeConfig) -> LiveBuilder {
         LiveBuilder {
             endpoint,
             config,
@@ -270,7 +270,7 @@ impl Live {
     /// layout, any [`Audience`], relays, sessions, the route table. The
     /// calls here are conveniences over it.
     #[must_use]
-    pub fn moq(&self) -> &Moq {
+    pub fn node(&self) -> &Node {
         &self.moq
     }
 
@@ -293,7 +293,7 @@ impl Live {
     /// not a valid path.
     pub fn publish<B: From<broadcast::Producer>>(&self, name: &str) -> Result<B, Error> {
         if name.is_empty() {
-            return Err(e!(iroh_moq::Error::InvalidPath {
+            return Err(e!(iroh_live_node::Error::InvalidPath {
                 path: name.to_owned()
             })
             .into());

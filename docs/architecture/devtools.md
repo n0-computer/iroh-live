@@ -82,7 +82,7 @@ and subscriber in one process, and prints the figures.
 members leaving. The broadcasts carry a plain data track, since
 `iroh-live-rooms` has no media dependency.
 
-`iroh-moq/tests/` covers sessions, the node and the moq routing behaviour the
+`iroh-live-node/tests/` covers sessions, the node and the moq routing behaviour the
 node relies on. `iroh-live-relay/tests/relay_bridge.rs` covers bridging between
 the WebTransport and iroh sides of the relay. `tests/e2e-browser/` is a
 Playwright suite that builds the relay and the CLI, serves the embedded web

@@ -6,6 +6,7 @@ description = "Android helpers for iroh-live apps: an EGL renderer for NV12 fram
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 publish = false
 
 [dependencies]

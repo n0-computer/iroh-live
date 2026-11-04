@@ -9,7 +9,7 @@
 //! Rooms paths (`rooms/...`) belong to `iroh-live-rooms`.
 
 use iroh::EndpointId;
-use iroh_moq::net::Pattern;
+use iroh_live_node::net::Pattern;
 
 /// The first segment of every path in this layout.
 const ROOT: &str = "live";

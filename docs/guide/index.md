@@ -115,17 +115,17 @@ when it does.
 
 The paths, the grant and the endpoint are defaults, and each can be replaced:
 
-- `Live::builder_with(endpoint, MoqConfig)` sets the admission and the grant.
+- `Live::builder_with(endpoint, NodeConfig)` sets the admission and the grant.
 - `Live::publish_at(path, Audience)` and
   `Live::subscribe_path(path, Reach)` work on any path, next to the ticket
   calls. `Live::remote_broadcast(&subscription)` reads the media of the result.
-- `Live::moq()` is the escape hatch to the whole transport.
+- `Live::node()` is the escape hatch to the whole transport.
 - `EndpointOptions::apply(builder)` adds the preset, the key and mDNS to your
   own endpoint builder, so you can set the relay mode or another address
   lookup. `bind()` does the same on a default one.
 - `iroh_live::paths` builds and parses the `live/<id>/<name>` paths.
 
-A node that needs none of `Live` can mount `Moq` on a router itself, as
+A node that needs none of `Live` can mount `Node` on a router itself, as
 `iroh-live/examples/moq_only.rs` does.
 
 `iroh-live/examples/publish.rs` is a complete publisher, with a two-rung

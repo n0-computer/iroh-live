@@ -5,7 +5,7 @@
 | Page | Summary |
 |---|---|
 | [Getting started](guide/index.md) | System dependencies, building, and a first stream from the CLI and the library |
-| [Using iroh-live](guide/usage.md) | Complete examples: publish, watch, call, rooms, custom paths, relays, raw MoQ tracks, and `Moq` without `Live` |
+| [Using iroh-live](guide/usage.md) | Complete examples: publish, watch, call, rooms, custom paths, relays, raw MoQ tracks, and `Node` without `Live` |
 | [CLI reference](cli.md) | The `irl` commands and their flags |
 | [Desktop rendering](guide/desktop.md) | Drawing decoded frames with wgpu and egui |
 | [Tickets](guide/tickets.md) | How a broadcast or a room is named and shared |
@@ -22,7 +22,7 @@
 |---|---|
 | [Overview](architecture/index.md) | The crates, what the `moq-ext-*` crates add to moq-video and moq-audio, and the conventions |
 | [The media stack](architecture/media-stack.md) | What we use from moq-video and moq-audio, and the feature flags |
-| [Transport](architecture/transport.md) | `iroh-moq`: paths, the route table, publications and audiences, sessions, relay links, and ALPN negotiation |
+| [Transport](architecture/transport.md) | `iroh-live-node` and `moq-transport-iroh`: paths, the route table, publications and audiences, sessions, relay links, and ALPN negotiation |
 | [Publishing](architecture/publish.md) | `LocalBroadcast`, sources, the simulcast ladder, and encoders that run only on demand |
 | [Subscribing](architecture/subscribe.md) | `RemoteBroadcast`, video decoding, and rendition switches |
 | [Adaptive rendition switching](architecture/adaptive.md) | How a player picks a rendition from the link |

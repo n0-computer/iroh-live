@@ -5,10 +5,12 @@ mod common;
 use std::{collections::BTreeSet, time::Duration};
 
 use common::{
-    Node, TIMEOUT, announced, ends, publish, publish_from, read_counter, reading, retracted,
+    Peer, TIMEOUT, announced, ends, publish, publish_from, read_counter, reading, retracted,
     stays_pending, step,
 };
-use iroh_moq::{Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach};
+use iroh_live_node::{
+    Admission, Audience, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach,
+};
 use moq_net::{Pattern, Patterns};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -18,8 +20,8 @@ use n0_watcher::{Watchable, Watcher};
 #[tokio::test]
 #[traced_test]
 async fn a_path_resolves_by_dialing_its_publisher() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
@@ -43,7 +45,7 @@ async fn a_path_resolves_by_dialing_its_publisher() {
 #[tokio::test]
 #[traced_test]
 async fn an_own_publication_resolves_locally() {
-    let alice = Node::spawn().await;
+    let alice = Peer::spawn().await;
     let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
@@ -63,7 +65,7 @@ async fn an_own_publication_resolves_locally() {
 #[tokio::test]
 #[traced_test]
 async fn a_path_holds_one_publication_until_its_broadcast_ends() {
-    let alice = Node::spawn().await;
+    let alice = Peer::spawn().await;
     let first = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let err = publish(&alice.moq, alice.path("cam"), Audience::Everyone)
         .expect_err("a second publication at one path");
@@ -87,9 +89,9 @@ const QUIET: Duration = Duration::from_secs(2);
 #[tokio::test]
 #[traced_test]
 async fn a_peers_audience_follows_its_set() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
-    let carol = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let publication = publish(
@@ -160,9 +162,9 @@ async fn a_peers_audience_follows_its_set() {
 #[tokio::test]
 #[traced_test]
 async fn offers_show_in_the_route_table() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
-    let carol = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let path = alice.path("cam");
@@ -197,8 +199,8 @@ async fn offers_show_in_the_route_table() {
 #[tokio::test]
 #[traced_test]
 async fn unpublishing_withdraws_the_path() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
     let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
@@ -227,8 +229,8 @@ async fn unpublishing_withdraws_the_path() {
 #[tokio::test]
 #[traced_test]
 async fn closing_a_session_cuts_the_peer_off() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
     let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
@@ -251,13 +253,13 @@ async fn closing_a_session_cuts_the_peer_off() {
 #[tokio::test]
 #[traced_test]
 async fn manual_admission_checks_a_token_and_bounds_offers() {
-    let alice = Node::with_config(MoqConfig {
+    let alice = Peer::with_config(NodeConfig {
         admission: Admission::Manual,
         ..Default::default()
     })
     .await;
-    let bob = Node::spawn().await;
-    let mallory = Node::spawn().await;
+    let bob = Peer::spawn().await;
+    let mallory = Peer::spawn().await;
 
     let public = publish(&alice.moq, alice.path("public"), Audience::Everyone).expect("publish");
     let secret = publish(&alice.moq, alice.path("secret"), Audience::Everyone).expect("publish");
@@ -368,9 +370,9 @@ const FORGED: u64 = 1_000_000;
 #[tokio::test]
 #[traced_test]
 async fn a_peer_cannot_route_another_publishers_path() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
-    let mallory = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let mallory = Peer::spawn().await;
 
     let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let _forged = publish_from(&mallory.moq, publication.path(), Audience::Everyone, FORGED)
@@ -431,8 +433,8 @@ async fn a_peer_cannot_route_another_publishers_path() {
 #[tokio::test]
 #[traced_test]
 async fn a_subscriber_started_first_gets_the_named_path() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let path = alice.path("cam");
     let subscribing = tokio::spawn({
@@ -455,7 +457,7 @@ async fn a_subscriber_started_first_gets_the_named_path() {
 }
 
 /// Dials `to` from `dialer` and waits for the session to be refused.
-async fn refused(dialer: &Node, to: &Node, within: Duration) {
+async fn refused(dialer: &Peer, to: &Peer, within: Duration) {
     match step("connect", dialer.moq.connect(to.endpoint.addr())).await {
         Err(_) => {}
         Ok(session) => {
@@ -478,12 +480,12 @@ async fn refused(dialer: &Node, to: &Node, within: Duration) {
 #[tokio::test]
 #[traced_test]
 async fn an_undecided_session_is_refused() {
-    let alice = Node::with_config(MoqConfig {
+    let alice = Peer::with_config(NodeConfig {
         admission: Admission::Manual,
         ..Default::default()
     })
     .await;
-    let bob = Node::spawn().await;
+    let bob = Peer::spawn().await;
     let moq = alice.moq.clone();
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
         while let Some(incoming) = moq.accept().await {
@@ -499,7 +501,7 @@ async fn an_undecided_session_is_refused() {
 #[tokio::test]
 #[traced_test]
 async fn a_parked_accept_does_not_hold_up_shutdown() {
-    let alice = Node::with_config(MoqConfig {
+    let alice = Peer::with_config(NodeConfig {
         admission: Admission::Manual,
         ..Default::default()
     })
@@ -521,7 +523,7 @@ async fn a_parked_accept_does_not_hold_up_shutdown() {
 #[tokio::test]
 #[traced_test]
 async fn the_router_shuts_the_node_down() {
-    let alice = Node::spawn().await;
+    let alice = Peer::spawn().await;
     step("router shutdown", alice.router.shutdown())
         .await
         .expect("router");
@@ -535,12 +537,12 @@ async fn the_router_shuts_the_node_down() {
 #[tokio::test]
 #[traced_test]
 async fn a_grant_bounds_what_a_peer_publishes() {
-    let alice = Node::with_config(MoqConfig {
+    let alice = Peer::with_config(NodeConfig {
         admission: Admission::Manual,
         ..Default::default()
     })
     .await;
-    let bob = Node::spawn().await;
+    let bob = Peer::spawn().await;
     let allowed = publish(&bob.moq, bob.path("allowed"), Audience::Everyone).expect("publish");
     let other = publish(&bob.moq, bob.path("other"), Audience::Everyone).expect("publish");
 
@@ -596,7 +598,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
 #[tokio::test]
 #[traced_test]
 async fn the_route_table_serves_every_publication() {
-    let alice = Node::spawn().await;
+    let alice = Peer::spawn().await;
     let origin = alice.moq.origin();
     let public = publish(&alice.moq, alice.path("public"), Audience::Everyone).expect("publish");
     let nobody = Audience::Peers(Watchable::new(BTreeSet::new()));
@@ -649,9 +651,9 @@ fn unauthorized(err: &moq_net::Error) -> bool {
 #[tokio::test]
 #[traced_test]
 async fn a_peers_audience_holds_on_a_dialed_session() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
-    let carol = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let publication =
@@ -703,9 +705,9 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
 #[tokio::test]
 #[traced_test]
 async fn a_changed_audience_retracts_and_grants_live() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
-    let carol = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let publication = publish(
@@ -772,8 +774,8 @@ async fn a_changed_audience_retracts_and_grants_live() {
 #[tokio::test]
 #[traced_test]
 async fn a_peer_reads_the_publishers_own_broadcast() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let publication = alice
         .moq
@@ -836,13 +838,13 @@ fn anywhere(_peer: iroh::EndpointId) -> Grant {
 #[tokio::test]
 #[traced_test]
 async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
-    let alice = Node::with_config(MoqConfig {
+    let alice = Peer::with_config(NodeConfig {
         grant: Some(std::sync::Arc::new(anywhere)),
         ..Default::default()
     })
     .await;
-    let bob = Node::spawn().await;
-    let carol = Node::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
 
     let publication = publish(&carol.moq, "shared/cam", Audience::Everyone).expect("publish");
     step("bob connects", bob.moq.connect(alice.endpoint.addr()))
@@ -871,7 +873,7 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
 }
 
 /// Waits until `node` has a session with `remote`, and returns it.
-async fn session_with(node: &Node, remote: iroh::EndpointId) -> iroh_moq::Session {
+async fn session_with(node: &Peer, remote: iroh::EndpointId) -> iroh_live_node::Session {
     let mut sessions = node.moq.sessions();
     loop {
         if let Some(session) = sessions

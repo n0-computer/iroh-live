@@ -1,8 +1,10 @@
-# iroh-moq
+# iroh-live-node
 
-[Media over QUIC](https://moq.dev/) over [iroh](https://github.com/n0-computer/iroh).
+The iroh-live node: [Media over QUIC](https://moq.dev/) over
+[iroh](https://github.com/n0-computer/iroh) with one route table fed by direct
+sessions and relays.
 
-A `Moq` node publishes broadcasts at paths and subscribes to paths. It keeps
+A `Node` publishes broadcasts at paths and subscribes to paths. It keeps
 one route table fed by every link it has: direct sessions with peers, and moq
 relays it is attached to. A path resolves to its cheapest route. When that
 route dies, moq moves to another route of the same instance without ending the
@@ -10,11 +12,17 @@ subscription, and `Subscription::closed` asks the table again for any other.
 The application picks the paths, and nothing here knows about media: a
 broadcast holds whatever tracks you write.
 
+Use it for peer-to-peer MoQ with many sessions, relays, admission and per-peer
+visibility. For a single plain MoQ session without a route table, use
+[`moq-transport-iroh`](../moq-transport-iroh), which this crate is built on and
+re-exports as `iroh_live_node::transport`. For media, use
+[`iroh-live`](../iroh-live), which re-exports this crate as `iroh_live::node`.
+
 ```rust
-use iroh_moq::{Audience, Moq, MoqConfig, MoqPreset, Reach};
+use iroh_live_node::{Audience, Node, NodeConfig, MoqPreset, Reach};
 
 let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-let moq = Moq::new(endpoint.clone(), MoqConfig::default());
+let moq = Node::new(endpoint.clone(), NodeConfig::default());
 
 // Accept sessions on every MoQ version this build speaks.
 let router = moq.mount(iroh::protocol::Router::builder(endpoint)).spawn();
@@ -32,13 +40,12 @@ let consumer = subscription.as_moq();
 ## Who sees what
 
 A publication's `Audience` says who sees it: `Everyone`, or a watched set of
-`Peers`. A session's
-`Grant` says what the peer may subscribe to and publish, in moq-auth's pattern
-form. `Audience` and `Grant` come from `moq-ext-access`. `MoqConfig::grant`
-gives each peer its grant from its endpoint id, and without it a peer may read
-anything and publish nothing.
-`iroh-live`, for example, lets a peer publish under `live/<its id>/` only, so
-no peer can stand in for another.
+`Peers`. A session's `Grant` says what the peer may subscribe to and publish,
+in moq-auth's pattern form. `Audience` and `Grant` come from
+[`moq-ext-access`](../moq-ext-access). `NodeConfig::grant` gives each peer its
+grant from its endpoint id, and without it a peer may read anything and publish
+nothing. `iroh-live`, for example, lets a peer publish under `live/<its id>/`
+only, so no peer can stand in for another.
 
 moq enforces it on each live session: the node authorizes every session, dialed
 or accepted, for exactly the publications whose audience admits its peer, and
@@ -47,16 +54,16 @@ out of an audience loses the path at once, and what it read there ends with
 `Unauthorized`. Every link serves only the node's own publications, never a
 route the node learned from another peer or a relay.
 
-With `Admission::Manual`, incoming sessions wait in `Moq::accept` until the
+With `Admission::Manual`, incoming sessions wait in `Node::accept` until the
 application admits or rejects them, for example after checking a token.
 
 ## Relays
 
-`Moq::attach_relay(RelayConfig::new(url))` stays attached to a moq relay at an
+`Node::attach_relay(RelayConfig::new(url))` stays attached to a moq relay at an
 `iroh://` or `https://` URL, and redials it with backoff. `RelayConfig::iroh(id)`
-builds the `iroh://` URL from an endpoint id. Public publications go
-to the relay, and the relay's routes join the route table at a higher cost than
-a direct route. A node that only publishes through the relay sets
+builds the `iroh://` URL from an endpoint id. Public publications go to the
+relay, and the relay's routes join the route table at a higher cost than a
+direct route. A node that only publishes through the relay sets
 `RelayConfig::consume` to false.
 
 A relay is trusted with every path it forwards. On a relay where anyone may
@@ -71,16 +78,9 @@ Every link runs a connection monitor. `Session::link()` and `RelayLink::link()`
 return its latest `LinkSample`: round trip, minimum round trip, loss, goodput
 and the peer's delivery estimate, with `None` for what is not measured yet.
 `Subscription::link()` returns the sample of whichever link serves the
-subscription.
+subscription. `LinkSample`, `MoqPreset`, `alpns()` and `ALPN` come from
+`moq-transport-iroh` and are re-exported here.
 
-## Endpoints and transport
+## Features
 
-`MoqPreset` is iroh's N0 preset with BBR3, so the send-rate estimate moq-net
-gives subscribers tracks the link.
-`iroh_moq::transport::{dial, accept}` do the ALPN negotiation and HTTP/3
-handling for applications that run moq-net's client or server themselves, as
-`iroh-live-relay` does.
-
-`iroh_moq::alpns()` lists every MoQ version this build speaks, newest first,
-then HTTP/3. Mount the node under all of them, so peers on other moq releases
-still connect.
+None.

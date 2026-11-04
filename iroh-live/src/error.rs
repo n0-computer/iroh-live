@@ -7,7 +7,7 @@ use n0_error::stack_error;
 pub enum Error {
     /// A peer was unreachable, or a path could not be resolved or published.
     #[error(transparent)]
-    Transport(iroh_moq::Error),
+    Transport(iroh_live_node::Error),
     /// A source, an encoder, a decoder or a recording failed.
     #[cfg(feature = "media")]
     #[error(transparent)]

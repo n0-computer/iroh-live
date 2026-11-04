@@ -20,7 +20,7 @@ use moq_net::{
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 
-type Transport = iroh_moq::AdaptedTransport<web_transport_iroh::Session>;
+type Transport = iroh_live_node::AdaptedTransport<web_transport_iroh::Session>;
 
 /// Creates an origin with hop `hop`, its driver spawned.
 fn origin(hop: u64) -> origin::Producer {
@@ -54,7 +54,7 @@ impl Server {
         let endpoint = endpoint().await;
         let (tx, incoming) = mpsc::channel(4);
         let mut router = Router::builder(endpoint.clone());
-        for alpn in iroh_moq::alpns() {
+        for alpn in iroh_live_node::alpns() {
             router = router.accept(alpn, Forward(tx.clone()));
         }
         Self {
@@ -78,7 +78,7 @@ impl Server {
             .await
             .expect("timed out waiting for a connection")
             .expect("router gone");
-        let (transport, target) = iroh_moq::transport::accept(connection)
+        let (transport, target) = iroh_live_node::transport::accept(connection)
             .await
             .expect("transport handshake");
         let address = match target {
@@ -126,7 +126,7 @@ async fn dial(
     subscriber: origin::Producer,
     publisher: Option<origin::Consumer>,
 ) -> Session {
-    let transport = iroh_moq::transport::dial(endpoint, remote)
+    let transport = iroh_live_node::transport::dial(endpoint, remote)
         .await
         .expect("dial failed");
     let mut client = moq_net::Client::new().with_subscriber(subscriber);
@@ -398,7 +398,7 @@ async fn a_route_table_fails_over_between_links() {
     let (_relay_link, _relay_side) = step("relay handshake", async {
         tokio::join!(
             async {
-                let transport = iroh_moq::transport::dial(&node, relay_addr)
+                let transport = iroh_live_node::transport::dial(&node, relay_addr)
                     .await
                     .expect("dial relay");
                 let (session, driver) = moq_net::Client::new()

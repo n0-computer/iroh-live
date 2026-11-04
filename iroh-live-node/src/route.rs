@@ -39,7 +39,7 @@ use n0_error::e;
 use tracing::{debug, info};
 
 use crate::{
-    Error, Moq, Reach, ServingLink, Session,
+    Error, Node, Reach, ServingLink, Session,
     node::Shared,
     publish::check_path,
     state::{LinkEntry, State},
@@ -300,8 +300,8 @@ pub(crate) async fn announced_by(
     Err(moq_net::Error::Closed)
 }
 
-/// Resolves `path` in the route table, for [`Moq::subscribe`](crate::Moq::subscribe).
-pub(crate) async fn subscribe(moq: &Moq, path: Path, reach: Reach) -> Result<Subscription, Error> {
+/// Resolves `path` in the route table, for [`Node::subscribe`](crate::Node::subscribe).
+pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Subscription, Error> {
     check_path(&path)?;
     if moq.shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));

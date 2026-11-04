@@ -17,13 +17,13 @@
 //! no other peer can stand in for it. Membership itself is open to anyone with
 //! the ticket.
 //!
-//! The node's [`MoqConfig::grant`](iroh_moq::MoqConfig::grant) has to let each
+//! The node's [`NodeConfig::grant`](iroh_live_node::NodeConfig::grant) has to let each
 //! peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
 //! `iroh_live::LiveBuilder::with_rooms` does that, and
-//! `iroh_live::moq_config_with` does it for a config built by hand.
+//! `iroh_live::node_config_with` does it for a config built by hand.
 //!
 //! ```no_run
-//! # async fn example(moq: iroh_moq::Moq)
+//! # async fn example(moq: iroh_live_node::Node)
 //! # -> Result<(), Box<dyn std::error::Error>> {
 //! use iroh_live_rooms::{RoomTicket, Rooms};
 //!

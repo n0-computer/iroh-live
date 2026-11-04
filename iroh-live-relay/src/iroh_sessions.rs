@@ -26,7 +26,7 @@ const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Accepts iroh clients' MoQ sessions into the cluster.
 ///
-/// Mount it under every ALPN in [`iroh_moq::alpns`], or use
+/// Mount it under every ALPN in [`moq_transport_iroh::alpns`], or use
 /// [`router`](Self::router).
 #[derive(Clone, derive_more::Debug)]
 pub struct IrohSessions {
@@ -54,7 +54,7 @@ impl IrohSessions {
     /// Spawns a router on `endpoint` with this handler.
     pub fn router(self, endpoint: Endpoint) -> Router {
         let mut router = Router::builder(endpoint);
-        for alpn in iroh_moq::alpns() {
+        for alpn in moq_transport_iroh::alpns() {
             router = router.accept(alpn, self.clone());
         }
         router.spawn()
@@ -63,14 +63,14 @@ impl IrohSessions {
     /// Runs one session until it closes or the relay shuts down.
     async fn serve(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote = connection.remote_id();
-        let opened = tokio::time::timeout(iroh_moq::HANDSHAKE_TIMEOUT, async {
-            let (transport, target) = iroh_moq::transport::accept(connection)
+        let opened = tokio::time::timeout(moq_transport_iroh::HANDSHAKE_TIMEOUT, async {
+            let (transport, target) = moq_transport_iroh::accept(connection)
                 .await
                 .map_err(AcceptError::from_err)?;
             let handshake = moq_net::Server::new()
                 .accept_request(
                     moq_net::time::Instant::now(),
-                    iroh_moq::transport::poll_session(transport, target.is_some()),
+                    moq_transport_iroh::poll_session(transport, target.is_some()),
                 )
                 .await
                 .map_err(AcceptError::from_err)?;
@@ -96,7 +96,7 @@ impl IrohSessions {
                 |cluster| cluster.origin.consume(),
             );
         let (session, driver) = tokio::time::timeout(
-            iroh_moq::HANDSHAKE_TIMEOUT,
+            moq_transport_iroh::HANDSHAKE_TIMEOUT,
             handshake
                 .with_publisher(serving)
                 .with_subscriber(publish)
@@ -160,7 +160,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 /// Returns what an iroh peer may publish into the relay.
 ///
 /// That is its own `live/` broadcasts and its room broadcasts.
-pub(crate) fn relay_grant(peer: iroh::EndpointId) -> iroh_moq::Grant {
+pub(crate) fn relay_grant(peer: iroh::EndpointId) -> iroh_live_node::Grant {
     iroh_live::grant_with(peer, &[iroh_live::rooms::publish_scope])
 }
 

@@ -284,7 +284,7 @@ impl Link {
         };
         let link = serving.sample;
         let mut lines = vec![match (serving.kind, link.relayed) {
-            (iroh_live::moq::LinkKind::Relay, _) => "via a relay link".to_string(),
+            (iroh_live::node::LinkKind::Relay, _) => "via a relay link".to_string(),
             (_, true) => "relayed".to_string(),
             (_, false) => "direct".to_string(),
         }];

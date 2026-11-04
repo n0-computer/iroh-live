@@ -1,6 +1,6 @@
 //! Pull mode: serving a broadcast ticket's broadcast from the relay.
 //!
-//! The relay's iroh-moq node uses the cluster origin as its route table. When
+//! The relay's iroh-live-node node uses the cluster origin as its route table. When
 //! a session names a valid [`BroadcastTicket`], the node subscribes to the
 //! ticket's broadcast, and the publisher's session announces it straight into
 //! the cluster at its own path, `live/<publisher>/<name>`. Nothing is copied:
@@ -26,7 +26,7 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live::BroadcastTicket;
-use iroh_moq::{Grant, Moq, MoqConfig, Subscription};
+use iroh_live_node::{Grant, Node, NodeConfig, Subscription};
 use moq_net::{Pattern, Patterns};
 use moq_relay::cluster::Cluster;
 use n0_watcher::Watcher;
@@ -85,7 +85,7 @@ pub fn serving(cluster: &Cluster, path: &str) -> Cluster {
 /// Shared state for pull operations.
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
-    moq: Moq,
+    moq: Node,
     linger: Duration,
     /// Live or dialing pulls, by local broadcast name.
     ///
@@ -152,12 +152,12 @@ impl PullState {
     /// The node writes what publishers announce into the cluster origin
     /// directly, each publisher kept to its own paths by the grant.
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
-        let config = MoqConfig {
+        let config = NodeConfig {
             table: Some(cluster.origin.clone()),
-            ..iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope])
+            ..iroh_live::node_config_with(&[iroh_live::rooms::publish_scope])
         };
         Self {
-            moq: Moq::new(endpoint, config),
+            moq: Node::new(endpoint, config),
             linger: DEFAULT_LINGER,
             pulls: Arc::new(Mutex::new(HashMap::new())),
             publishers: Arc::new(Mutex::new(HashMap::new())),
@@ -444,7 +444,7 @@ fn grant_for(paths: &HashMap<String, usize>) -> Grant {
 }
 
 /// Re-grants every session with `publisher` for `paths`.
-fn regrant(moq: &Moq, publisher: EndpointId, paths: &HashMap<String, usize>) {
+fn regrant(moq: &Node, publisher: EndpointId, paths: &HashMap<String, usize>) {
     let grant = grant_for(paths);
     for session in moq.sessions().get() {
         if session.remote_id() == publisher {
@@ -462,7 +462,7 @@ struct PublisherClaim {
     publisher: EndpointId,
     path: String,
     publishers: Publishers,
-    moq: Moq,
+    moq: Node,
 }
 
 impl PublisherClaim {

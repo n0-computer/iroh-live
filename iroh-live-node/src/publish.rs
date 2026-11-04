@@ -157,7 +157,7 @@ fn peers_task(
     })))
 }
 
-/// Publishes a broadcast at `path`, for [`Moq::publish`](crate::Moq::publish).
+/// Publishes a broadcast at `path`, for [`Node::publish`](crate::Node::publish).
 pub(crate) fn publish<T>(
     shared: &Arc<Shared>,
     path: Path,
@@ -181,7 +181,7 @@ pub(crate) fn publish<T>(
     let publication = shared
         .table
         .create_broadcast(&path)
-        .map_err(|source| e!(Error::Moq { source }))?;
+        .map_err(|source| e!(Error::Node { source }))?;
     // Filled before the announcement, so no reader finds the broadcast
     // without the tracks `fill` creates.
     let filled = fill(publication.broadcast());
@@ -189,7 +189,7 @@ pub(crate) fn publish<T>(
     // learns of it before the table has it.
     publication
         .announce(origin::Route::default())
-        .map_err(|source| e!(Error::Moq { source }))?;
+        .map_err(|source| e!(Error::Node { source }))?;
     let broadcast = publication.broadcast().clone();
     let id = state.next_id();
     let closed_task = {

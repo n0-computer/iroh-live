@@ -69,7 +69,7 @@ pub enum Error {
     ///
     /// The error comes from moq-net and looks the same whatever transport
     /// carries the broadcast. Failures of the transport itself, such as an
-    /// unreachable peer, belong to the transport's own error, `iroh_moq::Error`
+    /// unreachable peer, belong to the transport's own error, `iroh_live_node::Error`
     /// for iroh.
     #[error("broadcast failed")]
     Broadcast {

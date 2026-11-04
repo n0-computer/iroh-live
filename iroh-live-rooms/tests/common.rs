@@ -8,8 +8,8 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh_live_node::{Grant, Node, NodeConfig};
 use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms};
-use iroh_moq::{Grant, Moq, MoqConfig};
 use n0_watcher::Watcher;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -32,7 +32,7 @@ pub(crate) async fn endpoint() -> Endpoint {
 #[derive(Debug)]
 pub(crate) struct Peer {
     pub(crate) endpoint: Endpoint,
-    pub(crate) moq: Moq,
+    pub(crate) moq: Node,
     pub(crate) rooms: Rooms,
     router: Router,
 }
@@ -41,13 +41,13 @@ impl Peer {
     /// Spawns a peer whose peers may publish only under their room scope.
     pub(crate) async fn spawn() -> Self {
         let endpoint = endpoint().await;
-        let config = MoqConfig {
+        let config = NodeConfig {
             grant: Some(Arc::new(|peer| {
                 Grant::publish_under(iroh_live_rooms::publish_scope(peer))
             })),
             ..Default::default()
         };
-        let moq = Moq::new(endpoint.clone(), config);
+        let moq = Node::new(endpoint.clone(), config);
         let rooms = Rooms::new(&moq);
         let router = moq
             .mount(Router::builder(endpoint.clone()))

@@ -6,6 +6,7 @@ description = "the error, slot state and stats helpers shared by moq-ext-player 
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [lints]
 workspace = true

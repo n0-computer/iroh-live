@@ -237,7 +237,7 @@ impl LocalBroadcast {
     /// Creates an empty broadcast that fills `producer`.
     ///
     /// Pass the broadcast a transport created for publishing, such as an
-    /// `iroh_moq::Publication`'s: its readers read what this writes, with
+    /// `iroh_live_node::Publication`'s: its readers read what this writes, with
     /// nothing copied in between. `producer` must hold no catalog track yet.
     /// Closing this closes `producer`, which withdraws the publication.
     ///

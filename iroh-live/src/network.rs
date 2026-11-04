@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use iroh_moq::{LinkId, Subscription};
+use iroh_live_node::{LinkId, Subscription};
 use moq_ext_player::NetworkSample;
 
 /// Returns the network signals of the link serving `subscription`.

@@ -6,6 +6,7 @@ description = "multi-party rooms over iroh gossip and MoQ"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [lints]
 workspace = true
@@ -15,7 +16,7 @@ bytes = "1.12.1"
 derive_more = { version = "2.1.1", features = ["display", "debug"] }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
-iroh-moq = { workspace = true }
+iroh-live-node = { workspace = true }
 iroh-smol-kv = { workspace = true }
 iroh-tickets = { workspace = true }
 moq-net = { workspace = true }

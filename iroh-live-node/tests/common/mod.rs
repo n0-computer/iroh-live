@@ -14,7 +14,7 @@ use std::{
 use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
-use iroh_moq::{Audience, Grant, Moq, MoqConfig, Publication};
+use iroh_live_node::{Audience, Grant, Node, NodeConfig, Publication};
 use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
@@ -43,16 +43,16 @@ pub(crate) async fn endpoint() -> Endpoint {
 }
 
 /// A node that accepts MoQ, with the router that makes it do so.
-pub(crate) struct Node {
+pub(crate) struct Peer {
     pub(crate) endpoint: Endpoint,
-    pub(crate) moq: Moq,
+    pub(crate) moq: Node,
     pub(crate) router: Router,
 }
 
-impl Node {
+impl Peer {
     /// Spawns a node whose peers may publish only under `live/<their id>/`.
     pub(crate) async fn spawn() -> Self {
-        Self::with_config(MoqConfig::default()).await
+        Self::with_config(NodeConfig::default()).await
     }
 
     /// Returns `live/<this node's id>/<name>`.
@@ -61,10 +61,10 @@ impl Node {
     }
 
     /// Spawns a node with `config`, filling in the grant `spawn` gives.
-    pub(crate) async fn with_config(mut config: MoqConfig) -> Self {
+    pub(crate) async fn with_config(mut config: NodeConfig) -> Self {
         config.grant.get_or_insert_with(|| Arc::new(own_paths));
         let endpoint = endpoint().await;
-        let moq = Moq::new(endpoint.clone(), config);
+        let moq = Node::new(endpoint.clone(), config);
         let router = moq.mount(Router::builder(endpoint.clone())).spawn();
         Self {
             endpoint,
@@ -142,20 +142,20 @@ impl std::ops::Deref for Published {
 
 /// Publishes a counter broadcast at `path` on `moq`.
 pub(crate) fn publish(
-    moq: &Moq,
+    moq: &Node,
     path: impl AsRef<str>,
     audience: Audience,
-) -> Result<Published, iroh_moq::Error> {
+) -> Result<Published, iroh_live_node::Error> {
     publish_from(moq, path, audience, 0)
 }
 
 /// Publishes a counter broadcast at `path` on `moq`, counting from `first`.
 pub(crate) fn publish_from(
-    moq: &Moq,
+    moq: &Node,
     path: impl AsRef<str>,
     audience: Audience,
     first: u64,
-) -> Result<Published, iroh_moq::Error> {
+) -> Result<Published, iroh_live_node::Error> {
     let publication = moq.publish(path.as_ref(), audience)?;
     let broadcast = TestBroadcast::writing(publication.broadcast().clone(), first);
     Ok(Published {

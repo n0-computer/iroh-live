@@ -10,7 +10,7 @@ use iroh::EndpointId;
 use iroh_live::{
     EndpointOptions, Live, Mdns,
     media::PlayerConfig,
-    moq::{Reach, RelayConfig, RelayOffer},
+    node::{Reach, RelayConfig, RelayOffer},
 };
 use n0_error::bail_any;
 use tracing::info;
@@ -31,7 +31,7 @@ async fn main() -> n0_error::Result {
 
     info!(relay = %cli.relay, name = %cli.name, frames = cli.frames, "subscribing");
     // The link redials, and the subscribe waits until the relay routes the name.
-    let _link = live.moq().attach_relay(RelayConfig {
+    let _link = live.node().attach_relay(RelayConfig {
         offer: RelayOffer::Nothing,
         ..RelayConfig::iroh(cli.relay)
     })?;

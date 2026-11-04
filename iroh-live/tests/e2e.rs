@@ -169,7 +169,7 @@ async fn a_call_rings_answers_and_hangs_up() {
     let (_alice_side, alice_offer) = call_side(&alice);
     let (_bob_side, bob_offer) = call_side(&bob);
     let (alice_id, bob_id) = (alice.endpoint().id(), bob.endpoint().id());
-    let mut bob_table = bob.moq().origin().announced();
+    let mut bob_table = bob.node().origin().announced();
 
     // One call side serves both calls: each rings and hangs up by audience.
     for _ in 0..2 {
@@ -202,7 +202,7 @@ async fn a_call_rings_answers_and_hangs_up() {
         drop((at_alice, player));
     }
     assert_eq!(
-        alice.moq().sessions().get().len(),
+        alice.node().sessions().get().len(),
         1,
         "the session was replaced"
     );

@@ -219,7 +219,7 @@ impl State {
             return Some(id);
         }
         // moq-relay declares a hop of its own, not the one derived from its
-        // endpoint id, and iroh-moq peers always carry the derived one. So an
+        // endpoint id, and iroh-live-node peers always carry the derived one. So an
         // unknown hop is a relay's: the oldest relay link, if there is one.
         self.links
             .iter()

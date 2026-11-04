@@ -6,6 +6,7 @@ description = "audio and video live streaming over iroh"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 data-encoding = "2.11.1"
@@ -13,7 +14,7 @@ derive_more = { version = "2.1.1", features = ["debug"] }
 iroh = { workspace = true }
 # mDNS address lookup, for networks without internet access.
 iroh-mdns-peer-lookup = "0.1.2"
-iroh-moq = { workspace = true }
+iroh-live-node = { workspace = true }
 # Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
 # knows nothing about rooms.
 iroh-live-rooms = { workspace = true, optional = true }

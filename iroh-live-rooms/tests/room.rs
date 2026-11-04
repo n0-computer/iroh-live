@@ -7,8 +7,8 @@ mod common;
 use std::time::Duration;
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
+use iroh_live_node::Reach;
 use iroh_live_rooms::{Error, Room, RoomTicket};
-use iroh_moq::Reach;
 use moq_net::{Timestamp, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -204,7 +204,7 @@ async fn room_broadcasts_are_private() {
         .moq
         .publish(
             format!("rooms/elsewhere/{a}/public"),
-            iroh_moq::Audience::Everyone,
+            iroh_live_node::Audience::Everyone,
         )
         .expect("publish");
     let _public_writer = counting_into(public.broadcast(), 0);
@@ -412,7 +412,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
     let forgery = mallory
         .moq
-        .publish(path.as_str(), iroh_moq::Audience::Everyone)
+        .publish(path.as_str(), iroh_live_node::Audience::Everyone)
         .expect("publish at b's path");
     let _forger = counting_into(forgery.broadcast(), FORGED);
     tokio::time::timeout(TIMEOUT, mallory.moq.connect(peer_c.endpoint.addr()))

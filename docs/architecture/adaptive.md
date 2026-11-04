@@ -30,7 +30,8 @@ afterwards reads them. Without signals, the player holds the best rendition its
 constraints allow.
 
 moq-ext-player does not depend on iroh, so it never produces these itself.
-Every `iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that
+Every `iroh-live-node` link runs a connection monitor (the sampler is
+`moq-transport-iroh/src/link.rs`) that
 reads its MoQ session's statistics every 200 ms and keeps the latest
 `LinkSample`. A direct session starts the history over when the connection
 selects another path, and a relay link on every reconnect. Both bump
@@ -41,7 +42,7 @@ into a `NetworkSample` and counts a change of serving link as a new path too.
 
 `delivery` is the one figure that describes capacity. The publisher sends it in
 moq-net's PROBE control message: its own estimate of what the path to this
-subscriber carries, refreshed every 100 ms. iroh-moq reads it as
+subscriber carries, refreshed every 100 ms. iroh-live-node reads it as
 `estimated_recv_rate` in moq-net's session statistics. A publisher on a MoQ
 version without PROBE sends none, and the field reads `None`.
 

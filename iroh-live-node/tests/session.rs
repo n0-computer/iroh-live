@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{Node, TIMEOUT, step};
-use iroh_moq::Error;
+use common::{Peer, TIMEOUT, step};
+use iroh_live_node::Error;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
@@ -11,8 +11,8 @@ use n0_watcher::Watcher;
 #[tokio::test]
 #[traced_test]
 async fn connecting_twice_to_a_peer_reuses_the_session() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
         .await
@@ -35,8 +35,8 @@ async fn connecting_twice_to_a_peer_reuses_the_session() {
 #[tokio::test]
 #[traced_test]
 async fn a_connect_after_a_close_dials_anew() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
         .await
@@ -56,8 +56,8 @@ async fn a_connect_after_a_close_dials_anew() {
 #[tokio::test]
 #[traced_test]
 async fn concurrent_connects_to_a_peer_share_one_dial() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let addr = bob.endpoint.addr();
     let (first, second) = step(
@@ -81,8 +81,8 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
 #[tokio::test]
 #[traced_test]
 async fn an_accepted_session_appears_in_sessions() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
 
     let mut sessions = bob.moq.sessions();
     let dialed = step("dial", alice.moq.connect(bob.endpoint.addr()))
@@ -120,8 +120,8 @@ async fn an_accepted_session_appears_in_sessions() {
 #[tokio::test]
 #[traced_test]
 async fn shutdown_closes_sessions_and_refuses_new_ones() {
-    let alice = Node::spawn().await;
-    let bob = Node::spawn().await;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
     let bob_addr = bob.endpoint.addr();
 
     let session = step("dial", alice.moq.connect(bob_addr.clone()))
@@ -151,7 +151,7 @@ async fn shutdown_closes_sessions_and_refuses_new_ones() {
 #[tokio::test]
 #[traced_test]
 async fn accept_ends_at_shutdown() {
-    let alice = Node::spawn().await;
+    let alice = Peer::spawn().await;
     let moq = alice.moq.clone();
     let waiting = tokio::spawn(async move { moq.accept().await.is_none() });
     alice.moq.shutdown().await;

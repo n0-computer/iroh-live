@@ -11,7 +11,7 @@ use noq_proto::congestion::Bbr3Config;
 ///
 /// ```no_run
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let endpoint = iroh::Endpoint::bind(iroh_moq::MoqPreset).await?;
+/// let endpoint = iroh::Endpoint::bind(moq_transport_iroh::MoqPreset).await?;
 /// # Ok(())
 /// # }
 /// ```

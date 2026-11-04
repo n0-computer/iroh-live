@@ -7,7 +7,7 @@ membership and subscribes to a member's broadcast when the application asks.
 Rooms do not know about media. `Room::publish` creates a broadcast in the
 node's route table and returns it as any type built from a moq-net
 `broadcast::Producer`, such as a `LocalBroadcast`. `Room::subscribe` returns an
-`iroh_moq::Subscription`.
+`iroh_live_node::Subscription`.
 
 ## Joining
 
@@ -29,7 +29,7 @@ let room = rooms
 
 Without `Live`, create `Rooms::new(&moq)`, mount `rooms.protocol_handler()` under
 `iroh_live::rooms::ALPN` yourself, and widen the grant with
-`iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope])`.
+`iroh_live::node_config_with(&[iroh_live::rooms::publish_scope])`.
 
 Share `room.ticket()` with the people who join. It lists this member as the
 bootstrap endpoint.
@@ -70,7 +70,7 @@ contain a slash.
 with that member, so no other peer can stand in for it. It waits until the
 member announces the name, so bound the wait with a timeout. Leaving the room
 does not close subscriptions. Errors are `iroh_live_rooms::Error`, and its
-`Transport` variant holds an `iroh_moq::Error`.
+`Transport` variant holds an `iroh_live_node::Error`.
 
 A grid cannot follow the room state alone. A member can end a broadcast and
 publish it again before its announcement changes. A member can also drop this

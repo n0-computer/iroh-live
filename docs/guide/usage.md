@@ -14,13 +14,13 @@ iroh-live = { version = "0.1", features = ["full"] }  # add "rooms" for rooms
 | You want | Use | Crate |
 |---|---|---|
 | Publish, watch, call, rooms | `Live`, `LocalBroadcast`, `RemoteBroadcast` | `iroh-live` |
-| Your own paths, audiences or grants | `Live::moq()`, `Moq` | `iroh-moq` |
+| Your own paths, audiences or grants | `Live::node()`, `Node` | `iroh-live-node` |
 | Several participants | `Rooms`, `Room` | `iroh-live-rooms` |
 | Encode sources, decode and play | `LocalBroadcast`, `Player` | `moq-ext-publisher`, `moq-ext-player` |
-| Browsers, or peers behind a relay | `Moq::attach_relay`, the relay binary | `iroh-live-relay` |
+| Browsers, or peers behind a relay | `Node::attach_relay`, the relay binary | `iroh-live-relay` |
 
 `iroh-live` re-exports the rest: `iroh_live::media` has the media crates,
-`iroh_live::moq` is `iroh-moq`, and `iroh_live::rooms` is `iroh-live-rooms`
+`iroh_live::node` is `iroh-live-node`, and `iroh_live::rooms` is `iroh-live-rooms`
 behind the `rooms` feature. The examples below are complete programs. Each one
 needs `tokio` with the `full` feature.
 
@@ -257,8 +257,8 @@ use iroh::EndpointId;
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
     media::{LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video},
-    moq::net::Pattern,
-    moq_config_with,
+    node::net::Pattern,
+    node_config_with,
 };
 use n0_watcher::Watchable;
 
@@ -270,7 +270,7 @@ fn stage_scope(peer: EndpointId) -> Pattern {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointOptions::default().bind().await?;
-    let live = Live::builder_with(endpoint, moq_config_with(&[stage_scope]))
+    let live = Live::builder_with(endpoint, node_config_with(&[stage_scope]))
         .with_router()
         .spawn();
     let me = live.endpoint().id();
@@ -327,7 +327,7 @@ use iroh::EndpointId;
 use iroh_live::{
     EndpointOptions, Live,
     media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
-    moq::RelayConfig,
+    node::RelayConfig,
 };
 
 #[tokio::main]
@@ -340,7 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_router()
         .spawn();
 
-    let link = live.moq().attach_relay(RelayConfig {
+    let link = live.node().attach_relay(RelayConfig {
         consume: false,
         ..RelayConfig::iroh(relay)
     })?;
@@ -370,7 +370,7 @@ is the viewing side in Rust.
 ## Data without media
 
 A broadcast is a set of tracks, and a track is a stream of groups of frames.
-Nothing requires them to be video. `live.moq()` is the transport, and a
+Nothing requires them to be video. `live.node()` is the transport, and a
 `moq_net` broadcast is the unit it publishes, so a control channel is a
 broadcast with one track. Run it with no argument to serve, and with the printed
 id to read.
@@ -381,7 +381,7 @@ use std::time::Duration;
 use iroh::EndpointId;
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
-    moq::net::{Timescale, Timestamp, track},
+    node::net::{Timescale, Timestamp, track},
     paths,
 };
 
@@ -396,7 +396,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let me = live.endpoint().id();
             println!("read with: {me}");
             let path = paths::broadcast(me, "control");
-            let publication = live.moq().publish(path, Audience::Everyone)?;
+            let publication = live.node().publish(path, Audience::Everyone)?;
             let mut control = publication.broadcast().create_track(
                 "control",
                 track::Info::default().with_timescale(Timescale::MILLI),
@@ -409,7 +409,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(id) => {
             let peer: EndpointId = id.parse()?;
             let path = paths::broadcast(peer, "control");
-            let subscription = live.moq().subscribe(path, Reach::Direct(peer)).await?;
+            let subscription = live.node().subscribe(path, Reach::Direct(peer)).await?;
             let mut control = subscription
                 .as_moq()
                 .track("control")?
@@ -433,10 +433,10 @@ grants apply as they do for media.
 
 ## Without `Live`
 
-`Live` is a convenience over `Moq` and an endpoint. A program with its own
-router, its own ALPNs or its own access rules mounts `Moq` itself and gets the
+`Live` is a convenience over `Node` and an endpoint. A program with its own
+router, its own ALPNs or its own access rules mounts `Node` itself and gets the
 same sessions, route table and relays, with no media dependency. The default
-`MoqConfig` lets peers read anything and publish nothing, so the reader below
+`NodeConfig` lets peers read anything and publish nothing, so the reader below
 grants the publisher `demo/**`. The publishing side is
 [`iroh-live/examples/moq_only.rs`](../../iroh-live/examples/moq_only.rs), which
 serves `demo/hello`.
@@ -445,7 +445,7 @@ serves `demo/hello`.
 use std::sync::Arc;
 
 use iroh::EndpointId;
-use iroh_live::moq::{Grant, Moq, MoqConfig, MoqPreset, Reach, net::Pattern};
+use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, net::Pattern};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -455,9 +455,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
     let demo: Pattern = "demo/**".parse()?;
-    let moq = Moq::new(
+    let moq = Node::new(
         endpoint.clone(),
-        MoqConfig {
+        NodeConfig {
             grant: Some(Arc::new(move |_peer| Grant::publish_under(demo.clone()))),
             ..Default::default()
         },
@@ -485,5 +485,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Moq::sessions`, `Moq::accept` with `Admission::Manual`, and `Session::link`
+`Node::sessions`, `Node::accept` with `Admission::Manual`, and `Session::link`
 cover the rest of the node. See [the transport page](../architecture/transport.md).

@@ -23,22 +23,16 @@ use crate::{
     node::Shared,
     session::{SessionParts, Transport, driver_now, hop_for, subscriber},
     state::served,
-    transport::accept_transport,
+    transport::{HANDSHAKE_TIMEOUT, accept_with_headers},
 };
 
 /// A function that gives a peer its grant, from its endpoint id.
 pub type GrantFn = Arc<dyn Fn(EndpointId) -> Grant + Send + Sync>;
 
-/// How many incoming sessions may wait for [`Moq::accept`] at once.
+/// How many incoming sessions may wait for [`Node::accept`] at once.
 ///
 /// Past this, new sessions wait up to [`ADMISSION_TIMEOUT`] for room.
 pub(crate) const INCOMING_QUEUE: usize = 16;
-
-/// How long an incoming connection may take to open its MoQ session.
-///
-/// Without a bound, a peer that never sends its setup holds a task for as long
-/// as the connection lives.
-pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long an incoming session waits for room in the admission queue.
 ///
@@ -49,16 +43,16 @@ const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// How a node treats incoming sessions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Admission {
-    /// Admits every session with the grant [`MoqConfig::grant`] gives its peer.
+    /// Admits every session with the grant [`NodeConfig::grant`] gives its peer.
     ///
-    /// [`MoqConfig::grant`]: crate::MoqConfig::grant
+    /// [`NodeConfig::grant`]: crate::NodeConfig::grant
     #[default]
     Open,
-    /// Hands every incoming session to [`Moq::accept`](crate::Moq::accept) to decide.
+    /// Hands every incoming session to [`Node::accept`](crate::Node::accept) to decide.
     Manual,
 }
 
-/// How to dial a peer with [`Moq::connect_with`](crate::Moq::connect_with).
+/// How to dial a peer with [`Node::connect_with`](crate::Node::connect_with).
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
     /// A token to present, sent as `?jwt=` in the setup path or the CONNECT URL.
@@ -69,11 +63,18 @@ pub struct ConnectOptions {
     pub cost: Option<u64>,
     /// What the dialed peer may do on this node.
     ///
-    /// `None` takes it from [`MoqConfig::grant`](crate::MoqConfig::grant).
+    /// `None` takes it from [`NodeConfig::grant`](crate::NodeConfig::grant).
     pub grant: Option<Grant>,
 }
 
 impl ConnectOptions {
+    /// Returns the transport's options for a dial.
+    pub(crate) fn dial_options(&self) -> moq_transport_iroh::DialOptions {
+        let mut options = moq_transport_iroh::DialOptions::default();
+        options.token.clone_from(&self.token);
+        options
+    }
+
     /// Returns the setup path that carries the token, if there is one.
     pub(crate) fn setup_path(&self) -> Option<String> {
         let token = self.token.as_ref()?;
@@ -86,7 +87,7 @@ impl ConnectOptions {
 
 /// An incoming session waiting for admission.
 ///
-/// Yielded by [`Moq::accept`](crate::Moq::accept) under
+/// Yielded by [`Node::accept`](crate::Node::accept) under
 /// [`Admission::Manual`](crate::Admission::Manual). Dropping it without
 /// admitting rejects the session.
 #[derive(derive_more::Debug)]
@@ -152,11 +153,11 @@ impl Incoming {
         let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
             .await
             .map_err(|_| {
-                e!(Error::Moq {
+                e!(Error::Node {
                     source: moq_net::Error::Timeout
                 })
             })?
-            .map_err(|source| e!(Error::Moq { source }))?;
+            .map_err(|source| e!(Error::Node { source }))?;
         let parts = SessionParts {
             remote: self.remote,
             connection: self.connection,
@@ -184,7 +185,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     }
     let remote = connection.remote_id();
     let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-        let (transport, h3) = accept_transport(connection.clone()).await?;
+        let (transport, h3) = accept_with_headers(connection.clone()).await?;
         let address = match h3 {
             Some(_) => moq_net::transport::Address::Uri,
             None => moq_net::transport::Address::Setup,
@@ -192,7 +193,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         let handshake = moq_net::Server::new()
             .accept_request(driver_now(), Transport::new(transport, address))
             .await
-            .map_err(|source| e!(Error::Moq { source }))?;
+            .map_err(|source| e!(Error::Node { source }))?;
         Ok::<_, Error>((h3, handshake))
     })
     .await;
@@ -200,7 +201,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         Ok(opened) => opened?,
         Err(_) => {
             debug!(remote = %remote.fmt_short(), "no session setup in time");
-            return Err(e!(Error::Moq {
+            return Err(e!(Error::Node {
                 source: moq_net::Error::Timeout
             }));
         }
@@ -238,7 +239,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
                 Err(_) => {
                     info!(remote = %remote.fmt_short(), "admission queue full, rejecting");
                     incoming.handshake.close(moq_net::Error::Timeout);
-                    return Err(e!(Error::Moq {
+                    return Err(e!(Error::Node {
                         source: moq_net::Error::Timeout
                     }));
                 }

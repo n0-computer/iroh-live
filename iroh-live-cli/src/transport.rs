@@ -6,7 +6,7 @@ use iroh::EndpointId;
 use iroh_live::{
     BroadcastTicket, EndpointOptions, Live, Mdns, Session, Subscription,
     media::RemoteBroadcast,
-    moq::{RelayConfig, RelayLink},
+    node::{RelayConfig, RelayLink},
 };
 use n0_error::Result;
 use tracing::{info, warn};
@@ -182,7 +182,7 @@ pub fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
 /// The relay receives every public broadcast of this node. The link does not
 /// consume, or it would mirror the relay's whole namespace into the route table.
 fn attach_relay(live: &Live, relay: EndpointId, name: &str) -> Result<RelayLink> {
-    let link = live.moq().attach_relay(RelayConfig {
+    let link = live.node().attach_relay(RelayConfig {
         consume: false,
         ..RelayConfig::iroh(relay)
     })?;

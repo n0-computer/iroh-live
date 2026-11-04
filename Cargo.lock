@@ -4442,9 +4442,9 @@ dependencies = [
  "data-encoding",
  "derive_more",
  "iroh",
+ "iroh-live-node",
  "iroh-live-rooms",
  "iroh-mdns-peer-lookup",
- "iroh-moq",
  "moq-audio",
  "moq-ext-player",
  "moq-ext-publisher",
@@ -4541,6 +4541,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-live-node"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "iroh",
+ "moq-ext-access",
+ "moq-net",
+ "moq-tokio",
+ "moq-transport-iroh",
+ "n0-error",
+ "n0-future",
+ "n0-tracing-test",
+ "n0-watcher",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "web-transport-iroh",
+]
+
+[[package]]
 name = "iroh-live-relay"
 version = "0.1.0"
 dependencies = [
@@ -4552,11 +4573,12 @@ dependencies = [
  "include_dir",
  "iroh",
  "iroh-live",
+ "iroh-live-node",
  "iroh-live-rooms",
- "iroh-moq",
  "moq-net",
  "moq-relay",
  "moq-tokio",
+ "moq-transport-iroh",
  "n0-future",
  "n0-watcher",
  "rustls",
@@ -4577,7 +4599,7 @@ dependencies = [
  "derive_more",
  "iroh",
  "iroh-gossip",
- "iroh-moq",
+ "iroh-live-node",
  "iroh-smol-kv",
  "iroh-tickets",
  "moq-net",
@@ -4631,32 +4653,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "iroh-moq"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "derive_more",
- "futures",
- "iroh",
- "moq-ext-access",
- "moq-net",
- "moq-tokio",
- "n0-error",
- "n0-future",
- "n0-tracing-test",
- "n0-watcher",
- "noq-proto",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
- "web-transport-iroh",
- "web-transport-proto",
- "web-transport-trait",
 ]
 
 [[package]]
@@ -5928,6 +5924,25 @@ dependencies = [
  "web-transport-trait",
  "webpki-roots",
  "x509-parser",
+]
+
+[[package]]
+name = "moq-transport-iroh"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "iroh",
+ "moq-net",
+ "n0-error",
+ "noq-proto",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+ "web-transport-iroh",
+ "web-transport-proto",
+ "web-transport-trait",
 ]
 
 [[package]]
