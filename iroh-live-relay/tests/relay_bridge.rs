@@ -1531,6 +1531,56 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
     pub_ep.close().await;
 }
 
+/// A pull lets none of the publisher's other broadcasts into the cluster, not even while it dials.
+#[tokio::test]
+#[serial]
+async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (pub_ep, publisher, wanted_broadcast, wanted) = start_publisher("wanted").await;
+    let other_broadcast = publish_video(&publisher, "other");
+    let other = publisher.ticket("other").path();
+
+    // Every path the cluster announces, from before the dial on.
+    let cluster = relay.cluster.origin.consume();
+    let mut announced = cluster.announced();
+    let pull_state =
+        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+            .with_linger(PULL_LINGER);
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&wanted.to_string(), &wanted))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+
+    let mut seen = Vec::new();
+    let mut settle = None;
+    loop {
+        let deadline = settle.unwrap_or_else(|| tokio::time::Instant::now() + TIMEOUT);
+        match tokio::time::timeout_at(deadline, announced.next()).await {
+            Ok(Some(event)) => {
+                let path = announce_of(&event).prefix.as_str().to_owned();
+                if path == wanted.path() && settle.is_none() {
+                    // Give anything announced alongside it time to arrive.
+                    settle = Some(tokio::time::Instant::now() + Duration::from_millis(500));
+                }
+                seen.push(path);
+            }
+            Ok(None) => panic!("the cluster closed"),
+            Err(_) if settle.is_some() => break,
+            Err(_) => panic!("the pulled broadcast was never announced, saw {seen:?}"),
+        }
+    }
+    assert!(
+        !seen.contains(&other),
+        "the publisher's other broadcast entered the cluster: {seen:?}"
+    );
+
+    drop(guard);
+    drop((wanted_broadcast, other_broadcast));
+    publisher.shutdown().await;
+    pub_ep.close().await;
+}
+
 /// A node with rooms, accepting both MoQ and the rooms' gossip.
 async fn room_node() -> (
     iroh::Endpoint,

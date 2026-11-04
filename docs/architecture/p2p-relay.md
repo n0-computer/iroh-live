@@ -48,7 +48,8 @@ upstream session.
 Concurrent pulls for one ticket share one dial, so two browsers that arrive
 together open one upstream session. The session's grant lets the publisher
 announce only the pulled paths, so the cluster carries only the broadcasts the
-tickets name. A pull ends once no session has named the ticket for ten
+tickets name. The relay dials with that grant, which the session enforces from
+before its handshake, and a pull that joins a live session widens it. A pull ends once no session has named the ticket for ten
 seconds, which lets a page reload reuse it, and its path then leaves the
 grant and the cluster. When the last pull of a publisher ends, the relay
 closes its session with that publisher.

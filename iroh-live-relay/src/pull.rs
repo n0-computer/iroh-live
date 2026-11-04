@@ -26,7 +26,7 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live::BroadcastTicket;
-use iroh_live_node::{Grant, Node, NodeConfig, Subscription};
+use iroh_live_node::{ConnectOptions, Grant, Node, NodeConfig, Subscription};
 use moq_net::{Pattern, Patterns};
 use moq_relay::cluster::Cluster;
 use n0_watcher::Watcher;
@@ -299,12 +299,21 @@ impl PullState {
         // A publisher that never announces the path to us would keep the
         // subscription waiting forever.
         tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
+            // A new session is authorized for the pulled paths before its
+            // handshake, so the publisher's other broadcasts never enter the
+            // cluster, not even for a moment.
+            let options = ConnectOptions {
+                grant: Some(claim.grant()),
+                ..Default::default()
+            };
             let session = self
                 .moq
-                .connect(ticket.peer())
+                .connect_with(ticket.peer(), options)
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to reach the remote: {err:#}"))?;
-            session.set_grant(claim.grant());
+            // A session that was up already ignores the options, and claims
+            // may have changed the paths since the dial started.
+            claim.regrant();
             session
                 .subscribe(ticket.path())
                 .await
@@ -490,6 +499,18 @@ impl PublisherClaim {
             .get(&self.publisher)
             .map(grant_for)
             .unwrap_or_else(|| grant_for(&HashMap::new()))
+    }
+
+    /// Re-grants every session with this claim's publisher for the paths pulled now.
+    ///
+    /// Runs under the lock claims change the paths under, as [`Self::new`]
+    /// and the drop do, so a grant read before a concurrent claim or
+    /// retirement never lands after it.
+    fn regrant(&self) {
+        let publishers = self.publishers.lock().expect("poisoned");
+        let none = HashMap::new();
+        let paths = publishers.get(&self.publisher).unwrap_or(&none);
+        regrant(&self.moq, self.publisher, paths);
     }
 }
 
