@@ -5,7 +5,7 @@ use std::sync::Arc;
 use moq_net::Path;
 use n0_error::{AnyError, stack_error};
 
-/// Errors of the transport.
+/// An error from a [`Node`](crate::Node) or one of its handles.
 ///
 /// moq-net's errors stay typed, and the rest carry an [`AnyError`].
 #[stack_error(derive, add_meta)]
@@ -88,8 +88,8 @@ pub enum Error {
         #[error(source, std_err)]
         source: AnyError,
     },
-    /// The transport has shut down.
-    #[error("the transport has shut down")]
+    /// The node has shut down.
+    #[error("the node has shut down")]
     ShutDown,
 }
 
