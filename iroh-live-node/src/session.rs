@@ -113,8 +113,9 @@ impl Session {
     /// takes paths from the peer and resets what it reads there, and a
     /// narrower publish half takes the peer's broadcasts outside it out of the
     /// route table. A wider one brings them back. The route table only ever
-    /// takes what the grant the session started with let the peer publish, so
-    /// a publish half wider than that widens nothing.
+    /// takes what the grant the session started with, or the node's
+    /// [`NodeConfig::grant`](crate::NodeConfig::grant) for the peer, lets the
+    /// peer publish, so a publish half wider than both widens nothing.
     pub fn set_grant(&self, grant: Grant) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
@@ -253,19 +254,29 @@ pub(crate) fn authorized(shared: &Shared, remote: EndpointId, grant: &Grant) -> 
     auth
 }
 
-/// Returns where a session writes what its peer announces.
+/// Returns where a session with `remote` writes what its peer announces.
 ///
 /// That is the route table, tagged [`origin::Link::Peer`] and scoped to what
-/// `grant` lets the peer publish. `None` if the grant lets the peer publish
-/// nothing.
-pub(crate) fn subscriber(table: &origin::Producer, grant: &Grant) -> Option<origin::Producer> {
-    if grant.publish.is_empty() {
+/// `grant` or the node's own grant for `remote` lets the peer publish. The
+/// scope bounds the session for good, so a session that starts with a grant
+/// narrower than the node's can still be widened up to it with
+/// [`Session::set_grant`]. The session's authorization keeps the peer to
+/// `grant` meanwhile. `None` if neither grant lets the peer publish anything.
+pub(crate) fn subscriber(
+    shared: &Shared,
+    remote: EndpointId,
+    grant: &Grant,
+) -> Option<origin::Producer> {
+    let mut publish = grant.publish.clone();
+    publish.extend(shared.grant_for(remote).publish.iter().cloned());
+    if publish.is_empty() {
         return None;
     }
-    match table
+    match shared
+        .table
         .clone()
         .with_link(origin::Link::Peer)
-        .scope("", &grant.publish)
+        .scope("", &publish)
     {
         Ok(scoped) => Some(scoped),
         Err(err) => {
@@ -311,7 +322,7 @@ pub(crate) async fn dial_session(
         &options,
         remote_id,
         &served(&shared.table),
-        subscriber(&shared.table, &grant),
+        subscriber(&shared, remote_id, &grant),
         auth.clone(),
     )
     .await

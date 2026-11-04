@@ -303,7 +303,8 @@ impl Node {
     /// Dials `peer` with a token, a cost, or a grant.
     ///
     /// An existing session with the peer, or a dial in flight to it, is
-    /// returned as it is, and the options go unused.
+    /// returned as it is, and the options go unused. To be sure of a session's
+    /// grant, call [`Session::set_grant`] on the session this returns.
     ///
     /// # Errors
     ///

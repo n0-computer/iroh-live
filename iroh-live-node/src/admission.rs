@@ -64,6 +64,10 @@ pub struct ConnectOptions {
     /// What the dialed peer may do on this node.
     ///
     /// `None` takes it from [`NodeConfig::grant`](crate::NodeConfig::grant).
+    /// A new session is authorized for it before its handshake, so nothing
+    /// outside it ever reaches the route table or the peer. A session that
+    /// already exists keeps its grant: change that with
+    /// [`Session::set_grant`](crate::Session::set_grant).
     pub grant: Option<Grant>,
 }
 
@@ -147,7 +151,7 @@ impl Incoming {
             .handshake
             .with_publisher(served(&shared.table))
             .with_peer_hop(hop_for(&self.remote));
-        if let Some(subscriber) = subscriber(&shared.table, &grant) {
+        if let Some(subscriber) = subscriber(&shared, self.remote, &grant) {
             handshake = handshake.with_subscriber(subscriber);
         }
         let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())

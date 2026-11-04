@@ -590,6 +590,52 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     bob.shutdown().await;
 }
 
+/// A dial's grant holds from the session's start, and the session can widen up to the node's grant.
+#[tokio::test]
+#[traced_test]
+async fn a_dial_grant_holds_from_the_start_and_widens_to_the_nodes() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let wanted = publish(&bob.moq, bob.path("wanted"), Audience::Everyone).expect("publish");
+    let other = publish(&bob.moq, bob.path("other"), Audience::Everyone).expect("publish");
+
+    // Both cursors start before the dial, so they see whatever the session
+    // lets into the table from its first moment.
+    let mut to_wanted = alice.moq.origin().announced();
+    let mut to_other = alice.moq.origin().announced();
+    let narrow = Grant {
+        subscribe: Patterns::new(),
+        publish: Pattern::literal(wanted.path().as_str())
+            .expect("pattern")
+            .into(),
+    };
+    let options = ConnectOptions {
+        grant: Some(narrow.clone()),
+        ..Default::default()
+    };
+    let session = step(
+        "alice dials bob",
+        alice.moq.connect_with(bob.endpoint.addr(), options),
+    )
+    .await
+    .expect("connect");
+    assert_eq!(session.grant(), narrow);
+    announced(&mut to_wanted, wanted.path().as_str()).await;
+    stays_pending(
+        "bob's broadcast outside the dial's grant reached alice's table",
+        QUIET,
+        announced(&mut to_other, other.path().as_str()),
+    )
+    .await;
+
+    // Alice's node grants bob all of `live/<bob>/`, so the session widens to it.
+    session.set_grant(common::own_paths(bob.id()));
+    announced(&mut alice.moq.origin().announced(), other.path().as_str()).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
 /// The route table serves every publication of the node, whatever its audience.
 ///
 /// A publication is created in the table, so a local reader resolves it with
