@@ -3,8 +3,8 @@
 //! A [`LocalBroadcast`] holds a catalog, a media clock, one video slot and one
 //! audio slot. The video slot opens its source once and encodes it into a
 //! ladder of renditions, each encoding only while someone watches it. A
-//! transport publishes the broadcast by reading it through
-//! [`moq_net::Consume`].
+//! transport publishes the broadcast by creating the `broadcast::Producer` it
+//! fills ([`LocalBroadcast::new_in`]), so readers get it without a copy.
 //!
 //! The sources come from `moq-ext-sources`, and the codecs from `moq_video`
 //! and `moq_audio`. Nothing here depends on iroh or on a player.

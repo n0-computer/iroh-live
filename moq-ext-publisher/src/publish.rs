@@ -1,8 +1,9 @@
 //! Publishing: a broadcast that exists apart from any transport.
 //!
 //! A [`LocalBroadcast`] holds a catalog, a media clock, one video slot and one
-//! audio slot. A transport publishes it by reading it through
-//! [`moq_net::Consume`]. A player reads it in-process with
+//! audio slot. It fills a `broadcast::Producer`: one a transport created for
+//! publishing ([`LocalBroadcast::new_in`]), or one of its own
+//! ([`LocalBroadcast::new`]). A player reads it in-process with
 //! `RemoteBroadcast::from_consumer(broadcast.consume())`.
 //!
 //! The video slot opens its source once and encodes it into every rendition of
@@ -192,9 +193,11 @@ impl Drop for Shared {
 
 /// A broadcast this process produces.
 ///
-/// It holds a catalog, a media clock, one video slot and one audio slot. You
-/// publish it by passing it to a transport such as `iroh-live` or
-/// `iroh-live-rooms`, which reads it through `moq_net::Consume<broadcast::Consumer>`.
+/// It holds a catalog, a media clock, one video slot and one audio slot. A
+/// transport that publishes it hands it the broadcast to fill: build it with
+/// [`new_in`](Self::new_in) or `From<broadcast::Producer>`, as `iroh-live`'s
+/// `publish` does. A standalone one from [`new`](Self::new) reads in-process
+/// through `moq_net::Consume<broadcast::Consumer>`.
 ///
 /// Cloning is cheap. [`close`](Self::close) ends the broadcast for every clone.
 /// The setters spawn an encoding task, so call them from within a Tokio
@@ -214,11 +217,35 @@ impl Default for LocalBroadcast {
     }
 }
 
+impl From<moq_net::broadcast::Producer> for LocalBroadcast {
+    fn from(producer: moq_net::broadcast::Producer) -> Self {
+        Self::new_in(producer)
+    }
+}
+
 impl LocalBroadcast {
-    /// Creates an empty broadcast, published nowhere yet.
+    /// Creates an empty broadcast of its own, published nowhere.
+    ///
+    /// For a local preview, a test, or a transport that takes any
+    /// `broadcast::Consumer`. To publish, build it in the transport's broadcast
+    /// with [`new_in`](Self::new_in) instead, so peers read it without a copy.
     #[must_use]
     pub fn new() -> Self {
-        let mut producer = moq_net::broadcast::Info::new().produce();
+        Self::new_in(moq_net::broadcast::Info::new().produce())
+    }
+
+    /// Creates an empty broadcast that fills `producer`.
+    ///
+    /// Pass the broadcast a transport created for publishing, such as an
+    /// `iroh_moq::Publication`'s: its readers read what this writes, with
+    /// nothing copied in between. `producer` must hold no catalog track yet.
+    /// Closing this closes `producer`, which withdraws the publication.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `producer` already holds a catalog track.
+    #[must_use]
+    pub fn new_in(mut producer: moq_net::broadcast::Producer) -> Self {
         // The catalog advertises the clock's wall mapping, so it is built with
         // the clock that stamps the media.
         let clock = moq_mux::Clock::new();
@@ -226,7 +253,7 @@ impl LocalBroadcast {
             .with_catalog(hang::catalog::Catalog::default())
             .with_clock(clock.clone());
         let catalog = moq_mux::catalog::Producer::new(&mut producer, config)
-            .expect("a new broadcast has no catalog track yet");
+            .expect("the broadcast has no catalog track yet");
         let span = info_span!("broadcast");
         Self {
             shared: Arc::new(Shared {
