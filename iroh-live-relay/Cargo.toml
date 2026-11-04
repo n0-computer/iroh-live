@@ -38,6 +38,8 @@ rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false 
 include_dir = "0.7"
 dirs = "7"
 tower-http = { version = "0.7", features = ["cors"] }
+# Decodes the broadcast name in a request path. Already in the tree through `url`.
+percent-encoding = "2"
 
 [dev-dependencies]
 iroh = { workspace = true }
