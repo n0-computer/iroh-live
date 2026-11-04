@@ -4,7 +4,8 @@ A publisher that offers several renditions lets each subscriber follow its own
 downlink. Every `Player` in `RenditionMode::Auto` runs a selector task
 (`moq-ext-player/src/player/select.rs`). It reads the broadcast's network
 signals every 200 ms, computes which rendition should play, and hands that to
-the video supervisor when it changes. The rule itself is in `player/bound.rs`.
+the video supervisor when it changes. The rule itself is in
+`moq-ext-adaptive/src/bound.rs`.
 The decoder swap is the supervisor's job, described in
 [subscribing](subscribe.md#switching-renditions).
 
@@ -18,7 +19,7 @@ pub struct NetworkSample {
     pub rtt: Option<Duration>,
     pub min_rtt: Option<Duration>,     // smallest recent rtt on this path
     pub loss: Option<f64>,             // 0.0..=1.0
-    pub delivery: Option<Bitrate>,     // the publisher's estimate of the path
+    pub delivery: Option<u64>,         // the publisher's estimate, in bits/s
     pub path_generation: u64,          // bumped when the path changes
 }
 ```

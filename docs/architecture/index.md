@@ -23,11 +23,12 @@ This repository holds the layer that joins them.
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-No `moq-ext-*` crate depends on iroh, so each could move upstream into moq;
-that includes the UI and platform crates `moq-ext-egui` and
+No `moq-ext-*` crate depends on iroh, so each could move upstream into moq.
+That includes the UI and platform crates `moq-ext-egui` and
 `moq-ext-media-android`. `moq-ext-player` and `moq-ext-publisher` do not
-depend on each other. A transport publishes a `LocalBroadcast` by reading it through `moq_net::Consume`, and builds a
-`RemoteBroadcast` from a route table with `from_origin` or `from_resolved`.
+depend on each other. A transport publishes a `LocalBroadcast` by reading it
+through `moq_net::Consume`, and builds a `RemoteBroadcast` from a route table
+with `from_origin` or `from_resolved`.
 `iroh-live-rooms` has no media dependency. `iroh-live` depends on both and is
 the only crate that joins them.
 
@@ -78,9 +79,10 @@ link's measurements, so `remote.play(config)` starts a player that adapts with
 nothing further to wire.
 
 The facade's error is `iroh_live::Error`: `Transport` wraps an
-`iroh_live_node::Error`, `Media` an `moq_ext_player::Error`, and `SecretKey` and
-`Bind` come from `EndpointOptions`. Audiences, admission, relays and routes belong to [`iroh-live-node`](transport.md), reached
-through `live.node()`.
+`iroh_live_node::Error`, `Media` a `moq_ext_player::Error`, `SecretKey` and
+`Bind` come from `EndpointOptions`, and `InvalidTicket` from parsing a ticket.
+Audiences, admission, relays and routes belong to
+[`iroh-live-node`](transport.md), reached through `live.node()`.
 
 `irl call` and the Android demo share a one-to-one call convention. Each side
 publishes one broadcast named `iroh_live::CALL` (`live/<id>/call`) with

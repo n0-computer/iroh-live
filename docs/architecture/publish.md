@@ -29,8 +29,9 @@ previews can read it.
 `VideoSource` has these constructors:
 
 - `capture(moq_video::capture::Config)` opens a camera, a display or a window,
-  and returns once it produced a frame. It needs the `capture` feature. A device
-  that produces no frame within 30 seconds fails.
+  and returns once it produced a frame. It needs the `capture` feature. A
+  camera that produces no frame within 10 seconds fails, and a display or a
+  window within 30 seconds.
 - `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock,
   and a marker that flashes in step with `AudioSource::test_pattern`'s beep.
 - `push(format)` returns a `FrameSender` for frames the application makes. The
@@ -104,9 +105,11 @@ records a discontinuity, so the next timestamp does not stretch a frame across
 the gap. The track and its catalog entry stay advertised throughout.
 
 The source itself keeps running while nobody watches, because the publisher's
-preview reads the same frames. A microphone is the exception: moq-audio opens
-it inside the publication that encodes it. It opens when the broadcast first
-has a listener, and a failure then shows in `status()`.
+preview reads the same frames. A microphone is not a shared source. The audio
+slot opens it on a thread of its own as soon as `set_audio` runs, as one
+`moq_audio::capture::Producer` that feeds the encoder. A failure, at open or
+later, shows in `status()` as a `Failed` audio slot, and the slot stays failed
+until the next `set_audio`.
 
 `LocalBroadcast::status()` watches a `PublishStatus`: each slot's `SlotState`
 (`Off`, `Starting`, `Running`, `Failed`, `Ended`), and per rendition a

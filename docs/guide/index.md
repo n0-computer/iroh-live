@@ -115,8 +115,9 @@ while let Some(frame) = frames.next().await {
 
 `VideoSource::capture` fails if the camera cannot be opened.
 `AudioSource::microphone` only checks that the device exists. The microphone
-opens when the broadcast first has a subscriber, and a failure then shows in
-`LocalBroadcast::status()`.
+opens on its own thread once `set_audio` runs. A failure then shows in
+`LocalBroadcast::status()`, and the audio stays off until the next
+`set_audio`.
 
 `Live::subscribe` returns once a route to the broadcast is found. The catalog
 arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`

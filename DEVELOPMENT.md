@@ -42,9 +42,12 @@ Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 
 ## Working against a local moq checkout
 
-The workspace builds the moq crates from the revision pinned in the root
-`Cargo.toml`. To try a local checkout, add a `[patch]` block for the moq
-repository that points at `../moq/rs/<crate>`. Do not commit it.
+The workspace builds the moq crates from the revision of moq's `main` branch
+pinned in the root `Cargo.toml`. To try a local checkout, add a `[patch]` block
+for the moq repository that points at `../moq/rs/<crate>`. Do not commit it.
+
+To bump the pin, change the rev of every moq crate in the root `Cargo.toml` at
+once, and update the rev and date in the README's moq section.
 
 ## Commits
 
