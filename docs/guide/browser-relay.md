@@ -50,5 +50,5 @@ subscribing with `Reach::Relays`, as `iroh-live/examples/subscribe_test.rs`
 does. `irl watch` cannot, since its tickets name a publisher, not a relay.
 
 `irl publish --relay` attaches with `consume: false` in its `RelayConfig`, so
-it does not copy the relay's routes into its own route table. The default
+it does not take the relay's routes into its own route table. The default
 config does.

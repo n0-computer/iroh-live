@@ -57,8 +57,8 @@ renderer for the Pi Zero, which has no Vulkan.
 ## Feature flags
 
 `moq-ext-publisher` and `moq-ext-player` define the device and graphics
-features, and `iroh-live` passes them through.
-`iroh-live` forwards them and defaults to `capture`, `render` and
-`sound-server`. Its `media` feature (default) turns the media stack on, and
-each device feature implies it. `iroh-live-cli` always renders and defaults to
-`aec`, `playback` and `sound-server`.
+features, and `iroh-live` passes them through. `iroh-live` has no default
+features. `full` turns on `media`, `capture`, `render`, `sound-server` and
+`record`, `media` turns the media stack on, and each device feature implies it.
+`iroh-live-cli` always captures and renders, and defaults to `aec`, `playback`
+and `sound-server`.

@@ -40,9 +40,9 @@
 //!
 //! A publication is offered on a session when both its audience and the
 //! session's grant allow it. [`MoqConfig::grant`] gives each peer its grant
-//! from its endpoint id. Without it, any peer may publish at any path, and so
-//! stand in for another peer. [`Grant::publish_under`] keeps a peer to the
-//! paths that name it.
+//! from its endpoint id. Without it, a peer may subscribe to anything and
+//! publish nothing. [`Grant::publish_under`] lets a peer publish only at paths
+//! that name it, so it cannot stand in for another peer.
 //!
 //! Every link runs a connection monitor. [`Session::link`],
 //! [`RelayLink::link`] and [`Subscription::link`] return its latest

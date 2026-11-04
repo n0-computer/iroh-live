@@ -53,7 +53,7 @@ A publisher reaches a relay through a relay link.
 `Moq::attach_relay(RelayConfig::new(url))` stays attached and redials with
 backoff, and every publication with the `Everyone` audience is offered to it.
 `irl publish --relay <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` this
-way. A relay link consumes by default: it copies every route the relay knows
+way. A relay link consumes by default: it feeds every route the relay knows
 into the node's route table. `irl publish` only publishes, so it attaches with
 `consume: false`. The [browser relay guide](../guide/browser-relay.md) has the
 workflow.

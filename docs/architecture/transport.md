@@ -21,41 +21,33 @@ publisher. A `BroadcastTicket` names a publisher and a name, and
 
 ## One route table, fed by every link
 
-Every link writes what its peer announces into an ingest origin of its own. A
-bridge (`route.rs`) mirrors each of those routes into the node's route table as
-a dynamic route with the same hops and cost. A request on that route resolves
-the path through the link's ingest. moq serves the cheapest route. When it
-dies, moq moves to another route with the same first hop; a move between a
-direct and a relay route ends the broadcast, and `Subscription::closed` asks the
-table again.
+Every link announces straight into the node's route table. A session's
+subscriber is the table tagged `Link::Peer` and scoped to the paths its grant
+lets the peer publish. A relay's is the table tagged `Link::Upstream`, so
+routes from one upstream are never offered to another. The peer's hop and the
+link's cost travel with each route (`route.rs`). moq serves the cheapest route.
+When it dies, moq moves to another route of the same instance, which is the
+stream the publisher announced. A move between a direct and a relay route of
+one instance does not end the broadcast. When the instance's last route goes,
+the broadcast ends, and `Subscription::closed` asks the table again.
 
-Because each link's routes are also kept apart, the node can say which link
-serves a path (`Subscription::session`, `Subscription::link`), and list what one
-link announces (`Session::origin`, `RelayLink::origin`).
-`Session::subscribe` resolves a path over one session only. Rooms read each
+The node can still say which link serves a path (`Subscription::session`,
+`Subscription::link`). `Session::subscribe` resolves a path over one session
+only, and follows only the instance that session announced. Rooms read each
 member this way.
 
-A direct session's ingest holds only what the session's grant lets the peer
-publish. `MoqConfig::grant` computes that grant from the peer's endpoint id.
-`iroh_live::grant` lets a peer publish under `live/<peer>/` and, with the
-`rooms` feature, `rooms/*/<peer>/`. The table is shared by everything on the
-node and answers a ticket without dialing. A peer that could put a route to
-another publisher's path into it could stand in for that publisher, and hop
-chains cannot prevent this because a peer declares its own hop. A relay link
-mirrors everything, since forwarding other publishers' broadcasts is its job.
-Attaching a relay trusts it with every path it forwards.
+A direct session's routes enter the table only within the grant. `MoqConfig::grant`
+computes it from the peer's endpoint id, and the default is
+`Grant::subscribe_only()`: a peer may read anything and publish nothing.
+`iroh_live::grant` lets a peer publish under `live/<peer>/`, and
+`LiveBuilder::with_rooms` adds `rooms/*/<peer>/`. The table is shared by
+everything on the node and answers a ticket without dialing. A peer whose grant
+let it announce another publisher's path could stand in for that publisher,
+so grants should name the peer. A relay is trusted with every path it forwards,
+since forwarding other publishers' broadcasts is its job. Attach only relays
+that keep each publisher to its own paths.
 
-moq moves a broadcast between routes that share a first hop, and a first hop
-is only what the publisher declared. So the bridge rewrites a relay route's
-first hop to a value derived from the claimed one (`relayed` in `route.rs`).
-Routes to one source through different relays still share a first hop and can
-take over from each other. A relay route never shares one with a direct route.
-A subscription served by a direct session therefore ends when that session
-goes, and `Subscription::closed` asks the table again, which finds the relay
-route. Without the rewrite, a peer that published someone else's path into a
-relay under that publisher's hop would be spliced into the subscription once
-the direct session dropped. `iroh-moq/tests/origin.rs` tests the moq behaviour
-this relies on, and `iroh-live-relay/tests/relay_bridge.rs` tests the node's.
+`iroh-moq/tests/origin.rs` tests the moq behaviour this relies on.
 
 `Moq::subscribe(path, reach)` resolves a path in the table. If there is no
 route yet, it reaches out as `Reach` says: dial the publisher
@@ -70,9 +62,14 @@ path. The transport does not create the broadcast: it publishes anything that
 implements `Consume<broadcast::Consumer>`, so one broadcast can be published at
 several paths at once.
 
-Every session has a publish origin of its own. A publication is offered on a
+Every session has a publish origin of its own, and the publication is copied
+into it with `moq-ext-forward`, which reads a track from the broadcast only
+when the peer asks for it. So one broadcast can be offered to each peer
+without showing every peer the same set. A publication is offered on a
 session when its audience admits the peer and the session's grant covers its
-path. The audience is `Everyone` or a watched set of `Peers`. Offers change
+path. The audience is `Everyone` or a watched set of `Peers`. `Grant`, `SessionRequest`,
+`Audience` and the rule for what a link sees live in `moq-ext-access`, which
+has no iroh dependency, and `iroh-moq` re-exports them for endpoint ids. Offers change
 while the session runs, as audiences change.
 
 Withdrawing an offer retracts the path: the peer can no longer resolve it, and
@@ -89,7 +86,7 @@ that dial each other at the same moment keep both sessions.
 
 `Moq` implements iroh's `ProtocolHandler`, so incoming connections arrive
 through it. Under `Admission::Open` (the default) every session is admitted
-with the grant `MoqConfig::grant` gives the peer, or `Grant::everything()` if
+with the grant `MoqConfig::grant` gives the peer, or `Grant::subscribe_only()` if
 none is set. Under `Admission::Manual` the handshake waits after the peer's
 setup, and the session shows up in `Moq::accept()`. The application reads the
 `SessionRequest` (its path, a `jwt` query parameter, an HTTP/3 header) and
@@ -109,14 +106,16 @@ as `link sample`.
 
 ## Relay links
 
-`Moq::attach_relay(RelayConfig::new(url))` attaches to a moq relay through
-moq-tokio's client, for `iroh://` and `https://` URLs. The link redials with
+`Moq::attach_relay(RelayConfig::new(url))` attaches to a moq relay at an
+`iroh://` or `https://` URL. `https://` links use moq-tokio's client, and
+`iroh://` links dial through the node's own endpoint, since moq-tokio has no
+iroh transport. The link redials with
 backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
 the `Everyone` audience go to the relay by default (`RelayOffer::Public`). The
 relay's routes join the route table at a cost of 10 (`DEFAULT_RELAY_COST`)
 against a direct link's cost of one, so a direct route wins while it exists.
 
-`RelayConfig::consume` defaults to true, which copies every route the relay
+`RelayConfig::consume` defaults to true, which feeds every route the relay
 knows into the node's route table. A node that only publishes through the
 relay sets `consume: false`.
 
@@ -141,6 +140,13 @@ An application that runs moq-net's client or server itself gets the same
 negotiation from `iroh_moq::transport::{dial, accept}`, which return a
 `web_transport_iroh::Session`. `iroh-live-relay` accepts its iroh sessions
 through `accept`.
+
+## The poll adapter
+
+moq-net runs sessions over a poll-based transport interface, and
+web-transport-iroh is async. `iroh-moq/src/adapter.rs` is moq-tokio's adapter,
+vendored because moq-tokio's version takes only its own QUIC backends. It goes
+away once web-transport-iroh implements the poll interface itself.
 
 ## Errors
 

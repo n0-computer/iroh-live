@@ -5,10 +5,10 @@
 A `Moq` node publishes broadcasts at paths and subscribes to paths. It keeps
 one route table fed by every link it has: direct sessions with peers, and moq
 relays it is attached to. A path resolves to its cheapest route. When that
-route dies, moq moves to another route from the same first hop, and
-`Subscription::closed` asks the table again for any other. The application
-picks the paths, and
-nothing here knows about media: a broadcast holds whatever tracks you write.
+route dies, moq moves to another route of the same instance without ending the
+subscription, and `Subscription::closed` asks the table again for any other.
+The application picks the paths, and nothing here knows about media: a
+broadcast holds whatever tracks you write.
 
 ```rust
 use iroh_moq::{Audience, Moq, MoqConfig, MoqPreset, Reach};
@@ -33,7 +33,9 @@ let consumer = subscription.as_moq();
 A publication's `Audience` says who sees it: `Everyone`, or a watched set of
 `Peers`. A session's
 `Grant` says what the peer may subscribe to and publish, in moq-auth's pattern
-form. `MoqConfig::grant` gives each peer its grant from its endpoint id.
+form. `Audience` and `Grant` come from `moq-ext-access`. `MoqConfig::grant`
+gives each peer its grant from its endpoint id, and without it a peer may read
+anything and publish nothing.
 `iroh-live`, for example, lets a peer publish under `live/<its id>/` only, so
 no peer can stand in for another.
 
