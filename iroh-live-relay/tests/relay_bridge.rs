@@ -180,7 +180,7 @@ fn noq_client() -> moq_tokio::Client {
         .with_reconnect(false)
 }
 
-/// Waits for a dialled connection to complete its MoQ handshake.
+/// Waits for a dialed connection to complete its MoQ handshake.
 async fn established(connection: moq_tokio::Connection) -> moq_tokio::Connection {
     tokio::time::timeout(TIMEOUT, connection.established())
         .await

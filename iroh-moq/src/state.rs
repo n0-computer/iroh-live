@@ -1,7 +1,7 @@
 //! The node's bookkeeping: publications, links, and what each link is offered.
 //!
-//! Everything here changes under one lock and never awaits, so `publish`,
-//! `publish` and `unpublish` are synchronous.
+//! Everything here changes under one lock and never awaits, so `publish` and
+//! `unpublish` are synchronous.
 //!
 //! Each link has its own publish origin. Offering a publication on a link adds
 //! a route at its path there (see [`serve`]). What links announce goes straight
@@ -104,8 +104,9 @@ impl State {
         }
     }
 
-    /// Removes a link, withdrawing its offers. Its session takes its routes
-    /// out of the route table as it ends.
+    /// Removes a link, withdrawing its offers.
+    ///
+    /// Its session takes its routes out of the route table as it ends.
     pub(crate) fn remove_link(&mut self, id: u64) {
         self.links.remove(&id);
     }
@@ -117,6 +118,9 @@ impl State {
     }
 
     /// Removes a publication from every link and from the route table.
+    ///
+    /// The publication's route in the route table goes when the returned entry
+    /// drops.
     pub(crate) fn remove_publication(&mut self, id: u64) -> Option<PubEntry> {
         let entry = self.publications.remove(&id)?;
         for link in self.links.values_mut() {
@@ -210,12 +214,11 @@ impl State {
     }
 }
 
-/// Reports whether `publication` belongs on link `id`.
+/// Reports whether `publication` belongs on `link`.
 ///
-/// Offered when the link's grant covers the path and the audience admits
-/// the link. Relays see `Everyone`
-/// publications only when their configuration offers public ones, and never a
-/// `Peers` one, which a relay would forward to anyone.
+/// It does when the link's grant covers the path and the audience admits the
+/// link. A relay sees `Everyone` publications only if its configuration offers
+/// public ones, and never a `Peers` one, which a relay would forward to anyone.
 fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
     let role = match link.kind {
         LinkKind::Direct => LinkRole::Direct,
@@ -232,10 +235,11 @@ fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
     )
 }
 
-/// Offers `broadcast` at `path` on `origin`, as `instance`, until the handle drops.
+/// Offers `broadcast` at `path` on `origin` as `instance`, until the handle drops.
 ///
 /// The offer also ends with the broadcast. Returns `None`, and logs why, if
-/// the origin refuses the path.
+/// the origin refuses the path. The broadcast is copied into the origin, and
+/// only the tracks a reader asks for are read (see [`moq_ext_forward::forward`]).
 pub(crate) fn serve(
     origin: &origin::Producer,
     path: &Path,

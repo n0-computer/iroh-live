@@ -109,6 +109,7 @@ pub const ALPN: &[u8] = moq_net::ALPNS[0].as_bytes();
 /// Returns every ALPN a node accepts, newest MoQ version first, then HTTP/3.
 ///
 /// [`Moq::mount`] mounts a node under all of them.
+#[must_use]
 pub fn alpns() -> Vec<&'static [u8]> {
     moq_net::ALPNS
         .iter()

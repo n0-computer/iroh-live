@@ -4,10 +4,11 @@
 //! its own sessions can hand an origin a broadcast they already hold. An
 //! application that offers one broadcast in several origins (say, one per
 //! peer, each seeing a different set), or re-serves what one origin learned in
-//! another, has to copy: [`forward`] subscribes each track a reader asks for in
-//! `dest` in `source`, and writes its groups and frames through. The readers'
-//! demand (delay, priority, ranges) travels upstream as it changes. Frames share their payload, so a copy moves references, not
-//! bytes. Nothing is read from `source` that no reader of `dest` asked for.
+//! another, has to copy. [`forward`] subscribes in `source` to each track a
+//! reader asks for in `dest`, and writes its groups and frames through. The
+//! readers' demand (delay, priority, ranges) travels upstream as it changes.
+//! Frames share their payload, so a copy moves references, not bytes. Nothing
+//! is read from `source` that no reader of `dest` asked for.
 
 use std::{task::Poll, time::Duration};
 
@@ -23,11 +24,13 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Closes `dest` once `source` closes, so the copy never outlives what it
 /// copies. Tracks being copied then get a few seconds to reach their ends, so
 /// readers see the tail and the end, not a dropped producer.
+///
+/// Dropping the future stops the copy at once.
 pub fn forward(source: broadcast::Consumer, dest: broadcast::Producer) -> impl Future<Output = ()> {
     forward_with(source, dest, || {})
 }
 
-/// Like [`forward`], calling `requested` whenever a reader asks for a track.
+/// Serves requests as [`forward`] does, and calls `requested` for each one.
 ///
 /// The request handler is registered when this is called, not when the future
 /// is first polled: a reader may ask for a track in between, and with no
@@ -65,8 +68,11 @@ pub fn forward_with(
 /// What a track's loop woke for.
 #[allow(clippy::large_enum_variant, reason = "a short-lived local")]
 enum Wake {
+    /// The readers' demand changed, or the last reader left.
     Demand(Result<Option<track::Subscription>, moq_net::Error>),
+    /// The source opened a group, or ended.
     Group(Result<Option<group::Consumer>, moq_net::Error>),
+    /// A group's copy finished.
     Copied,
 }
 
@@ -93,6 +99,7 @@ async fn track(source: broadcast::Consumer, request: track::Request) {
     let mut subscriber = match upstream.subscribe(subscription).await {
         Ok(subscriber) => subscriber,
         Err(err) => {
+            debug!(track = %name, %err, "source track did not accept the subscription");
             request.reject(err);
             return;
         }

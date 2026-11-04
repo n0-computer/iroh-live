@@ -41,7 +41,7 @@ pub enum Reach {
     Both(EndpointId),
 }
 
-/// How a [`Moq`] node runs.
+/// The configuration of a [`Moq`] node.
 #[derive(Clone, Default, derive_more::Debug)]
 pub struct MoqConfig {
     /// How incoming sessions are admitted.
@@ -206,7 +206,8 @@ impl Moq {
 
     /// Resolves `path` in the route table.
     ///
-    /// If no route exists yet, reaches out as `reach` says.
+    /// If no route exists yet, reaches out as `reach` says. Cancellation safe:
+    /// a dial this call started continues for other callers.
     ///
     /// The table holds what direct peers announce within their grants, routes
     /// from attached relays, and this node's [`Audience::Everyone`]
@@ -246,7 +247,8 @@ impl Moq {
 
     /// Returns the session with `peer`, dialing if there is none.
     ///
-    /// Concurrent calls share one dial. The dialer's half of the handshake
+    /// Concurrent calls share one dial, which continues if this future is
+    /// dropped. The dialer's half of the handshake
     /// completes before the peer decides whether to admit it, so a peer that
     /// refuses usually closes the session right after this returns.
     /// [`Session::closed`] then says why.
@@ -297,7 +299,7 @@ impl Moq {
     /// Waits for the next session that needs admission.
     ///
     /// Yields only under [`Admission::Manual`]. Returns `None` once the node
-    /// shuts down.
+    /// shuts down. Cancellation safe: dropping the future loses nothing.
     pub async fn accept(&self) -> Option<Incoming> {
         admission::next(&self.shared).await
     }

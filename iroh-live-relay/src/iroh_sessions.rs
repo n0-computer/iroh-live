@@ -1,13 +1,13 @@
 //! Sessions from iroh clients, scoped by their endpoint id.
 //!
-//! moq-tokio's server has no iroh backend, and an iroh session's auth
-//! request would carry no peer identity anyway. So the relay accepts iroh sessions
-//! itself with [`IrohSessions`], and lets each client publish only at the paths
-//! that name it, `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
+//! moq-tokio's server has no iroh backend, and an iroh session's auth request
+//! would carry no peer identity anyway. So the relay accepts iroh sessions
+//! itself with [`IrohSessions`]. It lets each client publish only at the paths
+//! that name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
 //! Browsers come in through moq-tokio's server, and [`browser_auth`] keeps them
 //! to names of one segment.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use iroh::{
     Endpoint,
@@ -22,7 +22,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use crate::pull::PullState;
 
 /// How long a closing session gets to tell its peer when the relay shuts down.
-const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Accepts iroh clients' MoQ sessions into the cluster.
 ///
@@ -32,7 +32,9 @@ const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 pub struct IrohSessions {
     #[debug(skip)]
     cluster: Cluster,
+    /// Pulls the broadcasts that sessions name by ticket, if enabled.
     pulls: Option<Arc<PullState>>,
+    /// Cancelled when the router shuts down, which closes every session.
     shutdown: CancellationToken,
 }
 
@@ -145,8 +147,9 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// What an iroh peer may publish into the relay: its own `live/` broadcasts
-/// and its room broadcasts.
+/// Returns what an iroh peer may publish into the relay.
+///
+/// That is its own `live/` broadcasts and its room broadcasts.
 pub(crate) fn relay_grant(peer: iroh::EndpointId) -> iroh_moq::Grant {
     iroh_live::grant_with(peer, &[iroh_live::rooms::publish_scope])
 }

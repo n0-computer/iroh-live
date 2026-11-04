@@ -114,7 +114,8 @@ impl Incoming {
 
     /// Admits the session with `grant`.
     ///
-    /// Dropping the future before the handshake completes rejects the session.
+    /// Cancellation safe: dropping the future before the handshake completes
+    /// rejects the session, and dropping it after admits the session.
     ///
     /// # Errors
     ///

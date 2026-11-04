@@ -78,6 +78,12 @@ pub struct RelayConfig {
 /// Runs the relay server until ctrl-c or an error.
 ///
 /// Install a rustls crypto provider first, as the crate example does.
+///
+/// # Errors
+///
+/// Fails if the relay's identity cannot be loaded, an endpoint or listener
+/// cannot bind, or the cluster cannot start. A failure of the listener after
+/// startup ends the relay without an error.
 pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let mut quic = moq_tokio::quic::Config::default();
     quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
@@ -261,10 +267,14 @@ fn secret_key() -> anyhow::Result<SecretKey> {
     })
 }
 
+/// Returns the broadcast name in the path of a connection's request URL, if any.
 fn extract_name_from_url(request: &moq_tokio::server::Request) -> Option<String> {
     iroh_sessions::requested_name(request.url()?.path())
 }
 
+/// Serves the SHA-256 fingerprint of the relay's self-signed certificate.
+///
+/// The web viewer pins it, so the browser accepts the QUIC connection.
 async fn serve_fingerprint(State(certificates): State<Certificates>) -> impl IntoResponse {
     certificates
         .fingerprints()
@@ -273,6 +283,7 @@ async fn serve_fingerprint(State(certificates): State<Certificates>) -> impl Int
         .unwrap_or_default()
 }
 
+/// Serves a file of the embedded web viewer, or a 404.
 fn serve_embedded_file(path: &str) -> axum::response::Response {
     let mime = mime_from_path(path);
     match WEB_DIR.get_file(path) {
@@ -286,6 +297,7 @@ fn serve_embedded_file(path: &str) -> axum::response::Response {
     }
 }
 
+/// Returns the content type for a file name, from its extension.
 fn mime_from_path(path: &str) -> &'static str {
     match path.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",

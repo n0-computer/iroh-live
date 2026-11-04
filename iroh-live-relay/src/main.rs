@@ -1,5 +1,6 @@
 use clap::Parser;
 
+/// The relay's command line.
 #[derive(Parser)]
 #[command(about = "iroh-live relay: bridges iroh P2P and WebTransport/browser clients")]
 struct Cli {
@@ -16,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".parse().unwrap()),
+                .unwrap_or_else(|_| "info".parse().expect("a valid filter")),
         )
         .init();
 

@@ -21,7 +21,9 @@ pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 /// shorter span one lost acknowledgement reads as a large loss rate.
 const WINDOW: Duration = Duration::from_secs(2);
 
-/// The fewest packets a window needs for a loss rate; below it the rate is zero.
+/// The fewest packets a window needs for a loss rate.
+///
+/// Below it the rate is zero.
 const MIN_PACKETS: u64 = 20;
 
 /// The span the round trip minimum is taken across.
@@ -71,6 +73,7 @@ pub struct ServingLink {
 pub(crate) struct LinkState(Arc<Mutex<LinkSample>>);
 
 impl LinkState {
+    /// Returns the latest reading.
     pub(crate) fn get(&self) -> LinkSample {
         self.0.lock().expect("poisoned").clone()
     }
@@ -118,8 +121,10 @@ pub(crate) async fn monitor(source: Source, state: LinkState) {
     monitor_with(source, state, Arc::new(Mutex::new(Sampler::default()))).await;
 }
 
-/// Like [`monitor`], with a sampler that outlives the monitor, so the path
-/// generation carries on across the sessions of one link.
+/// Reads `source` as [`monitor`] does, with a sampler the caller keeps.
+///
+/// A sampler that outlives the monitor carries the path generation on across
+/// the sessions of one link.
 pub(crate) async fn monitor_with(source: Source, state: LinkState, sampler: SharedSampler) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -192,8 +197,10 @@ pub(crate) struct Sampler {
 }
 
 impl Sampler {
-    /// Starts a new session of the link: the next reading counts as a new
-    /// path even if the QUIC path id repeats, and history starts over.
+    /// Starts a new session of the link.
+    ///
+    /// The next reading counts as a new path even if the QUIC path id repeats,
+    /// and history starts over.
     pub(crate) fn new_session(&mut self) {
         if self.path.take().is_some() {
             self.path_generation += 1;

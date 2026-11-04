@@ -244,10 +244,11 @@ impl Origins {
     }
 }
 
-/// Returns where a session writes what its peer announces: the route table,
-/// tagged [`origin::Link::Peer`] and scoped to what `grant` lets the peer publish.
+/// Returns where a session writes what its peer announces.
 ///
-/// `None` if it lets the peer publish nothing.
+/// That is the route table, tagged [`origin::Link::Peer`] and scoped to what
+/// `grant` lets the peer publish. `None` if the grant lets the peer publish
+/// nothing.
 pub(crate) fn subscriber(table: &origin::Producer, grant: &Grant) -> Option<origin::Producer> {
     if grant.publish.is_empty() {
         return None;
@@ -259,7 +260,7 @@ pub(crate) fn subscriber(table: &origin::Producer, grant: &Grant) -> Option<orig
     {
         Ok(scoped) => Some(scoped),
         Err(err) => {
-            warn!(%err, "the grant's publish patterns fit no path; ingesting nothing");
+            warn!(%err, "the grant's publish patterns fit no path, so nothing the peer announces is ingested");
             None
         }
     }
@@ -288,36 +289,21 @@ pub(crate) async fn dial_session(
         .grant
         .clone()
         .unwrap_or_else(|| shared.grant_for(remote_id));
-    let transport = transport::dial_with(&shared.endpoint, remote, &options).await?;
-    let connection = transport.conn().clone();
+    let dialed = transport::dial_with(&shared.endpoint, remote, &options).await?;
+    let connection = dialed.conn().clone();
     let origins = Origins::new(&shared);
-    let mut client = moq_net::Client::new()
-        .with_publisher(origins.publish.consume())
-        .with_peer_hop(hop_for(&remote_id));
-    if let Some(subscriber) = subscriber(&shared.table, &grant) {
-        client = client.with_subscriber(subscriber);
-    }
-    if let Some(cost) = options.cost {
-        client = client.with_cost(cost);
-    }
-    // An H3 session carries the token in its CONNECT URL already.
-    let address = if transport.is_h3() {
-        moq_net::transport::Address::Uri
-    } else {
-        if let Some(path) = options.setup_path()
-            && let Ok(url) = url::Url::parse(&format!("moqt://iroh{path}"))
-        {
-            client = client.with_url(url);
-        }
-        moq_net::transport::Address::Setup
-    };
-    let (moq, driver) = client
-        .connect(driver_now(), Transport::new(transport.session, address))
-        .await
-        .map_err(|source| match source {
-            moq_net::Error::Unauthorized | moq_net::Error::App(_) => e!(Error::Refused { source }),
-            source => e!(Error::Moq { source }),
-        })?;
+    let (moq, driver) = client_handshake(
+        dialed,
+        &options,
+        remote_id,
+        &origins.publish.consume(),
+        subscriber(&shared.table, &grant),
+    )
+    .await
+    .map_err(|source| match source {
+        moq_net::Error::Unauthorized | moq_net::Error::App(_) => e!(Error::Refused { source }),
+        source => e!(Error::Moq { source }),
+    })?;
     Ok(SessionParts {
         remote: remote_id,
         connection,
@@ -328,6 +314,42 @@ pub(crate) async fn dial_session(
         driver,
         origins,
     })
+}
+
+/// Completes the MoQ handshake as the client, over a transport this node dialed.
+///
+/// Offers `publish` to the peer and, if given, writes what the peer announces
+/// to `subscriber`.
+pub(crate) async fn client_handshake(
+    dialed: transport::Dialed,
+    options: &ConnectOptions,
+    remote: EndpointId,
+    publish: &origin::Consumer,
+    subscriber: Option<origin::Producer>,
+) -> Result<(moq_net::Session, moq_net::Driver), moq_net::Error> {
+    let mut client = moq_net::Client::new()
+        .with_publisher(publish.clone())
+        .with_peer_hop(hop_for(&remote));
+    if let Some(subscriber) = subscriber {
+        client = client.with_subscriber(subscriber);
+    }
+    if let Some(cost) = options.cost {
+        client = client.with_cost(cost);
+    }
+    // An H3 session carries the token in its CONNECT URL already.
+    let address = if dialed.is_h3() {
+        moq_net::transport::Address::Uri
+    } else {
+        if let Some(path) = options.setup_path()
+            && let Ok(url) = url::Url::parse(&format!("moqt://iroh{path}"))
+        {
+            client = client.with_url(url);
+        }
+        moq_net::transport::Address::Setup
+    };
+    client
+        .connect(driver_now(), Transport::new(dialed.session, address))
+        .await
 }
 
 /// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
@@ -389,6 +411,7 @@ impl Drop for Actor {
 }
 
 impl Actor {
+    /// Creates an actor for the node `shared`.
     pub(crate) fn new(shared: Arc<Shared>) -> Self {
         Self {
             shared,
@@ -401,6 +424,7 @@ impl Actor {
         }
     }
 
+    /// Runs the actor until the node shuts down or every handle to it drops.
     pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
         let shutdown = self.shared.shutdown.clone();
         loop {
@@ -481,6 +505,7 @@ impl Actor {
         }
     }
 
+    /// Dispatches one request from the node's handles.
     fn handle(&mut self, message: ActorMessage) {
         match message {
             ActorMessage::Connect {
@@ -495,6 +520,9 @@ impl Actor {
         }
     }
 
+    /// Answers a connect from the live session with the peer, or dials one.
+    ///
+    /// Callers that ask while a dial is in flight wait on that dial.
     fn connect(
         &mut self,
         remote: EndpointAddr,
@@ -536,6 +564,7 @@ impl Actor {
         })
     }
 
+    /// Registers the session a dial produced, or fails the callers waiting on it.
     fn dialed(&mut self, id: tokio::task::Id, result: Result<SessionParts, Error>) {
         let Some(remote) = self.dial_ids.remove(&id) else {
             return;
@@ -567,6 +596,7 @@ impl Actor {
             origins,
         } = parts;
         let link_state = LinkState::default();
+        let hop = hop_for(&remote);
         let mut state = self.shared.state.lock().expect("poisoned");
         let link = state.next_id();
         let session = Session {
@@ -578,7 +608,7 @@ impl Actor {
                 request,
                 connection: connection.clone(),
                 moq: moq.clone(),
-                hop: hop_for(&remote),
+                hop,
                 link_state: link_state.clone(),
                 shared: Arc::downgrade(&self.shared),
                 closing: Default::default(),
@@ -589,7 +619,7 @@ impl Actor {
             LinkEntry {
                 kind: LinkKind::Direct,
                 remote: Some(remote),
-                hop: hop_for(&remote),
+                hop,
                 grant,
                 publish: origins.publish.clone(),
                 public: true,
@@ -606,7 +636,7 @@ impl Actor {
         // instants, so either may already have handed out the other's second.
         let sessions = self.peers.entry(remote).or_default();
         if !sessions.is_empty() {
-            debug!(remote = %remote.fmt_short(), "simultaneous connect; serving the first session");
+            debug!(remote = %remote.fmt_short(), "simultaneous connect, serving the first session");
         }
         sessions.push(session.clone());
         self.publish_sessions();
@@ -644,6 +674,7 @@ impl Actor {
         session
     }
 
+    /// Cleans up after a session task ends, or panics.
     fn session_ended(
         &mut self,
         id: tokio::task::Id,
@@ -673,6 +704,7 @@ impl Actor {
         self.publish_sessions();
     }
 
+    /// Publishes the current sessions to the watchers of [`Moq::sessions`].
     fn publish_sessions(&self) {
         let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
         self.shared.sessions.set(sessions).ok();

@@ -76,15 +76,17 @@ pub struct Subscription {
     inner: Arc<SubscriptionInner>,
 }
 
-/// The session a subscription reads from, and the stream it announced.
+/// The link a subscription reads from, and the stream it announced.
 struct Pin {
     link: u64,
+    /// The instance the link announced, if it declared one.
     instance: Option<Instance>,
 }
 
 struct SubscriptionInner {
     path: Path,
     origin: origin::Consumer,
+    /// The broadcast [`Subscription::as_moq`] returns.
     current: Mutex<broadcast::Consumer>,
     /// Set if the subscription does not follow the whole table.
     pin: Option<Pin>,
@@ -131,6 +133,10 @@ impl Routes {
 }
 
 impl Subscription {
+    /// Creates a subscription that reads `broadcast`, resolved at `path` in `origin`.
+    ///
+    /// `pin` is the link, and the instance it announced, that the subscription
+    /// is limited to. `None` follows the whole table.
     pub(crate) fn new(
         path: Path,
         origin: origin::Consumer,
@@ -207,15 +213,16 @@ impl Subscription {
         Some((link, state.links.get(&link)?))
     }
 
-    /// Follows the path until nothing serves it, switching
-    /// [`as_moq`](Self::as_moq) to whatever serves it now.
+    /// Follows the path until nothing serves it.
     ///
-    /// moq moves between routes of one instance by itself. This switches when
+    /// Switches [`as_moq`](Self::as_moq) to whatever serves the path now. moq
+    /// moves between routes of one instance by itself. This switches when
     /// another instance takes the path over, even while the old broadcast is
-    /// still served to its readers, and asks the table again when the
-    /// broadcast ends: the instance's last route went while another remains.
-    /// A pinned subscription follows only its own instance. Returns once
-    /// nothing serves the path.
+    /// still served to its readers. It also asks the table again when the
+    /// broadcast ends, which happens when the instance's last route went while
+    /// another remains. A pinned subscription follows only its own instance.
+    ///
+    /// Cancellation safe: dropping the future loses nothing.
     pub async fn closed(&self) {
         let instance = self.inner.pin.as_ref().and_then(|pin| pin.instance.clone());
         let mut following = self
@@ -265,7 +272,7 @@ pub(crate) fn direct_view(table: &origin::Producer) -> origin::Consumer {
     table.clone().with_link(Link::Upstream).consume()
 }
 
-/// Waits until a route to `path` entered from a source `from` accepts, and returns its instance.
+/// Waits for a route to `path` that entered from a hop `from` accepts, and returns its instance.
 pub(crate) async fn announced_by(
     view: &origin::Consumer,
     path: &Path,

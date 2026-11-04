@@ -27,8 +27,9 @@ use crate::{
     ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Moq,
     link::{self, LinkState},
     node::{Shared, Tasks},
-    session::{Origins, hop_for},
+    session::{Origins, client_handshake, hop_for},
     state::LinkEntry,
+    transport,
 };
 
 /// The cost a relay link adds to every route through it, unless configured.
@@ -40,7 +41,7 @@ pub const DEFAULT_RELAY_COST: u64 = 10;
 /// How to attach to a relay.
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
-    /// `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
+    /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
     pub url: Url,
     /// Sent as `?jwt=` in the URL.
     pub token: Option<String>,
@@ -57,9 +58,10 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
-    /// Returns a config for the relay at `url`.
+    /// Creates a config for the relay at `url`.
     ///
     /// It offers every public publication and consumes what the relay routes.
+    #[must_use]
     pub fn new(url: Url) -> Self {
         Self {
             url,
@@ -70,7 +72,8 @@ impl RelayConfig {
         }
     }
 
-    /// Returns a config for the relay with endpoint id `relay`, dialed over iroh.
+    /// Creates a config for the relay with endpoint id `relay`, dialed over iroh.
+    #[must_use]
     pub fn iroh(relay: EndpointId) -> Self {
         let url = format!("iroh://{relay}/")
             .parse()
@@ -162,6 +165,8 @@ impl RelayLink {
     ///
     /// Closes the session, stops redialing and withdraws the relay's routes.
     /// Returns once the session has closed. Idempotent.
+    ///
+    /// Cancellation safe: the link's task finishes the close.
     pub async fn detach(&self) {
         info!(url = %self.inner.url, "detaching relay");
         match &self.inner.uplink {
@@ -212,8 +217,8 @@ impl Tasks {
 
     /// Aborts every relay link's task, reporting each detached.
     ///
-    /// An aborted task never reaches its own report, so this makes it. For
-    /// the cases that cannot wait; [`shutdown_relays`](Self::shutdown_relays)
+    /// An aborted task never reaches its own report, so this makes it. Use it
+    /// where waiting is not possible. [`shutdown_relays`](Self::shutdown_relays)
     /// lets sessions close.
     pub(crate) fn detach_relays(&self) {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
@@ -223,8 +228,10 @@ impl Tasks {
         }
     }
 
-    /// Waits, up to the shutdown grace each, for every relay link's task to
-    /// close its session. The node's shutdown token must be cancelled already.
+    /// Waits for every relay link's task to close its session.
+    ///
+    /// Each task gets up to the shutdown grace. The node's shutdown token must
+    /// be cancelled already.
     pub(crate) async fn shutdown_relays(&self) {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
         for (_, relay) in relays {
@@ -234,8 +241,10 @@ impl Tasks {
 }
 
 impl RelayTask {
-    /// Waits up to the shutdown grace for the task to end by itself, then
-    /// aborts it, and reports the link detached.
+    /// Ends the task and reports the link detached.
+    ///
+    /// Waits up to the shutdown grace for the task to end by itself, and then
+    /// aborts it.
     async fn finish(mut self) {
         if tokio::time::timeout(crate::session::SHUTDOWN_GRACE, &mut self.task)
             .await
@@ -258,7 +267,7 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         scheme => {
             return Err(e!(Error::Relay {
                 source: AnyError::from_string(format!(
-                    "unsupported relay URL scheme {scheme:?}; use iroh:// or https://"
+                    "unsupported relay URL scheme {scheme:?}, use iroh:// or https://"
                 )),
             }));
         }
@@ -402,8 +411,7 @@ enum Uplink {
 /// The first pause before redialing a relay.
 const REDIAL_MIN: Duration = Duration::from_secs(1);
 
-/// How long a session must last before the next redial starts from the
-/// shortest pause again.
+/// How long a session must last to reset the redial pause to [`REDIAL_MIN`].
 const STABLE_SESSION: Duration = Duration::from_secs(10);
 
 /// The longest pause between redials.
@@ -451,8 +459,10 @@ async fn tokio_uplink(
     shared.state.lock().expect("poisoned").remove_link(link);
 }
 
-/// Runs an `iroh://` relay link: dials the relay over the node's endpoint,
-/// and redials with backoff whenever the session ends.
+/// Runs an `iroh://` relay link until it is stopped.
+///
+/// Dials the relay over the node's endpoint, and redials with backoff whenever
+/// the session ends.
 #[allow(clippy::too_many_arguments, reason = "one call site, all owned")]
 async fn iroh_uplink(
     shared: Arc<Shared>,
@@ -548,32 +558,9 @@ async fn dial_relay(
     ),
     Error,
 > {
-    let dialed = crate::transport::dial_with(&shared.endpoint, relay.into(), options).await?;
+    let dialed = transport::dial_with(&shared.endpoint, relay.into(), options).await?;
     let connection = dialed.conn().clone();
-    let mut client = moq_net::Client::new()
-        .with_publisher(publish.clone())
-        .with_peer_hop(hop_for(&relay));
-    if let Some(subscriber) = subscriber {
-        client = client.with_subscriber(subscriber.clone());
-    }
-    if let Some(cost) = options.cost {
-        client = client.with_cost(cost);
-    }
-    let address = if dialed.is_h3() {
-        moq_net::transport::Address::Uri
-    } else {
-        if let Some(path) = options.setup_path()
-            && let Ok(url) = Url::parse(&format!("moqt://iroh{path}"))
-        {
-            client = client.with_url(url);
-        }
-        moq_net::transport::Address::Setup
-    };
-    let (moq, driver) = client
-        .connect(
-            crate::session::driver_now(),
-            crate::session::Transport::new(dialed.session, address),
-        )
+    let (moq, driver) = client_handshake(dialed, options, relay, publish, subscriber.cloned())
         .await
         .map_err(|source| e!(Error::Moq { source }))?;
     Ok((moq, driver, connection))

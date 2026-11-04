@@ -75,6 +75,8 @@ impl Publication {
     }
 
     /// Waits until the publication is withdrawn.
+    ///
+    /// Cancellation safe: dropping the future loses nothing.
     pub async fn withdrawn(&self) {
         self.inner.withdrawn.cancelled().await;
     }

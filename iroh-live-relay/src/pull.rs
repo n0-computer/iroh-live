@@ -35,8 +35,13 @@ const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 /// How long to wait for the publisher's broadcast to resolve.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// First wait before mirroring a broadcast again after it ended. Doubles per failure.
+/// The first wait before mirroring a broadcast again after it ended.
+///
+/// Doubles per failure, up to [`REMIRROR_BACKOFF_MAX`].
 const REMIRROR_BACKOFF: Duration = Duration::from_millis(500);
+
+/// The longest wait between attempts to mirror a broadcast again.
+const REMIRROR_BACKOFF_MAX: Duration = Duration::from_secs(8);
 
 /// How many times in a row mirroring again may fail before the pull retires.
 const MAX_REMIRRORS: u32 = 5;
@@ -130,7 +135,8 @@ impl PullState {
 
     /// Sets how long an unused pull stays connected.
     ///
-    /// Defaults to ten seconds.
+    /// Defaults to ten seconds, long enough for a page reload to reuse the
+    /// connection.
     #[must_use]
     pub fn with_linger(mut self, linger: Duration) -> Self {
         self.linger = linger;
@@ -140,9 +146,15 @@ impl PullState {
     /// Pulls the broadcast `ticket` names into the cluster under `requested`.
     ///
     /// Hold the returned [`PullGuard`] while the session that asked runs.
-    /// Concurrent pulls of one name share a dial. Cancelling this future only
-    /// drops the caller's claim: the dial runs on, and the pull retires as
-    /// usual.
+    /// Concurrent pulls of one name share a dial.
+    ///
+    /// Cancellation safe: dropping this future only drops the caller's claim.
+    /// The dial runs on, and the pull retires as usual.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the publisher cannot be reached, does not announce the
+    /// broadcast within [`SUBSCRIBE_TIMEOUT`], or the cluster refuses the name.
     pub async fn pull(
         &self,
         requested: &str,
@@ -195,7 +207,7 @@ impl PullState {
             debug!(local_name = %local_name, "joining an existing pull");
         }
 
-        // Dialling or joining, every caller waits on the one dial's outcome.
+        // Dialing or joining, every caller waits on the one dial's outcome.
         let mut dial = guard.pull.dial.subscribe();
         let outcome = dial
             .wait_for(|dial| !matches!(dial, Dial::Pending))
@@ -340,7 +352,7 @@ impl PullState {
                 Ok(next) => return Some(next),
                 Err(err) => {
                     warn!(local_name = %local_name, attempt, %err, "could not mirror the pull again");
-                    backoff = (backoff * 2).min(Duration::from_secs(8));
+                    backoff = (backoff * 2).min(REMIRROR_BACKOFF_MAX);
                 }
             }
         }
