@@ -68,7 +68,7 @@ pub(super) async fn run(
             job.reporter.slot(SlotState::Ended);
         }
         Err(err) => {
-            warn!(error = %err, "audio publish failed");
+            warn!(error = %format!("{err:#}"), "audio publish failed");
             job.reporter.slot(SlotState::Failed(ByPtr::new(err)));
         }
     }
