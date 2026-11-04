@@ -267,6 +267,18 @@ async fn record(
         },
         () = stop.cancelled() => return Ok(0),
     };
+    // A broadcast may be announced before its catalog track exists, and the
+    // exporter's own catalog reader does not ask again. The remote broadcast
+    // does, so wait until it has read a catalog.
+    let mut known = broadcast.catalog();
+    tokio::select! {
+        seen = known.wait_for(Option::is_some) => {
+            if seen.is_err() {
+                return Err(n0_error::e!(Error::Closed));
+            }
+        }
+        () = stop.cancelled() => return Ok(0),
+    }
     let (_local, source) = match broadcast.routed() {
         Some(origin) => (None, moq_mux::Source::new(origin, consumer.clone())),
         None => {

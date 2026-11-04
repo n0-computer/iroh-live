@@ -200,9 +200,12 @@ impl RemoteBroadcast {
 
     /// Starts recording the broadcast into `out`, remuxed without decoding.
     ///
+    /// The recording starts once the broadcast has a route and a catalog.
+    ///
     /// # Errors
     ///
-    /// Fails if the rendition the config names is not in the catalog.
+    /// Fails with [`Error::UnknownRendition`] if the catalog is already known
+    /// and lacks the rendition the config names.
     #[cfg(feature = "record")]
     pub fn record(
         &self,
