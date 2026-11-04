@@ -67,14 +67,13 @@ use iroh_live::{
 let live = Live::builder(EndpointOptions::default().bind().await?)
     .with_router()
     .spawn();
-let broadcast = LocalBroadcast::new();
+// Created in the node's route table, published while `broadcast` lives.
+let broadcast: LocalBroadcast = live.publish("hello")?;
 
 let camera = VideoSource::capture(video::capture::Config::default()).await?;
 broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
 let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
 broadcast.set_audio(microphone, AudioEncoding::voice())?;
-
-live.publish("hello", &broadcast)?;
 println!("{}", live.ticket("hello"));
 ```
 
@@ -117,7 +116,7 @@ when it does.
 The paths, the grant and the endpoint are defaults, and each can be replaced:
 
 - `Live::builder_with(endpoint, MoqConfig)` sets the admission and the grant.
-- `Live::publish_at(path, broadcast, Audience)` and
+- `Live::publish_at(path, Audience)` and
   `Live::subscribe_path(path, Reach)` work on any path, next to the ticket
   calls. `Live::remote_broadcast(&subscription)` reads the media of the result.
 - `Live::moq()` is the escape hatch to the whole transport.

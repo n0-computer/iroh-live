@@ -36,22 +36,28 @@ running it: flags, the certificate, the key and the web client.
 
 The relay does not need to know a publisher in advance. When a session asks for
 a name that parses as a `BroadcastTicket`, the relay subscribes to the ticket's
-broadcast through its own iroh-moq node and mirrors it into the cluster under
-that name (`src/pull.rs`). From then on it is ordinary relay fan-out: a second
-viewer of the same ticket shares the first one's upstream session.
+broadcast through its own iroh-moq node (`src/pull.rs`). That node uses the
+cluster origin as its route table (`MoqConfig::table`), so the publisher's
+session announces the broadcast straight into the cluster at its own path,
+`live/<publisher>/<name>`, with no copy. The session that named the ticket is
+served the cluster with a mount at that name (`origin::Producer::mount`), so it
+reads the broadcast under the name it asked for. From then on it is ordinary
+relay fan-out: a second viewer of the same ticket shares the first one's
+upstream session.
 
 Concurrent pulls for one ticket share one dial, so two browsers that arrive
-together open one upstream session. The mirror carries only the one broadcast
-the ticket names. A pull ends once no session has named the ticket and nothing
-has read the broadcast for ten seconds, which lets a page reload reuse it. When
-the last pull of a publisher ends, the relay closes its session with that
-publisher.
+together open one upstream session. The session's grant lets the publisher
+announce only the pulled paths, so the cluster carries only the broadcasts the
+tickets name. A pull ends once no session has named the ticket for ten
+seconds, which lets a page reload reuse it, and its path then leaves the
+grant and the cluster. When the last pull of a publisher ends, the relay
+closes its session with that publisher.
 
 ## Publishing to a relay
 
 A publisher reaches a relay through a relay link.
 `Moq::attach_relay(RelayConfig::new(url))` stays attached and redials with
-backoff, and every publication with the `Everyone` audience is offered to it.
+backoff, and every publication with the `Everyone` audience is visible to it.
 `irl publish --relay <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` this
 way. A relay link consumes by default: it feeds every route the relay knows
 into the node's route table. `irl publish` only publishes, so it attaches with

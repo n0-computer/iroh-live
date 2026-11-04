@@ -37,10 +37,11 @@ which matters on the Pi demo's small e-paper panel.
 ## Call tickets
 
 A call uses a `BroadcastTicket` named `call` (`iroh_live::CALL`).
-`Live::call(peer, &broadcast)` offers this node's side at `live/<id>/call` to
-`peer` only, and `Live::answer(peer)` subscribes to the other's. A peer's
-`call` path appearing in the route table is the ring, and
-`Publication::unpublish` hangs up. `irl call` and the Android demo use both.
+`Live::call()` publishes this node's side at `live/<id>/call`, visible to
+nobody, and `CallOffer::ring(peer)` offers it to `peer` only.
+`Live::answer(peer)` subscribes to the other's. A peer's `call` path appearing
+in the route table is the ring, and `CallOffer::hang_up(peer)` hangs up. `irl
+call` and the Android demo use both.
 
 ## RoomTicket
 

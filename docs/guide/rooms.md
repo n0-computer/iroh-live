@@ -4,8 +4,9 @@ A room is a gossip topic. Its members announce themselves and the names of the
 broadcasts they publish into the room. `iroh_live_rooms::Room` tracks the
 membership and subscribes to a member's broadcast when the application asks.
 
-Rooms do not know about media. `iroh-live-rooms` publishes anything that
-implements moq-net's `Consume<broadcast::Consumer>`, and returns an
+Rooms do not know about media. `Room::publish` creates a broadcast in the
+node's route table and returns it as any type built from a moq-net
+`broadcast::Producer`, such as a `LocalBroadcast`. `Room::subscribe` returns an
 `iroh_moq::Subscription`.
 
 ## Joining
@@ -51,7 +52,8 @@ show "joined" and "left", compare two states.
 ## Publishing and subscribing
 
 ```rust
-room.publish("cam", &broadcast)?;
+let broadcast: LocalBroadcast = room.publish("cam")?;
+broadcast.set_video(source, encoding)?;
 let subscription = room.subscribe(peer, "cam").await?;
 let player = live
     .remote_broadcast(&subscription)
@@ -59,10 +61,9 @@ let player = live
 ```
 
 `publish` puts the broadcast at `rooms/<topic>/<this member>/<name>`, and only
-the room's members can read it. A member that leaves or expires loses the
-path, though tracks it already reads run on until its session closes.
-Unpublishing the returned `Publication` or ending the broadcast removes the
-name from this member's announcement. A name must not be empty or
+the room's members can read it. A member that leaves or expires loses the path
+at once, and what it reads there ends. `Room::unpublish(name)` or closing the
+broadcast removes the name from this member's announcement. A name must not be empty or
 contain a slash.
 
 `subscribe` dials the member if needed and reads the broadcast over the session

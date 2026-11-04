@@ -3,10 +3,14 @@
 `moq_ext_publisher::LocalBroadcast` wraps a `moq_net::broadcast::Producer`. It
 owns the catalog, a media clock, one video slot and one audio slot.
 `set_video`, `set_encoded_video` and `set_audio` fill a slot and replace what it
-held. `clear_video` and `clear_audio` empty it. `LocalBroadcast::new()` creates
-a broadcast that is published nowhere yet, and a transport reads it through
-`moq_net::Consume`. In iroh-live, `Live::publish(name, &broadcast)` publishes
-it at `live/<this node's id>/<name>`.
+held. `clear_video` and `clear_audio` empty it. A transport creates the
+broadcast it publishes, and `LocalBroadcast::new_in(producer)` (or
+`From<broadcast::Producer>`) fills that one, so readers get it without a copy.
+In iroh-live, `let broadcast: LocalBroadcast = live.publish(name)?` publishes
+one at `live/<this node's id>/<name>`. `LocalBroadcast::new()` creates one of
+its own, published nowhere, for a local preview or a test. Closing a
+`LocalBroadcast`, or dropping its last clone, closes the broadcast, which
+withdraws the publication.
 
 Encoding is upstream. `moq_video::encode` and `moq_audio::encode` own the
 codec, its thread and the catalog entry it writes. This crate adds a simulcast

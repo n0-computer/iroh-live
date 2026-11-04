@@ -10,7 +10,6 @@ This repository holds the layer that joins them.
 |---|---|
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions and relay links |
 | `moq-ext-access` | Access control: grants, session requests and audiences. No transport dependency |
-| `moq-ext-forward` | Serves a moq-net broadcast in one origin from a broadcast held elsewhere |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, endpoint setup, and the re-exports |
 | `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording |
@@ -58,8 +57,10 @@ this build speaks. `accept(alpn, handler)` mounts another protocol on it.
 `with_rooms()` mounts rooms' gossip that way, and widens the grant so members
 can publish their room broadcasts.
 
-`Live::publish(name, &broadcast)` publishes an `moq_ext_publisher::LocalBroadcast`
-at `live/<our id>/<name>` to everyone. `Live::ticket(name)` returns the
+`Live::publish(name)` creates a broadcast at `live/<our id>/<name>` in the
+route table, published to everyone, and returns it as an
+`moq_ext_publisher::LocalBroadcast` (or any type built from a
+`broadcast::Producer`). Peers read it without a copy. `Live::ticket(name)` returns the
 `BroadcastTicket` to share. `Live::subscribe(&ticket)` resolves the ticket's
 path over whichever link serves it and returns the `Subscription`.
 `Live::remote_broadcast(&subscription)` reads its media without waiting for the
@@ -74,11 +75,13 @@ The facade's error is `iroh_live::Error`: `Transport` wraps an
 through `live.moq()`.
 
 `irl call` and the Android demo share a one-to-one call convention. Each side
-offers a broadcast named `iroh_live::CALL` (`live/<id>/call`) to the other peer
-only, with an `Audience::Peers` of one, and subscribes to the other's. A node
+publishes one broadcast named `iroh_live::CALL` (`live/<id>/call`) with
+`Live::call`, visible to nobody, and its `CallOffer` rings a peer by adding it
+to the `Audience::Peers` set. Each side subscribes to the other's. A node
 learns it is called when a peer's `call` path appears in its route table
-(`Moq::origin`), and a hang-up withdraws the offer, which ends the other side's
-read. The session stays open.
+(`Moq::origin`), and a hang-up takes the peer out of the set, which retracts
+the path and ends the other side's read. The session stays open, and the
+broadcast keeps running for the next call.
 
 ## Conventions
 
