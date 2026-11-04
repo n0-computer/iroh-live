@@ -3,7 +3,6 @@
 //! Every printed identifier is a valid `--video` or `--audio` value for
 //! `irl publish`.
 
-#[cfg(feature = "playback")]
 use iroh_live::media::{audio, video};
 
 /// Runs the `devices` command.

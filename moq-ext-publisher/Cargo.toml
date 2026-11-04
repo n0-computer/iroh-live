@@ -37,8 +37,9 @@ default = []
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-ext-sources/capture", "moq-video/capture", "moq-audio/capture"]
 # Audio devices through PipeWire or PulseAudio instead of ALSA. Checked at
-# runtime, so a build with it still runs without either.
-sound-server = ["moq-ext-sources/sound-server", "moq-audio/pipewire", "moq-audio/pulseaudio"]
+# runtime, so a build with it still runs without either. Linux only; a no-op
+# elsewhere (see moq-ext-sources).
+sound-server = ["moq-ext-sources/sound-server"]
 # Echo cancellation: removes the output mix from the microphone.
 aec = ["capture", "moq-ext-sources/aec", "moq-audio/aec"]
 # Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.

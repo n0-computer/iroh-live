@@ -68,7 +68,7 @@ playback = ["media", "moq-ext-player/playback"]
 # ALSA compatibility plugin.
 sound-server = ["media", "moq-ext-publisher/sound-server", "moq-ext-sources/sound-server"]
 # Acoustic echo cancellation, for a call on a handset or a laptop speaker.
-aec = ["media", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-sources/aec"]
+aec = ["capture", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-sources/aec"]
 # Linux screen capture through xdg-desktop-portal and PipeWire.
 pipewire = ["media", "moq-ext-publisher/pipewire", "moq-ext-sources/pipewire"]
 # GPU rendering of decoded frames.

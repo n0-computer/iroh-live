@@ -287,9 +287,10 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) 
         echo_reference: echo.map(|output| std::sync::Arc::new(output.clone()) as _),
         ..MicrophoneConfig::default()
     };
-    let published = AudioSource::microphone(config)
-        .await
-        .and_then(|source| broadcast.set_audio(source, AudioEncoding::voice()));
+    let published = match AudioSource::microphone(config).await {
+        Ok(source) => broadcast.set_audio(source, AudioEncoding::voice()),
+        Err(err) => Err(err.into()),
+    };
     if let Err(err) = published {
         warn!("publishing without audio: {err:#}");
     }
@@ -490,8 +491,15 @@ async fn accept_one(
         let Some(update) = updates.next().await else {
             return Ok(());
         };
-        let caller = BroadcastTicket::from_path(update.prefix.as_str())
-            .filter(|ticket| update.kind.is_active() && ticket.name() == CALL);
+        let (announce, active) = match &update {
+            iroh_live::moq::net::announce::Event::End(announce) => (announce, false),
+            iroh_live::moq::net::announce::Event::Start(announce)
+            | iroh_live::moq::net::announce::Event::Update(announce)
+            | iroh_live::moq::net::announce::Event::Restart(announce)
+            | iroh_live::moq::net::announce::Event::Takeover { announce, .. } => (announce, true),
+        };
+        let caller = BroadcastTicket::from_path(announce.prefix.as_str())
+            .filter(|ticket| active && ticket.name() == CALL);
         if let Some(ticket) = caller.filter(|ticket| ticket.peer() != me) {
             break ticket.peer();
         }
