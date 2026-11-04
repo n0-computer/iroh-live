@@ -2,7 +2,10 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -90,6 +93,11 @@ pub struct Rooms {
     gossip: Gossip,
     /// Set once the gossip has shut down, so the router's shutdown does not repeat it.
     shut_down: Arc<OnceCell<()>>,
+    /// Set when [`shutdown`](Self::shutdown) starts.
+    ///
+    /// The rooms joined here read it, so the gossip map ending under them is
+    /// a clean stop and not a failure.
+    closing: Arc<AtomicBool>,
 }
 
 impl Rooms {
@@ -108,6 +116,7 @@ impl Rooms {
             moq: moq.clone(),
             gossip,
             shut_down: Arc::default(),
+            closing: Arc::default(),
         }
     }
 
@@ -124,6 +133,7 @@ impl Rooms {
     /// [`Room::leave`] first to tell the other members at once. Idempotent,
     /// and concurrent calls wait for the same shutdown.
     pub async fn shutdown(&self) {
+        self.closing.store(true, Ordering::Relaxed);
         self.shut_down
             .get_or_init(|| async {
                 if let Err(err) = self.gossip.shutdown().await {
@@ -185,6 +195,7 @@ impl Rooms {
             writer,
             peers: BTreeMap::new(),
             resync: None,
+            rooms_closing: self.closing.clone(),
         };
         let span = info_span!("room", topic = %topic.fmt_short(), me = %me.fmt_short());
         let task = tokio::spawn(actor.run(inbox).instrument(span));
@@ -470,7 +481,7 @@ impl Inner {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Announcement {
     peer: RoomPeer,
-    /// The member left; drop it without waiting for its lease to run out.
+    /// Whether the member left, so the others drop it before its lease runs out.
     left: bool,
 }
 
@@ -481,6 +492,8 @@ struct Actor {
     peers: BTreeMap<EndpointId, RoomPeer>,
     /// The members the replay after a resubscription has shown so far.
     resync: Option<BTreeSet<EndpointId>>,
+    /// Set once the [`Rooms`] this room belongs to shut down.
+    rooms_closing: Arc<AtomicBool>,
 }
 
 impl Drop for Actor {
@@ -497,7 +510,12 @@ impl Actor {
         // One writer, so announcements go out in the order they were decided.
         let desired = Watchable::new(self.announcement(false));
         let announcer = AbortOnDropHandle::new(tokio::spawn(
-            announce(self.writer.clone(), desired.watch()).in_current_span(),
+            announce(
+                self.writer.clone(),
+                desired.watch(),
+                self.rooms_closing.clone(),
+            )
+            .in_current_span(),
         ));
         let mut local_changed = self.inner.local_changed.watch();
         let mut display_name = self.inner.display_name.watch();
@@ -508,6 +526,9 @@ impl Actor {
             tokio::select! {
                 update = updates.next() => match update {
                     None => ended = true,
+                    Some(Err(err)) if self.closing() => {
+                        debug!(%err, "gossip map update failed while the rooms shut down");
+                    }
                     Some(Err(err)) => warn!(%err, "gossip map update failed"),
                     Some(Ok(item)) => {
                         resubscribes = 0;
@@ -529,6 +550,12 @@ impl Actor {
                 reply = inbox.recv() => break reply,
             }
             if ended {
+                // The gossip stopped under the map, which is how the rooms
+                // shut down a room nobody left.
+                if self.closing() {
+                    debug!("the rooms shut down, stopping the room");
+                    break None;
+                }
                 if resubscribes == MAP_RESUBSCRIBES {
                     warn!("the room's gossip map ended");
                     break None;
@@ -549,6 +576,11 @@ impl Actor {
         if let Some(reply) = leave {
             reply.send(()).ok();
         }
+    }
+
+    /// Returns whether the [`Rooms`] this room belongs to are shutting down.
+    fn closing(&self) -> bool {
+        self.rooms_closing.load(Ordering::Relaxed)
     }
 
     /// Subscribes to the gossip map: every entry there is now, then changes.
@@ -574,7 +606,7 @@ impl Actor {
             info!("leaving the room");
             let told = tokio::time::timeout(
                 LEAVE_STEP_TIMEOUT,
-                put(&self.writer, &self.announcement(true)),
+                put(&self.writer, &self.announcement(true), &self.rooms_closing),
             )
             .await;
             if told.is_err() {
@@ -708,11 +740,15 @@ impl Actor {
 }
 
 /// Writes `desired` whenever it changes, and every [`STATE_REFRESH`].
-async fn announce(writer: WriteScope, mut desired: n0_watcher::Direct<Announcement>) {
+async fn announce(
+    writer: WriteScope,
+    mut desired: n0_watcher::Direct<Announcement>,
+    rooms_closing: Arc<AtomicBool>,
+) {
     let mut refresh = tokio::time::interval(STATE_REFRESH);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        put(&writer, &desired.get()).await;
+        put(&writer, &desired.get(), &rooms_closing).await;
         tokio::select! {
             changed = desired.updated() => {
                 if changed.is_err() {
@@ -724,11 +760,17 @@ async fn announce(writer: WriteScope, mut desired: n0_watcher::Direct<Announceme
     }
 }
 
-/// Writes `state` under [`PEER_STATE_KEY`].
-async fn put(writer: &WriteScope, announcement: &Announcement) {
+/// Writes `announcement` under [`PEER_STATE_KEY`].
+///
+/// A failure while the rooms shut down is expected, and logs at DEBUG only.
+async fn put(writer: &WriteScope, announcement: &Announcement, rooms_closing: &AtomicBool) {
     let bytes = postcard::to_stdvec(announcement).expect("an announcement serializes");
     if let Err(err) = writer.put(PEER_STATE_KEY, bytes).await {
-        warn!(%err, "failed to write the announcement");
+        if rooms_closing.load(Ordering::Relaxed) {
+            debug!(%err, "could not write the announcement while the rooms shut down");
+        } else {
+            warn!(%err, "failed to write the announcement");
+        }
     }
 }
 
