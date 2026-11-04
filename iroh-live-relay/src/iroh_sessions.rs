@@ -148,10 +148,15 @@ pub fn browser_auth() -> moq_relay::auth::Config {
 }
 
 /// Returns the broadcast name a session asked for in its path, if any.
+///
+/// A URL carries the name percent-encoded, so `/my%20cam` asks for `my cam`.
+/// A name that does not decode to UTF-8 is none.
 pub(crate) fn requested_name(path: &str) -> Option<String> {
     let path = path.split('?').next().unwrap_or_default();
-    let name = path.trim_start_matches('/');
-    (!name.is_empty()).then(|| name.to_owned())
+    let name = percent_encoding::percent_decode_str(path.trim_start_matches('/'))
+        .decode_utf8()
+        .ok()?;
+    (!name.is_empty()).then(|| name.into_owned())
 }
 
 /// Returns what an iroh peer may publish into the relay.
@@ -212,5 +217,16 @@ mod tests {
         assert_eq!(requested_name("/abc?jwt=x").as_deref(), Some("abc"));
         assert_eq!(requested_name(""), None);
         assert_eq!(requested_name("/"), None);
+    }
+
+    #[test]
+    fn a_requested_name_is_percent_decoded() {
+        assert_eq!(requested_name("/my%20cam").as_deref(), Some("my cam"));
+        assert_eq!(
+            requested_name("/caf%C3%A9?jwt=x").as_deref(),
+            Some("caf\u{e9}")
+        );
+        assert_eq!(requested_name("/100%25").as_deref(), Some("100%"));
+        assert_eq!(requested_name("/%FF"), None);
     }
 }

@@ -4551,6 +4551,7 @@ dependencies = [
  "moq-transport-iroh",
  "n0-future",
  "n0-watcher",
+ "percent-encoding",
  "rustls",
  "serial_test",
  "tokio",
