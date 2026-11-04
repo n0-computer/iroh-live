@@ -24,6 +24,7 @@ use iroh_live::{
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
         VideoFormat, VideoFrames, VideoRendition, VideoRenditions as _, VideoSource,
     },
+    net::Timestamp,
 };
 use jni::{
     JNIEnv, JavaVM,
@@ -31,7 +32,6 @@ use jni::{
     sys::{jboolean, jint, jlong},
 };
 use moq_ext_media_android::{handle, renderer::AndroidRenderer};
-use moq_net::Timestamp;
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::task::AbortOnDropHandle;
@@ -500,11 +500,11 @@ async fn accept_one(
             return Ok(());
         };
         let (announce, active) = match &update {
-            iroh_live::node::net::announce::Event::End(announce) => (announce, false),
-            iroh_live::node::net::announce::Event::Start(announce)
-            | iroh_live::node::net::announce::Event::Update(announce)
-            | iroh_live::node::net::announce::Event::Restart(announce)
-            | iroh_live::node::net::announce::Event::Takeover { announce, .. } => (announce, true),
+            iroh_live::net::announce::Event::End(announce) => (announce, false),
+            iroh_live::net::announce::Event::Start(announce)
+            | iroh_live::net::announce::Event::Update(announce)
+            | iroh_live::net::announce::Event::Restart(announce)
+            | iroh_live::net::announce::Event::Takeover { announce, .. } => (announce, true),
         };
         let caller = BroadcastTicket::from_path(announce.prefix.as_str())
             .filter(|ticket| active && ticket.name() == CALL);

@@ -19,9 +19,10 @@ use iroh_live::media::{
     video::{Frame, FrameRate, Size, Surface},
 };
 use iroh_live::{
-    BroadcastTicket, Live, Reach, Subscription, media::RemoteBroadcast, node::LinkSample,
+    BroadcastTicket, Live, Reach, Subscription,
+    media::{Rate, RemoteBroadcast},
+    node::LinkSample,
 };
-use moq_net::bandwidth::Rate;
 use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, NodeId};
 use tracing::info;

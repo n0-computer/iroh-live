@@ -10,10 +10,9 @@
 use std::time::Duration;
 
 use iroh_live::media::{
-    VideoEncoding, VideoRendition,
+    Rate, VideoEncoding, VideoRendition,
     video::{self, Size},
 };
-use moq_net::bandwidth::Rate;
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 

@@ -257,7 +257,7 @@ use iroh::EndpointId;
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
     media::{LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video},
-    node::net::Pattern,
+    net::Pattern,
     node_config_with,
 };
 
@@ -380,7 +380,7 @@ use std::time::Duration;
 use iroh::EndpointId;
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
-    node::net::{Timescale, Timestamp, track},
+    net::{Timescale, Timestamp, track},
     paths,
 };
 

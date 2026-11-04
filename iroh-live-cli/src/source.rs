@@ -4,13 +4,12 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, MicrophoneConfig, VideoFormat,
+    AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, MicrophoneConfig, Rate, VideoFormat,
     VideoSource, audio,
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::media::{EncodedVideoSource, RpicamConfig};
-use moq_net::bandwidth::Rate;
 use n0_error::{Result, anyerr};
 #[cfg(not(feature = "aec"))]
 use tracing::warn;

@@ -16,8 +16,7 @@ use iroh_live::media::{
     RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
     video::{FrameRate, Size, decode},
 };
-use iroh_live::{BroadcastTicket, CALL, CallOffer, Live, Subscription};
-use moq_net::bandwidth::Rate;
+use iroh_live::{BroadcastTicket, CALL, CallOffer, Live, Subscription, media::Rate};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher as _;
 use tracing::{Instrument, info_span};

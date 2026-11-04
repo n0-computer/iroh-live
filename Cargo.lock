@@ -7619,7 +7619,6 @@ dependencies = [
  "khronos-egl",
  "libc",
  "linux-embedded-hal",
- "moq-net",
  "n0-error",
  "qrcode",
  "raw-window-handle",

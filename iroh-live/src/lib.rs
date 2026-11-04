@@ -3,7 +3,8 @@
 //! A [`Live`] node binds the [`Node`] transport to an iroh endpoint. It
 //! publishes broadcasts at `live/<its endpoint id>/<name>` and subscribes to
 //! other nodes' broadcasts over a direct session or an attached relay. The
-//! transport is re-exported as [`node`]. The `media` module gathers the media
+//! transport is re-exported as [`node`], and the moq-net it builds on as
+//! [`net`]. The `media` module gathers the media
 //! crates (sources, broadcasts, players, codecs), and `rooms` re-exports the
 //! rooms crate, each behind its feature.
 #![cfg_attr(
@@ -110,9 +111,12 @@ pub mod media {
     pub use moq_ext_sources::{
         AudioFormat, AudioSource, EncodedVideoSource, FrameSender, VideoFormat, VideoSource,
     };
+    pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
 }
 pub use iroh_live_node as node;
+/// The moq-net this crate builds against, as [`node::net`].
+pub use iroh_live_node::net;
 pub use iroh_live_node::{
     Audience, MoqPreset, Node, NodeConfig, Publication, Reach, Session, Subscription,
 };

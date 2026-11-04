@@ -8,10 +8,9 @@ use clap::Parser;
 use iroh::EndpointId;
 use iroh_live::{
     Live,
-    media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
+    media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
     node::RelayConfig,
 };
-use moq_net::bandwidth::Rate;
 use tracing::{debug, info, warn};
 
 use crate::epaper;

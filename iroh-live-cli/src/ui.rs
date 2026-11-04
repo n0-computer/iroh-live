@@ -291,7 +291,7 @@ impl Link {
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",
-                moq_ext_egui::format_bitrate(moq_net::bandwidth::Rate::from_bps(bps))
+                moq_ext_egui::format_bitrate(iroh_live::media::Rate::from_bps(bps))
             ));
         }
         lines
