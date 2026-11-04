@@ -198,9 +198,9 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
 pub enum LinkRole {
     /// A session with a peer.
     Direct,
-    /// A relay. `public` says whether it takes [`Audience::Everyone`] publications.
+    /// A moq relay.
     Relay {
-        /// Whether `Everyone` publications go to the relay.
+        /// Whether [`Audience::Everyone`] publications go to the relay.
         public: bool,
     },
 }
@@ -299,34 +299,34 @@ mod tests {
 
     #[test]
     fn visibility_follows_grant_audience_and_link() {
-        let g = Grant::everything();
+        let grant = Grant::everything();
         let everyone = AudienceKind::<String>::Everyone;
         let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
         let direct = LinkRole::Direct;
         let a = "a".to_string();
         let b = "b".to_string();
-        assert!(visible("p", &everyone, &g, direct, Some(&b)));
-        assert!(visible("p", &peers, &g, direct, Some(&a)));
-        assert!(!visible("p", &peers, &g, direct, Some(&b)));
-        assert!(!visible("p", &peers, &g, direct, None));
+        assert!(visible("p", &everyone, &grant, direct, Some(&b)));
+        assert!(visible("p", &peers, &grant, direct, Some(&a)));
+        assert!(!visible("p", &peers, &grant, direct, Some(&b)));
+        assert!(!visible("p", &peers, &grant, direct, None));
         assert!(!visible(
             "p",
             &everyone,
-            &g,
+            &grant,
             LinkRole::Relay { public: false },
             None
         ));
         assert!(visible(
             "p",
             &everyone,
-            &g,
+            &grant,
             LinkRole::Relay { public: true },
             None
         ));
         assert!(!visible(
             "p",
             &peers,
-            &g,
+            &grant,
             LinkRole::Relay { public: true },
             Some(&a)
         ));
