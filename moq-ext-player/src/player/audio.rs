@@ -33,7 +33,7 @@ pub(crate) struct Inputs {
     pub stats: PlaybackRecorder,
 }
 
-/// Plays the broadcast's audio until the player is dropped.
+/// Plays the broadcast's audio until the player is dropped or the broadcast closes.
 ///
 /// Reopens on a new catalog or a new route. Audio then follows a publisher
 /// that restarts its microphone, and a subscription that changes path.
@@ -86,9 +86,11 @@ pub(crate) async fn run(inputs: Inputs) {
                         ))
                     }
                     // The session closed while the track opened. The epoch
-                    // or the catalog changes next, and nothing failed.
+                    // or the catalog changes next, or the broadcast closes,
+                    // and nothing failed.
                     Err(err @ Error::Closed { .. }) => {
                         debug!(error = %err, rendition = %name, "audio closed before it opened");
+                        send_if_changed(&status, |status| status.audio = SlotState::Ended);
                         None
                     }
                     Err(err) => {
@@ -111,6 +113,19 @@ pub(crate) async fn run(inputs: Inputs) {
         loop {
             let reading = reader.is_some();
             tokio::select! {
+                // The task holds the broadcast, so the watches below never
+                // close, and only this tells it that nothing comes back.
+                () = broadcast.closed() => {
+                    debug!("the broadcast closed, so the audio is over");
+                    drop(reader);
+                    stats.audio.update(|audio| *audio = None);
+                    send_if_changed(&status, |status| {
+                        if matches!(status.audio, SlotState::Running | SlotState::Starting) {
+                            status.audio = SlotState::Ended;
+                        }
+                    });
+                    return;
+                }
                 result = async { (&mut reader.as_mut().expect("guarded").0).await }, if reading => {
                     reader = None;
                     stats.audio.update(|audio| *audio = None);
