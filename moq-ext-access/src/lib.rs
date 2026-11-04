@@ -132,6 +132,10 @@ pub enum Audience<P: PeerId> {
     Peers(n0_watcher::Watchable<BTreeSet<P>>),
 }
 
+#[allow(
+    clippy::derivable_impls,
+    reason = "a derived Default would require `P: Default`, which peer ids such as iroh's EndpointId are not"
+)]
 impl<P: PeerId> Default for Audience<P> {
     fn default() -> Self {
         Self::Everyone
@@ -151,10 +155,7 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
     fn from(audience: &Audience<P>) -> Self {
         match audience {
             Audience::Everyone => Self::Everyone,
-            Audience::Peers(peers) => {
-                use n0_watcher::Watcher;
-                Self::Peers(peers.get())
-            }
+            Audience::Peers(peers) => Self::Peers(peers.get()),
         }
     }
 }

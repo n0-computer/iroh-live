@@ -1,9 +1,6 @@
 //! Publications: a broadcast placed at a path, before an audience.
 
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Weak},
-};
+use std::sync::{Arc, Weak};
 
 use iroh::EndpointId;
 use moq_net::{Instance, Path, broadcast};
