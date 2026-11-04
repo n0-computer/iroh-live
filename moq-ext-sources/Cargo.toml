@@ -26,8 +26,6 @@ tracing = "0.1.44"
 
 # Reads audio files. moq-audio has no container reader.
 symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav"], optional = true }
-# moq-audio's sound-server backends on Linux, nothing elsewhere.
-moq-ext-sound-server = { workspace = true, optional = true }
 
 [dev-dependencies]
 moq-mux = { workspace = true }
@@ -42,9 +40,9 @@ file = ["dep:symphonia"]
 # Camera, screen and microphone capture. Off for a build that only publishes
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-video/capture", "moq-audio/capture"]
-# Audio devices through PipeWire or PulseAudio instead of ALSA. Linux only; a
-# no-op elsewhere.
-sound-server = ["dep:moq-ext-sound-server"]
+# Audio devices through PipeWire or PulseAudio instead of ALSA. Does nothing
+# off Linux and the BSDs.
+sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
 # Echo cancellation for the microphone.
 aec = ["capture", "moq-audio/aec"]
 # Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.
