@@ -5583,6 +5583,7 @@ dependencies = [
 name = "moq-ext-forward"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "moq-net",
  "n0-future",
  "tokio",

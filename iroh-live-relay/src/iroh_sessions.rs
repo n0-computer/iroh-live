@@ -83,12 +83,16 @@ impl IrohSessions {
             .origin
             .scope("", &relay_grant(remote).publish)
             .map_err(AcceptError::from_err)?;
-        let (session, driver) = handshake
-            .with_publisher(self.cluster.origin.consume())
-            .with_subscriber(publish)
-            .ok()
-            .await
-            .map_err(AcceptError::from_err)?;
+        let (session, driver) = tokio::time::timeout(
+            iroh_moq::HANDSHAKE_TIMEOUT,
+            handshake
+                .with_publisher(self.cluster.origin.consume())
+                .with_subscriber(publish)
+                .ok(),
+        )
+        .await
+        .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
+        .map_err(AcceptError::from_err)?;
         info!(%path, "iroh client admitted, publishing under its own id only");
 
         // Held while the session runs.
@@ -171,6 +175,22 @@ mod tests {
         assert!(matches("hello"));
         assert!(!matches("live/someone/cam"));
         assert!(!matches("rooms/topic/someone/cam"));
+    }
+
+    /// Pull mirrors sit at the ticket's spelling, which always has a `/`
+    /// between the endpoint id and the name, so no browser can publish one.
+    #[test]
+    fn a_browser_cannot_publish_over_a_pull_mirror() {
+        let ticket = iroh_live::BroadcastTicket::new(
+            iroh::SecretKey::from_bytes(&[7; 32]).public(),
+            "cam".to_owned(),
+        );
+        let auth = browser_auth();
+        let matches = |path: &str| auth.public_publish.iter().any(|p| p.matches(path));
+        let full = ticket.to_string();
+        let bare = full.strip_prefix("iroh-live:").unwrap();
+        assert!(!matches(&full));
+        assert!(!matches(bare));
     }
 
     #[test]

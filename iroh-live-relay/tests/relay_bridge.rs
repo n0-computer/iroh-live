@@ -803,6 +803,52 @@ async fn pull_survives_a_reader_holding_no_guard() {
     pub_ep.close().await;
 }
 
+/// A pull outlives its publisher re-publishing the broadcast, while a session holds it.
+#[tokio::test]
+#[serial]
+async fn a_pull_survives_the_publisher_republishing() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (pub_ep, publisher, broadcast, ticket) = start_publisher("republished").await;
+    let local_name = ticket.to_string();
+
+    let pull_state =
+        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+            .with_linger(PULL_LINGER);
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+    assert!(wait_for_broadcast(&relay.cluster, &local_name, true).await);
+
+    drop(broadcast);
+    let again = publish_video(&publisher, "republished");
+
+    // The held pull serves the new broadcast, not an orphan of the old one.
+    let mut served = false;
+    for _ in 0..20 {
+        if wait_for_broadcast(&relay.cluster, &local_name, true).await {
+            let mirrored = routed_broadcast(&relay.cluster.origin.consume(), local_name.as_str())
+                .await
+                .expect("mirrored broadcast");
+            let track = mirrored.track("catalog.json").expect("track");
+            if let Ok(Ok(_)) =
+                tokio::time::timeout(Duration::from_secs(2), track.subscribe(None)).await
+            {
+                served = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(served, "the pull did not follow the re-published broadcast");
+
+    drop(guard);
+    drop(again);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+}
+
 /// A relay link publishes the node's public broadcasts and consumes the relay's.
 #[tokio::test]
 #[serial]

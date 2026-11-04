@@ -13,6 +13,7 @@
 
 use std::{
     collections::HashMap,
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -30,6 +31,22 @@ use tracing::{debug, info, warn};
 ///
 /// Long enough for a page reload to reuse the connection.
 const DEFAULT_LINGER: Duration = Duration::from_secs(10);
+
+/// How long to wait for the publisher's broadcast to resolve.
+const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// First wait before mirroring a broadcast again after it ended. Doubles per failure.
+const REMIRROR_BACKOFF: Duration = Duration::from_millis(500);
+
+/// How many times in a row mirroring again may fail before the pull retires.
+const MAX_REMIRRORS: u32 = 5;
+
+/// A pulled broadcast and the mirror serving it from the cluster.
+struct Mirrored {
+    subscription: Subscription,
+    mirror: origin::Publication,
+    copy: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
 
 /// Shared state for pull operations.
 #[derive(Clone, derive_more::Debug)]
@@ -210,11 +227,29 @@ impl PullState {
             broadcast = %ticket.name(),
             "pulling remote broadcast"
         );
-        let subscription = self
-            .moq
-            .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
-            .await
-            .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))?;
+        let mirrored = self.mirror(ticket, local_name).await?;
+        tokio::spawn(self.clone().hold(
+            ticket.clone(),
+            local_name.to_owned(),
+            Arc::clone(pull),
+            mirrored,
+            publisher,
+        ));
+        Ok(())
+    }
+
+    /// Resolves the ticket's broadcast and mirrors it into the cluster.
+    async fn mirror(&self, ticket: &BroadcastTicket, local_name: &str) -> anyhow::Result<Mirrored> {
+        // A publisher that never announces the path to us would keep the
+        // subscription waiting forever.
+        let subscription = tokio::time::timeout(
+            SUBSCRIBE_TIMEOUT,
+            self.moq
+                .subscribe(ticket.path(), Reach::Direct(ticket.peer())),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out subscribing to the remote"))?
+        .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))?;
         // The mirror is a broadcast of the cluster's own, whose tracks are
         // copied from the subscription as readers ask for them.
         let mirror = self
@@ -224,7 +259,10 @@ impl PullState {
             .map_err(|err| anyhow::anyhow!("failed to mirror {local_name}: {err}"))?;
         // Registered before the announcement, so no reader asks for a track
         // while nothing serves it.
-        let copy = iroh_moq::forward::forward(subscription.as_moq(), mirror.broadcast().clone());
+        let copy = Box::pin(iroh_moq::forward::forward(
+            subscription.as_moq(),
+            mirror.broadcast().clone(),
+        ));
         mirror
             .announce(origin::Route::default())
             .map_err(|err| anyhow::anyhow!("failed to announce {local_name}: {err}"))?;
@@ -234,45 +272,79 @@ impl PullState {
             path = %subscription.path(),
             "remote broadcast available locally"
         );
-        tokio::spawn(self.clone().hold(
-            local_name.to_owned(),
-            Arc::clone(pull),
+        Ok(Mirrored {
             subscription,
             mirror,
             copy,
-            publisher,
-        ));
-        Ok(())
+        })
     }
 
-    /// Serves the mirror until either end is done with it, then retracts it.
+    /// Serves the mirror until nothing wants it, then retracts it.
+    ///
+    /// When the publisher's broadcast ends while sessions still want it (it
+    /// re-published, or moved to another route), the mirror is rebuilt from a
+    /// fresh resolution. The pull retires once nobody wants it, or once
+    /// resolving fails [`MAX_REMIRRORS`] times in a row.
     async fn hold(
         self,
+        ticket: BroadcastTicket,
         local_name: String,
         pull: Arc<Pull>,
-        subscription: Subscription,
-        mirror: origin::Publication,
-        copy: impl Future<Output = ()>,
+        mut current: Mirrored,
         publisher: PublisherClaim,
     ) {
-        let demand = mirror.broadcast().demand();
-        tokio::select! {
-            () = subscription.closed() => {
-                info!(local_name = %local_name, "the publisher ended the pulled broadcast");
-                self.retire(&local_name, &pull);
+        loop {
+            let demand = current.mirror.broadcast().demand();
+            let ended = tokio::select! {
+                () = current.subscription.closed() => {
+                    info!(local_name = %local_name, "the publisher ended the pulled broadcast");
+                    true
+                }
+                () = self.wait_idle(&local_name, &pull, demand.clone()) => {
+                    info!(local_name = %local_name, "pull went idle, retracting the mirror");
+                    false
+                }
+                () = &mut current.copy => {
+                    warn!(local_name = %local_name, "the pulled broadcast closed");
+                    true
+                }
+            };
+            let wanted = pull.claimed() || demand.wanted();
+            // Retracts the mirror.
+            drop(current);
+            if !ended {
+                break;
             }
-            () = self.wait_idle(&local_name, &pull, demand) => {
-                info!(local_name = %local_name, "pull went idle, retracting the mirror");
-            }
-            () = copy => {
-                warn!(local_name = %local_name, "the pulled broadcast closed");
+            if !wanted {
                 self.retire(&local_name, &pull);
+                break;
+            }
+            match self.remirror(&ticket, &local_name).await {
+                Some(next) => current = next,
+                None => {
+                    self.retire(&local_name, &pull);
+                    break;
+                }
             }
         }
-        // Retracts the mirror, and closes the publisher's session if this was
-        // its last pull.
-        drop(mirror);
+        // Closes the publisher's session if this was its last pull.
         drop(publisher);
+    }
+
+    /// Mirrors the ticket's broadcast again, backing off between attempts.
+    async fn remirror(&self, ticket: &BroadcastTicket, local_name: &str) -> Option<Mirrored> {
+        let mut backoff = REMIRROR_BACKOFF;
+        for attempt in 1..=MAX_REMIRRORS {
+            tokio::time::sleep(backoff).await;
+            match self.mirror(ticket, local_name).await {
+                Ok(next) => return Some(next),
+                Err(err) => {
+                    warn!(local_name = %local_name, attempt, %err, "could not mirror the pull again");
+                    backoff = (backoff * 2).min(Duration::from_secs(8));
+                }
+            }
+        }
+        None
     }
 
     /// Waits until the pull has nothing left to serve, then retires its entry.

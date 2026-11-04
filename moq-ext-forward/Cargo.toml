@@ -13,5 +13,9 @@ workspace = true
 [dependencies]
 moq-net = { workspace = true }
 n0-future = "0.3.2"
-tokio = { version = "1.53.1", features = ["macros"] }
+tokio = { version = "1.53.1", features = ["macros", "time"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+bytes = "1"
+tokio = { version = "1.53.1", features = ["full"] }
