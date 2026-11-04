@@ -36,6 +36,7 @@ pub struct Grant {
 
 impl Grant {
     /// Returns a grant that allows everything in both directions.
+    #[must_use]
     pub fn everything() -> Self {
         Self {
             subscribe: Patterns::from(Pattern::all()),
@@ -44,6 +45,7 @@ impl Grant {
     }
 
     /// Returns a grant to subscribe to everything and publish nothing.
+    #[must_use]
     pub fn subscribe_only() -> Self {
         Self {
             subscribe: Patterns::from(Pattern::all()),
@@ -55,6 +57,7 @@ impl Grant {
     ///
     /// With a pattern that names the peer, such as `live/<peer id>/**`, no peer
     /// can publish at another's paths.
+    #[must_use]
     pub fn publish_under(publish: impl Into<Patterns>) -> Self {
         Self {
             subscribe: Patterns::from(Pattern::all()),
@@ -63,11 +66,13 @@ impl Grant {
     }
 
     /// Reports whether the peer may subscribe to `path`.
+    #[must_use]
     pub fn allows_subscribe(&self, path: &str) -> bool {
         self.subscribe.matches(path)
     }
 
     /// Reports whether the peer may publish `path`.
+    #[must_use]
     pub fn allows_publish(&self, path: &str) -> bool {
         self.publish.matches(path)
     }
@@ -83,6 +88,7 @@ pub struct SessionRequest {
 
 impl SessionRequest {
     /// Parses a request target, `/<path>?<query>`, and its headers.
+    #[must_use]
     pub fn new(target: &str, headers: Vec<(String, String)>) -> Self {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let query = url::form_urlencoded::parse(query.as_bytes())
@@ -98,11 +104,13 @@ impl SessionRequest {
     /// Returns the request path, without its query.
     ///
     /// The setup path on a raw session, the CONNECT path on an HTTP/3 one.
+    #[must_use]
     pub fn path(&self) -> &str {
         &self.path
     }
 
     /// Returns a query parameter of the request, such as `jwt`.
+    #[must_use]
     pub fn query(&self, key: &str) -> Option<&str> {
         self.query
             .iter()
@@ -113,6 +121,7 @@ impl SessionRequest {
     /// Returns an HTTP/3 CONNECT header, matched case-insensitively.
     ///
     /// Always `None` on raw sessions.
+    #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -179,6 +188,7 @@ pub enum LinkRole {
 /// the link. Relays see `Everyone` publications only when `public`, and never a
 /// `Peers` one, which a relay would forward to anyone. A direct link is in a
 /// `Peers` audience when its `remote` is in the set.
+#[must_use]
 pub fn visible<P: PeerId>(
     path: &str,
     audience: &AudienceKind<P>,

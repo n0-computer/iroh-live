@@ -1,7 +1,7 @@
 //! Video views for egui, on top of [`moq_ext_player`].
 //!
 //! The views draw decoded frames through the `wgpu` renderer in
-//! `moq_ext_player`. They need an [`egui_wgpu::RenderState`]. A view without
+//! [`moq_video::render`]. They need an [`egui_wgpu::RenderState`]. A view without
 //! one shows a black placeholder.
 //!
 //! This draws a player's video:
@@ -34,6 +34,7 @@ pub mod overlay;
 
 pub use egui_wgpu;
 use moq_ext_player::VideoFrames;
+use tracing::{debug, info, warn};
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
 pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {
@@ -47,8 +48,7 @@ pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {
     }
 }
 
-/// The `wgpu` crate the renderer links, re-exported from
-/// [`moq_video::render`].
+/// The `wgpu` crate the renderer links.
 ///
 /// Use it to name `wgpu` types, so they always match the renderer's version.
 pub use moq_video::render::wgpu;
@@ -143,7 +143,7 @@ impl FrameView {
     ) -> Self {
         let renderer = render_state.and_then(|rs| {
             EguiVideoRenderer::new(rs)
-                .inspect_err(|err| tracing::warn!(error = %err, "wgpu video renderer init failed"))
+                .inspect_err(|err| warn!(error = %err, "wgpu video renderer init failed"))
                 .ok()
         });
         let placeholder = ctx.load_texture(
@@ -170,7 +170,7 @@ impl FrameView {
             Ok(()) => self.failing = false,
             Err(err) if !self.failing => {
                 self.failing = true;
-                tracing::warn!(error = %err, "video render failed, keeping the last picture");
+                warn!(error = %err, "video render failed, keeping the last picture");
             }
             Err(_) => {}
         }
@@ -196,8 +196,7 @@ impl FrameView {
 pub struct VideoView {
     frames: Option<VideoFrames>,
     frame_view: FrameView,
-    /// Kept so [`set_frames`](Self::set_frames) can wake the window for the new
-    /// stream.
+    /// The context [`set_frames`](Self::set_frames) wakes for a new stream.
     #[debug(skip)]
     ctx: egui::Context,
     /// Wakes the window on each frame. Dropping it stops the task.
@@ -328,7 +327,7 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     if let Some(requested) = wgpu::Backends::from_env()
         && !requested.contains(wgpu::Backends::VULKAN)
     {
-        tracing::info!(
+        info!(
             ?requested,
             "WGPU_BACKEND excludes Vulkan, so the DMA-BUF import path is not used",
         );
@@ -346,7 +345,7 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     })) {
         Ok(adapter) => adapter,
         Err(err) => {
-            tracing::warn!(error = %err, "no Vulkan adapter available, letting egui pick one");
+            warn!(error = %err, "no Vulkan adapter available, letting egui pick one");
             return adapter_limits_config();
         }
     };
@@ -355,7 +354,7 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     let required_features = if adapter.features().contains(dma_buf) {
         dma_buf
     } else {
-        tracing::debug!(
+        debug!(
             "adapter has no DMA-BUF external memory support; \
              video rendering will use the CPU-upload fallback"
         );
@@ -367,7 +366,7 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     ) {
         Ok(pair) => pair,
         Err(err) => {
-            tracing::warn!(error = %err, "wgpu device request failed, letting egui build one");
+            warn!(error = %err, "wgpu device request failed, letting egui build one");
             return adapter_limits_config();
         }
     };

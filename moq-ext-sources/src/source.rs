@@ -310,8 +310,7 @@ pub struct EncodedVideoSource {
     guard: Option<Box<dyn std::any::Any + Send>>,
 }
 
-/// What an [`EncodedVideoSource`] is made of, as [`EncodedVideoSource::into_parts`]
-/// returns it.
+/// The parts of an [`EncodedVideoSource`], as [`EncodedVideoSource::into_parts`] returns them.
 pub type EncodedParts = (
     n0_future::boxed::BoxStream<bytes::Bytes>,
     Option<Box<dyn std::any::Any + Send>>,
@@ -330,9 +329,10 @@ impl EncodedVideoSource {
         }
     }
 
-    /// Splits the source into its byte stream and the guard that keeps the
-    /// producer of the bytes alive, such as a subprocess. Drop the guard to
-    /// stop the producer.
+    /// Splits the source into its byte stream and a guard.
+    ///
+    /// The guard keeps the producer of the bytes alive, such as a subprocess.
+    /// Drop the guard to stop the producer.
     pub fn into_parts(self) -> EncodedParts {
         (self.bytes, self.guard)
     }

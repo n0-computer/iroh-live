@@ -60,8 +60,9 @@ let player = live
 
 `publish` puts the broadcast at `rooms/<topic>/<this member>/<name>`, and only
 the room's members can read it. A member that leaves or expires loses the
-path, though tracks it already reads run on until its session closes. Unpublishing the returned `Publication` or ending the broadcast
-removes the name from this member's announcement. A name must not be empty or
+path, though tracks it already reads run on until its session closes.
+Unpublishing the returned `Publication` or ending the broadcast removes the
+name from this member's announcement. A name must not be empty or
 contain a slash.
 
 `subscribe` dials the member if needed and reads the broadcast over the session

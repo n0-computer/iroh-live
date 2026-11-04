@@ -93,15 +93,18 @@ pub struct DebugOverlay {
     /// Enabled categories in bar order, each with whether its panel is open.
     categories: Vec<(StatCategory, bool)>,
     history: History,
-    /// Transport details such as path kind and address. The first line joins
-    /// the NET summary.
+    /// Transport details such as path kind and address.
+    ///
+    /// The first line joins the NET summary.
     link: Vec<String>,
     /// Seconds the paused timeline is scrolled back from `timeline_paused`.
     timeline_scroll: f32,
     /// When the timeline was paused, or `None` while it follows the live edge.
     timeline_paused: Option<Instant>,
-    /// Salt for this overlay's interaction ids. Without it, overlays on
-    /// several tiles would share ids and highlight together on hover.
+    /// Salt for this overlay's interaction ids.
+    ///
+    /// Without it, overlays on several tiles would share ids and highlight
+    /// together on hover.
     salt: egui::Id,
 }
 
@@ -298,8 +301,9 @@ impl DebugOverlay {
         }
     }
 
-    /// Paints one detail panel, with a sparkline beside each line that has at
-    /// least two points of history.
+    /// Paints one detail panel.
+    ///
+    /// Each line with at least two points of history gets a sparkline.
     fn paint_panel(
         &self,
         painter: &egui::Painter,
@@ -407,8 +411,9 @@ struct Series {
 }
 
 impl History {
-    /// Appends the current value of every plotted line, at most once per
-    /// [`SAMPLE_INTERVAL`].
+    /// Appends the current value of every plotted line.
+    ///
+    /// Records at most once per [`SAMPLE_INTERVAL`].
     fn record(&mut self, sections: &[Section], now: Instant) {
         if self
             .last_sample
@@ -442,8 +447,9 @@ impl History {
         self.series.get(key).map(|series| &series.values)
     }
 
-    /// Returns the recorded points of `key` with when each was recorded,
-    /// oldest first.
+    /// Returns the recorded points of `key`, oldest first.
+    ///
+    /// Each point comes with the time it was recorded.
     fn timed(&self, key: &str) -> Vec<(Instant, f64)> {
         self.series
             .get(key)
@@ -534,8 +540,9 @@ fn mode_text(mode: &RenditionMode) -> String {
     }
 }
 
-/// Builds a player's NET section from the last network sample and the link
-/// details.
+/// Builds a player's NET section.
+///
+/// It shows the last network sample and the link details.
 fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
     let mut parts: Vec<String> = link.first().cloned().into_iter().collect();
     let mut lines: Vec<Line> = link.iter().map(|line| Line::info(line.clone())).collect();
@@ -811,8 +818,9 @@ fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> Section {
     Section::new(StatCategory::Capture, parts, lines)
 }
 
-/// Builds the NET section of a broadcast: the encoded video it sends, summed
-/// over its renditions.
+/// Builds the NET section of a broadcast.
+///
+/// It shows the encoded video the broadcast sends, summed over its renditions.
 fn net_publish(stats: &PublishStats) -> Section {
     let rates: Vec<u64> = stats
         .renditions
@@ -915,8 +923,9 @@ fn time_playback(timeline: &[FrameTiming]) -> Section {
 /// Seconds of history the timeline spans.
 const TIMELINE_WINDOW_SECS: f32 = 10.0;
 
-/// How far back the paused timeline scrolls, in seconds: about as far as the
-/// recorded history reaches.
+/// How far back the paused timeline scrolls, in seconds.
+///
+/// About as far as the recorded history reaches.
 const TIMELINE_SCROLL_MAX: f32 = 12.0;
 const HOLD_LANE_H: f32 = 36.0;
 const VIDEO_LANE_H: f32 = 20.0;

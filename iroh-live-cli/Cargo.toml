@@ -18,7 +18,7 @@ dirs = "7"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 hang = { workspace = true }
 iroh = { workspace = true }
-iroh-live = { workspace = true, features = ["capture", "render", "rooms", "record"] }
+iroh-live = { workspace = true, features = ["capture", "file", "render", "rooms", "record"] }
 moq-net = { workspace = true }
 iroh-live-egui = { workspace = true }
 moq-mux = { workspace = true }

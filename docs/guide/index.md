@@ -83,7 +83,7 @@ A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
 use iroh_live::{
-    Live,
+    EndpointOptions, Live,
     media::{AudioTarget, PlayerConfig, audio::playback::Engine},
 };
 

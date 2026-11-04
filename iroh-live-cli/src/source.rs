@@ -12,6 +12,8 @@ use iroh_live::media::{
 use iroh_live::media::{EncodedVideoSource, RpicamConfig};
 use moq_net::bandwidth::Rate;
 use n0_error::{Result, anyerr};
+#[cfg(not(feature = "aec"))]
+use tracing::warn;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use crate::{args::VideoCodecArg, backend::Backend, source_spec::RpicamMode};
@@ -330,7 +332,7 @@ pub fn microphone_config(id: Option<String>, output: Option<&AudioTarget>) -> Mi
         // A null output plays nothing, so it has no echo.
         #[cfg(not(feature = "aec"))]
         if !output.is_null() {
-            tracing::warn!(
+            warn!(
                 "this build has no echo cancellation, so the other side may hear itself; \
                  build with the `aec` feature to cancel it"
             );

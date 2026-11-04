@@ -60,6 +60,8 @@ record = ["media", "moq-ext-player/record"]
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.
 capture = ["media", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
+# Decoding WAV and MP3 files into an `AudioSource`.
+file = ["media", "moq-ext-sources/file"]
 # Speaker output.
 playback = ["media", "moq-ext-player/playback"]
 # Reach audio devices through PipeWire or PulseAudio rather than through their

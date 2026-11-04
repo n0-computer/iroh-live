@@ -40,12 +40,11 @@ Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 `cargo make cross-build-aarch64 -- <cargo args>`. See
 [cross/README.md](cross/README.md).
 
-## The patch block
+## Working against a local moq checkout
 
-`Cargo.toml` patches the moq crates, and the comment above its
-`[patch.crates-io]` block says why and when the block can go. `Cargo.lock` pins
-the revision. To work against a local moq checkout, point the block at
-`../moq/rs/<crate>` and do not commit that change.
+The workspace builds the moq crates from the revision pinned in the root
+`Cargo.toml`. To try a local checkout, add a `[patch]` block for the moq
+repository that points at `../moq/rs/<crate>`. Do not commit it.
 
 ## Commits
 

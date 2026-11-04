@@ -48,10 +48,6 @@ walks through a publisher and a subscriber, and
 [`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs) is a complete
 publisher.
 
-The workspace patches the moq crates with one fix for building `moq-video` on
-Windows, and [Cargo.toml](Cargo.toml) says why. To build for Windows
-downstream, copy its `[patch.crates-io]` block.
-
 ## Crates
 
 | Crate | Description |
@@ -59,6 +55,9 @@ downstream, copy its `[patch.crates-io]` block.
 | [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and re-exports of the crates below |
 | [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, and grants |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
+| [`moq-ext-access`](moq-ext-access) | Access control: grants, session requests, and who sees a publication. No iroh dependency |
+| [`moq-ext-forward`](moq-ext-forward) | Serves a moq-net broadcast in one origin from a broadcast held elsewhere |
+| [`moq-ext-adaptive`](moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines |
 | [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording. No iroh dependency |
 | [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |
 | [`moq-ext-sources`](moq-ext-sources) | Video and audio sources: test pattern, files, capture, push senders |
@@ -101,10 +100,10 @@ Codecs need no system libraries. Device access and graphics do, and
 [Getting started](docs/guide/index.md#system-dependencies) lists them.
 
 Every codec compiles upstream, so there are no per-codec features. The
-features gate devices and graphics. `moq-ext-publisher` and `moq-ext-player` define them,
-and `iroh-live/Cargo.toml` lists them. `iroh-live`
-passes them through and has no default features. `full` turns on `media`,
-`capture`, `render`, `sound-server`, and `record`. `irl` also turns on
+features gate devices and graphics. `moq-ext-publisher` and `moq-ext-player`
+define them, and `iroh-live/Cargo.toml` lists them. `iroh-live` passes them
+through and has no default features. `full` turns on `media`, `capture`,
+`render`, `sound-server`, and `record`. `irl` also turns on `file`,
 `playback` and `aec`. `media` turns the media stack on, and each device
 feature implies it. `rooms` re-exports `iroh-live-rooms` and adds
 `LiveBuilder::with_rooms`.

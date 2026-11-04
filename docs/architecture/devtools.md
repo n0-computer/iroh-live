@@ -1,13 +1,15 @@
 # Instrumentation and tests
 
 Two pieces show what a running pipeline does: statistics snapshots in
-`moq-ext-player`, `moq-ext-publisher` and an overlay in `iroh-live-egui` that draws them.
+`moq-ext-player` and `moq-ext-publisher`, and an overlay in `iroh-live-egui`
+that draws them.
 
 ## Metrics
 
 `LocalBroadcast::stats()` and `Player::stats()` return plain values,
 `PublishStats` and `PlaybackStats`, cheap enough to read on every redraw. A
-snapshot has current values only. The code is in `moq-ext-player/src/stats.rs` and `moq-ext-publisher/src/stats.rs`.
+snapshot has current values only. The code is in `moq-ext-player/src/stats.rs`
+and `moq-ext-publisher/src/stats.rs`.
 
 `PublishStats` has the source's frame rate, one `EncodeStats` per video
 rendition, and an `AudioEncodeStats`. `EncodeStats` has the encoder backend,

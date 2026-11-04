@@ -70,9 +70,10 @@ while let Some(frame) = frames.next().await {
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
 //! | [`EndpointOptions::bind`] | yes | nothing is bound |
-//! | [`Live::subscribe`] | yes | abandons the wait; a dial it started continues for other callers |
-//! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
+//! | [`Live::subscribe`] | yes | abandons the wait, and a dial it started continues for other callers |
+//! | [`Live::subscribe_path`] | yes | as [`Live::subscribe`] |
 //! | [`Live::answer`] | yes | abandons the wait |
+//! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
 //! | [`Live::shutdown`] | no, idempotent | call again to finish |
 //!
 //! `media`, [`moq`] and `rooms` list their own futures.
@@ -80,12 +81,12 @@ while let Some(frame) = frames.next().await {
 //!
 //! # Features
 //!
-//! No feature is on by default; `full` turns on `media`, `capture`, `render`,
+//! No feature is on by default. `full` turns on `media`, `capture`, `render`,
 //! `record` and `sound-server`. `media` adds the `media` module and
-//! `Live::remote_broadcast`. Without it the crate
-//! is the `live/` layout only, as the relay uses it. `playback`, `aec`,
-//! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
-//! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
+//! `Live::remote_broadcast`. Without it the crate is the `live/` layout only,
+//! as the relay uses it. `playback`, `aec`, `pipewire`, `vaapi`, `nvidia`,
+//! `v4l2` and `rpicam` add devices and codecs, and imply `media`. `rooms`
+//! re-exports `iroh-live-rooms` and adds `LiveBuilder::with_rooms`.
 
 mod endpoint;
 mod error;

@@ -9,19 +9,22 @@ This repository holds the layer that joins them.
 | Crate | What it is |
 |---|---|
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions and relay links |
+| `moq-ext-access` | Access control: grants, session requests and audiences. No transport dependency |
+| `moq-ext-forward` | Serves a moq-net broadcast in one origin from a broadcast held elsewhere |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, endpoint setup, and the re-exports |
 | `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording |
 | `moq-ext-publisher` | A broadcast that encodes sources into renditions |
-| `moq-ext-sources` | Video and audio sources |
+| `moq-ext-adaptive` | Rendition choice and decoder handover as pure state machines |
+| `moq-ext-sources` | Video and audio sources: test pattern, files, capture, push senders |
 | `moq-ext-media-core` | The error, slot state and stats helpers the two above share |
 | `iroh-live-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
 | `iroh-live-media-android` | The EGL renderer and JNI handle helpers for Android |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-`moq-ext-player` and `moq-ext-publisher` have no iroh dependency, and neither depends on the other. A transport publishes a
-`LocalBroadcast` by reading it through `moq_net::Consume`, and builds a
+`moq-ext-player` and `moq-ext-publisher` have no iroh dependency, and neither
+depends on the other. A transport publishes a `LocalBroadcast` by reading it through `moq_net::Consume`, and builds a
 `RemoteBroadcast` from a route table with `from_origin` or `from_resolved`.
 `iroh-live-rooms` has no media dependency. `iroh-live` depends on both and is
 the only crate that joins them.
@@ -42,17 +45,18 @@ The rest is upstream. See [the media stack](media-stack.md) for what we use.
 ## iroh-live
 
 `Live` is a node ready for live media. It wraps an endpoint the application
-binds, usually with `EndpointOptions::default().bind()`: iroh's N0 preset with
-BBR3 congestion control, a key and mDNS.
+binds, usually with `EndpointOptions::default().bind()`: `MoqPreset` (iroh's N0 preset
+with BBR3 congestion control), a key and mDNS. `EndpointOptions::apply` does the
+same on your own endpoint builder.
 
 ```rust
 let live = Live::builder(endpoint).with_router().spawn();
 ```
 
 `with_router()` spawns a `Router` that mounts the transport under every ALPN
-this build speaks. `accept(alpn, handler)` mounts another protocol on it, which
-is how rooms mount their gossip. `LiveBuilder::moq()` hands the transport to
-rooms before the router exists.
+this build speaks. `accept(alpn, handler)` mounts another protocol on it.
+`with_rooms()` mounts rooms' gossip that way, and widens the grant so members
+can publish their room broadcasts.
 
 `Live::publish(name, &broadcast)` publishes an `moq_ext_publisher::LocalBroadcast`
 at `live/<our id>/<name>` to everyone. `Live::ticket(name)` returns the
@@ -66,8 +70,7 @@ nothing further to wire.
 
 The facade's error is `iroh_live::Error`: `Transport` wraps an
 `iroh_moq::Error`, `Media` an `moq_ext_player::Error`, and `SecretKey` and
-`Bind` come from `EndpointOptions`. Audiences,
-admission, relays and routes belong to [`iroh-moq`](transport.md), reached
+`Bind` come from `EndpointOptions`. Audiences, admission, relays and routes belong to [`iroh-moq`](transport.md), reached
 through `live.moq()`.
 
 `irl call` and the Android demo share a one-to-one call convention. Each side

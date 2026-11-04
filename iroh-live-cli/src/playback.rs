@@ -5,6 +5,8 @@ use std::{sync::Arc, time::Duration};
 use iroh_live::media::{AudioTarget, Catalog, RemoteBroadcast};
 use n0_error::{Result, anyerr};
 use tracing::info;
+#[cfg(feature = "playback")]
+use tracing::warn;
 
 /// How long a broadcast's catalog may take to arrive once subscribed.
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
@@ -57,7 +59,7 @@ pub async fn output(device: Option<String>) -> Result<AudioTarget> {
         match open_engine(None).await {
             Ok(output) => Ok(output.into()),
             Err(err) => {
-                tracing::warn!(error = %format!("{err:#}"), "no audio output, playing silently");
+                warn!(error = %format!("{err:#}"), "no audio output, playing silently");
                 Ok(AudioTarget::null())
             }
         }

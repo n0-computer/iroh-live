@@ -43,6 +43,7 @@ pub struct BroadcastTicket {
 
 impl BroadcastTicket {
     /// Creates a ticket for broadcast `name` of `peer`.
+    #[must_use]
     pub fn new(peer: EndpointId, name: impl Into<String>) -> Self {
         Self {
             peer,
@@ -51,11 +52,13 @@ impl BroadcastTicket {
     }
 
     /// Returns the publisher's endpoint id.
+    #[must_use]
     pub fn peer(&self) -> EndpointId {
         self.peer
     }
 
     /// Returns the broadcast's name.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -64,6 +67,7 @@ impl BroadcastTicket {
     ///
     /// A string, since a name may not make a valid moq path; publishing or
     /// subscribing at it says so.
+    #[must_use]
     pub fn path(&self) -> String {
         paths::broadcast(self.peer, &self.name)
     }
@@ -71,6 +75,7 @@ impl BroadcastTicket {
     /// Returns the ticket of the broadcast at `path`, if it is a `live/<peer>/<name>` path.
     ///
     /// The inverse of [`path`](Self::path).
+    #[must_use]
     pub fn from_path(path: &str) -> Option<Self> {
         let (peer, name) = paths::parse(path)?;
         Some(Self::new(peer, name))

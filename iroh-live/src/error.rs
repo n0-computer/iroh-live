@@ -2,8 +2,7 @@
 
 use n0_error::stack_error;
 
-/// An error from the transport, the media on top of it, binding the endpoint, or
-/// parsing a ticket.
+/// An error from the transport, the media, binding the endpoint, or a ticket.
 #[stack_error(derive, add_meta, from_sources)]
 pub enum Error {
     /// A peer was unreachable, or a path could not be resolved or published.

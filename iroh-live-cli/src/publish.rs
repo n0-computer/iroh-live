@@ -297,8 +297,9 @@ mod preview {
     #[derive(Debug)]
     struct SourcePicker {
         selected: Option<PickedSource>,
-        /// The capture flags. `video` is the `--video` text, shown while no
-        /// entry matches it.
+        /// The capture flags.
+        ///
+        /// `video` is the `--video` text, shown while no entry matches it.
         capture: CaptureArgs,
         error: Option<String>,
         /// The sources publishing now, held to keep them running.

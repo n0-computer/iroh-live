@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Live, LiveBuilder, Mdns, Session, Subscription,
+    BroadcastTicket, EndpointOptions, Live, Mdns, Session, Subscription,
     media::RemoteBroadcast,
     moq::{RelayConfig, RelayLink},
 };
@@ -35,31 +35,20 @@ pub async fn setup_live(serve: bool) -> Result<Live> {
 }
 
 /// Binds an endpoint with `options` and starts the MoQ transport on it.
-pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Live> {
-    Ok(bind(options, serve).await?.spawn())
-}
-
-/// Binds an endpoint that also runs rooms, and starts the MoQ transport on it.
-///
-/// Always serves, since other participants dial in.
-pub async fn setup_live_with_rooms() -> Result<(Live, iroh_live::rooms::Rooms)> {
-    let endpoint = EndpointOptions::from_env()?.bind().await?;
-    Ok(Live::builder(endpoint).spawn_with_rooms())
-}
-
-/// Binds an endpoint and returns a node builder, with a router if `serve` is set.
 ///
 /// A ticket carries no addresses, so the endpoint uses mDNS on top of the
 /// preset's pkarr and DNS lookup. A node that does not serve only looks up
 /// others and does not announce itself.
-pub async fn bind(options: EndpointOptions, serve: bool) -> Result<LiveBuilder> {
+pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Live> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointOptions { mdns, ..options }.bind().await?;
-    let mut builder = Live::builder(endpoint);
-    if serve {
-        builder = builder.with_router();
+    let builder = Live::builder(endpoint);
+    Ok(if serve {
+        builder.with_router()
+    } else {
+        builder
     }
-    Ok(builder)
+    .spawn())
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.

@@ -5,7 +5,7 @@
 //! Every participant subscribes to every other, so this suits small groups.
 
 use iroh_live::{
-    Live,
+    EndpointOptions, Live,
     media::{AudioTarget, LocalBroadcast},
     rooms::{Room, RoomTicket, Rooms},
 };
@@ -48,7 +48,9 @@ struct Joined {
 async fn setup(args: &RoomArgs) -> Result<Joined> {
     // Opened first so the microphone can cancel its echo.
     let output = crate::playback::output(None).await?;
-    let (live, rooms) = transport::setup_live_with_rooms().await?;
+    // Rooms always serve, since other participants dial in.
+    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let (live, rooms) = Live::builder(endpoint).spawn_with_rooms();
     let (live, joined) =
         transport::with_live(live, async |live| join(live, &rooms, args, output).await).await?;
     Ok(Joined { live, ..joined })

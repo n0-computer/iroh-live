@@ -31,6 +31,7 @@ pub type PublishScope = fn(EndpointId) -> Pattern;
 /// The peer may subscribe to anything, and publish only under
 /// [`paths::publish_scope`], so no peer can publish at a path that names another.
 /// [`grant_with`] adds more scopes, such as rooms'.
+#[must_use]
 pub fn grant(peer: EndpointId) -> Grant {
     grant_with(peer, &[])
 }
@@ -40,6 +41,7 @@ pub fn grant(peer: EndpointId) -> Grant {
 /// What a peer may publish is the application's choice: a node that runs
 /// rooms passes `rooms::publish_scope` here, and one that does not leaves it
 /// out, whatever features the build has.
+#[must_use]
 pub fn grant_with(peer: EndpointId, scopes: &[PublishScope]) -> Grant {
     let mut publish = Patterns::from(paths::publish_scope(peer));
     for scope in scopes {
@@ -49,12 +51,13 @@ pub fn grant_with(peer: EndpointId, scopes: &[PublishScope]) -> Grant {
 }
 
 /// Returns the [`MoqConfig`] of a live node: admission open, with [`grant`].
+#[must_use]
 pub fn moq_config() -> MoqConfig {
     moq_config_with(&[])
 }
 
-/// Returns the [`MoqConfig`] of a live node whose peers may also publish
-/// under `scopes`, as [`grant_with`] says.
+/// Returns the [`MoqConfig`] of a live node with [`grant_with`] and `scopes`.
+#[must_use]
 pub fn moq_config_with(scopes: &[PublishScope]) -> MoqConfig {
     let scopes: Arc<[PublishScope]> = scopes.into();
     MoqConfig {
@@ -133,8 +136,9 @@ impl LiveBuilder {
         self
     }
 
-    /// Creates the node as [`with_rooms`](Self::with_rooms) says, and returns
-    /// its rooms with it.
+    /// Creates the node as [`with_rooms`](Self::with_rooms) says.
+    ///
+    /// Returns the node with its rooms.
     #[cfg(feature = "rooms")]
     pub fn spawn_with_rooms(self) -> (Live, iroh_live_rooms::Rooms) {
         let live = self.with_rooms().spawn();
@@ -212,6 +216,7 @@ impl Live {
     }
 
     /// Returns the endpoint.
+    #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
@@ -221,6 +226,7 @@ impl Live {
     /// The escape hatch for everything [`Live`] has no call for: any path
     /// layout, any [`Audience`], relays, sessions, the route table. The
     /// calls here are conveniences over it.
+    #[must_use]
     pub fn moq(&self) -> &Moq {
         &self.moq
     }
@@ -280,7 +286,7 @@ impl Live {
     /// # Errors
     ///
     /// Fails if no link reaches the broadcast, or `path` is not a valid path.
-    #[instrument("subscribe_path", skip_all, fields(path))]
+    #[instrument("subscribe_path", skip_all, fields(%path))]
     pub async fn subscribe_path(&self, path: &str, reach: Reach) -> Result<Subscription, Error> {
         Ok(self.moq.subscribe(path, reach).await?)
     }

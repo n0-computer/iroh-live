@@ -19,7 +19,8 @@
 //!
 //! The node's [`MoqConfig::grant`](iroh_moq::MoqConfig::grant) has to let each
 //! peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
-//! `iroh_live::moq_config` does that with the `rooms` feature.
+//! `iroh_live::LiveBuilder::with_rooms` does that, and
+//! `iroh_live::moq_config_with` does it for a config built by hand.
 //!
 //! ```no_run
 //! # async fn example(moq: iroh_moq::Moq, broadcast: moq_net::broadcast::Producer)

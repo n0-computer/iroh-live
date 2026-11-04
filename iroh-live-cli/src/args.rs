@@ -458,8 +458,9 @@ pub struct RecordArgs {
     #[arg(short, long, default_value = "recording.mp4")]
     pub output: PathBuf,
 
-    /// Container format, overriding the `--output` extension. `fmp4` is
-    /// fragmented MP4.
+    /// Container format, overriding the `--output` extension.
+    ///
+    /// `fmp4` is fragmented MP4.
     #[arg(long, value_parser = record_format())]
     pub format: Option<RecordFormat>,
 

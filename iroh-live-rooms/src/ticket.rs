@@ -18,6 +18,7 @@ pub struct RoomTicket {
 
 impl RoomTicket {
     /// Creates a ticket for `topic_id`, bootstrapping from `bootstrap`.
+    #[must_use]
     pub fn new(topic_id: TopicId, bootstrap: impl IntoIterator<Item = EndpointId>) -> Self {
         Self {
             bootstrap: bootstrap.into_iter().collect(),
@@ -26,16 +27,19 @@ impl RoomTicket {
     }
 
     /// Creates a ticket for a new room with a random topic.
+    #[must_use]
     pub fn generate() -> Self {
         Self::new(TopicId::from_bytes(rand::random()), [])
     }
 
     /// Returns the gossip topic that identifies the room.
+    #[must_use]
     pub fn topic_id(&self) -> TopicId {
         self.topic_id
     }
 
     /// Returns the peers a joiner contacts first.
+    #[must_use]
     pub fn bootstrap(&self) -> &[EndpointId] {
         &self.bootstrap
     }
