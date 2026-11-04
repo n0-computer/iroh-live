@@ -46,7 +46,10 @@ use moq_ext_media_core::{
 };
 use moq_ext_sources::frames::FrameSlot;
 
-use crate::stats::{FrameTiming, MediaKind, VideoPlaybackStats};
+use crate::{
+    error::CleanClose as _,
+    stats::{FrameTiming, MediaKind, VideoPlaybackStats},
+};
 
 /// How many decoded frames a reader may run ahead of the supervisor.
 ///
@@ -297,8 +300,12 @@ pub(crate) async fn run(inputs: Inputs) {
             }
             // A replacement whose track ended cleanly is not a broken decoder.
             // The publisher replaced the track or the route changed, and the
-            // selector asks for it again.
-            Outcome::Abandoned(target, Abandoned::Ended) if replacement_failure.is_none() => {
+            // selector asks for it again. A decoder that did not open because
+            // the session closed is the same: nothing is broken.
+            Outcome::Abandoned(
+                target,
+                Abandoned::Ended | Abandoned::OpenFailed(Error::Closed { .. }),
+            ) if replacement_failure.is_none() => {
                 debug!(rendition = %target.rendition, "replacement's track ended before it took over");
                 if switcher.current().is_none() {
                     send_if_changed(&status, |status| status.video = SlotState::Starting);
@@ -319,14 +326,14 @@ pub(crate) async fn run(inputs: Inputs) {
                         Abandon::Withdrawn
                     }
                     Abandoned::OpenFailed(err) => {
-                        warn!(error = %err, %rendition, "replacement decoder failed to open");
+                        warn!(error = %format!("{err:#}"), %rendition, "replacement decoder failed to open");
                         Abandon::Failed(Arc::new(err))
                     }
                     Abandoned::Ended => {
                         let failure = replacement_failure
                             .take()
                             .unwrap_or_else(|| Arc::new(n0_error::e!(Error::Closed)));
-                        warn!(error = %failure, %rendition, "replacement decoder gave up before it took over");
+                        warn!(error = %format!("{failure:#}"), %rendition, "replacement decoder gave up before it took over");
                         Abandon::Failed(failure)
                     }
                     Abandoned::TimedOut => {
@@ -371,7 +378,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     // switch, so the selector backs off and tries another
                     // rendition.
                     Some((target, Some(err))) => {
-                        warn!(error = %err, rendition = %target.rendition, "video failed");
+                        warn!(error = %format!("{err:#}"), rendition = %target.rendition, "video failed");
                         send_if_changed(&status, |status| {
                             status.clear_video(SlotState::Failed(err.clone().into()));
                             status.failed_rendition = Some(target.rendition.clone());
@@ -579,6 +586,12 @@ async fn spawn_reader(
                         debug!("video track ended");
                         return;
                     }
+                    // The session or the track was closed, which ends the
+                    // track like `Ok(None)` does.
+                    Err(err) if err.is_clean_close() => {
+                        debug!(error = %err, "video track closed");
+                        return;
+                    }
                     // Only `Codec` is about a single picture, and the next
                     // keyframe repairs it. The other errors are about the
                     // track and repeat on every read.
@@ -627,7 +640,13 @@ async fn spawn_reader(
 }
 
 /// Converts a decoder error into the crate's error.
+///
+/// A clean close of the session or the track becomes [`Error::Closed`], so the
+/// caller can tell it from a failure.
 fn decode_error(err: moq_video::Error) -> Error {
+    if err.is_clean_close() {
+        return n0_error::e!(Error::Closed);
+    }
     match err {
         moq_video::Error::NoDecoder(tried) => n0_error::e!(Error::NoDecoder { codec: tried }),
         moq_video::Error::UnknownDecoder { codec, .. } => n0_error::e!(Error::NoDecoder {
