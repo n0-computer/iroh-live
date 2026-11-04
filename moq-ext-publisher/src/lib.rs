@@ -4,7 +4,8 @@
 //! audio slot. The video slot opens its source once and encodes it into a
 //! ladder of renditions, each encoding only while someone watches it. A
 //! transport publishes the broadcast by creating the `broadcast::Producer` it
-//! fills ([`LocalBroadcast::new_in`]), so readers get it without a copy.
+//! fills ([`LocalBroadcast::new_in`], or `TryFrom`), so readers get it without
+//! a copy. [`LocalBroadcast::consume`] reads it in-process.
 //!
 //! The sources come from `moq-ext-sources`, and the codecs from `moq_video`
 //! and `moq_audio`. Nothing here depends on iroh or on a player.
@@ -32,7 +33,8 @@
 //!
 //! A microphone is opened inside the publication that encodes it, so a device
 //! that fails after `AudioSource::microphone` returned shows in
-//! [`LocalBroadcast::status`].
+//! [`LocalBroadcast::status`]. A failed microphone is not opened again: the
+//! audio slot stays failed until the audio is set again.
 
 mod publish;
 mod stats;
