@@ -1,9 +1,7 @@
-# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live-5`, the
-# commit the released versions were cut from plus one fix that lets moq-video
-# build for Windows with `capture`. `Cargo.lock` pins the revision, so these
-# jobs build what a local checkout builds and `--locked` has something exact to
-# hold to. Deleting the patch block is the whole revert once a moq-video
-# release carries the fix.
+# The moq crates come from moq-dev/moq `main` by git rev (`02e82fdcd`), set in
+# `[workspace.dependencies]` of the root `Cargo.toml`. There is no `[patch]`
+# block. `Cargo.lock` pins the rev, so the `--locked` jobs build what a local
+# checkout builds. See "The moq dependency" in the README.
 name: CI
 on:
   push:
@@ -54,6 +52,11 @@ jobs:
       - run: cargo check --locked -p iroh-live --all-targets --no-default-features --features rooms
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
+      # nextest does not run doctests.
+      - run: cargo test --doc --locked --workspace --all-features
+      - run: cargo doc --locked --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       - run: cargo fmt --check
 
   check-macos:
