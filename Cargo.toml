@@ -16,6 +16,7 @@ members = [
     "iroh-live-egui",
     "demos/android/rust",
     "demos/pi-zero",
+    "demos/client-gpu",
 ]
 resolver = "2"
 
