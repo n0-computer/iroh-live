@@ -2,7 +2,7 @@
 //!
 //! Browsers connect over WebTransport, iroh clients over iroh. Anyone may
 //! connect and subscribe to anything. An iroh client may publish only at the
-//! paths that name its endpoint id (see [`iroh_sessions`]), and a browser only
+//! paths that name its endpoint id (see [`IrohSessions`]), and a browser only
 //! at names of one segment. A session that names a broadcast ticket gets that
 //! broadcast pulled from its publisher (see [`pull`]).
 //!

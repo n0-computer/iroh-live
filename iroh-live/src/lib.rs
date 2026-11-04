@@ -75,7 +75,7 @@ router.shutdown().await?; // closes the endpoint
 //! - [`BroadcastTicket`]: a publisher's endpoint id and a broadcast name.
 #![cfg_attr(
     feature = "media",
-    doc = "- [`LocalBroadcast`] and [`RemoteBroadcast`], from [`media`]."
+    doc = "- [`LocalBroadcast`](media::LocalBroadcast) and [`RemoteBroadcast`](media::RemoteBroadcast), from [`media`]."
 )]
 //!
 //! # Cancellation safety
