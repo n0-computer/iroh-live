@@ -1,0 +1,16 @@
+[package]
+name = "moq-ext-access"
+version = "0.1.0"
+edition = "2024"
+description = "Access control for moq nodes: grants, session requests, and who sees a publication"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+moq-net = { workspace = true }
+n0-watcher = "1"
+url = "2.5.8"

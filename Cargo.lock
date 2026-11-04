@@ -4642,6 +4642,7 @@ dependencies = [
  "derive_more",
  "futures",
  "iroh",
+ "moq-ext-access",
  "moq-ext-forward",
  "moq-net",
  "moq-tokio",
@@ -5561,6 +5562,15 @@ dependencies = [
  "rand",
  "rand_pcg",
  "tracing",
+]
+
+[[package]]
+name = "moq-ext-access"
+version = "0.1.0"
+dependencies = [
+ "moq-net",
+ "n0-watcher",
+ "url",
 ]
 
 [[package]]

@@ -20,33 +20,12 @@ use crate::{
 };
 
 /// Who may see a publication.
-#[derive(Debug, Clone, Default)]
-pub enum Audience {
-    /// Every admitted session, and every relay that takes public publications.
-    #[default]
-    Everyone,
-    /// These peers, as the set changes.
-    ///
-    /// Never offered to relays. The publication holds the set: change it
-    /// through a clone of the watchable.
-    Peers(n0_watcher::Watchable<BTreeSet<EndpointId>>),
-}
+///
+/// See [`moq_ext_access::Audience`].
+pub type Audience = moq_ext_access::Audience<EndpointId>;
 
 /// An [`Audience`] as the registry keeps it: the current set, not its watcher.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AudienceKind {
-    Everyone,
-    Peers(BTreeSet<EndpointId>),
-}
-
-impl From<&Audience> for AudienceKind {
-    fn from(audience: &Audience) -> Self {
-        match audience {
-            Audience::Everyone => Self::Everyone,
-            Audience::Peers(peers) => Self::Peers(peers.get()),
-        }
-    }
-}
+pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 
 /// A published broadcast.
 ///

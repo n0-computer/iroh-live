@@ -16,6 +16,8 @@ use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use moq_ext_access::LinkRole;
+
 use crate::{Grant, LinkKind, Session, link::LinkState, publish::AudienceKind};
 
 /// A running offer: the task answering requests for one path on one origin.
@@ -203,17 +205,19 @@ impl State {
 /// publications only when their configuration offers public ones, and never a
 /// `Peers` one, which a relay would forward to anyone.
 fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
-    if !link.grant.allows_subscribe(publication.path.as_str()) {
-        return false;
-    }
-    match (&publication.audience, link.kind) {
-        (AudienceKind::Everyone, LinkKind::Direct) => true,
-        (AudienceKind::Everyone, LinkKind::Relay) => link.public,
-        (AudienceKind::Peers(peers), LinkKind::Direct) => {
-            link.remote.is_some_and(|remote| peers.contains(&remote))
-        }
-        _ => false,
-    }
+    let role = match link.kind {
+        LinkKind::Direct => LinkRole::Direct,
+        LinkKind::Relay => LinkRole::Relay {
+            public: link.public,
+        },
+    };
+    moq_ext_access::visible(
+        publication.path.as_str(),
+        &publication.audience,
+        &link.grant,
+        role,
+        link.remote.as_ref(),
+    )
 }
 
 /// Offers `broadcast` at `path` on `origin`, as `instance`, until the handle drops.

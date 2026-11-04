@@ -6,7 +6,14 @@ use std::{
 };
 
 use iroh::{EndpointId, endpoint::Connection};
-use moq_net::{Pattern, Patterns, server::Handshake};
+
+/// What a session may subscribe to from this node, and publish into it.
+///
+/// See [`moq_ext_access::Grant`].
+pub use moq_ext_access::Grant;
+/// What a peer asked for when it opened a session.
+pub use moq_ext_access::SessionRequest;
+use moq_net::server::Handshake;
 use n0_error::e;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
@@ -48,98 +55,6 @@ pub enum Admission {
     Open,
     /// Hands every incoming session to [`Moq::accept`](crate::Moq::accept) to decide.
     Manual,
-}
-
-/// What a session may subscribe to from this node, and publish into it.
-///
-/// The shape of a moq-auth grant, so a token means the same thing to this node
-/// and to a moq relay. Patterns are moq's: `*` matches one segment, `**` a
-/// subtree, anything else itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Grant {
-    /// The paths the peer may subscribe to from this node.
-    pub subscribe: Patterns,
-    /// The paths the peer may publish into this node's route table.
-    pub publish: Patterns,
-}
-
-impl Grant {
-    /// Returns a grant that allows everything in both directions.
-    pub fn everything() -> Self {
-        Self {
-            subscribe: Patterns::from(Pattern::all()),
-            publish: Patterns::from(Pattern::all()),
-        }
-    }
-
-    /// Returns a grant to subscribe to everything and publish only at `publish`.
-    ///
-    /// With a pattern that names the peer, such as `live/<peer id>/**`, no peer
-    /// can publish at another's paths.
-    pub fn publish_under(publish: impl Into<Patterns>) -> Self {
-        Self {
-            subscribe: Patterns::from(Pattern::all()),
-            publish: publish.into(),
-        }
-    }
-
-    /// Reports whether the peer may subscribe to `path`.
-    pub fn allows_subscribe(&self, path: &str) -> bool {
-        self.subscribe.matches(path)
-    }
-
-    /// Reports whether the peer may publish `path`.
-    pub fn allows_publish(&self, path: &str) -> bool {
-        self.publish.matches(path)
-    }
-}
-
-/// What a peer asked for when it opened a session.
-#[derive(Debug, Clone, Default)]
-pub struct SessionRequest {
-    path: String,
-    query: Vec<(String, String)>,
-    headers: Vec<(String, String)>,
-}
-
-impl SessionRequest {
-    /// Parses a request target, `/<path>?<query>`, and its headers.
-    pub(crate) fn new(target: &str, headers: Vec<(String, String)>) -> Self {
-        let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        let query = url::form_urlencoded::parse(query.as_bytes())
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect();
-        Self {
-            path: path.trim_matches('/').to_owned(),
-            query,
-            headers,
-        }
-    }
-
-    /// Returns the request path, without its query.
-    ///
-    /// The setup path on a raw iroh session, the CONNECT path on an HTTP/3 one.
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
-    /// Returns a query parameter of the request, such as `jwt`.
-    pub fn query(&self, key: &str) -> Option<&str> {
-        self.query
-            .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_str())
-    }
-
-    /// Returns an HTTP/3 CONNECT header, matched case-insensitively.
-    ///
-    /// Always `None` on raw sessions.
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
-    }
 }
 
 /// How to dial a peer with [`Moq::connect_with`](crate::Moq::connect_with).
@@ -339,19 +254,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_request_splits_its_path_and_query() {
-        let request = SessionRequest::new(
-            "/studio?jwt=abc%2Bdef&x=1",
-            vec![("Authorization".into(), "Bearer t".into())],
-        );
-        assert_eq!(request.path(), "studio");
-        assert_eq!(request.query("jwt"), Some("abc+def"));
-        assert_eq!(request.query("x"), Some("1"));
-        assert_eq!(request.query("y"), None);
-        assert_eq!(request.header("authorization"), Some("Bearer t"));
-    }
-
-    #[test]
     fn a_token_rides_the_setup_path() {
         let options = ConnectOptions {
             token: Some("a+b".into()),
@@ -361,20 +263,5 @@ mod tests {
         let request = SessionRequest::new(&path, vec![]);
         assert_eq!(request.query("jwt"), Some("a+b"));
         assert_eq!(ConnectOptions::default().setup_path(), None);
-    }
-
-    #[test]
-    fn grants_match_patterns() {
-        let everything = Grant::everything();
-        assert!(everything.allows_subscribe("live/x/cam"));
-        assert!(everything.allows_publish("anything"));
-        let live: Pattern = "live/**".parse().expect("pattern");
-        let scoped = Grant {
-            subscribe: Patterns::from(live),
-            publish: Patterns::new(),
-        };
-        assert!(scoped.allows_subscribe("live/x/cam"));
-        assert!(!scoped.allows_subscribe("rooms/t/x/cam"));
-        assert!(!scoped.allows_publish("live/x/cam"));
     }
 }

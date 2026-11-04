@@ -49,8 +49,11 @@ pub struct MoqConfig {
     /// Returns the grant of a session with a peer, from its endpoint id.
     ///
     /// Used for sessions admitted under [`Admission::Open`], and for dials
-    /// without [`ConnectOptions::grant`]. `None` grants everything: any peer
-    /// may publish at any path.
+    /// without [`ConnectOptions::grant`].
+    ///
+    /// `None` is the secure default: [`Grant::subscribe_only`], so any peer may
+    /// subscribe to anything but no peer may publish. Return
+    /// [`Grant::everything`] to allow any peer to publish at any path.
     ///
     /// A grant's publish patterns decide which paths the peer may put into the
     /// route table. Let each peer publish only under paths that name it, or
@@ -355,7 +358,7 @@ impl Shared {
     pub(crate) fn grant_for(&self, peer: EndpointId) -> Grant {
         self.grant
             .as_ref()
-            .map_or_else(Grant::everything, |grant| grant(peer))
+            .map_or_else(Grant::subscribe_only, |grant| grant(peer))
     }
 
     /// Hands an established session to the actor, which runs it.
