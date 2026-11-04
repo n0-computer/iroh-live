@@ -86,8 +86,7 @@ impl Releases {
         });
     }
 
-    /// Waits until every stopped capture has released its device, for at most
-    /// `patience`.
+    /// Waits at most `patience` for every stopped capture to release its device.
     ///
     /// A capture that still runs is not waited for: the application may use
     /// two cameras at once. A stopped capture that does not finish in time is

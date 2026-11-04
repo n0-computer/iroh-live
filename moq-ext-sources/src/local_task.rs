@@ -58,6 +58,8 @@ impl LocalTask {
 /// Only the closure has to cross. The returned handle cancels `stop`, which
 /// `make` gets to watch.
 ///
+/// # Errors
+///
 /// Fails if the runtime or the thread cannot be started.
 pub fn spawn<F, Fut>(name: &str, stop: CancellationToken, make: F) -> std::io::Result<LocalTask>
 where
