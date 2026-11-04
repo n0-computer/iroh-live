@@ -204,7 +204,7 @@ pub(crate) fn publish<T, E>(
     fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
 ) -> Result<(Publication, T), Error>
 where
-    E: std::error::Error + Send + Sync + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     check_path(&path)?;
     if shared.shutdown.is_cancelled() {
@@ -221,7 +221,7 @@ where
         Err(err) => {
             publication.broadcast().close();
             return Err(e!(Error::Fill {
-                source: AnyError::from_std(err)
+                source: AnyError::from_std_box(err.into())
             }));
         }
     };

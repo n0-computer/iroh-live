@@ -240,7 +240,8 @@ impl Node {
     /// # Errors
     ///
     /// As [`publish`](Self::publish), and [`Error::Fill`] if `fill` fails,
-    /// which closes the broadcast.
+    /// which closes the broadcast. `fill` may fail with any error that boxes
+    /// into a `std::error::Error`, an `anyhow::Error` included.
     pub fn publish_with<T, E>(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
@@ -248,7 +249,7 @@ impl Node {
         fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
     ) -> Result<(Publication, T), Error>
     where
-        E: std::error::Error + Send + Sync + 'static,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         publish::publish(&self.shared, crate::error::to_path(path)?, audience, fill)
     }
