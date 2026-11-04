@@ -9,7 +9,7 @@
 //! The binary wraps [`run`]. Another CLI can embed the relay by flattening
 //! [`RelayConfig`] into its arguments.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! use clap::Parser;
@@ -294,7 +294,7 @@ fn serve_embedded_file(path: &str) -> axum::response::Response {
         Some(file) => (
             axum::http::StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, mime)],
-            file.contents().to_vec(),
+            file.contents(),
         )
             .into_response(),
         None => axum::http::StatusCode::NOT_FOUND.into_response(),
