@@ -4469,7 +4469,6 @@ dependencies = [
  "iroh-live",
  "jni 0.21.1",
  "moq-ext-media-android",
- "moq-net",
  "moq-video",
  "n0-error",
  "n0-future",

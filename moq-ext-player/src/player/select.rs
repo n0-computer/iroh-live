@@ -416,7 +416,7 @@ mod tests {
         let (playing_tx, playing) = watch::channel(None);
         let (desired, desired_rx) = watch::channel(None);
         let inputs = Inputs {
-            broadcast: RemoteBroadcast::from_consumer(moq_net::Consume::consume(&broadcast)),
+            broadcast: RemoteBroadcast::from_consumer(broadcast.consume()),
             controls: Arc::new(Controls {
                 mode: watch::Sender::new(Mode::auto()),
                 latency: watch::Sender::new(Latency::default()),

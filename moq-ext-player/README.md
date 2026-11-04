@@ -27,7 +27,7 @@ automatic, pinned to one rendition, or off. `PlayerConfig::audio` takes an
 the `Player` aborts its tasks and returns at once.
 
 A broadcast published in the same process is read the same way: pass
-`moq_net::Consume::consume(&broadcast)` of a `moq_ext_publisher::LocalBroadcast`.
+`broadcast.consume()` of a `moq_ext_publisher::LocalBroadcast`.
 
 ## Feature flags
 

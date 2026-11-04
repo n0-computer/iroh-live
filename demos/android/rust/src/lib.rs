@@ -691,8 +691,8 @@ fn start_h264_impl(size: Size) -> Result<jlong> {
 /// The catalog appears only after the first camera frame. The player waits for
 /// it on its own.
 fn open_loopback(broadcast: &LocalBroadcast) -> Result<Player> {
-    let player = RemoteBroadcast::from_consumer(moq_net::Consume::consume(broadcast))
-        .play(PlayerConfig::default())?;
+    let player =
+        RemoteBroadcast::from_consumer(broadcast.consume()).play(PlayerConfig::default())?;
     info!(broadcast = LOOPBACK_NAME, "loopback playing");
     Ok(player)
 }

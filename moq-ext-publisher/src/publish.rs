@@ -197,7 +197,7 @@ impl Drop for Shared {
 /// transport that publishes it hands it the broadcast to fill: build it with
 /// [`new_in`](Self::new_in) or `TryFrom<broadcast::Producer>`, as `iroh-live`'s
 /// `publish` does. A standalone one from [`new`](Self::new) reads in-process
-/// through `moq_net::Consume<broadcast::Consumer>`.
+/// through [`consume`](Self::consume).
 ///
 /// Cloning is cheap. [`close`](Self::close) ends the broadcast for every clone.
 /// The setters spawn an encoding task, so call them from within a Tokio
@@ -368,6 +368,15 @@ impl LocalBroadcast {
         self.shared.stats.snapshot()
     }
 
+    /// Returns a reader of the broadcast, for playing it in-process.
+    ///
+    /// The same as the [`Consume`] impl, without importing the trait:
+    /// `RemoteBroadcast::from_consumer(broadcast.consume())` plays it.
+    #[must_use]
+    pub fn consume(&self) -> moq_net::broadcast::Consumer {
+        self.shared.producer.consume()
+    }
+
     /// Closes the broadcast for every clone.
     ///
     /// Stops the encoders and lets each finish its track. Then it ends the
@@ -479,7 +488,7 @@ impl LocalBroadcast {
 
 impl Consume<moq_net::broadcast::Consumer> for LocalBroadcast {
     fn consume(&self) -> moq_net::broadcast::Consumer {
-        self.shared.producer.consume()
+        Self::consume(self)
     }
 }
 

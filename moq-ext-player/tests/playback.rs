@@ -20,7 +20,7 @@ use tokio::{sync::watch, task::JoinHandle};
 
 /// Reads `broadcast` in-process, without a transport.
 fn local(broadcast: &LocalBroadcast) -> RemoteBroadcast {
-    RemoteBroadcast::from_consumer(moq_net::Consume::consume(broadcast))
+    RemoteBroadcast::from_consumer(broadcast.consume())
 }
 
 /// How long any one wait may take.

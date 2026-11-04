@@ -477,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn a_closed_local_broadcast_closes_its_remote() {
         let broadcast = moq_ext_publisher::LocalBroadcast::new();
-        let remote = RemoteBroadcast::from_consumer(moq_net::Consume::consume(&broadcast));
+        let remote = RemoteBroadcast::from_consumer(broadcast.consume());
         broadcast.close();
         tokio::time::timeout(Duration::from_secs(5), remote.closed())
             .await
