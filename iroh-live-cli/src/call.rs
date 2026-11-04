@@ -409,6 +409,8 @@ mod window {
     struct Pending {
         /// Which side started it.
         direction: Direction,
+        /// The offer of this attempt.
+        ///
         /// Held here, not in the task, so abandoning the attempt withdraws it
         /// at once.
         offer: Offer,

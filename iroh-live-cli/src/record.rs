@@ -174,13 +174,18 @@ async fn stop_after(duration: Option<Duration>) {
             None => std::future::pending().await,
         }
     };
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => {
-            if let Err(err) = result {
-                warn!(error = %err, "cannot listen for Ctrl+C, recording until the broadcast ends");
-                std::future::pending::<()>().await;
-            }
+    // A failed Ctrl+C listener never resolves, so the deadline still applies.
+    let interrupted = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            warn!(
+                error = %err,
+                "cannot listen for Ctrl+C, recording until the duration or the broadcast ends"
+            );
+            std::future::pending::<()>().await;
         }
+    };
+    tokio::select! {
+        () = interrupted => {}
         () = deadline => {}
     }
 }
