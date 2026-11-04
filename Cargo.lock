@@ -5576,7 +5576,7 @@ dependencies = [
 name = "moq-ext-media-core"
 version = "0.1.0"
 dependencies = [
- "moq-ext-sources",
+ "derive_more",
  "n0-error",
  "tokio",
 ]
@@ -5631,6 +5631,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "moq-audio",
+ "moq-ext-media-core",
  "moq-mux",
  "moq-net",
  "moq-video",

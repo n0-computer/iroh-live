@@ -1,17 +1,18 @@
-//! The error the player and the publisher share.
+//! The error the sources, the player and the publisher share.
 //!
 //! The variants of [`Error`] group failures by what a caller can act on.
 
-use moq_ext_sources::Error as SourceError;
 use n0_error::{AnyError, stack_error};
 
 /// Errors raised by the media crates.
 ///
-/// A watched status holds it as `Arc<Error>`, as in
+/// `moq-ext-sources`, `moq-ext-player` and `moq-ext-publisher` all return this
+/// one type, so an error passes from a source to a broadcast unchanged. A
+/// watched status holds it as `Arc<Error>`, as in
 /// [`SlotState::Failed`](crate::SlotState::Failed).
 #[stack_error(derive, add_meta)]
 pub enum Error {
-    /// A capture or playback device would not open, or failed while running.
+    /// A capture or playback device, or a media file, would not open or failed while running.
     #[error("device failed")]
     Device {
         /// What the device reported.
@@ -77,7 +78,7 @@ pub enum Error {
         #[error(source)]
         source: AnyError,
     },
-    /// The broadcast, source or player was closed.
+    /// The broadcast, source or player was closed, or the session under it.
     #[error("closed")]
     Closed,
     /// Reading or writing a file or pipe failed.
@@ -154,21 +155,18 @@ impl Error {
     }
 }
 
-impl From<moq_ext_sources::Error> for Error {
-    fn from(err: moq_ext_sources::Error) -> Self {
-        match err {
-            SourceError::Device { source, .. } => n0_error::e!(Self::Device { source }),
-            SourceError::InvalidConfig { reason, .. } => {
-                n0_error::e!(Self::InvalidConfig { reason })
-            }
-            SourceError::Closed { .. } => n0_error::e!(Self::Closed),
-            SourceError::Io { source, .. } => n0_error::e!(Self::Io { source }),
-        }
-    }
-}
-
 impl From<std::io::Error> for Error {
     fn from(source: std::io::Error) -> Self {
         n0_error::e!(Self::Io { source })
     }
 }
+
+/// The source a `FrameSender` feeds has gone.
+///
+/// Returned by `moq_ext_sources::FrameSender::push`, so a producing loop knows
+/// to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
+#[display("the source has closed")]
+pub struct Closed;
+
+impl std::error::Error for Closed {}

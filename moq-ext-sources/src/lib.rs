@@ -6,7 +6,9 @@
 //! [`VideoFrames`]. An [`AudioSource`] fans PCM out to every broadcast that
 //! reads it. An [`EncodedVideoSource`] carries H.264 that needs no encoder.
 //!
-//! The crate has no dependency on iroh and none on a transport.
+//! The crate has no dependency on iroh and none on a transport. Its [`Error`]
+//! is the one `moq-ext-media-core` defines, which the player and the publisher
+//! return too.
 //!
 //! # What is in it
 //!
@@ -72,7 +74,6 @@
 //! # }
 //! ```
 
-mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
 pub mod local_task;
@@ -85,8 +86,9 @@ use moq_video as video;
 pub use self::source::RpicamConfig;
 #[cfg(feature = "capture")]
 pub use self::source::{EchoReference, MicrophoneConfig};
+pub use moq_ext_media_core::{Closed, Error};
+
 pub use self::{
-    error::{Closed, Error},
     frames::VideoFrames,
     source::{
         AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, EncodedParts, EncodedVideoSource,

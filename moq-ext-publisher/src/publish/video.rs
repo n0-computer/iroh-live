@@ -192,9 +192,8 @@ pub(super) async fn run_raw(
     }
     match source.failure() {
         Some(failure) => {
-            warn!(error = %failure, "video source failed");
-            let failure = Arc::try_unwrap(failure).map_or_else(Error::device, Error::from);
-            reporter.slot(SlotState::Failed(ByPtr::new(failure)));
+            warn!(error = %format!("{failure:#}"), "video source failed");
+            reporter.slot(SlotState::Failed(failure.into()));
         }
         None => {
             debug!("video source ended");
