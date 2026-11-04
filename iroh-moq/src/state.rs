@@ -181,6 +181,21 @@ impl State {
         let Source::Peer(hop) = source else {
             return None;
         };
+        if let Some(id) = self.link_with_hop(hop) {
+            return Some(id);
+        }
+        // moq-relay declares a hop of its own, not the one derived from its
+        // endpoint id, and iroh-moq peers always carry the derived one. So an
+        // unknown hop is a relay's: the oldest relay link, if there is one.
+        self.links
+            .iter()
+            .filter(|(_, link)| link.kind == LinkKind::Relay)
+            .map(|(id, _)| *id)
+            .min()
+    }
+
+    /// Returns the link whose peer carries `hop`, if any.
+    pub(crate) fn link_with_hop(&self, hop: moq_net::Hop) -> Option<u64> {
         self.links
             .iter()
             .find(|(_, link)| link.hop == hop)

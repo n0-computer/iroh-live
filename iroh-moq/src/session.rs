@@ -123,13 +123,15 @@ impl Session {
     /// resolved.
     ///
     /// The session is told from other links by the hop its routes carry: the
-    /// one derived from the peer's id. moq lets a peer declare a hop of its own
-    /// on the wire, and that declaration wins over the one this node assigns.
-    /// So the guarantee is only as strong as the grants: a peer whose grant
-    /// lets it publish the path could declare this peer's hop and be resolved
-    /// here. It holds when grants do not overlap, as the default grants ensure
-    /// by letting each peer publish only under its own id. Two sessions with
-    /// one peer share the hop.
+    /// one derived from the peer's id, or, for a peer that declares a hop of
+    /// its own on the wire (as moq-relay does), one no other link carries.
+    /// moq lets a declaration win over the hop this node assigns, and this
+    /// node cannot read the declaration on a session it dialed. So the
+    /// guarantee is only as strong as the grants: a peer whose grant lets it
+    /// publish the path could declare this peer's hop, or a fresh one, and be
+    /// resolved here. It holds when grants do not overlap, as the default
+    /// grants ensure by letting each peer publish only under its own id. Two
+    /// sessions with one peer share the hop.
     ///
     /// # Errors
     ///
@@ -148,8 +150,22 @@ impl Session {
             return Err(e!(Error::ShutDown));
         };
         let view = route::direct_view(&shared.table);
+        // This peer's routes carry its derived hop, unless the peer declares
+        // one of its own, as moq-relay does. A hop no other link carries is
+        // taken to be such a declaration.
+        let own = self.inner.hop;
+        let link = self.inner.link;
+        let ours = |hop: moq_net::Hop| {
+            hop == own
+                || shared
+                    .state
+                    .lock()
+                    .expect("poisoned")
+                    .link_with_hop(hop)
+                    .is_none_or(|other| other == link)
+        };
         let instance = tokio::select! {
-            found = route::announced_by(&view, &path, |hop| hop == self.inner.hop) => match found {
+            found = route::announced_by(&view, &path, ours) => match found {
                 Ok(instance) => instance,
                 Err(moq_net::Error::Closed) => return Err(e!(Error::NotAnnounced { path })),
                 Err(source) => return Err(e!(Error::Unresolved { path, source })),
