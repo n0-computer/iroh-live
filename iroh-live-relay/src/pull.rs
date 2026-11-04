@@ -371,6 +371,10 @@ impl PullState {
     }
 
     /// Resolves the ticket's broadcast again, backing off between attempts.
+    ///
+    /// Does not look at the pull's claims. A pull that loses its last session
+    /// while this runs still tries [`MAX_RESOLVES`] times, about 90 seconds at
+    /// worst, and redials the publisher for nobody.
     async fn resolve_again(
         &self,
         ticket: &BroadcastTicket,

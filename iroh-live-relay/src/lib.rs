@@ -31,7 +31,10 @@
 //! # Cancellation safety
 //!
 //! [`run`] returns on ctrl-c, after closing its listeners. Dropping its future
-//! stops everything it started, accepted connections included.
+//! stops the listeners and the accepted connections. The tasks that dial and
+//! hold a pull are detached, and each holds a clone of the pull's node. They
+//! end when the pull retires, a linger window after its last session, or
+//! later while a dial or a resolve is in flight.
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
