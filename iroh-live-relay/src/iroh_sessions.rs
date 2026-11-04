@@ -196,7 +196,11 @@ mod tests {
             "cam".to_owned(),
         );
         let auth = browser_auth();
-        let matches = |path: &str| auth.public_publish.iter().any(|pattern| pattern.matches(path));
+        let matches = |path: &str| {
+            auth.public_publish
+                .iter()
+                .any(|pattern| pattern.matches(path))
+        };
         let full = ticket.to_string();
         let bare = full.strip_prefix("iroh-live:").expect("a ticket prefix");
         assert!(!matches(&full));

@@ -990,9 +990,7 @@ async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if matches!(update, Event::End(_))
-                && announce_of(&update).prefix.as_str() == path
-            {
+            if matches!(update, Event::End(_)) && announce_of(&update).prefix.as_str() == path {
                 return;
             }
         }
