@@ -1,8 +1,8 @@
-//! The crate's error types.
+//! The error the player and the publisher share.
 //!
-//! The [`Error`] the player and the publisher share. Its variants group
-//! failures by what a caller can act on.
+//! The variants of [`Error`] group failures by what a caller can act on.
 
+use moq_ext_sources::Error as SourceError;
 use n0_error::{AnyError, stack_error};
 
 /// Errors raised by the media crates.
@@ -156,12 +156,13 @@ impl Error {
 
 impl From<moq_ext_sources::Error> for Error {
     fn from(err: moq_ext_sources::Error) -> Self {
-        use moq_ext_sources::Error as Source;
         match err {
-            Source::Device { source, .. } => n0_error::e!(Self::Device { source }),
-            Source::InvalidConfig { reason, .. } => n0_error::e!(Self::InvalidConfig { reason }),
-            Source::Closed { .. } => n0_error::e!(Self::Closed),
-            Source::Io { source, .. } => n0_error::e!(Self::Io { source }),
+            SourceError::Device { source, .. } => n0_error::e!(Self::Device { source }),
+            SourceError::InvalidConfig { reason, .. } => {
+                n0_error::e!(Self::InvalidConfig { reason })
+            }
+            SourceError::Closed { .. } => n0_error::e!(Self::Closed),
+            SourceError::Io { source, .. } => n0_error::e!(Self::Io { source }),
         }
     }
 }

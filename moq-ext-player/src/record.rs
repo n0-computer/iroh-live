@@ -27,7 +27,7 @@ use moq_mux::{
 use n0_future::task::AbortOnDropHandle;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info};
+use tracing::{Instrument, debug, info, info_span};
 
 use moq_ext_media_core::Error;
 
@@ -46,8 +46,9 @@ pub enum RecordFormat {
 impl RecordFormat {
     /// Returns the container a file name's extension names, if it names one.
     ///
-    /// `.mp4`, `.m4v` and `.m4s` are fragmented MP4; `.mkv` and `.webm` are
+    /// `.mp4`, `.m4v` and `.m4s` are fragmented MP4. `.mkv` and `.webm` are
     /// Matroska. Case does not matter.
+    #[must_use]
     pub fn from_path(path: impl AsRef<Path>) -> Option<Self> {
         match path.as_ref().extension()?.to_str()?.to_lowercase().as_str() {
             "mp4" | "m4v" | "m4s" => Some(Self::Fmp4),
@@ -95,6 +96,7 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// Starts the recording task, for [`RemoteBroadcast::record`].
     pub(crate) fn start(
         broadcast: &RemoteBroadcast,
         out: Box<dyn AsyncWrite + Send + Unpin>,
@@ -107,7 +109,7 @@ impl Recording {
         }
         let stop = CancellationToken::new();
         let written = Arc::new(AtomicU64::new(0));
-        let span = tracing::info_span!(parent: broadcast.span(), "record");
+        let span = info_span!(parent: broadcast.span(), "record");
         let task = n0_future::task::spawn(
             record(
                 broadcast.clone(),
@@ -127,6 +129,7 @@ impl Recording {
     }
 
     /// Returns how many bytes have been written so far.
+    #[must_use]
     pub fn written(&self) -> u64 {
         self.written.load(Ordering::Relaxed)
     }

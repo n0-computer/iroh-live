@@ -1,4 +1,4 @@
-//! The player's error types. Everything else is [`moq_ext_media_core::Error`].
+//! The player's own error type, beside the shared [`moq_ext_media_core::Error`].
 
 use std::sync::Arc;
 
@@ -22,6 +22,8 @@ pub enum SwitchError {
         /// The rendition the switch was for.
         rendition: String,
     },
+    /// The switch could not finish.
+    ///
     /// The decoder did not open, the track ended, the switch timed out, or the
     /// catalog has no such rendition ([`Error::UnknownRendition`]).
     #[error("the switch to {rendition} failed")]

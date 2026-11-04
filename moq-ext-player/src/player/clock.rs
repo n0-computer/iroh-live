@@ -125,6 +125,8 @@ impl PlayoutClock {
     /// Recomputes the delay whenever the clock changes during the wait.
     /// Returns `true` when the frame should render, and `false` once the clock
     /// is closed.
+    ///
+    /// Cancellation safe: the wait keeps no state outside the future.
     pub(crate) async fn wait_async(&self, timestamp: Duration) -> bool {
         loop {
             // Register before reading the delay, so a `close` or a reference

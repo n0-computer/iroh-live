@@ -19,6 +19,8 @@ pub trait VideoRenditions {
 
     /// Returns the video rendition named `name`.
     ///
+    /// # Errors
+    ///
     /// Fails with [`Error::UnknownRendition`], which lists the names the
     /// catalog has.
     fn video_rendition(&self, name: &str) -> Result<&VideoConfig, Error>;
@@ -54,8 +56,7 @@ impl VideoRenditions for Catalog {
     }
 }
 
-/// Returns the video renditions as a ladder for rendition selection, largest
-/// first.
+/// Returns the video renditions as a ladder, largest first.
 pub(crate) fn rungs(catalog: &Catalog) -> Vec<Rung> {
     catalog
         .ranked_video()
@@ -90,13 +91,12 @@ mod tests {
 
     #[test]
     fn video_renditions_come_largest_first() {
-        let mut hang = hang::catalog::Catalog::default();
-        let renditions = &mut hang.video.renditions;
+        let mut catalog = hang::catalog::Catalog::default();
+        let renditions = &mut catalog.video.renditions;
         renditions.insert("low".into(), rendition(640, 360, 500_000));
         renditions.insert("high".into(), rendition(1920, 1080, 4_000_000));
         renditions.insert("720p-cheap".into(), rendition(1280, 720, 800_000));
         renditions.insert("720p-rich".into(), rendition(1280, 720, 3_000_000));
-        let catalog = hang;
         let names: Vec<&str> = catalog
             .ranked_video()
             .iter()

@@ -20,11 +20,11 @@ pub struct NetworkSample {
     /// matches loss on the media's direction only when both directions are
     /// impaired alike.
     pub loss: Option<f64>,
-    /// The sender's estimate of what the path to this endpoint delivers, in
-    /// bits per second.
+    /// The sender's estimate of what the path delivers, in bits per second.
     ///
-    /// This is the only field that measures capacity. Adaptation caps the
-    /// rendition's bitrate with it.
+    /// The estimate is for the path to this endpoint. It is the only field
+    /// that measures capacity. Adaptation caps the rendition's bitrate with
+    /// it.
     pub delivery: Option<u64>,
     /// A counter that changes whenever the path changes.
     ///

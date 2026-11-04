@@ -29,6 +29,8 @@
 
 use std::time::{Duration, Instant};
 
+use tracing::info;
+
 /// How far a replacement may trail the incumbent's playhead when it takes over.
 ///
 /// The same slack `@moq/watch` uses. It absorbs scheduling noise, and it is the
@@ -318,7 +320,7 @@ impl<R, O> Switcher<R, O> {
                 .as_ref()
                 .and_then(|playing| playing.playhead)
                 .map(|playhead| playhead.saturating_sub(pts));
-            tracing::info!(
+            info!(
                 rendition = %replacement.target.rendition,
                 ?behind,
                 "replacement did not catch up in time, taking over where it is"

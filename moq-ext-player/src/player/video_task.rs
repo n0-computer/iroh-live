@@ -2,8 +2,8 @@
 //!
 //! One decoder plays at a time. A switch or a decoder change opens a
 //! replacement beside it and hands over once the replacement has caught up
-//! with the picture on screen. The state machine for that lives in
-//! [`switch`](super::switch), and this module drives it with real decoders.
+//! with the picture on screen. The state machine for that is
+//! [`Switcher`], and this module drives it with real decoders.
 //!
 //! Each decoder is read by its own task, not from a `select!` arm.
 //! `moq_video::decode::Consumer` reads through a `Sink`, whose `read` is not
@@ -547,7 +547,7 @@ async fn spawn_reader(
             let mut timing = Smoothed::default();
             let mut cadence = RateMeter::over(CADENCE_EVERY);
             loop {
-                let started = std::time::Instant::now();
+                let started = Instant::now();
                 match consumer.read().await {
                     Ok(Some(moq_video::decode::Read::Frame(frame))) => {
                         if failures > 0 {

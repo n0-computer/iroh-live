@@ -26,6 +26,9 @@ The source is opened once and every rendition gets its own encoder. A rendition
 encodes only while someone watches it. `status()` says which renditions are
 encoding and with which backend, and `stats()` reports each encoder.
 
+`close()` lets each encoder finish its track before the broadcast ends.
+Dropping the last clone ends the broadcast at once, without that wait.
+
 ## Feature flags
 
 | Feature | Default | What it adds |

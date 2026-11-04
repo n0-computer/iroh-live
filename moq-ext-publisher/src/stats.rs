@@ -42,7 +42,7 @@ pub struct EncodeStats {
 }
 
 impl EncodeStats {
-    /// Counts one encoded frame of `bytes` and stores the rates from a [`RateMeter`].
+    /// Counts one encoded frame of `bytes` and stores the rates of a `RateMeter`.
     ///
     /// `rates` holds frames and bytes per second.
     pub(crate) fn record(&mut self, bytes: u64, rates: Option<(f64, f64)>) {

@@ -330,7 +330,7 @@ pub(crate) async fn run(inputs: Inputs) {
             if now.duration_since(since) < VANISH_GRACE {
                 continue;
             }
-            debug!("the catalog has had no video for a while; the video is over");
+            debug!("the catalog has had no video for a while, so the video is over");
             send_if_changed(&status, |status| status.video = SlotState::Ended);
         }
         vanished_since = None;

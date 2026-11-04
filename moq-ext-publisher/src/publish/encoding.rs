@@ -1,6 +1,6 @@
 //! How a broadcast encodes its sources: renditions and their presets.
 
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use moq_net::bandwidth::Rate;
 
@@ -40,7 +40,7 @@ impl VideoEncoding {
                 "a video encoding needs at least one rendition",
             ));
         }
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for rendition in &self.renditions {
             if rendition.name.is_empty() {
                 return Err(Error::invalid("a rendition name cannot be empty"));
@@ -58,7 +58,7 @@ impl VideoEncoding {
                     || size.height % 2 == 1)
             {
                 return Err(Error::invalid(format!(
-                    "rendition {} has size {size}; both sides must be even and non-zero",
+                    "rendition {} has size {size}, but both sides must be even and non-zero",
                     rendition.name
                 )));
             }

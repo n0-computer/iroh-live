@@ -1,7 +1,7 @@
-//! A player over `moq_video` and `moq_audio`: it picks the rendition the link
-//! can carry and keeps audio and video in step.
+//! A player over `moq_video` and `moq_audio`.
 //!
-//! Nothing here depends on iroh or on a publisher. A transport builds a
+//! It picks the rendition the link can carry and keeps audio and video in
+//! step. Nothing here depends on iroh or on a publisher. A transport builds a
 //! [`RemoteBroadcast`] from what it subscribed to, and attaches its view of the
 //! link with [`RemoteBroadcast::set_network`]. A broadcast that lives in the
 //! same process is read with [`RemoteBroadcast::from_consumer`].
@@ -30,11 +30,16 @@
 //! - [`VideoFrames`]: the frame stream every renderer reads.
 //! - [`AudioTarget`]: where a player's audio goes, a `moq_audio::playback::Engine`
 //!   or nowhere. A microphone can cancel the echo of an engine's mix.
+//! - [`RenditionMode`]: how the video rendition is chosen, which is
+//!   `moq_ext_adaptive::Mode`.
 //!
 //! A [`RemoteBroadcast`] that follows a route table looks for another route
 //! when its broadcast ends. A player adapts only to the network signals a
 //! transport attached. Without them, [`RenditionMode::Auto`] plays the best
 //! rendition its limits allow.
+//!
+//! Dropping a [`Player`] aborts its tasks and returns at once. Dropping the
+//! last clone of a [`RemoteBroadcast`] aborts the task that follows it.
 //!
 //! # Cancellation safety
 //!

@@ -26,6 +26,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tracing::debug;
+
 use crate::NetworkSample;
 
 /// One rendition, as the bound sees it.
@@ -52,6 +54,7 @@ pub struct Constraints {
 
 impl Constraints {
     /// Reports whether `rung` is not stalled, not excluded and not too tall.
+    #[must_use]
     pub fn allows(&self, rung: &Rung) -> bool {
         !rung.stalled
             && !self.excluded.contains(&rung.name)
@@ -79,8 +82,9 @@ pub struct Adaptation {
     /// acknowledgement. A single low reading does not mean a smaller link, so
     /// only a shortfall that lasts the whole window counts.
     pub estimate_window: Duration,
-    /// Loss above which the ceiling steps down one rung, once held for
-    /// [`downgrade_hold`](Self::downgrade_hold).
+    /// Loss above which the ceiling steps down one rung.
+    ///
+    /// It has to hold for [`downgrade_hold`](Self::downgrade_hold) first.
     pub loss_step_down: f64,
     /// Loss above which the ceiling drops to the bottom rung at once.
     pub loss_emergency: f64,
@@ -240,6 +244,7 @@ impl Bound {
     /// the old rendition's, and a step on it would stack onto the first.
     ///
     /// Returns `None` only when `ranked` is empty.
+    #[must_use]
     pub fn decide(
         &mut self,
         ranked: &[Rung],
@@ -251,7 +256,7 @@ impl Bound {
     ) -> Option<String> {
         if self.path_generation != Some(reading.path_generation) {
             if self.path_generation.is_some() {
-                tracing::debug!(
+                debug!(
                     generation = reading.path_generation,
                     "the network path changed, forgetting what the old one taught",
                 );
@@ -362,10 +367,10 @@ impl Bound {
                     }
                     let tries = self.failed_tries.entry(rung).or_default();
                     *tries += 1;
-                    tracing::debug!(
+                    debug!(
                         rung = %ranked[current_index].name,
                         tries = *tries,
-                        "stepped down; the next step up to this rung waits longer"
+                        "stepped down, so the next step up to this rung waits longer"
                     );
                     return Some(target.clone());
                 }

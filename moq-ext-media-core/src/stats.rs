@@ -16,6 +16,7 @@ impl<T: Clone> Cell<T> {
     }
 
     /// Returns a copy of the value.
+    #[must_use]
     pub fn get(&self) -> T {
         self.0.lock().expect("poisoned").clone()
     }
@@ -46,6 +47,7 @@ impl Default for RateMeter {
 
 impl RateMeter {
     /// Creates a meter that reports once per `window`.
+    #[must_use]
     pub fn over(window: Duration) -> Self {
         Self::starting(window, Instant::now())
     }
@@ -63,6 +65,7 @@ impl RateMeter {
     /// Counts one event carrying `amount`, such as bytes.
     ///
     /// Returns events and amount per second once the window has closed.
+    #[must_use]
     pub fn tick(&mut self, amount: u64) -> Option<(f64, f64)> {
         self.tick_at(amount, Instant::now())
     }

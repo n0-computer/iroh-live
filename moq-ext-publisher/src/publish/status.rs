@@ -51,7 +51,9 @@ pub struct PublishStatus {
 /// Which slot a report is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Medium {
+    /// The video slot.
     Video,
+    /// The audio slot.
     Audio,
 }
 
@@ -70,6 +72,7 @@ struct Owner {
 }
 
 impl Owners {
+    /// Returns the owner of `medium`.
     fn get_mut(&mut self, medium: Medium) -> &mut Owner {
         match medium {
             Medium::Video => &mut self.video,
@@ -79,6 +82,7 @@ impl Owners {
 }
 
 impl PublishStatus {
+    /// Returns the state of the slot of `medium`.
     fn slot(&mut self, medium: Medium) -> &mut SlotState {
         match medium {
             Medium::Video => &mut self.video,
@@ -155,6 +159,7 @@ impl StatusCell {
         });
     }
 
+    /// Applies `f` to the status if the task of `generation` still owns `medium`.
     fn write(&self, medium: Medium, generation: u64, f: impl FnOnce(&mut PublishStatus)) {
         let mut owners = self.owners.lock().expect("poisoned");
         if owners.get_mut(medium).generation != generation {

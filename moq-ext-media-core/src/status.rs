@@ -23,9 +23,9 @@ pub fn send_if_changed<T: Clone + PartialEq>(
 
 /// The state of one media slot, on a broadcast or on a player.
 ///
-/// `PublishStatus` and `PlayerStatus` both use it, so
-/// a UI reports both the same way. Two `Failed` states are equal only when they
-/// hold the same error, as [`ByPtr`] says.
+/// `PublishStatus` and `PlayerStatus` both use it, so a UI reports both the
+/// same way. Two `Failed` states are equal only when they hold the same error,
+/// as [`ByPtr`] says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum SlotState {
     /// Nothing is set.
@@ -54,6 +54,7 @@ pub struct ByPtr<T>(pub Arc<T>);
 
 impl<T> ByPtr<T> {
     /// Wraps `value` in a new allocation.
+    #[must_use]
     pub fn new(value: T) -> Self {
         Self(Arc::new(value))
     }

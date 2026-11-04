@@ -1,13 +1,16 @@
 //! The player's audio task: one rendition into the player's output.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::watch;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::output::{AudioTarget, OutputControl};
-use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock};
+use super::output::{AudioTarget, OutputControl, OutputSink};
+use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, clock::AudioLatency};
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
 use moq_ext_sources::AudioFormat;
 
@@ -150,16 +153,9 @@ async fn open(
     name: &str,
     config: &hang::catalog::AudioConfig,
     consumer: &moq_net::broadcast::Consumer,
-    max_age: std::time::Duration,
+    max_age: Duration,
     output: &AudioTarget,
-) -> Result<
-    (
-        moq_audio::decode::Consumer,
-        super::output::OutputSink,
-        OutputControl,
-    ),
-    Error,
-> {
+) -> Result<(moq_audio::decode::Consumer, OutputSink, OutputControl), Error> {
     let mut options = moq_audio::decode::Options::new();
     options.output.format = moq_audio::Format::F32;
     options.delay = moq_audio::decode::Delay::default().with_max(max_age);
@@ -180,10 +176,10 @@ async fn open(
 struct Job {
     name: String,
     decoder: moq_audio::decode::Consumer,
-    sink: super::output::OutputSink,
+    sink: OutputSink,
     control: OutputControl,
     /// Clears this track's contribution to the clock when dropped.
-    latency: super::clock::AudioLatency,
+    latency: AudioLatency,
     stats: PlaybackRecorder,
 }
 
@@ -205,7 +201,7 @@ impl Job {
             let moq_audio::decode::Read::Frame(frame) = read else {
                 continue;
             };
-            let decoded = std::time::Instant::now();
+            let decoded = Instant::now();
             // The playout clock holds video back by the audio buffered ahead
             // of the speaker. It is the only latency either side can measure.
             let buffered = self.sink.buffered();
@@ -215,7 +211,7 @@ impl Job {
                 kind: MediaKind::Audio,
                 pts: frame.timestamp.into(),
                 decoded,
-                presented: std::time::Instant::now() + buffered,
+                presented: Instant::now() + buffered,
             });
             let peak = self.control.peak();
             self.stats.audio.update(|audio| {

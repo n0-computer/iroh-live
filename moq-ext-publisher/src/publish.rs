@@ -8,16 +8,19 @@
 //! The video slot opens its source once and encodes it into every rendition of
 //! a ladder. Each rendition encodes only while someone watches it.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info};
+use tracing::{Instrument, Span, debug, info, info_span};
 
 use self::status::{Medium, StatusCell};
 pub use self::{
@@ -43,7 +46,7 @@ pub(crate) struct SlotTask {
 
 impl SlotTask {
     /// Spawns `run` with a stop token that is a child of `closed`.
-    fn spawn<F, Fut>(span: tracing::Span, closed: &CancellationToken, run: F) -> Self
+    fn spawn<F, Fut>(span: Span, closed: &CancellationToken, run: F) -> Self
     where
         F: FnOnce(CancellationToken) -> Fut,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -60,7 +63,7 @@ impl SlotTask {
     ///
     /// A task that finishes in time ends its tracks cleanly, so subscribers see
     /// an end instead of a reset. A slower task is aborted.
-    pub(crate) async fn finish(mut self, patience: std::time::Duration) {
+    pub(crate) async fn finish(mut self, patience: Duration) {
         self.stop.cancel();
         let Some(task) = self.task.take() else {
             return;
@@ -78,7 +81,7 @@ impl Drop for SlotTask {
 }
 
 /// How long a replaced or closed publish task gets to finish its tracks.
-const FINISH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+const FINISH_PATIENCE: Duration = Duration::from_secs(2);
 
 /// Everything a slot task needs.
 struct Job {
@@ -126,12 +129,14 @@ struct Rebase {
 }
 
 impl Rebase {
+    /// Anchors the mapping so `first` lands at the clock's current time.
     fn anchor(clock: moq_mux::Clock, first: moq_net::Timestamp) -> Self {
         Self {
             delta: clock.now().as_micros() as i128 - first.as_micros() as i128,
         }
     }
 
+    /// Returns `timestamp` on the broadcast clock.
     fn map(self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
         let micros = (timestamp.as_micros() as i128 + self.delta).max(0) as u64;
         moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp)
@@ -153,8 +158,9 @@ struct Shared {
     clock: moq_mux::Clock,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
-    /// Held by a video task while it owns track names. A replacement waits on
-    /// it until its predecessor's tracks are gone.
+    /// Held by a video task while it owns track names.
+    ///
+    /// A replacement waits on it until its predecessor's tracks are gone.
     video_tracks: Arc<tokio::sync::Mutex<()>>,
     /// The same for audio, whose track name does not change on replacement.
     audio_tracks: Arc<tokio::sync::Mutex<()>>,
@@ -169,7 +175,7 @@ struct Shared {
     closer: Mutex<Option<AbortOnDropHandle<()>>>,
     /// Cleared slots finishing their tracks, held so they are not detached.
     retiring: Mutex<n0_future::task::JoinSet<()>>,
-    span: tracing::Span,
+    span: Span,
 }
 
 impl Drop for Shared {
@@ -193,6 +199,10 @@ impl Drop for Shared {
 /// Cloning is cheap. [`close`](Self::close) ends the broadcast for every clone.
 /// The setters spawn an encoding task, so call them from within a Tokio
 /// runtime.
+///
+/// Dropping the last clone ends the broadcast without waiting. It aborts the
+/// encoding tasks and closes the catalog and the broadcast, so subscribers see
+/// it end.
 #[derive(Debug, Clone)]
 pub struct LocalBroadcast {
     shared: Arc<Shared>,
@@ -217,7 +227,7 @@ impl LocalBroadcast {
             .with_clock(clock.clone());
         let catalog = moq_mux::catalog::Producer::new(&mut producer, config)
             .expect("a new broadcast has no catalog track yet");
-        let span = tracing::info_span!("broadcast");
+        let span = info_span!("broadcast");
         Self {
             shared: Arc::new(Shared {
                 producer,
@@ -316,11 +326,13 @@ impl LocalBroadcast {
     ///
     /// A borrow of the receiver blocks the broadcast's writes, so keep it short
     /// and do not hold it across a call into the broadcast.
+    #[must_use]
     pub fn status(&self) -> watch::Receiver<PublishStatus> {
         self.shared.status.subscribe()
     }
 
     /// Returns what the broadcast is sending, per rendition.
+    #[must_use]
     pub fn stats(&self) -> PublishStats {
         self.shared.stats.snapshot()
     }
@@ -366,6 +378,7 @@ impl LocalBroadcast {
         self.shared.finished.cancelled().await;
     }
 
+    /// Fails with [`Error::Closed`] once the broadcast is closed.
     fn check_open(&self) -> Result<(), Error> {
         if self.shared.closed.is_cancelled() {
             Err(n0_error::e!(Error::Closed))
@@ -389,12 +402,12 @@ impl LocalBroadcast {
             Medium::Video => (
                 &shared.video,
                 &shared.video_tracks,
-                tracing::info_span!(parent: &shared.span, "video"),
+                info_span!(parent: &shared.span, "video"),
             ),
             Medium::Audio => (
                 &shared.audio,
                 &shared.audio_tracks,
-                tracing::info_span!(parent: &shared.span, "audio"),
+                info_span!(parent: &shared.span, "audio"),
             ),
         };
         let mut slot = lock.lock().expect("poisoned");
@@ -412,6 +425,7 @@ impl LocalBroadcast {
         *slot = Some(Slot { generation, task });
     }
 
+    /// Stops the task of a slot, and lets it finish its tracks in the background.
     fn clear(&self, medium: Medium) {
         let lock = match medium {
             Medium::Video => &self.shared.video,

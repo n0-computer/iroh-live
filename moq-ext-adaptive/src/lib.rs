@@ -12,7 +12,7 @@
 //!   [`Constraints`] and a [`NetworkSample`], and returns the best rung the
 //!   link carries. Time enters only as hysteresis, tuned by [`Adaptation`].
 //!   [`choose`] wraps it with the rendition [`Mode`] (automatic, pinned or off),
-//!   and [`Backoffs`] tracks renditions whose decoders failed. [`rank`] orders a
+//!   and [`Backoffs`] tracks renditions whose decoders failed. [`rank()`] orders a
 //!   ladder from catalog data, and [`step_down`] tells whether a switch moves
 //!   down the ladder.
 //! - [`Switcher`] hands the picture from one decoder to the next. It tracks one

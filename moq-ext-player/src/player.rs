@@ -71,6 +71,7 @@ impl Latency {
         !self.min.is_zero()
     }
 
+    /// Fails if `min` is above `max`.
     fn validate(&self) -> Result<(), Error> {
         if self.min > self.max {
             Err(Error::invalid(format!(
@@ -174,8 +175,11 @@ pub(crate) enum SwitchEvent {
 /// Why a switch was given up.
 #[derive(Debug, Clone)]
 pub(crate) enum Abandon {
+    /// A newer request replaced the switch.
     Superseded,
+    /// The request was withdrawn.
     Withdrawn,
+    /// The decoder failed, or the switch timed out.
     Failed(Arc<Error>),
 }
 
@@ -321,6 +325,7 @@ impl Player {
     /// Every call returns a handle onto the same stream, and each handle keeps
     /// its own cursor. The stream survives rendition switches and decoder
     /// changes. It ends when the broadcast closes or the player is dropped.
+    #[must_use]
     pub fn video(&self) -> VideoFrames {
         self.frames.clone()
     }
@@ -373,11 +378,13 @@ impl Player {
     ///
     /// A borrow of the receiver blocks the player's writes, so keep it short
     /// and do not hold it across a call into the player.
+    #[must_use]
     pub fn status(&self) -> watch::Receiver<PlayerStatus> {
         self.status.subscribe()
     }
 
     /// Returns the player's playback statistics.
+    #[must_use]
     pub fn stats(&self) -> PlaybackStats {
         PlaybackStats {
             video: self.stats.video.get(),
@@ -392,6 +399,7 @@ impl Player {
     /// Keeps a few hundred frames of each medium, about ten seconds at usual
     /// rates. It is meant for a debugging view of pacing and A/V sync. Read it
     /// once per redraw of that view, not per frame.
+    #[must_use]
     pub fn timeline(&self) -> Vec<FrameTiming> {
         let mut frames: Vec<FrameTiming> = self
             .stats

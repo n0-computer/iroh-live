@@ -13,7 +13,7 @@ use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, trace, warn};
+use tracing::{Instrument, Span, debug, info, info_span, trace, warn};
 
 use moq_ext_media_core::Error;
 
@@ -31,7 +31,9 @@ const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 /// The broadcast consumer a player reads, and how many times it has changed.
 #[derive(derive_more::Debug, Clone, Default)]
 pub(crate) struct Epoch {
+    /// Counts the consumers handed out so far, so a reader sees a new route.
     pub(crate) generation: u64,
+    /// The consumer to read, or `None` while waiting for a route and after the end.
     #[debug(skip)]
     pub(crate) consumer: Option<moq_net::broadcast::Consumer>,
 }
@@ -64,7 +66,7 @@ struct Shared {
     closed: CancellationToken,
     #[debug(skip)]
     network: Mutex<Option<NetworkSignals>>,
-    span: tracing::Span,
+    span: Span,
     #[debug(skip)]
     _task: AbortOnDropHandle<()>,
 }
@@ -85,9 +87,13 @@ impl RemoteBroadcast {
     /// The remote broadcast ends when `broadcast` ends. This reads a broadcast
     /// that lives in the same process too: pass it the consumer a publisher
     /// hands out through `moq_net::Consume`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn from_consumer(broadcast: moq_net::broadcast::Consumer) -> Self {
-        let span = tracing::info_span!("remote");
+        let span = info_span!("remote");
         Self::spawn(Origin::Consumer, Some(broadcast), span)
     }
 
@@ -101,6 +107,10 @@ impl RemoteBroadcast {
     /// The first request waits without limit, since the publisher may not have
     /// announced the path yet. If you already resolved the path, use
     /// [`from_resolved`](Self::from_resolved).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn from_origin(origin: moq_net::origin::Consumer, path: moq_net::Path) -> Self {
         Self::routed_to(origin, path, None)
@@ -112,6 +122,10 @@ impl RemoteBroadcast {
     /// waits for a first route. Every later request is a failover with a time
     /// limit, so a publisher that is already gone closes the broadcast. This is
     /// what `iroh-live` uses on subscribe, after resolving the path.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn from_resolved(
         origin: moq_net::origin::Consumer,
@@ -127,7 +141,7 @@ impl RemoteBroadcast {
         path: moq_net::Path,
         first: Option<moq_net::broadcast::Consumer>,
     ) -> Self {
-        let span = tracing::info_span!("remote", path = %path);
+        let span = info_span!("remote", path = %path);
         Self::spawn(
             Origin::Routed {
                 origin: Box::new(origin),
@@ -224,7 +238,7 @@ impl RemoteBroadcast {
     }
 
     /// Returns the span everything reading this broadcast logs under.
-    pub(crate) fn span(&self) -> &tracing::Span {
+    pub(crate) fn span(&self) -> &Span {
         &self.shared.span
     }
 
@@ -237,11 +251,7 @@ impl RemoteBroadcast {
         }
     }
 
-    fn spawn(
-        origin: Origin,
-        first: Option<moq_net::broadcast::Consumer>,
-        span: tracing::Span,
-    ) -> Self {
+    fn spawn(origin: Origin, first: Option<moq_net::broadcast::Consumer>, span: Span) -> Self {
         let epoch = watch::Sender::new(Epoch::default());
         let catalog = watch::Sender::new(None);
         let closed = CancellationToken::new();
@@ -390,6 +400,8 @@ async fn read_catalog(
 
 #[cfg(test)]
 mod tests {
+    use moq_net::{Instance, origin::Route};
+
     use super::*;
 
     #[tokio::test]
@@ -409,7 +421,7 @@ mod tests {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
         let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
         let published = origin
-            .publish("live/cam", moq_net::origin::Route::default())
+            .publish("live/cam", Route::default())
             .expect("published");
         let consumer = origin
             .consume()
@@ -428,12 +440,11 @@ mod tests {
             .expect("the remote closed within its re-resolve window");
     }
 
-    /// A new instance taking the path over switches players at once, while
-    /// the old instance still serves its readers.
+    /// A new instance taking the path over switches players at once.
+    ///
+    /// The old instance still serves its readers meanwhile.
     #[tokio::test]
     async fn a_takeover_switches_while_the_old_instance_lives() {
-        use moq_net::{Instance, origin::Route};
-
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
         let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
         let _first = origin
@@ -478,7 +489,7 @@ mod tests {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
         let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
         let first = origin
-            .publish("live/cam", moq_net::origin::Route::default())
+            .publish("live/cam", Route::default())
             .expect("published");
         let remote = RemoteBroadcast::from_origin(
             origin.consume(),
@@ -497,7 +508,7 @@ mod tests {
         // The first publication goes, and another takes the path.
         drop(first);
         let _second = origin
-            .publish("live/cam", moq_net::origin::Route::default())
+            .publish("live/cam", Route::default())
             .expect("published again");
         let next = tokio::time::timeout(
             Duration::from_secs(5),

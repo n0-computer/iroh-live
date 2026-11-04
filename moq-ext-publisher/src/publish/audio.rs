@@ -9,10 +9,8 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "capture")]
 use super::status::Reporter;
 use super::{Job, Rebase, encoding::AudioEncoding, status::RenditionState};
-use moq_ext_sources::AudioKind;
-
 use moq_ext_media_core::{ByPtr, Error, SlotState, stats::Cell};
-use moq_ext_sources::{AudioFormat, AudioSource};
+use moq_ext_sources::{AudioFormat, AudioKind, AudioSource};
 
 use crate::stats::AudioEncodeStats;
 
@@ -226,7 +224,7 @@ async fn follow(
                     .failure()
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "the microphone failed".to_string());
-                warn!(%reason, "microphone failed; moq-audio retries when it can");
+                warn!(%reason, "microphone failed, and moq-audio retries when it can");
                 reporter.slot(SlotState::Failed(ByPtr::new(Error::device_msg(reason))));
             }
             moq_audio::encode::Status::Ended => return Ok(()),

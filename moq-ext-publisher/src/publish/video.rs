@@ -10,7 +10,7 @@
 
 use std::{
     sync::{Arc, OnceLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use n0_future::{StreamExt, task::JoinSet};
@@ -219,13 +219,9 @@ fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Opt
 }
 
 /// Returns the gap between kept frames for a rendition slower than its source.
-fn frame_interval(
-    rendition: &VideoRendition,
-    source: moq_video::FrameRate,
-) -> Option<std::time::Duration> {
+fn frame_interval(rendition: &VideoRendition, source: moq_video::FrameRate) -> Option<Duration> {
     let rate = rendition.rate?;
-    (rate.as_f64() < source.as_f64())
-        .then(|| std::time::Duration::from_secs_f64(1.0 / rate.as_f64()))
+    (rate.as_f64() < source.as_f64()).then(|| Duration::from_secs_f64(1.0 / rate.as_f64()))
 }
 
 /// Probes the encoder `config` asks for, falling back to software once if allowed.
@@ -281,7 +277,7 @@ struct Encoder {
     /// The slot's hold on its track names.
     _tracks: Arc<tokio::sync::OwnedMutexGuard<()>>,
     /// The gap between kept frames, for a rendition slower than its source.
-    interval: Option<std::time::Duration>,
+    interval: Option<Duration>,
     reporter: Reporter,
     stats: Cell<EncodeStats>,
     stop: CancellationToken,
@@ -560,7 +556,7 @@ mod tests {
         };
         assert_eq!(
             frame_interval(&half, fps(30)),
-            Some(std::time::Duration::from_secs_f64(1.0 / 15.0))
+            Some(Duration::from_secs_f64(1.0 / 15.0))
         );
         assert_eq!(frame_interval(&VideoRendition::new("full"), fps(30)), None);
     }

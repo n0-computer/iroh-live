@@ -42,7 +42,7 @@ pub enum Mode {
     /// If it cannot be played, plays as [`Auto`](Self::Auto) would, reports
     /// why, and returns to it when it becomes available.
     Pinned(String),
-    /// Play no video; audio is unaffected (a tile scrolled off screen).
+    /// Play no video, and leave audio unaffected (a tile scrolled off screen).
     Off,
 }
 
@@ -75,8 +75,9 @@ impl Mode {
 /// Why a pin could not be honoured.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinProblem {
-    /// The pinned rendition's decoder failed, and it is left alone until it is
-    /// retried.
+    /// The pinned rendition's decoder failed.
+    ///
+    /// The rendition is left alone until it is retried.
     Excluded(String),
     /// The ladder has no rendition of that name.
     Unknown(String),
@@ -131,6 +132,7 @@ impl Backoffs {
 /// `rungs` is the ladder, best first. `current` is the rendition last asked
 /// for and `on_screen` the one playing. `sample` is the link, if the transport
 /// measures one. Without it the best allowed rendition plays.
+#[must_use]
 #[allow(
     clippy::too_many_arguments,
     reason = "the rendition asked for and the one on screen are both weighed"
@@ -179,6 +181,7 @@ pub fn choose(
 }
 
 /// Returns the best rendition the constraints allow, or the smallest if none is.
+#[must_use]
 pub fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
     rungs
         .iter()
@@ -193,6 +196,7 @@ pub fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
 /// [`Mode::Auto`], is a step down. Such a switch does not overlap: on a
 /// saturated link the incumbent's track would keep taking the bandwidth the
 /// replacement needs.
+#[must_use]
 pub fn step_down(
     mode: &Mode,
     rungs: &[Rung],

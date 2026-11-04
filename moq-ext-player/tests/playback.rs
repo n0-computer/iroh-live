@@ -399,9 +399,9 @@ fn never_over(states: &Mutex<Vec<SlotState>>) {
     );
 }
 
-/// Publishes a moving test pattern of `size` at `live/cam` on `origin`, as a
-/// transport would carry a remote publisher's broadcast.
+/// Publishes a moving test pattern of `size` at `live/cam` on `origin`.
 ///
+/// It stands in for a remote publisher's broadcast, as a transport carries it.
 /// The route costs `cost`. The broadcast and its route end when the task is
 /// aborted.
 fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -> JoinHandle<()> {
@@ -815,7 +815,7 @@ async fn the_frames_end_when_the_broadcast_closes() {
 async fn a_recording_writes_a_container() {
     let (broadcast, _source) = ladder();
     let remote = local(&broadcast);
-    let dir = std::env::temp_dir().join(format!("iroh-live-media-record-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("moq-ext-player-record-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a temp dir");
     let path = dir.join("out.mp4");
     let file = tokio::fs::File::create(&path)
