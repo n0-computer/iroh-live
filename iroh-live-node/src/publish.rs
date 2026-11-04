@@ -310,6 +310,15 @@ mod tests {
     use super::*;
     use crate::{Node, NodeConfig};
 
+    #[test]
+    fn check_path_refuses_empty_and_wildcard_paths() {
+        let check = |path: &str| check_path(&Path::new(path).expect("a path"));
+        assert!(check("live/alice/cam").is_ok());
+        assert!(matches!(check(""), Err(Error::InvalidPath { .. })));
+        assert!(matches!(check("live/*/cam"), Err(Error::InvalidPath { .. })));
+        assert!(matches!(check("live/**"), Err(Error::InvalidPath { .. })));
+    }
+
     /// A peers task that set_audience replaced cannot write its old set back.
     ///
     /// Aborting the task does not stop one that already waits on the lock, so

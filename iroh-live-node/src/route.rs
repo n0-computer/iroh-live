@@ -17,12 +17,11 @@
 //! path under another's instance could take over its readers. What keeps that
 //! out is the table's contents: a direct peer announces only paths its grant
 //! lets it publish, so with grants that name the peer it cannot reach another
-//! peer's paths, and an instance is a random string that only reaches the
-//! links whose grant lets them see the publication. A relay is trusted with the paths it
-//! forwards, so attach only relays that keep each publisher to its own paths,
-//! as moq-relay's tokens do. Hops no longer take part: moq splices by
-//! instance, not by the first hop a publisher claims, so the stand-in hop
-//! this crate once gave relayed routes has no job left.
+//! peer's paths. An instance is a random string that only reaches the links
+//! whose grant lets them see the publication. A relay is trusted with the
+//! paths it forwards, so attach only relays that keep each publisher to its
+//! own paths, as moq-relay's tokens do. Hops take no part in this, since moq
+//! splices by instance and not by the first hop a publisher claims.
 
 use std::{
     sync::{Arc, Mutex, Weak},

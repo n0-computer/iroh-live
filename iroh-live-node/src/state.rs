@@ -179,9 +179,9 @@ impl State {
     /// Its subscribe half lists the exact paths of the publications whose
     /// audience admits the link, within `base`, so it grows with them. See
     /// [`moq_ext_access::visible_paths`] for the limits that puts on the
-    /// number of publications. Its publish half is what the
-    /// peer may announce into the route table: `base`'s for a session, and
-    /// anything for a relay, which is trusted with what it forwards.
+    /// number of publications. Its publish half is what the peer may announce
+    /// into the route table: `base`'s for a session, and anything for a relay,
+    /// which is trusted with what it forwards.
     pub(crate) fn grant_for(
         &self,
         kind: LinkKind,
@@ -228,8 +228,8 @@ impl State {
             return Some(id);
         }
         // moq-relay declares a hop of its own, not the one derived from its
-        // endpoint id, and iroh-live-node peers always carry the derived one. So an
-        // unknown hop is a relay's: the oldest relay link, if there is one.
+        // endpoint id, and iroh-live-node peers always carry the derived one.
+        // So an unknown hop is a relay's: the oldest relay link, if any.
         self.links
             .iter()
             .filter(|(_, link)| link.kind == LinkKind::Relay)

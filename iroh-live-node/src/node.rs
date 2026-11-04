@@ -234,8 +234,9 @@ impl Node {
     /// # Errors
     ///
     /// Fails with [`Error::Duplicate`] if another publication has the path,
-    /// [`Error::InvalidPath`] for an empty path or one with a `*` segment, and
-    /// [`Error::ShutDown`] once the node has shut down.
+    /// [`Error::Moq`] if `path` does not parse, [`Error::InvalidPath`] for an
+    /// empty path or one with a `*` segment, and [`Error::ShutDown`] once the
+    /// node has shut down.
     pub fn publish(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
@@ -309,13 +310,19 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::NoRoute`] if `reach` allows no way to reach the
-    /// path, [`Error::Connect`] if the publisher cannot be dialed and no relay
-    /// can stand in, [`Error::NotGranted`] if the publisher's grant does not
-    /// let it publish the path and no relay can stand in,
-    /// [`Error::NotAnnounced`] if the publisher's session ends before it
-    /// announces the path, and [`Error::ShutDown`] once the node has shut
-    /// down.
+    /// Fails with:
+    ///
+    /// - [`Error::Moq`] or [`Error::InvalidPath`] for a path that cannot be
+    ///   published, as [`publish`](Self::publish) does.
+    /// - [`Error::NoRoute`] if `reach` allows no way to reach the path.
+    /// - [`Error::Connect`] if the publisher cannot be dialed and no relay can
+    ///   stand in.
+    /// - [`Error::NotGranted`] if the publisher's grant does not let it
+    ///   publish the path and no relay can stand in.
+    /// - [`Error::NotAnnounced`] if the publisher's session ends before it
+    ///   announces the path.
+    /// - [`Error::Unresolved`] if the route table refuses the path.
+    /// - [`Error::ShutDown`] once the node has shut down.
     pub async fn subscribe(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
@@ -338,10 +345,9 @@ impl Node {
     /// Returns the session with `peer`, dialing if there is none.
     ///
     /// Concurrent calls share one dial, which continues if this future is
-    /// dropped. The dialer's half of the handshake
-    /// completes before the peer decides whether to admit it, so a peer that
-    /// refuses usually closes the session right after this returns.
-    /// [`Session::closed`] then says why.
+    /// dropped. The dialer's half of the handshake completes before the peer
+    /// decides whether to admit it, so a peer that refuses usually closes the
+    /// session right after this returns. [`Session::closed`] then says why.
     ///
     /// # Errors
     ///
