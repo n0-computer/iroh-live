@@ -1,7 +1,7 @@
 //! The crate's error types.
 //!
-//! One [`Error`] covers everything the crate does. Its variants group failures
-//! by what a caller can act on.
+//! The [`Error`] the player and the publisher share. Its variants group
+//! failures by what a caller can act on.
 
 use n0_error::{AnyError, stack_error};
 

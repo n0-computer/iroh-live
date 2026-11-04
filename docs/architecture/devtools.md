@@ -69,7 +69,7 @@ only while `timeline_open()` is true.
 `iroh-live/tests/e2e.rs` runs over a real QUIC connection between two iroh
 endpoints. Every source is generated, so no camera, microphone or speaker is
 needed, but the codecs are real. It plays video, and audio into
-`AudioOutput::null()`. It drives a rendition switch with made-up network
+`AudioTarget::null()`. It drives a rendition switch with made-up network
 samples, changes the decoder of a playing player, and runs the call
 convention's ring, answer and hang-up.
 

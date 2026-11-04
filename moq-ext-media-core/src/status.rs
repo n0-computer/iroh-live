@@ -1,6 +1,6 @@
 //! The slot state a broadcast and a player both report, and a watch helper.
 
-use std::sync::Arc;
+use std::{fmt, ops::Deref, sync::Arc};
 
 use tokio::sync::watch;
 
@@ -25,8 +25,8 @@ pub fn send_if_changed<T: Clone + PartialEq>(
 ///
 /// `PublishStatus` and `PlayerStatus` both use it, so
 /// a UI reports both the same way. Two `Failed` states are equal only when they
-/// hold the same error. This lets a watcher tell an update from a repeat.
-#[derive(Debug, Clone, Default)]
+/// hold the same error, as [`ByPtr`] says.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum SlotState {
     /// Nothing is set.
     #[default]
@@ -40,22 +40,55 @@ pub enum SlotState {
     /// On a broadcast, the hardware-to-software encoder fallback retries, and
     /// moq-audio reopens a microphone when the device returns. On a player,
     /// video and audio both try again after a pause.
-    Failed(Arc<Error>),
+    Failed(ByPtr<Error>),
     /// The source ended.
     Ended,
 }
 
-impl PartialEq for SlotState {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Off, Self::Off)
-            | (Self::Starting, Self::Starting)
-            | (Self::Running, Self::Running)
-            | (Self::Ended, Self::Ended) => true,
-            (Self::Failed(left), Self::Failed(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
+/// An `Arc` that compares by pointer, so a watcher tells an update from a repeat.
+///
+/// Errors are not `PartialEq`, and a status that holds one must still be
+/// comparable. Two `ByPtr` are equal only when they share one allocation.
+#[derive(Debug)]
+pub struct ByPtr<T>(pub Arc<T>);
+
+impl<T> ByPtr<T> {
+    /// Wraps `value` in a new allocation.
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(value))
     }
 }
 
-impl Eq for SlotState {}
+impl<T> Clone for ByPtr<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> PartialEq for ByPtr<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<T> Eq for ByPtr<T> {}
+
+impl<T> From<Arc<T>> for ByPtr<T> {
+    fn from(value: Arc<T>) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> Deref for ByPtr<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for ByPtr<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}

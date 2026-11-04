@@ -43,7 +43,7 @@ impl FrameSlot {
     }
 
     /// Records why the stream is about to end, for [`FrameReader::failure`].
-    pub fn fail(&self, failure: Arc<Error>) {
+    pub(crate) fn fail(&self, failure: Arc<Error>) {
         let _ = self.failure.set(failure);
     }
 
@@ -53,7 +53,7 @@ impl FrameSlot {
     }
 
     /// Returns a handle that reads the slot without keeping it open.
-    pub fn reader(&self) -> FrameReader {
+    pub(crate) fn reader(&self) -> FrameReader {
         FrameReader {
             rx: self.tx.subscribe(),
             failure: self.failure.clone(),
@@ -66,7 +66,7 @@ impl FrameSlot {
 /// A source keeps this, so its stream ends when the frames stop even while
 /// handles to the source remain.
 #[derive(derive_more::Debug, Clone)]
-pub struct FrameReader {
+pub(crate) struct FrameReader {
     #[debug(skip)]
     rx: watch::Receiver<Option<Arc<video::Frame>>>,
     failure: Arc<OnceLock<Arc<Error>>>,
@@ -74,12 +74,12 @@ pub struct FrameReader {
 
 impl FrameReader {
     /// Returns a reader starting at the current frame.
-    pub fn frames(&self) -> VideoFrames {
+    pub(crate) fn frames(&self) -> VideoFrames {
         VideoFrames::new(self.rx.clone())
     }
 
     /// Returns why the stream ended, if it failed.
-    pub fn failure(&self) -> Option<Arc<Error>> {
+    pub(crate) fn failure(&self) -> Option<Arc<Error>> {
         self.failure.get().cloned()
     }
 }

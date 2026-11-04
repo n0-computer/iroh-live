@@ -19,8 +19,9 @@ sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
 
 macOS needs `libtool` and `automake` from Homebrew.
 
-`moq-ext-publisher` and `moq-ext-player` without their default features need none of these. It
-encodes and decodes, but it cannot open a device or draw.
+`moq-ext-publisher` and `moq-ext-player` have no default features and need none of these. They
+encode and decode, but they cannot open a device or draw until you turn on `capture`, `playback`
+or `render`.
 
 ## Building
 
@@ -56,10 +57,10 @@ publishes the broadcast under a name:
 
 ```rust
 use iroh_live::{
-    EndpointOptions, Live, LocalBroadcast,
+    EndpointOptions, Live,
     media::{
-        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
-        video,
+        AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
+        VideoRendition, VideoSource, video,
     },
 };
 
@@ -81,13 +82,16 @@ The broadcast is at `live/<endpoint id>/hello`, and the ticket names that path.
 A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
-use iroh_live::{AudioOutput, PlayerConfig};
+use iroh_live::{
+    Live,
+    media::{AudioTarget, PlayerConfig, audio::playback::Engine},
+};
 
 let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
 let subscription = live.subscribe(&ticket).await?;
-let output = AudioOutput::open(None).await?;
+let engine = Engine::open(Default::default()).await?;
 let player = live.remote_broadcast(&subscription).play(PlayerConfig {
-    audio: Some(output),
+    audio: Some(AudioTarget::from(engine)),
     ..Default::default()
 })?;
 
@@ -97,8 +101,9 @@ while let Some(frame) = frames.next().await {
 }
 ```
 
-`AudioOutput::open` needs the `playback` feature. A player with `audio: None`
-does not subscribe to the audio track.
+`Engine::open` and `AudioTarget::from(engine)` need the `playback` feature.
+`AudioTarget::null()` discards audio, for headless use. A player with
+`audio: None` does not subscribe to the audio track.
 
 `VideoSource::capture` fails if the camera cannot be opened.
 `AudioSource::microphone` only checks that the device exists. The microphone
@@ -114,7 +119,7 @@ The paths, the grant and the endpoint are defaults, and each can be replaced:
 - `Live::builder_with(endpoint, MoqConfig)` sets the admission and the grant.
 - `Live::publish_at(path, broadcast, Audience)` and
   `Live::subscribe_path(path, Reach)` work on any path, next to the ticket
-  calls. `subscribe_path_media` returns the `RemoteBroadcast`.
+  calls. `Live::remote_broadcast(&subscription)` reads the media of the result.
 - `Live::moq()` is the escape hatch to the whole transport.
 - `EndpointOptions::apply(builder)` adds the preset, the key and mDNS to your
   own endpoint builder, so you can set the relay mode or another address

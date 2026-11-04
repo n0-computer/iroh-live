@@ -40,7 +40,7 @@ pub(crate) struct Epoch {
 #[derive(Clone)]
 enum Origin {
     /// One broadcast consumer, which ends the remote broadcast when it ends.
-    Moq,
+    Consumer,
     /// A path in a route table, requested again when a change of route ends it.
     Routed {
         /// Boxed: a route table consumer is large.
@@ -85,9 +85,10 @@ impl RemoteBroadcast {
     /// The remote broadcast ends when `broadcast` ends. This reads a broadcast
     /// that lives in the same process too: pass it the consumer a publisher
     /// hands out through `moq_net::Consume`.
+    #[must_use]
     pub fn from_consumer(broadcast: moq_net::broadcast::Consumer) -> Self {
         let span = tracing::info_span!("remote");
-        Self::spawn(Origin::Moq, Some(broadcast), span)
+        Self::spawn(Origin::Consumer, Some(broadcast), span)
     }
 
     /// Follows `path` in a route table.
@@ -100,10 +101,8 @@ impl RemoteBroadcast {
     /// The first request waits without limit, since the publisher may not have
     /// announced the path yet. If you already resolved the path, use
     /// [`from_resolved`](Self::from_resolved).
-    pub fn from_origin(
-        origin: moq_net::origin::Consumer,
-        path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
-    ) -> Self {
+    #[must_use]
+    pub fn from_origin(origin: moq_net::origin::Consumer, path: moq_net::Path) -> Self {
         Self::routed_to(origin, path, None)
     }
 
@@ -113,40 +112,30 @@ impl RemoteBroadcast {
     /// waits for a first route. Every later request is a failover with a time
     /// limit, so a publisher that is already gone closes the broadcast. This is
     /// what `iroh-live` uses on subscribe, after resolving the path.
+    #[must_use]
     pub fn from_resolved(
         origin: moq_net::origin::Consumer,
-        path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
+        path: moq_net::Path,
         broadcast: moq_net::broadcast::Consumer,
     ) -> Self {
         Self::routed_to(origin, path, Some(broadcast))
     }
 
     /// Follows `path` in a route table, from `first` if given.
-    ///
-    /// A path that cannot be a route table path closes the broadcast at once.
     fn routed_to(
         origin: moq_net::origin::Consumer,
-        path: impl TryInto<moq_net::Path, Error: Into<moq_net::Error>>,
+        path: moq_net::Path,
         first: Option<moq_net::broadcast::Consumer>,
     ) -> Self {
-        match path.try_into() {
-            Ok(path) => {
-                let span = tracing::info_span!("remote", path = %path);
-                Self::spawn(
-                    Origin::Routed {
-                        origin: Box::new(origin),
-                        path,
-                    },
-                    first,
-                    span,
-                )
-            }
-            Err(err) => {
-                let span = tracing::info_span!("remote");
-                span.in_scope(|| info!(error = %err.into(), "the path is not valid"));
-                Self::spawn(Origin::Moq, None, span)
-            }
-        }
+        let span = tracing::info_span!("remote", path = %path);
+        Self::spawn(
+            Origin::Routed {
+                origin: Box::new(origin),
+                path,
+            },
+            first,
+            span,
+        )
     }
 
     /// Attaches network signals for automatic rendition selection.
@@ -156,10 +145,8 @@ impl RemoteBroadcast {
     /// attaches it on subscribe. The signals belong to the broadcast, not to
     /// this handle: every clone sees them, and attaching again replaces them
     /// for all clones. Players started afterwards use them.
-    #[must_use]
-    pub fn with_network(self, signals: impl Fn() -> NetworkSample + Send + Sync + 'static) -> Self {
+    pub fn set_network(&self, signals: impl Fn() -> NetworkSample + Send + Sync + 'static) {
         *self.shared.network.lock().expect("poisoned") = Some(Arc::new(signals));
-        self
     }
 
     /// Returns the catalog, `None` until the first arrives.
@@ -246,7 +233,7 @@ impl RemoteBroadcast {
     pub(crate) fn routed(&self) -> Option<moq_net::origin::Consumer> {
         match &self.shared.origin {
             Origin::Routed { origin, .. } => Some(origin.as_ref().clone()),
-            Origin::Moq => None,
+            Origin::Consumer => None,
         }
     }
 
@@ -292,7 +279,7 @@ async fn follow(
     let mut generation = 0u64;
     let mut next = first;
     let mut routes = match &origin {
-        Origin::Moq => None,
+        Origin::Consumer => None,
         Origin::Routed { origin, path } => match origin.follow(path.clone(), None) {
             Ok(routes) => Some(routes),
             Err(err) => {
@@ -431,7 +418,11 @@ mod tests {
             .expect("resolved");
         // The publisher leaves before the remote broadcast starts.
         drop(published);
-        let remote = RemoteBroadcast::from_resolved(origin.consume(), "live/cam", consumer);
+        let remote = RemoteBroadcast::from_resolved(
+            origin.consume(),
+            moq_net::Path::new("live/cam").expect("a valid path"),
+            consumer,
+        );
         tokio::time::timeout(REROUTE_PATIENCE + Duration::from_secs(5), remote.closed())
             .await
             .expect("the remote closed within its re-resolve window");
@@ -451,7 +442,10 @@ mod tests {
                 Route::default().with_instance(Instance::random(), 1),
             )
             .expect("published");
-        let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
+        let remote = RemoteBroadcast::from_origin(
+            origin.consume(),
+            moq_net::Path::new("live/cam").expect("a valid path"),
+        );
         let mut epoch = remote.epoch();
         let seen = tokio::time::timeout(
             Duration::from_secs(5),
@@ -486,7 +480,10 @@ mod tests {
         let first = origin
             .publish("live/cam", moq_net::origin::Route::default())
             .expect("published");
-        let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
+        let remote = RemoteBroadcast::from_origin(
+            origin.consume(),
+            moq_net::Path::new("live/cam").expect("a valid path"),
+        );
         let mut epoch = remote.epoch();
         let seen = tokio::time::timeout(
             Duration::from_secs(5),

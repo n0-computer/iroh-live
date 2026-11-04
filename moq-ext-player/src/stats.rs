@@ -1,9 +1,9 @@
-//! Snapshots of what a broadcast and a player are doing.
+//! Snapshots of what a player is doing.
 //!
-//! [`PublishStats`] and [`PlaybackStats`] are plain values. A UI can read them
-//! with `stats()` as often as it draws. Every figure has exactly one writer.
-//! Each rendition's encoder writes its own entry, and the task that reads the
-//! source writes the source frame rate.
+//! [`PlaybackStats`] is a plain value. A UI can read it with
+//! `Player::stats()` as often as it draws. Every figure has exactly one
+//! writer: the video task writes the video figures, and the audio task writes
+//! the audio figures.
 //!
 //! Rates are counted over a window instead of derived from the gap between two
 //! events. One late frame in a 30 fps stream reads as 50 by the gap and as 30

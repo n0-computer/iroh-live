@@ -30,15 +30,46 @@ pub const VANISH_GRACE: Duration = Duration::from_secs(3);
 /// How the rendition is chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
-    /// Follow the link, never above `max_height` rows when set.
+    /// Follow the link, never above `max_height` rows when set (a grid tile).
+    ///
+    /// Without network signals, holds the best rendition that fits.
     Auto {
         /// The tallest rendition allowed.
         max_height: Option<u32>,
     },
-    /// Play the named rendition.
+    /// Hold the named rendition.
+    ///
+    /// If it cannot be played, plays as [`Auto`](Self::Auto) would, reports
+    /// why, and returns to it when it becomes available.
     Pinned(String),
-    /// Play no video.
+    /// Play no video; audio is unaffected (a tile scrolled off screen).
     Off,
+}
+
+impl Default for Mode {
+    /// Automatic selection with no height limit.
+    fn default() -> Self {
+        Self::auto()
+    }
+}
+
+impl Mode {
+    /// Returns automatic selection with no height limit.
+    pub const fn auto() -> Self {
+        Self::Auto { max_height: None }
+    }
+
+    /// Returns automatic selection that never goes above `max_height`.
+    pub const fn auto_below(max_height: u32) -> Self {
+        Self::Auto {
+            max_height: Some(max_height),
+        }
+    }
+
+    /// Returns a mode holding the rendition `name`.
+    pub fn pinned(name: impl Into<String>) -> Self {
+        Self::Pinned(name.into())
+    }
 }
 
 /// Why a pin could not be honoured.

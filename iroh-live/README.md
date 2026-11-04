@@ -5,7 +5,7 @@ Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 `Live` is a node for live media. It runs the `iroh-moq` transport on an iroh
 endpoint, publishes broadcasts at `live/<endpoint id>/<name>`, and resolves
 other nodes' broadcasts over a direct session or an attached relay. The media
-crate is re-exported as `iroh_live::media` and the transport as
+crates are gathered in `iroh_live::media` and the transport is re-exported as
 `iroh_live::moq`.
 
 ## Example
@@ -14,8 +14,8 @@ Publish a camera, then share the ticket:
 
 ```rust
 use iroh_live::{
-    EndpointOptions, Live, LocalBroadcast,
-    media::{VideoEncoding, VideoRendition, VideoSource, video},
+    EndpointOptions, Live,
+    media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
 };
 
 let live = Live::builder(EndpointOptions::default().bind().await?).with_router().spawn();
@@ -32,7 +32,7 @@ println!("{}", live.ticket("hello"));
 On the other side, subscribe and play:
 
 ```rust
-use iroh_live::PlayerConfig;
+use iroh_live::media::PlayerConfig;
 
 let subscription = live.subscribe(&ticket).await?;
 let player = live
@@ -50,6 +50,13 @@ let mut frames = player.video();
   a `Publication`. The broadcast stays published until
   `Publication::unpublish`, the end of the broadcast, or shutdown. To publish
   for another audience, go through `live.moq()`.
+- `Live::publish_at(path, broadcast, audience)` and
+  `Live::subscribe_path(path, reach)` are the path-level calls under `publish`
+  and `subscribe`: any path, any `Audience`, any `Reach`. They apply no layout.
+- `Live::call(peer, broadcast)` offers a one-to-one call at `live/<id>/call`,
+  visible to `peer` only, and `Live::answer(peer)` resolves the other side.
+- `EndpointOptions` binds an endpoint with `MoqPreset`, a secret key and mDNS.
+  `EndpointOptions::apply` does the same on your own endpoint builder.
 - `BroadcastTicket` names a node and a broadcast. `Live::ticket(name)` returns
   the ticket for one of this node's broadcasts.
 - `Live::subscribe(&ticket)` returns the `Subscription` once a route is found.
@@ -57,7 +64,7 @@ let mut frames = player.video();
   the catalog, for a subscription from a ticket, a room or `Moq::subscribe`.
   The broadcast follows its path through the route table, so a change of route
   is a switch, not an end. Its players adapt to the link that serves it.
-- `CALL` is the broadcast name of the call convention `irl call` and the
+- `paths::CALL`, also exported as `CALL`, is the broadcast name of the call convention `irl call` and the
   Android demo share.
 - `grant` is the grant a live node gives each peer: subscribe to anything,
   publish only under the peer's own id. `moq_config` is the `MoqConfig` that
@@ -68,14 +75,15 @@ let mut frames = player.video();
 
 ## Features
 
-`media`, `capture`, `render`, and `sound-server` are on by default. `media` is
-the media stack. Without it the crate is the `live/` layout only (tickets, the
+No feature is on by default. `full` turns on `media`, `capture`, `render`,
+`sound-server` and `record`. `media` is the media stack. Without it the crate is the `live/` layout only (tickets, the
 grant, endpoint options), which is how the relay uses it. `playback`, `aec`,
 `pipewire`, `rpicam`, `vaapi`, `nvidia`, and `v4l2` add devices and codecs,
 imply `media`, and pass through to `moq-ext-player` and `moq-ext-publisher`.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
-`iroh_live::rooms`, and adds the room paths to `grant`.
+`iroh_live::rooms`. Run rooms on a node with `LiveBuilder::with_rooms`, which
+mounts the gossip protocol and adds the room paths to each peer's grant.
 
 ## Examples
 

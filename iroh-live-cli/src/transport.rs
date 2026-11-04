@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Live, LiveBuilder, Mdns, RemoteBroadcast, Session,
-    Subscription,
+    BroadcastTicket, EndpointOptions, Live, LiveBuilder, Mdns, Session, Subscription,
+    media::RemoteBroadcast,
     moq::{RelayConfig, RelayLink},
 };
 use n0_error::Result;

@@ -1,7 +1,5 @@
 //! The audio publish task: a microphone, or PCM from any other source.
 
-use std::sync::Arc;
-
 use tokio::sync::broadcast;
 #[cfg(feature = "capture")]
 use tokio::sync::oneshot;
@@ -13,7 +11,7 @@ use super::status::Reporter;
 use super::{Job, Rebase, encoding::AudioEncoding, status::RenditionState};
 use moq_ext_sources::AudioKind;
 
-use moq_ext_media_core::{Error, SlotState, stats::Cell};
+use moq_ext_media_core::{ByPtr, Error, SlotState, stats::Cell};
 use moq_ext_sources::{AudioFormat, AudioSource};
 
 use crate::stats::AudioEncodeStats;
@@ -52,6 +50,17 @@ pub(super) async fn run(
             // The producer is already gone.
             None => Ok(()),
         },
+        // Another crate in the build turned on microphones in `moq-ext-sources`
+        // while this crate's `capture` is off.
+        #[cfg(not(feature = "capture"))]
+        #[allow(
+            unreachable_patterns,
+            reason = "a variant exists only with the feature"
+        )]
+        _ => Err(Error::invalid(
+            "publishing a microphone needs the `capture` feature of moq-ext-publisher",
+        )
+        .into()),
     };
     if stop.is_cancelled() {
         return;
@@ -63,7 +72,7 @@ pub(super) async fn run(
         }
         Err(err) => {
             warn!(error = %err, "audio publish failed");
-            job.reporter.slot(SlotState::Failed(Arc::new(err)));
+            job.reporter.slot(SlotState::Failed(ByPtr::new(err)));
         }
     }
 }
@@ -218,7 +227,7 @@ async fn follow(
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "the microphone failed".to_string());
                 warn!(%reason, "microphone failed; moq-audio retries when it can");
-                reporter.slot(SlotState::Failed(Arc::new(Error::device_msg(reason))));
+                reporter.slot(SlotState::Failed(ByPtr::new(Error::device_msg(reason))));
             }
             moq_audio::encode::Status::Ended => return Ok(()),
             _ => {}

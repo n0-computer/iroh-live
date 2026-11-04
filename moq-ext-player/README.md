@@ -9,7 +9,7 @@ blank picture, and keeps audio and video in step.
 It does not depend on iroh or on a publisher. A transport builds a
 `RemoteBroadcast` from a `moq_net::broadcast::Consumer` (`from_consumer`) or from
 a route table (`from_origin`, `from_resolved`), and attaches its view of the
-link with `with_network`.
+link with `set_network`.
 
 ```rust
 use moq_ext_player::{PlayerConfig, RemoteBroadcast};
@@ -30,7 +30,7 @@ A broadcast published in the same process is read the same way: pass
 |---|---|---|
 | `record` | no | `RemoteBroadcast::record`: remux to fragmented MP4 or Matroska without decoding |
 | `playback` | no | Speaker output |
-| `capture` | no | Lets an `AudioTarget` serve as a microphone's echo reference. Enable `moq-ext-publisher/capture` too |
+| `capture` | no | Lets an `AudioTarget` serve as a microphone's echo reference |
 | `aec` | no | Echo cancellation. Implies `capture` and `playback` |
 | `render` | no | The wgpu renderer |
 | `vaapi`, `nvidia`, `v4l2` | no | Hardware H.264 decoding |

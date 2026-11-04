@@ -3,8 +3,9 @@
 //! A [`Live`] node binds the [`Moq`] transport to an iroh endpoint. It
 //! publishes broadcasts at `live/<its endpoint id>/<name>` and subscribes to
 //! other nodes' broadcasts over a direct session or an attached relay. The
-//! transport is re-exported as [`moq`], the media crate as `media` and the
-//! rooms crate as `rooms`, each with its feature.
+//! transport is re-exported as [`moq`]. The `media` module gathers the media
+//! crates (sources, broadcasts, players, codecs), and `rooms` re-exports the
+//! rooms crate, each behind its feature.
 #![cfg_attr(
     feature = "media",
     doc = r#"
@@ -12,8 +13,10 @@ This publishes a test pattern and plays someone else's broadcast:
 
 ```no_run
 use iroh_live::{
-    BroadcastTicket, Live, LocalBroadcast, MoqPreset, PlayerConfig, VideoSource,
-    media::{VideoEncoding, VideoRendition, video},
+    BroadcastTicket, Live, MoqPreset,
+    media::{
+        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video,
+    },
 };
 
 # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +71,8 @@ while let Some(frame) = frames.next().await {
 //! |---|---|---|
 //! | [`EndpointOptions::bind`] | yes | nothing is bound |
 //! | [`Live::subscribe`] | yes | abandons the wait; a dial it started continues for other callers |
+//! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
+//! | [`Live::answer`] | yes | abandons the wait |
 //! | [`Live::shutdown`] | no, idempotent | call again to finish |
 //!
 //! `media`, [`moq`] and `rooms` list their own futures.
@@ -105,11 +110,6 @@ pub mod media {
     };
     pub use moq_video as video;
 }
-#[cfg(feature = "media")]
-pub use self::media::{
-    AudioSource, AudioTarget, Latency, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
-    RenditionMode, VideoSource,
-};
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
 pub use iroh_moq as moq;
@@ -121,6 +121,6 @@ pub use self::{
     endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
     live::{Live, LiveBuilder, PublishScope, grant, grant_with, moq_config, moq_config_with},
-    paths::publish_scope,
-    ticket::{BroadcastTicket, CALL},
+    paths::CALL,
+    ticket::BroadcastTicket,
 };

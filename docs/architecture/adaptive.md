@@ -11,7 +11,7 @@ The decoder swap is the supervisor's job, described in
 ## Signals
 
 The transport-agnostic input is a function that returns a `NetworkSample`,
-attached with `RemoteBroadcast::with_network`.
+attached with `RemoteBroadcast::set_network`.
 
 ```rust
 pub struct NetworkSample {
@@ -25,7 +25,7 @@ pub struct NetworkSample {
 
 Every field is optional because transports measure different things, and
 `None` means unmeasured. A transport attaches its signals with
-`RemoteBroadcast::with_network`, and every player started from that broadcast
+`RemoteBroadcast::set_network`, and every player started from that broadcast
 afterwards reads them. Without signals, the player holds the best rendition its
 constraints allow.
 

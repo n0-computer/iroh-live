@@ -237,9 +237,9 @@ async fn announced_at(origin: &origin::Producer, path: &str) -> moq_net::broadca
 }
 
 /// Publishes a generated video broadcast as `name` on `live`.
-fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::LocalBroadcast {
+fn publish_video(live: &iroh_live::Live, name: &str) -> iroh_live::media::LocalBroadcast {
     use iroh_live::media::{VideoEncoding, VideoRendition, VideoSource, video};
-    let broadcast = iroh_live::LocalBroadcast::new();
+    let broadcast = iroh_live::media::LocalBroadcast::new();
     let source = VideoSource::test_pattern(
         video::Size::new(320, 240),
         video::FrameRate::new(30, 1).expect("a valid rate"),

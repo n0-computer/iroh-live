@@ -296,14 +296,14 @@ impl LatencyArg {
     /// `min` is the playout hold: two frames at 30 fps for Realtime, a Wi-Fi
     /// retransmission burst for Smooth. `max` is where the player skips ahead.
     /// It must stay above `min`, or the skip drops the frames the hold waits for.
-    pub fn latency(self) -> iroh_live::Latency {
-        let latency = |min, max| iroh_live::Latency {
+    pub fn latency(self) -> iroh_live::media::Latency {
+        let latency = |min, max| iroh_live::media::Latency {
             min: std::time::Duration::from_millis(min),
             max: std::time::Duration::from_millis(max),
         };
         match self {
             Self::Realtime => latency(60, 100),
-            Self::Balanced => iroh_live::Latency::default(),
+            Self::Balanced => iroh_live::media::Latency::default(),
             Self::Smooth => latency(400, 600),
         }
     }

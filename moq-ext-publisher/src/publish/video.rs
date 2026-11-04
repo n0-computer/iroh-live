@@ -25,7 +25,7 @@ use super::{
 use moq_video::encode;
 
 use moq_ext_media_core::{
-    Error, SlotState,
+    ByPtr, Error, SlotState,
     stats::{Cell, RateMeter, Smoothed},
 };
 use moq_ext_sources::{EncodedVideoSource, VideoSource, frames::VideoFrames};
@@ -145,7 +145,7 @@ pub(super) async fn run_raw(
     if encoders.is_empty() {
         let failure = last_failure
             .unwrap_or_else(|| Arc::new(Error::invalid("no rendition could be encoded")));
-        reporter.slot(SlotState::Failed(failure));
+        reporter.slot(SlotState::Failed(failure.into()));
         return;
     }
     reporter.slot(SlotState::Running);
@@ -176,7 +176,7 @@ pub(super) async fn run_raw(
                 if failed == spawned {
                     let failure = last_failure.clone().expect("counted above");
                     warn!(error = %failure, "no rendition can encode");
-                    reporter.slot(SlotState::Failed(failure));
+                    reporter.slot(SlotState::Failed(failure.into()));
                     return;
                 }
             }
@@ -194,7 +194,7 @@ pub(super) async fn run_raw(
         Some(failure) => {
             warn!(error = %failure, "video source failed");
             let failure = Arc::try_unwrap(failure).map_or_else(Error::device, Error::from);
-            reporter.slot(SlotState::Failed(Arc::new(failure)));
+            reporter.slot(SlotState::Failed(ByPtr::new(failure)));
         }
         None => {
             debug!("video source ended");
@@ -515,7 +515,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
     match result {
         // A source that ends before any access unit never described itself.
         // That is a failed camera, not a finished stream.
-        Ok(0) => reporter.slot(SlotState::Failed(Arc::new(Error::device_msg(
+        Ok(0) => reporter.slot(SlotState::Failed(ByPtr::new(Error::device_msg(
             "the pre-encoded source ended before its first access unit",
         )))),
         Ok(units) => {
@@ -524,7 +524,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
         }
         Err(err) => {
             warn!(error = %err, "pre-encoded video failed");
-            reporter.slot(SlotState::Failed(Arc::new(err)));
+            reporter.slot(SlotState::Failed(ByPtr::new(err)));
         }
     }
 }

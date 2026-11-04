@@ -5,8 +5,8 @@
 //! Every participant subscribes to every other, so this suits small groups.
 
 use iroh_live::{
-    Live, LocalBroadcast,
-    media::AudioTarget,
+    Live,
+    media::{AudioTarget, LocalBroadcast},
     rooms::{Room, RoomTicket, Rooms},
 };
 use n0_error::Result;

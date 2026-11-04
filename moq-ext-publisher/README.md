@@ -30,8 +30,8 @@ encoding and with which backend, and `stats()` reports each encoder.
 
 | Feature | Default | What it adds |
 |---|---|---|
-| `capture` | yes | Camera, screen and microphone devices |
-| `sound-server` | yes | Audio devices through PipeWire or PulseAudio instead of ALSA |
+| `capture` | no | Camera, screen and microphone devices |
+| `sound-server` | no | Audio devices through PipeWire or PulseAudio instead of ALSA |
 | `aec` | no | Echo cancellation. Implies `capture` |
 | `pipewire` | no | Linux screen capture through xdg-desktop-portal |
 | `vaapi`, `nvidia`, `v4l2` | no | Hardware H.264 encoding |

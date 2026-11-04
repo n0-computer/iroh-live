@@ -3,7 +3,8 @@
 //! - [`Grant`]: what a session may subscribe to and publish.
 //! - [`SessionRequest`]: what a peer asked for when it opened a session.
 //! - [`Audience`]: who may see a publication, generic over the peer id.
-//! - [`visible`]: whether a publication belongs on a link.
+//! - [`AudienceKind`]: an [`Audience`] as a registry keeps it, the current set.
+//! - [`visible`]: whether a publication belongs on a link, given a [`LinkRole`].
 //!
 //! The peer id is any type that implements [`PeerId`], such as an iroh
 //! endpoint id.

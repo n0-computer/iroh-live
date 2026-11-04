@@ -163,6 +163,7 @@ impl VideoSource {
     /// The pattern shows a sweeping bar, a frame counter and a clock. A marker
     /// flashes in step with the beep of [`AudioSource::test_pattern`].
     #[cfg(feature = "pattern")]
+    #[must_use]
     pub fn test_pattern(size: video::Size, rate: video::FrameRate) -> Self {
         let slot = FrameSlot::new();
         let reader = slot.reader();
@@ -190,6 +191,7 @@ impl VideoSource {
     /// The source ends when every sender is dropped. `format` describes what
     /// the sender will push. The broadcast encodes at the size of the frames
     /// that arrive.
+    #[must_use]
     pub fn push(format: VideoFormat) -> (FrameSender<video::Frame>, Self) {
         let slot = FrameSlot::new();
         let reader = slot.reader();
@@ -403,6 +405,10 @@ impl MicrophoneConfig {
     }
 
     /// Checks that echo cancellation, if asked for, is compiled in.
+    ///
+    /// Not part of the stable API: a publication calls it, and applications
+    /// have no use for it.
+    #[doc(hidden)]
     pub fn check(&self) -> Result<(), Error> {
         if self.echo_reference.is_some() && !cfg!(feature = "aec") {
             return Err(Error::invalid(
@@ -417,6 +423,16 @@ impl MicrophoneConfig {
     ///
     /// Fails if echo cancellation is not compiled in, or if the output already
     /// feeds another canceller.
+    ///
+    /// Not part of the stable API: the publication that encodes the microphone
+    /// calls it when it starts.
+    ///
+    /// # Errors
+    ///
+    /// Fails with an invalid-config error if echo cancellation is asked for
+    /// but not compiled in, and with a device error if the echo reference
+    /// cannot hand over its canceller.
+    #[doc(hidden)]
     pub fn resolve(&self) -> Result<audio::capture::Config, Error> {
         self.check()?;
         #[cfg_attr(not(feature = "aec"), allow(unused_mut, reason = "only aec attaches"))]
@@ -582,6 +598,7 @@ impl AudioSource {
 
     /// Returns a steady sine tone at `hz`, at 48 kHz in `layout`.
     #[cfg(feature = "pattern")]
+    #[must_use]
     pub fn tone(hz: f32, layout: audio::Layout) -> Self {
         Self::generated("tone", f64::from(hz), layout, generator::Gate::Continuous)
     }
@@ -592,6 +609,7 @@ impl AudioSource {
     /// pattern's marker flashes on. A viewer can see and hear whether the two
     /// line up.
     #[cfg(feature = "pattern")]
+    #[must_use]
     pub fn test_pattern(layout: audio::Layout) -> Self {
         Self::generated("test-pattern", generator::BEEP_HZ, layout, generator::BEEP)
     }
@@ -637,6 +655,7 @@ impl AudioSource {
     /// few seconds behind loses the oldest frames and counts them in its
     /// stats. The sender's demand is true while a broadcast publishes the
     /// source.
+    #[must_use]
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();

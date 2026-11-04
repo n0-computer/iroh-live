@@ -24,9 +24,11 @@ fn main() {
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::{
-    EndpointOptions, Live, LocalBroadcast,
-    media::{EncodedVideoSource, RpicamConfig, video::Size},
+    EndpointOptions, Live,
+    media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
 };
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+use tracing::info;
 
 /// The broadcast name.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -46,11 +48,12 @@ async fn main() -> n0_error::Result {
     let config = RpicamConfig::new(Size::new(640, 360), 30);
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
 
-    // The broadcast stays published while this is held.
-    let _publication = live.publish(BROADCAST, &broadcast)?;
+    // Dropping the `Publication` leaves the broadcast published. It ends with
+    // `broadcast`, or when the node shuts down.
+    live.publish(BROADCAST, &broadcast)?;
     println!("{}", live.ticket(BROADCAST));
 
-    tracing::info!("publishing, press Ctrl-C to stop");
+    info!("publishing, press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;
     live.shutdown().await;
     Ok(())

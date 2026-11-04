@@ -190,10 +190,9 @@ async fn a_held_shortfall_moves_the_player_down() {
         ..NetworkSample::default()
     }));
     let reader = sample.clone();
-    let player = local(&broadcast)
-        .with_network(move || *reader.lock().expect("poisoned"))
-        .play(PlayerConfig::default())
-        .expect("valid");
+    let remote = local(&broadcast);
+    remote.set_network(move || *reader.lock().expect("poisoned"));
+    let player = remote.play(PlayerConfig::default()).expect("valid");
     tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
         .await
         .expect("in time")
@@ -350,7 +349,7 @@ async fn a_failed_first_decoder_is_tried_again() {
         status
             .switch_error
             .as_ref()
-            .is_some_and(|error| !Arc::ptr_eq(error, &first))
+            .is_some_and(|error| *error != first)
     })
     .await;
 }
@@ -476,7 +475,10 @@ async fn a_player_keeps_playing_when_its_route_goes() {
     let direct_route = serve(&origin, 1, moq_video::Size::new(320, 180));
     let relayed_route = serve(&origin, 10, moq_video::Size::new(640, 360));
 
-    let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
+    let remote = RemoteBroadcast::from_origin(
+        origin.consume(),
+        moq_net::Path::new("live/cam").expect("a valid path"),
+    );
     let player = remote.play(PlayerConfig::default()).expect("valid");
     let mut frames = player.video();
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;

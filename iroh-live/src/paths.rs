@@ -6,13 +6,20 @@
 //! the layout is in one place. An application with another layout publishes
 //! through [`Live::publish_at`](crate::Live::publish_at) and ignores it.
 //!
-//! Rooms paths (`rooms/…`) belong to `iroh-live-rooms`.
+//! Rooms paths (`rooms/...`) belong to `iroh-live-rooms`.
 
 use iroh::EndpointId;
 use iroh_moq::net::Pattern;
 
 /// The first segment of every path in this layout.
 const ROOT: &str = "live";
+
+/// The broadcast name of a call, as `irl call` and the Android demo use it.
+///
+/// Each side publishes `live/<its id>/call` to the other peer only, and
+/// subscribes to the other's. A node learns it is called when a peer's `call`
+/// path appears in its route table.
+pub const CALL: &str = "call";
 
 /// Returns the path of `peer`'s broadcast `name`: `live/<peer>/<name>`.
 ///
@@ -23,19 +30,22 @@ const ROOT: &str = "live";
 /// let peer = iroh::SecretKey::generate().public();
 /// assert_eq!(iroh_live::paths::broadcast(peer, "cam"), format!("live/{peer}/cam"));
 /// ```
+#[must_use]
 pub fn broadcast(peer: EndpointId, name: &str) -> String {
     format!("{ROOT}/{peer}/{name}")
 }
 
 /// Returns the path of `peer`'s side of a call: `live/<peer>/call`.
+#[must_use]
 pub fn call(peer: EndpointId) -> String {
-    broadcast(peer, crate::CALL)
+    broadcast(peer, CALL)
 }
 
 /// Splits a `live/<peer>/<name>` path into the peer and the name.
 ///
 /// The inverse of [`broadcast`]. Returns `None` for a path elsewhere, one
 /// whose second segment is not an endpoint id, or one without a name.
+#[must_use]
 pub fn parse(path: &str) -> Option<(EndpointId, &str)> {
     let (peer, name) = path
         .strip_prefix(ROOT)?
@@ -48,6 +58,7 @@ pub fn parse(path: &str) -> Option<(EndpointId, &str)> {
 }
 
 /// Returns the paths `peer` publishes its own broadcasts under: `live/<peer>/**`.
+#[must_use]
 pub fn publish_scope(peer: EndpointId) -> Pattern {
     format!("{ROOT}/{peer}/**")
         .parse()

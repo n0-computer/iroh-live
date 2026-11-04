@@ -193,6 +193,8 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
+    use moq_ext_media_core::ByPtr;
+
     use super::*;
 
     fn names(names: &[&str]) -> Vec<String> {
@@ -244,11 +246,11 @@ mod tests {
 
     #[test]
     fn failures_compare_by_identity() {
-        let err = Arc::new(n0_error::e!(Error::Closed));
+        let err = ByPtr::new(n0_error::e!(Error::Closed));
         assert_eq!(SlotState::Failed(err.clone()), SlotState::Failed(err));
         assert_ne!(
-            SlotState::Failed(Arc::new(n0_error::e!(Error::Closed))),
-            SlotState::Failed(Arc::new(n0_error::e!(Error::Closed)))
+            SlotState::Failed(ByPtr::new(n0_error::e!(Error::Closed))),
+            SlotState::Failed(ByPtr::new(n0_error::e!(Error::Closed)))
         );
     }
 

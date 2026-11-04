@@ -10,6 +10,6 @@ mod status;
 
 pub use self::{
     error::Error,
-    status::{SlotState, send_if_changed},
+    status::{ByPtr, SlotState, send_if_changed},
 };
 pub use moq_ext_sources::Closed;

@@ -12,13 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, paths};
 
-/// The broadcast name of a call, as `irl call` and the Android demo use it.
-///
-/// Each side publishes `live/<its id>/call` to the other peer only, and
-/// subscribes to the other's. A node learns it is called when a peer's `call`
-/// path appears in its route table.
-pub const CALL: &str = "call";
-
 /// URI scheme prefix of a broadcast ticket.
 const SCHEME: &str = "iroh-live:";
 

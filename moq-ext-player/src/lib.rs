@@ -3,7 +3,7 @@
 //!
 //! Nothing here depends on iroh or on a publisher. A transport builds a
 //! [`RemoteBroadcast`] from what it subscribed to, and attaches its view of the
-//! link with [`RemoteBroadcast::with_network`]. A broadcast that lives in the
+//! link with [`RemoteBroadcast::set_network`]. A broadcast that lives in the
 //! same process is read with [`RemoteBroadcast::from_consumer`].
 //!
 //! # Example

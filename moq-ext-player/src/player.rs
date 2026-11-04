@@ -15,10 +15,9 @@ use std::{sync::Arc, time::Duration};
 
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
-use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
+use tracing::{Instrument, debug_span, info, info_span};
 
-use moq_ext_media_core::{Error, SlotState, send_if_changed, stats::Cell};
+use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 
 use crate::{
     RemoteBroadcast, SwitchError,
@@ -39,51 +38,9 @@ pub(crate) use self::clock::PlayoutClock;
 pub use moq_ext_adaptive::Adaptation;
 
 /// How to choose the video rendition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RenditionMode {
-    /// Follow the link, never above `max_height` if set (a grid tile).
-    ///
-    /// Without network signals on the broadcast, holds the best rendition that
-    /// fits.
-    Auto {
-        /// The tallest rendition to choose, in pixels.
-        max_height: Option<u32>,
-    },
-    /// Hold one rendition.
-    ///
-    /// If it cannot be played, plays as [`Auto`](Self::Auto) would, says why
-    /// in [`PlayerStatus::switch_error`], and returns to it when it becomes
-    /// available.
-    Pinned(String),
-    /// Unsubscribe video; audio keeps playing (a tile scrolled off screen).
-    Off,
-}
-
-impl Default for RenditionMode {
-    /// Automatic selection with no height limit.
-    fn default() -> Self {
-        Self::auto()
-    }
-}
-
-impl RenditionMode {
-    /// Returns automatic selection with no height limit.
-    pub const fn auto() -> Self {
-        Self::Auto { max_height: None }
-    }
-
-    /// Returns automatic selection that never goes above `max_height`.
-    pub const fn auto_below(max_height: u32) -> Self {
-        Self::Auto {
-            max_height: Some(max_height),
-        }
-    }
-
-    /// Returns a mode holding the rendition `name`.
-    pub fn pinned(name: impl Into<String>) -> Self {
-        Self::Pinned(name.into())
-    }
-}
+///
+/// The selector crate's [`Mode`](moq_ext_adaptive::Mode), under the player's name.
+pub use moq_ext_adaptive::Mode as RenditionMode;
 
 /// How far behind live to run.
 ///
@@ -173,7 +130,7 @@ impl Default for PlayerConfig {
 }
 
 /// The state of a player.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayerStatus {
     /// The video slot.
     pub video: SlotState,
@@ -186,31 +143,13 @@ pub struct PlayerStatus {
     /// A rendition whose decoder is warming up to take over.
     pub switching_to: Option<String>,
     /// Why the last switch or pin could not be honoured.
-    pub switch_error: Option<Arc<Error>>,
+    pub switch_error: Option<ByPtr<Error>>,
     /// The decoder backend running, such as `vaapi`.
     pub decoder: Option<String>,
     /// The rendition whose failure `video` reports when it is `Failed`.
     ///
     /// A wait for another rendition must not get an error that is not its own.
     pub(crate) failed_rendition: Option<String>,
-}
-
-/// Compares errors by identity, so a watcher tells an update from a repeat.
-impl PartialEq for PlayerStatus {
-    fn eq(&self, other: &Self) -> bool {
-        self.video == other.video
-            && self.audio == other.audio
-            && self.mode == other.mode
-            && self.rendition == other.rendition
-            && self.switching_to == other.switching_to
-            && self.decoder == other.decoder
-            && self.failed_rendition == other.failed_rendition
-            && match (&self.switch_error, &other.switch_error) {
-                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-                (None, None) => true,
-                _ => false,
-            }
-    }
 }
 
 impl PlayerStatus {
@@ -262,7 +201,7 @@ pub(crate) struct Controls {
 
 /// One playback: video into [`VideoFrames`], audio into an [`AudioTarget`].
 ///
-/// Dropping it cancels its tasks and returns at once: decoders stop at their
+/// Dropping it aborts its tasks and returns at once: decoders stop at their
 /// next await point and are not waited for, so a decoder thread may outlive
 /// the player briefly. It is not `Clone`: a second view of the broadcast is a
 /// second player.
@@ -275,13 +214,11 @@ pub struct Player {
     events: broadcast::Sender<SwitchEvent>,
     clock: PlayoutClock,
     stats: PlaybackRecorder,
-    shutdown: CancellationToken,
     _tasks: Vec<AbortOnDropHandle<()>>,
 }
 
 impl Drop for Player {
     fn drop(&mut self) {
-        self.shutdown.cancel();
         self.clock.close();
     }
 }
@@ -290,7 +227,7 @@ impl Player {
     /// Starts playing `broadcast`, for [`RemoteBroadcast::play`].
     pub(crate) fn start(broadcast: RemoteBroadcast, config: PlayerConfig) -> Result<Self, Error> {
         config.latency.validate()?;
-        let span = tracing::info_span!(parent: broadcast.span(), "player");
+        let span = info_span!(parent: broadcast.span(), "player");
         let status = watch::Sender::new(PlayerStatus {
             mode: config.rendition.clone(),
             video: match config.rendition {
@@ -312,7 +249,6 @@ impl Player {
         let (events, _) = broadcast::channel(16);
         let clock = PlayoutClock::new(config.latency.min);
         let stats = PlaybackRecorder::default();
-        let shutdown = CancellationToken::new();
         let slot = FrameSlot::new();
         let frames = slot.frames();
         // The supervisor reports failed renditions, and the selector backs off
@@ -335,9 +271,8 @@ impl Player {
                 desired: desired_tx,
                 clock: clock.clone(),
                 adaptation: config.adaptation,
-                shutdown: shutdown.clone(),
             })
-            .instrument(tracing::debug_span!(parent: &span, "select")),
+            .instrument(debug_span!(parent: &span, "select")),
         )));
         tasks.push(AbortOnDropHandle::new(n0_future::task::spawn(
             video_task::run(video_task::Inputs {
@@ -351,9 +286,8 @@ impl Player {
                 clock: clock.clone(),
                 stats: stats.clone(),
                 switch_deadline: config.switch_deadline,
-                shutdown: shutdown.clone(),
             })
-            .instrument(tracing::info_span!(parent: &span, "video")),
+            .instrument(info_span!(parent: &span, "video")),
         )));
         if let Some(output) = config.audio {
             tasks.push(AbortOnDropHandle::new(n0_future::task::spawn(
@@ -364,12 +298,11 @@ impl Player {
                     status: status.clone(),
                     clock: clock.clone(),
                     stats: stats.clone(),
-                    shutdown: shutdown.clone(),
                 })
-                .instrument(tracing::info_span!(parent: &span, "audio")),
+                .instrument(info_span!(parent: &span, "audio")),
             )));
         }
-        tracing::info!(parent: &span, mode = ?config.rendition, latency = ?config.latency, "player started");
+        info!(parent: &span, mode = ?config.rendition, latency = ?config.latency, "player started");
 
         Ok(Self {
             broadcast,
@@ -379,7 +312,6 @@ impl Player {
             events,
             clock,
             stats,
-            shutdown,
             _tasks: tasks,
         })
     }
@@ -509,7 +441,7 @@ impl Player {
                 {
                     return Err(n0_error::e!(SwitchError::Failed {
                         rendition: name.to_string(),
-                        source: source.clone(),
+                        source: source.0.clone(),
                     }));
                 }
                 _ => {}

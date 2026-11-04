@@ -34,7 +34,6 @@ use n0_future::{
     task::{AbortOnDropHandle, spawn},
 };
 use tokio::sync::{broadcast, mpsc, watch};
-use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
@@ -91,7 +90,6 @@ pub(crate) struct Inputs {
     pub stats: PlaybackRecorder,
     /// How long a replacement decoder has to take over.
     pub switch_deadline: Duration,
-    pub shutdown: CancellationToken,
 }
 
 /// Something one of the decoders did.
@@ -129,7 +127,6 @@ pub(crate) async fn run(inputs: Inputs) {
         clock,
         stats,
         switch_deadline,
-        shutdown,
     } = inputs;
     let mut switcher = VideoSwitcher::new(switch_deadline);
     let mut delivery: Option<Delivery> = None;
@@ -145,11 +142,6 @@ pub(crate) async fn run(inputs: Inputs) {
         let mut incumbent_end: Option<(Target, Option<Arc<Error>>)> = None;
         let outcome: Outcome<Error> = tokio::select! {
             biased;
-
-            () = shutdown.cancelled() => {
-                debug!("video stopped");
-                return;
-            }
 
             changed = desired.changed() => {
                 if changed.is_err() {
@@ -353,11 +345,11 @@ pub(crate) async fn run(inputs: Inputs) {
                         .as_ref()
                         .is_some_and(|playing| playing.rendition == target.rendition);
                     send_if_changed(&status, |status| {
-                        status.switch_error = Some(err.clone());
+                        status.switch_error = Some(err.clone().into());
                         // Nothing on screen and nothing on its way: the video
                         // has failed until the selector finds something to try.
                         if playing.is_none() && status.switching_to.is_none() {
-                            status.clear_video(SlotState::Failed(err.clone()));
+                            status.clear_video(SlotState::Failed(err.clone().into()));
                             status.failed_rendition = Some(rendition.clone());
                         }
                     });
@@ -381,9 +373,9 @@ pub(crate) async fn run(inputs: Inputs) {
                     Some((target, Some(err))) => {
                         warn!(error = %err, rendition = %target.rendition, "video failed");
                         send_if_changed(&status, |status| {
-                            status.clear_video(SlotState::Failed(err.clone()));
+                            status.clear_video(SlotState::Failed(err.clone().into()));
                             status.failed_rendition = Some(target.rendition.clone());
-                            status.switch_error = Some(err.clone());
+                            status.switch_error = Some(err.clone().into());
                         });
                         let _ = reports.try_send(Report::Failed(Failure {
                             target,

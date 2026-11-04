@@ -32,7 +32,7 @@ tracing = "0.1.44"
 tokio = { version = "1.53.1", features = ["full"] }
 
 [features]
-default = ["capture", "sound-server"]
+default = []
 # Camera, screen and microphone capture. Off for a build that only publishes
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-ext-sources/capture", "moq-video/capture", "moq-audio/capture"]

@@ -23,13 +23,13 @@ use crate::{BroadcastTicket, Error, paths};
 
 /// A function naming the paths a peer may publish under, given its id.
 ///
-/// [`publish_scope`] is one; `rooms::publish_scope` is another.
+/// [`paths::publish_scope`] is one; `rooms::publish_scope` is another.
 pub type PublishScope = fn(EndpointId) -> Pattern;
 
 /// Returns the grant a live node gives `peer`.
 ///
 /// The peer may subscribe to anything, and publish only under
-/// [`publish_scope`], so no peer can publish at a path that names another.
+/// [`paths::publish_scope`], so no peer can publish at a path that names another.
 /// [`grant_with`] adds more scopes, such as rooms'.
 pub fn grant(peer: EndpointId) -> Grant {
     grant_with(peer, &[])
@@ -55,9 +55,10 @@ pub fn moq_config() -> MoqConfig {
 
 /// Returns the [`MoqConfig`] of a live node whose peers may also publish
 /// under `scopes`, as [`grant_with`] says.
-pub fn moq_config_with(scopes: &'static [PublishScope]) -> MoqConfig {
+pub fn moq_config_with(scopes: &[PublishScope]) -> MoqConfig {
+    let scopes: Arc<[PublishScope]> = scopes.into();
     MoqConfig {
-        grant: Some(Arc::new(move |peer| grant_with(peer, scopes))),
+        grant: Some(Arc::new(move |peer| grant_with(peer, &scopes))),
         ..Default::default()
     }
 }
@@ -284,20 +285,6 @@ impl Live {
         Ok(self.moq.subscribe(path, reach).await?)
     }
 
-    /// Resolves the broadcast at `path` and reads its media.
-    ///
-    /// [`subscribe_path`](Self::subscribe_path) followed by
-    /// [`remote_broadcast`](Self::remote_broadcast).
-    #[cfg(feature = "media")]
-    pub async fn subscribe_path_media(
-        &self,
-        path: &str,
-        reach: Reach,
-    ) -> Result<RemoteBroadcast, Error> {
-        let subscription = self.subscribe_path(path, reach).await?;
-        Ok(self.remote_broadcast(&subscription))
-    }
-
     /// Offers `broadcast` as this node's side of a call with `peer`.
     ///
     /// Publishes at `live/<this node's id>/call`, visible to `peer` only. The
@@ -342,6 +329,7 @@ impl Live {
     /// Returns the ticket for this node's broadcast `name`.
     ///
     /// Does not check that anything is published there.
+    #[must_use]
     pub fn ticket(&self, name: &str) -> BroadcastTicket {
         BroadcastTicket::new(self.endpoint.id(), name)
     }
@@ -377,12 +365,13 @@ impl Live {
     /// watch [`RemoteBroadcast::catalog`] for it.
     #[cfg(feature = "media")]
     pub fn remote_broadcast(&self, subscription: &Subscription) -> RemoteBroadcast {
-        RemoteBroadcast::from_resolved(
+        let remote = RemoteBroadcast::from_resolved(
             subscription.as_origin(),
-            subscription.path(),
+            subscription.path().clone(),
             subscription.as_moq(),
-        )
-        .with_network(network::signals(subscription.clone()))
+        );
+        remote.set_network(network::signals(subscription.clone()));
+        remote
     }
 
     /// Shuts the node down, the router and the endpoint included.

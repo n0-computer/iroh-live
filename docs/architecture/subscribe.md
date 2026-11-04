@@ -101,12 +101,13 @@ one the handle read.
 
 ## Audio playback
 
-`AudioOutput` is one opened `moq_audio::playback::Engine`. The application
-opens it with `AudioOutput::open(device)` and passes it to every `PlayerConfig`
-that should play there, so several players share one device stream.
-`AudioOutput::devices()` lists outputs, and `switch(device)` moves every player
-on the output to another device. `AudioOutput::null()` discards audio, for
-headless use and tests: the player still decodes, but nothing paces the audio.
+An `AudioTarget` wraps one opened `moq_audio::playback::Engine`. The
+application opens the engine with `Engine::open(config)`, converts it with
+`AudioTarget::from(engine)` (the `playback` feature), and passes the target to
+every `PlayerConfig` that should play there, so several players share one
+device stream. The engine lists and switches devices. `AudioTarget::null()`
+discards audio, for headless use and tests: the player still decodes, but
+nothing paces the audio.
 A `PlayerConfig` with `audio: None` does not subscribe to audio at all.
 
 The audio task plays the first audio rendition. It writes frames straight to

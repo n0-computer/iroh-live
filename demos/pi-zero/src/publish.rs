@@ -7,8 +7,8 @@ use std::time::Duration;
 use clap::Parser;
 use iroh::EndpointId;
 use iroh_live::{
-    Live, LocalBroadcast,
-    media::{EncodedVideoSource, RpicamConfig, video::Size},
+    Live,
+    media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
     moq::RelayConfig,
 };
 use moq_net::bandwidth::Rate;

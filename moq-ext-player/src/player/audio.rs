@@ -4,12 +4,11 @@ use std::{sync::Arc, time::Duration};
 
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::output::{AudioTarget, OutputControl};
 use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock};
-use moq_ext_media_core::{Error, SlotState, send_if_changed};
+use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
 use moq_ext_sources::AudioFormat;
 
 use crate::{
@@ -28,7 +27,6 @@ pub(crate) struct Inputs {
     pub status: watch::Sender<PlayerStatus>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
-    pub shutdown: CancellationToken,
 }
 
 /// Plays the broadcast's audio until the player is dropped.
@@ -43,7 +41,6 @@ pub(crate) async fn run(inputs: Inputs) {
         status,
         clock,
         stats,
-        shutdown,
     } = inputs;
     let mut catalog = broadcast.catalog();
     let mut epoch = broadcast.epoch();
@@ -87,7 +84,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     Err(err) => {
                         warn!(error = %err, rendition = %name, "audio failed to open");
                         send_if_changed(&status, |status| {
-                            status.audio = SlotState::Failed(Arc::new(err))
+                            status.audio = SlotState::Failed(ByPtr::new(err))
                         });
                         None
                     }
@@ -104,7 +101,6 @@ pub(crate) async fn run(inputs: Inputs) {
         loop {
             let reading = reader.is_some();
             tokio::select! {
-                () = shutdown.cancelled() => return,
                 result = async { (&mut reader.as_mut().expect("guarded").0).await }, if reading => {
                     reader = None;
                     stats.audio.update(|audio| *audio = None);
@@ -113,7 +109,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         Ok(Ok(())) => send_if_changed(&status, |status| status.audio = SlotState::Ended),
                         Ok(Err(err)) => {
                             warn!(error = %err, "audio stopped");
-                            send_if_changed(&status, |status| status.audio = SlotState::Failed(Arc::new(err)));
+                            send_if_changed(&status, |status| status.audio = SlotState::Failed(ByPtr::new(err)));
                         }
                         Err(err) => warn!(error = %err, "the audio task panicked"),
                     }

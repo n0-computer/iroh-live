@@ -251,7 +251,7 @@ async fn publish_subscribe_audio() {
 
 /// Heavy loss in the network samples moves the player down the ladder.
 ///
-/// The samples are made up and fed in through `with_network`.
+/// The samples are made up and fed in through `set_network`.
 #[tokio::test]
 #[traced_test]
 async fn adaptive_rendition_switching() {
@@ -286,7 +286,7 @@ async fn adaptive_rendition_switching() {
         ..NetworkSample::default()
     }));
     let reader = sample.clone();
-    let remote = remote.with_network(move || *reader.lock().expect("poisoned"));
+    remote.set_network(move || *reader.lock().expect("poisoned"));
 
     let mut catalog = remote.catalog();
     tokio::time::timeout(

@@ -206,6 +206,7 @@ impl Default for LocalBroadcast {
 
 impl LocalBroadcast {
     /// Creates an empty broadcast, published nowhere yet.
+    #[must_use]
     pub fn new() -> Self {
         let mut producer = moq_net::broadcast::Info::new().produce();
         // The catalog advertises the clock's wall mapping, so it is built with

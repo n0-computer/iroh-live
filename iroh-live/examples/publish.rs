@@ -5,10 +5,10 @@
 
 use clap::Parser;
 use iroh_live::{
-    EndpointOptions, Live, LocalBroadcast,
+    EndpointOptions, Live,
     media::{
-        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
-        video,
+        AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
+        VideoRendition, VideoSource, video,
     },
 };
 use tracing::{info, warn};
@@ -62,8 +62,9 @@ async fn main() -> n0_error::Result {
         Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    // The broadcast stays published while this is held.
-    let _publication = live.publish(&args.name, &broadcast)?;
+    // Dropping the `Publication` leaves the broadcast published. It ends with
+    // `broadcast`, or when the node shuts down.
+    live.publish(&args.name, &broadcast)?;
     println!("{}", live.ticket(&args.name));
     info!(name = %args.name, "publishing");
 

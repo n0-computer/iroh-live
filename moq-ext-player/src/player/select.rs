@@ -10,14 +10,13 @@ use tokio::{
     sync::{mpsc, watch},
     time::Instant,
 };
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace};
 
 use moq_ext_adaptive::{
     Adaptation, Backoffs, Bound, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, Target, VANISH_GRACE,
 };
 
-use super::{Controls, Latency, PlayerStatus, RenditionMode};
+use super::{Controls, Latency, PlayerStatus};
 use moq_ext_media_core::{Error, SlotState, send_if_changed};
 
 use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
@@ -99,7 +98,6 @@ pub(crate) struct Inputs {
     pub clock: super::PlayoutClock,
     /// The thresholds and timers the choice follows.
     pub adaptation: Adaptation,
-    pub shutdown: CancellationToken,
 }
 
 /// The decoder configuration a target was last built under.
@@ -123,7 +121,6 @@ pub(crate) async fn run(inputs: Inputs) {
         desired,
         clock,
         adaptation,
-        shutdown,
     } = inputs;
     let mut mode = controls.mode.subscribe();
     let mut latency = controls.latency.subscribe();
@@ -158,13 +155,12 @@ pub(crate) async fn run(inputs: Inputs) {
     // nothing else would.
     let mut first = true;
     loop {
-        let auto = matches!(*mode.borrow(), RenditionMode::Auto { .. });
+        let auto = matches!(*mode.borrow(), Mode::Auto { .. });
         let ticking = (auto && network.is_some())
             || backoffs.any_excluded(Instant::now().into_std())
             || vanished_since.is_some();
         if !std::mem::take(&mut first) {
             tokio::select! {
-                () = shutdown.cancelled() => return,
                 // Returning drops the desired sender. That ends the video task
                 // and the player's frames, so a reader in `next()` sees the end.
                 () = broadcast.closed() => {
@@ -286,7 +282,7 @@ pub(crate) async fn run(inputs: Inputs) {
 
         let rungs = crate::catalog::rungs(&catalog);
         let chosen = moq_ext_adaptive::choose(
-            &mode_of(&mode),
+            &mode,
             &rungs,
             &backoffs.excluded(std_now),
             current.as_deref(),
@@ -300,10 +296,10 @@ pub(crate) async fn run(inputs: Inputs) {
         let why_changed = !same_error(&last_why, &why);
         send_if_changed(&status, |status| {
             if why_changed {
-                status.switch_error = why.clone();
+                status.switch_error = why.clone().map(Into::into);
             }
             match (&mode, &status.video) {
-                (RenditionMode::Off, _) => status.video = SlotState::Off,
+                (Mode::Off, _) => status.video = SlotState::Off,
                 (_, SlotState::Off) => status.video = SlotState::Starting,
                 // Video came back to a catalog that had none.
                 (_, SlotState::Ended) if choice.is_some() => status.video = SlotState::Starting,
@@ -313,12 +309,8 @@ pub(crate) async fn run(inputs: Inputs) {
         if why_changed {
             last_why = why;
         }
-        let step_down = moq_ext_adaptive::step_down(
-            &mode_of(&mode),
-            &rungs,
-            choice.as_deref(),
-            on_screen.as_deref(),
-        );
+        let step_down =
+            moq_ext_adaptive::step_down(&mode, &rungs, choice.as_deref(), on_screen.as_deref());
         let next = choice.and_then(|name| {
             let config = catalog.video.renditions.get(&name)?.clone();
             Some(Desired {
@@ -331,7 +323,7 @@ pub(crate) async fn run(inputs: Inputs) {
         // A catalog that never had video counts too, so an audio-only
         // broadcast ends its video instead of starting forever.
         let vanished = next.is_none()
-            && !matches!(mode, RenditionMode::Off)
+            && !matches!(mode, Mode::Off)
             && status.borrow().video != SlotState::Ended;
         if vanished {
             let since = *vanished_since.get_or_insert(now);
@@ -373,17 +365,6 @@ fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
         (Some(left), Some(right)) => left.to_string() == right.to_string(),
         (None, None) => true,
         _ => false,
-    }
-}
-
-/// Converts the player's rendition mode to the selector crate's.
-fn mode_of(mode: &RenditionMode) -> Mode {
-    match mode {
-        RenditionMode::Auto { max_height } => Mode::Auto {
-            max_height: *max_height,
-        },
-        RenditionMode::Pinned(name) => Mode::Pinned(name.clone()),
-        RenditionMode::Off => Mode::Off,
     }
 }
 
@@ -437,7 +418,7 @@ mod tests {
         let inputs = Inputs {
             broadcast: RemoteBroadcast::from_consumer(moq_net::Consume::consume(&broadcast)),
             controls: Arc::new(Controls {
-                mode: watch::Sender::new(RenditionMode::auto()),
+                mode: watch::Sender::new(Mode::auto()),
                 latency: watch::Sender::new(Latency::default()),
                 decoder: watch::Sender::new(moq_video::decode::Kind::Software),
                 volume: watch::Sender::new(1.0),
@@ -448,7 +429,6 @@ mod tests {
             desired,
             clock: super::super::PlayoutClock::new(Duration::from_millis(100)),
             adaptation: Adaptation::default(),
-            shutdown: CancellationToken::new(),
         };
         let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));
         Running {
