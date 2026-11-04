@@ -7,7 +7,7 @@ Use it to try iroh-live without writing code: publish a camera, a screen or a
 file, and watch it from another machine with the printed ticket.
 
 ```sh
-cargo install --path iroh-live-cli
+cargo install --locked --path iroh-live-cli
 irl publish --video test          # prints a ticket
 irl watch <ticket>
 ```
