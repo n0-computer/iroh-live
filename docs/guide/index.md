@@ -41,7 +41,7 @@ relay needs.
 Install the CLI and publish your camera and microphone:
 
 ```sh
-cargo install --path iroh-live-cli
+cargo install --locked --path iroh-live-cli
 
 irl publish              # prints a ticket and a QR code
 irl watch <TICKET>       # on another machine

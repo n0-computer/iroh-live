@@ -21,7 +21,7 @@ clock that keeps audio and video in step, and the application layer on top.
 ## Quick start
 
 ```sh
-cargo install --path iroh-live-cli
+cargo install --locked --path iroh-live-cli
 
 # Terminal 1: publish camera and microphone, print a ticket and a QR code
 irl publish
