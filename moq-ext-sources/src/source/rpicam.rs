@@ -25,6 +25,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use n0_future::{
+    StreamExt,
     boxed::BoxStream,
     task::{AbortOnDropHandle, spawn},
 };
@@ -222,7 +223,6 @@ pub(super) async fn open_raw(
     let mut pictures = frames(size, config.framerate, moq_mux::Clock::new())?;
     let (first_tx, first) = tokio::sync::oneshot::channel();
     let task = crate::local_task::spawn("rpicam", stop, move |stop| async move {
-        use n0_future::StreamExt;
         let mut first_tx = Some(first_tx);
         loop {
             let frame = tokio::select! {
@@ -230,12 +230,12 @@ pub(super) async fn open_raw(
                 () = stop.cancelled() => break,
             };
             let Some(frame) = frame else {
-                slot.fail(std::sync::Arc::new(Error::device_msg(format!(
+                slot.fail(Arc::new(Error::device_msg(format!(
                     "{RPICAM_VID} stopped writing pictures"
                 ))));
                 break;
             };
-            slot.send(std::sync::Arc::new(frame));
+            slot.send(Arc::new(frame));
             if let Some(tx) = first_tx.take() {
                 let _ = tx.send(());
             }

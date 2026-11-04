@@ -267,7 +267,7 @@ mod tests {
     async fn a_switch_waits_for_the_previous_capture_to_release() {
         let releases = Releases::new();
         let stop = CancellationToken::new();
-        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::sync_channel::<()>(1);
         let task = local_task::spawn("test-slow-release", stop.clone(), move |_stop| async move {
             // Closing the device takes a moment after the stop.
             let _ = released.recv();
@@ -309,7 +309,7 @@ mod tests {
     async fn a_stuck_capture_delays_the_next_open_once() {
         let releases = Releases::new();
         let stop = CancellationToken::new();
-        let (unstick, stuck) = std::sync::mpsc::channel::<()>();
+        let (unstick, stuck) = std::sync::mpsc::sync_channel::<()>(1);
         let task = local_task::spawn("test-stuck", stop.clone(), move |_stop| async move {
             // Ignores the stop, like a read blocked in `poll(-1)`.
             let _ = stuck.recv();
