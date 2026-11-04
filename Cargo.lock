@@ -5625,20 +5625,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-ext-sound-server"
-version = "0.1.0"
-dependencies = [
- "moq-audio",
-]
-
-[[package]]
 name = "moq-ext-sources"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "derive_more",
  "moq-audio",
- "moq-ext-sound-server",
  "moq-mux",
  "moq-net",
  "moq-video",
