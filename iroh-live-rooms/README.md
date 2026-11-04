@@ -3,8 +3,8 @@
 Multi-party rooms over [iroh-gossip](https://github.com/n0-computer/iroh-gossip)
 and MoQ. Media-free: nothing here knows what a room's broadcasts carry.
 
-Use it when several peers share a space. A room is a gossip topic; members
-announce themselves and the broadcasts they publish. `Rooms::join` returns a
+Use it when several peers share a space. A room is a gossip topic, and its
+members announce themselves and the broadcasts they publish. `Rooms::join` returns a
 `Room` with its membership as a watched `RoomState`, `Room::publish` places a
 broadcast at `rooms/<topic>/<member>/<name>` visible to the members only, and
 `Room::subscribe` reads a member's broadcast on demand. Most applications get
@@ -19,9 +19,12 @@ let room = rooms.join(&RoomTicket::generate(), Some("ada".into())).await?;
 let _cam = room.publish("cam")?;
 ```
 
-The node's grant has to let each peer publish under `publish_scope`;
-`iroh_live::node_config_with` does that. See the crate docs and
-`tests/room.rs` for the rest.
+The node's grant has to let each peer publish under `publish_scope`.
+`iroh_live::LiveBuilder::with_rooms` does that, and
+`iroh_live::node_config_with` does it for a config built by hand.
+`Rooms::shutdown`, or the router's shutdown through the handler, stops the
+gossip and every room joined on it. See the crate docs and `tests/room.rs` for
+the rest.
 
 Built on [`iroh-live-node`](../iroh-live-node).
 
