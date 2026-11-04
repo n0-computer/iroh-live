@@ -692,6 +692,53 @@ async fn the_route_table_carries_public_publications_only() {
     alice.shutdown().await;
 }
 
+/// A grant that lets every peer publish anywhere.
+fn anywhere(_peer: iroh::EndpointId) -> Grant {
+    Grant::everything()
+}
+
+/// With overlapping grants, a path only carol publishes is not resolved through bob's session.
+#[tokio::test]
+#[traced_test]
+async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
+    let alice = Node::with_config(MoqConfig {
+        grant: Some(std::sync::Arc::new(anywhere)),
+        ..Default::default()
+    })
+    .await;
+    let bob = Node::spawn().await;
+    let carol = Node::spawn().await;
+
+    let broadcast = TestBroadcast::start();
+    let publication = carol
+        .moq
+        .publish("shared/cam", &broadcast.producer, Audience::Everyone)
+        .expect("publish");
+    step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    let with_bob = step("alice sees bob", session_with(&alice, bob.id())).await;
+    let with_carol = step("alice sees carol", session_with(&alice, carol.id())).await;
+
+    let subscription = step("carol's session", with_carol.subscribe(publication.path()))
+        .await
+        .expect("carol's session resolves her own path");
+    read_counter(&subscription.as_moq()).await;
+    stays_pending(
+        "bob's session resolved a path only carol publishes",
+        QUIET,
+        with_bob.subscribe(publication.path()),
+    )
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
 /// Waits until `node` has a session with `remote`, and returns it.
 async fn session_with(node: &Node, remote: iroh::EndpointId) -> iroh_moq::Session {
     let mut sessions = node.moq.sessions();

@@ -174,20 +174,17 @@ impl State {
     ///
     /// A route is attributed to the hop its session's peer declares, or else
     /// to the hop this node assigned the session. The two agree for peers on
-    /// this crate. A relay that declares a hop of its own matches no link, and
-    /// stands for the oldest relay link that feeds the table. `None` for a
-    /// route published on this node.
+    /// this crate. `None` for a route published on this node, and for a hop no
+    /// link has, such as one a relay declares of its own: guessing a link
+    /// would mislabel a direct route.
     pub(crate) fn link_for(&self, source: Source) -> Option<u64> {
         let Source::Peer(hop) = source else {
             return None;
         };
-        let by_hop = self.links.iter().find(|(_, link)| link.hop == hop);
-        let relay = || {
-            self.links
-                .iter()
-                .find(|(_, link)| link.kind == LinkKind::Relay && link.consume)
-        };
-        by_hop.or_else(relay).map(|(id, _)| *id)
+        self.links
+            .iter()
+            .find(|(_, link)| link.hop == hop)
+            .map(|(id, _)| *id)
     }
 
     /// Reports whether a relay link feeds the route table.

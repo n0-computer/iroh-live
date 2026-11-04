@@ -123,10 +123,13 @@ impl Session {
     /// resolved.
     ///
     /// The session is told from other links by the hop its routes carry: the
-    /// one derived from the peer's id, or a hop the peer declares that no other
-    /// link has (a relay does). Two sessions with one peer share it, and so do
-    /// peers that declare hops of their own; grants that name each peer keep a
-    /// path to one.
+    /// one derived from the peer's id. moq lets a peer declare a hop of its own
+    /// on the wire, and that declaration wins over the one this node assigns.
+    /// So the guarantee is only as strong as the grants: a peer whose grant
+    /// lets it publish the path could declare this peer's hop and be resolved
+    /// here. It holds when grants do not overlap, as the default grants ensure
+    /// by letting each peer publish only under its own id. Two sessions with
+    /// one peer share the hop.
     ///
     /// # Errors
     ///
@@ -146,19 +149,7 @@ impl Session {
         };
         let view = route::direct_view(&shared.table);
         let instance = tokio::select! {
-            found = route::announced_by(&view, &path, |hop| {
-                // A peer that declares a hop of its own, such as a relay, is
-                // not told by `hop_for`: it is this session's unless another
-                // link has that hop.
-                hop == self.inner.hop
-                    || !shared
-                        .state
-                        .lock()
-                        .expect("poisoned")
-                        .links
-                        .values()
-                        .any(|link| link.hop == hop)
-            }) => match found {
+            found = route::announced_by(&view, &path, |hop| hop == self.inner.hop) => match found {
                 Ok(instance) => instance,
                 Err(moq_net::Error::Closed) => return Err(e!(Error::NotAnnounced { path })),
                 Err(source) => return Err(e!(Error::Unresolved { path, source })),
@@ -324,7 +315,7 @@ pub(crate) async fn dial_session(
 }
 
 /// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Returns a copy of `err` for one of several callers waiting on one dial.
 fn share(err: &Error) -> Error {

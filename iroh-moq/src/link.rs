@@ -75,6 +75,14 @@ impl LinkState {
         self.0.lock().expect("poisoned").clone()
     }
 
+    /// Empties the reading, as between sessions, keeping `path_generation`.
+    pub(crate) fn clear(&self, path_generation: u64) {
+        self.set(LinkSample {
+            path_generation,
+            ..LinkSample::default()
+        });
+    }
+
     fn set(&self, sample: LinkSample) {
         trace!(
             path_generation = sample.path_generation,
@@ -107,9 +115,14 @@ enum PathKey {
 
 /// Reads `source` into `state` every [`SAMPLE_INTERVAL`] until the connection closes.
 pub(crate) async fn monitor(source: Source, state: LinkState) {
+    monitor_with(source, state, Arc::new(Mutex::new(Sampler::default()))).await;
+}
+
+/// Like [`monitor`], with a sampler that outlives the monitor, so the path
+/// generation carries on across the sessions of one link.
+pub(crate) async fn monitor_with(source: Source, state: LinkState, sampler: SharedSampler) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut sampler = Sampler::default();
     // Holding the estimate is what asks the peer to probe.
     let recv = match &source {
         Source::Direct(moq, _) => moq.recv_bandwidth(),
@@ -126,7 +139,7 @@ pub(crate) async fn monitor(source: Source, state: LinkState) {
                 let Some(selected) = paths.iter().find(|path| path.is_selected()) else {
                     continue;
                 };
-                let mut sample = sampler.sample(
+                let mut sample = sampler.lock().expect("poisoned").sample(
                     PathKey::Quic(selected.id()),
                     &moq.stats(),
                     recv.as_ref().and_then(|recv| recv.peek()),
@@ -138,11 +151,16 @@ pub(crate) async fn monitor(source: Source, state: LinkState) {
             Source::Relay(connection) => match connection.stats() {
                 Some(stats) => {
                     let session = connection.presence().sessions_started;
-                    sampler.sample(PathKey::Session(session), &stats, None, Instant::now())
+                    sampler.lock().expect("poisoned").sample(
+                        PathKey::Session(session),
+                        &stats,
+                        None,
+                        Instant::now(),
+                    )
                 }
                 // Between sessions nothing is measured.
                 None => LinkSample {
-                    path_generation: sampler.path_generation,
+                    path_generation: sampler.lock().expect("poisoned").path_generation,
                     ..LinkSample::default()
                 },
             },
@@ -150,6 +168,9 @@ pub(crate) async fn monitor(source: Source, state: LinkState) {
         state.set(sample);
     }
 }
+
+/// A sampler shared by the monitors of one link's successive sessions.
+pub(crate) type SharedSampler = Arc<Mutex<Sampler>>;
 
 /// The counters one reading carries, and when it was taken.
 #[derive(Debug, Clone, Copy)]
@@ -163,7 +184,7 @@ struct Reading {
 
 /// Turns readings of a session's statistics into [`LinkSample`]s.
 #[derive(Debug, Default)]
-struct Sampler {
+pub(crate) struct Sampler {
     path: Option<PathKey>,
     path_generation: u64,
     /// This path's readings over the last [`MIN_RTT_WINDOW`], oldest first.
@@ -171,6 +192,20 @@ struct Sampler {
 }
 
 impl Sampler {
+    /// Starts a new session of the link: the next reading counts as a new
+    /// path even if the QUIC path id repeats, and history starts over.
+    pub(crate) fn new_session(&mut self) {
+        if self.path.take().is_some() {
+            self.path_generation += 1;
+        }
+        self.readings.clear();
+    }
+
+    /// Returns the generation the link is at.
+    pub(crate) fn generation(&self) -> u64 {
+        self.path_generation
+    }
+
     /// Folds `stats`, read on `path` at `now`, into a sample.
     ///
     /// A new path starts its history over, so no rate or minimum mixes two
@@ -303,6 +338,22 @@ mod tests {
         assert_eq!(backup.path_generation, 1);
         assert_eq!(backup.min_rtt, Some(Duration::from_millis(40)));
         assert_eq!(backup.loss_rate, None);
+    }
+
+    /// A redial is a new path even when the QUIC path id repeats.
+    #[test]
+    fn a_new_session_bumps_the_generation() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        run(&mut sampler, t0, 3, (1, 0, 0));
+        assert_eq!(sampler.generation(), 0);
+        sampler.new_session();
+        let first = sampler.sample(DIRECT, &stats(20, 0, 0, 0), None, t0 + SAMPLE_INTERVAL * 4);
+        assert_eq!(first.path_generation, 1);
+        // A session that never sampled adds nothing.
+        sampler.new_session();
+        sampler.new_session();
+        assert_eq!(sampler.generation(), 2);
     }
 
     #[test]

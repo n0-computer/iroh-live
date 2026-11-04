@@ -207,19 +207,41 @@ impl Subscription {
         Some((link, state.links.get(&link)?))
     }
 
-    /// Waits until the path has no route left.
+    /// Follows the path until nothing serves it, switching
+    /// [`as_moq`](Self::as_moq) to whatever serves it now.
     ///
-    /// moq moves between routes of one instance by itself. This asks the table
-    /// again when the broadcast ends anyway: another instance took over the
-    /// path, or the instance's last route went while another remains. A pinned
-    /// subscription asks for its own instance. Returns once nothing serves the
-    /// path.
+    /// moq moves between routes of one instance by itself. This switches when
+    /// another instance takes the path over, even while the old broadcast is
+    /// still served to its readers, and asks the table again when the
+    /// broadcast ends: the instance's last route went while another remains.
+    /// A pinned subscription follows only its own instance. Returns once
+    /// nothing serves the path.
     pub async fn closed(&self) {
         let instance = self.inner.pin.as_ref().and_then(|pin| pin.instance.clone());
+        let mut following = self
+            .inner
+            .origin
+            .follow(&self.inner.path, instance.clone())
+            .ok();
         loop {
             let current = self.as_moq();
             let since = tokio::time::Instant::now();
-            current.closed().await;
+            let taken = async {
+                match following.as_mut() {
+                    Some(following) => following.available().await.ok(),
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                Some(next) = taken => {
+                    if !next.is_closed() {
+                        debug!(path = %self.inner.path, "another instance serves the path");
+                        *self.inner.current.lock().expect("poisoned") = next;
+                    }
+                    continue;
+                }
+                _ = current.closed() => {}
+            }
             if since.elapsed() < REASK_WINDOW {
                 tokio::time::sleep(REASK_PAUSE).await;
             }

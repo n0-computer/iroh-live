@@ -864,8 +864,17 @@ fn detach<F: std::future::Future + Send + 'static>(future: F)
 where
     F::Output: Send + 'static,
 {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        drop(handle.spawn(future));
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => drop(handle.spawn(future)),
+        // Without a runtime, run what can finish at once: the deferred
+        // action's interrupt has fired, so the salvaged operation is usually
+        // ready. One that is not drops the stream, which sends the backend's
+        // default code 0.
+        Err(_) => {
+            if future.now_or_never().is_none() {
+                tracing::debug!("no runtime to finish a deferred stream stop, dropped");
+            }
+        }
     }
 }
 

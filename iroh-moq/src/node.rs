@@ -328,7 +328,7 @@ impl Moq {
         // added and then cleared.
         self.shared.state.lock().expect("poisoned").closed = true;
         self.shared.shutdown.cancel();
-        self.tasks.detach_relays();
+        self.tasks.shutdown_relays().await;
         let mut done = self.shared.done.watch();
         while !done.get() {
             if done.updated().await.is_err() {

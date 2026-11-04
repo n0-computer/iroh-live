@@ -343,9 +343,25 @@ async fn follow(
             generation,
             consumer: Some(consumer.clone()),
         });
-        read_catalog(&consumer, &catalog).await;
-        consumer.closed().await;
-        debug!("the broadcast ended");
+        // Another instance taking the path over leaves this broadcast to its
+        // readers until its own routes go, so a stream that is dead to the
+        // publisher would freeze players. Switch as soon as the table says so.
+        let taken_over = async {
+            match &mut routes {
+                Some(routes) => routes.available().await.ok(),
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            Some(taken) = taken_over => {
+                debug!("another instance took the broadcast over");
+                next = Some(taken);
+            }
+            _ = async {
+                read_catalog(&consumer, &catalog).await;
+                consumer.closed().await;
+            } => debug!("the broadcast ended"),
+        }
     }
     epoch.send_replace(Epoch {
         generation: generation + 1,
@@ -419,6 +435,47 @@ mod tests {
         tokio::time::timeout(REROUTE_PATIENCE + Duration::from_secs(5), remote.closed())
             .await
             .expect("the remote closed within its re-resolve window");
+    }
+
+    /// A new instance taking the path over switches players at once, while
+    /// the old instance still serves its readers.
+    #[tokio::test]
+    async fn a_takeover_switches_while_the_old_instance_lives() {
+        use moq_net::{Instance, origin::Route};
+
+        let (origin, driver) = moq_net::origin::Producer::new(Default::default());
+        let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
+        let _first = origin
+            .publish(
+                "live/cam",
+                Route::default().with_instance(Instance::random(), 1),
+            )
+            .expect("published");
+        let remote = RemoteBroadcast::from_origin(origin.consume(), "live/cam");
+        let mut epoch = remote.epoch();
+        let seen = tokio::time::timeout(
+            Duration::from_secs(5),
+            epoch.wait_for(|epoch| epoch.consumer.is_some()),
+        )
+        .await
+        .expect("the broadcast resolved")
+        .expect("epochs keep coming")
+        .generation;
+
+        let _second = origin
+            .publish(
+                "live/cam",
+                Route::default().with_instance(Instance::random(), 2),
+            )
+            .expect("published again");
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            epoch.wait_for(|epoch| epoch.generation > seen && epoch.consumer.is_some()),
+        )
+        .await
+        .expect("players switched to the new instance")
+        .expect("epochs keep coming");
+        assert!(!remote.is_closed());
     }
 
     /// A change of route gives players a new epoch instead of a close.

@@ -172,8 +172,12 @@ impl RelayLink {
             }
             Uplink::Iroh(stop) => stop.cancel(),
         }
-        if let Some(tasks) = self.inner.tasks.upgrade() {
-            tasks.remove_relay(self.inner.link);
+        if let Some(tasks) = self.inner.tasks.upgrade()
+            && let Some(relay) = tasks.remove_relay(self.inner.link)
+        {
+            // Let the task close its session before it is dropped, which
+            // would abort it.
+            relay.finish().await;
         }
         if let Some(shared) = self.inner.shared.upgrade() {
             shared
@@ -201,20 +205,45 @@ impl Tasks {
         relays.insert(link, task);
     }
 
-    /// Stops a relay link's task.
-    fn remove_relay(&self, link: u64) {
-        self.relays.lock().expect("poisoned").remove(&link);
+    /// Takes a relay link's task out, to be finished.
+    fn remove_relay(&self, link: u64) -> Option<RelayTask> {
+        self.relays.lock().expect("poisoned").remove(&link)
     }
 
-    /// Stops every relay link's task, reporting each detached.
+    /// Aborts every relay link's task, reporting each detached.
     ///
-    /// An aborted task never reaches its own report, so this makes it.
+    /// An aborted task never reaches its own report, so this makes it. For
+    /// the cases that cannot wait; [`shutdown_relays`](Self::shutdown_relays)
+    /// lets sessions close.
     pub(crate) fn detach_relays(&self) {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
         for (_, relay) in relays {
             drop(relay.task);
             relay.status.set(RelayStatus::Detached).ok();
         }
+    }
+
+    /// Waits, up to the shutdown grace each, for every relay link's task to
+    /// close its session. The node's shutdown token must be cancelled already.
+    pub(crate) async fn shutdown_relays(&self) {
+        let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
+        for (_, relay) in relays {
+            relay.finish().await;
+        }
+    }
+}
+
+impl RelayTask {
+    /// Waits up to the shutdown grace for the task to end by itself, then
+    /// aborts it, and reports the link detached.
+    async fn finish(mut self) {
+        if tokio::time::timeout(crate::session::SHUTDOWN_GRACE, &mut self.task)
+            .await
+            .is_err()
+        {
+            warn!("relay task did not stop in time, aborting");
+        }
+        self.status.set(RelayStatus::Detached).ok();
     }
 }
 
@@ -373,6 +402,10 @@ enum Uplink {
 /// The first pause before redialing a relay.
 const REDIAL_MIN: Duration = Duration::from_secs(1);
 
+/// How long a session must last before the next redial starts from the
+/// shortest pause again.
+const STABLE_SESSION: Duration = Duration::from_secs(10);
+
 /// The longest pause between redials.
 const REDIAL_MAX: Duration = Duration::from_secs(30);
 
@@ -393,7 +426,12 @@ async fn tokio_uplink(
     let _driver = origins.run();
     let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
     loop {
-        match watch.status().await {
+        let update = tokio::select! {
+            // The connection aborts as the task ends.
+            _ = shared.shutdown.cancelled() => break,
+            update = watch.status() => update,
+        };
+        match update {
             Ok(moq_tokio::Status::Connected | moq_tokio::Status::Migrating) => {
                 info!("relay connected");
                 status.set(RelayStatus::Connected).ok();
@@ -435,6 +473,7 @@ async fn iroh_uplink(
         grant: Some(Grant::everything()),
     };
     let mut pause = REDIAL_MIN;
+    let sampler = link::SharedSampler::default();
     loop {
         let dialed = tokio::select! {
             _ = stop.cancelled() => break,
@@ -445,30 +484,43 @@ async fn iroh_uplink(
             Ok((moq, driver, connection)) => {
                 info!("relay connected");
                 status.set(RelayStatus::Connected).ok();
-                pause = REDIAL_MIN;
+                let started = tokio::time::Instant::now();
+                // A new session is a new path, even if QUIC numbers it alike.
+                sampler.lock().expect("poisoned").new_session();
                 let _driver = AbortOnDropHandle::new(tokio::spawn(async move {
                     moq_net::time::run(driver).await;
                 }));
-                let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
+                let monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor_with(
                     link::Source::Direct(moq.clone(), connection),
                     link_state.clone(),
+                    sampler.clone(),
                 )));
-                tokio::select! {
-                    _ = stop.cancelled() => {
-                        moq.close().await.ok();
-                        break;
+                let closing = tokio::select! {
+                    _ = stop.cancelled() => true,
+                    _ = shared.shutdown.cancelled() => true,
+                    err = moq.closed() => {
+                        warn!(%err, "relay session dropped, redialing");
+                        false
                     }
-                    _ = shared.shutdown.cancelled() => {
-                        moq.close().await.ok();
-                        break;
-                    }
-                    err = moq.closed() => warn!(%err, "relay session dropped, redialing"),
+                };
+                // The monitor must not overwrite the cleared reading.
+                drop(monitor);
+                link_state.clear(sampler.lock().expect("poisoned").generation());
+                if closing {
+                    moq.close().await.ok();
+                    break;
+                }
+                // Only a session that held up earns a fresh backoff, so a
+                // relay that accepts and drops at once is not hammered.
+                if started.elapsed() >= STABLE_SESSION {
+                    pause = REDIAL_MIN;
                 }
             }
             Err(err) => warn!(%err, "relay dial failed, redialing"),
         }
         status.set(RelayStatus::Reconnecting).ok();
-        // Full jitter, so relays that dropped together do not redial together.
+        // Equal jitter, half the pause plus a random half, so relays that
+        // dropped together do not redial together.
         let jittered = pause.mul_f64(rand_unit());
         tokio::select! {
             _ = stop.cancelled() => break,
