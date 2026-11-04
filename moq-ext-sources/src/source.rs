@@ -135,6 +135,14 @@ impl VideoSource {
     /// seconds. A permission dialog the platform shows while the device opens
     /// does not count against that time.
     ///
+    /// A camera first waits, for at most 3 seconds, until every camera source
+    /// dropped before this call has closed its device. Drop the old source
+    /// before opening its replacement, and a switch back to the same camera
+    /// does not fail as busy. A capture that does not let go in time is
+    /// stuck in a read: the open proceeds without it, and that thread may hold
+    /// its device until the read returns. A V4L2 read waits for a frame
+    /// without a timeout in the moq-video this crate builds against.
+    ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
     ///

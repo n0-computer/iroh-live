@@ -145,7 +145,7 @@ async fn microphone(
     let broadcast = job.producer.clone();
     let catalog = job.catalog.clone();
     let driver_stop = stop.child_token();
-    let mut driver = moq_ext_sources::local_task::spawn(
+    let driver = moq_ext_sources::local_task::spawn(
         "audio-capture",
         driver_stop.clone(),
         move |stop| async move {
