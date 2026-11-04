@@ -49,7 +49,7 @@ let mut frames = player.video();
 - `Live::publish` publishes to everyone, attached relays included, and returns
   a `Publication`. The broadcast stays published until
   `Publication::unpublish`, the end of the broadcast, or shutdown. To publish
-  for another audience, go through `live.moq()`.
+  for another audience, use `publish_at`.
 - `Live::publish_at(path, broadcast, audience)` and
   `Live::subscribe_path(path, reach)` are the path-level calls under `publish`
   and `subscribe`: any path, any `Audience`, any `Reach`. They apply no layout.
@@ -64,8 +64,8 @@ let mut frames = player.video();
   the catalog, for a subscription from a ticket, a room or `Moq::subscribe`.
   The broadcast follows its path through the route table, so a change of route
   is a switch, not an end. Its players adapt to the link that serves it.
-- `paths::CALL`, also exported as `CALL`, is the broadcast name of the call convention `irl call` and the
-  Android demo share.
+- `paths::CALL`, also exported as `CALL`, is the broadcast name of the call
+  convention that `irl call` and the Android demo share.
 - `grant` is the grant a live node gives each peer: subscribe to anything,
   publish only under the peer's own id. `moq_config` is the `MoqConfig` that
   uses it.
@@ -89,5 +89,9 @@ mounts the gossip protocol and adds the room paths to each peer's grant.
 
 `examples/publish.rs` publishes a camera and a microphone, with a simulcast
 ladder behind `--simulcast`. `examples/publish-pi.rs` publishes a Raspberry Pi
-camera and needs `rpicam`. `examples/subscribe_test.rs` is the helper the
+camera and needs `rpicam`. `examples/moq_only.rs` serves a broadcast with
+`Moq` alone, without `Live`. `examples/subscribe_test.rs` is the helper the
 browser test suite runs.
+
+[Using iroh-live](../docs/guide/usage.md) has complete programs for the common
+cases: calls, rooms, custom paths, relays and raw MoQ tracks.

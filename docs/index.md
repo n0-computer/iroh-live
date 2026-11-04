@@ -5,6 +5,7 @@
 | Page | Summary |
 |---|---|
 | [Getting started](guide/index.md) | System dependencies, building, and a first stream from the CLI and the library |
+| [Using iroh-live](guide/usage.md) | Complete examples: publish, watch, call, rooms, custom paths, relays, raw MoQ tracks, and `Moq` without `Live` |
 | [CLI reference](cli.md) | The `irl` commands and their flags |
 | [Desktop rendering](guide/desktop.md) | Drawing decoded frames with wgpu and egui |
 | [Tickets](guide/tickets.md) | How a broadcast or a room is named and shared |

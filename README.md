@@ -43,8 +43,9 @@ All commands and flags are in [docs/cli.md](docs/cli.md).
 
 The [`iroh-live`](iroh-live) crate is the library: a `Live` node publishes
 broadcasts and plays other nodes' broadcasts, and its player picks a rendition
-from the ladder as the link allows. [Getting started](docs/guide/index.md)
-walks through a publisher and a subscriber, and
+from the ladder as the link allows. [Using iroh-live](docs/guide/usage.md)
+has complete examples: publish, watch, calls, rooms, your own paths, relays and
+raw MoQ tracks. [Getting started](docs/guide/index.md) covers the setup, and
 [`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs) is a complete
 publisher.
 
@@ -52,7 +53,7 @@ publisher.
 
 | Crate | Description |
 |---|---|
-| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and re-exports of the crates below |
+| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and the media, transport and rooms crates re-exported |
 | [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, and grants |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`moq-ext-access`](moq-ext-access) | Access control: grants, session requests, and who sees a publication. No iroh dependency |
@@ -103,8 +104,9 @@ Every codec compiles upstream, so there are no per-codec features. The
 features gate devices and graphics. `moq-ext-publisher` and `moq-ext-player`
 define them, and `iroh-live/Cargo.toml` lists them. `iroh-live` passes them
 through and has no default features. `full` turns on `media`, `capture`,
-`render`, `sound-server`, and `record`. `irl` also turns on `file`,
-`playback` and `aec`. `media` turns the media stack on, and each device
+`render`, `sound-server`, and `record`. `irl` always turns on `capture`,
+`file`, `render`, `rooms` and `record`, and by default `aec`, `playback` and
+`sound-server`. `media` turns the media stack on, and each device
 feature implies it. `rooms` re-exports `iroh-live-rooms` and adds
 `LiveBuilder::with_rooms`.
 

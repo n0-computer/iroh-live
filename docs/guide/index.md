@@ -134,6 +134,8 @@ ladder behind `--simulcast`.
 
 ## Where to go next
 
+- [Using iroh-live](usage.md) for complete examples: a call, rooms, your own
+  paths, a relay, and raw MoQ tracks.
 - [The CLI](../cli.md) for every `irl` command.
 - [Desktop rendering](desktop.md) for drawing frames in your own application.
 - [Tickets](tickets.md) for how a broadcast is named and shared.
