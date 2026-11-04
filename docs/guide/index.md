@@ -52,10 +52,12 @@ tone. [The CLI reference](../cli.md) lists every flag.
 
 ## Using the library
 
-A publisher binds an endpoint, creates a broadcast, opens its sources, and
-publishes the broadcast under a name:
+A publisher binds an endpoint, mounts the node on a router so viewers can
+connect, creates a broadcast, opens its sources, and publishes the broadcast
+under a name:
 
 ```rust
+use iroh::protocol::Router;
 use iroh_live::{
     EndpointOptions, Live,
     media::{
@@ -64,9 +66,10 @@ use iroh_live::{
     },
 };
 
-let live = Live::builder(EndpointOptions::default().bind().await?)
-    .with_router()
-    .spawn();
+let endpoint = EndpointOptions::default().bind().await?;
+let live = Live::new(endpoint.clone());
+// Keep the router: dropping it stops accepting viewers.
+let router = live.mount(Router::builder(endpoint)).spawn();
 // Created in the node's route table, published while `broadcast` lives.
 let broadcast: LocalBroadcast = live.publish("hello")?;
 
@@ -75,9 +78,14 @@ broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
 let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
 broadcast.set_audio(microphone, AudioEncoding::voice())?;
 println!("{}", live.ticket("hello"));
+
+// On exit: end the sessions, then close the endpoint through the router.
+live.shutdown().await;
+router.shutdown().await?;
 ```
 
-The broadcast is at `live/<endpoint id>/hello`, and the ticket names that path.
+The router is the application's, so it can carry other protocols next to the
+ones `mount` adds. The broadcast is at `live/<endpoint id>/hello`, and the ticket names that path.
 A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
@@ -86,7 +94,8 @@ use iroh_live::{
     media::{AudioTarget, PlayerConfig, audio::playback::Engine},
 };
 
-let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
+// Only dials, so it needs no router.
+let live = Live::new(EndpointOptions::default().bind().await?);
 let subscription = live.subscribe(&ticket).await?;
 let engine = Engine::open(Default::default()).await?;
 let player = live.remote_broadcast(&subscription).play(PlayerConfig {

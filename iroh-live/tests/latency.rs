@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
+use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
 use iroh_live::media::{
     Latency, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition, VideoSource,
     video::{Frame, FrameRate, Size, Surface, decode},
@@ -126,7 +126,10 @@ fn offset(received: &[(u64, Instant)], handed: &HashMap<u64, Instant>) -> i128 {
 async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
-    let publisher = Live::builder(endpoint().await).with_router().spawn();
+    let publisher = Live::new(endpoint().await);
+    let _router = publisher
+        .mount(Router::builder(publisher.endpoint().clone()))
+        .spawn();
     let broadcast: LocalBroadcast = publisher.publish("latency").expect("failed to publish");
     broadcast
         .set_video(
@@ -136,7 +139,7 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
         .expect("failed to set video");
     let ticket = BroadcastTicket::new(publisher.endpoint().id(), "latency");
 
-    let subscriber = Live::builder(endpoint().await).spawn();
+    let subscriber = Live::new(endpoint().await);
     let subscribed_at = Instant::now();
     let subscription = subscriber
         .subscribe(&ticket)

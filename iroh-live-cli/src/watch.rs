@@ -14,7 +14,7 @@ use n0_error::{Result, anyerr};
 
 use crate::{
     args::WatchArgs,
-    transport::{self, Subscribed},
+    transport::{self, Subscribed, Transport},
 };
 
 /// Where the first ticket comes from, and who dials it.
@@ -129,7 +129,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
 ///
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
-async fn setup(args: &WatchArgs) -> Result<(Live, AudioTarget)> {
+async fn setup(args: &WatchArgs) -> Result<(Transport, AudioTarget)> {
     #[cfg(feature = "playback")]
     let device = args.audio_output.clone();
     #[cfg(not(feature = "playback"))]
@@ -192,7 +192,7 @@ async fn connect(
 /// Plays until the user interrupts, with no window.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
-    live: Live,
+    live: Transport,
     sub: Subscribed,
     player: Player,
 ) -> Result {
@@ -225,7 +225,7 @@ mod window {
     use super::{Options, connect};
     use crate::{
         scan::{ScanView, Skip},
-        transport::Subscribed,
+        transport::{Subscribed, Transport},
         ui::{CursorIdle, RemoteView},
     };
 
@@ -257,7 +257,12 @@ mod window {
     }
 
     /// Opens the player window and runs it until it closes.
-    pub(super) fn run(live: Live, opening: Opening, options: Options, fullscreen: bool) -> Result {
+    pub(super) fn run(
+        live: Transport,
+        opening: Opening,
+        options: Options,
+        fullscreen: bool,
+    ) -> Result {
         eframe::run_native(
             "irl watch",
             crate::ui::native_options(fullscreen),
@@ -513,7 +518,7 @@ mod window {
     }
 
     struct WatchApp {
-        live: Live,
+        live: Transport,
         options: Options,
         render_state: Option<RenderState>,
         mode: Mode,

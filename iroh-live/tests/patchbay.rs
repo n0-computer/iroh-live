@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use iroh::{Endpoint, endpoint::presets};
+use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_live::media::{
     Adaptation, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding, VideoFormat,
     VideoFrames, VideoRendition, VideoSource,
@@ -129,7 +129,8 @@ impl Fixture {
             .expect("the subscriber bind task failed")
             .expect("failed to bind the subscriber endpoint");
 
-        let publisher = Live::builder(publisher_endpoint).with_router().spawn();
+        let publisher = Live::new(publisher_endpoint.clone());
+        let _router = publisher.mount(Router::builder(publisher_endpoint)).spawn();
         let broadcast: LocalBroadcast = publisher.publish("patchbay").expect("failed to publish");
         broadcast
             .set_video(gradient(size), VideoEncoding::ladder(renditions))
@@ -137,7 +138,7 @@ impl Fixture {
 
         // No address lookup. The lab gives each device a fixed address.
         let publisher_addr = publisher.endpoint().addr();
-        let subscriber = Live::builder(subscriber_endpoint).spawn();
+        let subscriber = Live::new(subscriber_endpoint);
         subscriber
             .node()
             .connect(publisher_addr)

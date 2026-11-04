@@ -33,6 +33,7 @@ names that broadcast for viewers. The generated sources need no camera or
 microphone.
 
 ```rust
+use iroh::protocol::Router;
 use iroh_live::{
     EndpointOptions, Live,
     media::{
@@ -43,9 +44,10 @@ use iroh_live::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let live = Live::builder(EndpointOptions::default().bind().await?)
-        .with_router()
-        .spawn();
+    let endpoint = EndpointOptions::default().bind().await?;
+    let live = Live::new(endpoint.clone());
+    // Accepts the viewers. Dropping the router stops accepting.
+    let router = live.mount(Router::builder(endpoint)).spawn();
 
     // Published while `broadcast` lives.
     let broadcast: LocalBroadcast = live.publish("pattern")?;
@@ -63,9 +65,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::signal::ctrl_c().await?;
     live.shutdown().await;
+    router.shutdown().await?; // also closes the endpoint
     Ok(())
 }
 ```
+
+The router belongs to the program, and `mount` only adds the transport's
+ALPNs to it. Add your own protocols with `accept` before `spawn`. Whoever binds
+the endpoint also closes it: `live.shutdown()` ends the sessions, and
+`router.shutdown()` then closes the endpoint. The endpoint of a node that is
+never mounted refuses every incoming connection. Such a node logs a warning
+when it publishes with no relay attached.
 
 The broadcast is at `live/<endpoint id>/pattern`, and a rendition encodes only
 while someone watches it. For a camera and microphone, see
@@ -89,7 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: watch <ticket>")?
         .parse()?;
-    let live = Live::builder(EndpointOptions::default().bind().await?).spawn();
+    let endpoint = EndpointOptions::default().bind().await?;
+    let live = Live::new(endpoint.clone());
 
     let subscription = live.subscribe(&ticket).await?;
     let player = live
@@ -104,13 +115,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("frame {count}: {}", frame.size());
     }
     live.shutdown().await;
+    endpoint.close().await;
     Ok(())
 }
 ```
 
 Hand each frame to a renderer instead of counting it: see
 [Desktop rendering](desktop.md). Without a router the node only dials, which is
-enough for a viewer.
+enough for a viewer. It then closes the endpoint itself.
 
 ## A one-to-one call
 
@@ -121,7 +133,7 @@ offers theirs. Both programs run the same code with the other's endpoint id,
 which each prints on start.
 
 ```rust
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     CallOffer, EndpointOptions, Live,
     media::{
@@ -136,9 +148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: call <peer id>")?
         .parse()?;
-    let live = Live::builder(EndpointOptions::default().bind().await?)
-        .with_router()
-        .spawn();
+    let endpoint = EndpointOptions::default().bind().await?;
+    let live = Live::new(endpoint.clone());
+    // The peer dials in to read our side.
+    let router = live.mount(Router::builder(endpoint)).spawn();
     println!("our id: {}", live.endpoint().id());
 
     let (broadcast, call): (LocalBroadcast, CallOffer) = live.call()?;
@@ -164,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     call.hang_up(peer);
     live.shutdown().await;
+    router.shutdown().await?;
     Ok(())
 }
 ```
@@ -176,14 +190,15 @@ other.
 
 ## Rooms
 
-A room is a gossip topic. `spawn_with_rooms` mounts the gossip protocol and
-lets members publish under their room paths. `join` returns a `Room` with a
-watched membership. This program creates a room, prints its ticket, publishes a
+A room is a gossip topic. `spawn_with_rooms` starts the rooms and lets members
+publish under their room paths, and `mount` then adds the gossip protocol to
+the router next to the transport. `join` returns a `Room` with a watched
+membership. This program creates a room, prints its ticket, publishes a
 test pattern, and plays the first broadcast another member announces. Pass a
 ticket to join instead of creating.
 
 ```rust
-use iroh::Watcher;
+use iroh::{Watcher, protocol::Router};
 use iroh_live::{
     EndpointOptions, Live,
     media::{LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video},
@@ -192,7 +207,10 @@ use iroh_live::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (live, rooms) = Live::builder(EndpointOptions::default().bind().await?).spawn_with_rooms();
+    let endpoint = EndpointOptions::default().bind().await?;
+    let (live, rooms) = Live::builder(endpoint.clone()).spawn_with_rooms();
+    // Members dial in over gossip and moq.
+    let _router = live.mount(Router::builder(endpoint)).spawn();
     let ticket = match std::env::args().nth(1) {
         Some(ticket) => ticket.parse()?,
         None => RoomTicket::generate(),
@@ -253,7 +271,7 @@ that names the peer, `stage/<id>/**`. Run it with no argument to publish and
 print the id, and with that id to watch.
 
 ```rust
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
     media::{LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video},
@@ -269,9 +287,8 @@ fn stage_scope(peer: EndpointId) -> Pattern {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointOptions::default().bind().await?;
-    let live = Live::builder_with(endpoint, node_config_with(&[stage_scope]))
-        .with_router()
-        .spawn();
+    let live = Live::builder_with(endpoint.clone(), node_config_with(&[stage_scope])).spawn();
+    let router = live.mount(Router::builder(endpoint)).spawn();
     let me = live.endpoint().id();
     println!("our id: {me}");
 
@@ -306,6 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     live.shutdown().await;
+    router.shutdown().await?;
     Ok(())
 }
 ```
@@ -322,7 +340,7 @@ visible to the relay as well, and a `Peers` one never is. A publisher that does 
 routes sets `consume: false`.
 
 ```rust
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     EndpointOptions, Live,
     media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
@@ -335,9 +353,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: relay <relay id>")?
         .parse()?;
-    let live = Live::builder(EndpointOptions::default().bind().await?)
-        .with_router()
-        .spawn();
+    let endpoint = EndpointOptions::default().bind().await?;
+    let live = Live::new(endpoint.clone());
+    // Direct viewers still dial in. A relay-only publisher can skip the router
+    // and close the endpoint itself.
+    let router = live.mount(Router::builder(endpoint)).spawn();
 
     let link = live.node().attach_relay(RelayConfig {
         consume: false,
@@ -355,6 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::signal::ctrl_c().await?;
     link.detach().await;
     live.shutdown().await;
+    router.shutdown().await?;
     Ok(())
 }
 ```
@@ -377,7 +398,7 @@ id to read.
 ```rust
 use std::time::Duration;
 
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     Audience, EndpointOptions, Live, Reach,
     net::{Timescale, Timestamp, track},
@@ -386,9 +407,9 @@ use iroh_live::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let live = Live::builder(EndpointOptions::default().bind().await?)
-        .with_router()
-        .spawn();
+    let endpoint = EndpointOptions::default().bind().await?;
+    let live = Live::new(endpoint.clone());
+    let router = live.mount(Router::builder(endpoint)).spawn();
 
     match std::env::args().nth(1) {
         None => {
@@ -423,6 +444,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     live.shutdown().await;
+    router.shutdown().await?;
     Ok(())
 }
 ```
@@ -432,9 +454,10 @@ grants apply as they do for media.
 
 ## Without `Live`
 
-`Live` is a convenience over `Node` and an endpoint. A program with its own
-router, its own ALPNs or its own access rules mounts `Node` itself and gets the
-same sessions, route table and relays, with no media dependency. The default
+`Live` is a convenience over `Node`. A program with its own path layout or its
+own access rules uses `Node` itself and gets the same sessions, route table and
+relays, with no media dependency. `Node::mount` adds it to a router as
+`Live::mount` does. The default
 `NodeConfig` lets peers read anything and publish nothing, so the reader below
 grants the publisher `demo/**`. The publishing side is
 [`iroh-live/examples/moq_only.rs`](../../iroh-live/examples/moq_only.rs), which

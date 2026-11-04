@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     BroadcastTicket, CALL, CallOffer, EndpointOptions, Live,
     media::{
@@ -102,11 +102,13 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Binds the endpoint for a screen, with the key from `IROH_SECRET` if set.
 ///
-/// The demo stores no key, so without `IROH_SECRET` every screen gets a new
-/// endpoint id.
-async fn bind_live() -> Result<Live> {
-    let options = EndpointOptions::from_env()?;
-    Ok(Live::builder(options.bind().await?).with_router().spawn())
+/// Returns the node with the router that accepts its peers. The demo stores
+/// no key, so without `IROH_SECRET` every screen gets a new endpoint id.
+async fn bind_live() -> Result<(Live, Router)> {
+    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let live = Live::new(endpoint.clone());
+    let router = live.mount(Router::builder(endpoint)).spawn();
+    Ok((live, router))
 }
 
 /// This node's side of a call, offered to one peer while held.
@@ -147,6 +149,8 @@ async fn play_call(live: &Live, peer: EndpointId, output: &AudioTarget) -> Resul
 struct SessionHandle {
     /// The endpoint and transport. `None` for the offline pipelines.
     live: Option<Live>,
+    /// Accepts the peers of `live`. Shutting it down closes the endpoint.
+    router: Option<Router>,
     /// This node's side of a call, once the call is up.
     offer: Option<Offer>,
     /// Playback of the watched broadcast. Dropping it stops decoding and audio.
@@ -191,6 +195,7 @@ impl SessionHandle {
     fn new() -> Self {
         Self {
             live: None,
+            router: None,
             offer: None,
             player: None,
             output: None,
@@ -346,7 +351,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
 async fn connect_impl(ticket: String) -> Result<jlong> {
     let ticket: BroadcastTicket = ticket.parse().context("failed to parse ticket")?;
 
-    let live = bind_live().await?;
+    let (live, router) = bind_live().await?;
     info!(broadcast = %ticket.name(), "connecting to broadcast");
 
     let subscription = live.subscribe(&ticket).await?;
@@ -363,6 +368,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     session.player = Some(player);
     session.output = Some(output);
     session.live = Some(live);
+    session.router = Some(router);
     Ok(handle::to_i64(session.into_shared()))
 }
 
@@ -396,7 +402,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(%ticket, %size, "parsing call ticket");
     let ticket: BroadcastTicket = ticket.parse().context("failed to parse call ticket")?;
 
-    let live = bind_live().await?;
+    let (live, router) = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     let output = open_output().await;
@@ -421,6 +427,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.broadcast = Some(broadcast);
     session.offer = Some(offer);
     session.live = Some(live);
+    session.router = Some(router);
     Ok(handle::to_i64(session.into_shared()))
 }
 
@@ -449,7 +456,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
 
 async fn answer_impl(size: Size) -> Result<jlong> {
     info!(%size, "waiting for a call");
-    let live = bind_live().await?;
+    let (live, router) = bind_live().await?;
     let id = live.endpoint().id();
     info!(id = %id.fmt_short(), "endpoint ready");
 
@@ -467,6 +474,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.ticket = Some(live.ticket(CALL).to_string());
     session.broadcast = Some(broadcast.clone());
     session.live = Some(live.clone());
+    session.router = Some(router);
     let shared = session.into_shared();
 
     // The task holds a `Weak`. A strong reference would keep the handle, and
@@ -574,7 +582,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
 
 async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     info!(%name, %size, "publishing broadcast");
-    let live = bind_live().await?;
+    let (live, router) = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     let broadcast: LocalBroadcast = live.publish(&name)?;
@@ -591,6 +599,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     session.ticket = Some(ticket);
     session.broadcast = Some(broadcast);
     session.live = Some(live);
+    session.router = Some(router);
     Ok(handle::to_i64(session.into_shared()))
 }
 
@@ -1203,7 +1212,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     let session = unsafe { take_handle(handle) };
     // Release the lock before `block_on`. Holding it would stall every other
     // JNI call on this handle until the endpoint closes.
-    let (waiting, player, offer, broadcast, live) = match session.lock() {
+    let (waiting, player, offer, broadcast, live, router) = match session.lock() {
         Ok(mut guard) => (
             {
                 guard.closing = true;
@@ -1213,6 +1222,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
             guard.offer.take(),
             guard.broadcast.take(),
             guard.live.take(),
+            guard.router.take(),
         ),
         Err(_) => {
             warn!("session handle was poisoned; skipping shutdown");
@@ -1231,6 +1241,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         }
         if let Some(live) = live {
             live.shutdown().await;
+        }
+        // Closes the endpoint after the sessions have said goodbye.
+        if let Some(router) = router
+            && let Err(err) = router.shutdown().await
+        {
+            warn!("failed to shut down the router: {err:#}");
         }
     });
     info!("disconnected");

@@ -13,14 +13,18 @@ node's route table and returns it as any type built from a moq-net
 
 `Rooms` owns the gossip instance, and the router mounts it. The node's grant
 must let members publish under `iroh_live_rooms::publish_scope(member)`.
-`LiveBuilder::with_rooms` does both, and only an application that calls it
-grants that scope; enabling the `rooms` feature alone grants nothing:
+`LiveBuilder::with_rooms` widens the grant and starts the rooms, and
+`Live::mount` then mounts the gossip next to the transport. Only an
+application that calls `with_rooms` grants that scope. Enabling the `rooms`
+feature alone grants nothing:
 
 ```rust
+use iroh::protocol::Router;
 use iroh_live::{Live, rooms::RoomTicket};
 
-let (live, rooms) = Live::builder(endpoint).spawn_with_rooms();
+let (live, rooms) = Live::builder(endpoint.clone()).spawn_with_rooms();
 // or `Live::builder(endpoint).with_rooms().spawn()` and `live.rooms()`
+let router = live.mount(Router::builder(endpoint)).spawn();
 
 let room = rooms
     .join(&RoomTicket::generate(), Some("ada".into()))
@@ -30,6 +34,9 @@ let room = rooms
 Without `Live`, create `Rooms::new(&moq)`, mount `rooms.protocol_handler()` under
 `iroh_live::rooms::ALPN` yourself, and widen the grant with
 `iroh_live::node_config_with(&[iroh_live::rooms::publish_scope])`.
+
+`Live::shutdown` shuts the rooms down with the node. Without `Live`, call
+`Rooms::shutdown`, or let `Router::shutdown` do it through the handler.
 
 Share `room.ticket()` with the people who join. It lists this member as the
 bootstrap endpoint.

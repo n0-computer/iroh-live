@@ -52,13 +52,18 @@ with BBR3 congestion control), a key and mDNS. `EndpointOptions::apply` does the
 same on your own endpoint builder.
 
 ```rust
-let live = Live::builder(endpoint).with_router().spawn();
+let live = Live::new(endpoint.clone());
+let router = live.mount(Router::builder(endpoint)).spawn();
 ```
 
-`with_router()` spawns a `Router` that mounts the transport under every ALPN
-this build speaks. `accept(alpn, handler)` mounts another protocol on it.
-`with_rooms()` mounts rooms' gossip that way, and widens the grant so members
-can publish their room broadcasts.
+`Live` owns neither the endpoint nor a router. `mount` adds the transport to
+the application's `RouterBuilder` under every ALPN this build speaks, through
+`Node::mount`, and the application adds its own protocols to the same router.
+`LiveBuilder::with_rooms()` widens the grant so members can publish their room
+broadcasts, and `mount` then adds rooms' gossip as well. `Live::shutdown` ends
+the node and its rooms. Whoever binds the endpoint closes it, usually through
+`Router::shutdown`. A node that is neither mounted nor attached to a relay
+logs a warning when it publishes, since no peer can dial in.
 
 `Live::publish(name)` creates a broadcast at `live/<our id>/<name>` in the
 route table, published to everyone, and returns it as an

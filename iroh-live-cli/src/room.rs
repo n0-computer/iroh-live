@@ -12,7 +12,11 @@ use iroh_live::{
 use n0_error::Result;
 use tracing::info;
 
-use crate::{args::RoomArgs, source, transport};
+use crate::{
+    args::RoomArgs,
+    source,
+    transport::{self, Transport},
+};
 
 mod chat;
 
@@ -33,7 +37,7 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
 
 /// This node's membership in the room, handed to the window.
 struct Joined {
-    live: Live,
+    live: Transport,
     broadcast: LocalBroadcast,
     sources: source::Opened,
     /// The speaker every participant plays on, and what the microphone cancels.
@@ -51,13 +55,20 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     // Rooms always serve, since other participants dial in.
     let endpoint = EndpointOptions::from_env()?.bind().await?;
     let (live, rooms) = Live::builder(endpoint).spawn_with_rooms();
-    let (live, joined) =
+    // Mounts rooms' gossip next to the moq ALPNs.
+    let live = Transport::new(live, true);
+    let (_, joined) =
         transport::with_live(live, async |live| join(live, &rooms, args, output).await).await?;
-    Ok(Joined { live, ..joined })
+    Ok(joined)
 }
 
 /// Joins the room over `live`, which the caller closes if this fails.
-async fn join(live: &Live, rooms: &Rooms, args: &RoomArgs, output: AudioTarget) -> Result<Joined> {
+async fn join(
+    live: &Transport,
+    rooms: &Rooms,
+    args: &RoomArgs,
+    output: AudioTarget,
+) -> Result<Joined> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
     let display_name = args
         .display_name
@@ -111,7 +122,7 @@ mod window {
     use super::{Joined, chat};
     use crate::{
         args::PlaybackArgs,
-        transport::{PEER_TIMEOUT, Subscribed},
+        transport::{PEER_TIMEOUT, Subscribed, Transport},
         ui::RemoteView,
     };
 
@@ -194,7 +205,7 @@ mod window {
 
     /// The room window.
     struct RoomApp {
-        live: Live,
+        live: Transport,
         /// This node's own broadcast.
         broadcast: LocalBroadcast,
         room: Room,
@@ -341,7 +352,7 @@ mod window {
                 }
                 info!(remote = %short(remote), %name, "subscribing to a member");
                 self.opening.spawn(open(
-                    self.live.clone(),
+                    Live::clone(&self.live),
                     self.room.clone(),
                     remote,
                     name,

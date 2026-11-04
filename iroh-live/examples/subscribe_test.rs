@@ -27,7 +27,8 @@ async fn main() -> n0_error::Result {
     }
     .bind()
     .await?;
-    let live = Live::builder(endpoint).spawn();
+    // Only dials, so it needs no router.
+    let live = Live::new(endpoint.clone());
 
     info!(relay = %cli.relay, name = %cli.name, frames = cli.frames, "subscribing");
     // The link redials, and the subscribe waits until the relay routes the name.
@@ -52,6 +53,7 @@ async fn main() -> n0_error::Result {
 
     info!("all frames received, exiting");
     live.shutdown().await;
+    endpoint.close().await;
     Ok(())
 }
 

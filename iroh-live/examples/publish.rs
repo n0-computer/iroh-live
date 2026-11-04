@@ -4,6 +4,7 @@
 //! `irl watch TICKET`. Without a microphone it publishes video only.
 
 use clap::Parser;
+use iroh::protocol::Router;
 use iroh_live::{
     EndpointOptions, Live,
     media::{
@@ -11,6 +12,7 @@ use iroh_live::{
         VideoRendition, VideoSource, video,
     },
 };
+use n0_error::StdResultExt;
 use tracing::{info, warn};
 
 #[derive(Parser)]
@@ -35,8 +37,10 @@ async fn main() -> n0_error::Result {
     let args = Args::parse();
 
     // Set `IROH_SECRET` to keep the same ticket across restarts.
-    let options = EndpointOptions::from_env()?;
-    let live = Live::builder(options.bind().await?).with_router().spawn();
+    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let live = Live::new(endpoint.clone());
+    // Accepts the viewers. Dropping the router stops accepting.
+    let router = live.mount(Router::builder(endpoint)).spawn();
     info!(id = %live.endpoint().id(), "endpoint ready");
 
     // Published while `broadcast` lives, or until the node shuts down.
@@ -68,5 +72,10 @@ async fn main() -> n0_error::Result {
 
     tokio::signal::ctrl_c().await?;
     live.shutdown().await;
+    // Also closes the endpoint.
+    router
+        .shutdown()
+        .await
+        .std_context("the router failed to shut down")?;
     Ok(())
 }

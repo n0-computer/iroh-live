@@ -1,15 +1,15 @@
 //! Shared transport setup: binding, subscribing, and advertising.
 
-use std::time::Duration;
+use std::{ops::Deref, time::Duration};
 
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     BroadcastTicket, EndpointOptions, Live, Mdns, Session, Subscription,
     media::RemoteBroadcast,
     node::{RelayConfig, RelayLink},
 };
 use n0_error::Result;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::args::TransportArgs;
 
@@ -26,11 +26,55 @@ pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// publisher is normal.
 const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
+/// A live node, and the router that accepts its sessions if it serves.
+///
+/// Derefs to [`Live`]. Cheap to clone. [`shutdown`](Self::shutdown) shuts the
+/// node down and closes its endpoint, which [`Live::shutdown`] alone does not.
+#[derive(Debug, Clone)]
+pub struct Transport {
+    live: Live,
+    /// Accepts incoming sessions. `None` for a node that only dials.
+    router: Option<Router>,
+}
+
+impl Transport {
+    /// Wraps `live`, mounting it on a new router if `serve` is set.
+    pub fn new(live: Live, serve: bool) -> Self {
+        let router = serve.then(|| live.mount(Router::builder(live.endpoint().clone())).spawn());
+        Self { live, router }
+    }
+
+    /// Shuts the node down, then closes the endpoint.
+    ///
+    /// Sessions say goodbye before the endpoint closes. Idempotent.
+    pub async fn shutdown(&self) {
+        self.live.shutdown().await;
+        match &self.router {
+            // Closes the endpoint once the router's handlers have shut down.
+            Some(router) => {
+                if let Err(err) = router.shutdown().await {
+                    error!(error = %err, "failed to shut down the iroh router");
+                    self.live.endpoint().close().await;
+                }
+            }
+            None => self.live.endpoint().close().await,
+        }
+    }
+}
+
+impl Deref for Transport {
+    type Target = Live;
+
+    fn deref(&self) -> &Live {
+        &self.live
+    }
+}
+
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
 /// With `serve` set, a router accepts incoming subscribers. Without it, only
 /// outbound connections work.
-pub async fn setup_live(serve: bool) -> Result<Live> {
+pub async fn setup_live(serve: bool) -> Result<Transport> {
     setup_live_with(EndpointOptions::from_env()?, serve).await
 }
 
@@ -39,30 +83,24 @@ pub async fn setup_live(serve: bool) -> Result<Live> {
 /// A ticket carries no addresses, so the endpoint uses mDNS on top of the
 /// preset's pkarr and DNS lookup. A node that does not serve only looks up
 /// others and does not announce itself.
-pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Live> {
+pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Transport> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointOptions { mdns, ..options }.bind().await?;
-    let builder = Live::builder(endpoint);
-    Ok(if serve {
-        builder.with_router()
-    } else {
-        builder
-    }
-    .spawn())
+    Ok(Transport::new(Live::new(endpoint), serve))
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.
 ///
-/// An endpoint dropped without [`Live::shutdown`] logs an error, and its peers
-/// have to time out.
+/// An endpoint dropped without [`Transport::shutdown`] logs an error, and its
+/// peers have to time out.
 pub async fn with_live<T>(
-    live: Live,
-    setup: impl AsyncFnOnce(&Live) -> Result<T>,
-) -> Result<(Live, T)> {
-    match setup(&live).await {
-        Ok(value) => Ok((live, value)),
+    transport: Transport,
+    setup: impl AsyncFnOnce(&Transport) -> Result<T>,
+) -> Result<(Transport, T)> {
+    match setup(&transport).await {
+        Ok(value) => Ok((transport, value)),
         Err(err) => {
-            live.shutdown().await;
+            transport.shutdown().await;
             Err(err)
         }
     }

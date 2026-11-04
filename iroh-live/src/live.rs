@@ -1,11 +1,8 @@
-//! The node: an endpoint, the MoQ transport on it, and the router that accepts.
+//! The node: the MoQ transport on an endpoint, with the live path layout.
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use iroh::{
-    Endpoint, EndpointId,
-    protocol::{DynProtocolHandler, ProtocolHandler, Router},
-};
+use iroh::{Endpoint, EndpointId, protocol::RouterBuilder};
 use iroh_live_node::{
     Audience, Grant, Node, NodeConfig, Publication, Reach, Subscription,
     net::{Pattern, Patterns},
@@ -15,7 +12,7 @@ use moq_ext_player::RemoteBroadcast;
 use moq_net::broadcast;
 use n0_error::e;
 use n0_watcher::Watchable;
-use tracing::{error, info, instrument};
+use tracing::{info, instrument};
 
 #[cfg(feature = "media")]
 use crate::network;
@@ -111,59 +108,60 @@ impl CallOffer {
 
 /// A node ready for live media.
 ///
-/// Cheap to clone. [`shutdown`](Self::shutdown) ends it for every clone and
-/// closes the endpoint it was built on.
+/// Cheap to clone. [`shutdown`](Self::shutdown) ends it for every clone.
+///
+/// The node does not own its endpoint, and it accepts nothing on its own.
+/// Mount it on the application's [`Router`](iroh::protocol::Router) with
+/// [`mount`](Self::mount), or it serves only the peers it dials and its
+/// attached relays. Whoever binds the endpoint closes it, directly or through
+/// [`Router::shutdown`](iroh::protocol::Router::shutdown).
+///
+/// # Examples
+///
+/// ```no_run
+/// use iroh::protocol::Router;
+/// use iroh_live::{EndpointOptions, Live};
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let endpoint = EndpointOptions::from_env()?.bind().await?;
+/// let live = Live::new(endpoint.clone());
+/// let router = live.mount(Router::builder(endpoint)).spawn();
+///
+/// // publish and subscribe ...
+///
+/// live.shutdown().await;
+/// router.shutdown().await?; // closes the endpoint
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Live {
-    endpoint: Endpoint,
     moq: Node,
-    router: Option<Router>,
     #[cfg(feature = "rooms")]
     rooms: Option<iroh_live_rooms::Rooms>,
 }
 
 /// Builds a [`Live`] on an endpoint.
 ///
-/// Obtained from [`Live::builder`]. The node takes over the endpoint:
-/// [`Live::shutdown`] closes it.
-#[derive(derive_more::Debug)]
+/// Obtained from [`Live::builder`].
+#[derive(Debug)]
 #[must_use]
 pub struct LiveBuilder {
     endpoint: Endpoint,
     config: NodeConfig,
-    router: bool,
     #[cfg(feature = "rooms")]
     rooms: bool,
-    #[debug(skip)]
-    protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
 }
 
 impl LiveBuilder {
-    /// Accepts incoming sessions on a router this builder spawns.
-    ///
-    /// Without a router the node only dials. It can subscribe and serve the
-    /// peers it dialed, but nobody can connect to it.
-    pub fn with_router(mut self) -> Self {
-        self.router = true;
-        self
-    }
-
-    /// Mounts `handler` under `alpn` on the router as well.
-    ///
-    /// Implies [`with_router`](Self::with_router).
-    pub fn accept(mut self, alpn: impl AsRef<[u8]>, handler: impl ProtocolHandler) -> Self {
-        self.protocols
-            .push((alpn.as_ref().to_vec(), handler.into()));
-        self
-    }
-
     /// Runs rooms on the node.
     ///
-    /// Mounts rooms' gossip protocol on the router, which this implies, and
-    /// widens every peer's grant by `rooms::publish_scope`, so members can
+    /// Widens every peer's grant by `rooms::publish_scope`, so members can
     /// publish their room broadcasts besides their own `live/` ones. Without
-    /// a grant, peers get [`Grant::subscribe_only`] plus that scope. Read the service with
-    /// [`Live::rooms`], or build with [`spawn_with_rooms`](Self::spawn_with_rooms).
+    /// a grant, peers get [`Grant::subscribe_only`] plus that scope.
+    /// [`Live::mount`] then mounts rooms' gossip protocol as well. Read the
+    /// service with [`Live::rooms`], or build with
+    /// [`spawn_with_rooms`](Self::spawn_with_rooms).
     #[cfg(feature = "rooms")]
     pub fn with_rooms(mut self) -> Self {
         self.rooms = true;
@@ -189,31 +187,21 @@ impl LiveBuilder {
         (live, rooms)
     }
 
-    /// Creates the node, spawning its router if asked to.
+    /// Creates the node, and its rooms if asked to.
+    ///
+    /// Must be called within a tokio runtime. Mount the node with
+    /// [`Live::mount`] to accept sessions.
     pub fn spawn(self) -> Live {
-        let moq = Node::new(self.endpoint.clone(), self.config);
+        let id = self.endpoint.id();
+        let moq = Node::new(self.endpoint, self.config);
         #[cfg(feature = "rooms")]
         let rooms = self.rooms.then(|| iroh_live_rooms::Rooms::new(&moq));
         #[cfg(feature = "rooms")]
-        let serve = self.router || !self.protocols.is_empty() || rooms.is_some();
+        info!(%id, rooms = rooms.is_some(), "live node started");
         #[cfg(not(feature = "rooms"))]
-        let serve = self.router || !self.protocols.is_empty();
-        let router = serve.then(|| {
-            let mut router = moq.mount(Router::builder(self.endpoint.clone()));
-            for (alpn, handler) in self.protocols {
-                router = router.accept(alpn, handler);
-            }
-            #[cfg(feature = "rooms")]
-            if let Some(rooms) = &rooms {
-                router = router.accept(iroh_live_rooms::ALPN, rooms.protocol_handler());
-            }
-            router.spawn()
-        });
-        info!(id = %self.endpoint.id(), accepting = router.is_some(), "live node started");
+        info!(%id, "live node started");
         Live {
-            endpoint: self.endpoint,
             moq,
-            router,
             #[cfg(feature = "rooms")]
             rooms,
         }
@@ -221,6 +209,14 @@ impl LiveBuilder {
 }
 
 impl Live {
+    /// Creates a node on `endpoint` with [`node_config`].
+    ///
+    /// Short for `Live::builder(endpoint).spawn()`. Must be called within a
+    /// tokio runtime.
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self::builder(endpoint).spawn()
+    }
+
     /// Returns a builder for a node on `endpoint`.
     ///
     /// The node's [`Node`] has [`node_config`]: open admission, and each peer
@@ -231,7 +227,7 @@ impl Live {
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// let endpoint = iroh::Endpoint::bind(iroh_live::MoqPreset).await?;
-    /// let live = iroh_live::Live::builder(endpoint).with_router().spawn();
+    /// let live = iroh_live::Live::builder(endpoint).spawn();
     /// # Ok(())
     /// # }
     /// ```
@@ -251,17 +247,38 @@ impl Live {
         LiveBuilder {
             endpoint,
             config,
-            router: false,
             #[cfg(feature = "rooms")]
             rooms: false,
-            protocols: Vec::new(),
         }
+    }
+
+    /// Mounts the node on `router` under every moq ALPN, and rooms' gossip if it runs rooms.
+    ///
+    /// Without a mount the endpoint refuses every incoming connection, so
+    /// only the peers this node dials and its attached relays can read what
+    /// it publishes. `router` must be built on this node's endpoint. A
+    /// handler the caller mounts under one of these ALPNs afterwards replaces
+    /// the node's.
+    ///
+    /// ```no_run
+    /// use iroh::protocol::Router;
+    /// # async fn run(live: iroh_live::Live) {
+    /// let router = live.mount(Router::builder(live.endpoint().clone())).spawn();
+    /// # }
+    /// ```
+    pub fn mount(&self, router: RouterBuilder) -> RouterBuilder {
+        let router = self.moq.mount(router);
+        #[cfg(feature = "rooms")]
+        if let Some(rooms) = &self.rooms {
+            return router.accept(iroh_live_rooms::ALPN, rooms.protocol_handler());
+        }
+        router
     }
 
     /// Returns the endpoint.
     #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
+        self.moq.endpoint()
     }
 
     /// Returns the MoQ transport.
@@ -384,7 +401,7 @@ impl Live {
     {
         let peers = Watchable::new(BTreeSet::new());
         let (publication, broadcast) = self.moq.publish_with(
-            paths::call(self.endpoint.id()),
+            paths::call(self.endpoint().id()),
             Audience::Peers(peers.clone()),
             |producer| B::try_from(producer.clone()),
         )?;
@@ -414,7 +431,7 @@ impl Live {
     /// Does not check that anything is published there.
     #[must_use]
     pub fn ticket(&self, name: &str) -> BroadcastTicket {
-        BroadcastTicket::new(self.endpoint.id(), name)
+        BroadcastTicket::new(self.endpoint().id(), name)
     }
 
     /// Resolves the ticket's broadcast over whichever link serves it.
@@ -457,24 +474,23 @@ impl Live {
         remote
     }
 
-    /// Shuts the node down, the router and the endpoint included.
+    /// Shuts the node down, and its rooms if it runs them.
     ///
-    /// Idempotent. Not cancellation safe: call it again to finish.
+    /// Closes every session and withdraws every publication. Does not close
+    /// the endpoint: close it afterwards, or shut down the router, which
+    /// closes it. Idempotent. Not cancellation safe: call it again to finish.
     pub async fn shutdown(&self) {
-        self.moq.shutdown().await;
-        if let Some(router) = self.router.as_ref()
-            && let Err(err) = router.shutdown().await
-        {
-            // Close the endpoint anyway, or its socket stays open.
-            error!(error = %err, "failed to shut down the iroh router");
+        #[cfg(feature = "rooms")]
+        if let Some(rooms) = &self.rooms {
+            rooms.shutdown().await;
         }
-        self.endpoint.close().await;
+        self.moq.shutdown().await;
     }
 }
 
 #[cfg(all(test, feature = "rooms"))]
 mod tests {
-    use iroh::{SecretKey, endpoint::presets};
+    use iroh::{SecretKey, endpoint::presets, protocol::Router};
 
     use super::*;
 
@@ -497,6 +513,9 @@ mod tests {
 
         let (live, _rooms) = rooms.spawn_with_rooms();
         assert!(live.rooms().is_some());
+        let router = live.mount(Router::builder(endpoint)).spawn();
+        // The router shuts the rooms and the node down a second time.
         live.shutdown().await;
+        router.shutdown().await.expect("the router shuts down");
     }
 }

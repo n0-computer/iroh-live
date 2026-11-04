@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
+use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
 use iroh_live::media::{
     AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player, PlayerConfig,
     RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
@@ -34,6 +34,13 @@ async fn endpoint() -> Endpoint {
         .expect("failed to bind endpoint");
     lookup.add_endpoint_info(endpoint.addr());
     endpoint
+}
+
+/// Mounts `live` on a new router, so peers can connect to it.
+///
+/// Keep the router for the whole test: dropping it stops accepting.
+fn serve(live: &Live) -> Router {
+    live.mount(Router::builder(live.endpoint().clone())).spawn()
 }
 
 /// Publishes a new media broadcast as `name` on `live`.
@@ -70,18 +77,19 @@ async fn first_frame(player: &Player) {
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_video() {
-    let (publisher, _broadcast) = async {
-        let live = Live::builder(endpoint().await).with_router().spawn();
+    let (publisher, _broadcast, _router) = async {
+        let live = Live::new(endpoint().await);
+        let router = serve(&live);
         let broadcast = publish(&live, "test-stream");
         set_pattern(&broadcast, Size::new(320, 240));
-        (live, broadcast)
+        (live, broadcast, router)
     }
     .instrument(info_span!("publisher"))
     .await;
     let ticket = BroadcastTicket::new(publisher.endpoint().id(), "test-stream");
 
     let subscriber = async move {
-        let live = Live::builder(endpoint().await).spawn();
+        let live = Live::new(endpoint().await);
         let subscription = live.subscribe(&ticket).await.expect("failed to subscribe");
         let player = live
             .remote_broadcast(&subscription)
@@ -163,8 +171,10 @@ async fn answer(live: &Live, peer: &Live) -> Subscription {
 #[tokio::test]
 #[traced_test]
 async fn a_call_rings_answers_and_hangs_up() {
-    let alice = Live::builder(endpoint().await).with_router().spawn();
-    let bob = Live::builder(endpoint().await).with_router().spawn();
+    let alice = Live::new(endpoint().await);
+    let _alice_router = serve(&alice);
+    let bob = Live::new(endpoint().await);
+    let _bob_router = serve(&bob);
     let (_alice_side, alice_offer) = call_side(&alice);
     let (_bob_side, bob_offer) = call_side(&bob);
     let (alice_id, bob_id) = (alice.endpoint().id(), bob.endpoint().id());
@@ -216,7 +226,8 @@ async fn a_call_rings_answers_and_hangs_up() {
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_audio() {
-    let publisher = Live::builder(endpoint().await).with_router().spawn();
+    let publisher = Live::new(endpoint().await);
+    let _router = serve(&publisher);
     let broadcast = publish(&publisher, "av-stream");
     set_pattern(&broadcast, Size::new(320, 240));
     broadcast
@@ -226,7 +237,7 @@ async fn publish_subscribe_audio() {
         )
         .expect("failed to set audio");
 
-    let subscriber = Live::builder(endpoint().await).spawn();
+    let subscriber = Live::new(endpoint().await);
     let remote = subscribe(&subscriber, &publisher, "av-stream").await;
     let output = AudioTarget::null();
     let player = remote
@@ -254,7 +265,8 @@ async fn publish_subscribe_audio() {
 #[tokio::test]
 #[traced_test]
 async fn adaptive_rendition_switching() {
-    let publisher = Live::builder(endpoint().await).with_router().spawn();
+    let publisher = Live::new(endpoint().await);
+    let _router = serve(&publisher);
     let broadcast = publish(&publisher, "adaptive-stream");
     broadcast
         .set_video(
@@ -273,7 +285,7 @@ async fn adaptive_rendition_switching() {
         )
         .expect("failed to set video");
 
-    let subscriber = Live::builder(endpoint().await).spawn();
+    let subscriber = Live::new(endpoint().await);
     let remote = subscribe(&subscriber, &publisher, "adaptive-stream").await;
 
     // Replaces the signals the subscription attached. Starts healthy.
@@ -341,11 +353,12 @@ async fn adaptive_rendition_switching() {
 #[tokio::test]
 #[traced_test]
 async fn changing_the_decoder_backend_rebuilds_it() {
-    let publisher = Live::builder(endpoint().await).with_router().spawn();
+    let publisher = Live::new(endpoint().await);
+    let _router = serve(&publisher);
     let broadcast = publish(&publisher, "decoder-stream");
     set_pattern(&broadcast, Size::new(320, 240));
 
-    let subscriber = Live::builder(endpoint().await).spawn();
+    let subscriber = Live::new(endpoint().await);
     let remote = subscribe(&subscriber, &publisher, "decoder-stream").await;
     let player = remote
         .play(PlayerConfig::default())

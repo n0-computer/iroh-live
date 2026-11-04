@@ -112,7 +112,7 @@ mod app {
         // The ticket has no addresses. The viewer finds the publisher through
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
         // network without internet.
-        let live = Live::builder(iroh_live::EndpointOptions::from_env()?.bind().await?).spawn();
+        let live = Live::new(iroh_live::EndpointOptions::from_env()?.bind().await?);
         let subscription = live.subscribe(&ticket).await?;
         let remote = live.remote_broadcast(&subscription);
         println!("connected!");
