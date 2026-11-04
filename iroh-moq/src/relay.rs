@@ -1,21 +1,26 @@
 //! Relay links: staying attached to a moq relay.
 //!
-//! A relay link publishes what the node offers the relay, and feeds what the
-//! relay announces into the node's route table, tagged [`Link::Upstream`] so a
-//! route from one relay is never offered to another. `https://`, `moqt://` and
-//! `moql://` relays are moq-tokio client connections, which redial with
-//! backoff. moq-tokio has no iroh transport, so `iroh://` relays are dialed
-//! through the node's own endpoint by [`iroh_uplink`], which redials the same
-//! way.
+//! A relay link serves the route table's local view, authorized for the
+//! node's [`Everyone`](crate::Audience::Everyone) publications when its
+//! [`RelayOffer`] is public and for nothing otherwise. It feeds what the relay
+//! announces into the route table, tagged [`Link::Upstream`]: the local view
+//! hides such routes, so a route from a relay is never offered to another link.
+//!
+//! `https://`, `moqt://` and `moql://` relays are moq-tokio client
+//! connections, which redial with backoff. moq-tokio has no iroh transport, so
+//! `iroh://` relays are dialed through the node's own endpoint by
+//! [`iroh_uplink`], which redials the same way.
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Weak},
     time::Duration,
 };
 
 use iroh::EndpointId;
-use moq_net::origin::{self, Link};
+use moq_net::{
+    auth,
+    origin::{self, Link},
+};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watchable;
@@ -27,8 +32,8 @@ use crate::{
     ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Moq,
     link::{self, LinkState},
     node::{Shared, Tasks},
-    session::{Origins, client_handshake, hop_for},
-    state::LinkEntry,
+    session::{client_handshake, hop_for},
+    state::{LinkEntry, served},
     transport,
 };
 
@@ -289,62 +294,21 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         ),
         _ => None,
     };
-    let origins = Origins::new(shared);
     // Routes the relay announces come from this hop. A relay over iroh is
     // known by its endpoint id. moq-tokio's redials keep the one hop assigned
     // here, and a relay that declares a hop of its own is matched by kind.
     let hop = iroh_relay
         .as_ref()
         .map_or_else(moq_net::Hop::random, hop_for);
-    let link_state = LinkState::default();
-    let link = {
-        let mut state = shared.state.lock().expect("poisoned");
-        if state.closed {
-            return Err(e!(Error::ShutDown));
-        }
-        let link = state.next_id();
-        state.add_link(
-            link,
-            LinkEntry {
-                kind: LinkKind::Relay,
-                remote: iroh_relay,
-                hop,
-                grant: Grant::everything(),
-                publish: origins.publish.clone(),
-                public: matches!(config.offer, RelayOffer::Public),
-                consume: config.consume,
-                offers: HashMap::new(),
-                session: None,
-                link_state: link_state.clone(),
-            },
-        );
-        link
-    };
+    // Routes from a relay are tagged upstream, so the local view every link
+    // serves never offers them to another link.
     let subscriber = config
         .consume
         .then(|| shared.table.clone().with_link(Link::Upstream));
-    let url = config.url.clone();
-    info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
-    let status = Watchable::new(RelayStatus::Connecting);
-    let (uplink, task) = match iroh_relay {
-        Some(relay) => {
-            let stop = CancellationToken::new();
-            let run = iroh_uplink(
-                shared.clone(),
-                relay,
-                config.clone(),
-                origins,
-                subscriber,
-                link,
-                link_state.clone(),
-                status.clone(),
-                stop.clone(),
-            );
-            (
-                Uplink::Iroh(stop),
-                tokio::spawn(run.instrument(info_span!("relay", %url, link))),
-            )
-        }
+    // The relay's sessions share one authorization across redials. moq-tokio
+    // keeps its own, which the connection hands out.
+    let (uplink, auth) = match iroh_relay {
+        Some(_) => (Uplink::Iroh(CancellationToken::new()), auth::Handle::new()),
         None => {
             let mut client = moq_tokio::client::Config::default()
                 .init()
@@ -353,26 +317,74 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
                         source: AnyError::from_std(err)
                     })
                 })?
-                .with_publisher(origins.publish.consume())
+                .with_publisher(served(&shared.table))
                 .with_peer_hop(hop)
                 .with_cost(config.cost);
-            if let Some(subscriber) = subscriber {
+            if let Some(subscriber) = subscriber.clone() {
                 client = client.with_subscriber(subscriber);
             }
             let connection = client.connect(config.dial_url());
+            let auth = connection.auth();
+            (Uplink::Tokio(connection), auth)
+        }
+    };
+    let link_state = LinkState::default();
+    let link = {
+        let mut state = shared.state.lock().expect("poisoned");
+        if state.closed {
+            if let Uplink::Tokio(connection) = &uplink {
+                connection.abort(moq_net::Error::Cancel);
+            }
+            return Err(e!(Error::ShutDown));
+        }
+        let link = state.next_id();
+        // Authorizes the link before its first session is up, which takes
+        // at least a round trip.
+        state.add_link(
+            link,
+            LinkEntry {
+                kind: LinkKind::Relay,
+                remote: iroh_relay,
+                hop,
+                grant: Grant::everything(),
+                public: matches!(config.offer, RelayOffer::Public),
+                consume: config.consume,
+                auth: auth.clone(),
+                session: None,
+                link_state: link_state.clone(),
+            },
+        );
+        link
+    };
+    let url = config.url.clone();
+    info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
+    let status = Watchable::new(RelayStatus::Connecting);
+    let task = match (&uplink, iroh_relay) {
+        (Uplink::Iroh(stop), Some(relay)) => {
+            let run = iroh_uplink(
+                shared.clone(),
+                relay,
+                config.clone(),
+                auth,
+                subscriber,
+                link,
+                link_state.clone(),
+                status.clone(),
+                stop.clone(),
+            );
+            tokio::spawn(run.instrument(info_span!("relay", %url, link)))
+        }
+        (Uplink::Tokio(connection), _) => {
             let run = tokio_uplink(
                 shared.clone(),
                 connection.clone(),
-                origins,
                 link,
                 link_state.clone(),
                 status.clone(),
             );
-            (
-                Uplink::Tokio(connection),
-                tokio::spawn(run.instrument(info_span!("relay", %url, link))),
-            )
+            tokio::spawn(run.instrument(info_span!("relay", %url, link)))
         }
+        (Uplink::Iroh(_), None) => unreachable!("an iroh uplink names its relay"),
     };
     moq.tasks.insert_relay(
         link,
@@ -421,7 +433,6 @@ const REDIAL_MAX: Duration = Duration::from_secs(30);
 async fn tokio_uplink(
     shared: Arc<Shared>,
     connection: moq_tokio::Connection,
-    origins: Origins,
     link: u64,
     link_state: LinkState,
     status: Watchable<RelayStatus>,
@@ -431,7 +442,6 @@ async fn tokio_uplink(
     // Aborts the connection for every clone when the task ends, so a
     // `RelayLink` handle held past shutdown does not keep redialing.
     let _stop = StopOnDrop(connection);
-    let _driver = origins.run();
     let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
     loop {
         let update = tokio::select! {
@@ -468,15 +478,14 @@ async fn iroh_uplink(
     shared: Arc<Shared>,
     relay: EndpointId,
     config: RelayConfig,
-    origins: Origins,
+    auth: auth::Handle,
     subscriber: Option<origin::Producer>,
     link: u64,
     link_state: LinkState,
     status: Watchable<RelayStatus>,
     stop: CancellationToken,
 ) {
-    let publish = origins.publish.consume();
-    let _driver = origins.run();
+    let publish = served(&shared.table);
     let options = ConnectOptions {
         token: config.token.clone(),
         cost: Some(config.cost),
@@ -488,7 +497,7 @@ async fn iroh_uplink(
         let dialed = tokio::select! {
             _ = stop.cancelled() => break,
             _ = shared.shutdown.cancelled() => break,
-            dialed = dial_relay(&shared, relay, &options, &publish, subscriber.as_ref()) => dialed,
+            dialed = dial_relay(&shared, relay, &options, &publish, subscriber.as_ref(), &auth) => dialed,
         };
         match dialed {
             Ok((moq, driver, connection)) => {
@@ -550,6 +559,7 @@ async fn dial_relay(
     options: &ConnectOptions,
     publish: &origin::Consumer,
     subscriber: Option<&origin::Producer>,
+    auth: &auth::Handle,
 ) -> Result<
     (
         moq_net::Session,
@@ -560,9 +570,16 @@ async fn dial_relay(
 > {
     let dialed = transport::dial_with(&shared.endpoint, relay.into(), options).await?;
     let connection = dialed.conn().clone();
-    let (moq, driver) = client_handshake(dialed, options, relay, publish, subscriber.cloned())
-        .await
-        .map_err(|source| e!(Error::Moq { source }))?;
+    let (moq, driver) = client_handshake(
+        dialed,
+        options,
+        relay,
+        publish,
+        subscriber.cloned(),
+        auth.clone(),
+    )
+    .await
+    .map_err(|source| e!(Error::Moq { source }))?;
     Ok((moq, driver, connection))
 }
 

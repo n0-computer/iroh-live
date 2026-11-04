@@ -19,9 +19,10 @@ let moq = Moq::new(endpoint.clone(), MoqConfig::default());
 // Accept sessions on every MoQ version this build speaks.
 let router = moq.mount(iroh::protocol::Router::builder(endpoint)).spawn();
 
-// Publish a broadcast this process writes, to everyone.
-let broadcast = moq_net::broadcast::Info::new().produce();
-let publication = moq.publish("demo/my-stream", &broadcast, Audience::Everyone)?;
+// Publish a broadcast this process writes, to everyone. It is created in the
+// route table, and peers read it without a copy.
+let publication = moq.publish("demo/my-stream", Audience::Everyone)?;
+let track = publication.broadcast().create_track("video", None)?;
 
 // Resolve a peer's broadcast, dialing the peer if no route exists yet.
 let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
@@ -38,6 +39,13 @@ gives each peer its grant from its endpoint id, and without it a peer may read
 anything and publish nothing.
 `iroh-live`, for example, lets a peer publish under `live/<its id>/` only, so
 no peer can stand in for another.
+
+moq enforces it on each live session: the node authorizes every session, dialed
+or accepted, for exactly the publications whose audience admits its peer, and
+authorizes it again whenever a publication or an audience changes. A peer taken
+out of an audience loses the path at once, and what it read there ends with
+`Unauthorized`. Every link serves only the node's own publications, never a
+route the node learned from another peer or a relay.
 
 With `Admission::Manual`, incoming sessions wait in `Moq::accept` until the
 application admits or rejects them, for example after checking a token.

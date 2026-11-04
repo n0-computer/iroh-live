@@ -19,9 +19,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::{
-    Error, Session,
+    Error, LinkKind, Session,
     node::Shared,
-    session::{Origins, SessionParts, Transport, driver_now, hop_for, subscriber},
+    session::{SessionParts, Transport, driver_now, hop_for, subscriber},
+    state::served,
     transport::accept_transport,
 };
 
@@ -132,10 +133,18 @@ impl Incoming {
             return Err(e!(Error::ShutDown));
         };
         info!(remote = %self.remote.fmt_short(), ?grant, "admitting session");
-        let origins = Origins::new(&shared);
+        // Authorized before the handshake completes, so the session's first
+        // announcements already keep to what the peer may see.
+        let auth = self.handshake.auth();
+        auth.authorize(&shared.state.lock().expect("poisoned").grant_for(
+            LinkKind::Direct,
+            Some(&self.remote),
+            &grant,
+            true,
+        ));
         let mut handshake = self
             .handshake
-            .with_publisher(origins.publish.consume())
+            .with_publisher(served(&shared.table))
             .with_peer_hop(hop_for(&self.remote));
         if let Some(subscriber) = subscriber(&shared.table, &grant) {
             handshake = handshake.with_subscriber(subscriber);
@@ -156,7 +165,7 @@ impl Incoming {
             request: self.request,
             moq,
             driver,
-            origins,
+            auth,
         };
         shared.register(parts).await
     }

@@ -10,7 +10,7 @@ use std::{
 };
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
-use moq_net::{Path, origin};
+use moq_net::{Path, auth, origin};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use tokio::{
@@ -24,7 +24,7 @@ use crate::{
     link::{self, LinkState},
     node::Shared,
     route,
-    state::LinkEntry,
+    state::{LinkEntry, served},
     transport,
 };
 
@@ -71,7 +71,7 @@ pub(crate) struct SessionInner {
     pub(crate) link: u64,
     pub(crate) remote: EndpointId,
     pub(crate) dialed: bool,
-    pub(crate) grant: Grant,
+    pub(crate) grant: std::sync::Mutex<Grant>,
     pub(crate) request: SessionRequest,
     pub(crate) connection: Connection,
     pub(crate) moq: moq_net::Session,
@@ -104,7 +104,24 @@ impl Session {
 
     /// Returns what the peer may do on this node.
     pub fn grant(&self) -> Grant {
-        self.inner.grant.clone()
+        self.inner.grant.lock().expect("poisoned").clone()
+    }
+
+    /// Changes what the peer may do on this node, on the live session.
+    ///
+    /// moq enforces it at once, in both directions. A narrower subscribe half
+    /// takes paths from the peer and resets what it reads there, and a
+    /// narrower publish half takes the peer's broadcasts outside it out of the
+    /// route table. A wider one brings them back. The route table only ever
+    /// takes what the grant the session started with let the peer publish, so
+    /// a publish half wider than that widens nothing.
+    pub fn set_grant(&self, grant: Grant) {
+        let Some(shared) = self.inner.shared.upgrade() else {
+            return;
+        };
+        let mut state = shared.state.lock().expect("poisoned");
+        *self.inner.grant.lock().expect("poisoned") = grant.clone();
+        state.set_grant(self.inner.link, grant);
     }
 
     /// Returns what the peer asked for when it opened the session.
@@ -143,7 +160,7 @@ impl Session {
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
     ) -> Result<Subscription, Error> {
         let path = crate::error::to_path(path)?;
-        if !self.inner.grant.allows_publish(path.as_str()) {
+        if !self.grant().allows_publish(path.as_str()) {
             return Err(e!(Error::NotGranted { path }));
         }
         let Some(shared) = self.inner.shared.upgrade() else {
@@ -220,28 +237,20 @@ impl Session {
     }
 }
 
-/// What a session's peer is offered, and the driver that runs it.
+/// Returns an auth handle authorized for what a direct session with `remote` may see now.
 ///
-/// What the peer announces needs no origin of its own: it goes into the
-/// node's route table (see [`subscriber`]).
-pub(crate) struct Origins {
-    pub(crate) publish: origin::Producer,
-    driver: origin::Driver,
-}
-
-impl Origins {
-    /// Creates the publish origin under the node's identity.
-    pub(crate) fn new(shared: &Shared) -> Self {
-        let (publish, driver) = origin::Producer::new(shared.table.config());
-        Self { publish, driver }
-    }
-
-    /// Runs the driver while the handle lives.
-    pub(crate) fn run(self) -> AbortOnDropHandle<()> {
-        AbortOnDropHandle::new(tokio::spawn(async move {
-            moq_net::time::run(self.driver).await;
-        }))
-    }
+/// Authorized before the session starts, so its first announcements already
+/// keep to the grant. The node re-authorizes it as its publications change.
+pub(crate) fn authorized(shared: &Shared, remote: EndpointId, grant: &Grant) -> auth::Handle {
+    let auth = auth::Handle::new();
+    let scope = shared.state.lock().expect("poisoned").grant_for(
+        LinkKind::Direct,
+        Some(&remote),
+        grant,
+        true,
+    );
+    auth.authorize(&scope);
+    auth
 }
 
 /// Returns where a session writes what its peer announces.
@@ -275,10 +284,15 @@ pub(crate) struct SessionParts {
     pub(crate) request: SessionRequest,
     pub(crate) moq: moq_net::Session,
     pub(crate) driver: moq_net::Driver,
-    pub(crate) origins: Origins,
+    /// The session's authorization, which the node keeps up to date.
+    pub(crate) auth: auth::Handle,
 }
 
 /// Dials `remote` and completes the MoQ handshake as the client.
+///
+/// The session's authorization is in place before the handshake, so the dialed
+/// peer sees only what its grant and the audiences let it see, as an accepted
+/// one does.
 pub(crate) async fn dial_session(
     shared: Arc<Shared>,
     remote: EndpointAddr,
@@ -291,13 +305,14 @@ pub(crate) async fn dial_session(
         .unwrap_or_else(|| shared.grant_for(remote_id));
     let dialed = transport::dial_with(&shared.endpoint, remote, &options).await?;
     let connection = dialed.conn().clone();
-    let origins = Origins::new(&shared);
+    let auth = authorized(&shared, remote_id, &grant);
     let (moq, driver) = client_handshake(
         dialed,
         &options,
         remote_id,
-        &origins.publish.consume(),
+        &served(&shared.table),
         subscriber(&shared.table, &grant),
+        auth.clone(),
     )
     .await
     .map_err(|source| match source {
@@ -312,24 +327,26 @@ pub(crate) async fn dial_session(
         request: SessionRequest::default(),
         moq,
         driver,
-        origins,
+        auth,
     })
 }
 
 /// Completes the MoQ handshake as the client, over a transport this node dialed.
 ///
-/// Offers `publish` to the peer and, if given, writes what the peer announces
-/// to `subscriber`.
+/// Offers `publish` to the peer within what `auth` authorizes and, if given,
+/// writes what the peer announces to `subscriber`.
 pub(crate) async fn client_handshake(
     dialed: transport::Dialed,
     options: &ConnectOptions,
     remote: EndpointId,
     publish: &origin::Consumer,
     subscriber: Option<origin::Producer>,
+    auth: auth::Handle,
 ) -> Result<(moq_net::Session, moq_net::Driver), moq_net::Error> {
     let mut client = moq_net::Client::new()
         .with_publisher(publish.clone())
-        .with_peer_hop(hop_for(&remote));
+        .with_peer_hop(hop_for(&remote))
+        .with_auth(auth);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
     }
@@ -593,7 +610,7 @@ impl Actor {
             request,
             moq,
             driver,
-            origins,
+            auth,
         } = parts;
         let link_state = LinkState::default();
         let hop = hop_for(&remote);
@@ -604,7 +621,7 @@ impl Actor {
                 link,
                 remote,
                 dialed,
-                grant: grant.clone(),
+                grant: std::sync::Mutex::new(grant.clone()),
                 request,
                 connection: connection.clone(),
                 moq: moq.clone(),
@@ -621,10 +638,9 @@ impl Actor {
                 remote: Some(remote),
                 hop,
                 grant,
-                publish: origins.publish.clone(),
                 public: true,
                 consume: true,
-                offers: HashMap::new(),
+                auth,
                 session: Some(session.clone()),
                 link_state: link_state.clone(),
             },
@@ -651,7 +667,6 @@ impl Actor {
         let task_session = session.clone();
         let handle = self.sessions.spawn(
             async move {
-                let _driver = origins.run();
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
                     link::Source::Direct(moq.clone(), connection),
                     link_state,

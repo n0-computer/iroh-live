@@ -1,27 +1,28 @@
-//! The node's bookkeeping: publications, links, and what each link is offered.
+//! The node's bookkeeping: publications, links, and what each link may see.
 //!
 //! Everything here changes under one lock and never awaits, so `publish` and
 //! `unpublish` are synchronous.
 //!
-//! Each link has its own publish origin. Offering a publication on a link adds
-//! a route at its path there (see [`serve`]). What links announce goes straight
-//! into the node's route table instead, so the state only maps a route's source
-//! back to its link (see [`State::link_for`]).
+//! Every publication is a broadcast created in the node's route table, and
+//! every link serves the table's local view (see [`served`]). What a link's
+//! peer may see is its grant, which moq enforces on the live session: the
+//! exact paths of the publications whose audience admits the link. Whenever a
+//! publication, an audience or the set of links changes, the state works the
+//! grants out again and re-authorizes each link's session. What links announce
+//! goes straight into the table, so the state only maps a route's source back
+//! to its link (see [`State::link_for`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use iroh::EndpointId;
-use moq_net::{Hop, Instance, Path, broadcast, origin, origin::Source};
+use moq_net::{Hop, Path, Pattern, auth, origin, origin::Source};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use moq_ext_access::LinkRole;
 
 use crate::{Grant, LinkKind, Session, link::LinkState, publish::AudienceKind};
-
-/// A running offer: the task answering requests for one path on one origin.
-pub(crate) type Serve = AbortOnDropHandle<()>;
 
 /// The node's publications and links.
 #[derive(Debug, Default)]
@@ -37,20 +38,12 @@ pub(crate) struct State {
 #[derive(derive_more::Debug)]
 pub(crate) struct PubEntry {
     pub(crate) path: Path,
+    /// The broadcast in the route table, and its announcement.
     #[debug(skip)]
-    pub(crate) broadcast: broadcast::Consumer,
+    pub(crate) publication: origin::Publication,
     pub(crate) audience: AudienceKind,
-    /// The stream every offer of the publication serves.
-    ///
-    /// One instance on every link and in the route table, so a reader moves
-    /// between a direct route and a relay's without a break.
-    pub(crate) instance: Instance,
-    /// The publication's route in the node's own route table.
-    ///
-    /// Only for an `Everyone` publication, so a local subscriber resolves it.
-    pub(crate) _local: Option<Serve>,
     /// Follows a `Peers` audience's set.
-    pub(crate) _peers_task: Option<AbortOnDropHandle<()>>,
+    pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
     /// Withdraws the publication once its broadcast ends.
     pub(crate) _closed_task: AbortOnDropHandle<()>,
     /// Cancelled when the entry goes, for [`Publication::withdrawn`](crate::Publication::withdrawn).
@@ -59,6 +52,9 @@ pub(crate) struct PubEntry {
 
 impl Drop for PubEntry {
     fn drop(&mut self) {
+        // Out of the table, for local readers too. The broadcast lives on for
+        // whoever holds it, unannounced.
+        self.publication.unannounce();
         self.withdrawn.cancel();
     }
 }
@@ -70,17 +66,15 @@ pub(crate) struct LinkEntry {
     pub(crate) remote: Option<EndpointId>,
     /// The identity the link's routes are attributed to in the route table.
     pub(crate) hop: Hop,
+    /// What the link's peer may do at most, before audiences.
     pub(crate) grant: Grant,
-    /// What this link's peer is offered.
-    #[debug(skip)]
-    pub(crate) publish: origin::Producer,
     /// For a relay, whether `Everyone` publications go to it.
     pub(crate) public: bool,
     /// Whether the link feeds the route table.
     pub(crate) consume: bool,
-    /// The running offers, by publication.
+    /// The link's sessions' authorization, which moq enforces on them.
     #[debug(skip)]
-    pub(crate) offers: HashMap<u64, Option<Serve>>,
+    pub(crate) auth: auth::Handle,
     /// The session, for a direct link.
     pub(crate) session: Option<Session>,
     /// The latest reading of the link's connection monitor.
@@ -95,38 +89,56 @@ impl State {
         self.next_id
     }
 
-    /// Adds a link and offers it every publication it should see.
+    /// Adds a link and authorizes it for what it may see now.
     pub(crate) fn add_link(&mut self, id: u64, link: LinkEntry) {
         self.links.insert(id, link);
-        let publications: Vec<u64> = self.publications.keys().copied().collect();
-        for publication in publications {
-            self.reconcile(publication, id);
-        }
+        self.authorize(id);
     }
 
-    /// Removes a link, withdrawing its offers.
+    /// Removes a link.
     ///
     /// Its session takes its routes out of the route table as it ends.
     pub(crate) fn remove_link(&mut self, id: u64) {
         self.links.remove(&id);
     }
 
-    /// Adds a publication and offers it on every link it should reach.
+    /// Adds a publication and re-authorizes every link for it.
     pub(crate) fn add_publication(&mut self, id: u64, publication: PubEntry) {
         self.publications.insert(id, publication);
-        self.reconcile_publication(id);
+        self.authorize_all();
     }
 
-    /// Removes a publication from every link and from the route table.
+    /// Removes a publication, and re-authorizes every link without it.
     ///
-    /// The publication's route in the route table goes when the returned entry
-    /// drops.
+    /// Narrowing a link's grant retracts the path from its peer and resets
+    /// what the peer reads there. The path leaves the route table when the
+    /// returned entry drops.
     pub(crate) fn remove_publication(&mut self, id: u64) -> Option<PubEntry> {
         let entry = self.publications.remove(&id)?;
-        for link in self.links.values_mut() {
-            link.offers.remove(&id);
-        }
+        self.authorize_all();
         Some(entry)
+    }
+
+    /// Sets the audience of publication `id`, and re-authorizes every link.
+    pub(crate) fn set_audience(&mut self, id: u64, audience: AudienceKind) {
+        let Some(entry) = self.publications.get_mut(&id) else {
+            return;
+        };
+        if entry.audience == audience {
+            return;
+        }
+        debug!(path = %entry.path, ?audience, "audience changed");
+        entry.audience = audience;
+        self.authorize_all();
+    }
+
+    /// Sets the base grant of link `id`, and re-authorizes it.
+    pub(crate) fn set_grant(&mut self, id: u64, grant: Grant) {
+        let Some(link) = self.links.get_mut(&id) else {
+            return;
+        };
+        link.grant = grant;
+        self.authorize(id);
     }
 
     /// Returns the publication at `path`, if any.
@@ -137,41 +149,59 @@ impl State {
             .map(|(id, _)| *id)
     }
 
-    /// Brings every link's offer of publication `id` in line with its audience.
-    pub(crate) fn reconcile_publication(&mut self, id: u64) {
-        let links: Vec<u64> = self.links.keys().copied().collect();
-        for link in links {
-            self.reconcile(id, link);
+    /// Re-authorizes every link for what it may see now.
+    fn authorize_all(&self) {
+        for id in self.links.keys() {
+            self.authorize(*id);
         }
     }
 
-    /// Offers or withdraws `publication` on `link`, as [`visible`] decides.
-    pub(crate) fn reconcile(&mut self, publication: u64, link: u64) {
-        let Some(entry) = self.links.get_mut(&link) else {
+    /// Re-authorizes link `id` for what it may see now.
+    ///
+    /// moq skips a grant equal to the last one, so a change that leaves the
+    /// link's view alone costs its session nothing.
+    fn authorize(&self, id: u64) {
+        let Some(link) = self.links.get(&id) else {
             return;
         };
-        let Some(publication_entry) = self.publications.get(&publication) else {
-            entry.offers.remove(&publication);
-            return;
+        let grant = self.grant_for(link.kind, link.remote.as_ref(), &link.grant, link.public);
+        link.auth.authorize(&grant);
+    }
+
+    /// Returns the moq grant of a link, from the publications it may see.
+    ///
+    /// Its subscribe half lists the exact paths of the publications whose
+    /// audience admits the link, within `base`. Its publish half is what the
+    /// peer may announce into the route table: `base`'s for a session, and
+    /// anything for a relay, which is trusted with what it forwards.
+    pub(crate) fn grant_for(
+        &self,
+        kind: LinkKind,
+        remote: Option<&EndpointId>,
+        base: &Grant,
+        public: bool,
+    ) -> auth::Grant {
+        let role = match kind {
+            LinkKind::Direct => LinkRole::Direct,
+            LinkKind::Relay => LinkRole::Relay { public },
         };
-        let wanted = visible(publication_entry, entry);
-        let offered = entry.offers.contains_key(&publication);
-        if wanted == offered {
-            return;
-        }
-        if !wanted {
-            debug!(path = %publication_entry.path, link, "withdrawing offer");
-            entry.offers.remove(&publication);
-            return;
-        }
-        debug!(path = %publication_entry.path, link, "offering");
-        let offer = serve(
-            &entry.publish,
-            &publication_entry.path,
-            &publication_entry.instance,
-            &publication_entry.broadcast,
+        let subscribe = moq_ext_access::visible_paths(
+            self.publications
+                .values()
+                .map(|publication| (publication.path.as_str(), &publication.audience)),
+            base,
+            role,
+            remote,
         );
-        entry.offers.insert(publication, offer);
+        let publish = match kind {
+            LinkKind::Direct => base.publish.clone(),
+            LinkKind::Relay => Pattern::all().into(),
+        };
+        auth::Grant {
+            publish,
+            subscribe,
+            expires: None,
+        }
     }
 
     /// Returns the link whose peer announced a route from `source`.
@@ -214,139 +244,12 @@ impl State {
     }
 }
 
-/// Reports whether `publication` belongs on `link`.
+/// Returns what every link of the node serves its peer: the table's local view.
 ///
-/// It does when the link's grant covers the path and the audience admits the
-/// link. A relay sees `Everyone` publications only if its configuration offers
-/// public ones, and never a `Peers` one, which a relay would forward to anyone.
-fn visible(publication: &PubEntry, link: &LinkEntry) -> bool {
-    let role = match link.kind {
-        LinkKind::Direct => LinkRole::Direct,
-        LinkKind::Relay => LinkRole::Relay {
-            public: link.public,
-        },
-    };
-    moq_ext_access::visible(
-        publication.path.as_str(),
-        &publication.audience,
-        &link.grant,
-        role,
-        link.remote.as_ref(),
-    )
-}
-
-/// Offers `broadcast` at `path` on `origin` as `instance`, until the handle drops.
-///
-/// The offer also ends with the broadcast. Returns `None`, and logs why, if
-/// the origin refuses the path. The broadcast is copied into the origin, and
-/// only the tracks a reader asks for are read (see [`moq_ext_forward::forward`]).
-pub(crate) fn serve(
-    origin: &origin::Producer,
-    path: &Path,
-    instance: &Instance,
-    broadcast: &broadcast::Consumer,
-) -> Option<Serve> {
-    let publication = match origin.create_broadcast(path) {
-        Ok(publication) => publication,
-        Err(err) => {
-            warn!(%path, %err, "could not offer the broadcast");
-            return None;
-        }
-    };
-    let copy = moq_ext_forward::forward(broadcast.clone(), publication.broadcast().clone());
-    if let Err(err) =
-        publication.announce(origin::Route::default().with_instance(instance.clone(), 0))
-    {
-        warn!(%path, %err, "could not announce the broadcast");
-        return None;
-    }
-    Some(AbortOnDropHandle::new(tokio::spawn(async move {
-        // The publication stays announced while the copy runs.
-        let _publication = publication;
-        copy.await;
-    })))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use moq_net::{Hop, bytes::Bytes, track};
-
-    use super::*;
-
-    const MAX_AGE: Duration = Duration::from_secs(5);
-    const TIMEOUT: Duration = Duration::from_secs(10);
-
-    /// Runs an origin, as a session's publish origin runs.
-    fn origin() -> origin::Producer {
-        moq_tokio::origin::spawn_config(origin::Config::new(Hop::new(7).expect("a valid hop")))
-    }
-
-    /// Writes a frame into a track every few milliseconds until it closes.
-    fn writing() -> (broadcast::Producer, AbortOnDropHandle<()>) {
-        let broadcast = broadcast::Info::new().produce();
-        let mut track = broadcast
-            .create_track("video", track::Info::default().with_max_age(MAX_AGE))
-            .expect("create track");
-        let task = tokio::spawn(async move {
-            while track
-                .write_frame(None, Bytes::from_static(b"frame"))
-                .is_ok()
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        });
-        (broadcast, AbortOnDropHandle::new(task))
-    }
-
-    /// Resolves `path` on `origin`, and subscribes to its track until a group arrives.
-    async fn read(
-        origin: &origin::Producer,
-        path: &Path,
-    ) -> (broadcast::Consumer, track::Subscriber) {
-        let served = tokio::time::timeout(TIMEOUT, origin.consume().request(path, None))
-            .await
-            .expect("timed out resolving")
-            .expect("the offered path resolves");
-        let mut subscriber = tokio::time::timeout(
-            TIMEOUT,
-            served.track("video").expect("track").subscribe(
-                track::Subscription::default()
-                    .with_delay(moq_net::track::Delay::default().with_max(MAX_AGE)),
-            ),
-        )
-        .await
-        .expect("timed out subscribing")
-        .expect("subscribe");
-        tokio::time::timeout(TIMEOUT, subscriber.recv_group())
-            .await
-            .expect("timed out reading")
-            .expect("track failed")
-            .expect("a group");
-        (served, subscriber)
-    }
-
-    /// Withdrawing an offer closes what it served, and the path stops resolving.
-    ///
-    /// Tracks already read keep running, as moq-lite wants: a retraction does
-    /// not disturb subscriptions in flight.
-    #[tokio::test]
-    async fn a_withdrawn_offer_stops_resolving() {
-        let origin = origin();
-        let (broadcast, _writer) = writing();
-        let path = Path::new("live/publisher/cam").expect("a valid path");
-        let offer =
-            serve(&origin, &path, &Instance::random(), &broadcast.consume()).expect("offer");
-        let (served, _subscriber) = read(&origin, &path).await;
-
-        drop(offer);
-        tokio::time::timeout(TIMEOUT, served.closed())
-            .await
-            .expect("the served broadcast outlived the offer");
-        let again = tokio::time::timeout(TIMEOUT, origin.consume().request(&path, None))
-            .await
-            .expect("timed out resolving again");
-        assert!(again.is_err(), "a withdrawn path resolved again");
-    }
+/// It holds this node's publications and hides every route the node learned
+/// from a peer or a relay, so the node never carries traffic between two of
+/// its links. A link's grant then narrows it to the publications whose
+/// audience admits the link.
+pub(crate) fn served(table: &origin::Producer) -> origin::Consumer {
+    table.consume().local()
 }

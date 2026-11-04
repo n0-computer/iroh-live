@@ -14,7 +14,7 @@ use std::{
 use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
-use iroh_moq::{Grant, Moq, MoqConfig};
+use iroh_moq::{Audience, Grant, Moq, MoqConfig, Publication};
 use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
@@ -97,13 +97,10 @@ pub(crate) struct TestBroadcast {
 }
 
 impl TestBroadcast {
-    pub(crate) fn start() -> Self {
-        Self::starting_at(0)
-    }
-
-    /// Starts a broadcast whose counter starts at `first`, to tell two apart.
-    pub(crate) fn starting_at(first: u64) -> Self {
-        let producer = broadcast::Info::new().produce();
+    /// Writes the counter into `producer`, starting at `first`.
+    ///
+    /// A distinct `first` tells two broadcasts apart.
+    pub(crate) fn writing(producer: broadcast::Producer, first: u64) -> Self {
         let mut track = producer
             .create_track("video", track::Info::default().with_max_age(MAX_AGE))
             .expect("create track");
@@ -123,6 +120,48 @@ impl TestBroadcast {
             _writer: AbortOnDropHandle::new(writer),
         }
     }
+}
+
+/// A publication whose broadcast writes the counter.
+///
+/// Derefs to the [`Publication`].
+#[derive(derive_more::Debug)]
+#[debug("{publication:?}")]
+pub(crate) struct Published {
+    pub(crate) publication: Publication,
+    _broadcast: TestBroadcast,
+}
+
+impl std::ops::Deref for Published {
+    type Target = Publication;
+
+    fn deref(&self) -> &Publication {
+        &self.publication
+    }
+}
+
+/// Publishes a counter broadcast at `path` on `moq`.
+pub(crate) fn publish(
+    moq: &Moq,
+    path: impl AsRef<str>,
+    audience: Audience,
+) -> Result<Published, iroh_moq::Error> {
+    publish_from(moq, path, audience, 0)
+}
+
+/// Publishes a counter broadcast at `path` on `moq`, counting from `first`.
+pub(crate) fn publish_from(
+    moq: &Moq,
+    path: impl AsRef<str>,
+    audience: Audience,
+    first: u64,
+) -> Result<Published, iroh_moq::Error> {
+    let publication = moq.publish(path.as_ref(), audience)?;
+    let broadcast = TestBroadcast::writing(publication.broadcast().clone(), first);
+    Ok(Published {
+        publication,
+        _broadcast: broadcast,
+    })
 }
 
 /// Reads frames from the test track until one arrives, and returns its counter.

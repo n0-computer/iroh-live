@@ -10,7 +10,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
-use moq_net::{Consume, Path, broadcast, origin};
+use moq_net::{Path, broadcast, origin};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
@@ -60,6 +60,16 @@ pub struct MoqConfig {
     /// one peer can stand in for another.
     #[debug("{}", grant.is_some())]
     pub grant: Option<GrantFn>,
+    /// A route table to use instead of a new one, such as a relay's cluster origin.
+    ///
+    /// The caller runs its driver. The node creates its publications in it,
+    /// writes what peers announce into it, and serves its local view, which
+    /// hides routes from handles tagged [`Link::Peer`](origin::Link::Peer) or
+    /// [`Link::Upstream`](origin::Link::Upstream). Grants keep each peer to
+    /// this node's own publications, whatever else the table holds. `None`
+    /// creates a table under the hop derived from the endpoint id.
+    #[debug("{}", table.is_some())]
+    pub table: Option<origin::Producer>,
 }
 
 /// A MoQ node on an iroh endpoint.
@@ -81,9 +91,9 @@ pub struct MoqConfig {
 /// let moq = Moq::new(endpoint.clone(), MoqConfig::default());
 /// let _router = moq.mount(Router::builder(endpoint)).spawn();
 ///
-/// let broadcast = moq_net::broadcast::Info::new().produce();
-/// // write tracks into `broadcast`, then:
-/// let _publication = moq.publish("demo/camera", &broadcast, Audience::Everyone)?;
+/// let publication = moq.publish("demo/camera", Audience::Everyone)?;
+/// // write tracks into the broadcast in the route table:
+/// let _track = publication.broadcast().create_track("video", None)?;
 /// # Ok(())
 /// # }
 /// ```
@@ -118,7 +128,8 @@ pub(crate) struct Shared {
 /// the shared state.
 pub(crate) struct Tasks {
     _actor: AbortOnDropHandle<()>,
-    _table: AbortOnDropHandle<()>,
+    /// Runs the route table's driver, unless the caller supplied the table.
+    _table: Option<AbortOnDropHandle<()>>,
     /// Relay links, by link id.
     pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
 }
@@ -129,14 +140,20 @@ impl Moq {
     /// Must be called within a tokio runtime.
     pub fn new(endpoint: Endpoint, config: MoqConfig) -> Self {
         let id = endpoint.id();
-        let (table, driver) = origin::Producer::new(origin::Config::new(hop_for(&id)));
-        let table_task = tokio::spawn(
-            async move {
-                let err = moq_net::time::run(driver).await;
-                debug!(%err, "route table finished");
+        let (table, table_task) = match config.table {
+            Some(table) => (table, None),
+            None => {
+                let (table, driver) = origin::Producer::new(origin::Config::new(hop_for(&id)));
+                let task = tokio::spawn(
+                    async move {
+                        let err = moq_net::time::run(driver).await;
+                        debug!(%err, "route table finished");
+                    }
+                    .instrument(info_span!("route_table")),
+                );
+                (table, Some(AbortOnDropHandle::new(task)))
             }
-            .instrument(info_span!("route_table")),
-        );
+        };
         let (actor_tx, actor_rx) = mpsc::channel(16);
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         let shared = Arc::new(Shared {
@@ -164,7 +181,7 @@ impl Moq {
             shared,
             tasks: Arc::new(Tasks {
                 _actor: AbortOnDropHandle::new(actor_task),
-                _table: AbortOnDropHandle::new(table_task),
+                _table: table_task,
                 relays: Mutex::new(HashMap::new()),
             }),
         }
@@ -183,7 +200,12 @@ impl Moq {
         &self.shared.endpoint
     }
 
-    /// Publishes `broadcast` at `path` to `audience`.
+    /// Creates a broadcast at `path` in the route table, for `audience`.
+    ///
+    /// Fill it through [`Publication::broadcast`]. Peers read that broadcast
+    /// itself, never a copy: every session serves the route table, and its
+    /// grant lets the peer see exactly the publications whose audience admits
+    /// it. Changing the audience re-authorizes every live session at once.
     ///
     /// # Errors
     ///
@@ -193,15 +215,31 @@ impl Moq {
     pub fn publish(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
-        broadcast: impl Consume<broadcast::Consumer>,
         audience: Audience,
     ) -> Result<Publication, Error> {
-        publish::publish(
-            &self.shared,
-            crate::error::to_path(path)?,
-            broadcast.consume(),
-            audience,
-        )
+        let path = crate::error::to_path(path)?;
+        let (publication, ()) = publish::publish(&self.shared, path, audience, |_| ())?;
+        Ok(publication)
+    }
+
+    /// Publishes as [`publish`](Self::publish) does, filling the broadcast before it is announced.
+    ///
+    /// `fill` runs once, with the broadcast before anyone can see it, and its
+    /// result comes back with the publication. Create the tracks a reader
+    /// needs first there, such as a catalog, so no reader finds the broadcast
+    /// without them. It runs under the node's lock: it must not call back into
+    /// the node.
+    ///
+    /// # Errors
+    ///
+    /// As [`publish`](Self::publish).
+    pub fn publish_with<T>(
+        &self,
+        path: impl TryInto<Path, Error: Into<moq_net::Error>>,
+        audience: Audience,
+        fill: impl FnOnce(&broadcast::Producer) -> T,
+    ) -> Result<(Publication, T), Error> {
+        publish::publish(&self.shared, crate::error::to_path(path)?, audience, fill)
     }
 
     /// Resolves `path` in the route table.
@@ -210,8 +248,8 @@ impl Moq {
     /// a dial this call started continues for other callers.
     ///
     /// The table holds what direct peers announce within their grants, routes
-    /// from attached relays, and this node's [`Audience::Everyone`]
-    /// publications. With grants that keep each peer to paths that name it,
+    /// from attached relays, and every publication of this node, whatever
+    /// its audience. With grants that keep each peer to paths that name it,
     /// a path resolves to its publisher's broadcast and never to a third
     /// peer's. A relay is trusted with every path it forwards, so attach only
     /// relays that keep each publisher to its own paths, as moq-relay's tokens
@@ -238,7 +276,7 @@ impl Moq {
     ///
     /// It holds what [`subscribe`](Self::subscribe) resolves in: what direct
     /// peers announce within their grants, routes from attached relays, and
-    /// this node's [`Audience::Everyone`] publications. Its
+    /// every publication of this node, whatever its audience. Its
     /// [`announced`](origin::Consumer::announced) stream lists those paths as
     /// they come and go.
     pub fn origin(&self) -> origin::Consumer {

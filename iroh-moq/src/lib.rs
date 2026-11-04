@@ -16,9 +16,9 @@
 //! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
 //! let moq = Moq::new(endpoint, MoqConfig::default());
 //!
-//! // Publish a broadcast this process writes.
-//! let broadcast = moq_net::broadcast::Info::new().produce();
-//! let _publication = moq.publish("demo/studio", &broadcast, Audience::Everyone)?;
+//! // Publish a broadcast this process writes, created in the route table.
+//! let publication = moq.publish("demo/studio", Audience::Everyone)?;
+//! let _track = publication.broadcast().create_track("video", None)?;
 //!
 //! // Resolve a peer's broadcast, dialing the peer if no route exists yet.
 //! let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
@@ -38,11 +38,20 @@
 //!   peer may subscribe to and publish.
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //!
-//! A publication is offered on a session when both its audience and the
-//! session's grant allow it. [`MoqConfig::grant`] gives each peer its grant
-//! from its endpoint id. Without it, a peer may subscribe to anything and
-//! publish nothing. [`Grant::publish_under`] lets a peer publish only at paths
-//! that name it, so it cannot stand in for another peer.
+//! A publication is a broadcast in the route table, and every link serves the
+//! table's local view: this node's publications, never a route it learned from
+//! another link. What a link's peer sees is the grant moq enforces on the live
+//! session: the exact paths of the publications whose audience admits the
+//! peer, within the session's [`Grant`]. The node re-authorizes every session
+//! when a publication or an audience changes, so a peer taken out of an
+//! audience loses the path at once, and what it read there ends with
+//! [`moq_net::Error::Unauthorized`]. This holds on both sides of a session,
+//! dialed or accepted, and on every protocol version.
+//!
+//! [`MoqConfig::grant`] gives each peer its grant from its endpoint id.
+//! Without it, a peer may subscribe to anything and publish nothing.
+//! [`Grant::publish_under`] lets a peer publish only at paths that name it, so
+//! it cannot stand in for another peer.
 //!
 //! Every link runs a connection monitor. [`Session::link`],
 //! [`RelayLink::link`] and [`Subscription::link`] return its latest
@@ -79,12 +88,6 @@ pub use moq_net as net;
 /// The poll transport adapter sessions run over, for this crate's tests.
 #[doc(hidden)]
 pub use adapter::Session as AdaptedTransport;
-
-/// Serves a broadcast created in one origin from one held elsewhere.
-pub use moq_ext_forward as forward;
-/// Copies a broadcast into another, for this crate's tests.
-#[doc(hidden)]
-pub use moq_ext_forward::forward as forward_broadcast;
 
 pub use self::{
     admission::{

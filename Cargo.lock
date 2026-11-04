@@ -4642,7 +4642,6 @@ dependencies = [
  "futures",
  "iroh",
  "moq-ext-access",
- "moq-ext-forward",
  "moq-net",
  "moq-tokio",
  "n0-error",
@@ -5576,17 +5575,6 @@ dependencies = [
 name = "moq-ext-adaptive"
 version = "0.1.0"
 dependencies = [
- "tracing",
-]
-
-[[package]]
-name = "moq-ext-forward"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "moq-net",
- "n0-future",
- "tokio",
  "tracing",
 ]
 

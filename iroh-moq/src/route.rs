@@ -2,12 +2,13 @@
 //!
 //! Every link announces straight into the node's route table: a session's
 //! subscriber is the table tagged [`Link::Peer`], scoped to the paths its grant
-//! lets the peer publish, and a relay's is the table tagged [`Link::Upstream`],
-//! so routes from one upstream are never offered to another. The peer's hop and
-//! the link's cost travel with each route. moq serves the best route, and moves
-//! a reader between routes of one instance, such as a direct one and a relay's,
-//! without ending its subscriptions. Which link a route came from is the
-//! route's [`Source`].
+//! lets the peer publish, and a relay's is the table tagged [`Link::Upstream`].
+//! Every link serves the table's local view, which hides both, so no route
+//! learned on one link is offered on another. The peer's hop and the link's
+//! cost travel with each route. moq serves the best route, and moves a reader
+//! between routes of one instance, such as a direct one and a relay's, without
+//! ending its subscriptions. Which link a route came from is the route's
+//! [`Source`].
 //!
 //! # Trust
 //!
@@ -17,7 +18,7 @@
 //! out is the table's contents: a direct peer announces only paths its grant
 //! lets it publish, so with grants that name the peer it cannot reach another
 //! peer's paths, and an instance is a random string that only reaches the
-//! links a publication is offered on. A relay is trusted with the paths it
+//! links whose grant lets them see the publication. A relay is trusted with the paths it
 //! forwards, so attach only relays that keep each publisher to its own paths,
 //! as moq-relay's tokens do. Hops no longer take part: moq splices by
 //! instance, not by the first hop a publisher claims, so the stand-in hop
@@ -340,7 +341,7 @@ pub(crate) async fn subscribe(moq: &Moq, path: Path, reach: Reach) -> Result<Sub
     };
     match connected {
         // The peer's announcement of the path would never enter the table.
-        Ok(session) if !session.inner.grant.allows_publish(path.as_str()) => {
+        Ok(session) if !session.grant().allows_publish(path.as_str()) => {
             if !relays {
                 return Err(e!(Error::NotGranted { path }));
             }

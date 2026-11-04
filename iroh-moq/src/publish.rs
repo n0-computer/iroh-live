@@ -1,20 +1,16 @@
-//! Publications: a broadcast placed at a path, before an audience.
+//! Publications: a broadcast created at a path in the route table, for an audience.
 
 use std::sync::{Arc, Weak};
 
 use iroh::EndpointId;
-use moq_net::{Instance, Path, broadcast};
+use moq_net::{Path, broadcast, origin};
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::{
-    Error,
-    node::Shared,
-    state::{self, PubEntry},
-};
+use crate::{Error, node::Shared, state::PubEntry};
 
 /// Who may see a publication.
 ///
@@ -26,9 +22,13 @@ pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 
 /// A published broadcast.
 ///
+/// The broadcast lives in the node's route table: fill it through
+/// [`broadcast`](Self::broadcast), and every link whose peer may see it serves
+/// that one broadcast, with no copy in between.
+///
 /// Cheap to clone. The publication stays until [`unpublish`](Self::unpublish),
-/// until its broadcast ends, or until the node shuts down. Dropping the handles
-/// leaves it in place.
+/// until its broadcast closes, or until the node shuts down. Dropping the
+/// handles leaves it in place.
 #[derive(Debug, Clone)]
 pub struct Publication {
     inner: Arc<PublicationInner>,
@@ -38,6 +38,8 @@ pub struct Publication {
 struct PublicationInner {
     id: u64,
     path: Path,
+    #[debug(skip)]
+    broadcast: broadcast::Producer,
     #[debug(skip)]
     shared: Weak<Shared>,
     #[debug(skip)]
@@ -53,25 +55,17 @@ impl PartialEq for Publication {
 impl Eq for Publication {}
 
 impl Publication {
-    pub(crate) fn new(
-        id: u64,
-        path: Path,
-        shared: Weak<Shared>,
-        withdrawn: CancellationToken,
-    ) -> Self {
-        Self {
-            inner: Arc::new(PublicationInner {
-                id,
-                path,
-                shared,
-                withdrawn,
-            }),
-        }
-    }
-
     /// Returns the path the broadcast is published at.
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+
+    /// Returns the broadcast to fill.
+    ///
+    /// Tracks created here are what peers read. Closing it withdraws the
+    /// publication.
+    pub fn broadcast(&self) -> &broadcast::Producer {
+        &self.inner.broadcast
     }
 
     /// Waits until the publication is withdrawn.
@@ -86,10 +80,29 @@ impl Publication {
         self.inner.withdrawn.is_cancelled()
     }
 
+    /// Changes who may see the publication.
+    ///
+    /// Takes effect on every live session at once: a peer that may no longer
+    /// see it loses the path, and what it reads there ends with
+    /// [`moq_net::Error::Unauthorized`]. Does nothing once withdrawn.
+    pub fn set_audience(&self, audience: Audience) {
+        let Some(shared) = self.inner.shared.upgrade() else {
+            return;
+        };
+        let mut state = shared.state.lock().expect("poisoned");
+        let id = self.inner.id;
+        let Some(entry) = state.publications.get_mut(&id) else {
+            return;
+        };
+        entry.peers_task = peers_task(&audience, id, &self.inner.shared);
+        state.set_audience(id, AudienceKind::from(&audience));
+    }
+
     /// Withdraws the publication from every link and from the route table.
     ///
-    /// Ends what peers read through it. The broadcast keeps running and can be
-    /// published again.
+    /// Peers lose the path, and what they read there ends with
+    /// [`moq_net::Error::Unauthorized`]. The broadcast stays open for whoever
+    /// holds it, unannounced.
     pub fn unpublish(&self) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
@@ -105,11 +118,11 @@ impl Publication {
     }
 }
 
-/// Returns a task that re-offers a `Peers` publication as its set changes.
+/// Returns a task that re-authorizes the node's links as a `Peers` set changes.
 ///
 /// `None` for any other audience. Holds the node weakly, since the task lives
 /// in the state it updates.
-pub(crate) fn peers_task(
+fn peers_task(
     audience: &Audience,
     id: u64,
     shared: &Weak<Shared>,
@@ -129,12 +142,11 @@ pub(crate) fn peers_task(
                     return;
                 };
                 let mut state = shared.state.lock().expect("poisoned");
-                let Some(entry) = state.publications.get_mut(&id) else {
+                if !state.publications.contains_key(&id) {
                     return;
-                };
-                debug!(path = %entry.path, peers = current.len(), "audience peers set");
-                entry.audience = AudienceKind::Peers(current);
-                state.reconcile_publication(id);
+                }
+                debug!(peers = current.len(), "audience peers set");
+                state.set_audience(id, AudienceKind::Peers(current));
             }
             // This task holds `set`, so the watcher stays connected.
             let Ok(next) = peers.updated().await else {
@@ -145,13 +157,13 @@ pub(crate) fn peers_task(
     })))
 }
 
-/// Publishes `broadcast` at `path`, for [`Moq::publish`](crate::Moq::publish).
-pub(crate) fn publish(
+/// Publishes a broadcast at `path`, for [`Moq::publish`](crate::Moq::publish).
+pub(crate) fn publish<T>(
     shared: &Arc<Shared>,
     path: Path,
-    broadcast: broadcast::Consumer,
     audience: Audience,
-) -> Result<Publication, Error> {
+    fill: impl FnOnce(&broadcast::Producer) -> T,
+) -> Result<(Publication, T), Error> {
     check_path(&path)?;
     let weak = Arc::downgrade(shared);
     let mut state = shared.state.lock().expect("poisoned");
@@ -160,18 +172,32 @@ pub(crate) fn publish(
     }
     if let Some(existing) = state.publication_at(&path) {
         // An ended broadcast's closed task may not have run yet. Not a clash.
-        if !state.publications[&existing].broadcast.is_closed() {
+        let entry = &state.publications[&existing];
+        if !entry.publication.broadcast().consume().is_closed() {
             return Err(e!(Error::Duplicate { path }));
         }
         state.remove_publication(existing);
     }
+    let publication = shared
+        .table
+        .create_broadcast(&path)
+        .map_err(|source| e!(Error::Moq { source }))?;
+    // Filled before the announcement, so no reader finds the broadcast
+    // without the tracks `fill` creates.
+    let filled = fill(publication.broadcast());
+    // Announced under the lock, before any link may see the path, so no peer
+    // learns of it before the table has it.
+    publication
+        .announce(origin::Route::default())
+        .map_err(|source| e!(Error::Moq { source }))?;
+    let broadcast = publication.broadcast().clone();
     let id = state.next_id();
     let closed_task = {
-        let broadcast = broadcast.clone();
+        let consumer = broadcast.consume();
         let weak = weak.clone();
         let path = path.clone();
         tokio::spawn(async move {
-            broadcast.closed().await;
+            consumer.closed().await;
             let Some(shared) = weak.upgrade() else { return };
             let removed = shared
                 .state
@@ -183,26 +209,29 @@ pub(crate) fn publish(
             }
         })
     };
-    let instance = Instance::random();
-    let local = matches!(audience, Audience::Everyone)
-        .then(|| state::serve(&shared.table, &path, &instance, &broadcast))
-        .flatten();
     info!(%path, ?audience, "published");
     let withdrawn = CancellationToken::new();
     state.add_publication(
         id,
         PubEntry {
             path: path.clone(),
-            broadcast,
+            publication,
             audience: AudienceKind::from(&audience),
-            instance,
-            _local: local,
-            _peers_task: peers_task(&audience, id, &weak),
+            peers_task: peers_task(&audience, id, &weak),
             _closed_task: AbortOnDropHandle::new(closed_task),
             withdrawn: withdrawn.clone(),
         },
     );
-    Ok(Publication::new(id, path, weak, withdrawn))
+    let publication = Publication {
+        inner: Arc::new(PublicationInner {
+            id,
+            path,
+            broadcast,
+            shared: weak,
+            withdrawn,
+        }),
+    };
+    Ok((publication, filled))
 }
 
 /// Refuses a path that is empty or holds a segment only a pattern can spell.

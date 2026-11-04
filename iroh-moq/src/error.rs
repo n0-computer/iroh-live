@@ -50,8 +50,7 @@ pub enum Error {
     InvalidPath { path: String },
     /// The session's grant does not cover the path.
     ///
-    /// For an offer, the peer may not subscribe to the path. For a subscribe,
-    /// it may not publish it.
+    /// For a subscribe, the peer may not publish the path.
     #[error("the session's grant does not cover {path}")]
     NotGranted { path: Path },
     /// The path was not announced before its only link went away.

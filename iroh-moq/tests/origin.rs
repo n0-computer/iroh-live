@@ -14,7 +14,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use moq_net::{
-    Hop, announce, broadcast,
+    Hop, Pattern, Patterns, announce, auth, broadcast,
     origin::{self, Link, Route},
 };
 use n0_future::task::AbortOnDropHandle;
@@ -65,10 +65,14 @@ impl Server {
     }
 
     /// Accepts the next session with `publisher` and `subscriber` as its origins.
+    ///
+    /// With `grant`, authorizes the session for it before the handshake
+    /// completes, as the node does.
     async fn accept(
         &mut self,
         publisher: origin::Consumer,
         subscriber: Option<origin::Producer>,
+        grant: Option<auth::Grant>,
     ) -> Session {
         let connection = tokio::time::timeout(TIMEOUT, self.incoming.recv())
             .await
@@ -81,21 +85,25 @@ impl Server {
             Some(_) => moq_net::transport::Address::Uri,
             None => moq_net::transport::Address::Setup,
         };
-        let mut server = moq_net::Server::new().with_publisher(publisher);
-        if let Some(subscriber) = subscriber {
-            server = server.with_subscriber(subscriber);
-        }
-        let (session, driver) = server
-            .accept(now(), Transport::new(transport, address))
+        let handshake = moq_net::Server::new()
+            .accept_request(now(), Transport::new(transport, address))
             .await
             .expect("handshake failed");
+        if let Some(grant) = grant {
+            handshake.auth().authorize(&grant);
+        }
+        let mut handshake = handshake.with_publisher(publisher);
+        if let Some(subscriber) = subscriber {
+            handshake = handshake.with_subscriber(subscriber);
+        }
+        let (session, driver) = handshake.ok().await.expect("handshake failed");
         Session::new(session, driver)
     }
 }
 
 /// A MoQ session and its driver task.
 struct Session {
-    _session: moq_net::Session,
+    session: moq_net::Session,
     _driver: AbortOnDropHandle<()>,
 }
 
@@ -105,7 +113,7 @@ impl Session {
             moq_net::time::run(driver).await;
         });
         Self {
-            _session: session,
+            session,
             _driver: AbortOnDropHandle::new(task),
         }
     }
@@ -135,23 +143,25 @@ async fn dial(
     Session::new(session, driver)
 }
 
-/// Offers `broadcast` at `path` on `origin` under `route`, and retracts when it ends.
-///
-/// moq-net creates a broadcast in the origin that announces it, so the offer
-/// is a copy of `broadcast`, as the node makes one.
-fn serve(
-    origin: &origin::Producer,
-    path: &str,
-    route: Route,
-    broadcast: broadcast::Consumer,
-) -> AbortOnDropHandle<()> {
-    let publication = origin.create_broadcast(path).expect("create broadcast");
-    let copy = iroh_moq::forward_broadcast(broadcast, publication.broadcast().clone());
-    publication.announce(route).expect("announce");
-    AbortOnDropHandle::new(tokio::spawn(async move {
-        let _publication = publication;
-        copy.await;
-    }))
+/// Publishes a counter broadcast at `path` in `origin`, until the handles drop.
+fn publish(origin: &origin::Producer, path: &str) -> (origin::Publication, TestBroadcast) {
+    let publication = origin
+        .publish(path, Route::default())
+        .expect("publish into the origin");
+    let writer = TestBroadcast::writing(publication.broadcast().clone(), 0);
+    (publication, writer)
+}
+
+/// Returns a grant to subscribe to exactly `paths`, as the node gives a session.
+fn grant(paths: &[&str]) -> auth::Grant {
+    auth::Grant {
+        publish: Patterns::new(),
+        subscribe: paths
+            .iter()
+            .map(|path| Pattern::literal(path).expect("a literal"))
+            .collect(),
+        expires: None,
+    }
 }
 
 /// Waits for `path` to be announced on `origin` and returns the route.
@@ -235,198 +245,114 @@ async fn wait_for_paths(origin: &origin::Producer, expected: &[&str]) {
     }
 }
 
-/// A broadcast spliced at two paths reaches a subscriber at both, and ends at both.
-#[tokio::test]
-async fn a_broadcast_is_spliced_at_two_paths() {
-    const PUBLISHER_HOP: u64 = 11;
-    const SUBSCRIBER_HOP: u64 = 22;
-
-    let mut publisher = Server::spawn().await;
-    let id = publisher.endpoint.id();
-    let live_path = format!("live/{id}/cam");
-    let room_path = format!("rooms/topic/{id}/cam");
-
-    let broadcast = TestBroadcast::start();
-    let session_origin = origin(PUBLISHER_HOP);
-    let live = serve(
-        &session_origin,
-        &live_path,
-        Route::default(),
-        broadcast.producer.consume(),
-    );
-    let room = serve(
-        &session_origin,
-        &room_path,
-        Route::default(),
-        broadcast.producer.consume(),
-    );
-
-    let subscriber = endpoint().await;
-    let ingest = origin(SUBSCRIBER_HOP);
-    let (_client, _server) = tokio::join!(
-        dial(&subscriber, publisher.endpoint.addr(), ingest.clone(), None),
-        publisher.accept(session_origin.consume(), None),
-    );
-
-    // The receiver stamps the peer's hop onto what it announces, so a route
-    // published locally with no hops arrives with exactly the publisher's.
-    for path in [&live_path, &room_path] {
-        let route = announced_route(&ingest, path).await;
-        let hops: Vec<u64> = route.hops.iter().map(|hop| hop.id()).collect();
-        assert_eq!(hops, [PUBLISHER_HOP], "hop chain of {path}");
-    }
-
-    let at_live = resolve(&ingest, &live_path).await;
-    let at_room = resolve(&ingest, &room_path).await;
-    let first = read_counter(&at_live).await;
-    let second = read_counter(&at_room).await;
-    // Both read the one track the one writer feeds, not two copies of it.
-    assert!(first < 10_000 && second < 10_000, "{first} {second}");
-
-    // Finishing the source ends it at both paths, and the handlers retract
-    // their routes so no new request is answered with a closed broadcast.
-    broadcast.producer.close();
-    for consumer in [&at_live, &at_room] {
-        tokio::time::timeout(TIMEOUT, consumer.closed())
-            .await
-            .expect("a finished broadcast did not close at the subscriber");
-    }
-    tokio::time::timeout(TIMEOUT, async {
-        live.await.ok();
-        room.await.ok();
-    })
-    .await
-    .expect("handlers did not stop");
-    wait_for_paths(&ingest, &[]).await;
-}
-
-/// Per-session publish origins show two peers different publications.
+/// One origin shows each session what its grant allows, and nothing it learned upstream.
 ///
-/// What a session carries changes while it runs: a later offer appears, a
-/// withdrawn one retracts, and a forwarded route keeps its hop chain.
+/// The node serves every session the same local view of one origin, and the
+/// session's grant decides what the peer sees. Re-authorizing a live session
+/// narrows or widens it at once: a narrowed peer loses the path and what it
+/// reads there is reset, and the other session never notices.
 #[tokio::test]
-async fn per_session_origins_carry_different_offers() {
+#[n0_tracing_test::traced_test]
+async fn grants_show_sessions_different_publications_of_one_origin() {
     const UPSTREAM_HOP: u64 = 100;
     const NODE_HOP: u64 = 200;
     const BOB_HOP: u64 = 300;
     const CAROL_HOP: u64 = 400;
+    const EVERYONE: &str = "live/node/everyone";
+    const PEERS: &str = "live/node/peers";
+    const MANUAL: &str = "live/node/manual";
+    const LEARNED: &str = "live/upstream/cam";
 
-    // Upstream publishes one broadcast the node will learn and forward.
+    // The node learns a route from upstream, tagged so it is never re-offered.
     let mut upstream = Server::spawn().await;
-    let upstream_broadcast = TestBroadcast::start();
     let upstream_origin = origin(UPSTREAM_HOP);
-    let _upstream_route = serve(
-        &upstream_origin,
-        "live/upstream/cam",
-        Route::default(),
-        upstream_broadcast.producer.consume(),
-    );
-
+    let _upstream_route = publish(&upstream_origin, LEARNED);
     let mut node = Server::spawn().await;
-    let learned = origin(NODE_HOP);
+    let table = origin(NODE_HOP);
     let (_to_upstream, _upstream_session) = tokio::join!(
         dial(
             &node.endpoint,
             upstream.endpoint.addr(),
-            learned.clone(),
+            table.clone().with_link(Link::Upstream),
             None
         ),
-        upstream.accept(upstream_origin.consume(), None),
+        upstream.accept(upstream_origin.consume(), None, None),
     );
-    let upstream_route = announced_route(&learned, "live/upstream/cam").await;
+    announced_route(&table, LEARNED).await;
 
-    // The node's own publications.
-    let everyone = TestBroadcast::start();
-    let peers = TestBroadcast::start();
-    let manual = TestBroadcast::start();
+    // The node's own publications, each created once in the one origin.
+    let _everyone = publish(&table, EVERYONE);
+    let _peers = publish(&table, PEERS);
+    let _manual = publish(&table, MANUAL);
 
-    // Bob's view: the public broadcast and the one whose audience names him.
-    // Carol's: the public one and the manual one offered to her alone.
-    let bob_view = origin(NODE_HOP);
-    let carol_view = origin(NODE_HOP);
-    let bob_public = serve(
-        &bob_view,
-        "live/node/everyone",
-        Route::default(),
-        everyone.producer.consume(),
-    );
-    let _bob_peers = serve(
-        &bob_view,
-        "live/node/peers",
-        Route::default(),
-        peers.producer.consume(),
-    );
-    let _carol_public = serve(
-        &carol_view,
-        "live/node/everyone",
-        Route::default(),
-        everyone.producer.consume(),
-    );
-    let _carol_manual = serve(
-        &carol_view,
-        "live/node/manual",
-        Route::default(),
-        manual.producer.consume(),
-    );
-
+    // Bob may see the public one and the one whose audience names him. Carol
+    // may see the public one and the manual one. Both grants also name the
+    // learned path, which the local view hides all the same.
+    let served = table.consume().local();
     let bob = endpoint().await;
     let bob_ingest = origin(BOB_HOP);
-    let (_bob_client, _bob_server) = tokio::join!(
+    let (_bob_client, bob_server) = tokio::join!(
         dial(&bob, node.endpoint.addr(), bob_ingest.clone(), None),
-        node.accept(bob_view.consume(), None),
+        node.accept(
+            served.clone(),
+            None,
+            Some(grant(&[EVERYONE, PEERS, LEARNED]))
+        ),
     );
     let carol = endpoint().await;
     let carol_ingest = origin(CAROL_HOP);
     let (_carol_client, _carol_server) = tokio::join!(
         dial(&carol, node.endpoint.addr(), carol_ingest.clone(), None),
-        node.accept(carol_view.consume(), None),
+        node.accept(served, None, Some(grant(&[EVERYONE, MANUAL, LEARNED]))),
     );
 
-    wait_for_paths(&bob_ingest, &["live/node/everyone", "live/node/peers"]).await;
-    wait_for_paths(&carol_ingest, &["live/node/everyone", "live/node/manual"]).await;
-    read_counter(&resolve(&bob_ingest, "live/node/peers").await).await;
-    read_counter(&resolve(&carol_ingest, "live/node/manual").await).await;
+    wait_for_paths(&bob_ingest, &[EVERYONE, PEERS]).await;
+    wait_for_paths(&carol_ingest, &[EVERYONE, MANUAL]).await;
+    let bob_everyone = resolve(&bob_ingest, EVERYONE).await;
+    let mut bob_reading = step(
+        "bob subscribes",
+        bob_everyone
+            .track("video")
+            .expect("track")
+            .subscribe(subscription()),
+    )
+    .await
+    .expect("subscribe");
+    read_counter(&resolve(&carol_ingest, MANUAL).await).await;
 
-    // A path Bob was never offered does not resolve for him: nothing covers it.
-    let refused = bob_ingest.consume().request("live/node/manual", None).await;
+    // A path outside Bob's grant does not resolve for him.
+    let refused = bob_ingest.consume().request(MANUAL, None).await;
+    assert!(refused.is_err(), "bob resolved a path outside his grant");
+
+    // Narrowing Bob's live session takes the public one from him, resetting
+    // what he reads there, and widening it gives him the manual one.
+    bob_server
+        .session
+        .auth()
+        .authorize(&grant(&[PEERS, MANUAL]));
+    let err = step("bob's read ends", async {
+        loop {
+            match bob_reading.recv_group().await {
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("bob's read finished instead of being reset"),
+                Err(err) => return err,
+            }
+        }
+    })
+    .await;
     assert!(
-        matches!(refused, Err(moq_net::Error::Unroutable)),
-        "{:?}",
-        refused.err()
+        matches!(
+            err,
+            moq_net::Error::Unauthorized
+                | moq_net::Error::Stream(moq_net::StreamError::Unauthorized)
+        ),
+        "bob's read ended with {err:?}"
     );
-
-    // Offers change on a running session: Bob loses the public broadcast (its
-    // publication was withdrawn from his view) and gains the forwarded one,
-    // with the upstream hop chain kept.
-    drop(bob_public);
-    let _forwarded = {
-        let learned = learned.clone();
-        let bob_view = bob_view.clone();
-        let route = Route::default().with_hops(upstream_route.hops.clone());
-        AbortOnDropHandle::new(tokio::spawn(async move {
-            let upstream = learned
-                .consume()
-                .request("live/upstream/cam", None)
-                .await
-                .expect("request upstream");
-            serve(&bob_view, "live/upstream/cam", route, upstream)
-                .await
-                .ok();
-        }))
-    };
-    wait_for_paths(&bob_ingest, &["live/node/peers", "live/upstream/cam"]).await;
-
-    let route = announced_route(&bob_ingest, "live/upstream/cam").await;
-    let hops: Vec<u64> = route.hops.iter().map(|hop| hop.id()).collect();
-    assert_eq!(
-        hops,
-        [UPSTREAM_HOP, NODE_HOP],
-        "the forwarded route keeps its origin first and gains the node's hop"
-    );
-    read_counter(&resolve(&bob_ingest, "live/upstream/cam").await).await;
+    wait_for_paths(&bob_ingest, &[MANUAL, PEERS]).await;
+    read_counter(&resolve(&bob_ingest, MANUAL).await).await;
 
     // Carol's session never saw any of Bob's changes.
-    wait_for_paths(&carol_ingest, &["live/node/everyone", "live/node/manual"]).await;
+    wait_for_paths(&carol_ingest, &[EVERYONE, MANUAL]).await;
 }
 
 /// A route table serves the cheaper of two routes, and moves to the other when it dies.
@@ -443,14 +369,8 @@ async fn a_route_table_fails_over_between_links() {
     const RELAY_COST: u64 = 10;
 
     let mut publisher = Server::spawn().await;
-    let broadcast = TestBroadcast::start();
     let published = origin(PUBLISHER_HOP);
-    let _route = serve(
-        &published,
-        "live/p/cam",
-        Route::default(),
-        broadcast.producer.consume(),
-    );
+    let _route = publish(&published, "live/p/cam");
 
     // The relay pulls from the publisher and offers everything it learned.
     let mut relay = Server::spawn().await;
@@ -463,7 +383,7 @@ async fn a_route_table_fails_over_between_links() {
                 relayed.clone(),
                 None
             ),
-            publisher.accept(published.consume(), None),
+            publisher.accept(published.consume(), None, None),
         )
     })
     .await;
@@ -493,7 +413,7 @@ async fn a_route_table_fails_over_between_links() {
                     .expect("relay handshake");
                 Session::new(session, driver)
             },
-            relay.accept(relayed.consume(), None),
+            relay.accept(relayed.consume(), None, None),
         )
     })
     .await;
@@ -505,7 +425,7 @@ async fn a_route_table_fails_over_between_links() {
                 table.clone().with_link(Link::Peer),
                 None
             ),
-            publisher.accept(published.consume(), None),
+            publisher.accept(published.consume(), None, None),
         )
     })
     .await;

@@ -57,7 +57,6 @@ publisher.
 | [`iroh-moq`](iroh-moq) | MoQ over iroh: one route table fed by direct sessions and relay links, publications, and grants |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`moq-ext-access`](moq-ext-access) | Access control: grants, session requests, and who sees a publication. No iroh dependency |
-| [`moq-ext-forward`](moq-ext-forward) | Serves a moq-net broadcast in one origin from a broadcast held elsewhere |
 | [`moq-ext-adaptive`](moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines |
 | [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording. No iroh dependency |
 | [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |

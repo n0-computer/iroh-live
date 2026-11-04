@@ -5,8 +5,8 @@ mod common;
 use std::{collections::BTreeSet, time::Duration};
 
 use common::{
-    Node, TIMEOUT, TestBroadcast, announced, ends, read_counter, reading, retracted, stays_pending,
-    step,
+    Node, TIMEOUT, announced, ends, publish, publish_from, read_counter, reading, retracted,
+    stays_pending, step,
 };
 use iroh_moq::{Admission, Audience, ConnectOptions, Error, Grant, LinkKind, MoqConfig, Reach};
 use moq_net::{Pattern, Patterns};
@@ -21,11 +21,7 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
 
-    let broadcast = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
-        .expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
         bob.moq
@@ -48,11 +44,7 @@ async fn a_path_resolves_by_dialing_its_publisher() {
 #[traced_test]
 async fn an_own_publication_resolves_locally() {
     let alice = Node::spawn().await;
-    let broadcast = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
-        .expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
         alice
@@ -72,30 +64,18 @@ async fn an_own_publication_resolves_locally() {
 #[traced_test]
 async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     let alice = Node::spawn().await;
-    let first = TestBroadcast::start();
-    alice
-        .moq
-        .publish(alice.path("cam"), &first.producer, Audience::Everyone)
-        .expect("publish");
-    let second = TestBroadcast::start();
-    let err = alice
-        .moq
-        .publish(alice.path("cam"), &second.producer, Audience::Everyone)
+    let first = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let err = publish(&alice.moq, alice.path("cam"), Audience::Everyone)
         .expect_err("a second publication at one path");
     assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
 
     // A broadcast that ended frees its path at once, before the node has
     // noticed on its own.
-    first.producer.close();
-    alice
-        .moq
-        .publish(alice.path("cam"), &second.producer, Audience::Everyone)
+    first.broadcast().close();
+    let _second = publish(&alice.moq, alice.path("cam"), Audience::Everyone)
         .expect("publish over an ended broadcast");
 
-    let err = alice
-        .moq
-        .publish("", &second.producer, Audience::Everyone)
-        .expect_err("an empty path");
+    let err = publish(&alice.moq, "", Audience::Everyone).expect_err("an empty path");
     assert!(matches!(err, Error::InvalidPath { .. }), "{err:#}");
     alice.shutdown().await;
 }
@@ -112,15 +92,12 @@ async fn a_peers_audience_follows_its_set() {
     let carol = Node::spawn().await;
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
-    let broadcast = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(
-            alice.path("cam"),
-            &broadcast.producer,
-            Audience::Peers(members.clone()),
-        )
-        .expect("publish");
+    let publication = publish(
+        &alice.moq,
+        alice.path("cam"),
+        Audience::Peers(members.clone()),
+    )
+    .expect("publish");
 
     let for_bob = step(
         "bob",
@@ -188,12 +165,9 @@ async fn offers_show_in_the_route_table() {
     let carol = Node::spawn().await;
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
-    let broadcast = TestBroadcast::start();
     let path = alice.path("cam");
-    let _publication = alice
-        .moq
-        .publish(&path, &broadcast.producer, Audience::Peers(members.clone()))
-        .expect("publish");
+    let _publication =
+        publish(&alice.moq, &path, Audience::Peers(members.clone())).expect("publish");
     let _session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
@@ -225,11 +199,7 @@ async fn offers_show_in_the_route_table() {
 async fn unpublishing_withdraws_the_path() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
-    let broadcast = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
-        .expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
         bob.moq
@@ -259,11 +229,7 @@ async fn unpublishing_withdraws_the_path() {
 async fn closing_a_session_cuts_the_peer_off() {
     let alice = Node::spawn().await;
     let bob = Node::spawn().await;
-    let broadcast = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
-        .expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
     let subscription = step(
         "subscribe",
         bob.moq
@@ -293,22 +259,8 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let bob = Node::spawn().await;
     let mallory = Node::spawn().await;
 
-    let public = TestBroadcast::start();
-    let public = (
-        alice
-            .moq
-            .publish(alice.path("public"), &public.producer, Audience::Everyone)
-            .expect("publish"),
-        public,
-    );
-    let secret = TestBroadcast::start();
-    let secret = (
-        alice
-            .moq
-            .publish(alice.path("secret"), &secret.producer, Audience::Everyone)
-            .expect("publish"),
-        secret,
-    );
+    let public = publish(&alice.moq, alice.path("public"), Audience::Everyone).expect("publish");
+    let secret = publish(&alice.moq, alice.path("secret"), Audience::Everyone).expect("publish");
 
     let alice_id = alice.id();
     let moq = alice.moq.clone();
@@ -342,8 +294,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     .expect("admitted");
     let subscription = step(
         "bob subscribes",
-        bob.moq
-            .subscribe(public.0.path(), Reach::Direct(alice.id())),
+        bob.moq.subscribe(public.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("the offered publication");
@@ -354,7 +305,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     stays_pending(
         "bob resolved the secret one",
         QUIET,
-        session.subscribe(secret.0.path()),
+        session.subscribe(secret.path()),
     )
     .await;
 
@@ -389,7 +340,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
         "mallory subscribes",
         mallory
             .moq
-            .subscribe(public.0.path(), Reach::Direct(alice.id())),
+            .subscribe(public.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect_err("mallory resolved a broadcast without a token");
@@ -421,20 +372,16 @@ async fn a_peer_cannot_route_another_publishers_path() {
     let bob = Node::spawn().await;
     let mallory = Node::spawn().await;
 
-    let real = TestBroadcast::start();
-    let publication = alice
-        .moq
-        .publish(alice.path("cam"), &real.producer, Audience::Everyone)
-        .expect("publish");
-    let forged = TestBroadcast::starting_at(FORGED);
-    let _forged = mallory
-        .moq
-        .publish(publication.path(), &forged.producer, Audience::Everyone)
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let _forged = publish_from(&mallory.moq, publication.path(), Audience::Everyone, FORGED)
         .expect("publish at alice's path");
-    let own = mallory
-        .moq
-        .publish(mallory.path("cam"), &forged.producer, Audience::Everyone)
-        .expect("publish");
+    let own = publish_from(
+        &mallory.moq,
+        mallory.path("cam"),
+        Audience::Everyone,
+        FORGED,
+    )
+    .expect("publish");
     step("mallory connects", mallory.moq.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
@@ -494,11 +441,7 @@ async fn a_subscriber_started_first_gets_the_named_path() {
         async move { moq.subscribe(path, Reach::Direct(publisher)).await }
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let broadcast = TestBroadcast::start();
-    let _publication = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
-        .expect("publish");
+    let _publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
 
     let subscription = step("subscribe", subscribing)
         .await
@@ -582,10 +525,7 @@ async fn the_router_shuts_the_node_down() {
     step("router shutdown", alice.router.shutdown())
         .await
         .expect("router");
-    let broadcast = TestBroadcast::start();
-    let err = alice
-        .moq
-        .publish(alice.path("cam"), &broadcast.producer, Audience::Everyone)
+    let err = publish(&alice.moq, alice.path("cam"), Audience::Everyone)
         .expect_err("publish after the router shut down");
     assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
     alice.shutdown().await;
@@ -601,15 +541,8 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     })
     .await;
     let bob = Node::spawn().await;
-    let (allowed, other) = (TestBroadcast::start(), TestBroadcast::start());
-    let allowed = bob
-        .moq
-        .publish(bob.path("allowed"), &allowed.producer, Audience::Everyone)
-        .expect("publish");
-    let other = bob
-        .moq
-        .publish(bob.path("other"), &other.producer, Audience::Everyone)
-        .expect("publish");
+    let allowed = publish(&bob.moq, bob.path("allowed"), Audience::Everyone).expect("publish");
+    let other = publish(&bob.moq, bob.path("other"), Audience::Everyone).expect("publish");
 
     let moq = alice.moq.clone();
     let within: Pattern = allowed.path().as_str().parse().expect("pattern");
@@ -655,41 +588,243 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     bob.shutdown().await;
 }
 
-/// The route table carries the node's public publications and no other.
+/// The route table serves every publication of the node, whatever its audience.
+///
+/// A publication is created in the table, so a local reader resolves it with
+/// no link involved. Audiences bound peers, not this node, so a private
+/// publication resolves locally too.
 #[tokio::test]
 #[traced_test]
-async fn the_route_table_carries_public_publications_only() {
+async fn the_route_table_serves_every_publication() {
     let alice = Node::spawn().await;
     let origin = alice.moq.origin();
-    let (public, secret) = (TestBroadcast::start(), TestBroadcast::start());
-    let public = alice
-        .moq
-        .publish(alice.path("public"), &public.producer, Audience::Everyone)
-        .expect("publish");
-    let secret = alice
-        .moq
-        .publish(
-            alice.path("secret"),
-            &secret.producer,
-            Audience::Peers(Watchable::new(BTreeSet::new())),
-        )
-        .expect("publish");
+    let public = publish(&alice.moq, alice.path("public"), Audience::Everyone).expect("publish");
+    let nobody = Audience::Peers(Watchable::new(BTreeSet::new()));
+    let secret = publish(&alice.moq, alice.path("secret"), nobody).expect("publish");
 
-    let served = step(
-        "the table serves the public one",
-        origin.request(public.path(), None),
-    )
-    .await
-    .expect("resolve");
-    read_counter(&served).await;
-    let unrouted = step(
-        "the table does not serve the private one",
-        origin.request(secret.path(), None),
-    )
-    .await;
-    assert!(unrouted.is_err(), "a private publication reached the table");
+    for publication in [&public, &secret] {
+        let served = step(
+            "the table serves it",
+            origin.request(publication.path(), None),
+        )
+        .await
+        .expect("resolve");
+        read_counter(&served).await;
+    }
+
+    // Unpublishing takes it out of the table.
+    secret.unpublish();
+    let unrouted = step("an unpublished path", origin.request(secret.path(), None)).await;
+    assert!(unrouted.is_err(), "an unpublished path still resolves");
 
     alice.shutdown().await;
+}
+
+/// Reads groups from `subscriber` until its track ends, and returns why.
+async fn reset(subscriber: &mut moq_net::track::Subscriber) -> moq_net::Error {
+    step("the track ends", async {
+        loop {
+            match subscriber.recv_group().await {
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("the track finished instead of being reset"),
+                Err(err) => return err,
+            }
+        }
+    })
+    .await
+}
+
+/// Reports whether `err` is moq's refusal of a path the grant no longer covers.
+fn unauthorized(err: &moq_net::Error) -> bool {
+    matches!(
+        err,
+        moq_net::Error::Unauthorized | moq_net::Error::Stream(moq_net::StreamError::Unauthorized)
+    )
+}
+
+/// A `Peers` publication reaches its set on sessions this node dialed, too.
+///
+/// The node authorizes a session before its handshake, on either side, so a
+/// dialed peer outside the set never sees the path, and one inside does.
+#[tokio::test]
+#[traced_test]
+async fn a_peers_audience_holds_on_a_dialed_session() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+    let carol = Node::spawn().await;
+
+    let members = Watchable::new(BTreeSet::from([bob.id()]));
+    let publication =
+        publish(&alice.moq, alice.path("cam"), Audience::Peers(members)).expect("publish");
+    let public = publish(&alice.moq, alice.path("public"), Audience::Everyone).expect("publish");
+    let path = publication.path().as_str();
+
+    // Alice dials both, so she is the client on each session.
+    let to_bob = step("alice dials bob", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("connect");
+    let to_carol = step(
+        "alice dials carol",
+        alice.moq.connect(carol.endpoint.addr()),
+    )
+    .await
+    .expect("connect");
+    assert!(to_bob.dialed() && to_carol.dialed());
+
+    announced(&mut bob.moq.origin().announced(), path).await;
+    let from_alice = step("bob sees alice", session_with(&bob, alice.id())).await;
+    let subscription = step("bob subscribes", from_alice.subscribe(publication.path()))
+        .await
+        .expect("bob is in the set");
+    read_counter(&subscription.as_moq()).await;
+
+    // Carol sees the public one, and never the one for bob.
+    let mut carol_table = carol.moq.origin().announced();
+    announced(&mut carol_table, public.path().as_str()).await;
+    let from_alice = step("carol sees alice", session_with(&carol, alice.id())).await;
+    stays_pending(
+        "carol resolved a path whose audience leaves her out",
+        QUIET,
+        from_alice.subscribe(publication.path()),
+    )
+    .await;
+    let refused = carol.moq.origin().request(publication.path(), None).await;
+    assert!(refused.is_err(), "carol's table routes bob's path");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+/// Changing a `Peers` set re-authorizes live sessions in both directions.
+///
+/// A peer taken out loses the path, and what it reads there is reset with
+/// `Unauthorized`. A peer put in gets the path on the session it already has.
+#[tokio::test]
+#[traced_test]
+async fn a_changed_audience_retracts_and_grants_live() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+    let carol = Node::spawn().await;
+
+    let members = Watchable::new(BTreeSet::from([bob.id()]));
+    let publication = publish(
+        &alice.moq,
+        alice.path("cam"),
+        Audience::Peers(members.clone()),
+    )
+    .expect("publish");
+    let path = publication.path().as_str();
+
+    let for_bob = step(
+        "bob subscribes",
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("bob is in the set");
+    let mut bob_reading = reading(&for_bob.as_moq()).await;
+    let carol_session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    let mut bob_table = bob.moq.origin().announced();
+    announced(&mut bob_table, path).await;
+
+    // Swap bob for carol.
+    members.set(BTreeSet::from([carol.id()])).ok();
+    let err = reset(&mut bob_reading).await;
+    assert!(unauthorized(&err), "bob's read ended with {err:#}");
+    retracted(&mut bob_table, path).await;
+
+    let for_carol = step(
+        "carol subscribes",
+        carol_session.subscribe(publication.path()),
+    )
+    .await
+    .expect("carol was added");
+    read_counter(&for_carol.as_moq()).await;
+
+    // The audience can change wholesale, too.
+    let mut carol_reading = reading(&for_carol.as_moq()).await;
+    publication.set_audience(Audience::Peers(Watchable::new(BTreeSet::new())));
+    let err = reset(&mut carol_reading).await;
+    assert!(unauthorized(&err), "carol's read ended with {err:#}");
+    publication.set_audience(Audience::Everyone);
+    let again = step(
+        "bob subscribes once everyone may",
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("everyone may see it");
+    read_counter(&again.as_moq()).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+/// A peer reads the publisher's broadcast through its session, with nothing in between.
+///
+/// The publisher's track sees the peer's subscription as soon as the peer
+/// asks, and the peer reads the groups the publisher wrote, sequence for
+/// sequence.
+#[tokio::test]
+#[traced_test]
+async fn a_peer_reads_the_publishers_own_broadcast() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+
+    let publication = alice
+        .moq
+        .publish(alice.path("cam"), Audience::Everyone)
+        .expect("publish");
+    let mut track = publication
+        .broadcast()
+        .create_track("video", moq_net::track::Info::default())
+        .expect("create track");
+    let subscription = step(
+        "bob subscribes",
+        bob.moq
+            .subscribe(publication.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
+    let mut subscriber = step(
+        "bob subscribes to the track",
+        subscription
+            .as_moq()
+            .track("video")
+            .expect("track")
+            .subscribe(common::subscription()),
+    )
+    .await
+    .expect("subscribe to the track");
+    step("alice's track sees bob", async {
+        while track.subscription().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    for n in 0..3u8 {
+        track
+            .write_frame(None, moq_net::bytes::Bytes::from(vec![n]))
+            .expect("write");
+        let mut group = step("a group", subscriber.recv_group())
+            .await
+            .expect("track failed")
+            .expect("track ended");
+        let frame = step("a frame", group.read_frame())
+            .await
+            .expect("group failed")
+            .expect("a frame");
+        assert_eq!(frame.payload.as_ref(), [n]);
+        assert_eq!(group.sequence, u64::from(n), "group sequence");
+    }
+
+    alice.shutdown().await;
+    bob.shutdown().await;
 }
 
 /// A grant that lets every peer publish anywhere.
@@ -709,11 +844,7 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     let bob = Node::spawn().await;
     let carol = Node::spawn().await;
 
-    let broadcast = TestBroadcast::start();
-    let publication = carol
-        .moq
-        .publish("shared/cam", &broadcast.producer, Audience::Everyone)
-        .expect("publish");
+    let publication = publish(&carol.moq, "shared/cam", Audience::Everyone).expect("publish");
     step("bob connects", bob.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");

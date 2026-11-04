@@ -4,7 +4,9 @@
 //! - [`SessionRequest`]: what a peer asked for when it opened a session.
 //! - [`Audience`]: who may see a publication, generic over the peer id.
 //! - [`AudienceKind`]: an [`Audience`] as a registry keeps it, the current set.
-//! - [`visible`]: whether a publication belongs on a link, given a [`LinkRole`].
+//! - [`visible_paths`]: the paths a link may see, given its [`LinkRole`]. A
+//!   node hands them to moq as the subscribe half of the link's grant, and moq
+//!   enforces it on the live session.
 //!
 //! The peer id is any type that implements [`PeerId`], such as an iroh
 //! endpoint id.
@@ -182,14 +184,32 @@ pub enum LinkRole {
     },
 }
 
-/// Reports whether a publication at `path` for `audience` belongs on a link.
+/// Returns the exact paths of `publications` a link may see, as patterns.
 ///
-/// Offered when the link's `grant` covers the path and the audience admits
-/// the link. Relays see `Everyone` publications only when `public`, and never a
-/// `Peers` one, which a relay would forward to anyone. A direct link is in a
-/// `Peers` audience when its `remote` is in the set.
+/// A publication is visible when the link's `grant` covers its path and its
+/// audience admits the link. A relay sees `Everyone` publications only when
+/// `public`, and never a `Peers` one, which a relay would forward to anyone. A
+/// direct link is in a `Peers` audience when its `remote` is in the set.
+///
+/// Each path is a literal pattern, so nothing beside the listed publications
+/// matches: not a path below one, and not a route the node learned from
+/// another link. A path no pattern can spell is left out.
 #[must_use]
-pub fn visible<P: PeerId>(
+pub fn visible_paths<'a, P: PeerId>(
+    publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,
+    grant: &Grant,
+    role: LinkRole,
+    remote: Option<&P>,
+) -> Patterns {
+    publications
+        .into_iter()
+        .filter(|(path, audience)| visible(path, audience, grant, role, remote))
+        .filter_map(|(path, _)| Pattern::literal(path).ok())
+        .collect()
+}
+
+/// Reports whether a publication at `path` for `audience` belongs on a link.
+fn visible<P: PeerId>(
     path: &str,
     audience: &AudienceKind<P>,
     grant: &Grant,
@@ -282,5 +302,38 @@ mod tests {
             publish: Patterns::new(),
         };
         assert!(!visible("p", &everyone, &none, direct, Some(&a)));
+    }
+
+    #[test]
+    fn visible_paths_list_exactly_what_a_link_sees() {
+        let everyone = AudienceKind::<String>::Everyone;
+        let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
+        let publications = [("live/x/public", &everyone), ("live/x/secret", &peers)];
+        let grant = Grant::everything();
+        let (a, b) = ("a".to_string(), "b".to_string());
+
+        let for_a = visible_paths(publications, &grant, LinkRole::Direct, Some(&a));
+        assert!(for_a.matches("live/x/public"));
+        assert!(for_a.matches("live/x/secret"));
+        assert!(
+            !for_a.matches("live/x/public/below"),
+            "a literal, not a subtree"
+        );
+        assert!(
+            !for_a.matches("live/y/learned"),
+            "a path nobody published here"
+        );
+
+        let for_b = visible_paths(publications, &grant, LinkRole::Direct, Some(&b));
+        assert!(for_b.matches("live/x/public"));
+        assert!(!for_b.matches("live/x/secret"));
+
+        let public = LinkRole::Relay { public: true };
+        let relay = visible_paths(publications, &grant, public, None);
+        assert!(relay.matches("live/x/public"));
+        assert!(!relay.matches("live/x/secret"));
+
+        let private = LinkRole::Relay { public: false };
+        assert!(visible_paths(publications, &grant, private, None).is_empty());
     }
 }
