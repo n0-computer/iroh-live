@@ -328,6 +328,10 @@ impl LocalBroadcast {
 
     /// Encodes `source` as the broadcast's audio, replacing the current audio.
     ///
+    /// A microphone opens when the publication starts. If it fails then or
+    /// later, the audio slot shows the failure in [`status`](Self::status) and
+    /// stays failed until the audio is set again.
+    ///
     /// # Errors
     ///
     /// Fails for an invalid encoding, or with [`Error::Closed`] after
