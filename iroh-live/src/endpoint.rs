@@ -30,6 +30,7 @@ pub enum Mdns {
     Off,
 }
 
+// TODO: rename to `EndpointConfig` (deferred: ~25 call sites across four repos).
 /// An endpoint with [`MoqPreset`], a key and mDNS.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointOptions {
