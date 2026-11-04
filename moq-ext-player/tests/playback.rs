@@ -597,6 +597,27 @@ async fn audio_plays_through_a_null_output() {
     assert_eq!(player.status().borrow().audio, SlotState::Running);
 }
 
+/// Closing the broadcast ends the player's audio.
+#[tokio::test]
+async fn closing_the_broadcast_ends_the_audio() {
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_audio(
+            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioEncoding::voice(),
+        )
+        .expect("a valid encoding");
+    let player = local(&broadcast)
+        .play(PlayerConfig {
+            audio: Some(AudioTarget::null()),
+            ..PlayerConfig::default()
+        })
+        .expect("valid");
+    until(player.status(), |status| status.audio == SlotState::Running).await;
+    broadcast.close();
+    until(player.status(), |status| status.audio == SlotState::Ended).await;
+}
+
 /// A broadcast with only audio ends the player's video.
 #[tokio::test]
 async fn an_audio_only_broadcast_ends_the_video() {
