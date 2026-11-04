@@ -22,7 +22,7 @@ use std::{
 
 /// How long a frame still has to wait before it is due.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Delay {
+enum Delay {
     /// The frame is due now.
     Now,
     /// The frame is due after this long.
@@ -98,14 +98,14 @@ impl PlayoutClock {
     pub(crate) fn received(&self, timestamp: Duration) {
         let now_ms = self.now_ms();
         let timestamp_ms = timestamp.as_millis() as i64;
-        let ref_val = now_ms - timestamp_ms;
+        let reference = now_ms - timestamp_ms;
 
         let mut state = self.inner.state.lock().expect("poisoned");
-        if state.reference.is_some_and(|current| ref_val >= current) {
+        if state.reference.is_some_and(|current| reference >= current) {
             return;
         }
 
-        state.reference = Some(ref_val);
+        state.reference = Some(reference);
         self.inner.changed.notify_waiters();
     }
 
@@ -152,9 +152,8 @@ impl PlayoutClock {
 
     /// Returns how long the frame stamped `timestamp` still has to wait.
     ///
-    /// This is the arithmetic behind [`wait_async`](Self::wait_async), for a
-    /// caller that drives its own timer.
-    pub(crate) fn delay(&self, timestamp: Duration) -> Delay {
+    /// This is the arithmetic behind [`wait_async`](Self::wait_async).
+    fn delay(&self, timestamp: Duration) -> Delay {
         let timestamp_ms = timestamp.as_millis() as i64;
         let state = self.inner.state.lock().expect("poisoned");
 
@@ -252,7 +251,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn received_tracks_minimum_reference() {
+    fn the_reference_only_moves_earlier() {
         let sync = PlayoutClock::new(Duration::from_millis(100));
 
         // Wait a moment so base.elapsed() > 0.
@@ -262,7 +261,7 @@ mod tests {
         {
             let state = sync.inner.state.lock().expect("poisoned");
             assert!(state.reference.is_some());
-            let first_ref = state.reference.unwrap();
+            let first_ref = state.reference.expect("checked above");
             assert!(first_ref > 0, "reference should be positive for pts=0");
             drop(state);
         }
@@ -290,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn latency_computation() {
+    fn the_latency_is_the_jitter_plus_the_buffered_audio() {
         let sync = PlayoutClock::new(Duration::from_millis(50));
         assert_eq!(sync.latency(), Duration::from_millis(50));
 
@@ -369,7 +368,7 @@ mod tests {
         // Push the reference back far enough that the frame is due now.
         sync.received(Duration::from_millis(999_999));
 
-        let elapsed = handle.await.unwrap();
+        let elapsed = handle.await.expect("the waiter does not panic");
         assert!(
             elapsed < Duration::from_secs(1),
             "expected an early wake, well under the 2s jitter, got {elapsed:?}"
@@ -392,7 +391,7 @@ mod tests {
             !tokio::time::timeout(Duration::from_secs(1), handle)
                 .await
                 .expect("close should wake the waiter")
-                .unwrap(),
+                .expect("the waiter does not panic"),
             "a closed clock reports that the frame should not render",
         );
     }

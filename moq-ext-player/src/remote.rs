@@ -93,8 +93,8 @@ impl RemoteBroadcast {
     /// Starts reading the catalog of `broadcast`.
     ///
     /// The remote broadcast ends when `broadcast` ends. This reads a broadcast
-    /// that lives in the same process too: pass it the consumer a publisher
-    /// hands out through `moq_net::Consume`.
+    /// that lives in the same process too: pass it
+    /// `moq_ext_publisher::LocalBroadcast::consume`.
     ///
     /// # Panics
     ///
@@ -172,6 +172,10 @@ impl RemoteBroadcast {
     }
 
     /// Returns the catalog, `None` until the first arrives.
+    ///
+    /// A publisher may announce its broadcast before it creates the catalog
+    /// track. The catalog is then asked for again, with a growing wait, until
+    /// it appears or the broadcast closes.
     ///
     /// A borrow of the receiver blocks the next catalog update, so keep it
     /// short.
