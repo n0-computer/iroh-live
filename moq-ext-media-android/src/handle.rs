@@ -12,6 +12,7 @@ use std::{
 ///
 /// The `Arc` is leaked. Use [`from_i64`] to borrow it and [`take_i64`] to take
 /// it back.
+#[must_use]
 pub fn to_i64<T>(handle: Arc<Mutex<T>>) -> i64 {
     Arc::into_raw(handle) as i64
 }
@@ -23,6 +24,9 @@ pub fn to_i64<T>(handle: Arc<Mutex<T>>) -> i64 {
 /// `handle` must come from [`to_i64`] and must not have been passed to
 /// [`take_i64`] yet.
 pub unsafe fn from_i64<T>(handle: i64) -> Arc<Mutex<T>> {
+    // SAFETY: The caller guarantees `handle` is a pointer from `Arc::into_raw`
+    // whose reference is still leaked. `ManuallyDrop` keeps that reference
+    // leaked, so the handle stays valid after the clone.
     let arc = ManuallyDrop::new(unsafe { Arc::from_raw(handle as *const Mutex<T>) });
     Arc::clone(&arc)
 }
@@ -33,5 +37,7 @@ pub unsafe fn from_i64<T>(handle: i64) -> Arc<Mutex<T>> {
 ///
 /// `handle` must come from [`to_i64`]. It must not be used after this call.
 pub unsafe fn take_i64<T>(handle: i64) -> Arc<Mutex<T>> {
+    // SAFETY: The caller guarantees `handle` is a pointer from `Arc::into_raw`
+    // whose leaked reference has not been taken back yet.
     unsafe { Arc::from_raw(handle as *const Mutex<T>) }
 }
