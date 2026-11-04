@@ -7,6 +7,7 @@ use std::ffi::c_void;
 use glow::HasContext;
 use khronos_egl as egl_api;
 use n0_error::{Result, StdResultExt, anyerr, bail_any};
+use tracing::{debug, info, warn};
 
 use crate::egl::{self, Egl, Extensions};
 
@@ -109,15 +110,22 @@ impl AndroidRenderer {
     /// Creates a renderer that draws to `native_window`.
     ///
     /// `native_window` comes from `ANativeWindow_fromSurface`. When this
-    /// returns, the new EGL context is current on the calling thread. Fails if
-    /// any EGL or GL setup step fails.
+    /// returns, the new EGL context is current on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Fails if any EGL or GL setup step fails, such as a missing EGL library,
+    /// no matching config, or a shader that does not compile.
     ///
     /// # Safety
     ///
     /// `native_window` must be a valid `ANativeWindow*`.
     pub unsafe fn new(native_window: *mut c_void) -> Result<Self> {
+        // SAFETY: Loading runs the initializers of the system's libEGL, which
+        // we trust.
         let egl = unsafe { Egl::load_required().std_context("load EGL")? };
 
+        // SAFETY: `DEFAULT_DISPLAY` is always a valid native display.
         let egl_display = unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }
             .std_context("eglGetDisplay failed")?;
         egl.initialize(egl_display).std_context("eglInitialize")?;
@@ -156,6 +164,7 @@ impl AndroidRenderer {
             )
             .std_context("eglCreateContext")?;
 
+        // SAFETY: The caller guarantees `native_window`.
         let egl_surface = unsafe {
             egl.create_window_surface(
                 egl_display,
@@ -174,6 +183,8 @@ impl AndroidRenderer {
         )
         .std_context("eglMakeCurrent")?;
 
+        // SAFETY: The context was made current on this thread just above. It
+        // stays current for every GL call in the rest of this function.
         let gl = unsafe { egl::create_glow_context(&egl) };
         let extensions = Extensions::load(&egl);
 
@@ -211,6 +222,8 @@ impl AndroidRenderer {
 
         // One oversized triangle covers the whole viewport.
         let vertices: [f32; 6] = [0.0, 0.0, 2.0, 0.0, 0.0, 2.0];
+        // SAFETY: The slice covers exactly the bytes of `vertices`, which
+        // outlives it, and `u8` has no alignment requirement.
         let vert_bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 vertices.as_ptr() as *const u8,
@@ -230,7 +243,7 @@ impl AndroidRenderer {
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
         }
 
-        tracing::info!(
+        info!(
             renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
             "AndroidRenderer ready"
         );
@@ -279,10 +292,12 @@ impl AndroidRenderer {
         let Some(extensions) = &self.extensions else {
             return;
         };
+        // SAFETY: The caller guarantees the buffer and a current context, for
+        // this and every EGL and GL call below.
         let Some(client_buffer) =
             (unsafe { extensions.get_native_client_buffer(buffer_ptr as *const c_void) })
         else {
-            tracing::warn!("eglGetNativeClientBufferANDROID failed");
+            warn!("eglGetNativeClientBufferANDROID failed");
             return;
         };
 
@@ -295,7 +310,7 @@ impl AndroidRenderer {
                 attrs.as_ptr(),
             )
         }) else {
-            tracing::warn!("eglCreateImageKHR failed");
+            warn!("eglCreateImageKHR failed");
             return;
         };
 
@@ -372,7 +387,7 @@ impl AndroidRenderer {
         if y_upload.len() < (width * height) as usize
             || uv_upload.len() < (uv_row_bytes * uv_h) as usize
         {
-            tracing::warn!(
+            warn!(
                 width,
                 height,
                 y_len = y_upload.len(),
@@ -382,6 +397,9 @@ impl AndroidRenderer {
             return;
         }
 
+        // SAFETY: The caller guarantees a current context, for this and the
+        // GL calls below. Each plane holds at least the bytes the upload reads,
+        // as checked above.
         unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
@@ -448,6 +466,7 @@ impl AndroidRenderer {
             _ => (video_w, video_h),
         };
         let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
+        // SAFETY: The caller guarantees a current context.
         unsafe {
             self.gl.viewport(0, 0, surface_w, surface_h);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
@@ -466,10 +485,13 @@ impl AndroidRenderer {
     }
 
     /// Presents the drawn frame by swapping the EGL buffers.
+    ///
+    /// A failed swap, such as on a surface Android already destroyed, is
+    /// logged at debug and drops the frame.
     pub fn swap_buffers(&self) {
-        self.egl
-            .swap_buffers(self.egl_display, self.egl_surface)
-            .ok();
+        if let Err(err) = self.egl.swap_buffers(self.egl_display, self.egl_surface) {
+            debug!(error = %err, "eglSwapBuffers failed, dropping the frame");
+        }
     }
 
     /// Makes the EGL context current on the calling thread.
@@ -477,36 +499,41 @@ impl AndroidRenderer {
     /// Call it before drawing. A Kotlin coroutine can resume on a different
     /// thread than the one that last drew.
     pub fn make_current(&self) {
-        self.egl
-            .make_current(
-                self.egl_display,
-                Some(self.egl_surface),
-                Some(self.egl_surface),
-                Some(self.egl_context),
-            )
-            .ok();
+        if let Err(err) = self.egl.make_current(
+            self.egl_display,
+            Some(self.egl_surface),
+            Some(self.egl_surface),
+            Some(self.egl_context),
+        ) {
+            warn!(error = %err, "eglMakeCurrent failed, so the next draws go nowhere");
+        }
     }
 
     /// Destroys the EGL surface and context.
     ///
-    /// The EGL display stays initialized.
+    /// The EGL display stays initialized. A step that fails is logged at debug,
+    /// and the teardown goes on.
     pub fn teardown(&self) {
-        self.egl
-            .make_current(self.egl_display, None, None, None)
-            .ok();
-        self.egl
-            .destroy_surface(self.egl_display, self.egl_surface)
-            .ok();
-        self.egl
-            .destroy_context(self.egl_display, self.egl_context)
-            .ok();
-        tracing::info!("EGL teardown complete");
+        if let Err(err) = self.egl.make_current(self.egl_display, None, None, None) {
+            debug!(error = %err, "releasing the EGL context failed");
+        }
+        if let Err(err) = self.egl.destroy_surface(self.egl_display, self.egl_surface) {
+            debug!(error = %err, "destroying the EGL surface failed");
+        }
+        if let Err(err) = self.egl.destroy_context(self.egl_display, self.egl_context) {
+            debug!(error = %err, "destroying the EGL context failed");
+        }
+        info!("EGL teardown complete");
     }
 }
 
 /// Creates a texture with linear filtering and edge clamping.
+///
+/// The EGL context behind `gl` must be current on the calling thread.
 fn create_tex(gl: &glow::Context, target: u32) -> Result<glow::Texture> {
+    // SAFETY: Only `AndroidRenderer::new` calls this, with its context current.
     let texture = unsafe { gl.create_texture() }.map_err(|e| anyerr!(e))?;
+    // SAFETY: As above.
     unsafe {
         gl.bind_texture(target, Some(texture));
         gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
@@ -554,7 +581,12 @@ fn strip_stride(data: &[u8], row_bytes: usize, stride: usize, rows: usize) -> Ve
     out
 }
 
+/// Compiles one shader of `kind` from `source`.
+///
+/// The EGL context behind `gl` must be current on the calling thread. The GL
+/// calls below rely on that, since only `AndroidRenderer::new` calls this.
 fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
+    // SAFETY: A current context, as above, for every call in this function.
     let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyerr!(e))?;
     unsafe { gl.shader_source(shader, source) };
     unsafe { gl.compile_shader(shader) };
@@ -566,7 +598,12 @@ fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::S
     Ok(shader)
 }
 
+/// Links a program from the vertex shader `vs` and the fragment shader `fs`.
+///
+/// The EGL context behind `gl` must be current on the calling thread, as for
+/// [`compile_shader`].
 fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Result<glow::Program> {
+    // SAFETY: A current context, as above, for every call in this function.
     let program = unsafe { gl.create_program() }.map_err(|e| anyerr!(e))?;
     unsafe {
         gl.attach_shader(program, vs);

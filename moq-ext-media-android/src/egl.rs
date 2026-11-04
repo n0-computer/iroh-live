@@ -14,6 +14,7 @@
 use std::ffi::c_void;
 
 use khronos_egl as egl_api;
+use tracing::warn;
 
 /// The EGL instance the renderer loads.
 pub(crate) type Egl = egl_api::DynamicInstance<egl_api::EGL1_4>;
@@ -41,7 +42,7 @@ pub(crate) struct Extensions {
 unsafe fn resolve<T: Copy>(egl: &Egl, name: &str) -> Option<T> {
     let function = egl.get_proc_address(name);
     if function.is_none() {
-        tracing::warn!(name, "EGL extension function not available");
+        warn!(name, "EGL extension function not available");
     }
     // SAFETY: Android's "system" ABI is "C", both are function pointers of the
     // same size, and the caller guarantees the signature.
@@ -83,6 +84,8 @@ impl Extensions {
         &self,
         hardware_buffer: *const c_void,
     ) -> Option<*mut c_void> {
+        // SAFETY: The pointer was resolved for this signature, and the caller
+        // guarantees the buffer.
         let result = unsafe { (self.get_native_client_buffer)(hardware_buffer) };
         (!result.is_null()).then_some(result)
     }
@@ -104,6 +107,8 @@ impl Extensions {
         attrs: *const i32,
     ) -> Option<*mut c_void> {
         let no_context = std::ptr::null_mut();
+        // SAFETY: The pointer was resolved for this signature, and the caller
+        // guarantees the display, the buffer and the attribute list.
         let result =
             unsafe { (self.create_image)(display, no_context, target, client_buffer, attrs) };
         (!result.is_null()).then_some(result)
@@ -115,6 +120,8 @@ impl Extensions {
     ///
     /// `display` must be a valid `EGLDisplay`. `image` must be a valid `EGLImage`.
     pub(crate) unsafe fn destroy_image(&self, display: *mut c_void, image: *mut c_void) {
+        // SAFETY: The pointer was resolved for this signature, and the caller
+        // guarantees the display and the image.
         unsafe { (self.destroy_image)(display, image) };
     }
 
@@ -125,6 +132,8 @@ impl Extensions {
     /// `image` must be a valid `EGLImage`. A GL context must be current on this
     /// thread.
     pub(crate) unsafe fn image_target_texture_2d(&self, target: u32, image: *mut c_void) {
+        // SAFETY: The pointer was resolved for this signature, and the caller
+        // guarantees the image and a current context.
         unsafe { (self.image_target_texture)(target, image) };
     }
 }
@@ -135,6 +144,8 @@ impl Extensions {
 ///
 /// An EGL context must be current on the calling thread.
 pub(crate) unsafe fn create_glow_context(egl: &Egl) -> glow::Context {
+    // SAFETY: The caller guarantees a current EGL context, and the loader
+    // returns null for a function the driver lacks, as glow expects.
     unsafe {
         glow::Context::from_loader_function(|name| {
             egl.get_proc_address(name)
