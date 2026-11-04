@@ -11,7 +11,6 @@
 mod logcat;
 
 use std::{
-    collections::BTreeSet,
     ffi::c_void,
     sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
@@ -19,7 +18,7 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live::{
-    Audience, BroadcastTicket, CALL, EndpointOptions, Live, Publication, Reach,
+    BroadcastTicket, CALL, EndpointOptions, Live, Publication,
     media::{
         AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
@@ -118,12 +117,7 @@ struct Offer(Publication);
 
 impl Offer {
     fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
-        let publication = live.moq().publish(
-            live.ticket(CALL).path(),
-            broadcast,
-            Audience::Peers(n0_watcher::Watchable::new(BTreeSet::from([peer]))),
-        )?;
-        Ok(Self(publication))
+        Ok(Self(live.call(peer, broadcast)?))
     }
 }
 
@@ -135,8 +129,7 @@ impl Drop for Offer {
 
 /// Subscribes to `peer`'s side of a call and plays it.
 async fn play_call(live: &Live, peer: EndpointId, output: &AudioTarget) -> Result<Player> {
-    let path = BroadcastTicket::new(peer, CALL).path();
-    let subscription = live.moq().subscribe(path, Reach::Direct(peer)).await?;
+    let subscription = live.answer(peer).await?;
     play(&live.remote_broadcast(&subscription), output)
 }
 

@@ -10,28 +10,25 @@ implements moq-net's `Consume<broadcast::Consumer>`, and returns an
 
 ## Joining
 
-`Rooms` owns the gossip instance. Create it on the builder's `Moq` before the
-router, so that the router can mount it. The node's grant must let members
-publish under `iroh_live_rooms::publish_scope(member)`. The application says so
-at runtime with `iroh_live::moq_config_with`; enabling the `rooms` feature alone
-grants nothing:
+`Rooms` owns the gossip instance, and the router mounts it. The node's grant
+must let members publish under `iroh_live_rooms::publish_scope(member)`.
+`LiveBuilder::with_rooms` does both, and only an application that calls it
+grants that scope; enabling the `rooms` feature alone grants nothing:
 
 ```rust
-use iroh_live::{Live, rooms::{RoomTicket, Rooms}};
+use iroh_live::{Live, rooms::RoomTicket};
 
-let config = iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope]);
-let builder = Live::builder_with(endpoint, config).with_router();
-let rooms = Rooms::new(builder.moq());
-let live = builder
-    .accept(iroh_live::rooms::ALPN, rooms.protocol_handler())
-    .spawn();
+let (live, rooms) = Live::builder(endpoint).spawn_with_rooms();
+// or `Live::builder(endpoint).with_rooms().spawn()` and `live.rooms()`
 
 let room = rooms
     .join(&RoomTicket::generate(), Some("ada".into()))
     .await?;
 ```
 
-`Rooms::with_gossip` takes a gossip instance the application already runs.
+Without `Live`, create `Rooms::new(&moq)`, mount `rooms.protocol_handler()` under
+`iroh_live::rooms::ALPN` yourself, and widen the grant with
+`iroh_live::moq_config_with(&[iroh_live::rooms::publish_scope])`.
 
 Share `room.ticket()` with the people who join. It lists this member as the
 bootstrap endpoint.

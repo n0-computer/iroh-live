@@ -29,6 +29,12 @@ cargo build --workspace                  # default features
 cargo build --workspace --all-features   # every feature, VA-API and NVIDIA included
 ```
 
+`iroh-live` itself has no default features. Ask for `full` to get the media
+stack with capture, rendering, the sound server and recording, or pick from
+`media`, `capture`, `render`, `playback`, `rooms` and the rest. Without
+`media`, `iroh-live` is the node, its tickets and its grant, which is what a
+relay needs.
+
 ## First stream
 
 Install the CLI and publish your camera and microphone:
@@ -102,6 +108,21 @@ opens when the broadcast first has a subscriber, and a failure then shows in
 `Live::subscribe` returns once a route to the broadcast is found. The catalog
 arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`
 when it does.
+
+The paths, the grant and the endpoint are defaults, and each can be replaced:
+
+- `Live::builder_with(endpoint, MoqConfig)` sets the admission and the grant.
+- `Live::publish_at(path, broadcast, Audience)` and
+  `Live::subscribe_path(path, Reach)` work on any path, next to the ticket
+  calls. `subscribe_path_media` returns the `RemoteBroadcast`.
+- `Live::moq()` is the escape hatch to the whole transport.
+- `EndpointOptions::apply(builder)` adds the preset, the key and mDNS to your
+  own endpoint builder, so you can set the relay mode or another address
+  lookup. `bind()` does the same on a default one.
+- `iroh_live::paths` builds and parses the `live/<id>/<name>` paths.
+
+A node that needs none of `Live` can mount `Moq` on a router itself, as
+`iroh-live/examples/moq_only.rs` does.
 
 `iroh-live/examples/publish.rs` is a complete publisher, with a two-rung
 ladder behind `--simulcast`.

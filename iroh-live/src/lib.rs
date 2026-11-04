@@ -47,6 +47,12 @@ while let Some(frame) = frames.next().await {
 "#
 )]
 //!
+//! The `live/<id>/<name>` layout, the grant and the endpoint setup are
+//! defaults. [`Live::publish_at`] and [`Live::subscribe_path`] take any path,
+//! [`Live::builder_with`] takes any [`MoqConfig`], [`EndpointOptions::apply`]
+//! composes with your own endpoint builder, and [`Live::moq`] is the escape
+//! hatch to the transport. [`Live::call`] offers a one-to-one call.
+//!
 //! The main types:
 //!
 //! - [`Live`]: the node. [`LiveBuilder`] mounts more protocols on its router.
@@ -69,8 +75,9 @@ while let Some(frame) = frames.next().await {
 //!
 //! # Features
 //!
-//! `media`, `capture`, `render`, `record` and `sound-server` are on by default. `media`
-//! adds the `media` module and `Live::remote_broadcast`. Without it the crate
+//! No feature is on by default; `full` turns on `media`, `capture`, `render`,
+//! `record` and `sound-server`. `media` adds the `media` module and
+//! `Live::remote_broadcast`. Without it the crate
 //! is the `live/` layout only, as the relay uses it. `playback`, `aec`,
 //! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
 //! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
@@ -80,6 +87,7 @@ mod error;
 mod live;
 #[cfg(feature = "media")]
 mod network;
+pub mod paths;
 mod ticket;
 
 /// Sources, broadcasts and players, with the codec stacks they sit on.
@@ -112,9 +120,7 @@ pub use iroh_moq::{
 pub use self::{
     endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
-    live::{
-        Live, LiveBuilder, PublishScope, grant, grant_with, moq_config, moq_config_with,
-        publish_scope,
-    },
+    live::{Live, LiveBuilder, PublishScope, grant, grant_with, moq_config, moq_config_with},
+    paths::publish_scope,
     ticket::{BroadcastTicket, CALL},
 };

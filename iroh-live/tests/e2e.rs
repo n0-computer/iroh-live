@@ -6,7 +6,6 @@
 #![cfg(feature = "media")]
 
 use std::{
-    collections::BTreeSet,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -17,10 +16,10 @@ use iroh_live::media::{
     RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
     video::{FrameRate, Size, decode},
 };
-use iroh_live::{Audience, BroadcastTicket, CALL, Live, Publication, Reach, Subscription};
+use iroh_live::{BroadcastTicket, CALL, Live, Publication, Subscription};
 use moq_net::bandwidth::Rate;
 use n0_tracing_test::traced_test;
-use n0_watcher::{Watchable, Watcher as _};
+use n0_watcher::Watcher as _;
 use tracing::{Instrument, info_span};
 
 /// Generous, because tests run in parallel and openh264 encodes in software.
@@ -148,26 +147,16 @@ async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active:
 
 /// Offers `side` as `live`'s call side to `peer` only.
 fn offer(live: &Live, side: &LocalBroadcast, peer: &Live) -> Publication {
-    live.moq()
-        .publish(
-            live.ticket(CALL).path(),
-            side,
-            Audience::Peers(Watchable::new(BTreeSet::from([peer.endpoint().id()]))),
-        )
+    live.call(peer.endpoint().id(), side)
         .expect("failed to offer")
 }
 
 /// Subscribes `live` to `peer`'s call side.
 async fn answer(live: &Live, peer: &Live) -> Subscription {
-    let path = BroadcastTicket::new(peer.endpoint().id(), CALL).path();
-    tokio::time::timeout(
-        TIMEOUT,
-        live.moq()
-            .subscribe(path, Reach::Direct(peer.endpoint().id())),
-    )
-    .await
-    .expect("timed out reaching the other side")
-    .expect("failed to reach the other side")
+    tokio::time::timeout(TIMEOUT, live.answer(peer.endpoint().id()))
+        .await
+        .expect("timed out reaching the other side")
+        .expect("failed to reach the other side")
 }
 
 /// The call convention: an offer rings, the answer plays, and a hang-up ends it.

@@ -129,7 +129,7 @@ mod window {
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        Audience, BroadcastTicket, CALL, Live, Publication, Reach,
+        BroadcastTicket, CALL, Live, Publication,
         media::{AudioTarget, LocalBroadcast, Player, SlotState, VideoSource},
     };
     use iroh_live_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
@@ -380,12 +380,7 @@ mod window {
 
     impl Offer {
         fn new(live: &Live, broadcast: &LocalBroadcast, peer: EndpointId) -> Result<Self> {
-            let publication = live.moq().publish(
-                live.ticket(CALL).path(),
-                broadcast,
-                Audience::Peers(Watchable::new(BTreeSet::from([peer]))),
-            )?;
-            Ok(Self(publication))
+            Ok(Self(live.call(peer, broadcast)?))
         }
     }
 
@@ -1069,13 +1064,7 @@ mod window {
         playback: PlaybackArgs,
         output: AudioTarget,
     ) -> Answer {
-        let path = BroadcastTicket::new(peer, CALL).path();
-        let subscription = match tokio::time::timeout(
-            PEER_TIMEOUT,
-            live.moq().subscribe(path, Reach::Direct(peer)),
-        )
-        .await
-        {
+        let subscription = match tokio::time::timeout(PEER_TIMEOUT, live.answer(peer)).await {
             Ok(Ok(subscription)) => subscription,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),
             Err(_) => {

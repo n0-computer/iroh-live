@@ -10,7 +10,7 @@ use iroh::EndpointId;
 use n0_error::e;
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
+use crate::{Error, paths};
 
 /// The broadcast name of a call, as `irl call` and the Android demo use it.
 ///
@@ -72,18 +72,15 @@ impl BroadcastTicket {
     /// A string, since a name may not make a valid moq path; publishing or
     /// subscribing at it says so.
     pub fn path(&self) -> String {
-        format!("live/{}/{}", self.peer, self.name)
+        paths::broadcast(self.peer, &self.name)
     }
 
     /// Returns the ticket of the broadcast at `path`, if it is a `live/<peer>/<name>` path.
     ///
     /// The inverse of [`path`](Self::path).
     pub fn from_path(path: &str) -> Option<Self> {
-        let (peer, name) = path.strip_prefix("live/")?.split_once('/')?;
-        if name.is_empty() {
-            return None;
-        }
-        Some(Self::new(peer.parse().ok()?, name))
+        let (peer, name) = paths::parse(path)?;
+        Some(Self::new(peer, name))
     }
 
     fn parse_uri(rest: &str) -> Result<Self, Error> {

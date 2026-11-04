@@ -103,10 +103,11 @@ Codecs need no system libraries. Device access and graphics do, and
 Every codec compiles upstream, so there are no per-codec features. The
 features gate devices and graphics. `moq-ext-publisher` and `moq-ext-player` define them,
 and `iroh-live/Cargo.toml` lists them. `iroh-live`
-passes them through and turns on `capture`, `render`, and `sound-server` by
-default. `irl` also turns on `playback` and `aec`. `iroh-live` adds `media`
-(default), which turns the media stack on, and each device feature implies
-it. It also adds `rooms`, which re-exports `iroh-live-rooms`.
+passes them through and has no default features. `full` turns on `media`,
+`capture`, `render`, `sound-server`, and `record`. `irl` also turns on
+`playback` and `aec`. `media` turns the media stack on, and each device
+feature implies it. `rooms` re-exports `iroh-live-rooms` and adds
+`LiveBuilder::with_rooms`.
 
 ### Cross-compiling for aarch64
 

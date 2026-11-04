@@ -1,6 +1,6 @@
 //! The node: an endpoint, the MoQ transport on it, and the router that accepts.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use iroh::{
     Endpoint, EndpointId,
@@ -14,18 +14,12 @@ use iroh_moq::{
 use moq_ext_player::RemoteBroadcast;
 use moq_net::{Consume, broadcast};
 use n0_error::e;
+use n0_watcher::Watchable;
 use tracing::{error, info, instrument};
 
 #[cfg(feature = "media")]
 use crate::network;
-use crate::{BroadcastTicket, Error};
-
-/// Returns the paths `peer` publishes its own broadcasts under: `live/<peer>/**`.
-pub fn publish_scope(peer: EndpointId) -> Pattern {
-    format!("live/{peer}/**")
-        .parse()
-        .expect("an endpoint id is a valid path segment")
-}
+use crate::{BroadcastTicket, Error, paths};
 
 /// A function naming the paths a peer may publish under, given its id.
 ///
@@ -47,7 +41,7 @@ pub fn grant(peer: EndpointId) -> Grant {
 /// rooms passes `rooms::publish_scope` here, and one that does not leaves it
 /// out, whatever features the build has.
 pub fn grant_with(peer: EndpointId, scopes: &[PublishScope]) -> Grant {
-    let mut publish = Patterns::from(publish_scope(peer));
+    let mut publish = Patterns::from(paths::publish_scope(peer));
     for scope in scopes {
         publish.insert(scope(peer));
     }
@@ -77,6 +71,8 @@ pub struct Live {
     endpoint: Endpoint,
     moq: Moq,
     router: Option<Router>,
+    #[cfg(feature = "rooms")]
+    rooms: Option<iroh_live_rooms::Rooms>,
 }
 
 /// Builds a [`Live`] on an endpoint.
@@ -87,8 +83,10 @@ pub struct Live {
 #[must_use]
 pub struct LiveBuilder {
     endpoint: Endpoint,
-    moq: Moq,
+    config: MoqConfig,
     router: bool,
+    #[cfg(feature = "rooms")]
+    rooms: bool,
     #[debug(skip)]
     protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
 }
@@ -105,27 +103,61 @@ impl LiveBuilder {
 
     /// Mounts `handler` under `alpn` on the router as well.
     ///
-    /// Implies [`with_router`](Self::with_router). Rooms mount their gossip
-    /// this way.
+    /// Implies [`with_router`](Self::with_router).
     pub fn accept(mut self, alpn: impl AsRef<[u8]>, handler: impl ProtocolHandler) -> Self {
         self.protocols
             .push((alpn.as_ref().to_vec(), handler.into()));
         self
     }
 
-    /// Returns the node's MoQ transport, for handing to `Rooms` before the
-    /// router is built.
-    pub fn moq(&self) -> &Moq {
-        &self.moq
+    /// Runs rooms on the node.
+    ///
+    /// Mounts rooms' gossip protocol on the router, which this implies, and
+    /// widens every peer's grant by `rooms::publish_scope`, so members can
+    /// publish their room broadcasts besides their own `live/` ones. Without
+    /// a grant, peers get [`Grant::subscribe_only`] plus that scope. Read the service with
+    /// [`Live::rooms`], or build with [`spawn_with_rooms`](Self::spawn_with_rooms).
+    #[cfg(feature = "rooms")]
+    pub fn with_rooms(mut self) -> Self {
+        self.rooms = true;
+        let inner = self.config.grant.take();
+        self.config.grant = Some(Arc::new(move |peer| {
+            let mut grant = match &inner {
+                Some(inner) => inner(peer),
+                None => Grant::subscribe_only(),
+            };
+            grant.publish.insert(iroh_live_rooms::publish_scope(peer));
+            grant
+        }));
+        self
+    }
+
+    /// Creates the node as [`with_rooms`](Self::with_rooms) says, and returns
+    /// its rooms with it.
+    #[cfg(feature = "rooms")]
+    pub fn spawn_with_rooms(self) -> (Live, iroh_live_rooms::Rooms) {
+        let live = self.with_rooms().spawn();
+        let rooms = live.rooms.clone().expect("with_rooms creates the rooms");
+        (live, rooms)
     }
 
     /// Creates the node, spawning its router if asked to.
     pub fn spawn(self) -> Live {
-        let moq = self.moq;
-        let router = (self.router || !self.protocols.is_empty()).then(|| {
+        let moq = Moq::new(self.endpoint.clone(), self.config);
+        #[cfg(feature = "rooms")]
+        let rooms = self.rooms.then(|| iroh_live_rooms::Rooms::new(&moq));
+        #[cfg(feature = "rooms")]
+        let serve = self.router || !self.protocols.is_empty() || rooms.is_some();
+        #[cfg(not(feature = "rooms"))]
+        let serve = self.router || !self.protocols.is_empty();
+        let router = serve.then(|| {
             let mut router = moq.mount(Router::builder(self.endpoint.clone()));
             for (alpn, handler) in self.protocols {
                 router = router.accept(alpn, handler);
+            }
+            #[cfg(feature = "rooms")]
+            if let Some(rooms) = &rooms {
+                router = router.accept(iroh_live_rooms::ALPN, rooms.protocol_handler());
             }
             router.spawn()
         });
@@ -134,6 +166,8 @@ impl LiveBuilder {
             endpoint: self.endpoint,
             moq,
             router,
+            #[cfg(feature = "rooms")]
+            rooms,
         }
     }
 }
@@ -141,8 +175,10 @@ impl LiveBuilder {
 impl Live {
     /// Returns a builder for a node on `endpoint`.
     ///
-    /// Creates the node's [`Moq`] with [`moq_config`], so it must be called
-    /// within a tokio runtime.
+    /// The node's [`Moq`] has [`moq_config`]: open admission, and each peer
+    /// may publish only under `live/<its id>/`. Use
+    /// [`builder_with`](Self::builder_with) to change that. [`spawn`](LiveBuilder::spawn)
+    /// creates the [`Moq`], so it must be called within a tokio runtime.
     ///
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -157,14 +193,19 @@ impl Live {
 
     /// Returns a builder for a node on `endpoint` with its own [`MoqConfig`].
     ///
-    /// For a node whose peers may publish more than [`grant`] allows, such as
-    /// rooms (`moq_config_with(&[rooms::publish_scope])`), or one with its own
-    /// admission. Must be called within a tokio runtime.
+    /// This is the override path for everything [`moq_config`] decides: a
+    /// node whose peers may publish more or less than [`grant`] allows, with
+    /// its own admission, or with no grant at all (`MoqConfig::default()`
+    /// lets peers subscribe but not publish). Nothing else in [`Live`] depends
+    /// on the grant. With rooms, prefer [`LiveBuilder::with_rooms`], which
+    /// widens the grant for you.
     pub fn builder_with(endpoint: Endpoint, config: MoqConfig) -> LiveBuilder {
         LiveBuilder {
-            moq: Moq::new(endpoint.clone(), config),
             endpoint,
+            config,
             router: false,
+            #[cfg(feature = "rooms")]
+            rooms: false,
             protocols: Vec::new(),
         }
     }
@@ -176,7 +217,9 @@ impl Live {
 
     /// Returns the MoQ transport.
     ///
-    /// For publishing to another audience or attaching relays.
+    /// The escape hatch for everything [`Live`] has no call for: any path
+    /// layout, any [`Audience`], relays, sessions, the route table. The
+    /// calls here are conveniences over it.
     pub fn moq(&self) -> &Moq {
         &self.moq
     }
@@ -206,6 +249,94 @@ impl Live {
         Ok(self
             .moq
             .publish(self.ticket(name).path(), broadcast, Audience::Everyone)?)
+    }
+
+    /// Publishes a broadcast at `path` to `audience`.
+    ///
+    /// The path-level call under [`publish`](Self::publish): it applies no
+    /// layout, so `path` need not be under `live/`. Peers can subscribe only
+    /// where their grant on this node allows it, and a peer that publishes
+    /// into this node must be allowed `path` by its grant on the other side.
+    ///
+    /// # Errors
+    ///
+    /// Fails if something is already published at `path`, or it is not a
+    /// valid path.
+    pub fn publish_at(
+        &self,
+        path: &str,
+        broadcast: impl Consume<broadcast::Consumer>,
+        audience: Audience,
+    ) -> Result<Publication, Error> {
+        Ok(self.moq.publish(path, broadcast, audience)?)
+    }
+
+    /// Resolves the broadcast at `path` over the links `reach` names.
+    ///
+    /// The path-level call under [`subscribe`](Self::subscribe).
+    /// Cancellation safe.
+    ///
+    /// # Errors
+    ///
+    /// Fails if no link reaches the broadcast, or `path` is not a valid path.
+    #[instrument("subscribe_path", skip_all, fields(path))]
+    pub async fn subscribe_path(&self, path: &str, reach: Reach) -> Result<Subscription, Error> {
+        Ok(self.moq.subscribe(path, reach).await?)
+    }
+
+    /// Resolves the broadcast at `path` and reads its media.
+    ///
+    /// [`subscribe_path`](Self::subscribe_path) followed by
+    /// [`remote_broadcast`](Self::remote_broadcast).
+    #[cfg(feature = "media")]
+    pub async fn subscribe_path_media(
+        &self,
+        path: &str,
+        reach: Reach,
+    ) -> Result<RemoteBroadcast, Error> {
+        let subscription = self.subscribe_path(path, reach).await?;
+        Ok(self.remote_broadcast(&subscription))
+    }
+
+    /// Offers `broadcast` as this node's side of a call with `peer`.
+    ///
+    /// Publishes at `live/<this node's id>/call`, visible to `peer` only. The
+    /// peer learns it is called when that path appears in its route table, and
+    /// that it was hung up when the path ends: call
+    /// [`Publication::unpublish`] to hang up. Pair it with
+    /// [`answer`](Self::answer) on the other side.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a call offer is already published.
+    pub fn call(
+        &self,
+        peer: EndpointId,
+        broadcast: impl Consume<broadcast::Consumer>,
+    ) -> Result<Publication, Error> {
+        self.publish_at(
+            &paths::call(self.endpoint.id()),
+            broadcast,
+            Audience::Peers(Watchable::new(BTreeSet::from([peer]))),
+        )
+    }
+
+    /// Resolves `peer`'s side of a call over a direct session.
+    ///
+    /// Waits until `peer` offers it. Cancellation safe.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the peer cannot be reached.
+    pub async fn answer(&self, peer: EndpointId) -> Result<Subscription, Error> {
+        self.subscribe_path(&paths::call(peer), Reach::Direct(peer))
+            .await
+    }
+
+    /// Returns the rooms of a node built with [`LiveBuilder::with_rooms`].
+    #[cfg(feature = "rooms")]
+    pub fn rooms(&self) -> Option<&iroh_live_rooms::Rooms> {
+        self.rooms.as_ref()
     }
 
     /// Returns the ticket for this node's broadcast `name`.
@@ -266,5 +397,34 @@ impl Live {
             error!(error = %err, "failed to shut down the iroh router");
         }
         self.endpoint.close().await;
+    }
+}
+
+#[cfg(all(test, feature = "rooms"))]
+mod tests {
+    use iroh::{SecretKey, endpoint::presets};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn only_with_rooms_may_a_peer_publish_room_broadcasts() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");
+        let peer = SecretKey::generate().public();
+        let room = format!("rooms/topic/{peer}/camera");
+
+        let plain = Live::builder(endpoint.clone());
+        let grant = plain.config.grant.as_ref().expect("a grant")(peer);
+        assert!(grant.allows_publish(&paths::broadcast(peer, "cam")));
+        assert!(!grant.allows_publish(&room));
+
+        let rooms = Live::builder(endpoint.clone()).with_rooms();
+        let grant = rooms.config.grant.as_ref().expect("a grant")(peer);
+        assert!(grant.allows_publish(&paths::broadcast(peer, "cam")));
+        assert!(grant.allows_publish(&room));
+        assert!(!grant.allows_publish(&paths::broadcast(SecretKey::generate().public(), "cam")));
+
+        let (live, _rooms) = rooms.spawn_with_rooms();
+        assert!(live.rooms().is_some());
+        live.shutdown().await;
     }
 }

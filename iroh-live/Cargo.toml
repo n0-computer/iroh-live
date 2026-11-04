@@ -24,6 +24,7 @@ moq-ext-sources = { workspace = true, optional = true }
 moq-audio = { workspace = true, optional = true }
 moq-video = { workspace = true, optional = true }
 n0-error = "1"
+n0-watcher = "1"
 serde = "1.0.229"
 tracing = "0.1.44"
 
@@ -31,7 +32,6 @@ tracing = "0.1.44"
 # The examples.
 clap = { version = "4.6", features = ["derive"] }
 n0-tracing-test = "0.3.0"
-n0-watcher = "1"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing-subscriber = "0.3.23"
 
@@ -46,7 +46,10 @@ patchbay = "0.7.0"
 workspace = true
 
 [features]
-default = ["media", "capture", "render", "sound-server", "record"]
+default = []
+# What an app that plays and publishes media wants: the media stack, device
+# capture, GPU rendering, the sound server and recording.
+full = ["media", "capture", "render", "sound-server", "record"]
 # The media stack: `iroh_live::media`, `Live::remote_broadcast`. Without it the
 # crate is the `live/` layout only (tickets, grant, endpoint options), as the
 # relay uses it.

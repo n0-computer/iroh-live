@@ -23,8 +23,8 @@ On Linux, request `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when you
 create the device. Without it, DMA-BUF frames from PipeWire screen capture are
 uploaded through the CPU.
 
-All of this needs the `render` feature. It is on by default in `iroh-live`, and
-off in `moq-ext-player`.
+All of this needs the `render` feature. `iroh-live` turns it on with `full`, and
+`moq-ext-player` leaves it off.
 
 ## egui
 

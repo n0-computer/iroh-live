@@ -29,12 +29,9 @@ async fn main() -> n0_error::Result {
         offer: RelayOffer::Nothing,
         ..RelayConfig::iroh(cli.relay)
     })?;
-    let subscription = live
-        .moq()
-        .subscribe(cli.name.as_str(), Reach::Relays)
-        .await?;
     let player = live
-        .remote_broadcast(&subscription)
+        .subscribe_path_media(&cli.name, Reach::Relays)
+        .await?
         .play(PlayerConfig::default())?;
     let mut frames = player.video();
 

@@ -60,12 +60,32 @@ impl EndpointOptions {
         })
     }
 
-    /// Returns an endpoint builder with [`MoqPreset`], the key and mDNS applied.
+    /// Applies [`MoqPreset`], the key and mDNS to `builder`, and returns it.
+    ///
+    /// For a caller that builds its own endpoint and sets what these options
+    /// do not, such as the relay mode or another address lookup. The preset
+    /// sets the relay mode and address lookups, so make your own settings
+    /// after this call, not before.
     ///
     /// If mDNS cannot start, as in a sandbox or on a phone without a multicast
     /// lock, logs a warning and goes without it.
-    async fn builder(self) -> Builder {
-        let mut builder = Endpoint::builder(MoqPreset);
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// use iroh::{RelayMode, endpoint::Builder};
+    /// use iroh_live::EndpointOptions;
+    ///
+    /// let endpoint = EndpointOptions::from_env()?
+    ///     .apply(Builder::empty())
+    ///     .await
+    ///     .relay_mode(RelayMode::Disabled)
+    ///     .bind()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn apply(self, builder: Builder) -> Builder {
+        let mut builder = builder.preset(MoqPreset);
         if let Some(key) = self.secret_key {
             builder = builder.secret_key(key);
         }
@@ -100,7 +120,7 @@ impl EndpointOptions {
     /// Fails with [`Error::Bind`] if the endpoint's sockets cannot be bound.
     pub async fn bind(self) -> Result<Endpoint, Error> {
         let endpoint = self
-            .builder()
+            .apply(Builder::empty())
             .await
             .bind()
             .await
