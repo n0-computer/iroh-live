@@ -37,14 +37,15 @@ const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
 pub struct LinkSample {
     /// The smoothed round trip time.
     pub rtt: Option<Duration>,
-    /// The smallest smoothed round trip time read on this path in the last
-    /// fifteen seconds.
+    /// The smallest smoothed round trip time on this path in the last 15 s.
     pub min_rtt: Option<Duration>,
-    /// The share of packets sent in the last two seconds that were lost, in
-    /// `0.0..=1.0`.
+    /// The share of packets sent in the last two seconds that were lost.
+    ///
+    /// The rate is in `0.0..=1.0`.
     pub loss_rate: Option<f64>,
-    /// The rate UDP bytes arrived at over the last two seconds, in bits per
-    /// second, overhead and duplicates included.
+    /// The rate UDP bytes arrived at over the last two seconds, in bits/s.
+    ///
+    /// The count includes packet overhead and duplicates.
     pub goodput_bps: Option<u64>,
     /// The peer's estimate of the path to this endpoint, in bits per second.
     pub delivery_bps: Option<u64>,
@@ -61,12 +62,13 @@ enum PathKey {
     Session(u64),
 }
 
-/// Reads `session`, riding `connection`, every [`SAMPLE_INTERVAL`] and hands each
-/// sample to `publish`, until the connection closes.
+/// Samples `session` every [`SAMPLE_INTERVAL`] until `connection` closes.
 ///
-/// A sampler that outlives the call carries the path generation on across the
-/// sessions of one link. Holding the session's bandwidth estimate is what asks
-/// the peer to probe.
+/// Each sample goes to `publish`. A sampler that outlives the call carries the
+/// path generation on across the sessions of one link. Holding the session's
+/// bandwidth estimate is what asks the peer to probe.
+///
+/// The future is cancel-safe: dropping it only stops the sampling.
 pub async fn watch(
     session: moq_net::Session,
     connection: Connection,
@@ -107,7 +109,7 @@ struct Reading {
 /// Turns readings of a session's statistics into [`LinkSample`]s.
 ///
 /// Keeps the history rates and minimums are taken over, and the path
-/// generation. [`watch`] drives one on a timer; call the `sample_*` methods
+/// generation. [`watch`] drives one on a timer. Call the `sample_*` methods
 /// directly to read on your own schedule.
 #[derive(Debug, Default)]
 pub struct LinkSampler {

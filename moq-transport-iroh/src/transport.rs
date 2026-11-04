@@ -34,6 +34,8 @@ use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 /// too would settle every dial on the oldest moq-lite. Hand the transport to
 /// [`moq_net::Client::connect`].
 ///
+/// Dropping the future abandons the dial.
+///
 /// # Errors
 ///
 /// Fails if the dial fails, or if the peer negotiates an ALPN this build does
@@ -57,6 +59,8 @@ pub async fn dial(
 ///
 /// Fails if the connection negotiated an ALPN this build does not speak, which
 /// happens when the handler is mounted under an ALPN outside [`alpns`].
+///
+/// [`alpns`]: crate::alpns
 pub fn accept(connection: Connection) -> Result<Transport, Error> {
     Transport::new(connection)
 }
