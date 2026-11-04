@@ -42,8 +42,16 @@ async fn wanted(demand: &mut moq_net::track::Demand) -> Result<(), moq_net::Erro
 }
 
 /// Waits until no subscriber wants the track, or it closes.
-async fn unwanted(demand: &mut moq_net::track::Demand) {
-    while let Ok(Some(_)) = demand.wanted_changed().await {}
+///
+/// Returns `false` if the track closed.
+async fn unwanted(demand: &mut moq_net::track::Demand) -> bool {
+    loop {
+        match demand.wanted_changed().await {
+            Ok(Some(_)) => {}
+            Ok(None) => return true,
+            Err(_) => return false,
+        }
+    }
 }
 
 /// Encodes a raw source into every rendition of `encoding`.
@@ -310,9 +318,11 @@ impl Encoder {
             // stops. The track and its catalog entry are already advertised.
             tokio::select! {
                 used = wanted(&mut demand) => {
+                    // The track was closed or aborted under the encoder, so
+                    // there is nothing left to finish.
                     if let Err(err) = used {
-                        debug!(error = %err, "rendition no longer watched");
-                        break;
+                        debug!(error = %err, "the rendition's track closed");
+                        return Ok(());
                     }
                 }
                 () = self.frames.closed() => {
@@ -341,7 +351,11 @@ impl Encoder {
                 let frame = tokio::select! {
                     // The last viewer left. Mark the gap so the next timestamp
                     // does not stretch this frame across it.
-                    _ = unwanted(&mut demand) => {
+                    open = unwanted(&mut demand) => {
+                        if !open {
+                            debug!("the rendition's track closed while it encoded");
+                            return Ok(());
+                        }
                         self.producer.discontinuity().map_err(Error::broadcast)?;
                         self.reporter.rendition(&self.name, RenditionState::Idle);
                         break;
