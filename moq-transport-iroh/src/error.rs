@@ -9,12 +9,13 @@ use iroh::endpoint::{
 use moq_net::transport::CloseKind;
 use n0_error::{AnyError, stack_error};
 
-/// Errors of dialing and accepting.
+/// An error from dialing or accepting a MoQ connection.
 #[stack_error(derive, add_meta)]
 pub enum Error {
     /// The peer could not be dialed, or the handshake failed.
     ///
-    /// The source is shared between the callers waiting on one dial.
+    /// The source sits in an [`Arc`] so that the callers waiting on one dial
+    /// can share the failure.
     #[error("failed to connect to the peer")]
     Connect {
         #[error(source, std_err)]
