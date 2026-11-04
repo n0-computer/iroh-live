@@ -106,13 +106,26 @@ mod app {
     }
 
     /// Watches a remote broadcast, rendering with EGL/GLES2.
+    ///
+    /// Shuts the node down and closes the endpoint however the playback ends,
+    /// so the publisher sees the session close instead of timing out.
     async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
-        let ticket = opts.ticket;
-        println!("connecting to {ticket} ...");
         // The ticket has no addresses. The viewer finds the publisher through
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
         // network without internet.
-        let live = Live::new(iroh_live::EndpointOptions::from_env()?.bind().await?);
+        let endpoint = iroh_live::EndpointOptions::from_env()?.bind().await?;
+        // Only dials, so it needs no router, and closes the endpoint itself.
+        let live = Live::new(endpoint.clone());
+        let result = watch_with(&live, opts).await;
+        live.shutdown().await;
+        endpoint.close().await;
+        result
+    }
+
+    /// Subscribes `live` to the ticket's broadcast and plays it until it ends.
+    async fn watch_with(live: &Live, opts: WatchOpts) -> n0_error::Result {
+        let ticket = opts.ticket;
+        println!("connecting to {ticket} ...");
         let subscription = live.subscribe(&ticket).await?;
         let remote = live.remote_broadcast(&subscription);
         println!("connected!");
