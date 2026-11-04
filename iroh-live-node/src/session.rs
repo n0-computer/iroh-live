@@ -148,8 +148,9 @@ impl Session {
     /// # Errors
     ///
     /// Fails with [`Error::NotGranted`] if the session's grant does not let
-    /// the peer publish the path, and [`Error::NotAnnounced`] if the session
-    /// ends before the peer announces it.
+    /// the peer publish the path, [`Error::NotAnnounced`] if the session ends
+    /// before the peer announces it, [`Error::Unresolved`] if the route table
+    /// refuses the path, and [`Error::ShutDown`] once the node is gone.
     pub async fn subscribe(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
@@ -274,7 +275,11 @@ pub(crate) fn subscriber(
     {
         Ok(scoped) => Some(scoped),
         Err(err) => {
-            warn!(%err, "the grant's publish patterns fit no path, so nothing the peer announces is ingested");
+            warn!(
+                remote = %remote.fmt_short(),
+                %err,
+                "the grant's publish patterns fit no path, so nothing the peer announces is ingested"
+            );
             None
         }
     }
@@ -677,12 +682,17 @@ impl Actor {
                 )));
                 let run = moq_net::time::run(driver);
                 tokio::pin!(run);
-                let err = tokio::select! {
-                    _ = cancel.cancelled() => {
+                let ended = tokio::select! {
+                    () = cancel.cancelled() => None,
+                    err = &mut run => Some(err),
+                };
+                // A shutdown still runs the driver, so it can flush the close.
+                let err = match ended {
+                    Some(err) => err,
+                    None => {
                         moq.abort(moq_net::Error::Cancel);
-                        (&mut run).await
+                        run.await
                     }
-                    err = &mut run => err,
                 };
                 drop(task_session);
                 err
