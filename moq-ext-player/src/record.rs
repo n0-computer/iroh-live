@@ -258,13 +258,16 @@ async fn record(
     stop: CancellationToken,
     written: Arc<AtomicU64>,
 ) -> Result<u64, Error> {
-    // A recording follows one route. A change of route ends the file.
+    // A recording follows one route. A change of route ends the file. The
+    // `broadcast` held here keeps the watch senders alive, so their `Err` arms
+    // never fire, and only `closed` ends a wait on a broadcast that is gone.
     let mut epoch = broadcast.epoch();
     let consumer = tokio::select! {
         epoch = epoch.wait_for(|epoch| epoch.consumer.is_some()) => match epoch {
             Ok(epoch) => epoch.consumer.clone().expect("waited for it"),
             Err(_) => return Err(n0_error::e!(Error::Closed)),
         },
+        () = broadcast.closed() => return Err(n0_error::e!(Error::Closed)),
         () = stop.cancelled() => return Ok(0),
     };
     // A broadcast may be announced before its catalog track exists, and the
@@ -277,6 +280,7 @@ async fn record(
                 return Err(n0_error::e!(Error::Closed));
             }
         }
+        () = broadcast.closed() => return Err(n0_error::e!(Error::Closed)),
         () = stop.cancelled() => return Ok(0),
     }
     let (_local, source) = match broadcast.routed() {
@@ -320,6 +324,23 @@ async fn record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A broadcast that closes before it has a catalog ends the recording.
+    #[tokio::test]
+    async fn a_close_before_the_catalog_ends_the_recording() {
+        let producer = moq_net::broadcast::Info::new().produce();
+        let remote = RemoteBroadcast::from_consumer(producer.consume());
+        let mut recording = remote
+            .record(tokio::io::sink(), RecordConfig::default())
+            .expect("a valid config");
+        // Long enough for the recording to wait on the catalog.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        producer.close();
+        let result = tokio::time::timeout(Duration::from_secs(5), recording.wait())
+            .await
+            .expect("the recording ended with its broadcast");
+        assert!(matches!(result, Err(Error::Closed { .. })), "{result:?}");
+    }
 
     #[test]
     fn extensions_name_containers() {
