@@ -633,9 +633,20 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
         "a 440 Hz tone decoded as silence (peak {peak})"
     );
     drop(player);
+    // The handle still returns what was decoded before the drop, at most its
+    // one-second backlog, and then ends.
+    let leftover = tokio::time::timeout(TIMEOUT, async {
+        let mut leftover = 0usize;
+        while audio.next().await.is_some() {
+            leftover += 1;
+        }
+        leftover
+    })
+    .await
+    .expect("the frames outlived the player");
     assert!(
-        audio.next().await.is_none(),
-        "the frames outlived the player"
+        leftover <= 50,
+        "{leftover} frames came after the player was dropped"
     );
 }
 

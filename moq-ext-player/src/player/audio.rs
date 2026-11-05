@@ -68,7 +68,9 @@ impl AudioFrames {
 
     /// Waits for the next decoded frame.
     ///
-    /// Returns `None` once the player is dropped. Cancellation safe.
+    /// Frames decoded before the player was dropped are still returned, up to
+    /// the backlog a handle keeps. Returns `None` once the player is dropped
+    /// and this handle has read them. Cancellation safe.
     pub async fn next(&mut self) -> Option<AudioFrame> {
         loop {
             match self.rx.recv().await {
