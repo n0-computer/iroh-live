@@ -4525,6 +4525,7 @@ dependencies = [
  "n0-future",
  "n0-tracing-test",
  "n0-watcher",
+ "noq-proto",
  "tokio",
  "tokio-util",
  "tracing",

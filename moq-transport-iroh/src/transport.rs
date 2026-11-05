@@ -51,6 +51,42 @@ pub async fn dial(
     Transport::new(connection)
 }
 
+/// Dials `remote` with iroh's connect `options`, as [`dial`] does.
+///
+/// The options can give this one connection its own QUIC transport config,
+/// such as another [`Congestion`](crate::Congestion) controller, while the
+/// endpoint keeps its own for every other connection:
+///
+/// ```no_run
+/// # async fn run(endpoint: iroh::Endpoint, remote: iroh::EndpointId) -> Result<(), moq_transport_iroh::Error> {
+/// use iroh::endpoint::ConnectOptions;
+/// use moq_transport_iroh::{Congestion, dial_with};
+///
+/// let options = ConnectOptions::new().with_transport_config(Congestion::Cubic.transport_config());
+/// let transport = dial_with(&endpoint, remote, options).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Dropping the future abandons the dial.
+///
+/// # Errors
+///
+/// As [`dial`].
+pub async fn dial_with(
+    endpoint: &Endpoint,
+    remote: impl Into<EndpointAddr>,
+    options: endpoint::ConnectOptions,
+) -> Result<Transport, Error> {
+    let connection = endpoint
+        .connect_with_opts(remote, ALPN, options)
+        .await
+        .map_err(connect_error)?
+        .await
+        .map_err(connect_error)?;
+    Transport::new(connection)
+}
+
 /// Returns the MoQ transport over an incoming `connection`.
 ///
 /// Hand it to [`moq_net::Server::accept_request`].

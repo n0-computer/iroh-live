@@ -88,7 +88,7 @@ pub use moq_net as net;
 /// applications that run moq-net's client or server directly.
 pub use moq_transport_iroh as transport;
 
-pub use moq_transport_iroh::{ALPN, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
+pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
 
 pub use self::{
     admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},

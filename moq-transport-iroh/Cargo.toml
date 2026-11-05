@@ -16,7 +16,8 @@ bytes = "1"
 iroh = { workspace = true }
 moq-net = { workspace = true }
 n0-error = "1"
-# BBR3, the congestion controller every endpoint binds with.
+# The congestion controllers: BBR3, which every endpoint binds with, and the
+# CUBIC and NewReno a `Congestion` names.
 noq-proto = { workspace = true }
 # `time` drives the link sampler's interval.
 tokio = { version = "1.53.1", features = ["time"] }

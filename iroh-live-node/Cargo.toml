@@ -30,4 +30,6 @@ url = "2.5.8"
 
 [dev-dependencies]
 n0-tracing-test = "0.3.0"
+# Tells the congestion controller of a connection by its type.
+noq-proto = { workspace = true }
 tokio = { version = "1.53.1", features = ["full"] }

@@ -99,6 +99,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let iroh_endpoint = EndpointOptions {
         secret_key: Some(iroh_secret),
         mdns: Mdns::Announce,
+        ..EndpointOptions::default()
     }
     .bind()
     .await?;
