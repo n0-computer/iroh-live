@@ -6,7 +6,7 @@
 use std::{io::Write, path::Path};
 
 use iroh::{Endpoint, SecretKey, endpoint::Builder};
-use iroh_live_node::MoqPreset;
+use iroh_live_node::{Congestion, MoqPreset};
 use n0_error::e;
 use tracing::{debug, info, warn};
 
@@ -31,13 +31,19 @@ pub enum Mdns {
 }
 
 // TODO: rename to `EndpointConfig` (deferred: ~25 call sites across four repos).
-/// An endpoint with [`MoqPreset`], a key and mDNS.
+/// An endpoint with [`MoqPreset`], a key, mDNS and a congestion controller.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointOptions {
     /// The endpoint's identity. `None` generates an ephemeral one.
     pub secret_key: Option<SecretKey>,
     /// How the endpoint uses mDNS.
     pub mdns: Mdns,
+    /// The congestion controller of every connection, BBR3 by default.
+    ///
+    /// One dial can use another with
+    /// [`ConnectOptions::congestion`](crate::node::ConnectOptions::congestion),
+    /// without a new endpoint.
+    pub congestion: Congestion,
 }
 
 impl EndpointOptions {
@@ -61,12 +67,14 @@ impl EndpointOptions {
         })
     }
 
-    /// Applies [`MoqPreset`], the key and mDNS to `builder`, and returns it.
+    /// Applies [`MoqPreset`], the key, mDNS and the congestion controller to `builder`, and returns it.
     ///
     /// For a caller that builds its own endpoint and sets what these options
     /// do not, such as the relay mode or another address lookup. The preset
-    /// sets the relay mode and address lookups, so make your own settings
-    /// after this call, not before.
+    /// sets the relay mode, the address lookups and the QUIC transport config,
+    /// so make your own settings after this call, not before. A transport
+    /// config set afterwards replaces the one that carries
+    /// [`congestion`](Self::congestion).
     ///
     /// If mDNS cannot start, as in a sandbox or on a phone without a multicast
     /// lock, logs a warning and goes without it.
@@ -86,7 +94,9 @@ impl EndpointOptions {
     /// # }
     /// ```
     pub async fn apply(self, builder: Builder) -> Builder {
-        let mut builder = builder.preset(MoqPreset);
+        let mut builder = builder
+            .preset(MoqPreset)
+            .transport_config(self.congestion.transport_config());
         if let Some(key) = self.secret_key {
             builder = builder.secret_key(key);
         }
@@ -124,13 +134,14 @@ impl EndpointOptions {
     ///
     /// Fails with [`Error::Bind`] if the endpoint's sockets cannot be bound.
     pub async fn bind(self) -> Result<Endpoint, Error> {
+        let congestion = self.congestion;
         let endpoint = self
             .apply(Builder::empty())
             .await
             .bind()
             .await
             .map_err(|source| e!(Error::Bind { source }))?;
-        info!(id = %endpoint.id(), "endpoint bound");
+        info!(id = %endpoint.id(), %congestion, "endpoint bound");
         Ok(endpoint)
     }
 }

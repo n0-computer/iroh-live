@@ -132,7 +132,7 @@ pub use iroh_live_node as node;
 /// The moq-net this crate builds against, as [`node::net`].
 pub use iroh_live_node::net;
 pub use iroh_live_node::{
-    Audience, MoqPreset, Node, NodeConfig, Publication, Reach, Session, Subscription,
+    Audience, Congestion, MoqPreset, Node, NodeConfig, Publication, Reach, Session, Subscription,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;

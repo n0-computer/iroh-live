@@ -40,9 +40,9 @@ use std::time::Duration;
 pub use self::{
     error::{Error, TransportError},
     link::{LinkSample, LinkSampler, SAMPLE_INTERVAL, watch},
-    preset::MoqPreset,
+    preset::{Congestion, MoqPreset, UnknownCongestion},
     stream::{RecvStream, SendStream},
-    transport::{Transport, accept, dial},
+    transport::{Transport, accept, dial, dial_with},
 };
 
 /// How long a connection may take to open its MoQ session, dialed or accepted.

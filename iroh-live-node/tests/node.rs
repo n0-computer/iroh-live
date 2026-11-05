@@ -8,8 +8,10 @@ use common::{
     Peer, TIMEOUT, announced, ends, publish, publish_from, read_counter, reading, retracted,
     stays_pending, step,
 };
+use iroh::endpoint::PathId;
 use iroh_live_node::{
-    Admission, Audience, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach,
+    Admission, Audience, Congestion, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach,
+    Session,
 };
 use moq_net::{Pattern, Patterns};
 use n0_future::task::AbortOnDropHandle;
@@ -39,6 +41,46 @@ async fn a_path_resolves_by_dialing_its_publisher() {
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Returns whether the first path of `session`'s connection runs the controller `C`.
+fn runs<C: 'static>(session: &Session) -> bool {
+    session
+        .connection()
+        .congestion_state(PathId::ZERO)
+        .expect("the first path is open")
+        .into_any()
+        .downcast::<C>()
+        .is_ok()
+}
+
+/// A dial with its own congestion controller gets it, and the endpoint's other dials keep theirs.
+#[tokio::test]
+#[traced_test]
+async fn a_dial_can_choose_its_congestion_controller() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
+    let options = ConnectOptions {
+        congestion: Some(Congestion::NewReno),
+        ..Default::default()
+    };
+    let chosen = step(
+        "bob dials with NewReno",
+        bob.moq.connect_with(alice.endpoint.addr(), options),
+    )
+    .await
+    .expect("connected");
+    let default = step("carol dials", carol.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connected");
+    assert!(runs::<noq_proto::congestion::NewReno>(&chosen));
+    // The test endpoints bind without `MoqPreset`, so iroh's CUBIC.
+    assert!(runs::<noq_proto::congestion::Cubic>(&default));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
 }
 
 /// The node's own public publication resolves locally, without a link.

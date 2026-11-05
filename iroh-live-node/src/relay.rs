@@ -495,6 +495,7 @@ async fn iroh_uplink(
         token: config.token.clone(),
         cost: Some(config.cost),
         grant: Some(Grant::everything()),
+        congestion: None,
     };
     let mut pause = REDIAL_MIN;
     let sampler = link::SharedSampler::default();

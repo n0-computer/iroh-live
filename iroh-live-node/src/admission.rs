@@ -14,6 +14,7 @@ pub use moq_ext_access::Grant;
 /// What a peer asked for when it opened a session.
 pub use moq_ext_access::SessionRequest;
 use moq_net::{server::Handshake, setup::Token};
+use moq_transport_iroh::Congestion;
 use n0_error::e;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
@@ -71,9 +72,25 @@ pub struct ConnectOptions {
     /// already exists keeps its grant: change that with
     /// [`Session::set_grant`](crate::Session::set_grant).
     pub grant: Option<Grant>,
+    /// The congestion controller of this connection.
+    ///
+    /// `None` keeps the endpoint's, which is BBR3 under
+    /// [`MoqPreset`](crate::MoqPreset). It applies to a direct dial only: a
+    /// session that already exists keeps its controller, so close it first to
+    /// dial again with another. A relay link ignores it.
+    pub congestion: Option<Congestion>,
 }
 
 impl ConnectOptions {
+    /// Returns iroh's options for the QUIC dial.
+    pub(crate) fn quic(&self) -> iroh::endpoint::ConnectOptions {
+        let options = iroh::endpoint::ConnectOptions::new();
+        match self.congestion {
+            Some(congestion) => options.with_transport_config(congestion.transport_config()),
+            None => options,
+        }
+    }
+
     /// Returns the token as the MoQ SETUP carries it, if there is one.
     pub(crate) fn setup_token(&self) -> Option<Token> {
         let token = self.token.as_ref()?;

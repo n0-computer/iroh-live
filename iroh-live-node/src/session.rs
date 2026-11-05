@@ -313,7 +313,10 @@ pub(crate) async fn dial_session(
         .grant
         .clone()
         .unwrap_or_else(|| shared.grant_for(remote_id));
-    let transport = transport::dial(&shared.endpoint, remote).await?;
+    if let Some(congestion) = options.congestion {
+        debug!(%congestion, "dialing with its own congestion controller");
+    }
+    let transport = transport::dial_with(&shared.endpoint, remote, options.quic()).await?;
     let connection = transport.conn().clone();
     let auth = authorized(&shared, remote_id, &grant);
     let (moq, driver) = client_handshake(
