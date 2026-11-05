@@ -136,6 +136,46 @@ pub use iroh_live_node::{
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
+/// Typed JSON tracks over moq-net, including a latest-value track.
+///
+/// [`snapshot`](json::snapshot) is the latest-value track, for state such
+/// as a setting or the newest result. Every update supersedes the last, and
+/// [`Consumer::latest`](json::snapshot::Consumer::latest) skips to the newest
+/// value. A track keeps its newest group, so a reader that subscribes late
+/// reads the current value at once, and the writer does not repeat it.
+/// [`stream`](json::stream) is the lossless log, for records that must all
+/// arrive.
+///
+/// This publishes a latency in milliseconds and reads it back:
+///
+/// ```no_run
+/// use iroh_live::{
+///     Audience, Live, Reach,
+///     json::snapshot,
+///     net::track,
+/// };
+///
+/// # async fn run(live: Live, other: Live) -> Result<(), Box<dyn std::error::Error>> {
+/// let path = iroh_live::paths::broadcast(live.endpoint().id(), "control");
+/// let (_publication, track) = live.node().publish_with(&path, Audience::Everyone, |producer| {
+///     producer.create_track("latency", track::Info::default())
+/// })?;
+/// let mut latency = snapshot::Producer::<u64>::new(track, snapshot::Config::default());
+/// latency.update(&150)?;
+///
+/// // On another node.
+/// let subscription = other
+///     .subscribe_path(&path, Reach::Direct(live.endpoint().id()))
+///     .await?;
+/// let track = subscription.as_moq().track("latency")?.subscribe(None).await?;
+/// let mut latency = snapshot::Consumer::<u64>::new(track, Default::default());
+/// while let Some(newest) = latency.latest().await? {
+///     println!("latency {} ms", newest.value);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub use moq_json as json;
 
 pub use self::{
     endpoint::{EndpointOptions, Mdns, secret_key_file},
