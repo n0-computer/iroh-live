@@ -110,6 +110,7 @@ pub(super) async fn run_raw(
         producer,
         catalog,
         clock,
+        timestamps,
         handovers,
         handing_over,
         stats,
@@ -136,7 +137,7 @@ pub(super) async fn run_raw(
     let rate = format.rate;
     // The first rendition to encode anchors it. It is shared so every
     // rendition carries the same timestamp for the same picture.
-    let timeline = Timeline::new(clock);
+    let timeline = Timeline::new(clock).recording(timestamps);
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
@@ -696,6 +697,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish::{TIMESTAMP_HISTORY, TimestampLog};
 
     fn at(micros: u64) -> moq_net::Timestamp {
         moq_net::Timestamp::from_micros(micros).expect("in range")
@@ -745,6 +747,29 @@ mod tests {
         let ahead = at(clock.now().as_micros() as u64 + 500_000);
         let mut timeline = Timeline::new(clock).after(Some(ahead));
         assert!(timeline.map(at(0)) > ahead);
+    }
+
+    /// A recording timeline finds the source timestamp of each frame it mapped, across a break.
+    #[test]
+    fn a_recording_timeline_maps_back_to_the_source() {
+        let log = TimestampLog::default();
+        let mut timeline = Timeline::new(moq_mux::Clock::new()).recording(log.clone());
+        let pattern = timeline.map(at(80_000_000));
+        let camera = timeline.map(at(20_000));
+        assert_eq!(log.source(pattern), Some(at(80_000_000)));
+        assert_eq!(log.source(camera), Some(at(20_000)));
+        assert_eq!(log.source(at(1)), None, "nothing was published at 1 us");
+    }
+
+    #[test]
+    fn the_timestamp_log_forgets_the_oldest_frames() {
+        let log = TimestampLog::default();
+        let count = TIMESTAMP_HISTORY as u64 + 10;
+        for micros in 1..=count {
+            log.record(at(micros), at(micros + 7));
+        }
+        assert_eq!(log.source(at(1)), None);
+        assert_eq!(log.source(at(count)), Some(at(count + 7)));
     }
 
     #[test]
