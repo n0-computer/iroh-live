@@ -5557,10 +5557,12 @@ dependencies = [
  "egui-wgpu",
  "moq-ext-player",
  "moq-ext-publisher",
+ "moq-ext-sources",
  "moq-net",
  "moq-video",
  "n0-future",
  "pollster",
+ "tokio",
  "tracing",
 ]
 
