@@ -44,7 +44,7 @@ web-transport-iroh = "0.7.0"
 # `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
 # major is a different type, so these two versions have to move together.
 eframe = { version = "0.36.2", default-features = false }
-egui = "0.36.2"
+egui = "0.37.0"
 egui-wgpu = "0.36.2"
 wgpu = "30"
 
