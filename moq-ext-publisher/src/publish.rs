@@ -10,6 +10,7 @@
 //! a ladder. Each rendition encodes only while someone watches it.
 
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -110,6 +111,8 @@ struct Job {
     producer: moq_net::broadcast::Producer,
     catalog: moq_mux::catalog::Producer,
     clock: moq_mux::Clock,
+    /// Where the video task records the source timestamp of each frame it publishes.
+    timestamps: TimestampLog,
     /// Held while the task owns its track names.
     tracks: Arc<tokio::sync::Mutex<()>>,
     /// The tracks a replaced video task left open, for this one to take over.
@@ -156,6 +159,37 @@ impl Job {
 /// another timeline.
 const MAX_AHEAD: Duration = Duration::from_secs(1);
 
+/// How many published video frames a broadcast keeps the source timestamp of.
+///
+/// About 30 s at 30 fps, far longer than a round trip to a subscriber takes.
+const TIMESTAMP_HISTORY: usize = 1024;
+
+/// The source timestamp of each recently published video frame, by its broadcast timestamp.
+///
+/// A broadcast timestamp maps to one source timestamp, because the broadcast
+/// clock never goes back. Every rendition publishes a picture at the same
+/// broadcast timestamp, so the renditions of a ladder share one entry.
+#[derive(Debug, Clone, Default)]
+struct TimestampLog(Arc<Mutex<BTreeMap<moq_net::Timestamp, moq_net::Timestamp>>>);
+
+impl TimestampLog {
+    /// Records that the frame stamped `source` was published at `published`.
+    ///
+    /// Forgets the oldest entry past [`TIMESTAMP_HISTORY`].
+    fn record(&self, published: moq_net::Timestamp, source: moq_net::Timestamp) {
+        let mut log = self.0.lock().expect("poisoned");
+        log.insert(published, source);
+        if log.len() > TIMESTAMP_HISTORY {
+            log.pop_first();
+        }
+    }
+
+    /// Returns the source timestamp of the frame published at `published`.
+    fn source(&self, published: moq_net::Timestamp) -> Option<moq_net::Timestamp> {
+        self.0.lock().expect("poisoned").get(&published).copied()
+    }
+}
+
 /// Maps a source's timestamps onto the broadcast clock.
 ///
 /// The first frame lands at the clock's current time, and later frames keep
@@ -176,6 +210,8 @@ struct Timeline {
     last: Option<moq_net::Timestamp>,
     /// The breaks this clone has seen, to tell it about a new one once.
     breaks: u64,
+    /// Where each mapping is recorded, for a timeline that records them.
+    log: Option<TimestampLog>,
 }
 
 /// Where a [`Timeline`] is anchored.
@@ -195,7 +231,14 @@ impl Timeline {
             anchor: Default::default(),
             last: None,
             breaks: 0,
+            log: None,
         }
+    }
+
+    /// Records every mapping in `log`.
+    fn recording(mut self, log: TimestampLog) -> Self {
+        self.log = Some(log);
+        self
     }
 
     /// Reports whether the source's timeline broke since this clone last asked.
@@ -249,6 +292,9 @@ impl Timeline {
         let micros = u64::try_from(source + offset).unwrap_or(0);
         let mapped = moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp);
         self.last = Some(mapped);
+        if let Some(log) = &self.log {
+            log.record(mapped, timestamp);
+        }
         mapped
     }
 }
@@ -266,6 +312,8 @@ struct Shared {
     producer: moq_net::broadcast::Producer,
     catalog: Mutex<moq_mux::catalog::Producer>,
     clock: moq_mux::Clock,
+    /// The source timestamps of the published video, for [`LocalBroadcast::video_source_timestamp`].
+    video_timestamps: TimestampLog,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
     /// Held by a video task while it owns track names.
@@ -375,6 +423,7 @@ impl LocalBroadcast {
                 producer,
                 catalog: Mutex::new(catalog),
                 clock,
+                video_timestamps: TimestampLog::default(),
                 video: Mutex::new(None),
                 audio: Mutex::new(None),
                 video_tracks: Default::default(),
@@ -485,6 +534,36 @@ impl LocalBroadcast {
         self.shared.status.subscribe()
     }
 
+    /// Returns the source timestamp of the video frame this broadcast published at `published`.
+    ///
+    /// The broadcast moves every source timestamp onto its own clock, so a
+    /// subscriber's decoded frame carries another timestamp than the frame the
+    /// source produced. A subscriber that sends the decoded frame's timestamp
+    /// back lets the publisher find its own frame with this, without marking
+    /// the pixels. Every rendition shares the timestamp of a picture.
+    ///
+    /// Returns `None` for a timestamp this broadcast did not publish, for one
+    /// older than the last 1024 frames, and for a pre-encoded source, whose
+    /// timestamps are published as they are.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(broadcast: &moq_ext_publisher::LocalBroadcast, echoed: moq_net::Timestamp) {
+    /// // `echoed` is the timestamp of a frame a subscriber decoded.
+    /// if let Some(source) = broadcast.video_source_timestamp(echoed) {
+    ///     println!("the subscriber saw the frame the source stamped {source:?}");
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn video_source_timestamp(
+        &self,
+        published: moq_net::Timestamp,
+    ) -> Option<moq_net::Timestamp> {
+        self.shared.video_timestamps.source(published)
+    }
+
     /// Returns what the broadcast is sending, per rendition.
     #[must_use]
     pub fn stats(&self) -> PublishStats {
@@ -583,6 +662,7 @@ impl LocalBroadcast {
             producer: shared.producer.clone(),
             catalog: shared.catalog.lock().expect("poisoned").clone(),
             clock: shared.clock.clone(),
+            timestamps: shared.video_timestamps.clone(),
             tracks: tracks.clone(),
             handovers,
             handing_over: handing_over.clone(),

@@ -808,6 +808,45 @@ async fn a_source_that_waits_for_demand_is_played() {
     feeder.abort();
 }
 
+/// A decoded frame's timestamp leads the publisher back to the source frame it came from.
+#[tokio::test]
+async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
+    let format = VideoFormat {
+        size: moq_video::Size::new(64, 48),
+        rate: fps(30),
+    };
+    let (sender, source) = VideoSource::push(format);
+    let feeder = tokio::spawn(push_frames(sender, format));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            software(VideoEncoding::single(VideoRendition::new("video"))),
+        )
+        .expect("valid");
+    let player = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video();
+    for _ in 0..3 {
+        let frame = tokio::time::timeout(TIMEOUT, frames.next())
+            .await
+            .expect("a frame")
+            .expect("the video plays");
+        let source = broadcast
+            .video_source_timestamp(frame.timestamp)
+            .unwrap_or_else(|| panic!("{:?} was not published", frame.timestamp));
+        // `push_frames` stamps frame n at n * 33_333 us.
+        assert_eq!(
+            source.as_micros() % 33_333,
+            0,
+            "{source:?} was never pushed"
+        );
+    }
+    drop(player);
+    feeder.abort();
+}
+
 /// A player's frames end when the broadcast closes.
 ///
 /// The video then reports `Ended`.
