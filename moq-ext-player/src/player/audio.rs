@@ -319,6 +319,7 @@ impl Job {
             self.stats.audio_timeline.push(FrameTiming {
                 kind: MediaKind::Audio,
                 pts: frame.timestamp.into(),
+                arrived: None,
                 decoded,
                 presented: Instant::now() + buffered,
             });

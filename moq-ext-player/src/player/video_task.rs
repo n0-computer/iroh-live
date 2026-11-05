@@ -38,6 +38,7 @@ use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
     Abandon, Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
+    arrivals::{self, Arrivals},
     select::{DecodeSettings, Desired, Failure, Report},
 };
 use moq_ext_media_core::{
@@ -100,14 +101,27 @@ enum Event {
     /// The replacement's open task finished.
     Opened(Result<Result<Reader, Error>, n0_future::task::JoinError>),
     /// The replacement decoded a picture, or its track ended.
-    Replacement(Option<moq_video::Frame>),
+    Replacement(Option<Decoded>),
     /// The incumbent decoded a picture, or its track ended.
-    Incumbent(Option<moq_video::Frame>),
+    Incumbent(Option<Decoded>),
+}
+
+/// A picture as it came out of its decoder.
+struct Decoded {
+    frame: moq_video::Frame,
+    /// When its track's frames arrived.
+    ///
+    /// Looked up when the picture is presented rather than when it is decoded.
+    /// The decoder and the watch read the same frame at once, and by then the
+    /// watch has recorded it.
+    arrivals: Arrivals,
 }
 
 /// A picture waiting for the playout clock to say it is due.
 struct Delivery {
     frame: moq_video::Frame,
+    /// When the frame's data arrived, looked up for the timeline.
+    arrivals: Arrivals,
     /// When the frame came out of its decoder, for the timeline.
     decoded: Instant,
     due: BoxFuture<bool>,
@@ -205,11 +219,13 @@ pub(crate) async fn run(inputs: Inputs) {
             due = async { delivery.as_mut().expect("guarded").due.as_mut().await },
                 if delivering =>
             {
-                let Delivery { frame, decoded, .. } = delivery.take().expect("guarded");
+                let Delivery { frame, arrivals, decoded, .. } = delivery.take().expect("guarded");
                 if due {
+                    let arrived = arrivals.get(frame.timestamp);
                     stats.video_timeline.push(FrameTiming {
                         kind: MediaKind::Video,
                         pts: frame.timestamp.into(),
+                        arrived,
                         decoded,
                         presented: Instant::now(),
                     });
@@ -229,7 +245,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     switcher.opened(generation, result)
                 }
                 Event::Replacement(Some(frame)) => {
-                    match switcher.replacement_frame(frame.timestamp.into(), tokio::time::Instant::now().into_std()) {
+                    match switcher.replacement_frame(frame.frame.timestamp.into(), tokio::time::Instant::now().into_std()) {
                         (Verdict::Promote, outcome) => {
                             // The incumbent's pending picture is older, so it
                             // is replaced.
@@ -246,7 +262,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     switcher.replacement_ended()
                 }
                 Event::Incumbent(Some(frame)) => {
-                    switcher.incumbent_frame(frame.timestamp.into());
+                    switcher.incumbent_frame(frame.frame.timestamp.into());
                     delivery = Some(pace(frame, &mut shown, &clock, &controls, &stats));
                     Outcome::Idle
                 }
@@ -461,7 +477,7 @@ async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
 /// Counts the frame in `shown`. Reads the latency mode on every frame, so a
 /// change takes effect at once.
 fn pace(
-    frame: moq_video::Frame,
+    Decoded { frame, arrivals }: Decoded,
     shown: &mut RateMeter,
     clock: &PlayoutClock,
     controls: &Controls,
@@ -488,6 +504,7 @@ fn pace(
     };
     Delivery {
         frame,
+        arrivals,
         decoded: Instant::now(),
         due,
     }
@@ -497,7 +514,7 @@ fn pace(
 struct Reader {
     /// The name of the decoder backend, for status and logs.
     decoder: String,
-    frames: mpsc::Receiver<moq_video::Frame>,
+    frames: mpsc::Receiver<Decoded>,
     /// Why the reader gave up on its track, unset after a clean end.
     failure: Arc<OnceLock<Arc<Error>>>,
     /// Set once this reader's pictures are on screen.
@@ -507,6 +524,8 @@ struct Reader {
     on_screen: Arc<AtomicBool>,
     /// Dropping this aborts the read loop, which drops the decoder with it.
     _task: AbortOnDropHandle<()>,
+    /// Records when the track's frames arrive, until dropped.
+    _arrivals: Option<AbortOnDropHandle<()>>,
 }
 
 /// Returns the decode options for a player's settings.
@@ -540,6 +559,8 @@ async fn spawn_reader(
             .map_err(decode_error)?;
     let decoder = consumer.name().to_string();
     info!(rendition, decoder = %decoder, "video decoding");
+    let arrivals = Arrivals::default();
+    let watch_arrivals = watch_arrivals(settings, config, rendition, &arrivals);
 
     let (tx, frames) = mpsc::channel(READ_AHEAD);
     let name = rendition.to_string();
@@ -574,7 +595,8 @@ async fn spawn_reader(
                                 }
                             });
                         }
-                        if tx.send(frame).await.is_err() {
+                        let arrivals = arrivals.clone();
+                        if tx.send(Decoded { frame, arrivals }).await.is_err() {
                             debug!("nobody is reading this rendition any more");
                             return;
                         }
@@ -636,7 +658,33 @@ async fn spawn_reader(
         failure,
         on_screen,
         _task: AbortOnDropHandle::new(task),
+        _arrivals: watch_arrivals,
     })
+}
+
+/// Starts recording when the frames of `rendition` arrive, with the decoder's subscription.
+///
+/// Returns `None` when the rendition cannot be watched, which leaves the
+/// arrival of its pictures unknown and playback unchanged.
+fn watch_arrivals(
+    settings: &DecodeSettings,
+    config: &hang::catalog::VideoConfig,
+    rendition: &str,
+    arrivals: &Arrivals,
+) -> Option<AbortOnDropHandle<()>> {
+    use hang::catalog::Reference as _;
+
+    let container = moq_mux::catalog::hang::Container::try_from(config).ok()?;
+    let track = settings.consumer.track(config.track(rendition)).ok()?;
+    // What `moq_video::decode::Consumer` asks for, so the publisher sees one
+    // request.
+    let subscription = moq_net::track::Subscription::default()
+        .with_priority(hang::catalog::PRIORITY.video)
+        .with_delay(decode_options(settings).delay);
+    let task = arrivals::watch(track, subscription, container, arrivals.clone());
+    Some(AbortOnDropHandle::new(spawn(
+        task.instrument(error_span!("arrivals", rendition)),
+    )))
 }
 
 /// Converts a decoder error into the crate's error.
@@ -821,7 +869,7 @@ mod tests {
             .await
             .map_err(|_| "the reader produced no picture from the first group")?
             .ok_or("the video track ended before its first picture")?;
-        let first = first.timestamp.as_micros() as u64;
+        let first = first.frame.timestamp.as_micros() as u64;
         assert_eq!(first, 0, "the reader opened past the first picture");
 
         feed(&mut import, &mut split, &units[boundary..], broken)?;
@@ -848,7 +896,7 @@ mod tests {
     async fn read_all(reader: &mut Reader) -> Vec<u64> {
         let mut seen = Vec::new();
         while let Some(frame) = reader.frames.recv().await {
-            seen.push(frame.timestamp.as_micros() as u64);
+            seen.push(frame.frame.timestamp.as_micros() as u64);
         }
         seen
     }
@@ -909,6 +957,29 @@ mod tests {
             broken.contains(encoded.last().expect("the encoder produced pictures")),
             "the reader stopped before the end: got {broken:?}",
         );
+        Ok(())
+    }
+
+    /// Every decoded picture can name when its data arrived, before it was decoded.
+    #[tokio::test]
+    async fn a_decoded_picture_knows_when_its_data_arrived() -> TestResult {
+        let (mut reader, _, _, _published) = publish(None).await?;
+        let mut decoded = Vec::new();
+        while let Some(picture) = reader.frames.recv().await {
+            decoded.push((picture, Instant::now()));
+        }
+        assert!(!decoded.is_empty(), "the reader decoded no picture");
+        for (picture, at) in &decoded {
+            let timestamp = picture.frame.timestamp;
+            let arrived = picture
+                .arrivals
+                .get(timestamp)
+                .ok_or_else(|| format!("no arrival for the picture at {timestamp:?}"))?;
+            assert!(
+                arrived <= *at,
+                "the picture at {timestamp:?} arrived after it was decoded"
+            );
+        }
         Ok(())
     }
 

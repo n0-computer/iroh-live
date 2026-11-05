@@ -74,18 +74,24 @@ pub enum MediaKind {
     Audio,
 }
 
-/// When one frame left its decoder and when it was presented.
+/// When one frame arrived, left its decoder, and was presented.
 ///
 /// Read with [`Player::timeline`](crate::Player::timeline) for a timeline view
-/// of playback. The gap between the two instants is how long the playout clock
-/// held the frame. Pictures and audio with the same timestamp should be
-/// presented together.
+/// of playback, or [`Player::video_timing`](crate::Player::video_timing) for one
+/// picture. From `arrived` to `decoded` is the time in the decoder, and from
+/// `decoded` to `presented` the time the playout clock held the frame. Pictures
+/// and audio with the same timestamp should be presented together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameTiming {
     /// The medium.
     pub kind: MediaKind,
     /// The frame's presentation timestamp on the broadcast clock.
     pub pts: Duration,
+    /// When the frame's data was complete on this node, before decoding.
+    ///
+    /// Set for pictures. It is `None` for audio, and for a picture whose data
+    /// arrived before the player watched its track.
+    pub arrived: Option<Instant>,
     /// When the decoder handed the frame over.
     pub decoded: Instant,
     /// When the frame was presented.
