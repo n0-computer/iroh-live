@@ -32,6 +32,8 @@
 
 pub mod overlay;
 
+use std::sync::Arc;
+
 pub use egui_wgpu;
 use moq_ext_player::VideoFrames;
 use tracing::warn;
@@ -199,6 +201,9 @@ impl FrameView {
 pub struct VideoView {
     frames: Option<VideoFrames>,
     frame_view: FrameView,
+    /// The frame [`render`](Self::render) last took from the stream.
+    #[debug(skip)]
+    last: Option<Arc<moq_video::Frame>>,
     /// The context [`set_frames`](Self::set_frames) wakes for a new stream.
     #[debug(skip)]
     ctx: egui::Context,
@@ -244,6 +249,7 @@ impl VideoView {
             _wake: wake_on_frame(ctx, frames.as_ref()),
             frames,
             frame_view: FrameView::new(ctx, name, render_state),
+            last: None,
             ctx: ctx.clone(),
         }
     }
@@ -262,8 +268,31 @@ impl VideoView {
     pub fn render(&mut self) -> egui::Image<'_> {
         if let Some(frame) = self.frames.as_mut().and_then(VideoFrames::try_next) {
             self.frame_view.render_frame(&frame);
+            self.last = Some(frame);
         }
         self.frame_view.image()
+    }
+
+    /// Returns the frame [`render`](Self::render) last drew, or `None` before the first.
+    ///
+    /// Its `timestamp` and `size()` say which picture is on screen, for a
+    /// label beside the video. A frame that failed to draw still counts, as
+    /// does one a view without a renderer skipped. The frame stays after
+    /// [`set_frames`](Self::set_frames), as the picture does.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn draw(ui: &mut egui::Ui, view: &mut moq_ext_egui::VideoView) {
+    /// ui.add(view.render());
+    /// if let Some(frame) = view.last_frame() {
+    ///     ui.label(format!("{} at {:?}", frame.size(), frame.timestamp));
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn last_frame(&self) -> Option<&Arc<moq_video::Frame>> {
+        self.last.as_ref()
     }
 }
 
@@ -381,5 +410,36 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
             queue,
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use moq_ext_sources::frames::FrameSlot;
+
+    use super::*;
+
+    fn frame(micros: u64) -> Arc<moq_video::Frame> {
+        let size = moq_video::Size::new(2, 2);
+        let surface = moq_video::Surface::rgba(&[0u8; 16], size).expect("a 2x2 picture");
+        let timestamp = moq_net::Timestamp::from_micros(micros).expect("in range");
+        Arc::new(moq_video::Frame::new(surface, timestamp))
+    }
+
+    /// The view reports the frame each render took, and keeps it across a new stream.
+    #[tokio::test]
+    async fn the_last_frame_is_the_one_render_took() {
+        let ctx = egui::Context::default();
+        let slot = FrameSlot::new();
+        let mut view = VideoView::new(&ctx, "test", slot.frames(), None);
+        assert!(view.last_frame().is_none());
+        slot.send(frame(1));
+        slot.send(frame(2));
+        let _ = view.render();
+        let micros = |view: &VideoView| view.last_frame().map(|f| f.timestamp.as_micros());
+        assert_eq!(micros(&view), Some(2));
+        view.set_frames(None);
+        let _ = view.render();
+        assert_eq!(micros(&view), Some(2));
     }
 }

@@ -26,3 +26,7 @@ moq-video = { workspace = true, features = ["render"] }
 n0-future = "0.3.2"
 pollster = "1.0"
 tracing = "0.1.44"
+
+[dev-dependencies]
+moq-ext-sources = { workspace = true }
+tokio = { version = "1.53.1", features = ["macros", "rt"] }
