@@ -32,7 +32,10 @@ mod output;
 mod select;
 mod video_task;
 
-pub use self::output::AudioTarget;
+pub use self::{
+    audio::{AudioFrame, AudioFrames},
+    output::AudioTarget,
+};
 
 pub(crate) use self::clock::PlayoutClock;
 pub use moq_ext_adaptive::Adaptation;
@@ -203,7 +206,7 @@ pub(crate) struct Controls {
     pub(crate) volume: watch::Sender<f32>,
 }
 
-/// One playback: video into [`VideoFrames`], audio into an [`AudioTarget`].
+/// One playback: video into [`VideoFrames`], audio into an [`AudioTarget`] and [`AudioFrames`].
 ///
 /// Dropping it aborts its tasks and returns at once: decoders stop at their
 /// next await point and are not waited for, so a decoder thread may outlive
@@ -213,6 +216,7 @@ pub(crate) struct Controls {
 pub struct Player {
     broadcast: RemoteBroadcast,
     frames: VideoFrames,
+    audio_frames: broadcast::Sender<AudioFrame>,
     status: watch::Sender<PlayerStatus>,
     controls: Arc<Controls>,
     events: broadcast::Sender<SwitchEvent>,
@@ -251,6 +255,7 @@ impl Player {
             volume: watch::Sender::new(1.0),
         });
         let (events, _) = broadcast::channel(16);
+        let (audio_frames, _) = broadcast::channel(audio::AUDIO_FRAMES_BACKLOG);
         let clock = PlayoutClock::new(config.latency.min);
         let stats = PlaybackRecorder::default();
         let slot = FrameSlot::new();
@@ -298,6 +303,7 @@ impl Player {
                 audio::run(audio::Inputs {
                     broadcast: broadcast.clone(),
                     output,
+                    frames: audio_frames.clone(),
                     controls: controls.clone(),
                     status: status.clone(),
                     clock: clock.clone(),
@@ -311,6 +317,7 @@ impl Player {
         Ok(Self {
             broadcast,
             frames,
+            audio_frames,
             status,
             controls,
             events,
@@ -328,6 +335,38 @@ impl Player {
     #[must_use]
     pub fn video(&self) -> VideoFrames {
         self.frames.clone()
+    }
+
+    /// Returns the decoded audio, as PCM with its timestamps.
+    ///
+    /// The frames are the ones the player writes to its [`AudioTarget`], so
+    /// they flow only while [`PlayerConfig::audio`] is set. Pass
+    /// [`AudioTarget::null`] to decode the audio without playing it, for
+    /// analysis. Each call returns a new handle that starts at the next decoded
+    /// frame. The stream follows the audio across new routes and replaced
+    /// tracks, and ends when the player is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(broadcast: moq_ext_player::RemoteBroadcast) -> Result<(), moq_ext_player::Error> {
+    /// use moq_ext_player::{AudioTarget, PlayerConfig};
+    ///
+    /// let player = broadcast.play(PlayerConfig {
+    ///     audio: Some(AudioTarget::null()),
+    ///     ..PlayerConfig::default()
+    /// })?;
+    /// let mut audio = player.audio_frames();
+    /// while let Some(frame) = audio.next().await {
+    ///     let peak = frame.samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
+    ///     println!("{:?}: peak {peak}", frame.timestamp);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn audio_frames(&self) -> AudioFrames {
+        AudioFrames::new(&self.audio_frames)
     }
 
     /// Returns the broadcast this player plays.

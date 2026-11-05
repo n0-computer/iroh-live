@@ -28,6 +28,7 @@
 //!   [`RemoteBroadcast::play`] starts a [`Player`].
 //! - [`Player`]: decodes the chosen rendition and keeps audio and video in step.
 //! - [`VideoFrames`]: the frame stream every renderer reads.
+//! - [`AudioFrames`]: the decoded audio, for analysis or a custom output.
 //! - [`AudioTarget`]: where a player's audio goes, a `moq_audio::playback::Engine`
 //!   or nowhere. A microphone can cancel the echo of an engine's mix.
 //! - [`RenditionMode`]: how the video rendition is chosen, which is
@@ -45,7 +46,7 @@
 //!
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
-//! | [`VideoFrames::next`], [`RemoteBroadcast::closed`] | yes | loses nothing |
+//! | [`VideoFrames::next`], [`AudioFrames::next`], [`RemoteBroadcast::closed`] | yes | loses nothing |
 //! | [`Player::wait_for_rendition`] | yes | the switch continues |
 //! | `Recording::wait`, `Recording::stop` (feature `record`) | yes, while the recording is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
 
@@ -66,7 +67,10 @@ pub use self::{
     catalog::VideoRenditions,
     error::SwitchError,
     network::NetworkSample,
-    player::{Adaptation, AudioTarget, Latency, Player, PlayerConfig, PlayerStatus, RenditionMode},
+    player::{
+        Adaptation, AudioFrame, AudioFrames, AudioTarget, Latency, Player, PlayerConfig,
+        PlayerStatus, RenditionMode,
+    },
     remote::RemoteBroadcast,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind, PlaybackStats, VideoPlaybackStats},
 };

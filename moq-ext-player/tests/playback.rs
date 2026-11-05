@@ -597,6 +597,48 @@ async fn audio_plays_through_a_null_output() {
     assert_eq!(player.status().borrow().audio, SlotState::Running);
 }
 
+/// The decoded audio reaches an `AudioFrames` reader, with its format and rising timestamps.
+#[tokio::test]
+async fn the_decoded_audio_reaches_an_audio_frames_reader() {
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_audio(
+            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioEncoding::voice(),
+        )
+        .expect("a valid encoding");
+    let player = local(&broadcast)
+        .play(PlayerConfig {
+            audio: Some(AudioTarget::null()),
+            ..PlayerConfig::default()
+        })
+        .expect("valid");
+    let mut audio = player.audio_frames();
+    let mut previous = None;
+    let mut peak = 0f32;
+    for _ in 0..10 {
+        let frame = tokio::time::timeout(TIMEOUT, audio.next())
+            .await
+            .expect("an audio frame")
+            .expect("the player is alive");
+        assert!(frame.format.sample_rate > 0);
+        assert!(!frame.samples.is_empty());
+        assert!(!frame.duration().is_zero());
+        assert!(previous.is_none_or(|previous| frame.timestamp > previous));
+        previous = Some(frame.timestamp);
+        peak = frame.samples.iter().fold(peak, |peak, s| peak.max(s.abs()));
+    }
+    assert!(
+        peak > 0.01,
+        "a 440 Hz tone decoded as silence (peak {peak})"
+    );
+    drop(player);
+    assert!(
+        audio.next().await.is_none(),
+        "the frames outlived the player"
+    );
+}
+
 /// Closing the broadcast ends the player's audio.
 #[tokio::test]
 async fn closing_the_broadcast_ends_the_audio() {

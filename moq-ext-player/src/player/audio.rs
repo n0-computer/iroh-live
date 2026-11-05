@@ -6,7 +6,7 @@ use std::{
 };
 
 use n0_future::task::{AbortOnDropHandle, spawn};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::output::{AudioTarget, OutputControl, OutputSink};
@@ -23,10 +23,71 @@ use crate::{
 /// How long after audio ended or failed the catalog is read again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 
+/// How many decoded frames an [`AudioFrames`] reader may fall behind before it skips.
+///
+/// One second of 20 ms Opus frames.
+pub(crate) const AUDIO_FRAMES_BACKLOG: usize = 50;
+
+/// One block of decoded audio, from [`Player::audio_frames`](crate::Player::audio_frames).
+#[derive(Debug, Clone)]
+pub struct AudioFrame {
+    /// The presentation timestamp of the first sample, on the publisher's broadcast clock.
+    pub timestamp: moq_net::Timestamp,
+    /// The sample rate and the channel layout of [`samples`](Self::samples).
+    pub format: AudioFormat,
+    /// The samples, interleaved, from -1.0 to 1.0.
+    pub samples: Arc<[f32]>,
+}
+
+impl AudioFrame {
+    /// Returns how long the frame plays.
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        let channels = self.format.layout.channels().max(1) as usize;
+        let per_channel = self.samples.len() / channels;
+        Duration::from_secs_f64(per_channel as f64 / f64::from(self.format.sample_rate.max(1)))
+    }
+}
+
+/// The decoded audio of a player, in the order it decodes.
+///
+/// Returned by [`Player::audio_frames`](crate::Player::audio_frames). Each
+/// handle reads every frame decoded after it was created. A handle that falls
+/// more than a second behind loses the oldest frames, so the decoder never
+/// waits for a reader.
+#[derive(Debug)]
+pub struct AudioFrames {
+    rx: broadcast::Receiver<AudioFrame>,
+}
+
+impl AudioFrames {
+    /// Creates a handle that reads what `tx` sends from now on.
+    pub(crate) fn new(tx: &broadcast::Sender<AudioFrame>) -> Self {
+        Self { rx: tx.subscribe() }
+    }
+
+    /// Waits for the next decoded frame.
+    ///
+    /// Returns `None` once the player is dropped. Cancellation safe.
+    pub async fn next(&mut self) -> Option<AudioFrame> {
+        loop {
+            match self.rx.recv().await {
+                Ok(frame) => return Some(frame),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    debug!(skipped, "an audio frames reader fell behind and skipped");
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
 /// The audio task's inputs.
 pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
     pub output: AudioTarget,
+    /// Where each decoded frame goes, for [`AudioFrames`] readers.
+    pub frames: broadcast::Sender<AudioFrame>,
     pub controls: Arc<Controls>,
     pub status: watch::Sender<PlayerStatus>,
     pub clock: PlayoutClock,
@@ -41,6 +102,7 @@ pub(crate) async fn run(inputs: Inputs) {
     let Inputs {
         broadcast,
         output,
+        frames,
         controls,
         status,
         clock,
@@ -71,6 +133,11 @@ pub(crate) async fn run(inputs: Inputs) {
                         send_if_changed(&status, |status| status.audio = SlotState::Running);
                         let job = Job {
                             name: name.clone(),
+                            format: AudioFormat {
+                                sample_rate: decoder.sample_rate(),
+                                layout: decoder.layout(),
+                            },
+                            frames: frames.clone(),
                             decoder,
                             sink,
                             control: control.clone(),
@@ -203,6 +270,10 @@ async fn open(
 /// One rendition being decoded into the output.
 struct Job {
     name: String,
+    /// What the decoder delivers: interleaved `f32` at its own rate and layout.
+    format: AudioFormat,
+    /// Where each decoded frame goes, for [`AudioFrames`] readers.
+    frames: broadcast::Sender<AudioFrame>,
     decoder: moq_audio::decode::Consumer,
     sink: OutputSink,
     control: OutputControl,
@@ -244,6 +315,7 @@ impl Job {
             let buffered = self.sink.buffered();
             self.latency.set(buffered);
             self.sink.write(&frame.data)?;
+            self.share(&frame);
             self.stats.audio_timeline.push(FrameTiming {
                 kind: MediaKind::Audio,
                 pts: frame.timestamp.into(),
@@ -261,5 +333,23 @@ impl Job {
         }
         debug!("audio track ended");
         Ok(())
+    }
+
+    /// Hands `frame` to the [`AudioFrames`] readers, if there are any.
+    fn share(&self, frame: &moq_audio::Frame) {
+        if self.frames.receiver_count() == 0 {
+            return;
+        }
+        let channels = self.format.layout.channels();
+        match moq_audio::Format::F32.as_interleaved_f32(&frame.data, channels) {
+            Ok(samples) => {
+                let _ = self.frames.send(AudioFrame {
+                    timestamp: frame.timestamp,
+                    format: self.format,
+                    samples: samples.into(),
+                });
+            }
+            Err(err) => debug!(error = %err, "a decoded audio frame is not whole f32 samples"),
+        }
     }
 }
