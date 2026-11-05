@@ -889,6 +889,50 @@ async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
     feeder.abort();
 }
 
+/// A frame from the player's video looks up when its data arrived, before it was decoded.
+#[tokio::test]
+async fn a_presented_frame_knows_when_its_data_arrived() {
+    let format = VideoFormat {
+        size: moq_video::Size::new(64, 48),
+        rate: fps(30),
+    };
+    let (sender, source) = VideoSource::push(format);
+    let feeder = tokio::spawn(push_frames(sender, format));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            software(VideoEncoding::single(VideoRendition::new("video"))),
+        )
+        .expect("valid");
+    let player = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video();
+    let mut arrived = 0;
+    for _ in 0..10 {
+        let frame = tokio::time::timeout(TIMEOUT, frames.next())
+            .await
+            .expect("a frame")
+            .expect("the video plays");
+        let timing = player
+            .video_timing(frame.timestamp.into())
+            .expect("a presented frame is on the timeline");
+        if let Some(at) = timing.arrived {
+            assert!(at <= timing.decoded, "{timing:?} decoded before it arrived");
+            arrived += 1;
+        }
+    }
+    // A frame cached before the watch subscribed has no arrival, so allow
+    // the first to miss.
+    assert!(
+        arrived >= 9,
+        "only {arrived} of 10 frames knew their arrival"
+    );
+    drop(player);
+    feeder.abort();
+}
+
 /// A player's frames end when the broadcast closes.
 ///
 /// The video then reports `Ended`.

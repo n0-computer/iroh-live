@@ -26,6 +26,7 @@ use crate::{
     stats::{FrameTiming, PlaybackStats, Timeline},
 };
 
+mod arrivals;
 mod audio;
 mod clock;
 mod output;
@@ -449,6 +450,36 @@ impl Player {
             .collect();
         frames.sort_by_key(|timing| timing.presented);
         frames
+    }
+
+    /// Returns the timing of the presented picture at `pts`, or `None` once it left the timeline.
+    ///
+    /// `pts` is the `timestamp` of a frame from [`video`](Self::video). Its
+    /// `arrived`, `decoded` and `presented` tell the time on the network from
+    /// the time in the decoder and in the playout clock. The timeline keeps the
+    /// last few hundred pictures, so look a frame up soon after it is handed out.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run(player: moq_ext_player::Player) {
+    /// let mut frames = player.video();
+    /// while let Some(frame) = frames.next().await {
+    ///     let timing = player.video_timing(frame.timestamp.into());
+    ///     if let Some(arrived) = timing.and_then(|timing| timing.arrived) {
+    ///         println!("{:?} since its data arrived", arrived.elapsed());
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn video_timing(&self, pts: Duration) -> Option<FrameTiming> {
+        self.stats
+            .video_timeline
+            .snapshot()
+            .into_iter()
+            .rev()
+            .find(|timing| timing.pts == pts)
     }
 
     /// Waits until `name` is on screen.
