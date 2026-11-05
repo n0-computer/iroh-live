@@ -19,6 +19,9 @@ iroh-live-node = { workspace = true }
 # knows nothing about rooms.
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
+# Re-exported as `iroh_live::json`: typed JSON tracks, the latest-value
+# snapshot track among them.
+moq-json = { workspace = true }
 moq-ext-player = { workspace = true, optional = true }
 moq-ext-publisher = { workspace = true, optional = true }
 moq-ext-sources = { workspace = true, optional = true }
