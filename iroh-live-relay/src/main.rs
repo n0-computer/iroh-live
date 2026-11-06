@@ -5,7 +5,7 @@ use clap::Parser;
 #[command(about = "iroh-live relay: bridges iroh P2P and WebTransport/browser clients")]
 struct Cli {
     #[command(flatten)]
-    relay: iroh_live_relay::RelayConfig,
+    relay: iroh_live_relay::Config,
 }
 
 #[tokio::main]

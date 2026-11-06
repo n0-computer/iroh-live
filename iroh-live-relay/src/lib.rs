@@ -7,7 +7,7 @@
 //! broadcast pulled from its publisher (see [`pull`]).
 //!
 //! The binary wraps [`run`]. Another CLI can embed the relay by flattening
-//! [`RelayConfig`] into its arguments.
+//! [`Config`] into its arguments.
 //!
 //! # Examples
 //!
@@ -17,7 +17,7 @@
 //! #[derive(Parser)]
 //! struct Cli {
 //!     #[command(flatten)]
-//!     relay: iroh_live_relay::RelayConfig,
+//!     relay: iroh_live_relay::Config,
 //! }
 //!
 //! # async fn main_() -> anyhow::Result<()> {
@@ -66,7 +66,7 @@ const RELAY_NODE: &str = "iroh-live-relay";
 
 /// Configuration for the relay server, as clap arguments.
 #[derive(Args, Debug, Clone)]
-pub struct RelayConfig {
+pub struct Config {
     /// Bind address for WebTransport over QUIC.
     #[arg(long, default_value = "[::]:4443")]
     pub bind: SocketAddr,
@@ -87,7 +87,7 @@ pub struct RelayConfig {
 /// Fails if the relay's identity cannot be loaded, an endpoint or listener
 /// cannot bind, or the cluster cannot start. A failure of the listener after
 /// startup ends the relay without an error.
-pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
+pub async fn run(config: Config) -> anyhow::Result<()> {
     let mut quic = moq_tokio::quic::Config::default();
     quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
     let connect = moq_tokio::connect::Config::default();

@@ -32,7 +32,7 @@ use embedded_graphics::{
 };
 use gpio_cdev::{Chip, LineRequestFlags};
 use linux_embedded_hal::{CdevPin, SpidevDevice};
-use qrcode::QrCode;
+use qrcode::{EcLevel, QrCode, types::QrError};
 use tracing::{debug, info};
 
 use crate::epd_v4::{self, Epd2in13V4};
@@ -187,6 +187,16 @@ impl QrLayout {
     }
 }
 
+/// Encodes a ticket as a QR code at the lowest error correction level.
+///
+/// A ticket is about 72 bytes, which fits version 4 (33 modules) only at level
+/// L. At the default level it grows to version 5 (37 modules), which leaves
+/// the code too little quiet zone on this panel for a phone to read it. The
+/// panel is clean and close, so it needs little error correction.
+fn ticket_qr(data: &str) -> Result<QrCode, QrError> {
+    QrCode::with_error_correction_level(data.as_bytes(), EcLevel::L)
+}
+
 /// Generates a QR code from `data` and displays it on the e-paper HAT.
 pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
     info!("display_qr: starting");
@@ -194,7 +204,7 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
 
     let mut display = DisplayBuffer::new_white();
 
-    let code = QrCode::new(data.as_bytes())?;
+    let code = ticket_qr(data)?;
     let modules = code.width();
     debug!(modules, data_len = data.len(), "QR code generated");
 
@@ -320,19 +330,17 @@ pub(crate) fn clear_display() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use qrcode::QrCode;
-
     use super::*;
 
     /// A ticket as `irl publish` and this demo print it.
-    const TICKET: &str = "iroh-live:kX9mQ2vT7bL4nR8dY1sW6pA3zC5eH0jF2gK8uM4iO7Q/pi-zero";
+    const TICKET: &str = "ilv1:xq2zp5bk3o4rbi5kx7ncymbkjrmdlbm3lqkv3wuiixu3vo5mbfqq/live/~/pi-zero";
 
     /// A ticket QR is 33 modules wide and gets three pixels per module.
     ///
     /// At one pixel per module, phones fail to read it off the panel.
     #[test]
     fn a_ticket_qr_gets_three_pixels_per_module() {
-        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        let code = ticket_qr(TICKET).expect("a ticket fits in a QR code");
         assert_eq!(code.width(), 33);
 
         let layout = QrLayout::centred(code.width());
@@ -347,7 +355,7 @@ mod tests {
     /// grows into the border, and phones stop reading it.
     #[test]
     fn a_ticket_qr_keeps_most_of_a_quiet_zone() {
-        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        let code = ticket_qr(TICKET).expect("a ticket fits in a QR code");
         let layout = QrLayout::centred(code.width());
         let quiet_modules = layout.x_offset as f64 / layout.scale as f64;
         assert!(
@@ -363,7 +371,7 @@ mod tests {
     /// and the endpoint id alone is 43 base64 characters.
     #[test]
     fn a_fourth_pixel_per_module_does_not_fit_the_panel() {
-        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        let code = ticket_qr(TICKET).expect("a ticket fits in a QR code");
         assert!(
             code.width() * 4 > epd_v4::WIDTH as usize,
             "four pixels per module would fit, so the layout is leaving some behind",
