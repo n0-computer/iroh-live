@@ -33,12 +33,12 @@ encoding. `startH264` sends the camera through MediaCodec to a local broadcast
 and back, which tests the codec without a peer.
 
 A call follows the same convention as `irl call`, so a phone and a desktop can
-call each other. Each side publishes its broadcast with `Live::call`, as
-`iroh_live::CALL`, rings the other peer only with its `CallOffer`, and
-subscribes to the other's with `Live::answer`. `dial` offers this side to the
+call each other. Each side publishes its broadcast with `Calls::new`, as
+`iroh_live::calls::CALL`, rings the other peer only with `Calls::ring`, and
+subscribes to the other's with `Calls::answer`. `dial` offers this side to the
 ticket's peer and returns once the peer answers. `answer` opens this side and
-returns, so the QR code can go on screen. A task then waits for a peer's `call`
-path to appear in the route table, and answers it. The screen polls
+returns, so the QR code can go on screen. A task then waits for a `CallEvent::Ringing` and
+answers it. The screen polls
 `callConnected` to learn when a caller arrived.
 
 ## Prerequisites

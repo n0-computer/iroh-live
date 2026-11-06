@@ -39,15 +39,18 @@ a name that parses as a `BroadcastTicket`, the relay subscribes to the ticket's
 broadcast through its own iroh-live-node node (`src/pull.rs`). That node uses the
 cluster origin as its route table (`NodeConfig::table`), so the publisher's
 session announces the broadcast straight into the cluster at its own path,
-`live/<publisher>/<name>`, with no copy. The session that named the ticket is
+with no copy. The relay pulls only a ticket whose path is the publisher's
+canonical `live/<peer>/<name>` or `rooms/<topic>/<peer>/<name>` path. It refuses
+any other ticket with `NotOwner`. The session that named the ticket is
 served the cluster with a mount at that name (`origin::Producer::mount`), so it
 reads the broadcast under the name it asked for. From then on it is ordinary
 relay fan-out: a second viewer of the same ticket shares the first one's
 upstream session.
 
 Concurrent pulls for one ticket share one dial, so two browsers that arrive
-together open one upstream session. The session's grant lets the publisher
-announce only the pulled paths, so the cluster carries only the broadcasts the
+together open one upstream session. The relay claims each pulled path
+through `Node::claim_path`, on a base grant of nothing. The session's grant
+then lets the publisher announce only the pulled paths, so the cluster carries only the broadcasts the
 tickets name. The relay dials with that grant, which the session enforces from
 before its handshake, and a pull that joins a live session widens it. A pull ends once no session has named the ticket for ten
 seconds, which lets a page reload reuse it, and its path then leaves the

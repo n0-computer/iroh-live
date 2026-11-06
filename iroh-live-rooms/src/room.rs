@@ -811,7 +811,8 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
 
 #[cfg(test)]
 mod tests {
-    use iroh::SecretKey;
+    use iroh::{Endpoint, SecretKey, endpoint::presets, protocol::Router};
+    use iroh_live_node::NodeConfig;
 
     use super::*;
 
@@ -846,9 +847,6 @@ mod tests {
 
     #[tokio::test]
     async fn mounting_marks_the_rooms_mounted() {
-        use iroh::{Endpoint, endpoint::presets, protocol::Router};
-        use iroh_live_node::NodeConfig;
-
         let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");
         let node = Node::new(endpoint.clone(), NodeConfig::default());
         let rooms = Rooms::new(&node);

@@ -8,20 +8,19 @@ members announce themselves and the broadcasts they publish. `Rooms::join` retur
 `Room` with its membership as a watched `RoomState`, `Room::publish` places a
 broadcast at `rooms/<topic>/<member>/<name>` visible to the members only, and
 `Room::subscribe` reads a member's broadcast on demand. Most applications get
-this through `iroh_live::rooms` and `LiveBuilder::with_rooms`.
+this through `iroh_live::rooms`.
 
 ```rust
 use iroh_live_rooms::{RoomTicket, Rooms};
 
 let rooms = Rooms::new(&node);
-// Mount `rooms.protocol_handler()` under `iroh_live_rooms::ALPN`.
+// Mount it on the router with `rooms.mount(router_builder)`.
 let room = rooms.join(&RoomTicket::generate(), Some("ada".into())).await?;
 let _cam = room.publish("cam")?;
 ```
 
 The node's grant has to let each peer publish under `publish_scope`.
-`iroh_live::LiveBuilder::with_rooms` does that, and
-`iroh_live::node_config_with` does it for a config built by hand.
+`LiveLayout::config(&[Arc::new(iroh_live::rooms::publish_scope)])` does that.
 `Rooms::shutdown`, or the router's shutdown through the handler, stops the
 gossip and every room joined on it. See the crate docs and `tests/room.rs` for
 the rest.

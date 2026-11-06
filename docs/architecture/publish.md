@@ -6,7 +6,7 @@ owns the catalog, a media clock, one video slot and one audio slot.
 held. `clear_video` and `clear_audio` empty it. A transport creates the
 broadcast it publishes, and `LocalBroadcast::new_in(producer)` (or
 `TryFrom<broadcast::Producer>`) fills that one, so readers get it without a copy.
-In iroh-live, `let broadcast: LocalBroadcast = live.publish(name)?` publishes
+In iroh-live, `let broadcast: LocalBroadcast = layout.publish(&node, name)?` publishes
 one at `live/<this node's id>/<name>`. `LocalBroadcast::new()` creates one of
 its own, published nowhere, for a local preview or a test. Closing a
 `LocalBroadcast`, or dropping its last clone, closes the broadcast, which
