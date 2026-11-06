@@ -687,10 +687,11 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
     let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("spelling").await;
 
     let canonical = ticket.to_string();
+    // The scheme is case-insensitive, so this is another spelling of the ticket.
     let bare = canonical
-        .strip_prefix("iroh-live:")
-        .expect("a ticket serializes with its scheme")
-        .to_owned();
+        .strip_prefix("ilv1:")
+        .map(|rest| format!("ILV1:{rest}"))
+        .expect("a ticket serializes with its scheme");
     assert_ne!(bare, canonical);
 
     let pull_state =

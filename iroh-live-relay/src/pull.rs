@@ -3,10 +3,14 @@
 //! The relay's [`Node`] uses the cluster origin as its route table. When a
 //! session names a valid [`BroadcastTicket`], the node subscribes to the
 //! ticket's broadcast, and the publisher's session announces it straight into
-//! the cluster at its own path, `live/<publisher>/<name>`. Nothing is copied:
-//! cluster readers read the session's broadcast. The session's grant lets the
-//! publisher announce exactly the pulled paths, so its other broadcasts stay
-//! out. A session that named the ticket reads it under the name it asked for
+//! the cluster at its own path. Nothing is copied: cluster readers read the
+//! session's broadcast. The node's base grant is nothing, and each pull holds
+//! a [`PathClaim`] that lets the publisher announce exactly the pulled path,
+//! so its other broadcasts stay out. The relay pulls only a path the ticket's
+//! peer owns: its canonical `live/<peer>/<name>` path, or a room path with the
+//! peer as member, see [`owner`]. Anything else, such as a path in a scheme of
+//! the publisher's own, is refused with [`NotOwner`](iroh_live_node::Error::NotOwner).
+//! A session that named the ticket reads it under the name it asked for
 //! through a mount, see [`mounted`].
 //!
 //! A pull retires once no local session that named the ticket has held its
@@ -26,8 +30,9 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live::BroadcastTicket;
-use iroh_live_node::{ConnectOptions, Grant, Node, NodeConfig, Subscription};
-use moq_net::{Pattern, Patterns};
+use iroh_live::layout::LiveLayout;
+use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription};
+use moq_net::Path;
 use moq_relay::cluster::Cluster;
 use n0_watcher::Watcher;
 use tokio::sync::watch;
@@ -51,6 +56,28 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(8);
 
 /// How many times in a row resolving again may fail before the pull retires.
 const MAX_RESOLVES: u32 = 5;
+
+/// Returns the peer that owns `path`, for the pull node's [`NodeConfig::owner`].
+///
+/// A path is a peer's if it is exactly the canonical `live/<peer>/<name>`
+/// path of that peer, or a room path `rooms/<topic>/<member>/<name>` whose
+/// member is that peer. Any other path has no owner the relay can verify.
+pub fn owner(path: &Path) -> Option<EndpointId> {
+    let layout = LiveLayout::default();
+    if let Some((peer, name)) = layout.parse(path)
+        && layout.path(peer, name).ok().as_ref() == Some(path)
+    {
+        return Some(peer);
+    }
+    let mut parts = path.parts();
+    let (Some("rooms"), Some(_topic), Some(member), Some(_name)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let member: EndpointId = member.parse().ok()?;
+    (member.to_string() == path.parts().nth(2)?).then_some(member)
+}
 
 /// Returns `cluster` with `requested` reading the broadcast its ticket names.
 ///
@@ -92,10 +119,9 @@ pub struct PullState {
     /// Claims and retirements happen under this lock, so an entry found here
     /// is still open.
     pulls: Arc<Mutex<HashMap<String, Arc<Pull>>>>,
-    /// The paths pulled, live or dialing, from each publisher.
+    /// How many pulls, live or dialing, each publisher has.
     ///
-    /// They make up the grant of the session with the publisher, and the last
-    /// one to go closes that session.
+    /// The last one to go closes the session with the publisher.
     publishers: Publishers,
 }
 
@@ -150,11 +176,14 @@ impl PullState {
     /// Creates pull state that dials over `endpoint` into `cluster`.
     ///
     /// The node writes what publishers announce into the cluster origin
-    /// directly, each publisher kept to its own paths by the grant.
+    /// directly. Its base grant is nothing, so a publisher announces only the
+    /// paths a pull claims, and only if it owns them, see [`owner`].
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         let config = NodeConfig {
             table: Some(cluster.origin.clone()),
-            ..iroh_live::node_config_with(&[iroh_live::rooms::publish_scope])
+            grant: Some(Arc::new(|_| Grant::nothing())),
+            owner: Some(Arc::new(owner)),
+            ..Default::default()
         };
         Self {
             moq: Node::new(endpoint, config),
@@ -223,8 +252,7 @@ impl PullState {
                 // Counted for the whole of the pull, dial included, so a
                 // retiring pull cannot close the session this one is about to
                 // use.
-                let publisher = PublisherClaim::new(&state, &ticket);
-                let outcome = match state.do_connect(&ticket, &name, &pull, publisher).await {
+                let outcome = match state.do_connect(&ticket, &name, &pull).await {
                     Ok(()) => Dial::Connected,
                     Err(err) => {
                         // Retire it, so the next pull dials again.
@@ -262,14 +290,17 @@ impl PullState {
         ticket: &BroadcastTicket,
         local_name: &str,
         pull: &Arc<Pull>,
-        publisher: PublisherClaim,
     ) -> anyhow::Result<()> {
         info!(
             remote = %ticket.peer().fmt_short(),
-            broadcast = %ticket.name(),
+            path = %ticket.path(),
             "pulling remote broadcast"
         );
-        let subscription = self.resolve(ticket, &publisher).await?;
+        // Held for the whole of the pull, dial included: it grants the
+        // publisher its path, and a retiring pull cannot close the session
+        // this one is about to use.
+        let publisher = PublisherClaim::new(self, ticket)?;
+        let subscription = self.resolve(ticket).await?;
         info!(
             local_name = %local_name,
             remote = %ticket.peer().fmt_short(),
@@ -288,32 +319,19 @@ impl PullState {
 
     /// Waits for the publisher to announce the ticket's broadcast into the cluster.
     ///
-    /// Grants the session with the publisher the pulled paths before waiting,
-    /// so only those enter the cluster, and resolves the path through that
-    /// session, so no other peer can stand in for the publisher.
-    async fn resolve(
-        &self,
-        ticket: &BroadcastTicket,
-        claim: &PublisherClaim,
-    ) -> anyhow::Result<Subscription> {
+    /// The caller's [`PublisherClaim`] already lets the publisher announce
+    /// the path, so a session dialed now is authorized for it before its
+    /// handshake. The path resolves through that session, so no other peer
+    /// can stand in for the publisher.
+    async fn resolve(&self, ticket: &BroadcastTicket) -> anyhow::Result<Subscription> {
         // A publisher that never announces the path to us would keep the
         // subscription waiting forever.
         tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
-            // A new session is authorized for the pulled paths before its
-            // handshake, so the publisher's other broadcasts never enter the
-            // cluster, not even for a moment.
-            let options = ConnectOptions {
-                grant: Some(claim.grant()),
-                ..Default::default()
-            };
             let session = self
                 .moq
-                .connect_with(ticket.peer(), options)
+                .connect(ticket.peer())
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to reach the remote: {err:#}"))?;
-            // A session that was up already ignores the options, and claims
-            // may have changed the paths since the dial started.
-            claim.regrant();
             session
                 .subscribe(ticket.path())
                 .await
@@ -357,7 +375,7 @@ impl PullState {
                 self.retire(&local_name, &pull);
                 break;
             }
-            match self.resolve_again(&ticket, &local_name, &publisher).await {
+            match self.resolve_again(&ticket, &local_name).await {
                 Some(next) => current = next,
                 None => {
                     self.retire(&local_name, &pull);
@@ -379,12 +397,11 @@ impl PullState {
         &self,
         ticket: &BroadcastTicket,
         local_name: &str,
-        publisher: &PublisherClaim,
     ) -> Option<Subscription> {
         let mut backoff = RESOLVE_BACKOFF;
         for attempt in 1..=MAX_RESOLVES {
             tokio::time::sleep(backoff).await;
-            match self.resolve(ticket, publisher).await {
+            match self.resolve(ticket).await {
                 Ok(next) => return Some(next),
                 Err(err) => {
                     warn!(local_name = %local_name, attempt, %err, "could not resolve the pull again");
@@ -438,83 +455,40 @@ fn remove_current(pulls: &mut HashMap<String, Arc<Pull>>, local_name: &str, pull
     }
 }
 
-/// The paths pulled from each publisher, with how many pulls want each.
-type Publishers = Arc<Mutex<HashMap<EndpointId, HashMap<String, usize>>>>;
+/// How many pulls each publisher has.
+type Publishers = Arc<Mutex<HashMap<EndpointId, usize>>>;
 
-/// Returns the grant of a session with a publisher whose `paths` are pulled.
+/// One pull's share in the session with a publisher, and the claim on its path.
 ///
-/// The publisher may put exactly those paths into the cluster, and sees
-/// nothing of it: its other broadcasts stay out, and a pull that retires takes
-/// its path out again.
-fn grant_for(paths: &HashMap<String, usize>) -> Grant {
-    Grant {
-        subscribe: Patterns::new(),
-        publish: paths
-            .keys()
-            .filter_map(|path| Pattern::literal(path).ok())
-            .collect(),
-    }
-}
-
-/// Re-grants every session with `publisher` for `paths`.
-fn regrant(moq: &Node, publisher: EndpointId, paths: &HashMap<String, usize>) {
-    let grant = grant_for(paths);
-    for session in moq.sessions().get() {
-        if session.remote_id() == publisher {
-            session.set_grant(grant.clone());
-        }
-    }
-}
-
-/// One pull's share in the session with a publisher, and in the path it pulls.
-///
-/// Dropping the last share of a path takes it out of the session's grant, and
-/// so out of the cluster. Dropping the last share of a publisher closes every
-/// session the relay's node has with it.
+/// The claim lets the publisher announce the pulled path into the cluster.
+/// Dropping it takes the path out again, and so out of the cluster. Dropping
+/// the last share of a publisher closes every session the relay's node has
+/// with it.
 struct PublisherClaim {
     publisher: EndpointId,
-    path: String,
     publishers: Publishers,
     moq: Node,
+    /// Declared last, so the session closes before the path is released.
+    _path: PathClaim,
 }
 
 impl PublisherClaim {
-    fn new(state: &PullState, ticket: &BroadcastTicket) -> Self {
+    /// Claims the ticket's path for its peer, if the peer owns it.
+    fn new(state: &PullState, ticket: &BroadcastTicket) -> anyhow::Result<Self> {
         let publisher = ticket.peer();
-        let path = ticket.path().to_string();
-        let mut publishers = state.publishers.lock().expect("poisoned");
-        let paths = publishers.entry(publisher).or_default();
-        *paths.entry(path.clone()).or_default() += 1;
-        // A session already up takes the path at once.
-        regrant(&state.moq, publisher, paths);
-        Self {
-            publisher,
-            path,
-            publishers: Arc::clone(&state.publishers),
-            moq: state.moq.clone(),
-        }
-    }
-
-    /// Returns the grant of a session with this claim's publisher.
-    fn grant(&self) -> Grant {
-        self.publishers
+        let path = state.moq.claim_path(publisher, ticket.path())?;
+        *state
+            .publishers
             .lock()
             .expect("poisoned")
-            .get(&self.publisher)
-            .map(grant_for)
-            .unwrap_or_else(|| grant_for(&HashMap::new()))
-    }
-
-    /// Re-grants every session with this claim's publisher for the paths pulled now.
-    ///
-    /// Runs under the lock claims change the paths under, as [`Self::new`]
-    /// and the drop do, so a grant read before a concurrent claim or
-    /// retirement never lands after it.
-    fn regrant(&self) {
-        let publishers = self.publishers.lock().expect("poisoned");
-        let none = HashMap::new();
-        let paths = publishers.get(&self.publisher).unwrap_or(&none);
-        regrant(&self.moq, self.publisher, paths);
+            .entry(publisher)
+            .or_default() += 1;
+        Ok(Self {
+            publisher,
+            publishers: Arc::clone(&state.publishers),
+            moq: state.moq.clone(),
+            _path: path,
+        })
     }
 }
 
@@ -524,17 +498,11 @@ impl Drop for PublisherClaim {
         // starts now either counts before this and keeps the session, or
         // counts after the close and dials anew.
         let mut publishers = self.publishers.lock().expect("poisoned");
-        let Some(paths) = publishers.get_mut(&self.publisher) else {
+        let Some(count) = publishers.get_mut(&self.publisher) else {
             return;
         };
-        if let Some(count) = paths.get_mut(&self.path) {
-            *count -= 1;
-            if *count == 0 {
-                paths.remove(&self.path);
-            }
-        }
-        if !paths.is_empty() {
-            regrant(&self.moq, self.publisher, paths);
+        *count -= 1;
+        if *count > 0 {
             return;
         }
         publishers.remove(&self.publisher);
@@ -544,5 +512,31 @@ impl Drop for PublisherClaim {
                 session.close("no pull left");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(path: &str) -> Path {
+        Path::new(path).expect("a path")
+    }
+
+    #[test]
+    fn owner_accepts_only_canonical_live_and_rooms_paths() {
+        let peer = iroh::SecretKey::from_bytes(&[3; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[4; 32]).public();
+        assert_eq!(owner(&path(&format!("live/{peer}/cam"))), Some(peer));
+        assert_eq!(owner(&path(&format!("live/{peer}/cam/hd"))), Some(peer));
+        assert_eq!(owner(&path(&format!("rooms/topic/{peer}/cam"))), Some(peer));
+        assert_eq!(owner(&path(&format!("rooms/topic/{peer}"))), None);
+        assert_eq!(owner(&path("fleet/robot/cam")), None);
+        assert_eq!(owner(&path(&format!("live/{peer}"))), None);
+        assert_eq!(owner(&path(&format!("other/{peer}/cam"))), None);
+        let base32 = data_encoding::BASE32_NOPAD
+            .encode(other.as_bytes())
+            .to_ascii_lowercase();
+        assert_eq!(owner(&path(&format!("live/{base32}/cam"))), None);
     }
 }
