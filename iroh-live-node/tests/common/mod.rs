@@ -63,6 +63,11 @@ impl Peer {
     /// Spawns a node with `config`, filling in the grant `spawn` gives.
     pub(crate) async fn with_config(mut config: NodeConfig) -> Self {
         config.grant.get_or_insert_with(|| Arc::new(own_paths));
+        Self::bare(config).await
+    }
+
+    /// Spawns a node with exactly `config`, the default grant included.
+    pub(crate) async fn bare(config: NodeConfig) -> Self {
         let endpoint = endpoint().await;
         let moq = Node::new(endpoint.clone(), config);
         let router = moq.mount(Router::builder(endpoint.clone())).spawn();

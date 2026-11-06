@@ -67,6 +67,33 @@ impl Grant {
         }
     }
 
+    /// Returns a grant that allows nothing in either direction.
+    #[must_use]
+    pub fn nothing() -> Self {
+        Self {
+            subscribe: Patterns::new(),
+            publish: Patterns::new(),
+        }
+    }
+
+    /// Returns this grant with the literal `path` added to what the peer may publish.
+    #[must_use]
+    pub fn with_publish_path(mut self, path: &str) -> Self {
+        if let Ok(pattern) = Pattern::literal(path) {
+            self.publish.insert(pattern);
+        }
+        self
+    }
+
+    /// Returns a grant that allows what either this grant or `other` allows.
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        let mut union = self.clone();
+        union.subscribe.extend(other.subscribe.iter().cloned());
+        union.publish.extend(other.publish.iter().cloned());
+        union
+    }
+
     /// Reports whether the peer may subscribe to `path`.
     #[must_use]
     pub fn allows_subscribe(&self, path: &str) -> bool {
@@ -329,6 +356,17 @@ mod tests {
         assert!(scoped.allows_subscribe("live/x/cam"));
         assert!(!scoped.allows_subscribe("rooms/t/x/cam"));
         assert!(!scoped.allows_publish("live/x/cam"));
+    }
+
+    #[test]
+    fn nothing_and_union_compose() {
+        let nothing = Grant::nothing();
+        assert!(!nothing.allows_publish("a/b") && !nothing.allows_subscribe("a/b"));
+        let one = Grant::nothing().with_publish_path("a/b");
+        assert!(one.allows_publish("a/b") && !one.allows_publish("a/b/c"));
+        let both = Grant::subscribe_only().union(&one);
+        assert!(both.allows_publish("a/b") && both.allows_subscribe("x"));
+        assert!(!both.allows_publish("x"));
     }
 
     #[test]

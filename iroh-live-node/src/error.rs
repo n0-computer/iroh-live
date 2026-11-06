@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use iroh::EndpointId;
 use moq_net::Path;
 use n0_error::{AnyError, stack_error};
 
@@ -61,9 +62,24 @@ pub enum Error {
     InvalidPath { path: String },
     /// The session's grant does not cover the path.
     ///
-    /// For a subscribe, the peer may not publish the path.
-    #[error("the session's grant does not cover {path}")]
-    NotGranted { path: Path },
+    /// For a subscribe, the peer may not publish the path. `publish_patterns`
+    /// are the patterns the grant lets the peer publish, as text.
+    #[error(
+        "the grant of {} does not let it publish {path}, it may publish [{}]",
+        peer.fmt_short(),
+        list_patterns(publish_patterns)
+    )]
+    NotGranted {
+        path: Path,
+        peer: EndpointId,
+        publish_patterns: Vec<String>,
+    },
+    /// The peer does not own the path, so a ticket cannot grant it.
+    #[error("{} does not own {path}", peer.fmt_short())]
+    NotOwner { path: Path, peer: EndpointId },
+    /// The peer already holds as many ticket grants as the node allows.
+    #[error("too many ticket grants for {}", peer.fmt_short())]
+    TooManyGrants { peer: EndpointId },
     /// The path was not announced before its only link went away.
     #[error("{path} was not announced before the session ended")]
     NotAnnounced { path: Path },
@@ -103,6 +119,34 @@ impl From<moq_transport_iroh::Error> for Error {
                 n0_error::e!(Self::UnsupportedAlpn { alpn })
             }
         }
+    }
+}
+
+/// How many patterns [`Error::NotGranted`] lists.
+const LISTED_PATTERNS: usize = 8;
+
+/// Renders the first few of `patterns` for an error message.
+fn list_patterns(patterns: &[String]) -> String {
+    let mut text = patterns
+        .iter()
+        .take(LISTED_PATTERNS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if patterns.len() > LISTED_PATTERNS {
+        text.push_str(&format!(", and {} more", patterns.len() - LISTED_PATTERNS));
+    }
+    text
+}
+
+impl Error {
+    /// Returns the error for `peer` publishing `path` outside `grant`.
+    pub(crate) fn not_granted(path: Path, peer: EndpointId, grant: &crate::Grant) -> Self {
+        n0_error::e!(Self::NotGranted {
+            path,
+            peer,
+            publish_patterns: grant.publish.iter().map(ToString::to_string).collect(),
+        })
     }
 }
 

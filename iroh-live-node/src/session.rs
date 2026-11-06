@@ -60,11 +60,21 @@ impl Session {
     }
 
     /// Returns what the peer may do on this node.
+    ///
+    /// That is the base grant, widened by the paths that live ticket
+    /// subscriptions claimed for the peer (see [`Node::claim_path`](crate::Node::claim_path)).
     pub fn grant(&self) -> Grant {
-        self.inner.grant.lock().expect("poisoned").clone()
+        let Some(shared) = self.inner.shared.upgrade() else {
+            return self.inner.grant.lock().expect("poisoned").clone();
+        };
+        let state = shared.state.lock().expect("poisoned");
+        let base = self.inner.grant.lock().expect("poisoned");
+        state.effective_grant(Some(&self.inner.remote), &base)
     }
 
-    /// Changes what the peer may do on this node, on the live session.
+    /// Changes the base grant of the peer, on the live session.
+    ///
+    /// Paths that live ticket subscriptions claimed stay on top of it.
     ///
     /// moq enforces it at once, in both directions. A narrower subscribe half
     /// takes paths from the peer and resets what it reads there, and a
@@ -119,8 +129,9 @@ impl Session {
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
     ) -> Result<Subscription, Error> {
         let path = crate::error::to_path(path)?;
-        if !self.grant().allows_publish(path.as_str()) {
-            return Err(e!(Error::NotGranted { path }));
+        let grant = self.grant();
+        if !grant.allows_publish(path.as_str()) {
+            return Err(Error::not_granted(path, self.inner.remote, &grant));
         }
         let Some(shared) = self.inner.shared.upgrade() else {
             return Err(e!(Error::ShutDown));

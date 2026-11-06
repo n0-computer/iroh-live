@@ -71,6 +71,7 @@
 
 mod actor;
 mod admission;
+mod claim;
 mod error;
 mod handshake;
 mod link;
@@ -94,6 +95,7 @@ pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, Mo
 
 pub use self::{
     admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
+    claim::{OwnerFn, PathClaim},
     error::Error,
     link::ServingLink,
     node::{Node, NodeConfig, Reach},

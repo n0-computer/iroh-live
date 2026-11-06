@@ -5,7 +5,7 @@ use std::sync::Arc;
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
 use moq_net::{auth, origin};
 use n0_error::e;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{
     ConnectOptions, Error, Grant, LinkKind, SessionRequest, node::Shared, state::served, transport,
@@ -50,40 +50,13 @@ pub(crate) fn authorized(shared: &Shared, remote: EndpointId, grant: &Grant) -> 
     auth
 }
 
-/// Returns where a session with `remote` writes what its peer announces.
+/// Returns where a session writes what its peer announces.
 ///
-/// That is the route table, tagged [`origin::Link::Peer`] and scoped to what
-/// `grant` or the node's own grant for `remote` lets the peer publish. The
-/// scope bounds the session for good, so a session that starts with a grant
-/// narrower than the node's can still be widened up to it with
-/// [`Session::set_grant`]. The session's authorization keeps the peer to
-/// `grant` meanwhile. `None` if neither grant lets the peer publish anything.
-pub(crate) fn subscriber(
-    shared: &Shared,
-    remote: EndpointId,
-    grant: &Grant,
-) -> Option<origin::Producer> {
-    let mut publish = grant.publish.clone();
-    publish.extend(shared.grant_for(remote).publish.iter().cloned());
-    if publish.is_empty() {
-        return None;
-    }
-    match shared
-        .table
-        .clone()
-        .with_link(origin::Link::Peer)
-        .scope("", &publish)
-    {
-        Ok(scoped) => Some(scoped),
-        Err(err) => {
-            warn!(
-                remote = %remote.fmt_short(),
-                %err,
-                "the grant's publish patterns fit no path, so nothing the peer announces is ingested"
-            );
-            None
-        }
-    }
+/// That is the route table, tagged [`origin::Link::Peer`] and scoped to
+/// everything: the session's authorization is the only gate, so a grant that
+/// widens later, as a ticket claim does, takes effect on the live session.
+pub(crate) fn subscriber(shared: &Shared) -> origin::Producer {
+    shared.table.clone().with_link(origin::Link::Peer)
 }
 
 /// Everything a session needs to run, produced by a dial or an admission.
@@ -125,7 +98,7 @@ pub(crate) async fn dial_session(
         &options,
         remote_id,
         &served(&shared.table),
-        subscriber(&shared, remote_id, &grant),
+        Some(subscriber(&shared)),
         auth.clone(),
     )
     .await

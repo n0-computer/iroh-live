@@ -12,7 +12,7 @@
 //! goes straight into the table, so the state only maps a route's source back
 //! to its link (see [`State::link_for`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
 use moq_net::{Hop, Path, Pattern, auth, origin, origin::Source};
@@ -32,6 +32,23 @@ pub(crate) struct State {
     pub(crate) links: BTreeMap<u64, LinkEntry>,
     /// Set once the node shuts down; nothing is added after that.
     pub(crate) closed: bool,
+    /// Paths that tickets widened a peer's grant to, with how many claims hold each.
+    tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
+}
+
+/// How many paths a ticket may widen one peer's grant to.
+const MAX_TICKET_PATHS: usize = 64;
+
+/// How many bytes of paths a ticket may widen one peer's grant to.
+const MAX_TICKET_BYTES: usize = 16 * 1024;
+
+/// Why a ticket path could not be claimed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ClaimRefused {
+    /// The node has shut down.
+    Closed,
+    /// The peer holds too many ticket paths.
+    TooMany,
 }
 
 /// One publication.
@@ -147,6 +164,63 @@ impl State {
         self.authorize(id);
     }
 
+    /// Adds one claim on `path` for `peer`, and widens the peer's links to it.
+    pub(crate) fn claim_path(&mut self, peer: EndpointId, path: &Path) -> Result<(), ClaimRefused> {
+        if self.closed {
+            return Err(ClaimRefused::Closed);
+        }
+        let paths = self.tickets.entry(peer).or_default();
+        if let Some(count) = paths.get_mut(path) {
+            *count += 1;
+            return Ok(());
+        }
+        let bytes: usize = paths.keys().map(|path| path.as_str().len()).sum();
+        if paths.len() >= MAX_TICKET_PATHS || bytes + path.as_str().len() > MAX_TICKET_BYTES {
+            return Err(ClaimRefused::TooMany);
+        }
+        paths.insert(path.clone(), 1);
+        self.authorize_peer(&peer);
+        Ok(())
+    }
+
+    /// Drops one claim on `path` for `peer`, and narrows the peer's links if it was the last.
+    pub(crate) fn release_path(&mut self, peer: &EndpointId, path: &Path) {
+        let Some(paths) = self.tickets.get_mut(peer) else {
+            return;
+        };
+        let Some(count) = paths.get_mut(path) else {
+            return;
+        };
+        *count -= 1;
+        if *count > 0 {
+            return;
+        }
+        paths.remove(path);
+        if paths.is_empty() {
+            self.tickets.remove(peer);
+        }
+        self.authorize_peer(peer);
+    }
+
+    /// Returns `base` widened by the ticket paths of `remote`.
+    pub(crate) fn effective_grant(&self, remote: Option<&EndpointId>, base: &Grant) -> Grant {
+        let Some(paths) = remote.and_then(|remote| self.tickets.get(remote)) else {
+            return base.clone();
+        };
+        paths.keys().fold(base.clone(), |grant, path| {
+            grant.with_publish_path(path.as_str())
+        })
+    }
+
+    /// Re-authorizes every link with `peer`.
+    fn authorize_peer(&self, peer: &EndpointId) {
+        for (id, link) in &self.links {
+            if link.remote.as_ref() == Some(peer) {
+                self.authorize(*id);
+            }
+        }
+    }
+
     /// Returns the publication at `path`, if any.
     pub(crate) fn publication_at(&self, path: &Path) -> Option<u64> {
         self.publications
@@ -193,6 +267,7 @@ impl State {
             LinkKind::Direct => LinkRole::Direct,
             LinkKind::Relay => LinkRole::Relay { public },
         };
+        let base = &self.effective_grant(remote, base);
         let subscribe = moq_ext_access::visible_paths(
             self.publications
                 .values()
