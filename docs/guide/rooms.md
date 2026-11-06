@@ -12,31 +12,37 @@ node's route table and returns it as any type built from a moq-net
 ## Joining
 
 `Rooms` owns the gossip instance, and the router mounts it. The node's grant
-must let members publish under `iroh_live_rooms::publish_scope(member)`.
-`LiveBuilder::with_rooms` widens the grant and starts the rooms, and
-`Live::mount` then mounts the gossip next to the transport. Only an
-application that calls `with_rooms` grants that scope. Enabling the `rooms`
-feature alone grants nothing:
+must let members publish under `iroh_live::rooms::publish_scope(member)`.
+Pass that scope to the layout's config, and mount the gossip with
+`Rooms::mount` next to the transport. Only an application that passes the scope
+grants it. Enabling the `rooms` feature alone grants nothing:
 
 ```rust
-use iroh::protocol::Router;
-use iroh_live::{Live, rooms::RoomTicket};
+use std::sync::Arc;
 
-let (live, rooms) = Live::builder(endpoint.clone()).spawn_with_rooms();
-// or `Live::builder(endpoint).with_rooms().spawn()` and `live.rooms()`
-let router = live.mount(Router::builder(endpoint)).spawn();
+use iroh::protocol::Router;
+use iroh_live::{
+    Node,
+    layout::LiveLayout,
+    rooms::{RoomTicket, Rooms},
+};
+
+let layout = LiveLayout::default();
+let node = Node::new(
+    endpoint.clone(),
+    layout.config(&[Arc::new(iroh_live::rooms::publish_scope)]),
+);
+let rooms = Rooms::new(&node);
+let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
 
 let room = rooms
     .join(&RoomTicket::generate(), Some("ada".into()))
     .await?;
 ```
 
-Without `Live`, create `Rooms::new(&moq)`, mount `rooms.protocol_handler()` under
-`iroh_live::rooms::ALPN` yourself, and widen the grant with
-`iroh_live::node_config_with(&[iroh_live::rooms::publish_scope])`.
-
-`Live::shutdown` shuts the rooms down with the node. Without `Live`, call
-`Rooms::shutdown`, or let `Router::shutdown` do it through the handler.
+A node that joins a room without the mount logs a warning, since the other
+members cannot reach its gossip. `Router::shutdown` shuts down the node and the
+rooms. To shut the rooms down yourself, call `Rooms::shutdown`.
 
 Share `room.ticket()` with the people who join. It lists this member as the
 bootstrap endpoint.

@@ -299,7 +299,7 @@ audio = "none"
 
 [[recv]]
 name = "friend"
-ticket = "iroh-live:..."     # as `irl publish` printed it
+ticket = "ilv1:..."         # as `irl publish` printed it
 audio_output = "default"     # or "none"
 record = "friend.mp4"        # optional, the extension picks the container
 rendition = "low"            # optional, the rendition to record

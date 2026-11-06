@@ -44,7 +44,7 @@ All commands and flags are in [docs/cli.md](docs/cli.md).
 
 ## Using iroh-live in Rust
 
-The [`iroh-live`](iroh-live) crate is the library: a `Live` node publishes
+The [`iroh-live`](iroh-live) crate is the library: a `Node` publishes
 broadcasts and plays other nodes' broadcasts, and its player picks a rendition
 from the ladder as the link allows. [Using iroh-live](docs/guide/usage.md)
 has complete examples: publish, watch, calls, rooms, your own paths, relays and
@@ -76,7 +76,7 @@ these APIs, crates.io versions will replace the git pins.
 
 | Crate | Description |
 |---|---|
-| [`iroh-live`](iroh-live) | `Live`: publish and subscribe at `live/<endpoint id>/<name>`, `BroadcastTicket`, endpoint setup, and the media, transport and rooms crates re-exported |
+| [`iroh-live`](iroh-live) | `Node` and `LiveLayout`: publish and subscribe at `live/<endpoint id>/<name>`, `Calls`, `BroadcastTicket`, endpoint setup, and the media, transport and rooms crates re-exported |
 | [`iroh-live-node`](iroh-live-node) | The node: one route table fed by direct sessions and relay links, publications, and grants |
 | [`moq-transport-iroh`](moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, moq-net's poll transport on iroh, `MoqPreset`, link statistics. No node concepts |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
@@ -130,8 +130,7 @@ through and has no default features. `full` turns on `media`, `capture`,
 `render`, `sound-server`, and `record`. `irl` always turns on `capture`,
 `file`, `render`, `rooms` and `record`, and by default `aec`, `playback` and
 `sound-server`. `media` turns the media stack on, and each device
-feature implies it. `rooms` re-exports `iroh-live-rooms` and adds
-`LiveBuilder::with_rooms`.
+feature implies it. `rooms` re-exports `iroh-live-rooms`.
 
 ### Cross-compiling for aarch64
 

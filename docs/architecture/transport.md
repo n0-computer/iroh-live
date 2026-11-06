@@ -46,8 +46,8 @@ that keep each peer to its own paths.
 A direct session's routes enter the table only within the grant. `NodeConfig::grant`
 computes it from the peer's endpoint id, and the default is
 `Grant::subscribe_only()`: a peer may read anything and publish nothing.
-`iroh_live::grant` lets a peer publish under `live/<peer>/`, and
-`LiveBuilder::with_rooms` adds `rooms/*/<peer>/`. The table is shared by
+`LiveLayout::config` lets a peer publish under `live/<peer>/`, and adding
+`iroh_live::rooms::publish_scope` adds `rooms/*/<peer>/`. The table is shared by
 everything on the node and answers a ticket without dialing. A peer whose grant
 let it announce another publisher's path could stand in for that publisher,
 so grants should name the peer. A relay is trusted with every path it forwards,
@@ -72,7 +72,7 @@ with nothing copied in between. `Node::publish_with` fills the broadcast before
 it is announced, so no reader finds it without its first tracks. The fill
 runs before the node takes its lock, so it may fail or call back into the
 node without harm.
-`iroh_live::Live::publish` builds a `LocalBroadcast` in it this way. A
+`LiveLayout::publish` builds a `LocalBroadcast` in it this way. A
 publication stays until `unpublish`, until its broadcast closes, or until the
 node shuts down.
 

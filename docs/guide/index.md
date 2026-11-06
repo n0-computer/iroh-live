@@ -59,46 +59,48 @@ under a name:
 ```rust
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Live,
+    EndpointOptions, Node,
+    layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
         VideoRendition, VideoSource, video,
     },
 };
 
+let layout = LiveLayout::default();
 let endpoint = EndpointOptions::default().bind().await?;
-let live = Live::new(endpoint.clone());
+let node = Node::new(endpoint.clone(), layout.config(&[]));
 // Keep the router: dropping it stops accepting viewers.
-let router = live.mount(Router::builder(endpoint)).spawn();
+let router = node.mount(Router::builder(endpoint)).spawn();
 // Created in the node's route table, published while `broadcast` lives.
-let broadcast: LocalBroadcast = live.publish("hello")?;
+let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
 
 let camera = VideoSource::capture(video::capture::Config::default()).await?;
 broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
 let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
 broadcast.set_audio(microphone, AudioEncoding::voice())?;
-println!("{}", live.ticket("hello"));
+println!("{}", layout.ticket(node.id(), "hello")?);
 
-// On exit: end the sessions, then close the endpoint through the router.
-live.shutdown().await;
+// On exit: shut down the node and close the endpoint through the router.
 router.shutdown().await?;
 ```
 
 The router is the application's, so it can carry other protocols next to the
-ones `mount` adds. The broadcast is at `live/<endpoint id>/hello`, and the ticket names that path.
+ones `mount` adds. The broadcast is at `live/<endpoint id>/hello`, and the
+ticket names that path.
 A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
 use iroh_live::{
-    EndpointOptions, Live,
-    media::{AudioTarget, PlayerConfig, audio::playback::Engine},
+    EndpointOptions, Node, NodeConfig,
+    media::{AudioTarget, PlayerConfig, audio::playback::Engine, remote_broadcast},
 };
 
-// Only dials, so it needs no router.
-let live = Live::new(EndpointOptions::default().bind().await?);
-let subscription = live.subscribe(&ticket).await?;
+// Only dials, so it needs no router and no layout.
+let node = Node::new(EndpointOptions::default().bind().await?, NodeConfig::default());
+let subscription = node.subscribe_ticket(&ticket).await?;
 let engine = Engine::open(Default::default()).await?;
-let player = live.remote_broadcast(&subscription).play(PlayerConfig {
+let player = remote_broadcast(&subscription).play(PlayerConfig {
     audio: Some(AudioTarget::from(engine)),
     ..Default::default()
 })?;
@@ -119,25 +121,26 @@ opens on its own thread once `set_audio` runs. A failure then shows in
 `LocalBroadcast::status()`, and the audio stays off until the next
 `set_audio`.
 
-`Live::subscribe` returns once a route to the broadcast is found. The catalog
+`Node::subscribe_ticket` returns once a route to the broadcast is found. The catalog
 arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`
 when it does.
 
 The paths, the grant and the endpoint are defaults, and each can be replaced:
 
-- `Live::builder_with(endpoint, NodeConfig)` sets the admission and the grant.
-- `Live::publish_to(name, Audience)` publishes under the layout to an
-  audience other than everyone, such as `Audience::peers([peer])`.
-- `Live::publish_at(path, Audience)` and
-  `Live::subscribe_path(path, Reach)` work on any path, next to the ticket
-  calls. `Live::remote_broadcast(&subscription)` reads the media of the result.
-- `Live::node()` is the escape hatch to the whole transport.
+- `NodeConfig` sets the admission and the grant. `LiveLayout::config(extra)`
+  builds one for the layout, and `NodeConfig::default()` is subscribe-only.
+- `LiveLayout::publish_with(&node, name, audience, fill)` publishes under the
+  layout to an audience other than everyone, such as `Audience::peers([peer])`.
+- `Node::publish(path, audience)` and `Node::subscribe(path, reach)` work on any
+  path, next to the ticket calls. `media::remote_broadcast(&subscription)`
+  reads the media of the result.
+- `LiveLayout::path` and `LiveLayout::parse` build and parse the
+  `live/<id>/<name>` paths.
 - `EndpointOptions::apply(builder)` adds the preset, the key and mDNS to your
   own endpoint builder, so you can set the relay mode or another address
   lookup. `bind()` does the same on a default one.
-- `iroh_live::paths` builds and parses the `live/<id>/<name>` paths.
 
-A node that needs none of `Live` can mount `Node` on a router itself, as
+A node that needs no layout can mount `Node` on a router itself, as
 `iroh-live/examples/moq_only.rs` does.
 
 `iroh-live/examples/publish.rs` is a complete publisher, with a two-rung

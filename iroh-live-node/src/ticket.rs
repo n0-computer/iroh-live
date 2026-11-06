@@ -205,6 +205,7 @@ impl<'de> Deserialize<'de> for BroadcastTicket {
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
+    use serde::de::{IntoDeserializer, value::Error};
 
     use super::*;
 
@@ -322,8 +323,6 @@ mod tests {
 
     #[test]
     fn serde_reads_the_string_form() {
-        use serde::de::{IntoDeserializer, value::Error};
-
         let original = ticket(id(), "cam");
         let text = original.to_string();
         let back = BroadcastTicket::deserialize(IntoDeserializer::<Error>::into_deserializer(

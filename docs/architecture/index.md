@@ -12,7 +12,7 @@ This repository holds the layer that joins them.
 | `iroh-live-node` | The node over that transport: the route table, publications and audiences, sessions and relay links |
 | `moq-ext-access` | Access control: grants, session requests and audiences. No transport dependency |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
-| `iroh-live` | `Live`, the facade that joins media and transport, `BroadcastTicket`, endpoint setup, and the re-exports |
+| `iroh-live` | `LiveLayout` and `Calls`, the facade that joins media and transport, endpoint setup, and the re-exports |
 | `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording |
 | `moq-ext-publisher` | A broadcast that encodes sources into renditions |
 | `moq-ext-adaptive` | Rendition choice and decoder handover as pure state machines |
@@ -47,51 +47,57 @@ The rest is upstream. See [the media stack](media-stack.md) for what we use.
 
 ## iroh-live
 
-`Live` is a node ready for live media. It wraps an endpoint the application
-binds, usually with `EndpointOptions::default().bind()`: `MoqPreset` (iroh's N0 preset
-with BBR3 congestion control), a key and mDNS. `EndpointOptions::apply` does the
-same on your own endpoint builder.
+`iroh-live` is the application's entry to the node for live media. The
+application binds an endpoint, usually with `EndpointOptions::default().bind()`:
+`MoqPreset` (iroh's N0 preset with BBR3 congestion control), a key and mDNS.
+`EndpointOptions::apply` does the same on your own endpoint builder.
 
 ```rust
-let live = Live::new(endpoint.clone());
-let router = live.mount(Router::builder(endpoint)).spawn();
+let layout = LiveLayout::default();
+let node = Node::new(endpoint.clone(), layout.config(&[]));
+let router = node.mount(Router::builder(endpoint)).spawn();
 ```
 
-`Live` owns neither the endpoint nor a router. `mount` adds the transport to
-the application's `RouterBuilder` under every ALPN this build speaks, through
-`Node::mount`, and the application adds its own protocols to the same router.
-`LiveBuilder::with_rooms()` widens the grant so members can publish their room
-broadcasts, and `mount` then adds rooms' gossip as well. `Live::shutdown` ends
-the node and its rooms. Whoever binds the endpoint closes it, usually through
-`Router::shutdown`. A node that is neither mounted nor attached to a relay
+The node takes any path. `LiveLayout` is the one convention iroh-live ships:
+broadcasts at `<root>/<peer>/<name>`, where the root is `live` by default, and
+each peer may publish only under its own id. `LiveLayout::config` builds the
+`NodeConfig` with that grant. The node owns neither the endpoint nor a router.
+`Node::mount` adds the transport to the application's `RouterBuilder` under
+every ALPN this build speaks, and the application adds its own protocols to the
+same router. `Rooms::mount` adds the rooms' gossip, and the layout's config
+takes `iroh_live::rooms::publish_scope` so members can publish their room
+broadcasts. `Router::shutdown` shuts down the node and every mounted service,
+and closes the endpoint. A node that is neither mounted nor attached to a relay
 logs a warning when it publishes, since no peer can dial in.
 
-`Live::publish(name)` creates a broadcast at `live/<our id>/<name>` in the
-route table, published to everyone, and returns it as an
-`moq_ext_publisher::LocalBroadcast` (or any type built from a
-`broadcast::Producer`). Peers read it without a copy. `Live::ticket(name)` returns the
-`BroadcastTicket` to share. `Live::subscribe(&ticket)` resolves the ticket's
-path over whichever link serves it and returns the `Subscription`.
-`Live::remote_broadcast(&subscription)` reads its media without waiting for the
-catalog, for a subscription from a ticket, a room or `Node::subscribe`. The
-broadcast follows the path through the route table and carries the serving
-link's measurements, so `remote.play(config)` starts a player that adapts with
-nothing further to wire.
+`layout.publish::<LocalBroadcast>(&node, name)` creates a broadcast at
+`live/<our id>/<name>` in the route table, published to everyone, and returns it
+as an `moq_ext_publisher::LocalBroadcast` (or any type built from a
+`broadcast::Producer`). Peers read it without a copy. `layout.ticket(node.id(),
+name)` returns the `BroadcastTicket` to share. `Node::subscribe_ticket(&ticket)`
+resolves the ticket's path over whichever link serves it and returns the
+`Subscription`. On a node with the default config, it claims exactly the
+ticket's path for the ticket's peer while the subscription lives.
+`iroh_live::media::remote_broadcast(&subscription)` reads its media without
+waiting for the catalog, for a subscription from a ticket, a room or
+`Node::subscribe`. The broadcast follows the path through the route table and
+carries the serving link's measurements, so `remote.play(config)` starts a
+player that adapts with nothing further to wire.
 
 The facade's error is `iroh_live::Error`: `Transport` wraps an
 `iroh_live_node::Error`, `Media` a `moq_ext_player::Error`, `SecretKey` and
 `Bind` come from `EndpointOptions`, and `InvalidTicket` from parsing a ticket.
 Audiences, admission, relays and routes belong to
-[`iroh-live-node`](transport.md), reached through `live.node()`.
+[`iroh-live-node`](transport.md).
 
-`irl call` and the Android demo share a one-to-one call convention. Each side
-publishes one broadcast named `iroh_live::CALL` (`live/<id>/call`) with
-`Live::call`, visible to nobody, and its `CallOffer` rings a peer by adding it
-to the `Audience::Peers` set. Each side subscribes to the other's. A node
-learns it is called when a peer's `call` path appears in its route table
-(`Node::origin`), and a hang-up takes the peer out of the set, which retracts
-the path and ends the other side's read. The session stays open, and the
-broadcast keeps running for the next call.
+`irl call` and the Android demo share a one-to-one call convention, in
+`iroh_live::calls`. `Calls::new(&node, &layout)` publishes this side as one
+broadcast at `<root>/<id>/call`, visible to nobody, and `ring` rings a peer by
+adding it to the `Audience::Peers` set. Each side subscribes to the other's. A
+node learns it is called when a peer's `call` path appears in its route table,
+which `Calls::events` reports as `CallEvent::Ringing`. A hang-up takes the peer
+out of the set, which retracts the path and ends the other side's read. The
+session stays open, and the broadcast keeps running for the next call.
 
 ## Conventions
 

@@ -31,9 +31,9 @@ gone closes the broadcast. `RemoteBroadcast::from_consumer(broadcast.consume())`
 `ranked_video()`, which lists the video renditions largest first, and
 `video_rendition(name)`.
 
-`Live::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
+`iroh_live::media::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
 `from_resolved` and attaches the serving link's measurements, whether the
-subscription came from `Live::subscribe`, a room or `Node::subscribe`. See
+subscription came from `Node::subscribe_ticket`, a room or `Node::subscribe`. See
 [adaptive bitrate](adaptive.md).
 
 ## Video decoding
