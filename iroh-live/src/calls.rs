@@ -64,7 +64,9 @@ use tracing::{debug, info, warn};
 use crate::layout::LiveLayout;
 
 /// The broadcast name of a call side, as `irl call` and the Android demo use it.
-const CALL: &str = "call";
+///
+/// Each node publishes its side at `<root>/<its id>/call`.
+pub const CALL: &str = "call";
 
 /// How many events a slow reader may fall behind before it gets [`CallEvent::Lagged`].
 const EVENT_QUEUE: usize = 64;

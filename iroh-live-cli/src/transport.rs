@@ -3,8 +3,10 @@
 use std::{ops::Deref, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
+use iroh_live::layout::LiveLayout;
+use iroh_live::media::remote_broadcast;
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Live, Mdns, Session, Subscription,
+    BroadcastTicket, EndpointOptions, Mdns, Node, Session, Subscription,
     media::RemoteBroadcast,
     node::{RelayConfig, RelayLink},
 };
@@ -28,20 +30,30 @@ const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
 /// A live node, and the router that accepts its sessions if it serves.
 ///
-/// Derefs to [`Live`]. Cheap to clone. [`shutdown`](Self::shutdown) shuts the
-/// node down and closes its endpoint, which [`Live::shutdown`] alone does not.
+/// Derefs to [`Node`]. Cheap to clone. [`shutdown`](Self::shutdown) shuts the
+/// node down and closes its endpoint, which [`Node::shutdown`] alone does not.
 #[derive(Debug, Clone)]
 pub struct Transport {
-    live: Live,
+    live: Node,
     /// Accepts incoming sessions. `None` for a node that only dials.
     router: Option<Router>,
 }
 
 impl Transport {
     /// Wraps `live`, mounting it on a new router if `serve` is set.
-    pub fn new(live: Live, serve: bool) -> Self {
+    pub fn new(live: Node, serve: bool) -> Self {
         let router = serve.then(|| live.mount(Router::builder(live.endpoint().clone())).spawn());
         Self { live, router }
+    }
+
+    /// Wraps `live`, which `router` already serves.
+    ///
+    /// For a node with services of its own on the router, such as rooms.
+    pub fn serving(live: Node, router: Router) -> Self {
+        Self {
+            live,
+            router: Some(router),
+        }
     }
 
     /// Shuts the node down, then closes the endpoint.
@@ -63,9 +75,9 @@ impl Transport {
 }
 
 impl Deref for Transport {
-    type Target = Live;
+    type Target = Node;
 
-    fn deref(&self) -> &Live {
+    fn deref(&self) -> &Node {
         &self.live
     }
 }
@@ -86,7 +98,10 @@ pub async fn setup_live(serve: bool) -> Result<Transport> {
 pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Transport> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointOptions { mdns, ..options }.bind().await?;
-    Ok(Transport::new(Live::new(endpoint), serve))
+    Ok(Transport::new(
+        Node::new(endpoint, LiveLayout::default().config(&[])),
+        serve,
+    ))
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.
@@ -117,8 +132,8 @@ impl Subscribed {
     /// Starts reading `subscription`'s broadcast.
     ///
     /// [`crate::playback::catalog`] waits for the catalog.
-    pub fn open(live: &Live, subscription: Subscription) -> Self {
-        let broadcast = live.remote_broadcast(&subscription);
+    pub fn open(subscription: Subscription) -> Self {
+        let broadcast = remote_broadcast(&subscription);
         Self {
             subscription,
             broadcast,
@@ -157,11 +172,11 @@ impl Subscribed {
 ///
 /// Prints a notice if the broadcast takes long to appear. Returns once a route
 /// is found, before the catalog arrives.
-pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscribed> {
+pub async fn subscribe(live: &Node, ticket: &BroadcastTicket) -> Result<Subscribed> {
     println!("connecting to {ticket} ...");
     let mut subscribing = std::pin::pin!(async {
-        let subscription = live.subscribe(ticket).await?;
-        n0_error::Ok(Subscribed::open(live, subscription))
+        let subscription = live.subscribe_ticket(ticket).await?;
+        n0_error::Ok(Subscribed::open(subscription))
     });
 
     let sub = match tokio::time::timeout(QUIET_SUBSCRIBE, subscribing.as_mut()).await {
@@ -169,14 +184,14 @@ pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscrib
         Err(_) => {
             warn!(
                 remote = %ticket.peer().fmt_short(),
-                broadcast = %ticket.name(),
+                broadcast = %ticket.path(),
                 seconds = QUIET_SUBSCRIBE.as_secs(),
                 "still waiting for the broadcast"
             );
             println!(
                 "still waiting for '{}' on {}: is the publisher running? \
                  press Ctrl+C to give up",
-                ticket.name(),
+                ticket.path(),
                 ticket.peer().fmt_short()
             );
             subscribing.await?
@@ -184,7 +199,7 @@ pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscrib
     };
     info!(
         remote = %ticket.peer().fmt_short(),
-        broadcast = %ticket.name(),
+        broadcast = %ticket.path(),
         path = %sub.subscription().path(),
         "subscribed"
     );
@@ -195,8 +210,10 @@ pub async fn subscribe(live: &Live, ticket: &BroadcastTicket) -> Result<Subscrib
 ///
 /// Prints the ticket unless `--no-serve` is set, and attaches the relay if one
 /// was named.
-pub fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
-    let ticket = live.ticket(&args.name).to_string();
+pub fn advertise(live: &Node, args: &TransportArgs) -> Result<String> {
+    let ticket = LiveLayout::default()
+        .ticket(live.id(), &args.name)?
+        .to_string();
     match (args.no_serve, args.relay) {
         (true, Some(_)) => println!("not serving: subscribers reach this broadcast by relay"),
         (true, None) => warn!(
@@ -219,12 +236,15 @@ pub fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
 ///
 /// The relay receives every public broadcast of this node. The link does not
 /// consume, or it would mirror the relay's whole namespace into the route table.
-fn attach_relay(live: &Live, relay: EndpointId, name: &str) -> Result<RelayLink> {
-    let link = live.node().attach_relay(RelayConfig {
+fn attach_relay(live: &Node, relay: EndpointId, name: &str) -> Result<RelayLink> {
+    let link = live.attach_relay(RelayConfig {
         consume: false,
         ..RelayConfig::iroh(relay)
     })?;
-    let path = live.ticket(name).path().clone();
+    let path = LiveLayout::default()
+        .ticket(live.id(), name)?
+        .path()
+        .clone();
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");
     println!("pushing to relay {relay}: viewers find the broadcast there at {path}");
     Ok(link)

@@ -7,8 +7,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
+use iroh_live::layout::LiveLayout;
+use iroh_live::media::remote_broadcast;
 use iroh_live::{
-    EndpointOptions, Live, Mdns,
+    EndpointOptions, Mdns, Node,
     media::PlayerConfig,
     node::{Reach, RelayConfig, RelayOffer},
 };
@@ -28,18 +30,16 @@ async fn main() -> n0_error::Result {
     .bind()
     .await?;
     // Only dials, so it needs no router.
-    let live = Live::new(endpoint.clone());
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
 
     info!(relay = %cli.relay, name = %cli.name, frames = cli.frames, "subscribing");
     // The link redials, and the subscribe waits until the relay routes the name.
-    let _link = live.node().attach_relay(RelayConfig {
+    let _link = node.attach_relay(RelayConfig {
         offer: RelayOffer::Nothing,
         ..RelayConfig::iroh(cli.relay)
     })?;
-    let subscription = live.subscribe_path(&cli.name, Reach::Relays).await?;
-    let player = live
-        .remote_broadcast(&subscription)
-        .play(PlayerConfig::default())?;
+    let subscription = node.subscribe(&cli.name, Reach::Relays).await?;
+    let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
     let mut frames = player.video();
 
     info!("subscribed, waiting for video");
@@ -52,7 +52,7 @@ async fn main() -> n0_error::Result {
     }
 
     info!("all frames received, exiting");
-    live.shutdown().await;
+    node.shutdown().await;
     endpoint.close().await;
     Ok(())
 }

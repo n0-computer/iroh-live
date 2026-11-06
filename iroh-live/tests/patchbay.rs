@@ -13,13 +13,15 @@
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use iroh_live::layout::LiveLayout;
+use iroh_live::media::remote_broadcast;
 use iroh_live::media::{
     Adaptation, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoEncoding, VideoFormat,
     VideoFrames, VideoRendition, VideoSource,
     video::{Frame, FrameRate, Size, Surface},
 };
 use iroh_live::{
-    BroadcastTicket, Live, Reach, Subscription,
+    Node, Reach, Subscription,
     media::{Rate, RemoteBroadcast},
     node::LinkSample,
 };
@@ -79,10 +81,10 @@ struct Fixture {
     publisher_node: NodeId,
     subscriber_node: NodeId,
     router_node: NodeId,
-    publisher: Live,
+    publisher: Node,
     /// Held because dropping it stops publishing.
     _broadcast: LocalBroadcast,
-    subscriber: Live,
+    subscriber: Node,
     subscription: Subscription,
     broadcast: RemoteBroadcast,
 }
@@ -129,28 +131,33 @@ impl Fixture {
             .expect("the subscriber bind task failed")
             .expect("failed to bind the subscriber endpoint");
 
-        let publisher = Live::new(publisher_endpoint.clone());
+        let publisher = Node::new(
+            publisher_endpoint.clone(),
+            LiveLayout::default().config(&[]),
+        );
         let _router = publisher.mount(Router::builder(publisher_endpoint)).spawn();
-        let broadcast: LocalBroadcast = publisher.publish("patchbay").expect("failed to publish");
+        let broadcast: LocalBroadcast = LiveLayout::default()
+            .publish(&publisher, "patchbay")
+            .expect("failed to publish");
         broadcast
             .set_video(gradient(size), VideoEncoding::ladder(renditions))
             .expect("failed to set video");
 
         // No address lookup. The lab gives each device a fixed address.
         let publisher_addr = publisher.endpoint().addr();
-        let subscriber = Live::new(subscriber_endpoint);
+        let subscriber = Node::new(subscriber_endpoint, LiveLayout::default().config(&[]));
         subscriber
-            .node()
             .connect(publisher_addr)
             .await
             .expect("failed to connect");
-        let ticket = BroadcastTicket::new(publisher.endpoint().id(), "patchbay");
+        let ticket = LiveLayout::default()
+            .ticket(publisher.id(), "patchbay")
+            .expect("a valid broadcast name");
         let subscription = subscriber
-            .node()
             .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
             .await
             .expect("failed to subscribe");
-        let remote = subscriber.remote_broadcast(&subscription);
+        let remote = remote_broadcast(&subscription);
 
         Self {
             lab,

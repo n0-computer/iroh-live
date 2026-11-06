@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use iroh_live::{
-    BroadcastTicket, Live,
+    BroadcastTicket, Node,
     media::{AudioTarget, Player, PlayerConfig, RenditionMode, VideoRenditions as _},
 };
 use n0_error::{Result, anyerr};
@@ -150,7 +150,7 @@ async fn setup(args: &WatchArgs) -> Result<(Transport, AudioTarget)> {
 /// Fails if the peer does not answer in time, if the catalog does not arrive,
 /// or if the broadcast does not offer the pinned rendition.
 async fn connect(
-    live: &Live,
+    live: &Node,
     ticket: &BroadcastTicket,
     options: &Options,
     dial_deadline: Option<Duration>,
@@ -213,7 +213,7 @@ mod window {
 
     use eframe::egui;
     use iroh_live::{
-        BroadcastTicket, Live,
+        BroadcastTicket, Node,
         media::{Player, RenditionMode},
     };
     use moq_ext_egui::egui_wgpu::RenderState;
@@ -448,14 +448,14 @@ mod window {
     /// finishes after its receiver is gone closes the subscription it opened.
     fn connecting(
         ctx: &egui::Context,
-        live: &Live,
+        live: &Node,
         options: &Options,
         ticket: BroadcastTicket,
         previous: Option<Previous>,
     ) -> Connecting {
         info!(
             remote = %ticket.peer().fmt_short(),
-            broadcast = %ticket.name(),
+            broadcast = %ticket.path(),
             "dialing"
         );
         let (tx, rx) = oneshot::channel();
@@ -501,7 +501,7 @@ mod window {
             sub,
             player,
         } = connected;
-        let title = ticket.name().to_owned();
+        let title = ticket.path().to_string();
         let mut remote =
             RemoteView::new(ctx, "video", player, options.playback.decoder, render_state)
                 .with_link(sub.subscription().clone());
@@ -768,7 +768,7 @@ mod window {
             let Mode::Connecting(pending) = &self.mode else {
                 return;
             };
-            let name = pending.ticket.name().to_owned();
+            let name = pending.ticket.path().to_string();
             let previous = pending.previous.clone();
 
             let mut cancel = false;
@@ -822,13 +822,15 @@ mod window {
 
     #[cfg(test)]
     mod tests {
-        use iroh_live::BroadcastTicket;
+        use iroh_live::layout::LiveLayout;
 
         use super::{REDIAL_WAIT, REDIAL_WAIT_MAX, Refused, back_label};
 
         fn refused(strikes: u32) -> Refused {
             Refused {
-                ticket: BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello"),
+                ticket: LiveLayout::default()
+                    .ticket(iroh::SecretKey::generate().public(), "hello")
+                    .expect("a valid broadcast name"),
                 strikes,
             }
         }

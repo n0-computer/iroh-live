@@ -13,6 +13,7 @@ use std::{
 
 use eframe::egui;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
+use iroh_live::layout::LiveLayout;
 use iroh_live::media::RpicamConfig;
 use iroh_live::{
     BroadcastTicket,
@@ -301,7 +302,7 @@ impl ScanView {
         let note = match &*self.state.borrow() {
             ScanState::Looking => None,
             ScanState::NotATicket => Some("that QR code is not an iroh-live ticket".to_string()),
-            ScanState::Found(ticket) => Some(format!("connecting to {}", ticket.name())),
+            ScanState::Found(ticket) => Some(format!("connecting to {}", ticket.path())),
             ScanState::Waiting(left) => Some(format!(
                 "that ticket did not connect, trying it again in {}s",
                 left.as_secs() + 1
@@ -401,7 +402,7 @@ async fn scan(
 fn found(state: &watch::Sender<ScanState>, ctx: &egui::Context, ticket: BroadcastTicket) {
     info!(
         remote = %ticket.peer().fmt_short(),
-        broadcast = %ticket.name(),
+        broadcast = %ticket.path(),
         "ticket scanned"
     );
     report(state, ctx, ScanState::Found(Box::new(ticket)));
@@ -812,7 +813,9 @@ mod tests {
     /// tests flaky at the boundary.
     fn fixed_ticket() -> BroadcastTicket {
         let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
-        BroadcastTicket::new(secret.public(), "pi-zero")
+        LiveLayout::default()
+            .ticket(secret.public(), "pi-zero")
+            .expect("a valid broadcast name")
     }
 
     /// Renders a ticket centered in a white scan-sized frame.
@@ -943,7 +946,9 @@ mod tests {
 
     #[test]
     fn a_ticket_survives_the_round_trip_through_a_qr_code() {
-        let ticket = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let ticket = LiveLayout::default()
+            .ticket(iroh::SecretKey::generate().public(), "hello")
+            .expect("a valid broadcast name");
         let text = decode(&render(&ticket.to_string())).expect("the code is there to be found");
         assert_eq!(
             text.parse::<BroadcastTicket>()
@@ -999,7 +1004,9 @@ mod tests {
 
     #[test]
     fn a_held_off_ticket_is_skipped_until_its_wait_runs_out() {
-        let ticket = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let ticket = LiveLayout::default()
+            .ticket(iroh::SecretKey::generate().public(), "hello")
+            .expect("a valid broadcast name");
         let skip = Skip {
             ticket: ticket.clone(),
             until: Instant::now() + Duration::from_secs(60),
@@ -1016,8 +1023,12 @@ mod tests {
 
     #[test]
     fn a_different_ticket_is_never_held_off() {
-        let refused = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
-        let other = BroadcastTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let refused = LiveLayout::default()
+            .ticket(iroh::SecretKey::generate().public(), "hello")
+            .expect("a valid broadcast name");
+        let other = LiveLayout::default()
+            .ticket(iroh::SecretKey::generate().public(), "hello")
+            .expect("a valid broadcast name");
         let skip = Skip {
             ticket: refused,
             until: Instant::now() + Duration::from_secs(60),
