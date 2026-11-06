@@ -12,7 +12,6 @@ members = [
     "moq-ext-player",
     "moq-ext-publisher",
     "moq-ext-sources",
-    "moq-ext-media-android",
     "moq-ext-egui",
     "demos/android/rust",
     "demos/pi-zero",
@@ -64,7 +63,6 @@ iroh-live-rooms = { path = "iroh-live-rooms" }
 moq-ext-media-core = { path = "moq-ext-media-core" }
 moq-ext-player = { path = "moq-ext-player", default-features = false }
 moq-ext-publisher = { path = "moq-ext-publisher", default-features = false }
-moq-ext-media-android = { path = "moq-ext-media-android" }
 moq-ext-sources = { path = "moq-ext-sources", default-features = false }
 moq-ext-egui = { path = "moq-ext-egui" }
 

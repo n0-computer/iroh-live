@@ -4469,10 +4469,12 @@ dependencies = [
 name = "iroh-live-android"
 version = "0.1.0"
 dependencies = [
+ "derive_more",
+ "glow 0.18.0",
  "iroh",
  "iroh-live",
  "jni 0.21.1",
- "moq-ext-media-android",
+ "khronos-egl",
  "moq-video",
  "n0-error",
  "n0-future",
@@ -5569,17 +5571,6 @@ dependencies = [
  "n0-future",
  "pollster",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "moq-ext-media-android"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "glow 0.18.0",
- "khronos-egl",
- "n0-error",
  "tracing",
 ]
 
