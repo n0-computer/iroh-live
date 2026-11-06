@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::{EndpointId, protocol::Router};
+use iroh_live::layout::LiveLayout;
 use iroh_live::{
-    Live,
+    Node,
     media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
     node::RelayConfig,
 };
@@ -57,12 +58,12 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // The ticket carries only the endpoint id. A viewer on the same network
     // finds the Pi over mDNS, a viewer elsewhere over pkarr and DNS.
     let endpoint = iroh_live::EndpointOptions::from_env()?.bind().await?;
-    let live = Live::new(endpoint.clone());
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     // Accepts the viewers that dial the Pi directly.
-    let router = live.mount(Router::builder(endpoint)).spawn();
+    let router = node.mount(Router::builder(endpoint)).spawn();
 
     // Published while `broadcast` lives.
-    let broadcast: LocalBroadcast = live.publish(opts.name.as_str())?;
+    let broadcast: LocalBroadcast = LiveLayout::default().publish(&node, opts.name.as_str())?;
 
     // Keeps the default of one keyframe per second.
     let config = RpicamConfig {
@@ -83,7 +84,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let _relay = match opts.relay {
         Some(relay) => {
             info!(%relay, "pushing to relay");
-            Some(live.node().attach_relay(RelayConfig {
+            Some(node.attach_relay(RelayConfig {
                 consume: false,
                 ..RelayConfig::iroh(relay)
             })?)
@@ -91,7 +92,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         None => None,
     };
 
-    let ticket = live.ticket(&opts.name);
+    let ticket = LiveLayout::default().ticket(node.id(), &opts.name)?;
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 
@@ -148,7 +149,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
 
     broadcast.close();
     broadcast.closed().await;
-    live.shutdown().await;
+    node.shutdown().await;
     // Also closes the endpoint.
     router
         .shutdown()

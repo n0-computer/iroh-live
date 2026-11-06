@@ -17,8 +17,10 @@ use std::{
 };
 
 use iroh::{EndpointId, protocol::Router};
+use iroh_live::media::remote_broadcast;
+use iroh_live::layout::LiveLayout;
 use iroh_live::{
-    BroadcastTicket, CALL, CallOffer, EndpointOptions, Live,
+    BroadcastTicket, CALL, CallOffer, EndpointOptions, Node,
     media::{
         AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
@@ -104,9 +106,9 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 ///
 /// Returns the node with the router that accepts its peers. The demo stores
 /// no key, so without `IROH_SECRET` every screen gets a new endpoint id.
-async fn bind_live() -> Result<(Live, Router)> {
+async fn bind_live() -> Result<(Node, Router)> {
     let endpoint = EndpointOptions::from_env()?.bind().await?;
-    let live = Live::new(endpoint.clone());
+    let live = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     let router = live.mount(Router::builder(endpoint)).spawn();
     Ok((live, router))
 }
@@ -137,9 +139,9 @@ impl Drop for Offer {
 }
 
 /// Subscribes to `peer`'s side of a call and plays it.
-async fn play_call(live: &Live, peer: EndpointId, output: &AudioTarget) -> Result<Player> {
+async fn play_call(live: &Node, peer: EndpointId, output: &AudioTarget) -> Result<Player> {
     let subscription = live.answer(peer).await?;
-    play(&live.remote_broadcast(&subscription), output)
+    play(&remote_broadcast(&subscription), output)
 }
 
 /// The state behind the `jlong` handle Kotlin holds.
@@ -148,7 +150,7 @@ async fn play_call(live: &Live, peer: EndpointId, output: &AudioTarget) -> Resul
 /// in concurrently.
 struct SessionHandle {
     /// The endpoint and transport. `None` for the offline pipelines.
-    live: Option<Live>,
+    live: Option<Node>,
     /// Accepts the peers of `live`. Shutting it down closes the endpoint.
     router: Option<Router>,
     /// This node's side of a call, once the call is up.
@@ -359,13 +361,13 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     let (live, router) = bind_live().await?;
     info!(broadcast = %ticket.name(), "connecting to broadcast");
 
-    let subscription = live.subscribe(&ticket).await?;
+    let subscription = live.subscribe_ticket(&ticket).await?;
     info!("subscribed");
 
     // The player waits for the catalog on its own, so the handle is usable
     // right away.
     let output = open_output().await;
-    let remote = live.remote_broadcast(&subscription);
+    let remote = remote_broadcast(&subscription);
     let player = play(&remote, &output)?;
 
     let mut session = SessionHandle::new();
@@ -476,7 +478,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.frames = Some(preview);
     session.output = Some(output.clone());
     session.camera = Some(camera);
-    session.ticket = Some(live.ticket(CALL).to_string());
+    session.ticket = Some(LiveLayout::default().ticket(live.id(), CALL)?.to_string());
     session.broadcast = Some(broadcast.clone());
     session.live = Some(live.clone());
     session.router = Some(router);
@@ -501,13 +503,13 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 /// A caller offers `live/<its id>/call` to this node only, so the first such
 /// path in the route table is the call.
 async fn accept_one(
-    live: Live,
+    live: Node,
     calls: CallOffer,
     output: AudioTarget,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
     let me = live.endpoint().id();
-    let mut updates = live.node().origin().announced();
+    let mut updates = live.origin().announced();
     let peer = loop {
         let Some(update) = updates.next().await else {
             return Ok(());
@@ -591,12 +593,12 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     let (live, router) = bind_live().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
-    let broadcast: LocalBroadcast = live.publish(&name)?;
+    let broadcast: LocalBroadcast = LiveLayout::default().publish(&live, &name)?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     // A publish-only session plays no sound, so there is no echo to cancel.
     set_microphone(&broadcast, None).await;
 
-    let ticket = live.ticket(&name).to_string();
+    let ticket = LiveLayout::default().ticket(live.id(), &name)?.to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();
