@@ -21,7 +21,7 @@ mod watch;
 #[cfg(target_os = "linux")]
 mod app {
     use clap::{Parser, Subcommand};
-    use iroh_live::{BroadcastTicket, Live};
+    use iroh_live::{BroadcastTicket, Node, layout::LiveLayout, media::remote_broadcast};
 
     use crate::{epaper, publish, watch};
 
@@ -115,19 +115,19 @@ mod app {
         // network without internet.
         let endpoint = iroh_live::EndpointOptions::from_env()?.bind().await?;
         // Only dials, so it needs no router, and closes the endpoint itself.
-        let live = Live::new(endpoint.clone());
-        let result = watch_with(&live, opts).await;
-        live.shutdown().await;
+        let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+        let result = watch_with(&node, opts).await;
+        node.shutdown().await;
         endpoint.close().await;
         result
     }
 
-    /// Subscribes `live` to the ticket's broadcast and plays it until it ends.
-    async fn watch_with(live: &Live, opts: WatchOpts) -> n0_error::Result {
+    /// Subscribes `node` to the ticket's broadcast and plays it until it ends.
+    async fn watch_with(node: &Node, opts: WatchOpts) -> n0_error::Result {
         let ticket = opts.ticket;
         println!("connecting to {ticket} ...");
-        let subscription = live.subscribe(&ticket).await?;
-        let remote = live.remote_broadcast(&subscription);
+        let subscription = node.subscribe_ticket(&ticket).await?;
+        let remote = remote_broadcast(&subscription);
         println!("connected!");
 
         // Wait for a readable catalog, so a bad publisher gives an error and
