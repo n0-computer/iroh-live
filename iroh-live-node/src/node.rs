@@ -25,9 +25,10 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use crate::{
     Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, Publication, RelayConfig,
     RelayLink, Session, Subscription,
+    actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
+    handshake::{SessionParts, hop_for},
     publish, relay, route,
-    session::{Actor, ActorMessage, SessionParts, hop_for},
     state::State,
 };
 

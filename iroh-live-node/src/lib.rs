@@ -69,8 +69,10 @@
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
 //! | [`Node::shutdown`] | no | call it again to finish |
 
+mod actor;
 mod admission;
 mod error;
+mod handshake;
 mod link;
 mod node;
 mod publish;

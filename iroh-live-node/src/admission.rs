@@ -21,8 +21,8 @@ use tracing::{debug, info};
 
 use crate::{
     Error, LinkKind, Session,
+    handshake::{SessionParts, driver_now, hop_for, subscriber},
     node::Shared,
-    session::{SessionParts, driver_now, hop_for, subscriber},
     state::served,
     transport::{self, HANDSHAKE_TIMEOUT},
 };
@@ -89,24 +89,6 @@ impl ConnectOptions {
             Some(congestion) => options.with_transport_config(congestion.transport_config()),
             None => options,
         }
-    }
-
-    /// Returns the token as the MoQ SETUP carries it, if there is one.
-    pub(crate) fn setup_token(&self) -> Option<Token> {
-        let token = self.token.as_ref()?;
-        Some(Token {
-            kind: Token::OUT_OF_BAND,
-            value: token.clone().into_bytes(),
-        })
-    }
-
-    /// Returns the setup path that carries the token, if there is one.
-    pub(crate) fn setup_path(&self) -> Option<String> {
-        let token = self.token.as_ref()?;
-        let query: String = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("jwt", token)
-            .finish();
-        Some(format!("/?{query}"))
     }
 }
 
@@ -288,25 +270,5 @@ pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
         biased;
         _ = shared.shutdown.cancelled() => None,
         incoming = queue.recv() => incoming,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_token_rides_the_setup_path() {
-        let options = ConnectOptions {
-            token: Some("a+b".into()),
-            ..Default::default()
-        };
-        let path = options.setup_path().expect("a path");
-        let request = SessionRequest::new(&path);
-        assert_eq!(request.token(), Some("a+b"));
-        assert_eq!(ConnectOptions::default().setup_path(), None);
-        let token = options.setup_token().expect("a token");
-        assert_eq!(token.value, b"a+b");
-        assert_eq!(ConnectOptions::default().setup_token(), None);
     }
 }
