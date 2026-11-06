@@ -10,7 +10,7 @@ use moq_net::Path;
 use n0_error::e;
 use tracing::debug;
 
-use crate::{Error, Node, node::Shared, state::ClaimRefused};
+use crate::{Error, Node, node::Shared, publish::check_path, state::ClaimRefused};
 
 /// Names the peer that owns a path, for [`NodeConfig::owner`](crate::NodeConfig::owner).
 ///
@@ -81,8 +81,11 @@ impl Node {
     /// let the peer publish. The claim is added to the peer's grant on top of
     /// its base grant, on every session with the peer, including ones that
     /// start later. Dropping the last claim on a path narrows the grant again,
-    /// and moq then ends what local readers read at the path from the peer. A
-    /// claim for the node's own id widens nothing.
+    /// and moq then ends what local readers read at the path from the peer.
+    ///
+    /// A path that [`NodeConfig::grant`](crate::NodeConfig::grant) already lets
+    /// the peer publish, and any path of this node's own id, needs no
+    /// widening, so the claim is a no-op.
     ///
     /// The peer has to own the path: [`NodeConfig::owner`](crate::NodeConfig::owner)
     /// decides if it is set. Otherwise exactly one segment of the path is the
@@ -99,6 +102,14 @@ impl Node {
         if self.shared.shutdown.is_cancelled() {
             return Err(e!(Error::ShutDown));
         }
+        check_path(path)?;
+        if peer == self.shared.id || self.grant_for(peer).allows_publish(path.as_str()) {
+            return Ok(PathClaim {
+                peer,
+                path: path.clone(),
+                shared: None,
+            });
+        }
         let owned = match &self.shared.owner {
             Some(owner) => owner(path) == Some(peer),
             None => owns_by_id(&peer, path),
@@ -108,14 +119,6 @@ impl Node {
                 path: path.clone(),
                 peer
             }));
-        }
-        let claim = |shared| PathClaim {
-            peer,
-            path: path.clone(),
-            shared,
-        };
-        if peer == self.shared.id {
-            return Ok(claim(None));
         }
         self.shared
             .state
@@ -127,6 +130,10 @@ impl Node {
                 ClaimRefused::TooMany => e!(Error::TooManyGrants { peer }),
             })?;
         debug!(peer = %peer.fmt_short(), %path, "ticket path claimed");
-        Ok(claim(Some(Arc::downgrade(&self.shared))))
+        Ok(PathClaim {
+            peer,
+            path: path.clone(),
+            shared: Some(Arc::downgrade(&self.shared)),
+        })
     }
 }

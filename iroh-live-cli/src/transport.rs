@@ -224,7 +224,7 @@ fn attach_relay(live: &Live, relay: EndpointId, name: &str) -> Result<RelayLink>
         consume: false,
         ..RelayConfig::iroh(relay)
     })?;
-    let path = live.ticket(name).path();
+    let path = live.ticket(name).path().clone();
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");
     println!("pushing to relay {relay}: viewers find the broadcast there at {path}");
     Ok(link)

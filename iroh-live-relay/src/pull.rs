@@ -481,7 +481,7 @@ struct PublisherClaim {
 impl PublisherClaim {
     fn new(state: &PullState, ticket: &BroadcastTicket) -> Self {
         let publisher = ticket.peer();
-        let path = ticket.path();
+        let path = ticket.path().to_string();
         let mut publishers = state.publishers.lock().expect("poisoned");
         let paths = publishers.entry(publisher).or_default();
         *paths.entry(path.clone()).or_default() += 1;

@@ -106,11 +106,11 @@ router.shutdown().await?; // closes the endpoint
 
 mod endpoint;
 mod error;
+pub mod layout;
 mod live;
 #[cfg(feature = "media")]
 mod network;
 pub mod paths;
-mod ticket;
 
 /// Sources, broadcasts and players, with the codec stacks they sit on.
 #[cfg(feature = "media")]
@@ -127,12 +127,15 @@ pub mod media {
     };
     pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
+
+    pub use crate::network::remote_broadcast;
 }
 pub use iroh_live_node as node;
 /// The moq-net this crate builds against, as [`node::net`].
 pub use iroh_live_node::net;
 pub use iroh_live_node::{
-    Audience, Congestion, MoqPreset, Node, NodeConfig, Publication, Reach, Session, Subscription,
+    Audience, BroadcastTicket, Congestion, MoqPreset, Node, NodeConfig, Publication, Reach,
+    Session, Subscription,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -185,5 +188,4 @@ pub use self::{
         node_config_with,
     },
     paths::CALL,
-    ticket::BroadcastTicket,
 };

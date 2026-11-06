@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, debug_span, info};
 
 use crate::{
-    Error,
+    BroadcastTicket, Error,
     node::Shared,
     state::{PubEntry, State},
 };
@@ -44,6 +44,8 @@ pub struct Publication {
 #[derive(derive_more::Debug)]
 struct PublicationInner {
     id: u64,
+    /// The id of the node that published.
+    peer: EndpointId,
     path: Path,
     #[debug(skip)]
     broadcast: broadcast::Producer,
@@ -65,6 +67,14 @@ impl Publication {
     /// Returns the path the broadcast is published at.
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+
+    /// Returns the ticket that names this publication.
+    ///
+    /// It holds the node's endpoint id and the path, and nothing about layouts.
+    #[must_use]
+    pub fn ticket(&self) -> BroadcastTicket {
+        BroadcastTicket::at(self.inner.peer, self.inner.path.clone())
     }
 
     /// Returns the broadcast to fill.
@@ -284,6 +294,7 @@ where
     let publication = Publication {
         inner: Arc::new(PublicationInner {
             id,
+            peer: shared.id,
             path,
             broadcast,
             shared: weak,

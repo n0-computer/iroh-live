@@ -356,7 +356,9 @@ async fn iroh_publish_iroh_subscribe() {
     let subscriber = iroh_live::Live::new(sub_ep.clone());
     // Through the relay's session, at the path that names the publisher: the
     // same path the publisher offers on a direct session.
-    let path = iroh_live::BroadcastTicket::new(pub_ep.id(), "relay-test").path();
+    let path = iroh_live::BroadcastTicket::new(pub_ep.id(), "relay-test")
+        .path()
+        .to_string();
     let sub = tokio::time::timeout(TIMEOUT, async {
         let session = subscriber.node().connect_with(relay_id, trusted()).await?;
         let subscription = session.subscribe(path).await?;
@@ -571,7 +573,9 @@ async fn iroh_publish_noq_subscribe() {
     )
     .await;
 
-    let named = iroh_live::BroadcastTicket::new(pub_ep.id(), "cli-stream").path();
+    let named = iroh_live::BroadcastTicket::new(pub_ep.id(), "cli-stream")
+        .path()
+        .to_string();
     announced_at(&sub_origin, named.as_str()).await;
 
     tracing::info!("noq subscriber received cli-stream announcement");
@@ -855,7 +859,9 @@ async fn a_relay_link_publishes_and_consumes() {
             .connect(relay.url()),
     )
     .await;
-    let path = iroh_live::BroadcastTicket::new(endpoint.id(), "studio").path();
+    let path = iroh_live::BroadcastTicket::new(endpoint.id(), "studio")
+        .path()
+        .to_string();
     let seen = announced_at(&sub_origin, path.as_str()).await;
     first_frame(&seen, "catalog.json").await;
 
@@ -1090,13 +1096,13 @@ async fn a_relay_gets_public_publications_only() {
     let members = Watchable::new(BTreeSet::from([relay.iroh_id]));
     let public = live
         .node()
-        .publish(live.ticket("public").path(), Audience::Everyone)
+        .publish(live.ticket("public").path().to_string(), Audience::Everyone)
         .expect("publish");
     let _public = counter(public.broadcast(), "data");
     let peers = live
         .node()
         .publish(
-            live.ticket("peers").path(),
+            live.ticket("peers").path().to_string(),
             Audience::Peers(members.clone()),
         )
         .expect("publish");
@@ -1177,7 +1183,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let _alice_router = serve(&alice);
     let publication = alice
         .node()
-        .publish(alice.ticket("cam").path(), Audience::Everyone)
+        .publish(alice.ticket("cam").path().to_string(), Audience::Everyone)
         .expect("publish");
     let _writer = counter(publication.broadcast(), "data");
     let _alice_link = attached(&alice, &relay, RelayOffer::Public).await;
@@ -1264,7 +1270,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let _alice_router = serve(&alice);
     let publication = alice
         .node()
-        .publish(alice.ticket("cam").path(), Audience::Everyone)
+        .publish(alice.ticket("cam").path().to_string(), Audience::Everyone)
         .expect("publish");
     let _writer = counter(publication.broadcast(), "data");
 
@@ -1358,7 +1364,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     let (mallory_endpoint, mallory) = relay_node().await;
     let own = mallory
         .node()
-        .publish(mallory.ticket("cam").path(), Audience::Everyone)
+        .publish(mallory.ticket("cam").path().to_string(), Audience::Everyone)
         .expect("publish");
     let _own = counter(own.broadcast(), "data");
     let forged_path = format!("live/{alice}/cam");
@@ -1519,7 +1525,7 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     let relay = TestRelay::start().await;
     let (pub_ep, publisher, _router, wanted_broadcast, wanted) = start_publisher("wanted").await;
     let other_broadcast = publish_video(&publisher, "other");
-    let other = publisher.ticket("other").path();
+    let other = publisher.ticket("other").path().to_string();
 
     // Every path the cluster announces, from before the dial on.
     let cluster = relay.cluster.origin.consume();
@@ -1539,7 +1545,7 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
         match tokio::time::timeout_at(deadline, announced.next()).await {
             Ok(Some(event)) => {
                 let path = announce_of(&event).prefix.as_str().to_owned();
-                if path == wanted.path() && settle.is_none() {
+                if path == wanted.path().as_str() && settle.is_none() {
                     // Give anything announced alongside it time to arrive.
                     settle = Some(tokio::time::Instant::now() + Duration::from_millis(500));
                 }

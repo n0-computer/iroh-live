@@ -72,17 +72,21 @@ impl Session {
         state.effective_grant(Some(&self.inner.remote), &base)
     }
 
-    /// Changes the base grant of the peer, on the live session.
+    /// Returns the base grant: what [`set_grant`](Self::set_grant) last set.
     ///
-    /// Paths that live ticket subscriptions claimed stay on top of it.
+    /// Without live ticket claims this equals [`grant`](Self::grant).
+    pub fn base_grant(&self) -> Grant {
+        self.inner.grant.lock().expect("poisoned").clone()
+    }
+
+    /// Changes the base grant of the peer, on the live session.
     ///
     /// moq enforces it at once, in both directions. A narrower subscribe half
     /// takes paths from the peer and resets what it reads there, and a
     /// narrower publish half takes the peer's broadcasts outside it out of the
-    /// route table. A wider one brings them back. The route table only ever
-    /// takes what the grant the session started with, or the node's
-    /// [`NodeConfig::grant`](crate::NodeConfig::grant) for the peer, lets the
-    /// peer publish, so a publish half wider than both widens nothing.
+    /// route table. A wider one brings them back, with no bound from the grant
+    /// the session started with. Paths that live ticket claims added stay until
+    /// their claims drop.
     pub fn set_grant(&self, grant: Grant) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;

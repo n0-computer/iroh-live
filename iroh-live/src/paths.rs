@@ -11,8 +11,7 @@
 use iroh::EndpointId;
 use iroh_live_node::net::Pattern;
 
-/// The first segment of every path in this layout.
-const ROOT: &str = "live";
+use crate::layout::LiveLayout;
 
 /// The broadcast name of a call, as `irl call` and the Android demo use it.
 ///
@@ -32,7 +31,7 @@ pub const CALL: &str = "call";
 /// ```
 #[must_use]
 pub fn broadcast(peer: EndpointId, name: &str) -> String {
-    format!("{ROOT}/{peer}/{name}")
+    format!("{}/{peer}/{name}", LiveLayout::default().root())
 }
 
 /// Returns the path of `peer`'s side of a call: `live/<peer>/call`.
@@ -48,7 +47,7 @@ pub fn call(peer: EndpointId) -> String {
 #[must_use]
 pub fn parse(path: &str) -> Option<(EndpointId, &str)> {
     let (peer, name) = path
-        .strip_prefix(ROOT)?
+        .strip_prefix(LiveLayout::default().root())?
         .strip_prefix('/')?
         .split_once('/')?;
     if name.is_empty() {
@@ -60,9 +59,7 @@ pub fn parse(path: &str) -> Option<(EndpointId, &str)> {
 /// Returns the paths `peer` publishes its own broadcasts under: `live/<peer>/**`.
 #[must_use]
 pub fn publish_scope(peer: EndpointId) -> Pattern {
-    format!("{ROOT}/{peer}/**")
-        .parse()
-        .expect("an endpoint id is a valid path segment")
+    LiveLayout::default().scope(peer)
 }
 
 #[cfg(test)]
