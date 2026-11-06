@@ -3,7 +3,24 @@
 use std::sync::Mutex;
 
 use iroh_live_node::{LinkId, Subscription};
-use moq_ext_player::NetworkSample;
+use moq_ext_player::{NetworkSample, RemoteBroadcast};
+
+/// Reads the media of a subscription.
+///
+/// The broadcast follows the subscription's path through the route table it
+/// was resolved in, so a change of route does not end it, and its players
+/// adapt to the link that serves it. A subscription on one session
+/// re-resolves through that session only. The catalog arrives later: watch
+/// [`RemoteBroadcast::catalog`] for it.
+pub fn remote_broadcast(subscription: &Subscription) -> RemoteBroadcast {
+    let remote = RemoteBroadcast::from_resolved(
+        subscription.as_origin(),
+        subscription.path().clone(),
+        subscription.as_moq(),
+    );
+    remote.set_network(signals(subscription.clone()));
+    remote
+}
 
 /// Returns the network signals of the link serving `subscription`.
 ///

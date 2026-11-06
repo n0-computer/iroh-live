@@ -683,7 +683,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
 /// A dial's grant holds from the session's start, and the session can widen up to the node's grant.
 #[tokio::test]
 #[traced_test]
-async fn a_dial_grant_holds_from_the_start_and_widens_to_the_nodes() {
+async fn a_dial_grant_holds_from_the_start_and_widens_with_set_grant() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
     let wanted = publish(&bob.moq, bob.path("wanted"), Audience::Everyone).expect("publish");

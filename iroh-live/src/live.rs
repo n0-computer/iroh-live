@@ -4,19 +4,21 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use iroh::{Endpoint, EndpointId, protocol::RouterBuilder};
 use iroh_live_node::{
-    Audience, Grant, Node, NodeConfig, Publication, Reach, Subscription,
-    net::{Pattern, Patterns},
+    Audience, Grant, Node, NodeConfig, Publication, Reach, Subscription, net::Pattern,
 };
 #[cfg(feature = "media")]
 use moq_ext_player::RemoteBroadcast;
 use moq_net::broadcast;
-use n0_error::e;
 use n0_watcher::Watchable;
 use tracing::{info, instrument};
 
 #[cfg(feature = "media")]
 use crate::network;
-use crate::{BroadcastTicket, Error, paths};
+use crate::{
+    BroadcastTicket, Error,
+    layout::{LiveLayout, Scope},
+    paths,
+};
 
 /// A function naming the paths a peer may publish under, given its id.
 ///
@@ -40,11 +42,7 @@ pub fn grant(peer: EndpointId) -> Grant {
 /// out, whatever features the build has.
 #[must_use]
 pub fn grant_with(peer: EndpointId, scopes: &[PublishScope]) -> Grant {
-    let mut publish = Patterns::from(paths::publish_scope(peer));
-    for scope in scopes {
-        publish.insert(scope(peer));
-    }
-    Grant::publish_under(publish)
+    LiveLayout::default().grant(peer, &as_scopes(scopes))
 }
 
 /// Returns the [`NodeConfig`] of a live node: admission open, with [`grant`].
@@ -56,11 +54,15 @@ pub fn node_config() -> NodeConfig {
 /// Returns the [`NodeConfig`] of a live node with [`grant_with`] and `scopes`.
 #[must_use]
 pub fn node_config_with(scopes: &[PublishScope]) -> NodeConfig {
-    let scopes: Arc<[PublishScope]> = scopes.into();
-    NodeConfig {
-        grant: Some(Arc::new(move |peer| grant_with(peer, &scopes))),
-        ..Default::default()
-    }
+    LiveLayout::default().config(&as_scopes(scopes))
+}
+
+/// Returns `scopes` as the layout's owned scope type.
+fn as_scopes(scopes: &[PublishScope]) -> Vec<Scope> {
+    scopes
+        .iter()
+        .map(|scope| -> Scope { Arc::new(*scope) })
+        .collect()
 }
 
 /// Who this node's side of a call is offered to, from [`Live::call`].
@@ -334,19 +336,10 @@ impl Live {
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
-        if name.is_empty() {
-            return Err(e!(iroh_live_node::Error::InvalidPath {
-                path: name.to_owned()
-            })
-            .into());
-        }
-        // Built before the broadcast is announced, so no reader finds it
-        // without the tracks `B` creates, such as a catalog.
         let (_publication, broadcast) =
-            self.moq
-                .publish_with(self.ticket(name).path(), audience, |producer| {
-                    B::try_from(producer.clone())
-                })?;
+            LiveLayout::default().publish_with(&self.moq, name, audience, |producer| {
+                B::try_from(producer.clone())
+            })?;
         Ok(broadcast)
     }
 
@@ -466,13 +459,7 @@ impl Live {
     /// watch [`RemoteBroadcast::catalog`] for it.
     #[cfg(feature = "media")]
     pub fn remote_broadcast(&self, subscription: &Subscription) -> RemoteBroadcast {
-        let remote = RemoteBroadcast::from_resolved(
-            subscription.as_origin(),
-            subscription.path().clone(),
-            subscription.as_moq(),
-        );
-        remote.set_network(network::signals(subscription.clone()));
-        remote
+        network::remote_broadcast(subscription)
     }
 
     /// Shuts the node down, and its rooms if it runs them.

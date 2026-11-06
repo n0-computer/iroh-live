@@ -130,7 +130,9 @@ async fn publish_subscribe_video() {
 
 /// Waits until `updates` announces `peer`'s `call` path (`active`) or retracts it.
 async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active: bool) {
-    let path = BroadcastTicket::new(peer.endpoint().id(), CALL).path();
+    let path = BroadcastTicket::new(peer.endpoint().id(), CALL)
+        .path()
+        .to_string();
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("the route table closed");

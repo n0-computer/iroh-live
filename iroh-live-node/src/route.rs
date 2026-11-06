@@ -1,8 +1,8 @@
 //! The route table, and the subscriptions that resolve paths in it.
 //!
 //! Every link announces straight into the node's route table: a session's
-//! subscriber is the table tagged [`Link::Peer`], scoped to the paths its grant
-//! lets the peer publish, and a relay's is the table tagged [`Link::Upstream`].
+//! subscriber is the table tagged [`Link::Peer`], gated by the session's
+//! authorization, which lets the peer publish only what its grant allows, and a relay's is the table tagged [`Link::Upstream`].
 //! Every link serves the table's local view, which hides both, so no route
 //! learned on one link is offered on another. The peer's hop and the link's
 //! cost travel with each route. moq serves the best route, and moves a reader
@@ -24,7 +24,7 @@
 //! splices by instance and not by the first hop a publisher claims.
 
 use std::{
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 
@@ -38,7 +38,7 @@ use n0_error::e;
 use tracing::{debug, info};
 
 use crate::{
-    Error, Node, Reach, ServingLink, Session,
+    BroadcastTicket, Error, Node, PathClaim, Reach, ServingLink, Session,
     node::Shared,
     publish::check_path,
     state::{LinkEntry, State},
@@ -93,6 +93,8 @@ struct SubscriptionInner {
     /// The route serving the path, as the table announces it.
     routes: Mutex<Routes>,
     shared: Weak<Shared>,
+    /// The ticket claim that lets the publisher announce the path, while held.
+    claim: OnceLock<PathClaim>,
 }
 
 /// Follows the route that serves one path.
@@ -153,8 +155,15 @@ impl Subscription {
                 pin: pin.map(|(link, instance)| Pin { link, instance }),
                 routes: Mutex::new(routes),
                 shared,
+                claim: OnceLock::new(),
             }),
         }
+    }
+
+    /// Keeps `claim` alive for as long as the subscription lives.
+    fn holding(self, claim: PathClaim) -> Self {
+        self.inner.claim.set(claim).ok();
+        self
     }
 
     /// Returns the path this subscription resolves.
@@ -265,6 +274,18 @@ impl Subscription {
             *self.inner.current.lock().expect("poisoned") = next;
         }
     }
+}
+
+/// Resolves the broadcast `ticket` names, for [`Node::subscribe_ticket`].
+pub(crate) async fn subscribe_ticket(
+    node: &Node,
+    ticket: &BroadcastTicket,
+) -> Result<Subscription, Error> {
+    let (peer, path) = (ticket.peer(), ticket.path());
+    // A no-op for a path the node's grant policy already covers.
+    let claim = node.claim_path(peer, path)?;
+    let subscription = node.subscribe(path.clone(), Reach::Both(peer)).await?;
+    Ok(subscription.holding(claim))
 }
 
 /// Returns the route table as direct sessions fill it, without relays' routes.

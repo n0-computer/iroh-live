@@ -72,7 +72,7 @@ pub enum Error {
     NotGranted {
         path: Path,
         peer: EndpointId,
-        publish_patterns: Vec<String>,
+        publish_patterns: moq_net::Patterns,
     },
     /// The peer does not own the path, so a ticket cannot grant it.
     #[error("{} does not own {path}", peer.fmt_short())]
@@ -104,6 +104,9 @@ pub enum Error {
         #[error(source, std_err)]
         source: AnyError,
     },
+    /// A string is not a [`BroadcastTicket`](crate::BroadcastTicket).
+    #[error("invalid broadcast ticket: {reason}")]
+    InvalidTicket { reason: &'static str },
     /// The node has shut down.
     #[error("the node has shut down")]
     ShutDown,
@@ -126,11 +129,11 @@ impl From<moq_transport_iroh::Error> for Error {
 const LISTED_PATTERNS: usize = 8;
 
 /// Renders the first few of `patterns` for an error message.
-fn list_patterns(patterns: &[String]) -> String {
+fn list_patterns(patterns: &moq_net::Patterns) -> String {
     let mut text = patterns
         .iter()
         .take(LISTED_PATTERNS)
-        .cloned()
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
     if patterns.len() > LISTED_PATTERNS {
@@ -145,7 +148,7 @@ impl Error {
         n0_error::e!(Self::NotGranted {
             path,
             peer,
-            publish_patterns: grant.publish.iter().map(ToString::to_string).collect(),
+            publish_patterns: grant.publish.clone(),
         })
     }
 }
@@ -159,4 +162,22 @@ pub(crate) fn to_path(
             source: source.into()
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use moq_net::{Pattern, Patterns};
+
+    use super::*;
+
+    #[test]
+    fn not_granted_lists_at_most_eight_patterns() {
+        let patterns: Patterns = (0..12)
+            .map(|n| Pattern::literal(&format!("live/p{n}/cam")).expect("pattern"))
+            .collect();
+        let listed = list_patterns(&patterns);
+        assert_eq!(listed.matches("/cam").count(), 8, "{listed}");
+        assert!(listed.ends_with("and 4 more"), "{listed}");
+        assert_eq!(list_patterns(&Patterns::new()), "");
+    }
 }

@@ -207,7 +207,7 @@ mod tests {
                 .any(|pattern| pattern.matches(path))
         };
         let full = ticket.to_string();
-        let bare = full.strip_prefix("iroh-live:").expect("a ticket prefix");
+        let bare = full.strip_prefix("ilv1:").expect("a ticket prefix");
         assert!(!matches(&full));
         assert!(!matches(bare));
     }

@@ -53,6 +53,14 @@
 //! [`Grant::publish_under`] lets a peer publish only at paths that name it, so
 //! it cannot stand in for another peer.
 //!
+//! A [`BroadcastTicket`] names a peer and the path it publishes at.
+//! [`Node::subscribe_ticket`] claims that path for that peer with
+//! [`Node::claim_path`], which widens the peer's grant to exactly that path for
+//! as long as the subscription lives, so a viewer needs no grant of its own.
+//! The peer has to own the path: by default, exactly one segment of it is the
+//! peer's own endpoint id (see [`NodeConfig::owner`]). A claim therefore never
+//! overlaps another peer's paths, which hop pinning and the route table rely on.
+//!
 //! Every link runs a connection monitor. [`Session::link`],
 //! [`RelayLink::link`] and [`Subscription::link`] return its latest
 //! [`LinkSample`].
@@ -61,12 +69,13 @@
 //!
 //! | Future | Safe | When dropped |
 //! |---|---|---|
-//! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
+//! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Node::subscribe_ticket`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
 //! | [`Node::accept`] | yes | loses nothing |
 //! | [`Incoming::admit`] | yes | rejects the session before the handshake completes, admits it after |
 //! | [`transport::dial`] | yes | drops the connection |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
+//! | [`Node::closed`] | yes | loses nothing |
 //! | [`Node::shutdown`] | no | call it again to finish |
 
 mod actor;
@@ -81,6 +90,7 @@ mod relay;
 mod route;
 mod session;
 mod state;
+mod ticket;
 
 /// The moq-net this crate builds against.
 pub use moq_net as net;
@@ -103,4 +113,5 @@ pub use self::{
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::{LinkId, LinkKind, Subscription},
     session::Session,
+    ticket::BroadcastTicket,
 };

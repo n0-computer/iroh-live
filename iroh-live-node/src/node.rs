@@ -23,8 +23,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, OwnerFn, Publication,
-    RelayConfig, RelayLink, Session, Subscription,
+    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, Incoming, OwnerFn,
+    Publication, RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
     handshake::{SessionParts, hop_for},
@@ -371,6 +371,23 @@ impl Node {
         reach: Reach,
     ) -> Result<Subscription, Error> {
         route::subscribe(self, crate::error::to_path(path)?, reach).await
+    }
+
+    /// Resolves the broadcast `ticket` names, whatever grants this node has.
+    ///
+    /// If [`NodeConfig::grant`] already lets the ticket's peer publish the
+    /// path, this is [`subscribe`](Self::subscribe) with [`Reach::Both`].
+    /// Otherwise the node first claims the path for that peer with
+    /// [`claim_path`](Self::claim_path), and the subscription holds the claim
+    /// for as long as it lives. A viewer therefore needs no grant of its own
+    /// to watch a ticket. When the last subscription of a path drops, the
+    /// grant narrows again, and moq ends what local readers read there.
+    ///
+    /// # Errors
+    ///
+    /// As [`claim_path`](Self::claim_path), and as [`subscribe`](Self::subscribe).
+    pub async fn subscribe_ticket(&self, ticket: &BroadcastTicket) -> Result<Subscription, Error> {
+        route::subscribe_ticket(self, ticket).await
     }
 
     /// Returns the route table.

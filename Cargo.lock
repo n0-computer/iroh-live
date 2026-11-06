@@ -4516,6 +4516,7 @@ dependencies = [
 name = "iroh-live-node"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "derive_more",
  "iroh",
  "moq-ext-access",
@@ -4527,6 +4528,7 @@ dependencies = [
  "n0-tracing-test",
  "n0-watcher",
  "noq-proto",
+ "serde",
  "tokio",
  "tokio-util",
  "tracing",
