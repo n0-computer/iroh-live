@@ -19,8 +19,8 @@
 //!
 //! The node's [`NodeConfig::grant`](iroh_live_node::NodeConfig::grant) has to let each
 //! peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
-//! `iroh_live::LiveBuilder::with_rooms` does that, and
-//! `iroh_live::node_config_with` does it for a config built by hand.
+//! `iroh_live::layout::LiveLayout::config(&[Arc::new(publish_scope)])` does
+//! that.
 //!
 //! ```no_run
 //! # async fn example(moq: iroh_live_node::Node)
@@ -28,7 +28,7 @@
 //! use iroh_live_rooms::{RoomTicket, Rooms};
 //!
 //! let rooms = Rooms::new(&moq);
-//! // Mount `rooms.protocol_handler()` under `iroh_live_rooms::ALPN` on the router.
+//! // Mount the service with `rooms.mount(router_builder)`.
 //! let room = rooms
 //!     .join(&RoomTicket::generate(), Some("ada".into()))
 //!     .await?;

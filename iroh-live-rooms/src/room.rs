@@ -13,7 +13,7 @@ use bytes::Bytes;
 use iroh::{
     EndpointId,
     endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler},
+    protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live_node::{Audience, Node, Publication, Subscription};
@@ -98,6 +98,10 @@ pub struct Rooms {
     /// The rooms joined here read it, so the gossip map ending under them is
     /// a clean stop and not a failure.
     closing: Arc<AtomicBool>,
+    /// Set once the service is mounted on a router, or its handler is taken.
+    mounted: Arc<AtomicBool>,
+    /// Set once a join has warned that the service is not mounted.
+    warned_unmounted: Arc<AtomicBool>,
 }
 
 impl Rooms {
@@ -117,13 +121,25 @@ impl Rooms {
             gossip,
             shut_down: Arc::default(),
             closing: Arc::default(),
+            mounted: Arc::default(),
+            warned_unmounted: Arc::default(),
         }
+    }
+
+    /// Mounts the service's gossip protocol on `router` under [`ALPN`].
+    ///
+    /// Without it, other members cannot reach this one's gossip. The router's
+    /// shutdown calls [`shutdown`](Self::shutdown).
+    pub fn mount(&self, router: RouterBuilder) -> RouterBuilder {
+        router.accept(ALPN, self.protocol_handler())
     }
 
     /// Returns the handler to mount under [`ALPN`] on the endpoint's router.
     ///
-    /// The router's shutdown calls [`shutdown`](Self::shutdown).
+    /// Prefer [`mount`](Self::mount). The router's shutdown calls
+    /// [`shutdown`](Self::shutdown).
     pub fn protocol_handler(&self) -> impl ProtocolHandler + use<> {
+        self.mounted.store(true, Ordering::Relaxed);
         Handler(self.clone())
     }
 
@@ -157,6 +173,11 @@ impl Rooms {
         ticket: &RoomTicket,
         display_name: Option<String>,
     ) -> Result<Room, Error> {
+        if !self.mounted.load(Ordering::Relaxed)
+            && !self.warned_unmounted.swap(true, Ordering::Relaxed)
+        {
+            warn!("rooms are not mounted on a router: peers cannot reach this member's gossip");
+        }
         let topic = ticket.topic_id();
         let me = self.moq.endpoint().id();
         let gossip_topic = self
@@ -821,5 +842,20 @@ mod tests {
         assert_eq!(path, format!("rooms/{topic}/{publisher}/cam"));
         assert!(publish_scope(publisher).matches(&path));
         assert!(!publish_scope(SecretKey::from_bytes(&[4; 32]).public()).matches(&path));
+    }
+
+    #[tokio::test]
+    async fn mounting_marks_the_rooms_mounted() {
+        use iroh::{Endpoint, endpoint::presets, protocol::Router};
+        use iroh_live_node::NodeConfig;
+
+        let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");
+        let node = Node::new(endpoint.clone(), NodeConfig::default());
+        let rooms = Rooms::new(&node);
+        assert!(!rooms.mounted.load(Ordering::Relaxed));
+
+        let router = rooms.mount(Router::builder(endpoint)).spawn();
+        assert!(rooms.mounted.load(Ordering::Relaxed));
+        router.shutdown().await.expect("the router shuts down");
     }
 }
