@@ -8,7 +8,10 @@
 //! A global tokio runtime drives all async work. Each session lives behind a
 //! `jlong` handle that Kotlin passes back in.
 
+mod egl;
+mod handle;
 mod logcat;
+mod renderer;
 
 use std::{
     ffi::c_void,
@@ -34,7 +37,7 @@ use jni::{
     objects::{JByteArray, JClass, JObject, JString},
     sys::{jboolean, jint, jlong},
 };
-use moq_ext_media_android::{handle, renderer::AndroidRenderer};
+use crate::renderer::AndroidRenderer;
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::{StreamExt as _, task::AbortOnDropHandle};

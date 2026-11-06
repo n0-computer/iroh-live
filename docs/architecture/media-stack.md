@@ -50,8 +50,7 @@ so a test that waits for bytes would pass on a stalled pipeline.
 `AudioSource::tone` is a steady sine.
 
 `moq-ext-egui` draws the texture `moq_video::render` returns in an egui panel,
-and has the debug overlay. `moq-ext-media-android` has an EGL renderer for
-Android. `demos/pi-zero/src/gles.rs` is a GLES2
+and has the debug overlay. The Android demo crate has an EGL renderer. `demos/pi-zero/src/gles.rs` is a GLES2
 renderer for the Pi Zero, which has no Vulkan.
 
 ## Feature flags

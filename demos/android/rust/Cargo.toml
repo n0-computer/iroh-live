@@ -17,14 +17,16 @@ iroh = { workspace = true }
 # handset on speakerphone has to subtract its own output from the microphone
 # or it publishes itself back. Video capture comes from Kotlin's CameraX.
 iroh-live = { workspace = true, features = ["aec"] }
-moq-ext-media-android = { workspace = true }
+# The EGL renderer and JNI handles.
+derive_more = { version = "2.1.1", features = ["debug"] }
+glow = "0.18"
+khronos-egl = { version = "6", features = ["dynamic"] }
 # `Timestamp`, which camera frames are stamped with.
 # `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
 # `mediacodec` gates `Surface::HardwareBuffer` and `moq_video::ndk`, which this
 # crate uses for `NativeWindow`. The workspace turns moq-video's default
-# features off, so this crate asks for it. Safe here and not in
-# `moq-ext-media-android`, because every dependency in this section is
-# already `cfg(target_os = "android")`.
+# features off, so this crate asks for it. Safe here, because every
+# dependency in this section is already `cfg(target_os = "android")`.
 moq-video = { workspace = true, features = ["mediacodec"] }
 # Held at 0.21. jni 0.22 splits `JNIEnv` into an owned `Env` and an
 # `EnvUnowned` that carries no JNI API of its own, which is a safety model
