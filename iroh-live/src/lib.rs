@@ -104,6 +104,7 @@ router.shutdown().await?; // closes the endpoint
 //! `v4l2` and `rpicam` add devices and codecs, and imply `media`. `rooms`
 //! re-exports `iroh-live-rooms` and adds `LiveBuilder::with_rooms`.
 
+pub mod calls;
 mod endpoint;
 mod error;
 pub mod layout;

@@ -12,6 +12,9 @@ pub enum Error {
     #[cfg(feature = "media")]
     #[error(transparent)]
     Media(moq_ext_player::Error),
+    /// A call could not be placed or answered.
+    #[error(transparent)]
+    Calls(crate::calls::Error),
     /// `IROH_SECRET` does not hold a secret key.
     #[error("IROH_SECRET does not hold a secret key")]
     SecretKey { source: iroh::KeyParsingError },
