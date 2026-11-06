@@ -81,7 +81,7 @@ void main() {
 /// [`Self::render_hardware_buffer`] or [`Self::render_nv12`], then show it with
 /// [`Self::swap_buffers`].
 #[derive(derive_more::Debug)]
-pub(crate) structAndroidRenderer {
+pub(crate) struct AndroidRenderer {
     gl: glow::Context,
     #[debug(skip)]
     egl: Egl,
@@ -120,7 +120,7 @@ impl AndroidRenderer {
     /// # Safety
     ///
     /// `native_window` must be a valid `ANativeWindow*`.
-    pub(crate) unsafe fnnew(native_window: *mut c_void) -> Result<Self> {
+    pub(crate) unsafe fn new(native_window: *mut c_void) -> Result<Self> {
         // SAFETY: Loading runs the initializers of the system's libEGL, which
         // we trust.
         let egl = unsafe { Egl::load_required().std_context("load EGL")? };
@@ -280,7 +280,7 @@ impl AndroidRenderer {
     ///
     /// - The EGL context must be current on the calling thread.
     /// - `buffer_ptr` must be a valid `AHardwareBuffer*` with an acquired reference.
-    pub(crate) unsafe fnrender_hardware_buffer(
+    pub(crate) unsafe fn render_hardware_buffer(
         &self,
         buffer_ptr: *mut c_void,
         surface_w: i32,
@@ -345,7 +345,7 @@ impl AndroidRenderer {
         clippy::too_many_arguments,
         reason = "one call carries both planes, their strides, the picture and the surface"
     )]
-    pub(crate) unsafe fnrender_nv12(
+    pub(crate) unsafe fn render_nv12(
         &self,
         y_data: &[u8],
         y_stride: u32,
@@ -488,7 +488,7 @@ impl AndroidRenderer {
     ///
     /// A failed swap, such as on a surface Android already destroyed, is
     /// logged at debug and drops the frame.
-    pub(crate) fnswap_buffers(&self) {
+    pub(crate) fn swap_buffers(&self) {
         if let Err(err) = self.egl.swap_buffers(self.egl_display, self.egl_surface) {
             debug!(error = %err, "eglSwapBuffers failed, dropping the frame");
         }
@@ -498,7 +498,7 @@ impl AndroidRenderer {
     ///
     /// Call it before drawing. A Kotlin coroutine can resume on a different
     /// thread than the one that last drew.
-    pub(crate) fnmake_current(&self) {
+    pub(crate) fn make_current(&self) {
         if let Err(err) = self.egl.make_current(
             self.egl_display,
             Some(self.egl_surface),
@@ -513,7 +513,7 @@ impl AndroidRenderer {
     ///
     /// The EGL display stays initialized. A step that fails is logged at debug,
     /// and the teardown goes on.
-    pub(crate) fnteardown(&self) {
+    pub(crate) fn teardown(&self) {
         if let Err(err) = self.egl.make_current(self.egl_display, None, None, None) {
             debug!(error = %err, "releasing the EGL context failed");
         }
