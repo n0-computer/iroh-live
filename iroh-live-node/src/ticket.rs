@@ -81,43 +81,6 @@ impl BroadcastTicket {
     pub fn path(&self) -> &Path {
         &self.path
     }
-
-    /// Creates a ticket for broadcast `name` of `peer`, at `live/<peer>/<name>`.
-    ///
-    /// Kept for callers that move to `LiveLayout::ticket`. Panics if `name`
-    /// makes no valid path.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn new(peer: EndpointId, name: impl Into<String>) -> Self {
-        let path = Path::new(&format!("live/{peer}/{}", name.into())).expect("a valid path");
-        Self { peer, path }
-    }
-
-    /// Returns the part of the path after `live/<peer>/`, or the whole path.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn name(&self) -> &str {
-        let prefix = format!("live/{}/", self.peer);
-        self.path
-            .as_str()
-            .strip_prefix(&prefix)
-            .unwrap_or(self.path.as_str())
-    }
-
-    /// Returns the ticket of the broadcast at a `live/<peer>/<name>` path.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn from_path(path: &str) -> Option<Self> {
-        let rest = path.strip_prefix("live/")?;
-        let (peer, name) = rest.split_once('/')?;
-        let peer = EndpointId::from_str(peer)
-            .ok()
-            .filter(|id| id.to_string() == peer)?;
-        if name.is_empty() {
-            return None;
-        }
-        Some(Self::at(peer, Path::new(path).ok()?))
-    }
 }
 
 fn invalid(reason: &'static str) -> Error {
@@ -345,17 +308,6 @@ mod tests {
         let wide = ticket(peer, &vec!["\u{e9}".repeat(100); 10].join("/"));
         assert!(wide.to_string().len() > BroadcastTicket::MAX_LEN);
         assert!(wide.to_string().parse::<BroadcastTicket>().is_err());
-    }
-
-    #[test]
-    fn the_shims_keep_the_live_layout() {
-        let peer = id();
-        let shim = BroadcastTicket::new(peer, "cam/hd");
-        assert_eq!(shim.path().as_str(), format!("live/{peer}/cam/hd"));
-        assert_eq!(shim.name(), "cam/hd");
-        assert_eq!(BroadcastTicket::from_path(shim.path().as_str()), Some(shim));
-        assert_eq!(BroadcastTicket::from_path(&format!("live/{peer}/")), None);
-        assert_eq!(BroadcastTicket::from_path("live/nobody/cam"), None);
     }
 
     #[test]

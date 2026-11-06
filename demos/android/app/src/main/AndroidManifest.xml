@@ -27,7 +27,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="iroh-live" />
+                <data android:scheme="ilv1" />
             </intent-filter>
         </activity>
     </application>

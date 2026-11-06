@@ -273,7 +273,7 @@ async fn setup_recv(
     let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
             "invalid ticket: {err}; it should be the string `irl publish` \
-             printed, starting with `iroh-live:`"
+             printed, starting with `ilv1:`"
         )
     })?;
     let sub = transport::subscribe(live, &ticket).await?;
@@ -416,7 +416,7 @@ mod tests {
             r#"
             [[recv]]
             name = "friend"
-            ticket = "iroh-live:abc/hello"
+            ticket = "ilv1:abc/hello"
             "#,
         )
         .expect("only `name` and `ticket` are required");

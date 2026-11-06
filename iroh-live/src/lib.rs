@@ -1,16 +1,30 @@
 //! Live audio and video over iroh.
 //!
-//! A [`Live`] node binds the [`Node`] transport to an iroh endpoint. It
-//! publishes broadcasts at `live/<its endpoint id>/<name>` and subscribes to
-//! other nodes' broadcasts over a direct session or an attached relay. The
-//! transport is re-exported as [`node`], and the moq-net it builds on as
-//! [`net`]. The `media` module gathers the media crates (sources, broadcasts,
-//! players, codecs), and `rooms` re-exports the rooms crate, each behind its
-//! feature.
+//! A [`Node`] publishes broadcasts at paths and subscribes to paths, over a
+//! direct session with a peer or an attached relay. The transport is
+//! re-exported as [`node`], and the moq-net it builds on as [`net`]. The
+//! `media` module gathers the media crates (sources, broadcasts, players,
+//! codecs), and `rooms` re-exports the rooms crate, each behind its feature.
 //!
 //! The moq crates come from the unreleased `main` branch of moq-dev/moq,
 //! pinned by git rev, so this crate cannot be published to crates.io yet.
 //! Depend on it through git.
+//!
+//! # Paths and layouts
+//!
+//! The node takes any path: [`Node::publish`] and [`Node::subscribe`] know
+//! nothing about how paths are chosen. iroh-live ships one convention,
+//! [`layout::LiveLayout`], which publishes a peer's broadcasts at
+//! `<root>/<peer>/<name>` (the root is `live` by default) and lets each peer
+//! publish only under its own id. Every use names the layout, so nothing
+//! about it is implicit. An application with its own scheme calls the node
+//! with its own paths and gives it a grant of its own, see
+//! [`NodeConfig::grant`].
+//!
+//! A [`BroadcastTicket`] names a peer and the path it publishes at, whatever
+//! the layout. [`Node::subscribe_ticket`] reads one on any node: it grants the
+//! ticket's publisher that one path for as long as the subscription lives, so
+//! a viewer needs no layout and no grant of its own.
 #![cfg_attr(
     feature = "media",
     doc = r#"
@@ -19,20 +33,23 @@ This publishes a test pattern and plays someone else's broadcast:
 ```no_run
 use iroh::protocol::Router;
 use iroh_live::{
-    BroadcastTicket, Live, MoqPreset,
+    BroadcastTicket, EndpointOptions, Node,
+    layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, video,
+        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
+        remote_broadcast, video,
     },
 };
 
 # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
-let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-let live = Live::new(endpoint.clone());
+let layout = LiveLayout::default();
+let endpoint = EndpointOptions::from_env()?.bind().await?;
+let node = Node::new(endpoint.clone(), layout.config(&[]));
 // Accepts the peers that read the broadcast. Keep the router alive.
-let router = live.mount(Router::builder(endpoint)).spawn();
+let router = node.mount(Router::builder(endpoint)).spawn();
 
 // Created in the node's route table: peers read it without a copy.
-let broadcast: LocalBroadcast = live.publish("studio")?;
+let broadcast: LocalBroadcast = layout.publish(&node, "studio")?;
 let source = VideoSource::test_pattern(
     video::Size::new(1280, 720),
     video::FrameRate::new(30, 1).expect("a valid rate"),
@@ -41,38 +58,34 @@ broadcast.set_video(
     source,
     VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
 )?;
-println!("share {}", live.ticket("studio"));
+println!("share {}", layout.ticket(node.id(), "studio")?);
 
-let subscription = live.subscribe(&ticket).await?;
-let player = live
-    .remote_broadcast(&subscription)
-    .play(PlayerConfig::default())?;
+let subscription = node.subscribe_ticket(&ticket).await?;
+let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
 let mut frames = player.video();
 while let Some(frame) = frames.next().await {
     // hand `frame` to a renderer
 #   drop(frame);
 }
 
-live.shutdown().await;
-router.shutdown().await?; // closes the endpoint
+// Shuts the node down and every mounted service, then closes the endpoint.
+router.shutdown().await?;
 # Ok(())
 # }
 ```
 "#
 )]
 //!
-//! The `live/<id>/<name>` layout, the grant and the endpoint setup are
-//! defaults. [`Live::publish_at`] and [`Live::subscribe_path`] take any path,
-//! [`Live::builder_with`] takes any [`NodeConfig`], [`EndpointOptions::apply`]
-//! composes with your own endpoint builder, and [`Live::node`] is the escape
-//! hatch to the transport. [`Live::call`] publishes this node's side of
-//! one-to-one calls, and its [`CallOffer`] rings and hangs up each peer.
+//! [`EndpointOptions::apply`] composes with your own endpoint builder, and
+//! [`calls::Calls`] places and answers one-to-one calls over a layout.
 //!
 //! The main types:
 //!
-//! - [`Live`]: the node. [`Live::mount`] mounts it on the application's
+//! - [`Node`]: the node. [`Node::mount`] mounts it on the application's
 //!   router, next to the application's own protocols.
-//! - [`BroadcastTicket`]: a publisher's endpoint id and a broadcast name.
+//! - [`layout::LiveLayout`]: the `<root>/<peer>/<name>` path convention.
+//! - [`BroadcastTicket`]: a publisher's endpoint id and the path of a broadcast.
+//! - [`calls::Calls`]: one-to-one calls.
 #![cfg_attr(
     feature = "media",
     doc = "- [`LocalBroadcast`](media::LocalBroadcast) and [`RemoteBroadcast`](media::RemoteBroadcast), from [`media`]."
@@ -83,14 +96,14 @@ router.shutdown().await?; // closes the endpoint
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
 //! | [`EndpointOptions::bind`] | yes | nothing is bound |
-//! | [`Live::subscribe`] | yes | abandons the wait, and a dial it started continues for other callers |
-//! | [`Live::subscribe_path`] | yes | as [`Live::subscribe`] |
-//! | [`Live::answer`] | yes | abandons the wait |
+//! | [`Node::subscribe`], [`Node::subscribe_ticket`] | yes | abandons the wait, and a dial it started continues for other callers |
+//! | [`calls::Calls::call`], [`calls::Calls::answer`] | yes | hangs up |
 //! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
-//! | [`Live::shutdown`] | no, idempotent | call again to finish |
+//! | [`Node::shutdown`] | no, idempotent | call again to finish |
 //!
-//! [`Live::shutdown`] does not close the endpoint. Whoever binds it closes
-//! it, directly or through `Router::shutdown`.
+//! [`Node::shutdown`] does not close the endpoint. Whoever binds it closes
+//! it, directly or through `Router::shutdown`, which also shuts down the node
+//! and every service mounted on the router.
 //!
 //! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
@@ -98,20 +111,18 @@ router.shutdown().await?; // closes the endpoint
 //! # Features
 //!
 //! No feature is on by default. `full` turns on `media`, `capture`, `render`,
-//! `record` and `sound-server`. `media` adds the `media` module and
-//! `Live::remote_broadcast`. Without it the crate is the `live/` layout only,
-//! as the relay uses it. `playback`, `aec`, `pipewire`, `vaapi`, `nvidia`,
-//! `v4l2` and `rpicam` add devices and codecs, and imply `media`. `rooms`
-//! re-exports `iroh-live-rooms` and adds `LiveBuilder::with_rooms`.
+//! `record` and `sound-server`. `media` adds the `media` module. Without it
+//! the crate is the layout, calls and endpoint setup only, as the relay uses
+//! it. `playback`, `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam`
+//! add devices and codecs, and imply `media`. `rooms` re-exports
+//! `iroh-live-rooms`.
 
 pub mod calls;
 mod endpoint;
 mod error;
 pub mod layout;
-mod live;
 #[cfg(feature = "media")]
 mod network;
-pub mod paths;
 
 /// Sources, broadcasts and players, with the codec stacks they sit on.
 #[cfg(feature = "media")]
@@ -154,14 +165,15 @@ pub use iroh_live_rooms as rooms;
 ///
 /// ```no_run
 /// use iroh_live::{
-///     Audience, Live, Reach,
+///     Audience, Node, Reach,
 ///     json::snapshot,
+///     layout::LiveLayout,
 ///     net::track,
 /// };
 ///
-/// # async fn run(live: Live, other: Live) -> Result<(), Box<dyn std::error::Error>> {
-/// let path = iroh_live::paths::broadcast(live.endpoint().id(), "control");
-/// let (_publication, track) = live.node().publish_with(&path, Audience::Everyone, |producer| {
+/// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
+/// let path = LiveLayout::default().path(node.id(), "control")?;
+/// let (_publication, track) = node.publish_with(path.clone(), Audience::Everyone, |producer| {
 ///     producer.create_track("latency", track::Info::default())
 /// })?;
 /// let mut latency = snapshot::Producer::<u64>::new(track, snapshot::Config::default());
@@ -169,7 +181,7 @@ pub use iroh_live_rooms as rooms;
 ///
 /// // On another node.
 /// let subscription = other
-///     .subscribe_path(&path, Reach::Direct(live.endpoint().id()))
+///     .subscribe(&path, Reach::Direct(node.id()))
 ///     .await?;
 /// let track = subscription.as_moq().track("latency")?.subscribe(None).await?;
 /// let mut latency = snapshot::Consumer::<u64>::new(track, Default::default());
@@ -184,9 +196,4 @@ pub use moq_json as json;
 pub use self::{
     endpoint::{EndpointOptions, Mdns, secret_key_file},
     error::Error,
-    live::{
-        CallOffer, Live, LiveBuilder, PublishScope, grant, grant_with, node_config,
-        node_config_with,
-    },
-    paths::CALL,
 };

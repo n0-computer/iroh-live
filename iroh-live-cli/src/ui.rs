@@ -579,7 +579,7 @@ mod tests {
     /// A rendered code keeps a white quiet zone around it.
     #[test]
     fn a_rendered_code_keeps_the_quiet_zone_a_decoder_relies_on() {
-        let pixels = QrPixels::render("iroh-live:hello").expect("the text fits");
+        let pixels = QrPixels::render("ilv1:hello").expect("the text fits");
         for row in 0..pixels.side {
             for column in 0..pixels.side {
                 let inside = (QR_QUIET..pixels.side - QR_QUIET).contains(&row)

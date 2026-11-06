@@ -203,10 +203,9 @@ mod tests {
     /// between the endpoint id and the name, so no browser can publish there.
     #[test]
     fn a_browser_cannot_publish_at_a_pulled_name() {
-        let ticket = iroh_live::BroadcastTicket::new(
-            iroh::SecretKey::from_bytes(&[7; 32]).public(),
-            "cam".to_owned(),
-        );
+        let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let path = LiveLayout::default().path(peer, "cam").expect("a path");
+        let ticket = iroh_live::BroadcastTicket::at(peer, path);
         let auth = browser_auth();
         let matches = |path: &str| {
             auth.public_publish

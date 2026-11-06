@@ -16,15 +16,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::{EndpointId, protocol::Router};
-use iroh_live::media::remote_broadcast;
-use iroh_live::layout::LiveLayout;
+use iroh::protocol::Router;
 use iroh_live::{
-    BroadcastTicket, CALL, CallOffer, EndpointOptions, Node,
+    BroadcastTicket, EndpointOptions, Node,
+    calls::{CALL, Call, CallEvent, Calls},
+    layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
         VideoFormat, VideoFrames, VideoRendition, VideoRenditions as _, VideoSource,
+        remote_broadcast,
     },
     net::Timestamp,
 };
@@ -36,7 +37,7 @@ use jni::{
 use moq_ext_media_android::{handle, renderer::AndroidRenderer};
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
-use n0_future::task::AbortOnDropHandle;
+use n0_future::{StreamExt as _, task::AbortOnDropHandle};
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -113,35 +114,9 @@ async fn bind_live() -> Result<(Node, Router)> {
     Ok((live, router))
 }
 
-/// This node's side of a call, offered to one peer while held.
-///
-/// The peer sees the offer in its route table, which is how it learns it is
-/// called, as `irl call` does.
-struct Offer {
-    calls: CallOffer,
-    peer: EndpointId,
-}
-
-impl Offer {
-    fn new(calls: &CallOffer, peer: EndpointId) -> Self {
-        calls.ring(peer);
-        Self {
-            calls: calls.clone(),
-            peer,
-        }
-    }
-}
-
-impl Drop for Offer {
-    fn drop(&mut self) {
-        self.calls.hang_up(self.peer);
-    }
-}
-
-/// Subscribes to `peer`'s side of a call and plays it.
-async fn play_call(live: &Node, peer: EndpointId, output: &AudioTarget) -> Result<Player> {
-    let subscription = live.answer(peer).await?;
-    play(&remote_broadcast(&subscription), output)
+/// Plays the side of the peer that `call` reached.
+fn play_call(call: &Call, output: &AudioTarget) -> Result<Player> {
+    play(&remote_broadcast(call.subscription()), output)
 }
 
 /// The state behind the `jlong` handle Kotlin holds.
@@ -153,8 +128,8 @@ struct SessionHandle {
     live: Option<Node>,
     /// Accepts the peers of `live`. Shutting it down closes the endpoint.
     router: Option<Router>,
-    /// This node's side of a call, once the call is up.
-    offer: Option<Offer>,
+    /// The call, once it is up. Dropping it hangs up.
+    call: Option<Call>,
     /// Playback of the watched broadcast. Dropping it stops decoding and audio.
     player: Option<Player>,
     /// The speaker, which is also the microphone's echo reference.
@@ -198,7 +173,7 @@ impl SessionHandle {
         Self {
             live: None,
             router: None,
-            offer: None,
+            call: None,
             player: None,
             output: None,
             broadcast: None,
@@ -359,7 +334,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     let ticket: BroadcastTicket = ticket.parse().context("failed to parse ticket")?;
 
     let (live, router) = bind_live().await?;
-    info!(broadcast = %ticket.name(), "connecting to broadcast");
+    info!(broadcast = %ticket.path(), "connecting to broadcast");
 
     let subscription = live.subscribe_ticket(&ticket).await?;
     info!("subscribed");
@@ -414,16 +389,16 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
 
     let output = open_output().await;
     // Published to nobody, then offered to the peer.
-    let (broadcast, calls): (LocalBroadcast, CallOffer) = live.call()?;
+    let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(&live, &LiveLayout::default())?;
     let (camera, _preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
-    let offer = Offer::new(&calls, ticket.peer());
     // A busy callee answers only once its call ends, so give up as `irl call`
     // does.
-    let player = tokio::time::timeout(PEER_TIMEOUT, play_call(&live, ticket.peer(), &output))
+    let call = tokio::time::timeout(PEER_TIMEOUT, calls.call(ticket.peer()))
         .await
         .std_context("the peer did not answer")??;
+    let player = play_call(&call, &output)?;
     info!(remote = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();
@@ -432,7 +407,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.output = Some(output);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    session.offer = Some(offer);
+    session.call = Some(call);
     session.live = Some(live);
     session.router = Some(router);
     Ok(handle::to_i64(session.into_shared()))
@@ -470,7 +445,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // Start the camera now, so the preview runs while the ticket is on screen
     // and the peer's first frame does not wait for the device to open.
     let output = open_output().await;
-    let (broadcast, calls): (LocalBroadcast, CallOffer) = live.call()?;
+    let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(&live, &LiveLayout::default())?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, Some(&output)).await;
 
@@ -479,8 +454,8 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.output = Some(output.clone());
     session.camera = Some(camera);
     session.ticket = Some(LiveLayout::default().ticket(live.id(), CALL)?.to_string());
-    session.broadcast = Some(broadcast.clone());
-    session.live = Some(live.clone());
+    session.broadcast = Some(broadcast);
+    session.live = Some(live);
     session.router = Some(router);
     let shared = session.into_shared();
 
@@ -489,7 +464,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // owns the task through `waiting`, so dropping the last `Arc` aborts it.
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
-        if let Err(err) = accept_one(live, calls, output, waiting).await {
+        if let Err(err) = accept_one(calls, output, waiting).await {
             error!(error = format!("{err:#}"), "answering failed");
         }
     });
@@ -500,36 +475,24 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 
 /// Answers the first peer that calls and installs a player for it on `session`.
 ///
-/// A caller offers `live/<its id>/call` to this node only, so the first such
-/// path in the route table is the call.
+/// A caller offers its side to this node only, which `calls` reports as a
+/// ring.
 async fn accept_one(
-    live: Node,
-    calls: CallOffer,
+    calls: Calls,
     output: AudioTarget,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
-    let me = live.endpoint().id();
-    let mut updates = live.origin().announced();
+    let mut events = calls.events();
     let peer = loop {
-        let Some(update) = updates.next().await else {
-            return Ok(());
-        };
-        let (announce, active) = match &update {
-            iroh_live::net::announce::Event::End(announce) => (announce, false),
-            iroh_live::net::announce::Event::Start(announce)
-            | iroh_live::net::announce::Event::Update(announce)
-            | iroh_live::net::announce::Event::Restart(announce)
-            | iroh_live::net::announce::Event::Takeover { announce, .. } => (announce, true),
-        };
-        let caller = BroadcastTicket::from_path(announce.prefix.as_str())
-            .filter(|ticket| active && ticket.name() == CALL);
-        if let Some(ticket) = caller.filter(|ticket| ticket.peer() != me) {
-            break ticket.peer();
+        match events.next().await {
+            Some(CallEvent::Ringing(peer)) => break peer,
+            Some(_) => {}
+            None => return Ok(()),
         }
     };
     info!(remote = %peer.fmt_short(), "answering");
-    let offer = Offer::new(&calls, peer);
-    let player = play_call(&live, peer, &output).await?;
+    let call = calls.answer(peer).await?;
+    let player = play_call(&call, &output)?;
     info!(remote = %peer.fmt_short(), "call answered");
 
     let Some(session) = session.upgrade() else {
@@ -542,7 +505,7 @@ async fn accept_one(
     // Replace the local preview with the peer's video.
     held.frames = Some(player.video());
     held.player = Some(player);
-    held.offer = Some(offer);
+    held.call = Some(call);
     Ok(())
 }
 
@@ -558,7 +521,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
     }
     // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
     let session = unsafe { borrow_handle(handle) };
-    let connected = session.lock().expect("poisoned").offer.is_some();
+    let connected = session.lock().expect("poisoned").call.is_some();
     jboolean::from(connected)
 }
 
@@ -1231,14 +1194,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     let session = unsafe { take_handle(handle) };
     // Release the lock before `block_on`. Holding it would stall every other
     // JNI call on this handle until the endpoint closes.
-    let (waiting, player, offer, broadcast, live, router) = match session.lock() {
+    let (waiting, player, call, broadcast, live, router) = match session.lock() {
         Ok(mut guard) => (
             {
                 guard.closing = true;
                 guard.waiting.take()
             },
             guard.player.take(),
-            guard.offer.take(),
+            guard.call.take(),
             guard.broadcast.take(),
             guard.live.take(),
             guard.router.take(),
@@ -1252,7 +1215,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         // Stop waiting for a caller first, so none is accepted during shutdown.
         drop(waiting);
         drop(player);
-        drop(offer);
+        drop(call);
         if let Some(broadcast) = broadcast {
             // Let the encoders finish, so subscribers see the broadcast end.
             broadcast.close();
