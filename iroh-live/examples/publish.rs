@@ -5,8 +5,9 @@
 
 use clap::Parser;
 use iroh::protocol::Router;
+use iroh_live::layout::LiveLayout;
 use iroh_live::{
-    EndpointOptions, Live,
+    EndpointOptions, Node,
     media::{
         AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
         VideoRendition, VideoSource, video,
@@ -16,7 +17,7 @@ use n0_error::StdResultExt;
 use tracing::{info, warn};
 
 #[derive(Parser)]
-#[command(about = "Publishes the default camera and microphone over iroh-live")]
+#[command(about = "Publishes the default camera and microphone over iroh-node")]
 struct Args {
     /// The broadcast name.
     #[clap(long, default_value = "demo")]
@@ -38,13 +39,14 @@ async fn main() -> n0_error::Result {
 
     // Set `IROH_SECRET` to keep the same ticket across restarts.
     let endpoint = EndpointOptions::from_env()?.bind().await?;
-    let live = Live::new(endpoint.clone());
+    let layout = LiveLayout::default();
+    let node = Node::new(endpoint.clone(), layout.config(&[]));
     // Accepts the viewers. Dropping the router stops accepting.
-    let router = live.mount(Router::builder(endpoint)).spawn();
-    info!(id = %live.endpoint().id(), "endpoint ready");
+    let router = node.mount(Router::builder(endpoint)).spawn();
+    info!(id = %node.id(), "endpoint ready");
 
     // Published while `broadcast` lives, or until the node shuts down.
-    let broadcast: LocalBroadcast = live.publish(&args.name)?;
+    let broadcast: LocalBroadcast = layout.publish(&node, &args.name)?;
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
@@ -67,11 +69,11 @@ async fn main() -> n0_error::Result {
         Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    println!("{}", live.ticket(&args.name));
+    println!("{}", layout.ticket(node.id(), &args.name)?);
     info!(name = %args.name, "publishing");
 
     tokio::signal::ctrl_c().await?;
-    live.shutdown().await;
+    node.shutdown().await;
     // Also closes the endpoint.
     router
         .shutdown()

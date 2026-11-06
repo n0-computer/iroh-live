@@ -12,8 +12,10 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh_live::layout::LiveLayout;
+use iroh_live::media::remote_broadcast;
 use iroh_live::{
-    BroadcastTicket, Live,
+    Node,
     media::{
         FrameSender, LocalBroadcast, PlayerConfig, VideoEncoding, VideoFormat, VideoFrames,
         VideoRendition, VideoSource,
@@ -58,8 +60,8 @@ async fn endpoint() -> Endpoint {
 
 /// A publisher and a subscriber, connected.
 struct Peers {
-    publisher: Live,
-    subscriber: Live,
+    publisher: Node,
+    subscriber: Node,
     broadcast: LocalBroadcast,
     _router: Router,
 }
@@ -67,12 +69,14 @@ struct Peers {
 impl Peers {
     /// Publishes an empty broadcast as `name` and returns both nodes.
     async fn new(name: &str) -> Self {
-        let publisher = Live::new(endpoint().await);
+        let publisher = Node::new(endpoint().await, LiveLayout::default().config(&[]));
         let router = publisher
             .mount(Router::builder(publisher.endpoint().clone()))
             .spawn();
-        let broadcast = publisher.publish(name).expect("failed to publish");
-        let subscriber = Live::new(endpoint().await);
+        let broadcast = LiveLayout::default()
+            .publish(&publisher, name)
+            .expect("failed to publish");
+        let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
         Self {
             publisher,
             subscriber,
@@ -83,15 +87,15 @@ impl Peers {
 
     /// Plays the broadcast `name` on the subscriber.
     async fn play(&self, name: &str) -> (iroh_live::media::Player, VideoFrames) {
-        let ticket = BroadcastTicket::new(self.publisher.endpoint().id(), name);
+        let ticket = LiveLayout::default()
+            .ticket(self.publisher.id(), name)
+            .expect("a valid broadcast name");
         let subscription = self
             .subscriber
-            .subscribe(&ticket)
+            .subscribe_ticket(&ticket)
             .await
             .expect("failed to subscribe");
-        let player = self
-            .subscriber
-            .remote_broadcast(&subscription)
+        let player = remote_broadcast(&subscription)
             .play(PlayerConfig::default())
             .expect("failed to play");
         let frames = player.video();

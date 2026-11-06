@@ -25,8 +25,9 @@ fn main() {
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh::protocol::Router;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
+use iroh_live::layout::LiveLayout;
 use iroh_live::{
-    EndpointOptions, Live,
+    EndpointOptions, Node,
     media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -44,19 +45,20 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
 
     let endpoint = EndpointOptions::from_env()?.bind().await?;
-    let live = Live::new(endpoint.clone());
-    let router = live.mount(Router::builder(endpoint)).spawn();
+    let layout = LiveLayout::default();
+    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let router = node.mount(Router::builder(endpoint)).spawn();
     // Published while `broadcast` lives, or until the node shuts down.
-    let broadcast: LocalBroadcast = live.publish(BROADCAST)?;
+    let broadcast: LocalBroadcast = layout.publish(&node, BROADCAST)?;
     // The default keyframe interval is one second, so a new viewer waits up
     // to a second for a picture.
     let config = RpicamConfig::new(Size::new(640, 360), 30);
     broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
-    println!("{}", live.ticket(BROADCAST));
+    println!("{}", layout.ticket(node.id(), BROADCAST)?);
 
     info!("publishing, press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;
-    live.shutdown().await;
+    node.shutdown().await;
     // Also closes the endpoint.
     router
         .shutdown()

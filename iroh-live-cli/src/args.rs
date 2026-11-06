@@ -10,6 +10,7 @@ use clap::{
     builder::{PossibleValuesParser, TypedValueParser},
 };
 use iroh::EndpointId;
+use iroh_live::layout::LiveLayout;
 use iroh_live::{BroadcastTicket, media::RecordFormat, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
@@ -387,7 +388,7 @@ impl RemoteArgs {
     pub fn ticket(&self) -> Result<BroadcastTicket> {
         match (&self.ticket, self.endpoint_id, &self.broadcast_name) {
             (Some(ticket), None, None) => Ok(ticket.clone()),
-            (None, Some(id), Some(name)) => Ok(BroadcastTicket::new(id, name.clone())),
+            (None, Some(id), Some(name)) => Ok(LiveLayout::default().ticket(id, name)?),
             _ => Err(anyerr!(
                 "provide either <TICKET> or --endpoint-id and --name"
             )),

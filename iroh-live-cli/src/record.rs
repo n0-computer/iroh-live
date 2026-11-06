@@ -12,7 +12,7 @@ use std::{
 
 use bytesize::ByteSize;
 use iroh_live::{
-    BroadcastTicket, Live,
+    BroadcastTicket, Node,
     media::{
         Catalog, RecordConfig, RecordFormat, Recording, RemoteBroadcast, VideoRenditions as _,
     },
@@ -43,7 +43,7 @@ async fn record(args: RecordArgs) -> Result {
 }
 
 /// Records one broadcast over `live`. The caller shuts `live` down.
-async fn record_on(live: &Live, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
+async fn record_on(live: &Node, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
     let sub = transport::subscribe(live, ticket).await?;
 
     let catalog = crate::playback::catalog(sub.broadcast()).await?;

@@ -16,7 +16,12 @@ use iroh_live::media::{
     RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
     video::{FrameRate, Size, decode},
 };
-use iroh_live::{BroadcastTicket, CALL, CallOffer, Live, Subscription, media::Rate};
+use iroh_live::{
+    Node,
+    calls::{Calls, HungUp},
+    layout::LiveLayout,
+    media::{Rate, remote_broadcast},
+};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher as _;
 use tracing::{Instrument, info_span};
@@ -36,25 +41,35 @@ async fn endpoint() -> Endpoint {
     endpoint
 }
 
-/// Mounts `live` on a new router, so peers can connect to it.
+/// Mounts `node` on a new router, so peers can connect to it.
 ///
 /// Keep the router for the whole test: dropping it stops accepting.
-fn serve(live: &Live) -> Router {
-    live.mount(Router::builder(live.endpoint().clone())).spawn()
+fn serve(node: &Node) -> Router {
+    node.mount(Router::builder(node.endpoint().clone())).spawn()
 }
 
-/// Publishes a new media broadcast as `name` on `live`.
-fn publish(live: &Live, name: &str) -> LocalBroadcast {
-    live.publish(name).expect("failed to publish")
+/// Creates a node on the default layout.
+async fn node() -> Node {
+    Node::new(endpoint().await, LiveLayout::default().config(&[]))
 }
 
-/// Subscribes `live` to the broadcast `publisher` publishes as `name`.
-async fn subscribe(live: &Live, publisher: &Live, name: &str) -> RemoteBroadcast {
-    let subscription = live
-        .subscribe(&BroadcastTicket::new(publisher.endpoint().id(), name))
+/// Publishes a new media broadcast as `name` on `node`.
+fn publish(node: &Node, name: &str) -> LocalBroadcast {
+    LiveLayout::default()
+        .publish(node, name)
+        .expect("failed to publish")
+}
+
+/// Subscribes `node` to the broadcast `publisher` publishes as `name`.
+async fn subscribe(node: &Node, publisher: &Node, name: &str) -> RemoteBroadcast {
+    let ticket = LiveLayout::default()
+        .ticket(publisher.id(), name)
+        .expect("a valid broadcast name");
+    let subscription = node
+        .subscribe_ticket(&ticket)
         .await
         .expect("failed to subscribe");
-    live.remote_broadcast(&subscription)
+    remote_broadcast(&subscription)
 }
 
 /// Sets a generated pattern of `size` on `broadcast`, as one rendition.
@@ -78,21 +93,25 @@ async fn first_frame(player: &Player) {
 #[traced_test]
 async fn publish_subscribe_video() {
     let (publisher, _broadcast, _router) = async {
-        let live = Live::new(endpoint().await);
-        let router = serve(&live);
-        let broadcast = publish(&live, "test-stream");
+        let node = node().await;
+        let router = serve(&node);
+        let broadcast = publish(&node, "test-stream");
         set_pattern(&broadcast, Size::new(320, 240));
-        (live, broadcast, router)
+        (node, broadcast, router)
     }
     .instrument(info_span!("publisher"))
     .await;
-    let ticket = BroadcastTicket::new(publisher.endpoint().id(), "test-stream");
+    let ticket = LiveLayout::default()
+        .ticket(publisher.id(), "test-stream")
+        .expect("a valid broadcast name");
 
     let subscriber = async move {
-        let live = Live::new(endpoint().await);
-        let subscription = live.subscribe(&ticket).await.expect("failed to subscribe");
-        let player = live
-            .remote_broadcast(&subscription)
+        let node = node().await;
+        let subscription = node
+            .subscribe_ticket(&ticket)
+            .await
+            .expect("failed to subscribe");
+        let player = remote_broadcast(&subscription)
             .play(PlayerConfig::default())
             .expect("failed to play");
         let mut frames = player.video();
@@ -119,7 +138,7 @@ async fn publish_subscribe_video() {
             previous = Some(frame.timestamp);
         }
 
-        live
+        node
     }
     .instrument(info_span!("subscriber"))
     .await;
@@ -128,95 +147,72 @@ async fn publish_subscribe_video() {
     subscriber.shutdown().await;
 }
 
-/// Waits until `updates` announces `peer`'s `call` path (`active`) or retracts it.
-async fn ringing(updates: &mut moq_net::announce::Consumer, peer: &Live, active: bool) {
-    let path = BroadcastTicket::new(peer.endpoint().id(), CALL)
-        .path()
-        .to_string();
+/// Waits until `calls` lists `peer` as ringing, or no longer does.
+async fn rings(calls: &Calls, peer: &Node, ringing: bool) {
     tokio::time::timeout(TIMEOUT, async {
-        loop {
-            let update = updates.next().await.expect("the route table closed");
-            let (announce, is_active) = match &update {
-                moq_net::announce::Event::End(announce) => (announce, false),
-                moq_net::announce::Event::Start(announce)
-                | moq_net::announce::Event::Update(announce)
-                | moq_net::announce::Event::Restart(announce)
-                | moq_net::announce::Event::Takeover { announce, .. } => (announce, true),
-            };
-            if announce.prefix.as_str() == path && is_active == active {
-                return;
-            }
+        while calls.ringing().get().contains(&peer.id()) != ringing {
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("the ring never turned {active}"));
+    .unwrap_or_else(|_| panic!("the ring never turned {ringing}"));
 }
 
-/// Publishes `live`'s call side, offered to nobody yet, with a test pattern.
-fn call_side(live: &Live) -> (LocalBroadcast, CallOffer) {
-    let (side, offer): (LocalBroadcast, CallOffer) = live.call().expect("failed to publish");
+/// Starts the call service of `node`, with a test pattern on its side.
+fn call_side(node: &Node) -> (Calls, LocalBroadcast) {
+    let (calls, side): (Calls, LocalBroadcast) =
+        Calls::new(node, &LiveLayout::default()).expect("failed to publish");
     set_pattern(&side, Size::new(320, 240));
-    (side, offer)
+    (calls, side)
 }
 
-/// Subscribes `live` to `peer`'s call side.
-async fn answer(live: &Live, peer: &Live) -> Subscription {
-    tokio::time::timeout(TIMEOUT, live.answer(peer.endpoint().id()))
-        .await
-        .expect("timed out reaching the other side")
-        .expect("failed to reach the other side")
-}
-
-/// The call convention: an offer rings, the answer plays, and a hang-up ends it.
+/// The call convention: a call rings, the answer plays, and a hang-up ends it.
 ///
 /// The session stays open, so a second call over it rings again.
 #[tokio::test]
 #[traced_test]
 async fn a_call_rings_answers_and_hangs_up() {
-    let alice = Live::new(endpoint().await);
+    let alice = node().await;
     let _alice_router = serve(&alice);
-    let bob = Live::new(endpoint().await);
+    let bob = node().await;
     let _bob_router = serve(&bob);
-    let (_alice_side, alice_offer) = call_side(&alice);
-    let (_bob_side, bob_offer) = call_side(&bob);
-    let (alice_id, bob_id) = (alice.endpoint().id(), bob.endpoint().id());
-    let mut bob_table = bob.node().origin().announced();
+    let (alice_calls, _alice_side) = call_side(&alice);
+    let (bob_calls, _bob_side) = call_side(&bob);
 
     // One call side serves both calls: each rings and hangs up by audience.
     for _ in 0..2 {
-        alice_offer.ring(bob_id);
-        let dialing = tokio::spawn({
-            let (alice, bob) = (alice.clone(), bob.clone());
-            async move { answer(&alice, &bob).await }
-        });
-        ringing(&mut bob_table, &alice, true).await;
-        bob_offer.ring(alice_id);
-        let at_bob = answer(&bob, &alice).await;
-        let at_alice = dialing.await.expect("the dial panicked");
-        let player = bob
-            .remote_broadcast(&at_bob)
+        let (at_alice, at_bob) = tokio::join!(
+            async {
+                tokio::time::timeout(TIMEOUT, alice_calls.call(bob.id()))
+                    .await
+                    .expect("timed out reaching the other side")
+                    .expect("failed to reach the other side")
+            },
+            async {
+                rings(&bob_calls, &alice, true).await;
+                tokio::time::timeout(TIMEOUT, bob_calls.answer(alice.id()))
+                    .await
+                    .expect("timed out answering")
+                    .expect("failed to answer")
+            },
+        );
+        let player = remote_broadcast(at_bob.subscription())
             .play(PlayerConfig::default())
             .expect("failed to play");
         first_frame(&player).await;
 
         // Alice hangs up: Bob's read ends and the ring stops.
-        alice_offer.hang_up(bob_id);
-        tokio::time::timeout(TIMEOUT, async {
-            while !at_bob.as_moq().is_closed() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("bob did not notice the hang-up");
-        ringing(&mut bob_table, &alice, false).await;
-        bob_offer.hang_up(alice_id);
-        drop((at_alice, player));
+        at_alice.hang_up();
+        let hung_up = tokio::time::timeout(TIMEOUT, at_bob.ended())
+            .await
+            .expect("bob did not notice the hang-up");
+        assert_eq!(hung_up, HungUp::Withdrawn);
+        drop((at_bob, player));
+        // The next round rings anew only once this withdrawal has arrived.
+        rings(&bob_calls, &alice, false).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    assert_eq!(
-        alice.node().sessions().get().len(),
-        1,
-        "the session was replaced"
-    );
+    assert_eq!(alice.sessions().get().len(), 1, "the session was replaced");
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -228,7 +224,7 @@ async fn a_call_rings_answers_and_hangs_up() {
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_audio() {
-    let publisher = Live::new(endpoint().await);
+    let publisher = node().await;
     let _router = serve(&publisher);
     let broadcast = publish(&publisher, "av-stream");
     set_pattern(&broadcast, Size::new(320, 240));
@@ -239,7 +235,7 @@ async fn publish_subscribe_audio() {
         )
         .expect("failed to set audio");
 
-    let subscriber = Live::new(endpoint().await);
+    let subscriber = node().await;
     let remote = subscribe(&subscriber, &publisher, "av-stream").await;
     let output = AudioTarget::null();
     let player = remote
@@ -267,7 +263,7 @@ async fn publish_subscribe_audio() {
 #[tokio::test]
 #[traced_test]
 async fn adaptive_rendition_switching() {
-    let publisher = Live::new(endpoint().await);
+    let publisher = node().await;
     let _router = serve(&publisher);
     let broadcast = publish(&publisher, "adaptive-stream");
     broadcast
@@ -287,7 +283,7 @@ async fn adaptive_rendition_switching() {
         )
         .expect("failed to set video");
 
-    let subscriber = Live::new(endpoint().await);
+    let subscriber = node().await;
     let remote = subscribe(&subscriber, &publisher, "adaptive-stream").await;
 
     // Replaces the signals the subscription attached. Starts healthy.
@@ -355,12 +351,12 @@ async fn adaptive_rendition_switching() {
 #[tokio::test]
 #[traced_test]
 async fn changing_the_decoder_backend_rebuilds_it() {
-    let publisher = Live::new(endpoint().await);
+    let publisher = node().await;
     let _router = serve(&publisher);
     let broadcast = publish(&publisher, "decoder-stream");
     set_pattern(&broadcast, Size::new(320, 240));
 
-    let subscriber = Live::new(endpoint().await);
+    let subscriber = node().await;
     let remote = subscribe(&subscriber, &publisher, "decoder-stream").await;
     let player = remote
         .play(PlayerConfig::default())

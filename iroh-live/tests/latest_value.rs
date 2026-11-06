@@ -3,7 +3,8 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_live::{Audience, Live, Reach, json::snapshot, net::track, paths};
+use iroh_live::layout::LiveLayout;
+use iroh_live::{Audience, Node, Reach, json::snapshot, net::track};
 use n0_tracing_test::traced_test;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -24,14 +25,15 @@ async fn endpoint() -> Endpoint {
 #[tokio::test]
 #[traced_test]
 async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
-    let publisher = Live::new(endpoint().await);
+    let publisher = Node::new(endpoint().await, LiveLayout::default().config(&[]));
     let _router = publisher
         .mount(Router::builder(publisher.endpoint().clone()))
         .spawn();
-    let path = paths::broadcast(publisher.endpoint().id(), "control");
+    let path = LiveLayout::default()
+        .path(publisher.id(), "control")
+        .expect("a path");
     let (_publication, track) = publisher
-        .node()
-        .publish_with(&path, Audience::Everyone, |producer| {
+        .publish_with(path.clone(), Audience::Everyone, |producer| {
             producer.create_track("latency", track::Info::default())
         })
         .expect("publish");
@@ -40,10 +42,10 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
         writer.update(&latency).expect("write");
     }
 
-    let subscriber = Live::new(endpoint().await);
+    let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
     let subscription = tokio::time::timeout(
         TIMEOUT,
-        subscriber.subscribe_path(&path, Reach::Direct(publisher.endpoint().id())),
+        subscriber.subscribe(&path, Reach::Direct(publisher.id())),
     )
     .await
     .expect("subscribed in time")

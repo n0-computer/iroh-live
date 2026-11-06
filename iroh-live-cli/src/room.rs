@@ -4,8 +4,12 @@
 //! each one in a grid. Chat is one more broadcast per member, see [`chat`].
 //! Every participant subscribes to every other, so this suits small groups.
 
+use std::sync::Arc;
+
+use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Live,
+    EndpointOptions, Node,
+    layout::LiveLayout,
     media::{AudioTarget, LocalBroadcast},
     rooms::{Room, RoomTicket, Rooms},
 };
@@ -54,9 +58,14 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     let output = crate::playback::output(None).await?;
     // Rooms always serve, since other participants dial in.
     let endpoint = EndpointOptions::from_env()?.bind().await?;
-    let (live, rooms) = Live::builder(endpoint).spawn_with_rooms();
+    let node = Node::new(
+        endpoint.clone(),
+        LiveLayout::default().config(&[Arc::new(iroh_live::rooms::publish_scope)]),
+    );
+    let rooms = Rooms::new(&node);
     // Mounts rooms' gossip next to the moq ALPNs.
-    let live = Transport::new(live, true);
+    let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
+    let live = Transport::serving(node, router);
     let (_, joined) =
         transport::with_live(live, async |live| join(live, &rooms, args, output).await).await?;
     Ok(joined)
@@ -108,7 +117,6 @@ mod window {
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        Live,
         media::{AudioTarget, LocalBroadcast, Player, VideoSource},
         rooms::{Room, RoomState},
     };
@@ -352,7 +360,6 @@ mod window {
                 }
                 info!(remote = %short(remote), %name, "subscribing to a member");
                 self.opening.spawn(open(
-                    Live::clone(&self.live),
                     self.room.clone(),
                     remote,
                     name,
@@ -621,19 +628,17 @@ mod window {
     /// Returns `None` with the key when the broadcast cannot be reached or
     /// produces no catalog within [`PEER_TIMEOUT`].
     async fn open(
-        live: Live,
         room: Room,
         remote: EndpointId,
         name: String,
         playback: PlaybackArgs,
         output: AudioTarget,
     ) -> (EndpointId, String, Option<Opened>) {
-        let opened = open_inner(live, room, remote, &name, playback, output).await;
+        let opened = open_inner(room, remote, &name, playback, output).await;
         (remote, name, opened)
     }
 
     async fn open_inner(
-        live: Live,
         room: Room,
         remote: EndpointId,
         name: &str,
@@ -643,7 +648,7 @@ mod window {
         // A member may announce a name it never publishes.
         let opened = tokio::time::timeout(PEER_TIMEOUT, async {
             let subscription = room.subscribe(remote, name).await?;
-            let sub = Subscribed::open(&live, subscription);
+            let sub = Subscribed::open(subscription);
             crate::playback::catalog(sub.broadcast()).await?;
             n0_error::Ok(sub)
         });

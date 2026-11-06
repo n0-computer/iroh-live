@@ -21,11 +21,13 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh_live::layout::LiveLayout;
+use iroh_live::media::remote_broadcast;
 use iroh_live::media::{
     Latency, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition, VideoSource,
     video::{Frame, FrameRate, Size, Surface, decode},
 };
-use iroh_live::{BroadcastTicket, Live, media::LocalBroadcast};
+use iroh_live::{Node, media::LocalBroadcast};
 use n0_tracing_test::traced_test;
 
 /// Generous, because tests run in parallel and openh264 encodes in software.
@@ -126,26 +128,30 @@ fn offset(received: &[(u64, Instant)], handed: &HashMap<u64, Instant>) -> i128 {
 async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
-    let publisher = Live::new(endpoint().await);
+    let publisher = Node::new(endpoint().await, LiveLayout::default().config(&[]));
     let _router = publisher
         .mount(Router::builder(publisher.endpoint().clone()))
         .spawn();
-    let broadcast: LocalBroadcast = publisher.publish("latency").expect("failed to publish");
+    let broadcast: LocalBroadcast = LiveLayout::default()
+        .publish(&publisher, "latency")
+        .expect("failed to publish");
     broadcast
         .set_video(
             stamped_source(handed.clone()),
             VideoEncoding::single(VideoRendition::new("video")),
         )
         .expect("failed to set video");
-    let ticket = BroadcastTicket::new(publisher.endpoint().id(), "latency");
+    let ticket = LiveLayout::default()
+        .ticket(publisher.id(), "latency")
+        .expect("a valid broadcast name");
 
-    let subscriber = Live::new(endpoint().await);
+    let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
     let subscribed_at = Instant::now();
     let subscription = subscriber
-        .subscribe(&ticket)
+        .subscribe_ticket(&ticket)
         .await
         .expect("failed to subscribe");
-    let remote = subscriber.remote_broadcast(&subscription);
+    let remote = remote_broadcast(&subscription);
     let config = PlayerConfig {
         latency,
         decoder: decode::Kind::Software,

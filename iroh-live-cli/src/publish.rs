@@ -3,7 +3,8 @@
 //! Capture sources are encoded into the renditions `--renditions` lists. A
 //! `file:` source is republished without re-encoding.
 
-use iroh_live::{Live, media::LocalBroadcast, net::broadcast};
+use iroh_live::layout::LiveLayout;
+use iroh_live::{Node, media::LocalBroadcast, net::broadcast};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -46,7 +47,8 @@ async fn setup_capture(
 ) -> Result<(Transport, LocalBroadcast, source::Opened, String)> {
     let live = setup_live(!args.transport.no_serve).await?;
     let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
-        let broadcast: LocalBroadcast = live.publish(&args.transport.name)?;
+        let broadcast: LocalBroadcast =
+            LiveLayout::default().publish(live, &args.transport.name)?;
         let sources = source::configure(&broadcast, &args.capture, None).await?;
         let ticket = transport::advertise(live, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.
@@ -101,12 +103,13 @@ async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
 }
 
 /// Publishes the file on `live`. The caller shuts `live` down.
-async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> Result {
+async fn publish_import(live: &Node, source: FileSource, args: &PublishArgs) -> Result {
     // The import creates its tracks once it has read the file's header, a
     // moment after the broadcast is published. A reader that asks within that
     // moment finds no catalog yet: `RemoteBroadcast` asks again until it
     // appears, while other readers may give up.
-    let producer: broadcast::Producer = live.publish(&args.transport.name)?;
+    let producer: broadcast::Producer =
+        LiveLayout::default().publish(live, &args.transport.name)?;
     let import = match FileImport::open(producer.clone(), source).await {
         Ok(import) => import,
         Err(err) => {

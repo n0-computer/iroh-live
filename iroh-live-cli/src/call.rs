@@ -1,15 +1,17 @@
 //! `irl call`: a 1:1 video call.
 //!
-//! Each side offers its broadcast as [`CALL`] to the other peer only, and
-//! subscribes to the other's. A node is called when a peer's `call` path
-//! appears in its route table, and a hang-up withdraws the offer. The Android
-//! demo does the same, so the two can call each other.
+//! Each side offers its broadcast as `call` to the other peer only, and
+//! subscribes to the other's, which `iroh_live::calls` does. A node is called
+//! when a peer's `call` path appears in its route table, and a hang-up
+//! withdraws the offer. The Android demo does the same, so the two can call
+//! each other.
 //!
 //! Each window shows its own ticket as a QR code and can scan the peer's off
 //! the camera. Whoever scans places the call, so no keyboard is needed.
 
+use iroh_live::layout::LiveLayout;
 use iroh_live::{
-    CALL, CallOffer,
+    calls::{CALL, Calls},
     media::{AudioTarget, LocalBroadcast},
 };
 use n0_error::Result;
@@ -37,7 +39,7 @@ struct Local {
     live: Transport,
     broadcast: LocalBroadcast,
     /// Who this node's side is offered to.
-    calls: CallOffer,
+    calls: Calls,
     sources: source::Opened,
     output: AudioTarget,
     ticket: String,
@@ -50,9 +52,9 @@ async fn setup(args: &CallArgs) -> Result<Local> {
     let live = transport::setup_live(true).await?;
     let (live, (broadcast, calls, sources, ticket)) = transport::with_live(live, async |live| {
         // Published once, to nobody: each call offers it to its peer.
-        let (broadcast, calls): (LocalBroadcast, CallOffer) = live.call()?;
+        let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(live, &LiveLayout::default())?;
         let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
-        let ticket = live.ticket(CALL).to_string();
+        let ticket = LiveLayout::default().ticket(live.id(), CALL)?.to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
@@ -133,13 +135,14 @@ mod window {
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        BroadcastTicket, CALL, CallOffer, Live,
+        BroadcastTicket,
+        calls::{Call, Calls},
         media::{AudioTarget, LocalBroadcast, Player, SlotState, VideoSource},
     };
     use moq_ext_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
-    use n0_watcher::{Watchable, Watcher as _};
+    use n0_watcher::Watcher as _;
     use tokio::sync::oneshot;
     use tracing::{debug, info, warn};
 
@@ -202,9 +205,7 @@ mod window {
             Box::new(move |cc| {
                 let ctx = &cc.egui_ctx;
                 crate::ui::spawn_ctrl_c_handler(ctx);
-                let callers = Watchable::new(BTreeSet::new());
-                let ringing = callers.watch();
-                let watcher = spawn(watch_callers(Live::clone(&live), callers));
+                let ringing = calls.ringing();
                 let preview = VideoView::new(
                     ctx,
                     "call-preview",
@@ -228,7 +229,6 @@ mod window {
                     preview,
                     render_state: cc.wgpu_render_state.clone(),
                     _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
-                    _watcher: AbortOnDropHandle::new(watcher),
                     live,
                     broadcast,
                     calls,
@@ -257,7 +257,7 @@ mod window {
         /// The local side, published once and offered to one peer per call.
         broadcast: LocalBroadcast,
         /// Who the local side is offered to.
-        calls: CallOffer,
+        calls: Calls,
         /// The local video, which the preview draws and the scan screen may read.
         local_video: Option<VideoSource>,
         /// The local audio, kept alive with the window.
@@ -287,7 +287,6 @@ mod window {
         ///
         /// Skipped until they withdraw it, so a hang-up is not answered again.
         ended: BTreeSet<EndpointId>,
-        _watcher: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
         /// The attempt in flight. There is at most one.
@@ -366,7 +365,8 @@ mod window {
     /// A connected call. Dropping it hangs up.
     struct InCall {
         peer: EndpointId,
-        _offer: Offer,
+        /// Hangs up when dropped.
+        _call: Call,
         sub: Subscribed,
         remote: RemoteView,
     }
@@ -380,42 +380,12 @@ mod window {
         }
     }
 
-    /// This node's side of a call, offered to one peer until dropped.
-    ///
-    /// The peer sees the offer in its route table, which is how it learns it
-    /// is called, and dropping the offer is how it learns of a hang-up.
-    struct Offer {
-        calls: CallOffer,
-        peer: EndpointId,
-    }
-
-    impl Offer {
-        fn new(calls: &CallOffer, peer: EndpointId) -> Self {
-            calls.ring(peer);
-            Self {
-                calls: calls.clone(),
-                peer,
-            }
-        }
-    }
-
-    impl Drop for Offer {
-        fn drop(&mut self) {
-            self.calls.hang_up(self.peer);
-        }
-    }
-
     /// A dial or an answer in flight.
     struct Pending {
         /// Which side started it.
         direction: Direction,
-        /// The offer of this attempt.
-        ///
-        /// Held here, not in the task, so abandoning the attempt withdraws it
-        /// at once.
-        offer: Offer,
         rx: oneshot::Receiver<Answer>,
-        /// Aborting this abandons the attempt.
+        /// Aborting this abandons the attempt, which withdraws the offer.
         _task: AbortOnDropHandle<()>,
     }
 
@@ -503,6 +473,7 @@ mod window {
 
     /// The peer's side of an established call, playing.
     struct Connected {
+        call: Call,
         sub: Subscribed,
         player: Player,
     }
@@ -578,16 +549,14 @@ mod window {
                     Answer::Failed("the call attempt stopped".to_string())
                 }
             };
-            let Pending {
-                direction, offer, ..
-            } = self
+            let Pending { direction, .. } = self
                 .pending
                 .take()
                 .expect("the attempt was borrowed a moment ago");
 
             let message = match answer {
                 Answer::Connected(connected) => {
-                    return self.enter_call(ctx, direction.peer(), offer, *connected);
+                    return self.enter_call(ctx, direction.peer(), *connected);
                 }
                 Answer::Failed(message) => message,
             };
@@ -603,14 +572,8 @@ mod window {
         }
 
         /// Moves to the in-call screen and opens the peer's video for drawing.
-        fn enter_call(
-            &mut self,
-            ctx: &egui::Context,
-            peer: EndpointId,
-            offer: Offer,
-            connected: Connected,
-        ) {
-            let Connected { sub, player } = connected;
+        fn enter_call(&mut self, ctx: &egui::Context, peer: EndpointId, connected: Connected) {
+            let Connected { call, sub, player } = connected;
             info!(remote = %peer.fmt_short(), "call connected");
             let remote = RemoteView::new(
                 ctx,
@@ -622,7 +585,7 @@ mod window {
             .with_link(sub.subscription().clone());
             self.screen = Screen::InCall(Box::new(InCall {
                 peer,
-                _offer: offer,
+                _call: call,
                 sub,
                 remote,
             }));
@@ -679,11 +642,9 @@ mod window {
 
         /// Offers this node's side to the peer and waits for the peer's, as the pending attempt.
         fn start(&mut self, ctx: &egui::Context, direction: Direction) {
-            let peer = direction.peer();
-            let offer = Offer::new(&self.calls, peer);
             let attempt = reach(
-                Live::clone(&self.live),
-                peer,
+                self.calls.clone(),
+                direction,
                 self.playback,
                 self.output.clone(),
             );
@@ -697,7 +658,6 @@ mod window {
             });
             self.pending = Some(Pending {
                 direction,
-                offer,
                 rx,
                 _task: AbortOnDropHandle::new(task),
             });
@@ -1035,49 +995,25 @@ mod window {
         (content.x.min(content.y) * QR_FRACTION).clamp(QR_MIN, QR_MAX)
     }
 
-    /// Tracks which peers offer this node their side of a call.
-    ///
-    /// A caller offers `live/<its id>/call` to the callee only, so the path
-    /// appearing in the route table is the ring. Runs for the window's life.
-    async fn watch_callers(live: Live, callers: Watchable<BTreeSet<EndpointId>>) {
-        let me = live.endpoint().id();
-        let mut updates = live.node().origin().announced();
-        while let Some(update) = updates.next().await {
-            let (announce, active) = match &update {
-                moq_net::announce::Event::End(announce) => (announce, false),
-                moq_net::announce::Event::Start(announce)
-                | moq_net::announce::Event::Update(announce)
-                | moq_net::announce::Event::Restart(announce)
-                | moq_net::announce::Event::Takeover { announce, .. } => (announce, true),
-            };
-            let Some(caller) = BroadcastTicket::from_path(announce.prefix.as_str())
-                .filter(|ticket| ticket.name() == CALL && ticket.peer() != me)
-                .map(|ticket| ticket.peer())
-            else {
-                continue;
-            };
-            let mut ringing = callers.get();
-            if active {
-                debug!(remote = %caller.fmt_short(), "ringing");
-                ringing.insert(caller);
-            } else {
-                ringing.remove(&caller);
-            }
-            callers.set(ringing).ok();
-        }
-    }
-
-    /// Waits for `peer`'s side of the call, then plays it.
+    /// Offers this node's side to the peer, waits for the peer's, and plays it.
     ///
     /// Gives up after [`PEER_TIMEOUT`], for a peer that is busy or away.
+    /// Dropping the future withdraws the offer.
     async fn reach(
-        live: Live,
-        peer: EndpointId,
+        calls: Calls,
+        direction: Direction,
         playback: PlaybackArgs,
         output: AudioTarget,
     ) -> Answer {
-        let subscription = match tokio::time::timeout(PEER_TIMEOUT, live.answer(peer)).await {
-            Ok(Ok(subscription)) => subscription,
+        let peer = direction.peer();
+        let placing = async {
+            match direction {
+                Direction::Outgoing(_) => calls.call(peer).await,
+                Direction::Incoming(_) => calls.answer(peer).await,
+            }
+        };
+        let call = match tokio::time::timeout(PEER_TIMEOUT, placing).await {
+            Ok(Ok(call)) => call,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),
             Err(_) => {
                 return Answer::Failed(format!(
@@ -1086,10 +1022,10 @@ mod window {
                 ));
             }
         };
-        let sub = Subscribed::open(&live, subscription);
+        let sub = Subscribed::open(call.subscription().clone());
         let config = crate::ui::player_config(&playback, Some(&output));
         match sub.broadcast().play(config) {
-            Ok(player) => Answer::Connected(Box::new(Connected { sub, player })),
+            Ok(player) => Answer::Connected(Box::new(Connected { call, sub, player })),
             Err(err) => Answer::Failed(format!("{err:#}")),
         }
     }
