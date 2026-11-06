@@ -30,9 +30,9 @@ use url::Url;
 
 use crate::{
     ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Node,
+    handshake::{client_handshake, hop_for},
     link::{self, LinkState},
     node::{Shared, Tasks},
-    session::{client_handshake, hop_for},
     state::{LinkEntry, served},
     transport,
 };
@@ -251,7 +251,7 @@ impl RelayTask {
     /// Waits up to the shutdown grace for the task to end by itself, and then
     /// aborts it.
     async fn finish(mut self) {
-        if tokio::time::timeout(crate::session::SHUTDOWN_GRACE, &mut self.task)
+        if tokio::time::timeout(crate::actor::SHUTDOWN_GRACE, &mut self.task)
             .await
             .is_err()
         {

@@ -80,6 +80,33 @@ impl Grant {
     }
 }
 
+/// The wire convention for the token a dialing peer presents.
+///
+/// [`SessionRequest::token`] reads what these functions write. The SETUP of
+/// moq-lite-06 and older has no token field, so a token also rides the
+/// `jwt` query of the setup path.
+pub mod token {
+    use moq_net::setup::Token;
+
+    /// Returns `token` as the MoQ SETUP carries it.
+    #[must_use]
+    pub fn setup_token(token: &str) -> Token {
+        Token {
+            kind: Token::OUT_OF_BAND,
+            value: token.as_bytes().to_vec(),
+        }
+    }
+
+    /// Returns the setup path that carries `token` in its `jwt` query.
+    #[must_use]
+    pub fn setup_path(token: &str) -> String {
+        let query: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("jwt", token)
+            .finish();
+        format!("/?{query}")
+    }
+}
+
 /// What a peer asked for when it opened a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionRequest {
@@ -277,6 +304,13 @@ mod tests {
         let request = request.with_token("from-setup");
         assert_eq!(request.token(), Some("from-setup"));
         assert_eq!(SessionRequest::new("/studio").token(), None);
+    }
+
+    #[test]
+    fn a_token_rides_the_setup_path() {
+        let path = token::setup_path("a+b");
+        assert_eq!(SessionRequest::new(&path).token(), Some("a+b"));
+        assert_eq!(token::setup_token("a+b").value, b"a+b");
     }
 
     #[test]
