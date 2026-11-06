@@ -14,6 +14,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
+use iroh_live::layout::LiveLayout;
 use moq_net::Pattern;
 use moq_relay::cluster::Cluster;
 use tokio_util::sync::CancellationToken;
@@ -153,6 +154,12 @@ pub fn browser_auth() -> moq_relay::auth::Config {
 /// A name that does not decode to UTF-8 is none.
 pub(crate) fn requested_name(path: &str) -> Option<String> {
     let path = path.split('?').next().unwrap_or_default();
+    // A ticket is read from the raw path: its own escapes are part of it, and
+    // decoding them first would change what it names.
+    let raw = path.trim_start_matches('/');
+    if raw.parse::<iroh_live::BroadcastTicket>().is_ok() {
+        return Some(raw.to_owned());
+    }
     let name = percent_encoding::percent_decode_str(path.trim_start_matches('/'))
         .decode_utf8()
         .ok()?;
@@ -163,7 +170,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 ///
 /// That is its own `live/` broadcasts and its room broadcasts.
 pub(crate) fn relay_grant(peer: iroh::EndpointId) -> iroh_live_node::Grant {
-    iroh_live::grant_with(peer, &[iroh_live::rooms::publish_scope])
+    LiveLayout::default().grant(peer, &[Arc::new(iroh_live::rooms::publish_scope)])
 }
 
 #[cfg(test)]
