@@ -154,9 +154,7 @@ impl Incoming {
             .handshake
             .with_publisher(served(&shared.table))
             .with_peer_hop(hop_for(&self.remote));
-        if let Some(subscriber) = subscriber(&shared, self.remote, &grant) {
-            handshake = handshake.with_subscriber(subscriber);
-        }
+        handshake = handshake.with_subscriber(subscriber(&shared));
         let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
             .await
             .map_err(|_| {

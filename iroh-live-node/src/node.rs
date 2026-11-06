@@ -23,8 +23,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, Publication, RelayConfig,
-    RelayLink, Session, Subscription,
+    Admission, Audience, ConnectOptions, Error, Grant, GrantFn, Incoming, OwnerFn, Publication,
+    RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
     handshake::{SessionParts, hop_for},
@@ -75,6 +75,13 @@ pub struct NodeConfig {
     /// creates a table under the hop derived from the endpoint id.
     #[debug("{}", table.is_some())]
     pub table: Option<origin::Producer>,
+    /// Names the peer that owns a path, for [`Node::claim_path`].
+    ///
+    /// `None` uses the generic rule: a path is a peer's when exactly one of
+    /// its segments is the peer's endpoint id. Set it for paths that name
+    /// their publisher some other way, such as a relay's pull paths.
+    #[debug("{}", owner.is_some())]
+    pub owner: Option<OwnerFn>,
 }
 
 /// A MoQ node on an iroh endpoint.
@@ -116,6 +123,7 @@ pub(crate) struct Shared {
     pub(crate) id: EndpointId,
     pub(crate) admission: Admission,
     grant: Option<GrantFn>,
+    pub(crate) owner: Option<OwnerFn>,
     /// The route table.
     pub(crate) table: origin::Producer,
     pub(crate) state: Mutex<State>,
@@ -136,11 +144,19 @@ pub(crate) struct Shared {
 /// Dropping the last [`Node`] drops these, which ends the tasks and releases
 /// the shared state.
 pub(crate) struct Tasks {
+    /// Cancelled on drop, so [`Node::closed`] resolves when the last handle goes.
+    shutdown: CancellationToken,
     _actor: AbortOnDropHandle<()>,
     /// Runs the route table's driver, unless the caller supplied the table.
     _table: Option<AbortOnDropHandle<()>>,
     /// Relay links, by link id.
     pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
+}
+
+impl Drop for Tasks {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
 }
 
 impl Node {
@@ -170,6 +186,7 @@ impl Node {
             id,
             admission: config.admission,
             grant: config.grant,
+            owner: config.owner,
             table,
             state: Mutex::new(State::default()),
             sessions: Watchable::new(Vec::new()),
@@ -182,6 +199,7 @@ impl Node {
             warned_unreachable: AtomicBool::new(false),
         });
         info!(id = %id.fmt_short(), hop = %shared.table.hop(), admission = ?config.admission, "moq node started");
+        let shutdown = shared.shutdown.clone();
         let actor = Actor::new(shared.clone());
         let actor_task = tokio::spawn(
             actor
@@ -191,6 +209,7 @@ impl Node {
         Self {
             shared,
             tasks: Arc::new(Tasks {
+                shutdown,
                 _actor: AbortOnDropHandle::new(actor_task),
                 _table: table_task,
                 relays: Mutex::new(HashMap::new()),
@@ -214,6 +233,28 @@ impl Node {
             router = router.accept(alpn, self.clone());
         }
         router
+    }
+
+    /// Returns the endpoint id of the node.
+    pub fn id(&self) -> EndpointId {
+        self.shared.id
+    }
+
+    /// Returns the grant [`NodeConfig::grant`] gives `peer` for new sessions.
+    ///
+    /// A session that already exists keeps its own grant: see
+    /// [`Session::grant`].
+    pub fn grant_for(&self, peer: EndpointId) -> Grant {
+        self.shared.grant_for(peer)
+    }
+
+    /// Returns a future that resolves when the node shuts down.
+    ///
+    /// Resolves once [`shutdown`](Self::shutdown) starts, or once the last
+    /// handle drops. Owns what it needs, so a service can hold it in a task.
+    /// Cancellation safe.
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static {
+        self.shared.shutdown.clone().cancelled_owned()
     }
 
     /// Returns the endpoint the node runs on.

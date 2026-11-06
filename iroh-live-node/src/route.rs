@@ -342,7 +342,7 @@ pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Su
         // The peer's announcement of the path would never enter the table.
         Ok(session) if !session.grant().allows_publish(path.as_str()) => {
             if !relays {
-                return Err(e!(Error::NotGranted { path }));
+                return Err(Error::not_granted(path, peer, &session.grant()));
             }
             info!(%path, "the publisher may not publish the path here, waiting for a relay");
         }
