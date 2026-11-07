@@ -29,12 +29,11 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
   const publishEl = page.locator("moq-publish");
   await expect(publishEl).toBeAttached({ timeout: 10_000 });
 
-  // Wait for the browser to actually publish tracks (not just connect).
-  // The subscribe_test retries if the catalog isn't available yet, but
-  // we need the browser to have published before starting the subscriber.
+  // Give the browser time to publish its tracks. The subscriber waits for
+  // the relay to route the name, but not for the tracks.
   await page.waitForTimeout(5000);
 
-  // Subscribe from Rust side: connect to relay, receive 3 frames, exit 0
+  // Subscribe through the relay from Rust: receive 3 frames, exit 0.
   const subscriber = spawn(subscribeBin, [
     "--relay",
     relay.irohAddr,

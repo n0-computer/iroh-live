@@ -1,130 +1,91 @@
-# iroh-live Android Demo
+# iroh-live Android demo
 
-Two-way video and audio calling on Android. Captures from the device camera with Camera2, encodes with MediaCodec hardware H.264, sends and receives through iroh-live sessions, and renders incoming video with zero-copy EGL `AHardwareBuffer` import.
+An Android app that watches a broadcast, publishes the camera and microphone,
+or runs a two-way call. It captures with CameraX, encodes and decodes H.264
+with MediaCodec, and draws decoded pictures through EGL `AHardwareBuffer`
+import, without a copy.
 
 ## Prerequisites
 
-- `ANDROID_HOME` pointing at the Android SDK (e.g. `~/Android/Sdk`)
-- Android NDK 28+ (install via Android Studio SDK Manager or `sdkmanager`)
-- Rust toolchain with the Android target:
-  ```sh
-  rustup target add aarch64-linux-android
-  ```
-- [cargo-ndk](https://github.com/niclas-van-eyk/cargo-ndk-rs) and
+- `ANDROID_HOME` pointing at the Android SDK, for example `~/Android/Sdk`.
+- The Android NDK, installed through the Android Studio SDK Manager or
+  `sdkmanager`. The tasks pick the newest version under `$ANDROID_HOME/ndk/`.
+- JDK 17 or newer, for Gradle.
+- The Rust target, [cargo-ndk](https://github.com/bbqsrc/cargo-ndk), and
   [cargo-make](https://github.com/sagiegurari/cargo-make):
+
   ```sh
+  rustup target add aarch64-linux-android   # x86_64-linux-android for the emulator
   cargo install cargo-ndk cargo-make
   ```
-- JDK 17+ (for Gradle)
 
 ## Quick start
 
-From the `demos/android/` directory with a device connected via USB:
+With a device connected over USB:
 
 ```sh
 cd demos/android
-export ANDROID_HOME=~/Android/Sdk
-cargo make install     # builds everything and installs the APK
-cargo make logcat      # stream filtered logs in another terminal
+cargo make run-on-device
 ```
 
-## Build tasks
+This builds the native library and the debug APK, installs it, starts the app,
+and streams its logs.
 
-All tasks auto-detect the NDK path from `$ANDROID_HOME/ndk/` and pick the highest installed version. See `Makefile.toml` for the full list.
+## Tasks
 
-| Task | Description |
+Run these from `demos/android/`. [Makefile.toml](Makefile.toml) has the full
+list.
+
+| Task | What it does |
 |------|-------------|
-| `cargo make apk` | Full pipeline: cargo-ndk -> clean -> strip -> Gradle APK |
-| `cargo make install` | Build + install on connected device |
-| `cargo make logcat` | Stream logs filtered to app tags |
-| `cargo make logcat-pid` | Stream all logs for the running app PID |
-| `cargo make ndk-build` | Build the Rust `.so` only |
-| `cargo make clean-jni` | Remove extra `.so` files from jniLibs |
-| `cargo make strip` | Strip debug symbols from native lib |
+| `cargo make apk` | Builds the native library with cargo-ndk, removes the extra `.so` files, strips it, and builds the debug APK |
+| `cargo make install` | `apk`, then installs it on the connected device |
+| `cargo make run-on-device` | `install`, then starts the app and streams its logs |
+| `cargo make apk-release`, `install-release`, `run-on-device-release` | The same with a release Gradle build |
+| `cargo make logcat` | Clears the log and streams the app's tags |
+| `cargo make logcat-pid` | Streams every log line of the running app |
+| `cargo make ndk-build` | Builds the native library only |
 
-### Manual build (without cargo-make)
+The native library is built for `arm64-v8a`. Set `ABI=x86_64` to build for the
+emulator, for example `ABI=x86_64 cargo make install`.
 
-```sh
-# 1. Build native library (API 26 for AAudio, libc++_shared for C++ runtime)
-export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.0.12674087  # adjust version
-cargo ndk -t arm64-v8a -P 26 --link-libcxx-shared \
-  -o demos/android/app/src/main/jniLibs \
-  build -p iroh-live-android --release
+The logs use the tags `iroh_live` (Rust `tracing`), `IrohBridge` (the Kotlin
+JNI bridge), `IrohLiveDemo` (the app), and `AndroidRuntime` (crashes).
 
-# 2. Remove extra .so files cargo-ndk copies from dependencies
-find demos/android/app/src/main/jniLibs -name "*.so" \
-  ! -name "libiroh_live_android.so" ! -name "libc++_shared.so" -delete
-
-# 3. Strip debug symbols (~500 MB -> ~21 MB)
-$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
-  demos/android/app/src/main/jniLibs/arm64-v8a/libiroh_live_android.so
-
-# 4. Build APK
-cd demos/android
-ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug
-
-# 5. Install
-$ANDROID_HOME/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-## Debugging
-
-```sh
-export ADB=$ANDROID_HOME/platform-tools/adb
-
-# Filtered to relevant tags (Rust tracing, JNI bridge, crashes):
-$ADB logcat "iroh_live:V" "IrohBridge:V" "AndroidRuntime:E" "System.err:W" "*:S"
-
-# All logs for the running app process:
-$ADB logcat --pid=$($ADB shell pidof -s com.n0.irohlive.demo)
-
-# Clear old logs first:
-$ADB logcat -c
-```
-
-Key log tags:
-- `iroh_live` --Rust-side `tracing` output
-- `IrohBridge` --Kotlin JNI bridge
-- `AndroidRuntime` --Java/Kotlin crash stack traces
-
-## Feature configuration
-
-Codecs come from `moq-video` and `moq-audio`, which compile every backend they
-have on the target and choose one at runtime. On Android that means MediaCodec
-for H.264 encode and decode, with openh264 behind it in software.
-
-What the crate does select, in `demos/android/rust/Cargo.toml`:
-
-- `moq-media`: `aec`, which implies `capture` for the microphone and `playback`
-  for the speaker. Echo cancellation is not optional on a handset: without it, a
-  device on speakerphone publishes its own output back to the peer.
-
-Camera frames come from Kotlin's Camera2 through `pushCameraNv12`, not from a
-device `moq_video::capture` opens, so the `capture` feature is here for the
-microphone alone.
-
-## Architecture
+## Layout
 
 ```
 demos/android/
-  Makefile.toml  # cargo-make build pipeline
-  rust/          # Rust JNI bridge crate (iroh-live-android)
-    src/lib.rs   # JNI entry points, camera frame source, session handle
-  app/           # Kotlin Android app
+  Makefile.toml     # the build tasks
+  rust/             # the JNI bridge crate, iroh-live-android
+    src/lib.rs      # JNI entry points and the session handle
+  app/              # the Kotlin app
     src/main/java/com/n0/irohlive/demo/
-      MainActivity.kt   # UI and lifecycle
-      IrohBridge.kt     # Kotlin-side JNI declarations
-      CameraHelper.kt   # Camera2 camera capture
+      IrohBridge.kt # the JNI declarations
+      Session.kt    # camera capture and the session lifecycle
+      ui/           # the Compose screens: home, watch, publish, call
 ```
 
-The Kotlin side captures camera frames via Camera2 and pushes them into the Rust layer through JNI. The Rust side uses `moq-media` to encode with Android MediaCodec H.264 and publish through `iroh-live` sessions.
+Kotlin captures camera frames with CameraX and pushes them into Rust through
+`IrohBridge.pushCameraNv12`. The Rust side publishes them with `iroh-live`, and
+a call follows the same convention as `irl call`. The home screen also has two
+diagnostics that need no network: camera passthrough, and an H.264 encode and
+decode loop.
+
+Codecs come from `moq-video` and `moq-audio`, which choose a backend at
+runtime: MediaCodec for H.264, with openh264 in software as the fallback. The
+bridge crate turns on `aec` in `iroh-live`, which brings in the
+microphone and the speaker. Echo cancellation keeps a phone on speaker from
+sending the peer's audio back to it.
 
 ## Requirements
 
-- **minSdk 26** (Android 8.0) --required for AAudio (audio backend)
-- **targetSdk 34**, **compileSdk 35**
-- arm64-v8a only (x86_64 not currently built)
+- minSdk 26 (Android 8.0), for AAudio. targetSdk 34, compileSdk 35.
+- arm64-v8a on a device, x86_64 on the emulator.
 
 ## Status
 
-Tested end to end on a real Android device, with two-way video and audio between Android and a Linux desktop. See [`docs/platforms.md`](../../docs/platforms.md) for the full support matrix and [`docs/guide/android.md`](../../docs/guide/android.md) for how the pieces fit together.
+Tested on a device, with two-way video and audio between Android and a Linux
+desktop. See [docs/guide/android.md](../../docs/guide/android.md) for how the
+pieces fit together, and [docs/platforms.md](../../docs/platforms.md) for the
+support matrix.

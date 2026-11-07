@@ -1,17 +1,25 @@
-/// Publish command: run the camera's hardware H.264 encoder through
-/// `rpicam-vid` and stream the result over iroh.
+//! Publish command: streams the camera's hardware H.264 over iroh.
+//!
+//! The encoder output is read through `rpicam-vid`.
+
 use std::time::Duration;
 
 use clap::Parser;
-use iroh::EndpointId;
-use iroh_live::{Live, ticket::LiveTicket};
-use moq_media::rpicam;
+use iroh::{EndpointId, protocol::Router};
+use iroh_live::layout::LiveLayout;
+use iroh_live::{
+    Node,
+    media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
+    node::RelayConfig,
+};
+use n0_error::StdResultExt;
+use tracing::{debug, info, warn};
 
 use crate::epaper;
 
-/// Per the datasheet, e-paper must be refreshed at least once every 24 h.
-/// We re-display the QR every 12 h to stay well within that limit while
-/// respecting the minimum 180 s interval between refreshes.
+/// How often to redraw the QR code.
+///
+/// The datasheet asks for a refresh at least every 24 h and at most every 180 s.
 const EPAPER_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Parser, Debug)]
@@ -20,10 +28,7 @@ pub(crate) struct PublishOpts {
     #[clap(long)]
     epaper: bool,
 
-    /// Relay's iroh endpoint ID - additionally connects to the relay so
-    /// browser and non-P2P clients can subscribe there. Publishing is
-    /// node-wide, so nothing further has to be done once connected: the relay
-    /// sees the same announced broadcasts as every other peer.
+    /// Relay endpoint ID to also push to, so browsers can watch there.
     #[clap(long)]
     pub relay: Option<EndpointId>,
 
@@ -50,52 +55,56 @@ pub(crate) struct PublishOpts {
 
 /// Publishes the camera stream and shows the ticket QR on e-paper.
 pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
-    // --- iroh endpoint ---
-    // `from_env` binds under `IROH_SECRET` with the n0 preset and mDNS on top
-    // of it. The Pi's ticket carries an endpoint id and nothing else, so a
-    // viewer on the same network resolves it over mDNS with no internet at all,
-    // and a viewer elsewhere resolves it over pkarr and DNS.
-    let live = Live::from_env().await?.with_router().spawn();
+    // The ticket carries only the endpoint id. A viewer on the same network
+    // finds the Pi over mDNS, a viewer elsewhere over pkarr and DNS.
+    let endpoint = iroh_live::EndpointOptions::from_env()?.bind().await?;
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+    // Accepts the viewers that dial the Pi directly.
+    let router = node.mount(Router::builder(endpoint)).spawn();
 
-    // --- media broadcast ---
-    let broadcast = live.publish(opts.name.as_str())?;
+    // Published while `broadcast` lives.
+    let broadcast: LocalBroadcast = LiveLayout::default().publish(&node, opts.name.as_str())?;
 
-    let output = rpicam::Output::H264 {
-        bitrate: opts.bitrate,
-        // A keyframe a second, which is how long a subscriber waits before the
-        // picture starts.
-        keyframe_interval: opts.fps,
+    // Keeps the default of one keyframe per second.
+    let config = RpicamConfig {
+        bitrate: Rate::from_bps(u64::from(opts.bitrate)),
+        ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
     };
-    let config = rpicam::Config::new(opts.width, opts.height, opts.fps, output);
-    tracing::info!(
+    info!(
         width = opts.width,
         height = opts.height,
         fps = opts.fps,
         bitrate = opts.bitrate,
         "using pre-encoded H.264 from rpicam-vid"
     );
-    broadcast.video().set(rpicam::open(config)?)?;
+    broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
 
-    // --- relay (optional) ---
-    if let Some(relay_id) = opts.relay {
-        live.transport().connect(relay_id).await?;
-        tracing::info!(%relay_id, "connected to relay");
-    }
+    // The link redials the relay if the session drops. It only pushes: the
+    // relay's routes stay out of the Pi's route table.
+    let _relay = match opts.relay {
+        Some(relay) => {
+            info!(%relay, "pushing to relay");
+            Some(node.attach_relay(RelayConfig {
+                consume: false,
+                ..RelayConfig::iroh(relay)
+            })?)
+        }
+        None => None,
+    };
 
-    // --- ticket (always printed, regardless of e-paper) ---
-    let ticket = LiveTicket::new(live.endpoint().id(), &opts.name);
+    let ticket = LiveLayout::default().ticket(node.id(), &opts.name)?;
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 
-    // --- QR code on e-paper (optional, non-fatal) ---
+    // The e-paper is optional: a failure only logs a warning.
     let has_epaper = if opts.epaper {
         match epaper::display_qr(&ticket_str) {
             Ok(()) => {
-                tracing::info!("QR code displayed on e-paper");
+                info!("QR code displayed on e-paper");
                 true
             }
             Err(e) => {
-                tracing::warn!(
+                warn!(
                     error = format!("{e:#}"),
                     "could not display QR on e-paper - is the HAT attached and SPI enabled? \
                      (the stream is publishing normally, use the ticket above to connect)"
@@ -107,17 +116,15 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         false
     };
 
-    // Datasheet requires a refresh at least every 24 h. Re-display the QR
-    // periodically if the initial display succeeded.
     let refresh_ticket = ticket_str.clone();
     let refresh_handle = if has_epaper {
         Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(EPAPER_REFRESH_INTERVAL).await;
                 match epaper::display_qr(&refresh_ticket) {
-                    Ok(()) => tracing::debug!("periodic e-paper refresh complete"),
+                    Ok(()) => debug!("periodic e-paper refresh complete"),
                     Err(e) => {
-                        tracing::warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
+                        warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
                     }
                 }
             }
@@ -126,23 +133,28 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         None
     };
 
-    // Wait for ctrl-c and then shutdown.
     tokio::signal::ctrl_c().await?;
 
     if let Some(handle) = refresh_handle {
         handle.abort();
     }
 
-    // Clear the e-paper before exit (datasheet: clear before storage).
+    // The datasheet asks to clear the display before storage.
     if has_epaper {
         match epaper::clear_display() {
-            Ok(()) => tracing::info!("e-paper cleared for storage"),
-            Err(e) => tracing::warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
+            Ok(()) => info!("e-paper cleared for storage"),
+            Err(e) => warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
         }
     }
 
-    broadcast.finish().await;
-    live.shutdown().await;
+    broadcast.close();
+    broadcast.closed().await;
+    node.shutdown().await;
+    // Also closes the endpoint.
+    router
+        .shutdown()
+        .await
+        .std_context("the router failed to shut down")?;
 
     Ok(())
 }

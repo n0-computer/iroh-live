@@ -1,26 +1,25 @@
-//! Publishes a camera and a microphone.
+//! Publishes the default camera and microphone, and prints a ticket.
 //!
-//! Captures the default camera and, when one is available, the default
-//! microphone, publishes both over iroh, and prints a ticket.
-//!
-//! Watch it with `irl play TICKET`.
+//! Run it with `cargo run -p iroh-live --example publish` and watch with
+//! `irl watch TICKET`. Without a microphone it publishes video only.
 
 use clap::Parser;
+use iroh::protocol::Router;
+use iroh_live::layout::LiveLayout;
 use iroh_live::{
-    Live,
+    EndpointOptions, Node,
     media::{
-        audio,
-        publish::{VideoRendition, VideoSource},
-        video,
+        AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
+        VideoRendition, VideoSource, video,
     },
-    ticket::LiveTicket,
 };
-use tracing::info;
+use n0_error::StdResultExt;
+use tracing::{info, warn};
 
 #[derive(Parser)]
-#[command(about = "Publishes the default camera and microphone over iroh-live")]
+#[command(about = "Publishes the default camera and microphone over iroh-node")]
 struct Args {
-    /// The path to publish on.
+    /// The broadcast name.
     #[clap(long, default_value = "demo")]
     name: String,
 
@@ -38,34 +37,47 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    let live = Live::from_env().await?.with_router().spawn();
-    info!(id = %live.endpoint().id(), "endpoint ready");
+    // Set `IROH_SECRET` to keep the same ticket across restarts.
+    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let layout = LiveLayout::default();
+    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    // Accepts the viewers. Dropping the router stops accepting.
+    let router = node.mount(Router::builder(endpoint)).spawn();
+    info!(id = %node.id(), "endpoint ready");
 
-    let broadcast = live.publish(&args.name)?;
+    // Published while `broadcast` lives, or until the node shuts down.
+    let broadcast: LocalBroadcast = layout.publish(&node, &args.name)?;
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);
-    let source = VideoSource::Capture(capture);
-    match args.simulcast {
-        false => broadcast.video().set(source)?,
-        true => broadcast.video().set_renditions(
-            source,
-            vec![
-                VideoRendition::new("high"),
-                VideoRendition::new("low").with_size(video::Size::new(320, 180)),
-            ],
-        )?,
+    let source = VideoSource::capture(capture).await?;
+    let encoding = if args.simulcast {
+        VideoEncoding::ladder([
+            VideoRendition::new("high"),
+            VideoRendition {
+                size: Some(video::Size::new(320, 180)),
+                ..VideoRendition::new("low")
+            },
+        ])
+    } else {
+        VideoEncoding::single(VideoRendition::new("video"))
+    };
+    broadcast.set_video(source, encoding)?;
+
+    match AudioSource::microphone(MicrophoneConfig::default()).await {
+        Ok(microphone) => broadcast.set_audio(microphone, AudioEncoding::voice())?,
+        Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }
 
-    // A machine with no microphone still publishes video: the device opens
-    // inside the publish task, which logs and ends the audio track on failure.
-    broadcast.audio().set(audio::capture::Config::default());
-
-    let ticket = LiveTicket::new(live.endpoint().id(), &args.name);
-    println!("{ticket}");
+    println!("{}", layout.ticket(node.id(), &args.name)?);
     info!(name = %args.name, "publishing");
 
     tokio::signal::ctrl_c().await?;
-    live.shutdown().await;
+    node.shutdown().await;
+    // Also closes the endpoint.
+    router
+        .shutdown()
+        .await
+        .std_context("the router failed to shut down")?;
     Ok(())
 }

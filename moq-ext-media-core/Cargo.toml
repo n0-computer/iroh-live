@@ -1,0 +1,17 @@
+[package]
+name = "moq-ext-media-core"
+version = "0.1.0"
+edition = "2024"
+description = "the error, slot state and stats helpers shared by moq-ext-sources, moq-ext-player and moq-ext-publisher"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+derive_more = { version = "2.1.1", features = ["display"] }
+n0-error = "1"
+tokio = { version = "1.53.1", features = ["sync"] }

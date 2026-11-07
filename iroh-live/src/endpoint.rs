@@ -1,0 +1,209 @@
+//! Binding an endpoint: [`MoqPreset`] plus a secret key and mDNS.
+//!
+//! [`EndpointOptions`] adds what a preset cannot. [`secret_key_file`] keeps a
+//! key across restarts.
+
+use std::{io::Write, path::Path};
+
+use iroh::{Endpoint, SecretKey, endpoint::Builder};
+use iroh_live_node::{Congestion, MoqPreset};
+use n0_error::e;
+use tracing::{debug, info, warn};
+
+use crate::Error;
+
+/// How an endpoint uses mDNS on the local network.
+///
+/// mDNS lets an endpoint id resolve on a network without internet access.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mdns {
+    /// Publishes this endpoint's addresses and resolves others'.
+    ///
+    /// For a node others dial.
+    #[default]
+    Announce,
+    /// Resolves others without publishing this endpoint.
+    ///
+    /// For a node nobody dials.
+    Lookup,
+    /// Uses no mDNS at all.
+    Off,
+}
+
+// TODO: rename to `EndpointConfig` (deferred: ~25 call sites across four repos).
+/// An endpoint with [`MoqPreset`], a key, mDNS and a congestion controller.
+#[derive(Debug, Clone, Default)]
+pub struct EndpointOptions {
+    /// The endpoint's identity. `None` generates an ephemeral one.
+    pub secret_key: Option<SecretKey>,
+    /// How the endpoint uses mDNS.
+    pub mdns: Mdns,
+    /// The congestion controller of every connection, BBR3 by default.
+    ///
+    /// One dial can use another with
+    /// [`ConnectOptions::congestion`](crate::node::ConnectOptions::congestion),
+    /// without a new endpoint.
+    pub congestion: Congestion,
+}
+
+impl EndpointOptions {
+    /// Returns the default options with the secret key in `IROH_SECRET`, if set.
+    ///
+    /// Set `IROH_SECRET` to keep one endpoint id, and so the same tickets,
+    /// across restarts.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::SecretKey`] if `IROH_SECRET` is set to something
+    /// that is not a secret key.
+    pub fn from_env() -> Result<Self, Error> {
+        let secret_key = std::env::var_os("IROH_SECRET")
+            .map(|key| key.to_string_lossy().parse())
+            .transpose()
+            .map_err(|source| e!(Error::SecretKey { source }))?;
+        Ok(Self {
+            secret_key,
+            ..Self::default()
+        })
+    }
+
+    /// Applies [`MoqPreset`], the key, mDNS and the congestion controller to `builder`, and returns it.
+    ///
+    /// For a caller that builds its own endpoint and sets what these options
+    /// do not, such as the relay mode or another address lookup. The preset
+    /// sets the relay mode, the address lookups and the QUIC transport config,
+    /// so make your own settings after this call, not before. A transport
+    /// config set afterwards replaces the one that carries
+    /// [`congestion`](Self::congestion).
+    ///
+    /// If mDNS cannot start, as in a sandbox or on a phone without a multicast
+    /// lock, logs a warning and goes without it.
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// use iroh::{RelayMode, endpoint::Builder};
+    /// use iroh_live::EndpointOptions;
+    ///
+    /// let endpoint = EndpointOptions::from_env()?
+    ///     .apply(Builder::empty())
+    ///     .await
+    ///     .relay_mode(RelayMode::Disabled)
+    ///     .bind()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn apply(self, builder: Builder) -> Builder {
+        let mut builder = builder
+            .preset(MoqPreset)
+            .transport_config(self.congestion.transport_config());
+        if let Some(key) = self.secret_key {
+            builder = builder.secret_key(key);
+        }
+        let announce = match self.mdns {
+            Mdns::Announce => true,
+            Mdns::Lookup => false,
+            Mdns::Off => return builder,
+        };
+        let options = iroh_mdns_peer_lookup::Options::new()
+            .announce(announce)
+            .build();
+        match iroh_mdns_peer_lookup::lookup(options).await {
+            Ok(lookup) => {
+                debug!(announce, "mDNS address lookup ready");
+                builder.address_lookup(lookup)
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "could not start mDNS address lookup; peers on this network will \
+                     only be found through pkarr and DNS, which need internet"
+                );
+                builder
+            }
+        }
+    }
+
+    /// Binds an endpoint with [`MoqPreset`] and these options.
+    ///
+    /// The endpoint accepts no ALPN until a router mounts handlers on it. The
+    /// caller owns it: close it, or shut down the router built on it, which
+    /// closes it.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::Bind`] if the endpoint's sockets cannot be bound.
+    pub async fn bind(self) -> Result<Endpoint, Error> {
+        let congestion = self.congestion;
+        let endpoint = self
+            .apply(Builder::empty())
+            .await
+            .bind()
+            .await
+            .map_err(|source| e!(Error::Bind { source }))?;
+        info!(id = %endpoint.id(), %congestion, "endpoint bound");
+        Ok(endpoint)
+    }
+}
+
+/// Loads the secret key stored at `path`, or generates one and stores it there.
+///
+/// The file holds the key's 32 bytes and is created readable by this user
+/// only.
+///
+/// # Errors
+///
+/// Fails if the file cannot be read or written, or holds something other than
+/// a key.
+pub fn secret_key_file(path: &Path) -> std::io::Result<SecretKey> {
+    match std::fs::read(path) {
+        Ok(stored) => {
+            let bytes = <[u8; 32]>::try_from(stored.as_slice()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} does not hold a secret key", path.display()),
+                )
+            })?;
+            Ok(SecretKey::from_bytes(&bytes))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let key = SecretKey::generate();
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            options.open(path)?.write_all(&key.to_bytes())?;
+            info!(path = %path.display(), id = %key.public(), "stored a new secret key");
+            Ok(key)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns a path in the temp dir that nothing else uses.
+    fn scratch() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("iroh-live-key-{}", SecretKey::generate().public()))
+    }
+
+    #[test]
+    fn a_stored_key_reads_back() {
+        let path = scratch();
+        let created = secret_key_file(&path).expect("creates the key");
+        let loaded = secret_key_file(&path).expect("loads the key");
+        std::fs::remove_file(&path).expect("removes the scratch file");
+        assert_eq!(created.to_bytes(), loaded.to_bytes());
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_key_is_refused() {
+        let path = scratch();
+        std::fs::write(&path, b"nowhere near a key").expect("writes the scratch file");
+        let result = secret_key_file(&path);
+        std::fs::remove_file(&path).expect("removes the scratch file");
+        assert!(result.is_err());
+    }
+}
