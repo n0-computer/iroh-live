@@ -523,11 +523,8 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
             return;
         };
         let (announce, active) = match &event {
-            Event::End(announce) => (announce, false),
-            Event::Update(_) => continue,
-            Event::Start(announce)
-            | Event::Restart(announce)
-            | Event::Takeover { announce, .. } => (announce, true),
+            Event::Absent(announce) => (announce, false),
+            Event::Present(announce) => (announce, true),
         };
         let Some((peer, CALL)) = layout.parse(&announce.prefix) else {
             continue;

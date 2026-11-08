@@ -297,9 +297,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
     // Routes the relay announces come from this hop. A relay over iroh is
     // known by its endpoint id. moq-tokio's redials keep the one hop assigned
     // here, and a relay that declares a hop of its own is matched by kind.
-    let hop = iroh_relay
-        .as_ref()
-        .map_or_else(moq_net::Hop::random, hop_for);
+    let hop = hop_for(&iroh_relay.unwrap_or_else(|| iroh::SecretKey::generate().public()));
     // Routes from a relay are tagged upstream, so the local view every link
     // serves never offers them to another link.
     let subscriber = config

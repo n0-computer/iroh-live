@@ -29,10 +29,8 @@ use std::{
 };
 
 use moq_net::{
-    Hop, Instance, Path, Pattern, Patterns,
-    announce::Event as AnnounceEvent,
-    broadcast,
-    origin::{self, Link, Source},
+    Instance, Path, Pattern, Patterns, broadcast,
+    origin::{self, Link, RouteEvent, Source},
 };
 use n0_error::e;
 use tracing::{debug, info};
@@ -80,7 +78,7 @@ pub struct Subscription {
 struct Pin {
     link: u64,
     /// The instance the link announced, if it declared one.
-    instance: Option<Instance>,
+    instance: Instance,
 }
 
 struct SubscriptionInner {
@@ -99,7 +97,7 @@ struct SubscriptionInner {
 
 /// Follows the route that serves one path.
 struct Routes {
-    announced: Option<moq_net::announce::Consumer>,
+    announced: Option<origin::Routes>,
     source: Option<Source>,
 }
 
@@ -111,7 +109,7 @@ impl Routes {
             .parse::<Pattern>()
             .ok()
             .and_then(|pattern| table.scope("", &Patterns::from(pattern)).ok())
-            .map(|scoped| scoped.announced());
+            .map(|scoped| scoped.routes());
         Self {
             announced,
             source: None,
@@ -123,11 +121,11 @@ impl Routes {
         let announced = self.announced.as_mut()?;
         while let Some(event) = announced.try_next() {
             self.source = match event {
-                AnnounceEvent::End(_) => None,
-                AnnounceEvent::Update(announce)
-                | AnnounceEvent::Start(announce)
-                | AnnounceEvent::Restart(announce)
-                | AnnounceEvent::Takeover { announce, .. } => Some(announce.route.source()),
+                RouteEvent::End(_) => None,
+                RouteEvent::Update(announce)
+                | RouteEvent::Start(announce)
+                | RouteEvent::Restart(announce)
+                | RouteEvent::Takeover { announce, .. } => Some(announce.route.source()),
             };
         }
         self.source
@@ -143,7 +141,7 @@ impl Subscription {
         path: Path,
         origin: origin::Consumer,
         broadcast: broadcast::Consumer,
-        pin: Option<(u64, Option<Instance>)>,
+        pin: Option<(u64, Instance)>,
         shared: Weak<Shared>,
     ) -> Self {
         let routes = Routes::new(&origin, &path);
@@ -233,7 +231,7 @@ impl Subscription {
     ///
     /// Cancellation safe: dropping the future loses nothing.
     pub async fn closed(&self) {
-        let instance = self.inner.pin.as_ref().and_then(|pin| pin.instance.clone());
+        let instance = self.inner.pin.as_ref().map(|pin| pin.instance.clone());
         let mut following = self
             .inner
             .origin
@@ -244,7 +242,7 @@ impl Subscription {
             let since = tokio::time::Instant::now();
             let taken = async {
                 match following.as_mut() {
-                    Some(following) => following.available().await.ok(),
+                    Some(following) => following.available().await.ok().flatten(),
                     None => std::future::pending().await,
                 }
             };
@@ -297,22 +295,22 @@ pub(crate) fn direct_view(table: &origin::Producer) -> origin::Consumer {
 pub(crate) async fn announced_by(
     view: &origin::Consumer,
     path: &Path,
-    from: impl Fn(Hop) -> bool,
-) -> Result<Option<Instance>, moq_net::Error> {
+    from: impl Fn(u64) -> bool,
+) -> Result<Instance, moq_net::Error> {
     let pattern = path
         .as_str()
         .parse::<Pattern>()
         .map_err(|_| moq_net::Error::Unauthorized)?;
-    let mut announced = view.scope("", &Patterns::from(pattern))?.announced();
+    let mut announced = view.scope("", &Patterns::from(pattern))?.routes();
     while let Some(event) = announced.next().await {
         match event {
-            AnnounceEvent::End(_) => {}
-            AnnounceEvent::Update(announce)
-            | AnnounceEvent::Start(announce)
-            | AnnounceEvent::Restart(announce)
-            | AnnounceEvent::Takeover { announce, .. } => {
+            RouteEvent::End(_) => {}
+            RouteEvent::Update(announce)
+            | RouteEvent::Start(announce)
+            | RouteEvent::Restart(announce)
+            | RouteEvent::Takeover { announce, .. } => {
                 if matches!(announce.route.source(), Source::Peer(hop) if from(hop)) {
-                    return Ok(announce.route.instance);
+                    return Ok(announce.route.instance().clone());
                 }
             }
         }
@@ -390,7 +388,11 @@ pub(crate) async fn routed(
     table: &origin::Consumer,
     path: &Path,
 ) -> Result<broadcast::Consumer, moq_net::Error> {
-    table.follow(path, None)?.available().await
+    table
+        .follow(path, None)?
+        .available()
+        .await?
+        .ok_or(moq_net::Error::Closed)
 }
 
 /// Returns the subscription `resolved` makes, or why there is none.

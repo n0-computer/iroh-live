@@ -50,13 +50,7 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
     .await
     .expect("subscribed in time")
     .expect("subscribe");
-    let track = subscription
-        .as_moq()
-        .track("latency")
-        .expect("the track")
-        .subscribe(None)
-        .await
-        .expect("track subscription");
+    let track = subscription.as_moq().track("latency").expect("the track");
     let mut reader = snapshot::Consumer::<u64>::new(track, Default::default());
     let mut read = async || {
         tokio::time::timeout(TIMEOUT, reader.latest())

@@ -749,7 +749,8 @@ mod tests {
         let framerate = moq_video::FrameRate::new(30, 1).expect("a valid frame rate");
         let mut config = encode::Config::new(SIZE.width, SIZE.height, framerate);
         config.kind = encode::Kind::Software;
-        config.gop = encode::Gop::Keyframe { interval: GOP };
+        // Ten frames at 30 fps.
+        config.join = std::time::Duration::from_secs(1) * GOP / 30;
         let mut encoder = encode::Encoder::new(&config).expect("the software encoder always opens");
 
         let mut units = Vec::new();

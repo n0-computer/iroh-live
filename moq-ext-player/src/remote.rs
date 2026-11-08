@@ -338,7 +338,9 @@ async fn follow(
                         },
                     };
                     match resolved {
-                        Ok(consumer) => consumer,
+                        Ok(Some(consumer)) => consumer,
+                        // The path went offline: wait for whatever serves it next.
+                        Ok(None) => continue,
                         Err(err) => {
                             info!(error = %err, "the broadcast cannot be resolved");
                             break;
@@ -360,7 +362,7 @@ async fn follow(
         // publisher would freeze players. Switch as soon as the table says so.
         let taken_over = async {
             match &mut routes {
-                Some(routes) => routes.available().await.ok(),
+                Some(routes) => routes.available().await.ok().flatten(),
                 None => std::future::pending().await,
             }
         };
@@ -444,7 +446,7 @@ async fn read_catalog(
 
 #[cfg(test)]
 mod tests {
-    use moq_net::{Instance, origin::Route};
+    use moq_net::{Instance, origin::RouteOptions};
 
     use super::*;
 
@@ -510,7 +512,7 @@ mod tests {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
         let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
         let published = origin
-            .publish("live/cam", Route::default())
+            .route("live/cam", RouteOptions::default())
             .expect("published");
         let consumer = origin
             .consume()
@@ -537,9 +539,9 @@ mod tests {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
         let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
         let _first = origin
-            .publish(
+            .route(
                 "live/cam",
-                Route::default().with_instance(Instance::random(), 1),
+                RouteOptions::default().with_instance(Instance::random(), 1),
             )
             .expect("published");
         let remote = RemoteBroadcast::from_origin(
@@ -557,9 +559,9 @@ mod tests {
         .generation;
 
         let _second = origin
-            .publish(
+            .route(
                 "live/cam",
-                Route::default().with_instance(Instance::random(), 2),
+                RouteOptions::default().with_instance(Instance::random(), 2),
             )
             .expect("published again");
         tokio::time::timeout(
@@ -578,7 +580,7 @@ mod tests {
         let (origin, driver) = moq_net::origin::Producer::new(Default::default());
         let _driver = AbortOnDropHandle::new(n0_future::task::spawn(moq_net::time::run(driver)));
         let first = origin
-            .publish("live/cam", Route::default())
+            .route("live/cam", RouteOptions::default())
             .expect("published");
         let remote = RemoteBroadcast::from_origin(
             origin.consume(),
@@ -597,7 +599,7 @@ mod tests {
         // The first publication goes, and another takes the path.
         drop(first);
         let _second = origin
-            .publish("live/cam", Route::default())
+            .route("live/cam", RouteOptions::default())
             .expect("published again");
         let next = tokio::time::timeout(
             Duration::from_secs(5),

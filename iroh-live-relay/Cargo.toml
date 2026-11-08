@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 moq-relay = { workspace = true, default-features = false, features = ["quic", "websocket"] }
-moq-tokio = { workspace = true, default-features = false, features = ["net", "quic", "aws-lc-rs"] }
+moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
 moq-net = { workspace = true }
 iroh = { workspace = true }
 iroh-live-node = { workspace = true }

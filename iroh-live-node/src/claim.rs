@@ -83,6 +83,9 @@ impl Node {
     /// start later. Dropping the last claim on a path narrows the grant again,
     /// and moq then ends what local readers read at the path from the peer.
     ///
+    /// A live session applies the wider grant a moment after this returns, so
+    /// a read of the path that starts at once may still be refused.
+    ///
     /// A path that [`NodeConfig::grant`](crate::NodeConfig::grant) already lets
     /// the peer publish, and any path of this node's own id, needs no
     /// widening, so the claim is a no-op.
