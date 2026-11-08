@@ -21,7 +21,7 @@ use tracing::{debug, info};
 
 use crate::{
     Error, LinkKind, Session,
-    handshake::{SessionParts, driver_now, hop_for, subscriber},
+    handshake::{Hop, SessionParts, driver_now, subscriber},
     node::Shared,
     state::served,
     transport::{self, HANDSHAKE_TIMEOUT},
@@ -153,7 +153,7 @@ impl Incoming {
         let mut handshake = self
             .handshake
             .with_publisher(served(&shared.table))
-            .with_peer_hop(hop_for(&self.remote));
+            .with_peer_hop(Hop::of(&self.remote).id());
         handshake = handshake.with_subscriber(subscriber(&shared));
         let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
             .await

@@ -164,7 +164,7 @@ fn decode_loop(
     let mut published = Duration::ZERO;
 
     loop {
-        let frames = decode_once(path, fanout, stop, &started, &mut published)?;
+        let frames = decode_once(path, fanout, stop, started, &mut published)?;
         if !looping || stop.is_cancelled() {
             debug!(path = %path.display(), "audio file ended");
             return Ok(());
@@ -185,7 +185,7 @@ fn decode_once(
     path: &Path,
     fanout: &PcmFanout,
     stop: &CancellationToken,
-    started: &Instant,
+    started: Instant,
     published: &mut Duration,
 ) -> Result<usize, Error> {
     let decode_err = |source: symphonia::core::errors::Error| file_error(path, source);
@@ -235,7 +235,7 @@ fn decode_once(
         let frame = moq_audio::Frame::new(
             data,
             moq_net::Timestamp::from_micros(published.as_micros() as u64)
-                .expect("published duration out of Timestamp range"),
+                .expect("a file plays for far less than the timestamp range"),
         );
         if stop.is_cancelled() {
             // The source went away.
@@ -290,7 +290,7 @@ mod tests {
     /// Writes `contents` to a uniquely named file in the temp directory.
     fn temp_file(tag: &str, contents: &[u8]) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "iroh-live-media-{tag}-{}-{:?}.wav",
+            "moq-ext-sources-{tag}-{}-{:?}.wav",
             std::process::id(),
             std::thread::current().id(),
         ));

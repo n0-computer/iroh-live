@@ -371,9 +371,7 @@ fn single(size: moq_video::Size) -> LocalBroadcast {
 }
 
 /// Records every video state the player reports until dropped.
-fn record_states(
-    player: &moq_ext_player::Player,
-) -> (Arc<Mutex<Vec<SlotState>>>, tokio::task::JoinHandle<()>) {
+fn record_states(player: &moq_ext_player::Player) -> (Arc<Mutex<Vec<SlotState>>>, JoinHandle<()>) {
     let states = Arc::new(Mutex::new(Vec::new()));
     let mut status = player.status();
     let written = states.clone();
@@ -557,7 +555,7 @@ async fn turning_video_off_leaves_nothing_decoding() {
 }
 
 #[tokio::test]
-async fn a_latency_below_its_own_minimum_is_refused() {
+async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
     let (broadcast, _source) = ladder();
     let config = PlayerConfig {
         latency: moq_ext_player::Latency {

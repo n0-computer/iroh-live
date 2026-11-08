@@ -3,7 +3,10 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
-use moq_net::{auth, origin};
+use moq_net::{
+    auth,
+    origin::{self, Source},
+};
 use n0_error::e;
 use tracing::debug;
 
@@ -11,18 +14,39 @@ use crate::{
     ConnectOptions, Error, Grant, LinkKind, SessionRequest, node::Shared, state::served, transport,
 };
 
-/// Returns the moq hop id of the node with endpoint id `id`.
+/// The moq hop id the routes of one link carry.
 ///
-/// Derived from the id, so a relay recognizes this node's routes after a
-/// restart. The first eight bytes of an ed25519 key are already uniform. Masked
-/// below 2^53, since JavaScript clients read hop ids as numbers, and never
-/// zero, which moq reserves.
-pub(crate) fn hop_for(id: &EndpointId) -> NonZeroU64 {
-    let bytes: [u8; 8] = id.as_bytes()[..8]
-        .try_into()
-        .expect("an endpoint id is 32 bytes");
-    let value = u64::from_le_bytes(bytes);
-    NonZeroU64::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero")
+/// Never zero: moq reserves zero for a route whose announcer named no hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display)]
+pub(crate) struct Hop(NonZeroU64);
+
+impl Hop {
+    /// Returns the hop of the node with endpoint id `id`.
+    ///
+    /// Derived from the id, so a relay recognizes this node's routes after a
+    /// restart. The first eight bytes of an ed25519 key are already uniform.
+    /// Masked below 2^53, since JavaScript clients read hop ids as numbers.
+    pub(crate) fn of(id: &EndpointId) -> Self {
+        let bytes: [u8; 8] = id.as_bytes()[..8]
+            .try_into()
+            .expect("an endpoint id is 32 bytes");
+        let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
+        Self(NonZeroU64::new(value.max(1)).expect("at least one"))
+    }
+
+    /// Returns the hop a route entered through, or `None` for a route this node
+    /// published or one announced with no hop.
+    pub(crate) fn of_route(source: Source) -> Option<Self> {
+        match source {
+            Source::Peer(id) => NonZeroU64::new(id).map(Self),
+            Source::Local => None,
+        }
+    }
+
+    /// Returns the id moq takes.
+    pub(crate) fn id(self) -> NonZeroU64 {
+        self.0
+    }
 }
 
 /// Returns the instant a session's driver starts from.
@@ -134,7 +158,7 @@ pub(crate) async fn client_handshake(
 ) -> Result<(moq_net::Session, moq_net::Driver), moq_net::Error> {
     let mut client = moq_net::Client::new()
         .with_publisher(publish.clone())
-        .with_peer_hop(hop_for(&remote))
+        .with_peer_hop(Hop::of(&remote).id())
         .with_auth(auth);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
@@ -179,12 +203,12 @@ mod tests {
     #[test]
     fn the_hop_is_stable_and_in_range() {
         let id = SecretKey::generate().public();
-        let hop = hop_for(&id);
-        assert_eq!(hop, hop_for(&id), "the same id gives the same hop");
-        assert!(hop.get() < 1 << 53, "{hop}");
+        let hop = Hop::of(&id);
+        assert_eq!(hop, Hop::of(&id), "the same id gives the same hop");
+        assert!(hop.id().get() < 1 << 53, "{hop}");
         assert_ne!(
             hop,
-            hop_for(&SecretKey::generate().public()),
+            Hop::of(&SecretKey::generate().public()),
             "two ids give two hops"
         );
     }

@@ -25,9 +25,9 @@ fn main() {
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh::protocol::Router;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::layout::LiveLayout;
 use iroh_live::{
     EndpointOptions, Node,
+    layout::LiveLayout,
     media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]

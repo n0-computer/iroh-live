@@ -27,7 +27,7 @@ use crate::{
     OwnerFn, Publication, RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
-    handshake::{SessionParts, hop_for},
+    handshake::{Hop, SessionParts},
     publish, relay, route,
     state::State,
 };
@@ -168,7 +168,7 @@ impl Node {
         let (table, table_task) = match config.table {
             Some(table) => (table, None),
             None => {
-                let (table, driver) = origin::Producer::new(origin::Config::new(hop_for(&id)));
+                let (table, driver) = origin::Producer::new(origin::Config::new(Hop::of(&id).id()));
                 let task = tokio::spawn(
                     async move {
                         let err = moq_net::time::run(driver).await;

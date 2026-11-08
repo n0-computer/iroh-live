@@ -342,7 +342,7 @@ const STRIPES: [(u32, [u8; 3], [u8; 3]); 4] = [
     (4, [0xff, 0x00, 0xff], [0x00, 0xb3, 0x00]),
 ];
 
-/// The buffers one publication paints from.
+/// The buffers the pattern thread paints into.
 ///
 /// The static parts are painted once and copied into each frame. That keeps a
 /// 720p pattern well inside its frame interval.

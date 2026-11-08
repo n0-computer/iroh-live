@@ -18,16 +18,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointOptions::from_env()?.bind().await?;
     // The default config lets peers subscribe to anything and publish
     // nothing. Set `grant` to let them publish somewhere.
-    let moq = Node::new(endpoint.clone(), NodeConfig::default());
-    let router = moq.mount(Router::builder(endpoint.clone())).spawn();
+    let node = Node::new(endpoint.clone(), NodeConfig::default());
+    let router = node.mount(Router::builder(endpoint.clone())).spawn();
 
     // An empty broadcast in the route table. A real one writes tracks into
     // `publication.broadcast()`.
-    let _publication = moq.publish("demo/hello", Audience::Everyone)?;
+    let _publication = node.publish("demo/hello", Audience::Everyone)?;
     println!("serving demo/hello as {}", endpoint.id());
 
     tokio::signal::ctrl_c().await?;
-    moq.shutdown().await;
+    node.shutdown().await;
     // Also closes the endpoint.
     router.shutdown().await?;
     Ok(())

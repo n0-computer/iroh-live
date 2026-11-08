@@ -27,6 +27,7 @@ pub struct AudioTarget {
     cancellers: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// The output behind an [`AudioTarget`].
 #[derive(derive_more::Debug, Clone)]
 enum Inner {
     #[cfg(feature = "playback")]
@@ -223,8 +224,9 @@ mod tests {
 
     /// The microphone config builds its echo canceller from its output.
     ///
-    /// It needs an output device, so it runs by hand. `publish::tests` covers
-    /// the publication side without a device.
+    /// It needs an output device, so it runs by hand.
+    /// `a_microphone_publication_asks_for_its_canceller` covers the publishing
+    /// side without a device.
     #[cfg(all(feature = "aec", feature = "playback"))]
     #[tokio::test]
     #[ignore = "needs an audio output device"]

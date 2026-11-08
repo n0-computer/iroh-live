@@ -92,7 +92,10 @@ impl SlotTask {
             return;
         };
         if tokio::time::timeout(patience, task).await.is_err() {
-            debug!("a publish task did not finish in time and was aborted");
+            debug!(
+                ?patience,
+                "a publish task did not finish in time and was aborted"
+            );
         }
     }
 }
@@ -128,8 +131,9 @@ struct Job {
 impl Job {
     /// Stops the predecessor, then locks the track names.
     ///
-    /// Returns `None` once stopped. Tracks the predecessor left for this task
-    /// stay for the next successor if there is one, and finish otherwise.
+    /// Returns `None` if `stop` fires first. Tracks the predecessor left for
+    /// this task then stay for the next successor if there is one, and finish
+    /// otherwise.
     async fn take_over(
         &mut self,
         stop: &CancellationToken,
@@ -219,7 +223,7 @@ struct Timeline {
 struct Anchor {
     /// Broadcast micros minus source micros, unset before the first frame.
     offset: Option<i128>,
-    /// How often the source's timeline broke.
+    /// How many times the source's timeline broke.
     breaks: u64,
 }
 

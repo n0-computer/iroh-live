@@ -7,11 +7,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::layout::LiveLayout;
-use iroh_live::media::remote_broadcast;
 use iroh_live::{
     EndpointOptions, Mdns, Node,
-    media::PlayerConfig,
+    layout::LiveLayout,
+    media::{PlayerConfig, remote_broadcast},
     node::{Reach, RelayConfig, RelayOffer},
 };
 use n0_error::bail_any;

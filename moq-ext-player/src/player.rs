@@ -43,7 +43,7 @@ pub use moq_ext_adaptive::Adaptation;
 
 /// How to choose the video rendition.
 ///
-/// The selector crate's [`Mode`](moq_ext_adaptive::Mode), under the player's name.
+/// This is [`moq_ext_adaptive::Mode`] under the player's name.
 pub use moq_ext_adaptive::Mode as RenditionMode;
 
 /// How far behind live to run.
@@ -70,12 +70,12 @@ impl Latency {
         max: Duration::from_millis(150),
     };
 
-    /// Returns whether frames are held for the clock.
+    /// Reports whether frames are held for the clock.
     pub(crate) fn paced(&self) -> bool {
         !self.min.is_zero()
     }
 
-    /// Fails if `min` is above `max`.
+    /// Returns an [`Error::InvalidConfig`] if `min` is above `max`.
     fn validate(&self) -> Result<(), Error> {
         if self.min > self.max {
             Err(Error::invalid(format!(
@@ -116,8 +116,9 @@ pub struct PlayerConfig {
     /// It bounds every handover: automatic, pinned, or to another decoder. The
     /// replacement subscribes to the other rendition, waits for its next
     /// keyframe, and decodes until it catches up with the picture on screen.
-    /// With a keyframe every two seconds on an impaired link, waiting for
-    /// the keyframe alone takes seconds. The incumbent keeps playing either way. 15 s by default.
+    /// Encoders open a group every two seconds by default, so on an impaired
+    /// link the wait for the keyframe alone takes seconds. The incumbent keeps
+    /// playing either way. 15 s by default.
     pub switch_deadline: Duration,
 }
 
@@ -261,9 +262,9 @@ impl Player {
         let stats = PlaybackRecorder::default();
         let slot = FrameSlot::new();
         let frames = slot.frames();
-        // The supervisor reports failed renditions, and the selector backs off
-        // from them. A report that does not fit is for a failure already
-        // backed off.
+        // The supervisor reports failed and ended renditions, and the selector
+        // backs off from them. Only a selector eight reports behind fills the
+        // channel, and a report dropped then costs at most one early retry.
         let (reports_tx, reports_rx) = mpsc::channel(8);
         let (desired_tx, desired_rx) = watch::channel(None);
         // The exact target on screen. Once something plays, the selector stops
@@ -541,7 +542,6 @@ impl Player {
                         if rendition == name
                             && status.borrow().switching_to.as_deref() == Some(name) => {}
                     Ok(SwitchEvent::Abandoned(rendition, reason)) if rendition == name => {
-                        let rendition = rendition.clone();
                         return Err(match reason {
                             Abandon::Superseded => n0_error::e!(SwitchError::Superseded { rendition }),
                             Abandon::Withdrawn => n0_error::e!(SwitchError::Withdrawn { rendition }),

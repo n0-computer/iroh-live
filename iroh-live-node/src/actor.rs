@@ -13,7 +13,7 @@ use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
     ConnectOptions, Error, LinkId, LinkKind, Session,
-    handshake::{SessionParts, dial_session, hop_for},
+    handshake::{Hop, SessionParts, dial_session},
     link::{self, LinkState},
     node::Shared,
     session::SessionInner,
@@ -264,7 +264,7 @@ impl Actor {
             auth,
         } = parts;
         let link_state = LinkState::default();
-        let hop = hop_for(&remote);
+        let hop = Hop::of(&remote);
         let mut state = self.shared.state.lock().expect("poisoned");
         let link = LinkId(state.next_id());
         let session = Session {

@@ -66,7 +66,7 @@ const LEAVE_STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// map. One that keeps ending means the map is gone.
 const MAP_RESUBSCRIBES: u32 = 3;
 
-/// Errors of a room.
+/// An error from a room or the room service.
 #[stack_error(derive, add_meta, from_sources)]
 pub enum Error {
     /// The room's gossip topic could not be joined.
@@ -89,7 +89,7 @@ pub enum Error {
 /// and [`shutdown`](Self::shutdown) ends it for every clone.
 #[derive(Debug, Clone)]
 pub struct Rooms {
-    moq: Node,
+    node: Node,
     gossip: Gossip,
     /// Set once the gossip has shut down, so the router's shutdown does not repeat it.
     shut_down: Arc<OnceCell<()>>,
@@ -105,20 +105,21 @@ pub struct Rooms {
 }
 
 impl Rooms {
-    /// Creates the room service on `moq`'s endpoint, with its own gossip.
+    /// Creates the room service on `node`'s endpoint, with its own gossip.
     #[must_use]
-    pub fn new(moq: &Node) -> Self {
-        let gossip = Gossip::builder().spawn(moq.endpoint().clone());
-        Self::with_gossip(moq, gossip)
+    pub fn new(node: &Node) -> Self {
+        let gossip = Gossip::builder().spawn(node.endpoint().clone());
+        Self::with_gossip(node, gossip)
     }
 
     /// Creates the room service over an existing gossip instance.
     ///
     /// The service takes over the gossip: [`shutdown`](Self::shutdown) shuts
     /// it down.
-    pub fn with_gossip(moq: &Node, gossip: Gossip) -> Self {
+    #[must_use]
+    pub fn with_gossip(node: &Node, gossip: Gossip) -> Self {
         Self {
-            moq: moq.clone(),
+            node: node.clone(),
             gossip,
             shut_down: Arc::default(),
             closing: Arc::default(),
@@ -180,7 +181,7 @@ impl Rooms {
             warn!("rooms are not mounted on a router: peers cannot reach this member's gossip");
         }
         let topic = ticket.topic_id();
-        let me = self.moq.endpoint().id();
+        let me = self.node.endpoint().id();
         let gossip_topic = self
             .gossip
             .subscribe(topic, ticket.bootstrap().to_vec())
@@ -196,13 +197,13 @@ impl Rooms {
                 }),
             },
         );
-        let writer = kv.write(self.moq.endpoint().secret_key().clone());
+        let writer = kv.write(self.node.endpoint().secret_key().clone());
 
         let (leave, inbox) = mpsc::channel(1);
         let inner = Arc::new(Inner {
             me,
             ticket: ticket.clone(),
-            moq: self.moq.clone(),
+            node: self.node.clone(),
             state: Watchable::new(RoomState::default()),
             members: Watchable::new(BTreeSet::new()),
             leave,
@@ -262,7 +263,7 @@ struct Inner {
     me: EndpointId,
     ticket: RoomTicket,
     #[debug(skip)]
-    moq: Node,
+    node: Node,
     state: Watchable<RoomState>,
     /// The members' ids, which every publication into the room is offered to.
     members: Watchable<BTreeSet<EndpointId>>,
@@ -295,6 +296,7 @@ impl Room {
     }
 
     /// Returns the members and their broadcasts, as they change.
+    #[must_use]
     pub fn state(&self) -> n0_watcher::Direct<RoomState> {
         self.inner.state.watch()
     }
@@ -364,7 +366,7 @@ impl Room {
             return Err(e!(Error::Left));
         }
         let topic = self.inner.ticket.topic_id();
-        let (publication, filled) = self.inner.moq.publish_with(
+        let (publication, filled) = self.inner.node.publish_with(
             room_path(topic, self.inner.me, name),
             Audience::Peers(self.inner.members.clone()),
             fill,
@@ -416,7 +418,7 @@ impl Room {
             return Err(e!(Error::Left));
         }
         let path = room_path(self.inner.ticket.topic_id(), peer, name);
-        let session = self.inner.moq.connect(peer).await?;
+        let session = self.inner.node.connect(peer).await?;
         Ok(session.subscribe(path).await?)
     }
 

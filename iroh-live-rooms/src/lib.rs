@@ -23,11 +23,11 @@
 //! that.
 //!
 //! ```no_run
-//! # async fn example(moq: iroh_live_node::Node)
+//! # async fn example(node: iroh_live_node::Node)
 //! # -> Result<(), Box<dyn std::error::Error>> {
 //! use iroh_live_rooms::{RoomTicket, Rooms};
 //!
-//! let rooms = Rooms::new(&moq);
+//! let rooms = Rooms::new(&node);
 //! // Mount the service with `rooms.mount(router_builder)`.
 //! let room = rooms
 //!     .join(&RoomTicket::generate(), Some("ada".into()))

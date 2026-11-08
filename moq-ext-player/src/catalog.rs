@@ -1,8 +1,8 @@
 //! Reading a hang catalog the way a player does.
 //!
 //! A broadcast's catalog is [`hang::catalog::Catalog`], shared as an `Arc`
-//! between the watchers of one broadcast. [`VideoRenditions`] adds the ranking
-//! and the lookup that errors name the alternatives for.
+//! between the watchers of one broadcast. [`VideoRenditions`] adds the ranking,
+//! and a lookup whose error names the renditions the catalog has.
 
 use hang::catalog::{Catalog, VideoConfig};
 use moq_ext_adaptive::Rung;

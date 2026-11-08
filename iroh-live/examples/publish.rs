@@ -5,9 +5,9 @@
 
 use clap::Parser;
 use iroh::protocol::Router;
-use iroh_live::layout::LiveLayout;
 use iroh_live::{
     EndpointOptions, Node,
+    layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
         VideoRendition, VideoSource, video,
@@ -18,7 +18,7 @@ use tracing::{info, warn};
 
 /// Command-line arguments of the example.
 #[derive(Parser)]
-#[command(about = "Publishes the default camera and microphone over iroh-node")]
+#[command(about = "Publishes the default camera and microphone over iroh-live")]
 struct Args {
     /// The broadcast name.
     #[clap(long, default_value = "demo")]

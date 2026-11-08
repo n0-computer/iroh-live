@@ -135,8 +135,8 @@ pub(super) async fn run_raw(
         None => (format.size, None),
     };
     let rate = format.rate;
-    // The first rendition to encode anchors it. It is shared so every
-    // rendition carries the same timestamp for the same picture.
+    // Anchors at the first frame any rendition encodes. The clones share the
+    // anchor, so every rendition carries the same timestamp for a picture.
     let timeline = Timeline::new(clock).recording(timestamps);
 
     let mut encoders = JoinSet::new();
@@ -492,7 +492,8 @@ impl Encoder {
                 };
                 let mapped = self.timeline.map(frame.timestamp);
                 if self.timeline.broke() {
-                    // A backend that cannot cut keys at its own interval.
+                    // Open a group so the new source starts with a keyframe. A
+                    // backend that cannot cut keeps its own interval.
                     if let Err(err) = encoder.cut().await {
                         debug!(error = %err, "no keyframe at the source's break");
                     }
@@ -567,8 +568,8 @@ impl Encoder {
                 self.producer.publish(&encoded).map_err(Error::broadcast)?;
                 // A keyframe with another decoder identity, such as a new
                 // level after a switch to a larger source, moves the rendition
-                // to a newly named track and finishes the old one. Its
-                // viewers are the new track's.
+                // to a newly named track and finishes the old one. Follow the
+                // demand of the track the producer writes now.
                 demand = self.producer.demand();
             }
         }

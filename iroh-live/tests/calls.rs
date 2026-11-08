@@ -13,7 +13,7 @@ use iroh::{
 };
 use iroh_live::{
     Audience, Node, NodeConfig, Reach,
-    calls::{CallEvent, Calls, Error, HungUp},
+    calls::{Call, CallEvent, Calls, Error, HungUp},
     layout::LiveLayout,
 };
 use moq_net::broadcast;
@@ -94,7 +94,7 @@ async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T 
 }
 
 /// Places a call from `a` to `b`, which answers once it rings.
-async fn connect(a: &Peer, b: &Peer) -> (iroh_live::calls::Call, iroh_live::calls::Call) {
+async fn connect(a: &Peer, b: &Peer) -> (Call, Call) {
     let (ringing, placed) = tokio::join!(
         async {
             eventually("b rings", || b.calls.ringing().get().contains(&a.id())).await;
@@ -217,7 +217,7 @@ async fn a_new_events_stream_replays_ringing() {
 
 #[tokio::test]
 #[traced_test]
-async fn a_hung_up_peer_rings_again_only_after_a_new_offer() {
+async fn a_hung_up_peer_rings_again_only_after_withdrawing() {
     let (a, b) = (Peer::start().await, Peer::start().await);
     let (call_a, call_b) = connect(&a, &b).await;
 
@@ -233,8 +233,8 @@ async fn a_hung_up_peer_rings_again_only_after_a_new_offer() {
     })
     .await;
 
-    // moq's announce cursor merges a withdrawal and a new offer that follow
-    // each other at once, so give the withdrawal time to arrive.
+    // The announcement listing can miss a withdrawal that a new offer follows
+    // at once, so give the withdrawal time to arrive.
     tokio::time::sleep(Duration::from_millis(500)).await;
     a.calls.ring(b.id());
     eventually("a rings again", || {

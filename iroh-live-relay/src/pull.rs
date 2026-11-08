@@ -8,10 +8,11 @@
 //! a [`PathClaim`] that lets the publisher announce exactly the pulled path,
 //! so its other broadcasts stay out. The relay pulls only a path the ticket's
 //! peer owns: its canonical `live/<peer>/<name>` path, or a room path with the
-//! peer as member, see [`owner`]. Anything else, such as a path in a scheme of
-//! the publisher's own, is refused with [`NotOwner`](iroh_live_node::Error::NotOwner).
-//! A session that named the ticket reads it under the name it asked for
-//! through a mount, see [`mounted`].
+//! peer as member, see [`owner`]. Anything else, such as a path in a scheme
+//! of the publisher's own, is refused with
+//! [`NotOwner`](iroh_live_node::Error::NotOwner). A session that named the
+//! ticket reads it under the name it asked for through a mount, see
+//! [`mounted`].
 //!
 //! A pull retires once no local session that named the ticket has held its
 //! [`PullGuard`] for the linger window. Its path then leaves the publisher's
@@ -29,8 +30,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_live::BroadcastTicket;
-use iroh_live::layout::LiveLayout;
+use iroh_live::{BroadcastTicket, layout::LiveLayout};
 use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription};
 use moq_net::Path;
 use moq_relay::cluster::Cluster;
@@ -75,8 +75,8 @@ pub fn owner(path: &Path) -> Option<EndpointId> {
     else {
         return None;
     };
-    let member: EndpointId = member.parse().ok()?;
-    (member.to_string() == path.parts().nth(2)?).then_some(member)
+    let peer: EndpointId = member.parse().ok()?;
+    (peer.to_string() == member).then_some(peer)
 }
 
 /// Returns `cluster` with `requested` reading the broadcast its ticket names.
@@ -113,7 +113,7 @@ pub fn serving(cluster: &Cluster, path: &str) -> Cluster {
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
     /// The node that dials publishers, with the cluster origin as its route table.
-    moq: Node,
+    node: Node,
     /// How long a pull without sessions stays connected.
     linger: Duration,
     /// Live or dialing pulls, by local broadcast name.
@@ -166,6 +166,7 @@ impl Pull {
 ///
 /// Dropping it withdraws the session's claim on the pull.
 #[derive(Debug)]
+#[must_use = "dropping the guard withdraws the claim on the pull"]
 pub struct PullGuard {
     pull: Arc<Pull>,
 }
@@ -191,7 +192,7 @@ impl PullState {
             ..Default::default()
         };
         Self {
-            moq: Node::new(endpoint, config),
+            node: Node::new(endpoint, config),
             linger: DEFAULT_LINGER,
             pulls: Arc::new(Mutex::new(HashMap::new())),
             publishers: Arc::new(Mutex::new(HashMap::new())),
@@ -210,9 +211,10 @@ impl PullState {
 
     /// Pulls the broadcast `ticket` names into the cluster.
     ///
-    /// The pull is for a session that asked for `requested`. Hold the returned [`PullGuard`] while the session that asked runs, and
-    /// serve that session the cluster [`mounted`] at `requested`. Concurrent
-    /// pulls of one name share a dial.
+    /// The pull is for a session that asked for `requested`. Hold the
+    /// returned [`PullGuard`] while that session runs, and serve it the
+    /// cluster [`mounted`] at `requested`. Concurrent pulls of one name share
+    /// a dial.
     ///
     /// Cancellation safe: dropping this future only drops the caller's claim.
     /// The dial runs on, and the pull retires as usual.
@@ -254,9 +256,6 @@ impl PullState {
             let name = local_name.clone();
             let pull = Arc::clone(&guard.pull);
             tokio::spawn(async move {
-                // Counted for the whole of the pull, dial included, so a
-                // retiring pull cannot close the session this one is about to
-                // use.
                 let outcome = match state.establish(&ticket, &name, &pull).await {
                     Ok(()) => Dial::Connected,
                     Err(err) => {
@@ -269,7 +268,7 @@ impl PullState {
                 pull.dial.send_replace(outcome);
             });
         } else {
-            debug!(local_name = %local_name, "joining an existing pull");
+            debug!(%local_name, "joining an existing pull");
         }
 
         // Dialing or joining, every caller waits on the one dial's outcome.
@@ -307,7 +306,7 @@ impl PullState {
         let publisher = PublisherClaim::new(self, ticket)?;
         let subscription = self.resolve(ticket).await?;
         info!(
-            local_name = %local_name,
+            %local_name,
             remote = %ticket.peer().fmt_short(),
             path = %subscription.path(),
             "remote broadcast available in the cluster"
@@ -333,7 +332,7 @@ impl PullState {
         // subscription waiting forever.
         tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
             let session = self
-                .moq
+                .node
                 .connect(ticket.peer())
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to reach the remote: {err:#}"))?;
@@ -363,17 +362,17 @@ impl PullState {
         publisher: PublisherClaim,
     ) {
         loop {
-            let ended = tokio::select! {
+            let broadcast_ended = tokio::select! {
                 () = current.closed() => {
-                    info!(local_name = %local_name, "nothing serves the pulled broadcast any more");
+                    info!(%local_name, "nothing serves the pulled broadcast any more");
                     true
                 }
                 () = self.wait_idle(&local_name, &pull) => {
-                    info!(local_name = %local_name, "pull went idle, retiring it");
+                    info!(%local_name, "pull went idle, retiring it");
                     false
                 }
             };
-            if !ended {
+            if !broadcast_ended {
                 break;
             }
             if !pull.claimed() {
@@ -409,7 +408,7 @@ impl PullState {
             match self.resolve(ticket).await {
                 Ok(next) => return Some(next),
                 Err(err) => {
-                    warn!(local_name = %local_name, attempt, %err, "could not resolve the pull again");
+                    warn!(%local_name, attempt, %err, "could not resolve the pull again");
                     backoff = (backoff * 2).min(RESOLVE_BACKOFF_MAX);
                 }
             }
@@ -419,8 +418,9 @@ impl PullState {
 
     /// Waits until no session has claimed the pull for the linger window.
     ///
-    /// Then it retires the pull's entry. The final check runs under the lock [`Self::pull`] claims under, so a
-    /// pull claimed during the linger keeps running.
+    /// Then it retires the pull's entry. The final check runs under the lock
+    /// that [`Self::pull`] claims under, so a pull claimed during the linger
+    /// keeps running.
     async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
         loop {
             if pull.claimed() {
@@ -473,8 +473,8 @@ struct PublisherClaim {
     publisher: EndpointId,
     /// The count this claim is part of, shared with [`PullState`].
     publishers: Publishers,
-    moq: Node,
-    /// Declared last, so the session closes before the path is released.
+    node: Node,
+    /// Released after [`Drop::drop`] closes the session, as fields drop after it.
     _path: PathClaim,
 }
 
@@ -482,7 +482,7 @@ impl PublisherClaim {
     /// Claims the ticket's path for its peer, if the peer owns it.
     fn new(state: &PullState, ticket: &BroadcastTicket) -> anyhow::Result<Self> {
         let publisher = ticket.peer();
-        let path = state.moq.claim_path(publisher, ticket.path())?;
+        let path = state.node.claim_path(publisher, ticket.path())?;
         *state
             .publishers
             .lock()
@@ -492,7 +492,7 @@ impl PublisherClaim {
         Ok(Self {
             publisher,
             publishers: Arc::clone(&state.publishers),
-            moq: state.moq.clone(),
+            node: state.node.clone(),
             _path: path,
         })
     }
@@ -512,9 +512,12 @@ impl Drop for PublisherClaim {
             return;
         }
         publishers.remove(&self.publisher);
-        for session in self.moq.sessions().get() {
+        for session in self.node.sessions().get() {
             if session.remote_id() == self.publisher {
-                info!(remote = %self.publisher.fmt_short(), "last pull of the publisher retired, closing its session");
+                info!(
+                    remote = %self.publisher.fmt_short(),
+                    "last pull of the publisher retired, closing its session"
+                );
                 session.close("no pull left");
             }
         }

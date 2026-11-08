@@ -21,13 +21,15 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_live::layout::LiveLayout;
-use iroh_live::media::remote_broadcast;
-use iroh_live::media::{
-    Latency, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition, VideoSource,
-    video::{Frame, FrameRate, Size, Surface, decode},
+use iroh_live::{
+    Node,
+    layout::LiveLayout,
+    media::{
+        Latency, LocalBroadcast, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition,
+        VideoSource, remote_broadcast,
+        video::{Frame, FrameRate, Size, Surface, decode},
+    },
 };
-use iroh_live::{Node, media::LocalBroadcast};
 use n0_tracing_test::traced_test;
 
 /// Generous, because tests run in parallel and openh264 encodes in software.

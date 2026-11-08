@@ -139,8 +139,8 @@ impl VideoSource {
     /// before opening its replacement, and a switch back to the same camera
     /// does not fail as busy. A capture that does not let go in time is
     /// stuck in a read: the open proceeds without it, and that thread may hold
-    /// its device until the read returns. A V4L2 read waits for a frame
-    /// without a timeout in the moq-video this crate builds against.
+    /// its device until the read returns. A V4L2 read gives up after a second,
+    /// but a Media Foundation read on Windows has no timeout.
     ///
     /// On Linux with the `pipewire` feature, the default camera
     /// (`Source::Camera(None)`) is PipeWire's default camera, which shares the
@@ -164,7 +164,7 @@ impl VideoSource {
                 Ok(source) => return Ok(source),
                 Err(err) => info!(
                     error = %format!("{err:#}"),
-                    "PipeWire's default camera did not open; trying V4L2"
+                    "PipeWire's default camera did not open, trying V4L2"
                 ),
             }
         }
@@ -262,7 +262,7 @@ impl VideoSource {
             .build()?;
         let thread_name = name.to_string();
         std::thread::Builder::new()
-            .name(name.to_string())
+            .name(thread_name.clone())
             .spawn(move || {
                 let _entered = runtime.enter();
                 match run(sender) {
@@ -360,6 +360,7 @@ impl EncodedVideoSource {
     /// The stream may split anywhere, since access units are found by their
     /// start codes. It should repeat its parameter sets before every keyframe,
     /// or a late subscriber cannot start decoding.
+    #[must_use]
     pub fn annex_b(bytes: impl n0_future::Stream<Item = bytes::Bytes> + Send + 'static) -> Self {
         Self {
             bytes: Box::pin(bytes),
@@ -590,6 +591,7 @@ impl AudioSource {
     ///
     /// A missing device then shows only when a broadcast publishes the source.
     #[cfg(feature = "capture")]
+    #[must_use]
     pub fn microphone_unchecked(config: MicrophoneConfig) -> Self {
         Self::new(
             "microphone",
@@ -654,6 +656,7 @@ impl AudioSource {
         Self::generated("test-pattern", generator::BEEP_HZ, layout, generator::BEEP)
     }
 
+    /// Returns a tone at `hz`, gated by `gate`, on a thread named `name`.
     #[cfg(feature = "pattern")]
     fn generated(
         name: &'static str,

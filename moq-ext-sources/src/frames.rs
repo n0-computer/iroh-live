@@ -30,6 +30,7 @@ impl Default for FrameSlot {
 
 impl FrameSlot {
     /// Creates an empty slot.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tx: watch::Sender::new(None),
@@ -42,12 +43,15 @@ impl FrameSlot {
         self.tx.send_replace(Some(frame));
     }
 
-    /// Records why the stream is about to end, for `FrameReader::failure`.
+    /// Records why the stream is about to end, for [`FrameReader::failure`].
+    ///
+    /// The first failure wins.
     pub(crate) fn fail(&self, failure: Arc<Error>) {
         let _ = self.failure.set(failure);
     }
 
     /// Returns a reader starting at the current frame.
+    #[must_use]
     pub fn frames(&self) -> VideoFrames {
         VideoFrames::new(self.tx.subscribe())
     }
@@ -100,6 +104,7 @@ pub struct VideoFrames {
 }
 
 impl VideoFrames {
+    /// Creates a handle whose first [`next`](Self::next) returns the current frame.
     fn new(mut rx: watch::Receiver<Option<Arc<video::Frame>>>) -> Self {
         rx.mark_changed();
         Self { rx }

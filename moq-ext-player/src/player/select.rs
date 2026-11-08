@@ -105,6 +105,7 @@ pub(crate) struct Inputs {
 struct Config {
     decoder: moq_video::decode::Kind,
     max_age: Duration,
+    /// The generation of the broadcast consumer, bumped on a new route.
     epoch: u64,
     /// Bumped to rebuild a video that ended.
     restart: u64,
@@ -348,7 +349,7 @@ pub(crate) async fn run(inputs: Inputs) {
         desired.send_if_modified(|desired| {
             let changed = desired.as_ref().map(|wanted| &wanted.target) != next.as_ref().map(|next| &next.target);
             if changed || retry {
-                trace!(target = ?next.as_ref().map(|next| &next.target), retry, "desired rendition");
+                trace!(desired = ?next.as_ref().map(|next| &next.target), retry, "desired rendition");
                 *desired = next;
                 failed = None;
             }
@@ -357,7 +358,7 @@ pub(crate) async fn run(inputs: Inputs) {
     }
 }
 
-/// Returns whether two optional errors say the same thing.
+/// Reports whether two optional errors say the same thing.
 ///
 /// Compares messages, because the selector builds a fresh error on every pass.
 fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
