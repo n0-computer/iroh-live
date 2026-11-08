@@ -162,7 +162,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     if raw.parse::<iroh_live::BroadcastTicket>().is_ok() {
         return Some(raw.to_owned());
     }
-    let name = percent_encoding::percent_decode_str(path.trim_start_matches('/'))
+    let name = percent_encoding::percent_decode_str(raw)
         .decode_utf8()
         .ok()?;
     (!name.is_empty()).then(|| name.into_owned())
@@ -191,14 +191,19 @@ mod tests {
         assert!(!scope.matches("cam"));
     }
 
+    /// Returns whether [`browser_auth`] lets a browser publish at `path`.
+    fn a_browser_may_publish(path: &str) -> bool {
+        browser_auth()
+            .public_publish
+            .iter()
+            .any(|pattern| pattern.matches(path))
+    }
+
     #[test]
     fn a_browser_publishes_one_segment_names() {
-        let auth = browser_auth();
-        let publish = &auth.public_publish;
-        let matches = |path: &str| publish.iter().any(|pattern| pattern.matches(path));
-        assert!(matches("hello"));
-        assert!(!matches("live/someone/cam"));
-        assert!(!matches("rooms/topic/someone/cam"));
+        assert!(a_browser_may_publish("hello"));
+        assert!(!a_browser_may_publish("live/someone/cam"));
+        assert!(!a_browser_may_publish("rooms/topic/someone/cam"));
     }
 
     /// A browser cannot publish at the name a pull is read under.
@@ -210,16 +215,10 @@ mod tests {
         let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let path = LiveLayout::default().path(peer, "cam").expect("a path");
         let ticket = iroh_live::BroadcastTicket::at(peer, path);
-        let auth = browser_auth();
-        let matches = |path: &str| {
-            auth.public_publish
-                .iter()
-                .any(|pattern| pattern.matches(path))
-        };
         let full = ticket.to_string();
         let bare = full.strip_prefix("ilv1:").expect("a ticket prefix");
-        assert!(!matches(&full));
-        assert!(!matches(bare));
+        assert!(!a_browser_may_publish(&full));
+        assert!(!a_browser_may_publish(bare));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+//! The relay binary: [`iroh_live_relay::run`] behind a command line.
+
 use clap::Parser;
 
 /// The relay's command line.

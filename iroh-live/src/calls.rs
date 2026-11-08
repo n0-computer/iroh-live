@@ -8,9 +8,13 @@
 //! Two peers that ring each other at once are the normal case of this
 //! protocol, and resolve into one [`Call`] on each side.
 //!
-//! The module depends on the node and the layout only, so it can become a
-//! crate unchanged. `B`, what fills the side, stays generic: a
-//! `LocalBroadcast` for media, or a bare `broadcast::Producer`.
+//! A peer that was hung up on rings again only once it withdraws its side and
+//! offers it anew. Publishing the side again without a withdrawal in between
+//! is no new offer, since the route table lists the path as present
+//! throughout.
+//!
+//! `B`, what fills the side, stays generic: a `LocalBroadcast` for media, or
+//! a bare `broadcast::Producer`.
 //!
 //! ```no_run
 //! use iroh_live::{Node, calls::{CallEvent, Calls}, layout::LiveLayout};
@@ -46,7 +50,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
     task::{Context, Poll},
 };
 
@@ -82,8 +86,8 @@ pub enum HungUp {
 
 /// A change in who is calling, from [`Calls::events`].
 ///
-/// Best-effort: moq's announce cursor can drop a ring that is withdrawn
-/// before it is delivered. [`Calls::ringing`] is the source of truth.
+/// Best-effort: the route table's announcement listing can drop a ring that
+/// is withdrawn before it is read. [`Calls::ringing`] is the source of truth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEvent {
     /// The peer rings this node.
@@ -118,7 +122,8 @@ impl Stream for CallEvents {
 pub enum Error {
     /// A grant does not let a peer publish its call side.
     ///
-    /// Either the node's grant refuses this node, or the session's grant refuses the peer.
+    /// Either the node's grant refuses this node, or the session's grant
+    /// refuses the peer.
     #[error("the grant does not let {peer} publish {path}")]
     NotGranted { path: Path, peer: EndpointId },
     /// The peer is not calling this node.
@@ -144,14 +149,14 @@ struct CallState {
     pending: BTreeSet<EndpointId>,
     /// Calls in progress.
     active: BTreeSet<EndpointId>,
-    /// Peers that were hung up on, until they withdraw or republish.
+    /// Peers that were hung up on, until they withdraw their side.
     ended: BTreeSet<EndpointId>,
     /// Dials started by [`Calls::ring`].
     dialing: BTreeMap<EndpointId, AbortOnDropHandle<()>>,
 }
 
 impl CallState {
-    /// Returns the peers that ring: visible, and in no call and not hung up.
+    /// Returns the peers that ring: visible, in no call, and not hung up on.
     fn ringing(&self) -> BTreeSet<EndpointId> {
         self.visible
             .iter()
@@ -198,11 +203,13 @@ impl Inner {
     }
 
     /// Locks the call state.
-    fn lock(&self) -> std::sync::MutexGuard<'_, CallState> {
+    fn lock(&self) -> MutexGuard<'_, CallState> {
         self.state.lock().expect("poisoned")
     }
 
     /// Takes `peer` out of the audience and the call bookkeeping, as a hang-up does.
+    ///
+    /// Takes `state` so the audience changes under the state lock.
     fn withdraw(&self, peer: EndpointId, state: &mut CallState) {
         let mut audience = self.audience.get();
         if audience.remove(&peer) {
@@ -279,11 +286,13 @@ impl Calls {
     /// Non-blocking and idempotent. The peer sees the side appear in its route
     /// table. [`call`](Self::call) and [`answer`](Self::answer) ring first.
     pub fn ring(&self, peer: EndpointId) {
+        // The audience changes under the state lock, as in `withdraw`, so a
+        // ring and a hang-up at once cannot lose either update.
+        let mut state = self.inner.lock();
         let mut audience = self.inner.audience.get();
         if audience.insert(peer) {
             self.inner.audience.set(audience).ok();
         }
-        let mut state = self.inner.lock();
         let connected = self
             .inner
             .node
@@ -342,7 +351,8 @@ impl Calls {
     ///
     /// The source of truth: peers whose side is visible, minus those with a
     /// call in progress or being placed, and those that were hung up on and
-    /// have not made a new offer since.
+    /// have not withdrawn their side since.
+    #[must_use]
     pub fn ringing(&self) -> n0_watcher::Direct<BTreeSet<EndpointId>> {
         self.inner.ringing.watch()
     }
@@ -351,6 +361,7 @@ impl Calls {
     ///
     /// It first replays the peers that ring now. See [`CallEvent`] for what
     /// it does not guarantee.
+    #[must_use]
     pub fn events(&self) -> CallEvents {
         let live = BroadcastStream::new(self.inner.events.subscribe()).map(|event| match event {
             Ok(event) => event,
@@ -446,8 +457,10 @@ impl Drop for Pending {
 /// A call in progress.
 ///
 /// Dropping it, or [`hang_up`](Self::hang_up), ends the call: the peer loses
-/// this node's side, and the peer rings again only after a new offer.
+/// this node's side, and rings again only once it withdraws its own side and
+/// offers it anew.
 #[derive(derive_more::Debug)]
+#[must_use = "dropping a `Call` hangs up"]
 #[debug("Call({})", peer.fmt_short())]
 pub struct Call {
     inner: Arc<Inner>,
@@ -535,7 +548,7 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
         let Some(inner) = inner.upgrade() else {
             return;
         };
-        let (announce, active) = match &event {
+        let (announce, present) = match &event {
             Event::Absent(announce) => (announce, false),
             Event::Present(announce) => (announce, true),
         };
@@ -546,7 +559,7 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
             continue;
         }
         let mut state = inner.lock();
-        if active {
+        if present {
             state.visible.insert(peer);
             state.ended.remove(&peer);
         } else {
@@ -562,7 +575,7 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
         inner.recompute(&state);
     }
     if let Some(inner) = inner.upgrade() {
-        debug!("calls closed");
+        debug!(id = %local_id.fmt_short(), "calls closed");
         inner.closed.cancel();
     }
 }

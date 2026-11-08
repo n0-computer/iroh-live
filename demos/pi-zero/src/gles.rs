@@ -60,165 +60,220 @@ enum ActiveMode {
     I420,
 }
 
+/// A texture and the size it is allocated at.
+#[derive(Debug)]
+struct PlaneTexture {
+    texture: glow::Texture,
+    /// `(0, 0)` until the first upload allocates the texture.
+    size: (u32, u32),
+}
+
+impl PlaneTexture {
+    /// Creates a texture with linear filtering and edge clamping.
+    ///
+    /// # Safety
+    ///
+    /// The GL context of `gl` must be current on the calling thread.
+    unsafe fn new(gl: &glow::Context) -> Result<Self> {
+        // SAFETY: the caller keeps the context current.
+        unsafe {
+            let texture = gl.create_texture().map_err(|e| anyhow::anyhow!(e))?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            for param in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::LINEAR as i32);
+            }
+            for param in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::CLAMP_TO_EDGE as i32);
+            }
+            Ok(Self {
+                texture,
+                size: (0, 0),
+            })
+        }
+    }
+
+    /// Uploads `data` of `format`, reallocating the texture only when its size changes.
+    ///
+    /// # Safety
+    ///
+    /// The GL context of `gl` must be current on the calling thread.
+    unsafe fn upload(&mut self, gl: &glow::Context, format: u32, data: &[u8], w: u32, h: u32) {
+        let pixels = glow::PixelUnpackData::Slice(Some(data));
+        // SAFETY: the caller keeps the context current, and `data` holds
+        // `w * h` pixels of `format`, which the callers slice it to.
+        unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+            if (w, h) == self.size {
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    w as i32,
+                    h as i32,
+                    format,
+                    glow::UNSIGNED_BYTE,
+                    pixels,
+                );
+            } else {
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    format as i32,
+                    w as i32,
+                    h as i32,
+                    0,
+                    format,
+                    glow::UNSIGNED_BYTE,
+                    pixels,
+                );
+                self.size = (w, h);
+            }
+        }
+    }
+}
+
 /// A GLES2 renderer with RGBA and I420 upload paths.
 ///
-/// The caller creates the GL context and swaps buffers.
+/// The caller creates the GL context and swaps buffers. The context must be
+/// current on the thread that drops the renderer, which frees its GL objects.
 #[derive(Debug)]
 pub(crate) struct GlesRenderer {
     gl: glow::Context,
-    // Shared vertex state.
+    /// The fullscreen triangle both programs draw.
     vbo: glow::Buffer,
-    a_pos_loc: u32,
-    // RGBA path.
     rgba_program: glow::Program,
-    rgba_texture: glow::Texture,
-    // I420 path.
+    rgba_a_pos: u32,
+    rgba: PlaneTexture,
     i420_program: glow::Program,
-    i420_a_pos_loc: u32,
-    y_texture: glow::Texture,
-    u_texture: glow::Texture,
-    v_texture: glow::Texture,
+    i420_a_pos: u32,
+    y: PlaneTexture,
+    u: PlaneTexture,
+    v: PlaneTexture,
     active: ActiveMode,
-    tex_width: u32,
-    tex_height: u32,
-    chroma_tex_width: u32,
-    chroma_tex_height: u32,
 }
 
 /// Compiles a shader of `kind` from `source`.
-fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
-    let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyhow::anyhow!(e))?;
-    unsafe { gl.shader_source(shader, source) };
-    unsafe { gl.compile_shader(shader) };
-    if !unsafe { gl.get_shader_compile_status(shader) } {
-        let log = unsafe { gl.get_shader_info_log(shader) };
-        unsafe { gl.delete_shader(shader) };
-        bail!("shader compile: {log}");
+///
+/// # Safety
+///
+/// The GL context of `gl` must be current on the calling thread.
+unsafe fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
+    // SAFETY: the caller keeps the context current.
+    unsafe {
+        let shader = gl.create_shader(kind).map_err(|e| anyhow::anyhow!(e))?;
+        gl.shader_source(shader, source);
+        gl.compile_shader(shader);
+        if !gl.get_shader_compile_status(shader) {
+            let log = gl.get_shader_info_log(shader);
+            gl.delete_shader(shader);
+            bail!("shader compile: {log}");
+        }
+        Ok(shader)
     }
-    Ok(shader)
 }
 
-fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Result<glow::Program> {
-    let program = unsafe { gl.create_program() }.map_err(|e| anyhow::anyhow!(e))?;
-    unsafe { gl.attach_shader(program, vs) };
-    unsafe { gl.attach_shader(program, fs) };
-    unsafe { gl.link_program(program) };
-    if !unsafe { gl.get_program_link_status(program) } {
-        let log = unsafe { gl.get_program_info_log(program) };
-        unsafe { gl.delete_program(program) };
-        bail!("shader link: {log}");
+/// Links the vertex shader `vs` and the fragment shader `fs` into a program.
+///
+/// # Safety
+///
+/// The GL context of `gl` must be current on the calling thread.
+unsafe fn link_program(
+    gl: &glow::Context,
+    vs: glow::Shader,
+    fs: glow::Shader,
+) -> Result<glow::Program> {
+    // SAFETY: the caller keeps the context current.
+    unsafe {
+        let program = gl.create_program().map_err(|e| anyhow::anyhow!(e))?;
+        gl.attach_shader(program, vs);
+        gl.attach_shader(program, fs);
+        gl.link_program(program);
+        if !gl.get_program_link_status(program) {
+            let log = gl.get_program_info_log(program);
+            gl.delete_program(program);
+            bail!("shader link: {log}");
+        }
+        Ok(program)
     }
-    Ok(program)
-}
-
-fn create_texture(gl: &glow::Context) -> Result<glow::Texture> {
-    let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
-    unsafe { gl.bind_texture(glow::TEXTURE_2D, Some(texture)) };
-    for param in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-        unsafe { gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::LINEAR as i32) };
-    }
-    for param in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
-        unsafe { gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::CLAMP_TO_EDGE as i32) };
-    }
-    Ok(texture)
 }
 
 impl GlesRenderer {
-    /// Creates both shader programs, VBO, and textures.
+    /// Creates both shader programs, the vertex buffer and the textures.
     ///
     /// # Safety
     ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn new(gl: glow::Context) -> Result<Self> {
-        let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
+        // The fullscreen triangle, in the [0, 2] square the vertex shader maps
+        // to clip space.
+        let vertices: Vec<u8> = [0.0f32, 0.0, 2.0, 0.0, 0.0, 2.0]
+            .iter()
+            .flat_map(|coordinate| coordinate.to_ne_bytes())
+            .collect();
+        // SAFETY: the caller keeps the context current.
+        unsafe {
+            let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
+            let rgba_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, RGBA_FRAG_SRC)?;
+            let rgba_program = link_program(&gl, vs, rgba_fs)?;
+            gl.delete_shader(rgba_fs);
+            let rgba_a_pos = gl
+                .get_attrib_location(rgba_program, "a_pos")
+                .context("a_pos not found in RGBA program")?;
 
-        let rgba_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, RGBA_FRAG_SRC)?;
-        let rgba_program = link_program(&gl, vs, rgba_fs)?;
-        unsafe { gl.delete_shader(rgba_fs) };
-        let a_pos_loc = unsafe { gl.get_attrib_location(rgba_program, "a_pos") }
-            .context("a_pos not found in RGBA program")?;
+            let i420_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
+            let i420_program = link_program(&gl, vs, i420_fs)?;
+            gl.delete_shader(i420_fs);
+            gl.delete_shader(vs);
+            let i420_a_pos = gl
+                .get_attrib_location(i420_program, "a_pos")
+                .context("a_pos not found in I420 program")?;
 
-        let i420_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
-        let i420_program = link_program(&gl, vs, i420_fs)?;
-        unsafe { gl.delete_shader(i420_fs) };
-        unsafe { gl.delete_shader(vs) };
-        let i420_a_pos_loc = unsafe { gl.get_attrib_location(i420_program, "a_pos") }
-            .context("a_pos not found in I420 program")?;
+            // The Y, U and V samplers read texture units 0, 1 and 2.
+            gl.use_program(Some(i420_program));
+            for (name, unit) in [("u_y_tex", 0), ("u_u_tex", 1), ("u_v_tex", 2)] {
+                if let Some(location) = gl.get_uniform_location(i420_program, name) {
+                    gl.uniform_1_i32(Some(&location), unit);
+                }
+            }
 
-        // The Y, U and V samplers read texture units 0, 1 and 2.
-        unsafe { gl.use_program(Some(i420_program)) };
-        if let Some(loc) = unsafe { gl.get_uniform_location(i420_program, "u_y_tex") } {
-            unsafe { gl.uniform_1_i32(Some(&loc), 0) };
+            let vbo = gl.create_buffer().map_err(|e| anyhow::anyhow!(e))?;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &vertices, glow::STATIC_DRAW);
+
+            // The I420 planes are packed rows. GL's default alignment of 4 would
+            // read past a row whose length is not a multiple of 4.
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+
+            Ok(Self {
+                rgba: PlaneTexture::new(&gl)?,
+                y: PlaneTexture::new(&gl)?,
+                u: PlaneTexture::new(&gl)?,
+                v: PlaneTexture::new(&gl)?,
+                gl,
+                vbo,
+                rgba_program,
+                rgba_a_pos,
+                i420_program,
+                i420_a_pos,
+                active: ActiveMode::Rgba,
+            })
         }
-        if let Some(loc) = unsafe { gl.get_uniform_location(i420_program, "u_u_tex") } {
-            unsafe { gl.uniform_1_i32(Some(&loc), 1) };
-        }
-        if let Some(loc) = unsafe { gl.get_uniform_location(i420_program, "u_v_tex") } {
-            unsafe { gl.uniform_1_i32(Some(&loc), 2) };
-        }
-
-        // Fullscreen triangle VBO.
-        let vertices: [f32; 6] = [0.0, 0.0, 2.0, 0.0, 0.0, 2.0];
-        let vert_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                vertices.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let vbo = unsafe { gl.create_buffer() }.map_err(|e| anyhow::anyhow!(e))?;
-        unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo)) };
-        unsafe { gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW) };
-
-        // The I420 planes are packed rows. GL's default alignment of 4 would
-        // read past a row whose length is not a multiple of 4.
-        unsafe { gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1) };
-
-        let rgba_texture = create_texture(&gl)?;
-        let y_texture = create_texture(&gl)?;
-        let u_texture = create_texture(&gl)?;
-        let v_texture = create_texture(&gl)?;
-
-        Ok(Self {
-            gl,
-            vbo,
-            a_pos_loc,
-            rgba_program,
-            rgba_texture,
-            i420_program,
-            i420_a_pos_loc,
-            y_texture,
-            u_texture,
-            v_texture,
-            active: ActiveMode::Rgba,
-            tex_width: 0,
-            tex_height: 0,
-            chroma_tex_width: 0,
-            chroma_tex_height: 0,
-        })
     }
 
-    /// Uploads RGBA pixel data to the texture.
+    /// Uploads RGBA pixel data of `w` x `h`.
     ///
     /// # Safety
     ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn upload_rgba(&mut self, rgba: &[u8], w: u32, h: u32) {
         self.active = ActiveMode::Rgba;
-        unsafe {
-            upload_tex(
-                &self.gl,
-                self.rgba_texture,
-                glow::RGBA,
-                rgba,
-                w,
-                h,
-                &mut self.tex_width,
-                &mut self.tex_height,
-            );
-        }
+        let pixels = &rgba[..(w * h * 4) as usize];
+        // SAFETY: the caller keeps the context current.
+        unsafe { self.rgba.upload(&self.gl, glow::RGBA, pixels, w, h) };
     }
 
-    /// Uploads the three I420 planes for the shader to convert.
+    /// Uploads the three I420 planes of a `w` x `h` picture for the shader to convert.
     ///
     /// The planes must be tightly packed. GLES2 has no `GL_UNPACK_ROW_LENGTH`,
     /// so row padding has to be removed on the CPU first.
@@ -228,40 +283,17 @@ impl GlesRenderer {
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn upload_i420(&mut self, y: &[u8], u: &[u8], v: &[u8], w: u32, h: u32) {
         self.active = ActiveMode::I420;
-        let chroma_w = w.div_ceil(2);
-        let chroma_h = h.div_ceil(2);
-
+        let (chroma_w, chroma_h) = (w.div_ceil(2), h.div_ceil(2));
+        let chroma = (chroma_w * chroma_h) as usize;
+        let gl = &self.gl;
+        // SAFETY: the caller keeps the context current.
         unsafe {
-            upload_tex(
-                &self.gl,
-                self.y_texture,
-                glow::LUMINANCE,
-                &y[..(w * h) as usize],
-                w,
-                h,
-                &mut self.tex_width,
-                &mut self.tex_height,
-            );
-            upload_tex(
-                &self.gl,
-                self.u_texture,
-                glow::LUMINANCE,
-                &u[..(chroma_w * chroma_h) as usize],
-                chroma_w,
-                chroma_h,
-                &mut self.chroma_tex_width,
-                &mut self.chroma_tex_height,
-            );
-            upload_tex(
-                &self.gl,
-                self.v_texture,
-                glow::LUMINANCE,
-                &v[..(chroma_w * chroma_h) as usize],
-                chroma_w,
-                chroma_h,
-                &mut self.chroma_tex_width,
-                &mut self.chroma_tex_height,
-            );
+            self.y
+                .upload(gl, glow::LUMINANCE, &y[..(w * h) as usize], w, h);
+            self.u
+                .upload(gl, glow::LUMINANCE, &u[..chroma], chroma_w, chroma_h);
+            self.v
+                .upload(gl, glow::LUMINANCE, &v[..chroma], chroma_w, chroma_h);
         }
     }
 
@@ -273,10 +305,12 @@ impl GlesRenderer {
     pub(crate) unsafe fn upload_frame(&mut self, frame: &Frame) {
         let size = frame.size();
         match &frame.surface {
+            // SAFETY: the caller keeps the context current.
             Surface::I420(i420) => unsafe {
                 self.upload_i420(i420.y(), i420.u(), i420.v(), i420.width(), i420.height());
             },
             other => match other.to_rgba(&Default::default()) {
+                // SAFETY: the caller keeps the context current.
                 Ok(rgba) => unsafe {
                     self.upload_rgba(rgba.data(), rgba.width(), rgba.height());
                 },
@@ -295,150 +329,55 @@ impl GlesRenderer {
     ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn draw(&self, vp_w: i32, vp_h: i32) {
+        let gl = &self.gl;
+        let a_pos = match self.active {
+            ActiveMode::Rgba => self.rgba_a_pos,
+            ActiveMode::I420 => self.i420_a_pos,
+        };
+        // SAFETY: the caller keeps the context current, and every object bound
+        // here was created on it in `new`.
         unsafe {
-            self.gl.viewport(0, 0, vp_w, vp_h);
-            self.gl.clear_color(0.0, 0.0, 0.0, 1.0);
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
-
-            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-
+            gl.viewport(0, 0, vp_w, vp_h);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             match self.active {
                 ActiveMode::Rgba => {
-                    self.gl.use_program(Some(self.rgba_program));
-                    self.gl
-                        .vertex_attrib_pointer_f32(self.a_pos_loc, 2, glow::FLOAT, false, 0, 0);
-                    self.gl.enable_vertex_attrib_array(self.a_pos_loc);
-                    self.gl.active_texture(glow::TEXTURE0);
-                    self.gl
-                        .bind_texture(glow::TEXTURE_2D, Some(self.rgba_texture));
+                    gl.use_program(Some(self.rgba_program));
+                    gl.active_texture(glow::TEXTURE0);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(self.rgba.texture));
                 }
                 ActiveMode::I420 => {
-                    self.gl.use_program(Some(self.i420_program));
-                    self.gl.vertex_attrib_pointer_f32(
-                        self.i420_a_pos_loc,
-                        2,
-                        glow::FLOAT,
-                        false,
-                        0,
-                        0,
-                    );
-                    self.gl.enable_vertex_attrib_array(self.i420_a_pos_loc);
-                    self.gl.active_texture(glow::TEXTURE0);
-                    self.gl.bind_texture(glow::TEXTURE_2D, Some(self.y_texture));
-                    self.gl.active_texture(glow::TEXTURE1);
-                    self.gl.bind_texture(glow::TEXTURE_2D, Some(self.u_texture));
-                    self.gl.active_texture(glow::TEXTURE2);
-                    self.gl.bind_texture(glow::TEXTURE_2D, Some(self.v_texture));
+                    gl.use_program(Some(self.i420_program));
+                    for (unit, plane) in [
+                        (glow::TEXTURE0, &self.y),
+                        (glow::TEXTURE1, &self.u),
+                        (glow::TEXTURE2, &self.v),
+                    ] {
+                        gl.active_texture(unit);
+                        gl.bind_texture(glow::TEXTURE_2D, Some(plane.texture));
+                    }
                 }
             }
-
-            self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
-
-            match self.active {
-                ActiveMode::Rgba => self.gl.disable_vertex_attrib_array(self.a_pos_loc),
-                ActiveMode::I420 => self.gl.disable_vertex_attrib_array(self.i420_a_pos_loc),
-            }
+            gl.vertex_attrib_pointer_f32(a_pos, 2, glow::FLOAT, false, 0, 0);
+            gl.enable_vertex_attrib_array(a_pos);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.disable_vertex_attrib_array(a_pos);
         }
-    }
-
-    /// Uploads a frame and draws it in one call.
-    ///
-    /// The caller swaps buffers afterwards.
-    ///
-    /// # Safety
-    ///
-    /// The GL context must be current on the calling thread.
-    #[allow(
-        dead_code,
-        reason = "convenience wrapper for a caller that has no use for upload and draw separately"
-    )]
-    pub(crate) unsafe fn render_frame(&mut self, frame: &Frame, vp_w: i32, vp_h: i32) {
-        unsafe {
-            self.upload_frame(frame);
-            self.draw(vp_w, vp_h);
-        }
-    }
-
-    /// Returns a reference to the underlying `glow::Context`.
-    #[allow(
-        dead_code,
-        reason = "exposed for a caller that needs to issue its own GL calls"
-    )]
-    pub(crate) fn gl(&self) -> &glow::Context {
-        &self.gl
-    }
-
-    /// Returns the dimensions of the last uploaded texture.
-    #[allow(
-        dead_code,
-        reason = "exposed for a caller that lays out UI around the video size"
-    )]
-    pub(crate) fn texture_dimensions(&self) -> (u32, u32) {
-        (self.tex_width, self.tex_height)
     }
 }
 
 impl Drop for GlesRenderer {
     fn drop(&mut self) {
+        // SAFETY: the type's contract keeps the context current on the thread
+        // that drops it, and every object was created on that context.
         unsafe {
-            self.gl.delete_texture(self.rgba_texture);
-            self.gl.delete_texture(self.y_texture);
-            self.gl.delete_texture(self.u_texture);
-            self.gl.delete_texture(self.v_texture);
+            for plane in [&self.rgba, &self.y, &self.u, &self.v] {
+                self.gl.delete_texture(plane.texture);
+            }
             self.gl.delete_program(self.rgba_program);
             self.gl.delete_program(self.i420_program);
             self.gl.delete_buffer(self.vbo);
-        }
-    }
-}
-
-/// Uploads pixel data, reallocating the texture only when its size changes.
-///
-/// `cached_w` and `cached_h` hold the texture's allocated size.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "GL upload needs all texture parameters"
-)]
-unsafe fn upload_tex(
-    gl: &glow::Context,
-    texture: glow::Texture,
-    format: u32,
-    data: &[u8],
-    w: u32,
-    h: u32,
-    cached_w: &mut u32,
-    cached_h: &mut u32,
-) {
-    unsafe { gl.bind_texture(glow::TEXTURE_2D, Some(texture)) };
-    if w != *cached_w || h != *cached_h {
-        unsafe {
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                format as i32,
-                w as i32,
-                h as i32,
-                0,
-                format,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(data)),
-            );
-        }
-        *cached_w = w;
-        *cached_h = h;
-    } else {
-        unsafe {
-            gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                0,
-                0,
-                w as i32,
-                h as i32,
-                format,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(data)),
-            );
         }
     }
 }

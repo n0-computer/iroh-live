@@ -258,16 +258,11 @@ mod tests {
         thread::sleep(Duration::from_millis(5));
 
         sync.received(Duration::from_millis(0));
-        {
-            let state = sync.inner.state.lock().expect("poisoned");
-            assert!(state.reference.is_some());
-            let first_reference = state.reference.expect("checked above");
-            assert!(
-                first_reference > 0,
-                "reference should be positive for pts=0"
-            );
-            drop(state);
-        }
+        let first = sync.inner.state.lock().expect("poisoned").reference;
+        assert!(
+            first.is_some_and(|reference| reference > 0),
+            "the reference for pts 0 is positive, got {first:?}"
+        );
 
         // A later frame at a worse offset leaves the reference alone.
         thread::sleep(Duration::from_millis(10));

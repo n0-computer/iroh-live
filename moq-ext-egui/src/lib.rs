@@ -306,6 +306,7 @@ impl VideoView {
 /// Elsewhere, or if Vulkan is not available or excluded by `WGPU_BACKEND`,
 /// egui builds the device and the renderer uploads frames from the CPU. The
 /// device always requests the adapter's own limits.
+#[must_use]
 pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     #[cfg(target_os = "linux")]
     {

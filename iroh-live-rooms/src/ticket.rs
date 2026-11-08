@@ -66,8 +66,7 @@ impl iroh_tickets::Ticket for RoomTicket {
     }
 
     fn decode_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
-        let ticket = postcard::from_bytes(bytes)?;
-        Ok(ticket)
+        Ok(postcard::from_bytes(bytes)?)
     }
 }
 

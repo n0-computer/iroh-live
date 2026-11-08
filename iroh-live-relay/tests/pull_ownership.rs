@@ -125,7 +125,7 @@ async fn a_pull_of_another_peers_path_is_refused() {
     victim.shutdown().await;
 }
 
-/// A path outside the `live/` and `rooms/` schemes has no owner the relay can verify.
+/// A path outside `live/` and `rooms/` has no owner the relay can verify.
 #[tokio::test]
 #[serial]
 async fn a_path_in_a_custom_scheme_is_refused() {
@@ -143,7 +143,7 @@ async fn a_path_in_a_custom_scheme_is_refused() {
     publisher.shutdown().await;
 }
 
-/// A ticket with reserved characters is mounted under its raw string and routed at its own path.
+/// A ticket with reserved characters mounts under its raw string, and routes at its own path.
 #[tokio::test]
 #[serial]
 async fn a_ticket_with_reserved_characters_mounts_once() {

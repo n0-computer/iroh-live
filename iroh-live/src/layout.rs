@@ -23,7 +23,7 @@ use n0_error::e;
 /// The root of a layout that names none.
 const DEFAULT_ROOT: &str = "live";
 
-/// Names the paths a peer may publish under, given its id.
+/// A function that names the paths a peer may publish under, given its id.
 ///
 /// Extends a [`LiveLayout`]'s own scope: `layout.config(&[Arc::new(rooms::publish_scope)])`
 /// lets peers publish room broadcasts too. A closure over a second layout or
@@ -152,7 +152,8 @@ impl LiveLayout {
 
     /// Returns the [`NodeConfig`] of a node on this layout.
     ///
-    /// It admits every peer and applies [`grant`](Self::grant). Pass `&[]` for no extra scopes.
+    /// It admits every peer and applies [`grant`](Self::grant). Pass `&[]`
+    /// for no extra scopes.
     #[must_use]
     pub fn config(&self, extra: &[Scope]) -> NodeConfig {
         let layout = self.clone();
@@ -163,7 +164,7 @@ impl LiveLayout {
         }
     }
 
-    /// Publishes a broadcast as `<root>/<this node's id>/<name>` to everyone, and returns it.
+    /// Publishes a broadcast at `<root>/<this node's id>/<name>` to everyone, and returns it.
     ///
     /// The broadcast is created in the node's route table, and peers read it
     /// with nothing copied in between. `B` is what fills it, built from the
@@ -189,7 +190,7 @@ impl LiveLayout {
     ///
     /// # fn run(node: Node) -> Result<(), Box<dyn std::error::Error>> {
     /// let layout = LiveLayout::default();
-    /// let producer: broadcast::Producer = layout.publish::<broadcast::Producer>(&node, "studio")?;
+    /// let producer: broadcast::Producer = layout.publish(&node, "studio")?;
     /// # drop(producer);
     /// # Ok(())
     /// # }
@@ -205,7 +206,7 @@ impl LiveLayout {
         Ok(broadcast)
     }
 
-    /// Publishes a broadcast as `<root>/<this node's id>/<name>` to `audience`, filling it first.
+    /// Publishes a broadcast at `<root>/<this node's id>/<name>` to `audience`, filling it first.
     ///
     /// `fill` runs before the announcement, as in [`Node::publish_with`], so
     /// no reader finds the broadcast without the tracks it creates, such as a

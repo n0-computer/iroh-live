@@ -28,11 +28,11 @@ pub(crate) async fn endpoint() -> Endpoint {
     endpoint
 }
 
-/// A peer with a MoQ node, rooms, and a router that accepts both.
+/// A peer with a node, rooms, and a router that accepts both.
 #[derive(Debug)]
 pub(crate) struct Peer {
     pub(crate) endpoint: Endpoint,
-    pub(crate) moq: Node,
+    pub(crate) node: Node,
     pub(crate) rooms: Rooms,
     router: Router,
 }
@@ -47,15 +47,14 @@ impl Peer {
             })),
             ..Default::default()
         };
-        let moq = Node::new(endpoint.clone(), config);
-        let rooms = Rooms::new(&moq);
-        let router = moq
-            .mount(Router::builder(endpoint.clone()))
-            .accept(iroh_live_rooms::ALPN, rooms.protocol_handler())
+        let node = Node::new(endpoint.clone(), config);
+        let rooms = Rooms::new(&node);
+        let router = rooms
+            .mount(node.mount(Router::builder(endpoint.clone())))
             .spawn();
         Self {
             endpoint,
-            moq,
+            node,
             rooms,
             router,
         }
@@ -74,9 +73,9 @@ impl Peer {
             .expect("failed to join the room")
     }
 
-    /// Shuts down the MoQ node and the router, then closes the endpoint.
+    /// Shuts down the node and the router, then closes the endpoint.
     pub(crate) async fn shutdown(self) {
-        self.moq.shutdown().await;
+        self.node.shutdown().await;
         self.router.shutdown().await.expect("router task panicked");
         self.endpoint.close().await;
     }

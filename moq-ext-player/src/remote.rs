@@ -59,6 +59,7 @@ enum Origin {
     },
 }
 
+/// The state every clone of a [`RemoteBroadcast`] shares.
 #[derive(derive_more::Debug)]
 struct Shared {
     #[debug(skip)]
@@ -242,7 +243,7 @@ impl RemoteBroadcast {
         self.shared.closed.is_cancelled()
     }
 
-    /// Returns the consumer players read.
+    /// Returns a receiver for the consumer players read, and its generation.
     pub(crate) fn epoch(&self) -> watch::Receiver<Epoch> {
         self.shared.epoch.subscribe()
     }
@@ -314,8 +315,9 @@ async fn follow(
         },
     };
     if let (Some(_), Some(routes)) = (&next, &mut routes) {
-        // The caller resolved the first broadcast already, so the route table's
-        // answer for it is spent rather than a change of route.
+        // The caller resolved the first broadcast already, and the table's first
+        // answer names it again. Take that answer here, so it does not count as
+        // a change of route.
         let _ = tokio::time::timeout(REROUTE_PATIENCE, routes.available()).await;
     }
     loop {
@@ -357,9 +359,11 @@ async fn follow(
             generation,
             consumer: Some(consumer.clone()),
         });
-        // Another instance taking the path over leaves this broadcast to its
-        // readers until its own routes go, so a stream that is dead to the
-        // publisher would freeze players. Switch as soon as the table says so.
+        // When another instance takes the path over, this broadcast stays open
+        // until its own routes go, and its stream may already be dead to the
+        // publisher. Switch as soon as the table names the new instance. An error,
+        // or `None` for a path that went offline, disables this arm, and the
+        // broadcast's own end drives the loop.
         let taken_over = async {
             match &mut routes {
                 Some(routes) => routes.available().await.ok().flatten(),
@@ -596,7 +600,7 @@ mod tests {
         .expect("epochs keep coming")
         .generation;
 
-        // The first publication goes, and another takes the path.
+        // The first route goes, and another takes the path.
         drop(first);
         let _second = origin
             .route("live/cam", RouteOptions::default())

@@ -11,16 +11,16 @@ use std::{
 };
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_live::media::{
-    AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player, PlayerConfig,
-    RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
-    video::{FrameRate, Size, decode},
-};
 use iroh_live::{
     Node,
     calls::{Calls, HungUp},
     layout::LiveLayout,
-    media::{Rate, remote_broadcast},
+    media::{
+        AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player,
+        PlayerConfig, Rate, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
+        remote_broadcast,
+        video::{FrameRate, Size, decode},
+    },
 };
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher as _;
@@ -162,7 +162,7 @@ async fn rings(calls: &Calls, peer: &Node, ringing: bool) {
 /// Starts the call service of `node`, with a test pattern on its side.
 fn call_side(node: &Node) -> (Calls, LocalBroadcast) {
     let (calls, side): (Calls, LocalBroadcast) =
-        Calls::new(node, &LiveLayout::default()).expect("failed to publish");
+        Calls::new(node, &LiveLayout::default()).expect("failed to start calls");
     set_pattern(&side, Size::new(320, 240));
     (calls, side)
 }

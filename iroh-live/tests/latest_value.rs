@@ -3,8 +3,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_live::layout::LiveLayout;
-use iroh_live::{Audience, Node, Reach, json::snapshot, net::track};
+use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, net::track};
 use n0_tracing_test::traced_test;
 
 const TIMEOUT: Duration = Duration::from_secs(30);

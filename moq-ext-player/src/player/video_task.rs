@@ -61,10 +61,10 @@ const READ_AHEAD: usize = 2;
 /// How many access units in a row may fail to decode before the reader stops.
 ///
 /// A decoder that lost its reference chain refuses every picture until the
-/// next keyframe, so the limit must span a keyframe interval. Publishers key
-/// every two seconds by default, which is 120 access units at 60fps. Three
-/// hundred covers that with room, and still reports a dead decoder within
-/// about ten seconds.
+/// next keyframe, so the limit must span the gap between two keyframes.
+/// Encoders open a group every two seconds by default (their `join`), which
+/// is 120 access units at 60fps. Three hundred covers that with room, and
+/// still reports a dead decoder within about ten seconds.
 const MAX_CONSECUTIVE_DECODE_FAILURES: u32 = 300;
 
 /// How often the decode cadence is logged.
@@ -125,6 +125,8 @@ struct Delivery {
     arrivals: Arrivals,
     /// When the frame came out of its decoder, for the timeline.
     decoded: Instant,
+    /// Resolves when the picture is due: `true` to show it, `false` once the
+    /// clock has closed.
     due: BoxFuture<bool>,
 }
 
@@ -377,8 +379,8 @@ pub(crate) async fn run(inputs: Inputs) {
                             status.failed_rendition = Some(rendition.clone());
                         }
                     });
-                    // A full channel already holds a failure, so dropping
-                    // this one loses nothing.
+                    // A full channel means the selector is far behind, and
+                    // dropping this costs at most one early retry.
                     let _ = reports.try_send(Report::Failed(Failure {
                         target: target.clone(),
                         config_only,
@@ -722,7 +724,7 @@ mod tests {
 
     /// Pictures per test stream: three groups of [`PICTURES_PER_GROUP`].
     const PICTURES: u64 = 30;
-    /// The keyframe interval of the test stream.
+    /// The pictures between two keyframes of the test stream.
     const PICTURES_PER_GROUP: u32 = 10;
 
     /// The interval between pictures at the 30fps the stream is encoded for.

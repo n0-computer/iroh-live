@@ -30,9 +30,9 @@ pub(super) async fn run(
     let result = match source.kind() {
         #[cfg(feature = "capture")]
         AudioKind::Microphone(config) => {
-            // Resolved here because an output hands its echo canceller to one
-            // microphone at a time. The publication this one replaces has only
-            // now let go of it.
+            // Resolved after `take_over`, because an output hands its echo
+            // canceller to one microphone at a time, and the publication this
+            // one replaces holds it until it stops.
             match config.resolve() {
                 Ok(capture) => microphone(&job, capture, &encoding, &stop).await,
                 Err(err) => Err(err),

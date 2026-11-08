@@ -31,9 +31,9 @@ const CAMERA_FIRST_FRAME_PATIENCE: Duration = Duration::from_secs(10);
 /// How long a camera open waits for an earlier capture to release its device.
 ///
 /// A stopped capture lets go within a frame interval, and a V4L2 read that
-/// waits for a frame gives up after a second once moq-video sets a read
-/// timeout (moq-dev/moq#7878). A capture that takes longer is stuck in a read,
-/// and waiting longer would not help.
+/// waits for a frame gives up after moq-video's one-second read timeout. A
+/// capture that takes longer is stuck in a read, and waiting longer would not
+/// help.
 const RELEASE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// The camera captures of this process.
@@ -97,8 +97,7 @@ impl Releases {
     /// A capture that still runs is not waited for: the application may use
     /// two cameras at once. A stopped capture that does not finish in time is
     /// forgotten with a warning, so later opens do not wait for it again. Its
-    /// thread may keep the device open until its read returns, which on a
-    /// moq-video without a V4L2 read timeout is never.
+    /// thread may keep the device open until its read returns.
     async fn settle(&self, patience: Duration) {
         let stopped: Vec<Tracked> = {
             let mut state = self.state.lock().expect("poisoned");
@@ -128,7 +127,7 @@ impl Releases {
             warn!(
                 device = %task.label,
                 patience = ?patience,
-                "a stopped capture still holds its device; opening without it"
+                "a stopped capture still holds its device, opening without it"
             );
             self.state
                 .lock()
@@ -308,8 +307,8 @@ mod tests {
 
     /// A capture thread stuck in a read is given up on, once.
     ///
-    /// This is a V4L2 camera that opened and never streams, on a moq-video
-    /// without a read timeout: its thread never finishes.
+    /// This is a camera whose read blocks without a timeout, such as a Media
+    /// Foundation camera that delivers neither a frame nor an error.
     #[tokio::test(start_paused = true)]
     async fn a_stuck_capture_delays_the_next_open_once() {
         let releases = Releases::new();

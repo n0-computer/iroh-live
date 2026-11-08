@@ -12,10 +12,7 @@
 //! goes straight into the table, so the state only maps a route's source back
 //! to its link (see [`State::link_for`]).
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    num::NonZeroU64,
-};
+use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
 use moq_net::{Path, Pattern, auth, origin, origin::Source};
@@ -25,7 +22,9 @@ use tracing::debug;
 
 use moq_ext_access::LinkRole;
 
-use crate::{Grant, LinkId, LinkKind, Session, link::LinkState, publish::AudienceKind};
+use crate::{
+    Grant, LinkId, LinkKind, Session, handshake::Hop, link::LinkState, publish::AudienceKind,
+};
 
 /// The node's publications and links.
 #[derive(Debug, Default)]
@@ -91,7 +90,7 @@ pub(crate) struct LinkEntry {
     pub(crate) kind: LinkKind,
     pub(crate) remote: Option<EndpointId>,
     /// The identity the link's routes are attributed to in the route table.
-    pub(crate) hop: NonZeroU64,
+    pub(crate) hop: Hop,
     /// What the link's peer may do at most, before audiences.
     pub(crate) grant: Grant,
     /// For a relay, whether `Everyone` publications go to it.
@@ -299,10 +298,10 @@ impl State {
     /// for a route published on this node, and for an unknown hop while no
     /// relay is attached.
     pub(crate) fn link_for(&self, source: Source) -> Option<LinkId> {
-        let Source::Peer(hop) = source else {
+        let Source::Peer(_) = source else {
             return None;
         };
-        if let Some(id) = self.link_with_hop(hop) {
+        if let Some(id) = Hop::of_route(source).and_then(|hop| self.link_with_hop(hop)) {
             return Some(id);
         }
         // moq-relay declares a hop of its own, not the one derived from its
@@ -316,10 +315,10 @@ impl State {
     }
 
     /// Returns the link whose peer carries `hop`, if any.
-    pub(crate) fn link_with_hop(&self, hop: u64) -> Option<LinkId> {
+    pub(crate) fn link_with_hop(&self, hop: Hop) -> Option<LinkId> {
         self.links
             .iter()
-            .find(|(_, link)| link.hop.get() == hop)
+            .find(|(_, link)| link.hop == hop)
             .map(|(id, _)| *id)
     }
 

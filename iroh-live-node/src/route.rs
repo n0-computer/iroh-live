@@ -37,6 +37,7 @@ use tracing::{debug, info};
 
 use crate::{
     BroadcastTicket, Error, Node, PathClaim, Reach, ServingLink, Session,
+    handshake::Hop,
     node::Shared,
     publish::check_path,
     state::{LinkEntry, State},
@@ -295,7 +296,7 @@ pub(crate) fn direct_view(table: &origin::Producer) -> origin::Consumer {
 pub(crate) async fn announced_by(
     view: &origin::Consumer,
     path: &Path,
-    from: impl Fn(u64) -> bool,
+    from: impl Fn(Hop) -> bool,
 ) -> Result<Instance, moq_net::Error> {
     let pattern = path
         .as_str()
@@ -309,7 +310,7 @@ pub(crate) async fn announced_by(
             | RouteEvent::Start(announce)
             | RouteEvent::Restart(announce)
             | RouteEvent::Takeover { announce, .. } => {
-                if matches!(announce.route.source(), Source::Peer(hop) if from(hop)) {
+                if Hop::of_route(announce.route.source()).is_some_and(&from) {
                     return Ok(announce.route.instance().clone());
                 }
             }

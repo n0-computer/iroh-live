@@ -140,8 +140,8 @@ impl DebugOverlay {
 
     /// Sets the link details shown in a player's NET section.
     ///
-    /// The media crate does not know about paths or addresses, so the caller
-    /// passes them in. The first line also joins the section summary.
+    /// The player does not know about paths or addresses, so the caller passes
+    /// them in. The first line also joins the section summary.
     pub fn set_link(&mut self, lines: Vec<String>) {
         self.link = lines;
     }
@@ -466,9 +466,7 @@ impl History {
         self.series.get(key).map(|series| &series.values)
     }
 
-    /// Returns the recorded points of `key`, oldest first.
-    ///
-    /// Each point comes with the time it was recorded.
+    /// Returns the recorded points of `key` with their times, oldest first.
     fn timed(&self, key: &str) -> Vec<(Instant, f64)> {
         self.series
             .get(key)
@@ -934,7 +932,7 @@ fn time_playback(timeline: &[FrameTiming]) -> Section {
     }
     if lines.is_empty() {
         lines.push(Line::info(
-            "no frames presented yet; the timeline fills while the panel is open",
+            "no frames presented yet, the timeline fills while the panel is open",
         ));
     }
     Section::new(StatCategory::Time, parts, lines)
@@ -945,7 +943,8 @@ const TIMELINE_WINDOW_SECS: f32 = 10.0;
 
 /// How far back the paused timeline scrolls, in seconds.
 ///
-/// About as far as the recorded history reaches.
+/// About as far as the recorded history reaches: [`HISTORY_LEN`] samples at
+/// [`SAMPLE_INTERVAL`].
 const TIMELINE_SCROLL_MAX: f32 = 12.0;
 
 // The heights of the timeline's lanes and its axis.

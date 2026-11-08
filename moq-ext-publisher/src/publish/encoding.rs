@@ -109,11 +109,12 @@ pub struct VideoRendition {
     pub bitrate: Option<Rate>,
     /// The frame rate. `None` follows the source. It cannot exceed the source's rate.
     pub rate: Option<moq_video::FrameRate>,
-    /// How often the encoder inserts a keyframe.
+    /// How often the encoder inserts a keyframe and opens a group.
     ///
-    /// A subscriber cannot draw anything before a keyframe. This interval
-    /// mostly sets how long a new viewer waits for a picture and how long a
-    /// rendition switch takes.
+    /// This is the encoder's join time, rounded to whole frames at the
+    /// rendition's rate. A subscriber cannot draw anything before a keyframe,
+    /// so this interval sets how long a new viewer waits for a picture and how
+    /// long a rendition switch takes. It cannot be zero.
     pub keyframe_interval: Duration,
     /// Which codec to encode.
     pub codec: moq_video::encode::Codec,
@@ -347,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn the_keyframe_interval_reaches_the_encoder_config() {
+    fn the_keyframe_interval_sets_the_encoder_join() {
         let rendition = VideoRendition {
             keyframe_interval: Duration::from_secs(1),
             ..VideoRendition::new("video")

@@ -64,12 +64,14 @@ impl RateMeter {
 
     /// Counts one event carrying `amount`, such as bytes.
     ///
-    /// Returns events and amount per second once the window has closed.
+    /// Returns `(events, amount)` per second when this event closes the
+    /// window, and `None` before that.
     #[must_use]
     pub fn tick(&mut self, amount: u64) -> Option<(f64, f64)> {
         self.tick_at(amount, Instant::now())
     }
 
+    /// Counts one event at `now`, as [`tick`](Self::tick) does.
     fn tick_at(&mut self, amount: u64, now: Instant) -> Option<(f64, f64)> {
         self.events += 1;
         self.amount += amount;
@@ -136,18 +138,16 @@ mod tests {
     fn the_amount_is_a_rate_too() {
         let start = Instant::now();
         let mut meter = RateMeter::starting(RATE_WINDOW, start);
+        // Thirty events 33 ms apart stay inside the window.
         for tick in 0..30u32 {
-            if let Some((_, bytes)) = meter.tick_at(2_500, start + Duration::from_millis(33) * tick)
-            {
-                // 2500 bytes every 33 ms is about 75 kB a second.
-                assert!((70_000.0..80_000.0).contains(&bytes), "{bytes}");
-                return;
-            }
+            let rate = meter.tick_at(2_500, start + Duration::from_millis(33) * tick);
+            assert_eq!(rate, None, "the window closed early at event {tick}");
         }
+        // 31 events of 2500 bytes over one second.
         let (_, bytes) = meter
             .tick_at(2_500, start + Duration::from_secs(1))
             .expect("a second has passed");
-        assert!((70_000.0..82_000.0).contains(&bytes), "{bytes}");
+        assert!((77_000.0..78_000.0).contains(&bytes), "{bytes}");
     }
 
     #[test]

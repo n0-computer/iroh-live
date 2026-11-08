@@ -22,6 +22,7 @@
 //! A change of network path resets everything learned on the old one.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
     time::{Duration, Instant},
 };
@@ -176,6 +177,8 @@ impl Bound {
 
     /// Returns the hold before a step up to `rung`, lengthened by failed tries.
     fn upgrade_hold(&self, rung: &str) -> Duration {
+        // Eight tries already put the hold far past any maximum. The cap keeps
+        // `4^tries` within `u32`.
         let tries = self.failed_tries.get(rung).copied().unwrap_or(0).min(8);
         self.adaptation
             .upgrade_hold
@@ -183,7 +186,7 @@ impl Bound {
             .min(self.adaptation.upgrade_hold_max)
     }
 
-    /// Returns the sliding maximum of the estimate, if there is one.
+    /// Records the reading's estimate and returns the sliding maximum, if any.
     fn estimate(&mut self, reading: &NetworkSample, now: Instant) -> Option<u64> {
         if let Some(delivery) = reading.delivery {
             self.estimates.push_back((now, delivery));
@@ -196,16 +199,26 @@ impl Bound {
         self.estimates.iter().map(|(_, bps)| *bps).max()
     }
 
+    /// Reports whether `loss` is at or above the emergency threshold.
+    fn is_emergency(&self, loss: Option<f64>) -> bool {
+        loss.is_some_and(|loss| loss >= self.adaptation.loss_emergency)
+    }
+
+    /// Drops the loss ceiling to `lowest`, the bottom eligible rung.
+    fn drop_to_bottom(&mut self, lowest: usize) {
+        self.loss_ceiling = Some(lowest);
+        self.lossy_since = None;
+        self.clean_since = None;
+    }
+
     /// Moves the loss ceiling on this reading.
     ///
     /// `current` is the index of the rung playing, and `lowest` the index of
     /// the bottom eligible rung. Sustained loss moves the ceiling one below
     /// `current`.
     fn follow_loss(&mut self, loss: f64, current: usize, lowest: usize, now: Instant) {
-        if loss >= self.adaptation.loss_emergency {
-            self.loss_ceiling = Some(lowest);
-            self.lossy_since = None;
-            self.clean_since = None;
+        if self.is_emergency(Some(loss)) {
+            self.drop_to_bottom(lowest);
             return;
         }
         if loss >= self.adaptation.loss_step_down {
@@ -287,13 +300,8 @@ impl Bound {
             }
             // An emergency still drops to the bottom at once, overriding the
             // switch on its way.
-            if reading
-                .loss
-                .is_some_and(|loss| loss >= self.adaptation.loss_emergency)
-            {
-                self.loss_ceiling = Some(lowest);
-                self.lossy_since = None;
-                self.clean_since = None;
+            if self.is_emergency(reading.loss) {
+                self.drop_to_bottom(lowest);
             }
         } else {
             if std::mem::take(&mut self.in_flight) {
@@ -344,16 +352,14 @@ impl Bound {
         };
 
         match target_index.cmp(&current_index) {
-            std::cmp::Ordering::Equal => {
+            Ordering::Equal => {
                 self.lower = None;
                 self.higher = None;
                 Some(ranked[current_index].name.clone())
             }
-            std::cmp::Ordering::Greater => {
+            Ordering::Greater => {
                 self.higher = None;
-                let emergency = reading
-                    .loss
-                    .is_some_and(|loss| loss >= self.adaptation.loss_emergency);
+                let emergency = self.is_emergency(reading.loss);
                 let since = *self.lower.get_or_insert(now);
                 if emergency || now.duration_since(since) >= self.adaptation.downgrade_hold {
                     self.lower = None;
@@ -376,7 +382,7 @@ impl Bound {
                 }
                 Some(ranked[current_index].name.clone())
             }
-            std::cmp::Ordering::Less => {
+            Ordering::Less => {
                 self.lower = None;
                 let cooling = self.last_downgrade.is_some_and(|at| {
                     now.duration_since(at) < self.adaptation.post_downgrade_cooldown

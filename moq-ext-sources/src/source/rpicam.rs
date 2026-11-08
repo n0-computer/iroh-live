@@ -182,6 +182,7 @@ impl RpicamConfig {
     /// Creates a config for `size` at `framerate`.
     ///
     /// The encoded path defaults to 500 kbit/s with a keyframe every second.
+    #[must_use]
     pub fn new(size: Size, framerate: u32) -> Self {
         Self {
             size,
@@ -244,7 +245,7 @@ pub(super) async fn open_raw(
     match tokio::time::timeout(super::FIRST_FRAME_PATIENCE, first).await {
         Ok(Ok(())) => Ok((format, task)),
         _ => Err(Error::device_msg(format!(
-            "{RPICAM_VID} produced no picture; is the camera connected?"
+            "{RPICAM_VID} produced no picture, check that the camera is connected"
         ))),
     }
 }
@@ -288,8 +289,8 @@ fn frames(size: Size, framerate: u32, clock: moq_mux::Clock) -> Result<BoxStream
                                 trailing,
                                 frame = state.pictures.frame,
                                 size = %state.pictures.size,
-                                "the raw camera stream ended part way through a picture; \
-                                 its rows are not the length this size implies",
+                                "the raw camera stream ended part way through a picture, \
+                                 so its rows are not the length this size implies",
                             );
                         }
                         state.process.report_exit().await;

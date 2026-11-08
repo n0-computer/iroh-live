@@ -83,7 +83,11 @@ pub enum Abandoned<E> {
 }
 
 /// What a transition did, for the caller to act on.
+///
+/// Dropping one unread loses a promotion or an abandoned switch the caller
+/// has to report.
 #[derive(Debug, PartialEq, Eq)]
+#[must_use]
 pub enum Outcome<E> {
     /// Nothing the caller has to act on.
     Idle,
@@ -457,8 +461,8 @@ mod tests {
     fn a_silent_first_decoder_times_out() {
         let now = Instant::now();
         let mut switcher = Test::new(PATIENCE);
-        ask(&mut switcher, "high", now);
-        switcher.opened::<()>(1, Ok("high"));
+        assert_eq!(ask(&mut switcher, "high", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(1, Ok("high")), Outcome::Idle);
         assert_eq!(
             switcher.expire::<()>(now + PATIENCE),
             Outcome::Abandoned(target("high"), Abandoned::TimedOut)
@@ -492,8 +496,8 @@ mod tests {
     #[test]
     fn a_newer_request_supersedes_a_warming_replacement() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "mid", now);
-        switcher.opened::<()>(2, Ok("mid"));
+        assert_eq!(ask(&mut switcher, "mid", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("mid")), Outcome::Idle);
         assert_eq!(switcher.warming_mut(), Some(&mut "mid"));
 
         assert_eq!(
@@ -507,7 +511,7 @@ mod tests {
     #[test]
     fn asking_for_the_replacement_again_changes_nothing() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(
             switcher.opening_mut(),
@@ -520,7 +524,7 @@ mod tests {
     #[test]
     fn asking_for_the_playing_rendition_withdraws_the_replacement() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(
             ask(&mut switcher, "high", now),
             Outcome::Abandoned(target("low"), Abandoned::Withdrawn)
@@ -546,8 +550,8 @@ mod tests {
     #[test]
     fn a_replacement_behind_the_playhead_is_held_back() {
         let (mut switcher, now) = playing(ms(10_000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
 
         for behind in [ms(8000), ms(9000), ms(9899)] {
             assert_eq!(
@@ -571,8 +575,8 @@ mod tests {
     #[test]
     fn a_replacement_that_cannot_catch_up_takes_over_after_its_patience() {
         let (mut switcher, now) = playing(ms(10_000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         let first = now + ms(500);
         assert_eq!(
             switcher.replacement_frame::<()>(ms(8000), first).0,
@@ -595,11 +599,11 @@ mod tests {
     #[test]
     fn a_released_incumbent_leaves_the_replacement_to_take_over() {
         let (mut switcher, now) = playing(ms(10_000));
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         switcher.release_incumbent();
         assert_eq!(switcher.current(), None);
         assert_eq!(switcher.deadline(), Some(now + PATIENCE));
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         assert_eq!(
             switcher.replacement_frame::<()>(ms(2000), now),
             (Verdict::Promote, Outcome::Promoted(target("low")))
@@ -610,8 +614,8 @@ mod tests {
     #[test]
     fn the_catch_up_bar_follows_the_incumbent() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         switcher.incumbent_frame(ms(2000));
         assert_eq!(
             switcher.replacement_frame::<()>(ms(1500), Instant::now()).0,
@@ -627,8 +631,8 @@ mod tests {
     #[test]
     fn a_replacement_ahead_of_the_playhead_takes_over_at_once() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         assert_eq!(
             switcher.replacement_frame::<()>(ms(1200), Instant::now()),
             (Verdict::Promote, Outcome::Promoted(target("low")))
@@ -643,7 +647,7 @@ mod tests {
             switcher.replacement_frame::<()>(ms(5000), Instant::now()).0,
             Verdict::Discard
         );
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(
             switcher.replacement_frame::<()>(ms(5000), Instant::now()).0,
             Verdict::Discard
@@ -654,8 +658,8 @@ mod tests {
     #[test]
     fn the_incumbent_ending_hands_over_on_the_next_picture() {
         let (mut switcher, now) = playing(ms(10_000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         assert_eq!(switcher.incumbent_ended::<()>(), Outcome::Idle);
         assert_eq!(switcher.current(), None);
         assert_eq!(switcher.deadline(), Some(now + PATIENCE));
@@ -670,7 +674,7 @@ mod tests {
     #[test]
     fn the_incumbent_ending_keeps_an_opening_replacement_on_its_deadline() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(switcher.incumbent_ended::<()>(), Outcome::Idle);
         assert_eq!(switcher.current(), None);
         assert_eq!(switcher.deadline(), Some(now + PATIENCE));
@@ -695,7 +699,7 @@ mod tests {
     #[test]
     fn a_replacement_that_never_opens_times_out() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(switcher.expire::<()>(now + PATIENCE - ms(1)), Outcome::Idle);
         assert_eq!(
             switcher.expire::<()>(now + PATIENCE),
@@ -709,9 +713,12 @@ mod tests {
     #[test]
     fn a_replacement_that_never_catches_up_times_out() {
         let (mut switcher, now) = playing(ms(60_000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
-        switcher.replacement_frame::<()>(ms(1000), Instant::now());
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
+        assert_eq!(
+            switcher.replacement_frame::<()>(ms(1000), Instant::now()),
+            (Verdict::Discard, Outcome::Idle)
+        );
         assert_eq!(
             switcher.expire::<()>(now + PATIENCE),
             Outcome::Abandoned(target("low"), Abandoned::TimedOut)
@@ -723,16 +730,19 @@ mod tests {
     #[test]
     fn a_superseding_request_starts_its_own_deadline() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "mid", now);
+        assert_eq!(ask(&mut switcher, "mid", now), Outcome::Idle);
         let later = now + ms(10_000);
-        ask(&mut switcher, "low", later);
+        assert_eq!(
+            ask(&mut switcher, "low", later),
+            Outcome::Abandoned(target("mid"), Abandoned::Superseded)
+        );
         assert_eq!(switcher.deadline(), Some(later + PATIENCE));
     }
 
     #[test]
     fn a_failed_open_is_reported_and_leaves_the_incumbent_playing() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
         assert_eq!(
             switcher.opened(2, Err("no such track")),
             Outcome::Abandoned(target("low"), Abandoned::OpenFailed("no such track"))
@@ -744,8 +754,8 @@ mod tests {
     #[test]
     fn a_replacement_whose_track_ends_is_reported() {
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
-        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         assert_eq!(
             switcher.replacement_ended::<()>(),
             Outcome::Abandoned(target("low"), Abandoned::Ended)
@@ -758,7 +768,7 @@ mod tests {
     fn a_failure_with_nothing_playing_is_a_failed_switch() {
         let now = Instant::now();
         let mut switcher = Test::new(PATIENCE);
-        ask(&mut switcher, "high", now);
+        assert_eq!(ask(&mut switcher, "high", now), Outcome::Idle);
         assert_eq!(
             switcher.opened(1, Err("no decoder")),
             Outcome::Abandoned(target("high"), Abandoned::OpenFailed("no decoder"))
@@ -766,8 +776,8 @@ mod tests {
         assert!(switcher.is_idle());
 
         let (mut switcher, now) = playing(ms(1000));
-        ask(&mut switcher, "low", now);
-        switcher.incumbent_ended::<()>();
+        assert_eq!(ask(&mut switcher, "low", now), Outcome::Idle);
+        assert_eq!(switcher.incumbent_ended::<()>(), Outcome::Idle);
         assert_eq!(
             switcher.opened(2, Err("no such track")),
             Outcome::Abandoned(target("low"), Abandoned::OpenFailed("no such track"))

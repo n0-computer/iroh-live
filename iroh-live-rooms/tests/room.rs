@@ -7,9 +7,10 @@ mod common;
 use std::time::Duration;
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
+use iroh::EndpointId;
 use iroh_live_node::{Audience, Reach};
 use iroh_live_rooms::{Error, Room, RoomState, RoomTicket};
-use moq_net::{Timestamp, broadcast, track};
+use moq_net::{Timestamp, announce, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 
@@ -24,6 +25,16 @@ fn publish_counter(
     let broadcast: broadcast::Producer = room.publish(name)?;
     let writer = counting_into(&broadcast, 0);
     Ok((broadcast, writer))
+}
+
+/// Returns a predicate that holds once a room state lists `member` with a `cam` broadcast.
+fn lists_cam(member: EndpointId) -> impl Fn(&RoomState) -> bool + Copy {
+    move |state| {
+        state
+            .peers
+            .get(&member)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
+    }
 }
 
 /// Writes a counter into `broadcast`'s data track every 20 ms, from `first`.
@@ -59,25 +70,13 @@ async fn members_see_each_other_and_their_broadcasts() {
     let _cam_b = publish_counter(&room_b, "cam").expect("publish");
 
     let (a, b) = (peer_a.id(), peer_b.id());
-    let seen_by_b = wait_for_state(&room_b, "b sees a's cam", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    let seen_by_b = wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
     assert_eq!(seen_by_b.peers[&a].display_name.as_deref(), Some("alice"));
     assert!(
         !seen_by_b.peers.contains_key(&b),
         "a room does not list its own member"
     );
-    wait_for_state(&room_a, "a sees b's cam", |state| {
-        state
-            .peers
-            .get(&b)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_a, "a sees b's cam", lists_cam(b)).await;
 
     peer_a.shutdown().await;
     peer_b.shutdown().await;
@@ -90,13 +89,7 @@ async fn a_member_subscribes_on_demand() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let _cam = publish_counter(&room_a, "cam").expect("publish");
     let a = peer_a.id();
-    wait_for_state(&room_b, "b sees a's cam", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
 
     let subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
         .await
@@ -136,13 +129,7 @@ async fn ending_a_broadcast_keeps_the_member() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let (cam, writer) = publish_counter(&room_a, "cam").expect("publish");
     let a = peer_a.id();
-    wait_for_state(&room_b, "b sees a's cam", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
 
     drop(writer);
     cam.close();
@@ -157,13 +144,7 @@ async fn ending_a_broadcast_keeps_the_member() {
 
     // And the name is free to publish again, and comes back for the others.
     let _again = publish_counter(&room_a, "cam").expect("publish again");
-    wait_for_state(&room_b, "a's cam is back", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_b, "a's cam is back", lists_cam(a)).await;
 
     peer_a.shutdown().await;
     peer_b.shutdown().await;
@@ -201,17 +182,11 @@ async fn room_broadcasts_are_private() {
     let private_path = format!("rooms/{}/{a}/cam", room_a.ticket().topic_id());
     // In a's own scope, outside the room.
     let public = peer_a
-        .moq
+        .node
         .publish(format!("rooms/elsewhere/{a}/public"), Audience::Everyone)
         .expect("publish");
     let _public_writer = counting_into(public.broadcast(), 0);
-    wait_for_state(&room_b, "b sees a's cam", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
     room_b
         .subscribe(a, "cam")
         .await
@@ -220,7 +195,7 @@ async fn room_broadcasts_are_private() {
     let outsider = Peer::spawn().await;
     tokio::time::timeout(
         TIMEOUT,
-        outsider.moq.subscribe(public.path(), Reach::Direct(a)),
+        outsider.node.subscribe(public.path(), Reach::Direct(a)),
     )
     .await
     .expect("timed out")
@@ -228,7 +203,7 @@ async fn room_broadcasts_are_private() {
     let private = tokio::time::timeout(
         Duration::from_secs(3),
         outsider
-            .moq
+            .node
             .subscribe(private_path.as_str(), Reach::Direct(a)),
     )
     .await;
@@ -302,20 +277,15 @@ async fn unpublishing_takes_the_name_out_of_the_room() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let a = peer_a.id();
     let _cam = publish_counter(&room_a, "cam").expect("publish");
-    let lists_cam = |state: &RoomState| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    };
-    wait_for_state(&room_b, "b sees a's cam", lists_cam).await;
+    let listed = lists_cam(a);
+    wait_for_state(&room_b, "b sees a's cam", listed).await;
 
     assert!(room_a.unpublish("cam"), "cam was published");
-    wait_for_state(&room_b, "a's cam is gone", |state| !lists_cam(state)).await;
+    wait_for_state(&room_b, "a's cam is gone", |state| !listed(state)).await;
     assert!(!room_a.unpublish("cam"), "cam was unpublished twice");
 
     let _again = publish_counter(&room_a, "cam").expect("publish again");
-    wait_for_state(&room_b, "a's cam is back", lists_cam).await;
+    wait_for_state(&room_b, "a's cam is back", listed).await;
 
     peer_a.shutdown().await;
     peer_b.shutdown().await;
@@ -328,19 +298,13 @@ async fn a_member_that_leaves_loses_the_paths() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let (a, b) = (peer_a.id(), peer_b.id());
     let _cam = publish_counter(&room_a, "cam").expect("publish");
-    wait_for_state(&room_b, "b sees a's cam", |state| {
-        state
-            .peers
-            .get(&a)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
     let subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
         .await
         .expect("timed out subscribing")
         .expect("subscribe");
     let path = subscription.path().to_owned();
-    let mut updates = peer_b.moq.origin().announced();
+    let mut updates = peer_b.node.origin().announced();
     until_announced(&mut updates, path.as_str(), true).await;
 
     room_b.leave().await;
@@ -351,22 +315,22 @@ async fn a_member_that_leaves_loses_the_paths() {
     peer_b.shutdown().await;
 }
 
-/// Waits until `updates` shows `path` announced (`active`) or retracted.
-async fn until_announced(updates: &mut moq_net::announce::Consumer, path: &str, active: bool) {
+/// Waits until `updates` lists `path` as present, or as absent.
+async fn until_announced(updates: &mut announce::Consumer, path: &str, present: bool) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            let (announce, is_active) = match &update {
-                moq_net::announce::Event::Absent(announce) => (announce, false),
-                moq_net::announce::Event::Present(announce) => (announce, true),
+            let (announce, is_present) = match &update {
+                announce::Event::Absent(announce) => (announce, false),
+                announce::Event::Present(announce) => (announce, true),
             };
-            if announce.prefix.as_str() == path && is_active == active {
+            if announce.prefix.as_str() == path && is_present == present {
                 return;
             }
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {path} announced: {active}"));
+    .unwrap_or_else(|_| panic!("timed out waiting for {path} present: {present}"));
 }
 
 /// Dropping a room without leaving frees its names for a rejoin.
@@ -377,7 +341,7 @@ async fn dropping_a_room_frees_its_names() {
     let ticket = RoomTicket::generate();
     let room = peer.join(&ticket, "alice").await;
     let path = format!("rooms/{}/{}/cam", ticket.topic_id(), peer.id());
-    let mut updates = peer.moq.origin().announced();
+    let mut updates = peer.node.origin().announced();
     let _cam = publish_counter(&room, "cam").expect("publish");
     until_announced(&mut updates, &path, true).await;
 
@@ -405,17 +369,17 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let b = peer_b.id();
     let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
     let forgery = mallory
-        .moq
+        .node
         .publish(path.as_str(), Audience::Everyone)
         .expect("publish at b's path");
     let _forger = counting_into(forgery.broadcast(), FORGED);
-    tokio::time::timeout(TIMEOUT, mallory.moq.connect(peer_c.endpoint.addr()))
+    tokio::time::timeout(TIMEOUT, mallory.node.connect(peer_c.endpoint.addr()))
         .await
         .expect("timed out connecting")
         .expect("connect");
 
     let mut following = peer_c
-        .moq
+        .node
         .origin()
         .follow(path.as_str(), None)
         .expect("follow the path");
@@ -423,15 +387,9 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     assert!(routed.is_err(), "the forgery reached c's table");
 
     let _cam = publish_counter(&room_b, "cam").expect("publish");
-    wait_for_state(&room_c, "c sees b's cam", |state| {
-        state
-            .peers
-            .get(&b)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
-    })
-    .await;
+    wait_for_state(&room_c, "c sees b's cam", lists_cam(b)).await;
     // Through the table, where a forgery would land, not the session with b.
-    let subscription = tokio::time::timeout(TIMEOUT, peer_c.moq.subscribe(path, Reach::Direct(b)))
+    let subscription = tokio::time::timeout(TIMEOUT, peer_c.node.subscribe(path, Reach::Direct(b)))
         .await
         .expect("timed out subscribing")
         .expect("subscribe");

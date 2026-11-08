@@ -171,11 +171,9 @@ impl Reporter {
     /// Sets the slot's state.
     pub(crate) fn slot(&self, state: SlotState) {
         let medium = self.medium;
-        self.cell
-            .write(medium, self.generation, |status| match medium {
-                Medium::Video => status.video = state,
-                Medium::Audio => status.audio = state,
-            });
+        self.cell.write(medium, self.generation, |status| {
+            *status.slot(medium) = state;
+        });
     }
 
     /// Sets one rendition's state.

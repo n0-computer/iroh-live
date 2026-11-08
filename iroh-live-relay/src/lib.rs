@@ -164,7 +164,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let http_port = http_listener.local_addr()?.port();
     info!(http_port, "http listening");
 
-    // Machine-parseable lines (used by e2e test fixtures).
+    // The e2e test fixtures parse this line.
     println!("http port: {http_port}");
     // `http`, since this listener speaks plain HTTP. The page pins the QUIC
     // certificate's fingerprint from `/certificate.sha256`, so the browser
@@ -183,7 +183,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
     }));
 
-    info!(iroh_addr = %iroh_endpoint.id(), "relay ready");
+    info!(endpoint_id = %iroh_endpoint.id(), "relay ready");
 
     let mut listener = server.listen().await?;
     // moq-tokio's listener does not stop on ctrl-c, so the loop watches for it.

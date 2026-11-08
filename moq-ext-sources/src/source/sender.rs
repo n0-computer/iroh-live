@@ -37,6 +37,7 @@ impl Demand {
 
 /// One consumer's claim on a source's frames, withdrawn on drop.
 #[derive(Debug)]
+#[must_use = "the demand ends when the guard is dropped"]
 pub struct DemandGuard {
     demand: Demand,
 }

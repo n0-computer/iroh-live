@@ -23,26 +23,26 @@ pub const REVIVE_AFTER: Duration = Duration::from_secs(2);
 /// How long a catalog may lack video before the video counts as over.
 ///
 /// A publisher replacing its video removes the old renditions before it adds
-/// the new ones. A closing publisher empties its catalog before it ends, just
-/// before the next route in a route table serves the path. Both gaps are brief.
+/// the new ones. A closing publisher empties its catalog before its broadcast
+/// ends, and another route may serve the path right after. Both gaps are brief.
 pub const VANISH_GRACE: Duration = Duration::from_secs(3);
 
 /// How the rendition is chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
-    /// Follow the link, never above `max_height` rows when set (a grid tile).
+    /// Follows the link, never above `max_height` rows when set (a grid tile).
     ///
     /// Without network signals, holds the best rendition that fits.
     Auto {
         /// The tallest rendition allowed.
         max_height: Option<u32>,
     },
-    /// Hold the named rendition.
+    /// Holds the named rendition.
     ///
     /// If it cannot be played, plays as [`Auto`](Self::Auto) would, reports
     /// why, and returns to it when it becomes available.
     Pinned(String),
-    /// Play no video, and leave audio unaffected (a tile scrolled off screen).
+    /// Plays no video, and leaves audio unaffected (a tile scrolled off screen).
     Off,
 }
 
@@ -103,6 +103,7 @@ impl Backoffs {
     }
 
     /// Returns the renditions left alone at `now`.
+    #[must_use]
     pub fn excluded(&self, now: Instant) -> BTreeSet<String> {
         self.0
             .iter()
@@ -112,11 +113,13 @@ impl Backoffs {
     }
 
     /// Reports whether `rendition` is left alone at `now`.
+    #[must_use]
     pub fn is_excluded(&self, rendition: &str, now: Instant) -> bool {
         self.0.get(rendition).is_some_and(|until| *until > now)
     }
 
     /// Reports whether any rendition is left alone at `now`.
+    #[must_use]
     pub fn any_excluded(&self, now: Instant) -> bool {
         self.0.values().any(|until| *until > now)
     }

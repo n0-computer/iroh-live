@@ -30,7 +30,7 @@ use url::Url;
 
 use crate::{
     ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Node,
-    handshake::{client_handshake, hop_for},
+    handshake::{Hop, client_handshake},
     link::{self, LinkState},
     node::{Shared, Tasks},
     state::{LinkEntry, served},
@@ -297,7 +297,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
     // Routes the relay announces come from this hop. A relay over iroh is
     // known by its endpoint id. moq-tokio's redials keep the one hop assigned
     // here, and a relay that declares a hop of its own is matched by kind.
-    let hop = hop_for(&iroh_relay.unwrap_or_else(|| iroh::SecretKey::generate().public()));
+    let hop = Hop::of(&iroh_relay.unwrap_or_else(|| iroh::SecretKey::generate().public()));
     // Routes from a relay are tagged upstream, so the local view every link
     // serves never offers them to another link.
     let subscriber = config
@@ -316,7 +316,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
                     })
                 })?
                 .with_publisher(served(&shared.table))
-                .with_peer_hop(hop)
+                .with_peer_hop(hop.id())
                 .with_cost(config.cost);
             if let Some(subscriber) = subscriber.clone() {
                 client = client.with_subscriber(subscriber);
