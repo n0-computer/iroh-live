@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{num::NonZeroU64, time::Duration};
 
 use common::{TIMEOUT, TestBroadcast, endpoint, read_counter, step, subscription};
 use iroh::{
@@ -14,15 +14,17 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use moq_net::{
-    Hop, Pattern, Patterns, announce, auth, broadcast,
-    origin::{self, Link, Route},
+    Pattern, Patterns, announce, auth, broadcast,
+    origin::{self, Link, RouteInfo, RouteOptions},
 };
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 
 /// Creates an origin with hop `hop`, its driver spawned.
 fn origin(hop: u64) -> origin::Producer {
-    moq_tokio::origin::spawn_config(origin::Config::new(Hop::new(hop).expect("a non-zero hop")))
+    moq_tokio::origin::spawn_config(origin::Config::new(
+        NonZeroU64::new(hop).expect("a non-zero hop"),
+    ))
 }
 
 fn now() -> moq_net::time::Instant {
@@ -133,12 +135,12 @@ async fn dial(
 }
 
 /// Publishes a counter broadcast at `path` in `origin`, until the handles drop.
-fn publish(origin: &origin::Producer, path: &str) -> (origin::Publication, TestBroadcast) {
-    let publication = origin
-        .publish(path, Route::default())
+fn publish(origin: &origin::Producer, path: &str) -> (origin::Route, TestBroadcast) {
+    let route = origin
+        .route(path, RouteOptions::default())
         .expect("publish into the origin");
-    let writer = TestBroadcast::writing(publication.broadcast().clone(), 0);
-    (publication, writer)
+    let writer = TestBroadcast::writing(route.broadcast().clone(), 0);
+    (route, writer)
 }
 
 /// Returns a grant to subscribe to exactly `paths`, as the node gives a session.
@@ -154,17 +156,12 @@ fn grant(paths: &[&str]) -> auth::Grant {
 }
 
 /// Waits for `path` to be announced on `origin` and returns the route.
-async fn announced_route(origin: &origin::Producer, path: &str) -> Route {
+async fn announced_route(origin: &origin::Producer, path: &str) -> RouteInfo {
     let mut announced = origin.consume().announced();
     tokio::time::timeout(TIMEOUT, async {
         loop {
             match announced.next().await.expect("origin closed") {
-                announce::Event::Start(a)
-                | announce::Event::Update(a)
-                | announce::Event::Restart(a)
-                | announce::Event::Takeover { announce: a, .. }
-                    if a.prefix.as_str() == path =>
-                {
+                announce::Event::Present(a) if a.prefix.as_str() == path => {
                     return a.route;
                 }
                 _ => {}
@@ -188,6 +185,7 @@ async fn resolve(origin: &origin::Producer, path: &str) -> broadcast::Consumer {
     .await
     .unwrap_or_else(|_| panic!("{path} did not resolve"))
     .expect("resolve failed")
+    .expect("the first change is an instance")
 }
 
 /// Collects the paths currently announced on `origin`.
@@ -200,11 +198,8 @@ async fn announced_paths(origin: &origin::Producer) -> Vec<String> {
         tokio::time::timeout(Duration::from_millis(300), announced.next()).await
     {
         let (announce, active) = match event {
-            announce::Event::End(announce) => (announce, false),
-            announce::Event::Start(announce)
-            | announce::Event::Update(announce)
-            | announce::Event::Restart(announce)
-            | announce::Event::Takeover { announce, .. } => (announce, true),
+            announce::Event::Absent(announce) => (announce, false),
+            announce::Event::Present(announce) => (announce, true),
         };
         let path = announce.prefix.as_str().to_owned();
         if !active {
@@ -392,7 +387,7 @@ async fn a_route_table_fails_over_between_links() {
                     .expect("dial relay");
                 let (session, driver) = moq_net::Client::new()
                     .with_subscriber(table.clone().with_link(Link::Upstream))
-                    .with_peer_hop(Hop::new(RELAY_HOP).expect("a hop"))
+                    .with_peer_hop(NonZeroU64::new(RELAY_HOP).expect("a hop"))
                     .with_cost(RELAY_COST)
                     .connect(now(), transport)
                     .await
@@ -420,11 +415,8 @@ async fn a_route_table_fails_over_between_links() {
     // it announces the best: the direct one, which is cheaper.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let best = announced_route(&table, "live/p/cam").await;
-    assert_eq!(
-        best.hops.iter().next().map(|hop| hop.id()),
-        Some(PUBLISHER_HOP)
-    );
-    assert!(best.cost.value() < RELAY_COST, "{:?}", best.cost);
+    assert_eq!(best.hops().next(), Some(PUBLISHER_HOP));
+    assert!(best.cost().value() < RELAY_COST, "{:?}", best.cost());
 
     let consumer = resolve(&table, "live/p/cam").await;
     let mut subscriber = step(

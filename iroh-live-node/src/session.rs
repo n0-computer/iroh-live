@@ -1,8 +1,11 @@
 //! Direct sessions with peers: the handle an application holds.
 
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    num::NonZeroU64,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use iroh::{EndpointId, endpoint::Connection};
@@ -33,7 +36,7 @@ pub(crate) struct SessionInner {
     pub(crate) connection: Connection,
     pub(crate) moq: moq_net::Session,
     /// The identity the peer's routes are attributed to in the route table.
-    pub(crate) hop: moq_net::Hop,
+    pub(crate) hop: NonZeroU64,
     pub(crate) link_state: LinkState,
     pub(crate) shared: Weak<Shared>,
     /// Set by [`Session::close`], so a connect right after it dials anew.
@@ -146,8 +149,8 @@ impl Session {
         // taken to be such a declaration.
         let own = self.inner.hop;
         let link = self.inner.link;
-        let ours = |hop: moq_net::Hop| {
-            hop == own
+        let ours = |hop: u64| {
+            hop == own.get()
                 || shared
                     .state
                     .lock()

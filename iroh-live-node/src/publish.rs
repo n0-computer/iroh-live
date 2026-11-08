@@ -6,7 +6,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use moq_net::{Path, broadcast, origin};
+use moq_net::{Path, broadcast, origin::RouteOptions};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
@@ -222,7 +222,7 @@ where
     }
     let publication = shared
         .table
-        .create_broadcast(&path)
+        .route(path.clone(), RouteOptions::hidden())
         .map_err(|source| e!(Error::Moq { source }))?;
     // Filled before the announcement, so no reader finds the broadcast
     // without the tracks `fill` creates.
@@ -255,7 +255,7 @@ where
     }
     // Announced under the lock, before any link may see the path, so no peer
     // learns of it before the table has it.
-    if let Err(source) = publication.announce(origin::Route::default()) {
+    if let Err(source) = publication.announce() {
         return refuse(e!(Error::Moq { source }));
     }
     let broadcast = publication.broadcast().clone();

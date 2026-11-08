@@ -259,11 +259,8 @@ async fn wait_for(updates: &mut announce::Consumer, path: &str, active: bool) {
         loop {
             let event = updates.next().await.expect("origin closed");
             let (announce, now_active) = match event {
-                announce::Event::End(announce) => (announce, false),
-                announce::Event::Start(announce)
-                | announce::Event::Update(announce)
-                | announce::Event::Restart(announce)
-                | announce::Event::Takeover { announce, .. } => (announce, true),
+                announce::Event::Absent(announce) => (announce, false),
+                announce::Event::Present(announce) => (announce, true),
             };
             if announce.prefix.as_str() == path && now_active == active {
                 return;

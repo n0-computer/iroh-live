@@ -324,7 +324,7 @@ async fn calls_interoperate_with_a_raw_path_callee() {
     let mut announced = raw.origin().announced();
     step("ring", async {
         while let Some(event) = announced.next().await {
-            if let moq_net::announce::Event::Start(announce) = event
+            if let moq_net::announce::Event::Present(announce) = event
                 && announce.prefix == a_side
             {
                 return;

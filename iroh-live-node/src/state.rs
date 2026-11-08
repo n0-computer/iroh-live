@@ -12,10 +12,13 @@
 //! goes straight into the table, so the state only maps a route's source back
 //! to its link (see [`State::link_for`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    num::NonZeroU64,
+};
 
 use iroh::EndpointId;
-use moq_net::{Hop, Path, Pattern, auth, origin, origin::Source};
+use moq_net::{Path, Pattern, auth, origin, origin::Source};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -57,7 +60,7 @@ pub(crate) struct PubEntry {
     pub(crate) path: Path,
     /// The broadcast in the route table, and its announcement.
     #[debug(skip)]
-    pub(crate) publication: origin::Publication,
+    pub(crate) publication: origin::Route,
     pub(crate) audience: AudienceKind,
     /// Follows a `Peers` audience's set.
     pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
@@ -77,7 +80,7 @@ impl Drop for PubEntry {
     fn drop(&mut self) {
         // Out of the table, for local readers too. The broadcast lives on for
         // whoever holds it, unannounced.
-        self.publication.unannounce();
+        self.publication.withdraw();
         self.withdrawn.cancel();
     }
 }
@@ -88,7 +91,7 @@ pub(crate) struct LinkEntry {
     pub(crate) kind: LinkKind,
     pub(crate) remote: Option<EndpointId>,
     /// The identity the link's routes are attributed to in the route table.
-    pub(crate) hop: Hop,
+    pub(crate) hop: NonZeroU64,
     /// What the link's peer may do at most, before audiences.
     pub(crate) grant: Grant,
     /// For a relay, whether `Everyone` publications go to it.
@@ -313,10 +316,10 @@ impl State {
     }
 
     /// Returns the link whose peer carries `hop`, if any.
-    pub(crate) fn link_with_hop(&self, hop: moq_net::Hop) -> Option<u64> {
+    pub(crate) fn link_with_hop(&self, hop: u64) -> Option<u64> {
         self.links
             .iter()
-            .find(|(_, link)| link.hop == hop)
+            .find(|(_, link)| link.hop.get() == hop)
             .map(|(id, _)| *id)
     }
 

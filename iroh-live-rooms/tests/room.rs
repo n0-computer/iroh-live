@@ -360,11 +360,8 @@ async fn until_announced(updates: &mut moq_net::announce::Consumer, path: &str, 
         loop {
             let update = updates.next().await.expect("origin closed");
             let (announce, is_active) = match &update {
-                moq_net::announce::Event::End(announce) => (announce, false),
-                moq_net::announce::Event::Start(announce)
-                | moq_net::announce::Event::Update(announce)
-                | moq_net::announce::Event::Restart(announce)
-                | moq_net::announce::Event::Takeover { announce, .. } => (announce, true),
+                moq_net::announce::Event::Absent(announce) => (announce, false),
+                moq_net::announce::Event::Present(announce) => (announce, true),
             };
             if announce.prefix.as_str() == path && is_active == active {
                 return;

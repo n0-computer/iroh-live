@@ -1,6 +1,6 @@
 //! The MoQ handshake of a direct session, dialed or accepted.
 
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
 use moq_net::{auth, origin};
@@ -17,12 +17,12 @@ use crate::{
 /// restart. The first eight bytes of an ed25519 key are already uniform. Masked
 /// below 2^53, since JavaScript clients read hop ids as numbers, and never
 /// zero, which moq reserves.
-pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
+pub(crate) fn hop_for(id: &EndpointId) -> NonZeroU64 {
     let bytes: [u8; 8] = id.as_bytes()[..8]
         .try_into()
         .expect("an endpoint id is 32 bytes");
     let value = u64::from_le_bytes(bytes);
-    moq_net::Hop::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero and below 2^62")
+    NonZeroU64::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero")
 }
 
 /// Returns the instant a session's driver starts from.
@@ -181,7 +181,7 @@ mod tests {
         let id = SecretKey::generate().public();
         let hop = hop_for(&id);
         assert_eq!(hop, hop_for(&id), "the same id gives the same hop");
-        assert!(hop.id() > 0 && hop.id() < 1 << 53, "{}", hop.id());
+        assert!(hop.get() < 1 << 53, "{hop}");
         assert_ne!(
             hop,
             hop_for(&SecretKey::generate().public()),

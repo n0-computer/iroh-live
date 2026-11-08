@@ -405,9 +405,14 @@ fn never_over(states: &Mutex<Vec<SlotState>>) {
 /// The route costs `cost`. The broadcast and its route end when the task is
 /// aborted.
 fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -> JoinHandle<()> {
-    let publication = origin.create_broadcast("live/cam").expect("a broadcast");
+    let route = origin
+        .route(
+            "live/cam",
+            moq_net::origin::RouteOptions::hidden().with_cost(cost),
+        )
+        .expect("a route");
     tokio::spawn(async move {
-        let mut broadcast = publication.broadcast().clone();
+        let mut broadcast = route.broadcast().clone();
         let catalog: moq_mux::catalog::Producer = moq_mux::catalog::Producer::new(
             &mut broadcast,
             moq_mux::catalog::Config::default().with_catalog(hang::catalog::Catalog::default()),
@@ -423,13 +428,11 @@ fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
                 .expect("an importer");
         let mut split = moq_mux::codec::h264::Split::new();
-        publication
-            .announce(moq_net::origin::Route::default().with_cost(cost))
-            .expect("announced");
+        route.announce().expect("announced");
 
         let mut config = moq_video::encode::Config::new(size.width, size.height, fps(30));
         config.kind = moq_video::encode::Kind::Software;
-        config.gop = moq_video::encode::Gop::Keyframe { interval: 30 };
+        config.join = Duration::from_secs(1);
         let mut encoder = moq_video::encode::Sink::open(&config)
             .await
             .expect("the software encoder opens");

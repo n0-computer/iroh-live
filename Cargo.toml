@@ -34,17 +34,17 @@ iroh-gossip = "0.101.0"
 noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd" }
-moq-net = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd" }
-moq-mux = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd" }
-moq-json = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd" }
+hang = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d" }
+moq-net = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", features = ["async"] }
+moq-mux = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d" }
+moq-json = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", features = ["async"] }
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
-moq-audio = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd", default-features = false, features = ["aac"] }
-moq-video = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd", default-features = false }
-moq-relay = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd", default-features = false }
-moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd", default-features = false }
-moq-room = { git = "https://github.com/moq-dev/moq", rev = "02e82fdcd" }
+moq-audio = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false, features = ["aac"] }
+moq-video = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
+moq-relay = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
+moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
+moq-room = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", features = ["async"] }
 
 # UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back
 # a `wgpu::Texture` from its own build of wgpu 30. A texture from a different

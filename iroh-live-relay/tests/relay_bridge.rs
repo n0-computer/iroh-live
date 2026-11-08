@@ -205,17 +205,17 @@ async fn routed_broadcast(
     consumer: &origin::Consumer,
     path: &str,
 ) -> Result<moq_net::broadcast::Consumer, moq_net::Error> {
-    consumer.follow(path, None)?.available().await
+    consumer
+        .follow(path, None)?
+        .available()
+        .await?
+        .ok_or(moq_net::Error::Closed)
 }
 
 /// Returns the announcement an event carries.
 fn announce_of(event: &Event) -> &moq_net::announce::Announce {
     match event {
-        Event::Start(announce)
-        | Event::Update(announce)
-        | Event::End(announce)
-        | Event::Restart(announce)
-        | Event::Takeover { announce, .. } => announce,
+        Event::Present(announce) | Event::Absent(announce) => announce,
     }
 }
 
@@ -293,9 +293,12 @@ async fn noq_publish_noq_subscribe() {
     // Publisher
     let pub_origin = moq_tokio::origin::spawn();
     let broadcast = pub_origin
-        .publish("test", origin::Route::default())
+        .route("test", origin::RouteOptions::default())
         .expect("create bc");
-    let track = broadcast.create_track("video", None).expect("track");
+    let track = broadcast
+        .broadcast()
+        .create_track("video", None)
+        .expect("track");
     let mut group = track.append_group().expect("group");
     group
         .write_frame(None, b"hello-noq".as_ref())
@@ -406,11 +409,12 @@ async fn noq_publish_iroh_subscribe() {
     // video track.
     let pub_origin = moq_tokio::origin::spawn();
     let broadcast = pub_origin
-        .publish("browser-stream", origin::Route::default())
+        .route("browser-stream", origin::RouteOptions::default())
         .expect("bc");
 
     // hang catalog format: renditions keyed by track name
     let catalog_track = broadcast
+        .broadcast()
         .create_track("catalog.json", None)
         .expect("catalog");
     let catalog_json =
@@ -421,7 +425,10 @@ async fn noq_publish_iroh_subscribe() {
         .expect("write");
     group.finish().expect("finish");
 
-    let video_track = broadcast.create_track("video/h264", None).expect("video");
+    let video_track = broadcast
+        .broadcast()
+        .create_track("video/h264", None)
+        .expect("video");
     let mut vgroup = video_track.append_group().expect("group");
     vgroup
         .write_frame(None, b"keyframe-data".as_ref())
@@ -882,9 +889,12 @@ async fn a_relay_link_publishes_and_consumes() {
     // Consuming: a browser's broadcast resolves through the relay.
     let pub_origin = moq_tokio::origin::spawn();
     let browser_broadcast = pub_origin
-        .publish("browser-stream", origin::Route::default())
+        .route("browser-stream", origin::RouteOptions::default())
         .expect("broadcast");
-    let track = browser_broadcast.create_track("data", None).expect("track");
+    let track = browser_broadcast
+        .broadcast()
+        .create_track("data", None)
+        .expect("track");
     let mut group = track.append_group().expect("group");
     group
         .write_frame(None, b"from-the-browser".as_ref())
@@ -920,7 +930,7 @@ async fn a_relay_link_publishes_and_consumes() {
     .await
     .expect("the relay's route never reached the table");
     assert!(
-        route.cost.value() >= iroh_live_node::DEFAULT_RELAY_COST,
+        route.cost().value() >= iroh_live_node::DEFAULT_RELAY_COST,
         "{route:?}"
     );
     link.detach().await;
@@ -1009,7 +1019,7 @@ async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if matches!(update, Event::End(_)) && announce_of(&update).prefix.as_str() == path {
+            if matches!(update, Event::Absent(_)) && announce_of(&update).prefix.as_str() == path {
                 return;
             }
         }
@@ -1272,10 +1282,10 @@ async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track:
 }
 
 /// Returns the hop iroh-live-node derives for `id`, which anyone can compute.
-fn hop_of(id: iroh::EndpointId) -> moq_net::Hop {
+fn hop_of(id: iroh::EndpointId) -> std::num::NonZeroU64 {
     let bytes: [u8; 8] = id.as_bytes()[..8].try_into().expect("32 bytes");
     let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
-    moq_net::Hop::new(value.max(1)).expect("a valid hop")
+    std::num::NonZeroU64::new(value.max(1)).expect("a valid hop")
 }
 
 /// A forgery of Alice's path under her hop never reaches Bob's direct subscription.
@@ -1310,9 +1320,10 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
         moq_net::time::run(mallory_driver).await;
     }));
     let forged = mallory
-        .publish(publication.path().as_str(), origin::Route::default())
+        .route(publication.path().as_str(), origin::RouteOptions::default())
         .expect("forged broadcast");
     let mut forged_track = forged
+        .broadcast()
         .create_track(
             "data",
             moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
@@ -1413,13 +1424,13 @@ async fn the_shipped_relay_refuses_forged_paths() {
     // A browser tries the same, and publishes a name of its own.
     let browser = moq_tokio::origin::spawn();
     let browser_forged = browser
-        .publish(
+        .route(
             format!("live/{alice}/screen").as_str(),
-            origin::Route::default(),
+            origin::RouteOptions::default(),
         )
         .expect("broadcast");
     let browser_own = browser
-        .publish("browser-stream", origin::Route::default())
+        .route("browser-stream", origin::RouteOptions::default())
         .expect("broadcast");
     let _browser_session = established(
         noq_client()
@@ -1440,7 +1451,10 @@ async fn the_shipped_relay_refuses_forged_paths() {
     // And an iroh node reads through it, over the relay's own acceptor.
     let (_viewer_endpoint, viewer) = relay_node().await;
     let _viewer_link = attached(&viewer, &relay, RelayOffer::Nothing).await;
-    let track = browser_own.create_track("data", None).expect("track");
+    let track = browser_own
+        .broadcast()
+        .create_track("data", None)
+        .expect("track");
     let mut group = track.append_group().expect("group");
     group
         .write_frame(None, b"from-the-browser".as_ref())
@@ -1647,9 +1661,10 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     // Mallory publishes Bob's camera into the relay before Bob is there.
     let mallory = moq_tokio::origin::spawn();
     let forged = mallory
-        .publish(cam_path.as_str(), origin::Route::default())
+        .route(cam_path.as_str(), origin::RouteOptions::default())
         .expect("forged broadcast");
     let mut track = forged
+        .broadcast()
         .create_track(
             "data",
             moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),

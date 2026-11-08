@@ -56,7 +56,7 @@ publisher.
 
 iroh-live depends on the unreleased `main` branch of
 [moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
-`Cargo.toml`. The pinned rev is `02e82fdcd` (2026-11-04). The moq crates on
+`Cargo.toml`. The pinned rev is `5ac2db31d` (2026-11-08). The moq crates on
 crates.io come from moq's `release` branch, which lags `main` by weeks.
 iroh-live uses APIs that exist only on `main`. Examples are the waiter-based
 `moq_net::transport::poll` traits that `moq-transport-iroh` implements, and the

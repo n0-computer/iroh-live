@@ -71,14 +71,31 @@ async fn a_claim_widens_a_session_bob_accepted() {
         .moq
         .claim_path(alice.id(), publication.path())
         .expect("claim");
-    let subscription = step(
-        "subscribe",
-        bob.moq
-            .subscribe(publication.path(), Reach::Direct(alice.id())),
-    )
-    .await
-    .expect("subscribe over the accepted session");
-    reading(&subscription.as_moq()).await;
+    // The live session applies the wider grant a moment after the claim, so a
+    // read that starts at once can still be refused. Retry until it is let in.
+    let deadline = tokio::time::Instant::now() + common::TIMEOUT;
+    let subscription = loop {
+        let subscription = step(
+            "subscribe",
+            bob.moq
+                .subscribe(publication.path(), Reach::Direct(alice.id())),
+        )
+        .await
+        .expect("subscribe over the accepted session");
+        let track = subscription
+            .as_moq()
+            .track("video")
+            .expect("track")
+            .subscribe(common::subscription())
+            .await;
+        if let Ok(mut track) = track
+            && matches!(track.recv_group().await, Ok(Some(_)))
+        {
+            break subscription;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never let in");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert!(!subscription.session().expect("a session").dialed());
 
     alice.shutdown().await;

@@ -178,7 +178,7 @@ impl VideoRendition {
             (kind, _) => kind.clone(),
         };
         config.color = color;
-        config.gop = moq_video::encode::Gop::keyframe_every(self.keyframe_interval, rate);
+        config.join = self.keyframe_interval;
         config
     }
 }
@@ -340,14 +340,11 @@ mod tests {
             ..VideoRendition::new("video")
         };
         let size = moq_video::Size::new(1280, 720);
-        assert_eq!(
-            rendition.encode_config(size, fps(30), None, true).gop,
-            moq_video::encode::Gop::Keyframe { interval: 30 }
-        );
-        assert_eq!(
-            rendition.encode_config(size, fps(15), None, true).gop,
-            moq_video::encode::Gop::Keyframe { interval: 15 }
-        );
+        for rate in [fps(30), fps(15)] {
+            let config = rendition.encode_config(size, rate, None, true);
+            assert_eq!(config.join, Duration::from_secs(1));
+            assert_eq!(config.effective_join(), Duration::from_secs(1));
+        }
     }
 
     #[test]

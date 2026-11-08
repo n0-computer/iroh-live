@@ -227,19 +227,6 @@ impl poll::Session for Transport {
             .map_err(Into::into)
     }
 
-    /// Opens a request stream, waiting for stream credit like any open.
-    ///
-    /// Never refuses: iroh cannot open a stream without waiting for the peer's
-    /// credit, and treating a full credit as a refusal would fail requests
-    /// whenever the peer's stream limit is reached.
-    fn poll_open_request(
-        &self,
-        waiter: &Waiter,
-        options: SendOptions<'_, Ungrouped>,
-    ) -> Poll<Result<Option<BiStreams<Self>>, TransportError>> {
-        self.poll_open_bi(waiter, options).map_ok(Some)
-    }
-
     fn send_group(&self, _priority: i64) -> Option<Ungrouped> {
         None
     }
@@ -549,10 +536,10 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn open_request_waits_for_credit_and_opens() {
+    async fn open_bi_waits_for_credit_and_opens() {
         let (client, _server, _endpoints) = pair().await;
-        let opened = kio::wait(|waiter| client.poll_open_request(waiter, SendOptions::default()));
-        assert!(timely("open", opened).await.expect("open").is_some());
+        let opened = kio::wait(|waiter| client.poll_open_bi(waiter, SendOptions::default()));
+        timely("open", opened).await.expect("open");
     }
 
     #[tokio::test]
