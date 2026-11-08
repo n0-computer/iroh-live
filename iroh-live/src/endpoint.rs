@@ -30,7 +30,7 @@ pub enum Mdns {
     Off,
 }
 
-// TODO: rename to `EndpointConfig` (deferred: ~25 call sites across four repos).
+// TODO: rename to `EndpointConfig`, once its call sites across repos can change together.
 /// An endpoint with [`MoqPreset`], a key, mDNS and a congestion controller.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointOptions {
@@ -67,9 +67,10 @@ impl EndpointOptions {
         })
     }
 
-    /// Applies [`MoqPreset`], the key, mDNS and the congestion controller to `builder`, and returns it.
+    /// Applies these options to `builder` and returns it.
     ///
-    /// For a caller that builds its own endpoint and sets what these options
+    /// This sets [`MoqPreset`], the key, mDNS and the congestion controller.
+    /// It is for a caller that builds its own endpoint and sets what these options
     /// do not, such as the relay mode or another address lookup. The preset
     /// sets the relay mode, the address lookups and the QUIC transport config,
     /// so make your own settings after this call, not before. A transport

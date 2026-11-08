@@ -244,20 +244,14 @@ mod tests {
         )
     }
 
-    fn auto() -> Mode {
-        Mode::Auto { max_height: None }
-    }
-
     #[test]
     fn auto_without_signals_plays_the_best() {
-        assert_eq!(pick(&auto(), &[]).rendition.as_deref(), Some("1080p"));
+        assert_eq!(pick(&Mode::auto(), &[]).rendition.as_deref(), Some("1080p"));
     }
 
     #[test]
     fn auto_respects_the_height_limit() {
-        let mode = Mode::Auto {
-            max_height: Some(720),
-        };
+        let mode = Mode::auto_below(720);
         assert_eq!(pick(&mode, &[]).rendition.as_deref(), Some("360p"));
     }
 
@@ -290,7 +284,10 @@ mod tests {
 
     #[test]
     fn a_failing_rendition_is_skipped_by_auto() {
-        assert_eq!(pick(&auto(), &["1080p"]).rendition.as_deref(), Some("360p"));
+        assert_eq!(
+            pick(&Mode::auto(), &["1080p"]).rendition.as_deref(),
+            Some("360p")
+        );
     }
 
     #[test]
@@ -309,9 +306,19 @@ mod tests {
     #[test]
     fn step_down_needs_auto_and_a_lower_rung() {
         let rungs = ladder();
-        assert!(step_down(&auto(), &rungs, Some("360p"), Some("1080p")));
-        assert!(!step_down(&auto(), &rungs, Some("1080p"), Some("360p")));
-        assert!(!step_down(&auto(), &rungs, Some("360p"), None));
+        assert!(step_down(
+            &Mode::auto(),
+            &rungs,
+            Some("360p"),
+            Some("1080p")
+        ));
+        assert!(!step_down(
+            &Mode::auto(),
+            &rungs,
+            Some("1080p"),
+            Some("360p")
+        ));
+        assert!(!step_down(&Mode::auto(), &rungs, Some("360p"), None));
         let pinned = Mode::Pinned("360p".into());
         assert!(!step_down(&pinned, &rungs, Some("360p"), Some("1080p")));
     }

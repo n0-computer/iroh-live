@@ -23,6 +23,7 @@ use iroh_live::{
     },
 };
 use n0_tracing_test::traced_test;
+use tracing::info;
 
 /// How long a switch may take until the remote player shows the new source.
 const SWITCH: Duration = Duration::from_secs(2);
@@ -33,19 +34,23 @@ const FIRST: Duration = Duration::from_secs(30);
 /// How many frames the player must show after a switch to count as playing.
 const PLAYING: usize = 10;
 
+/// A standard-definition frame size.
 const SD: Size = Size {
     width: 640,
     height: 360,
 };
+/// A high-definition frame size.
 const HD: Size = Size {
     width: 1280,
     height: 720,
 };
 
-fn fps(n: u32) -> FrameRate {
-    FrameRate::new(n, 1).expect("a valid rate")
+/// Returns a frame rate of `frames` per second.
+fn fps(frames: u32) -> FrameRate {
+    FrameRate::new(frames, 1).expect("a valid rate")
 }
 
+/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
 async fn endpoint() -> Endpoint {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     let lookup = LOOKUP.get_or_init(MemoryLookup::new);
@@ -102,6 +107,7 @@ impl Peers {
         (player, frames)
     }
 
+    /// Shuts down both nodes.
     async fn shutdown(self) {
         self.publisher.shutdown().await;
         self.subscriber.shutdown().await;
@@ -150,6 +156,7 @@ struct Look {
 }
 
 impl Look {
+    /// Returns a flat look of `size` with every pixel at `luma`.
     const fn flat(size: Size, luma: u8) -> Self {
         Self {
             size,
@@ -157,6 +164,7 @@ impl Look {
         }
     }
 
+    /// Returns the look of the test pattern at `size`.
     const fn pattern(size: Size) -> Self {
         Self { size, luma: None }
     }
@@ -248,7 +256,7 @@ async fn shows(frames: &mut VideoFrames, look: Look, bound: Duration, what: &str
             "{what}: frame {index} showed {seen:?}, not {look:?}"
         );
     }
-    tracing::info!(what, ?switched, "switch shown");
+    info!(what, ?switched, "switch shown");
 }
 
 /// The GPU demo's switch over iroh: one pushed source, fed from the camera, then the pattern.

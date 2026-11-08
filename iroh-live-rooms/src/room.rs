@@ -106,6 +106,7 @@ pub struct Rooms {
 
 impl Rooms {
     /// Creates the room service on `moq`'s endpoint, with its own gossip.
+    #[must_use]
     pub fn new(moq: &Node) -> Self {
         let gossip = Gossip::builder().spawn(moq.endpoint().clone());
         Self::with_gossip(moq, gossip)
@@ -257,6 +258,7 @@ pub struct Room {
 /// What every handle of a room shares with its actor.
 #[derive(derive_more::Debug)]
 struct Inner {
+    /// This node's endpoint id.
     me: EndpointId,
     ticket: RoomTicket,
     #[debug(skip)]
@@ -272,7 +274,9 @@ struct Inner {
     local: Mutex<BTreeMap<String, Local>>,
     /// Bumped whenever [`Inner::local`] changes, so the actor re-announces.
     local_changed: Watchable<u64>,
+    /// The name this member announces.
     display_name: Watchable<Option<String>>,
+    /// Set once the actor has stopped.
     done: Watchable<bool>,
 }
 
@@ -285,6 +289,7 @@ struct Local {
 
 impl Room {
     /// Returns a ticket for this room with this member as its bootstrap peer.
+    #[must_use]
     pub fn ticket(&self) -> RoomTicket {
         self.inner.ticket.with_bootstrap(self.inner.me)
     }
@@ -483,6 +488,7 @@ impl Inner {
         }
     }
 
+    /// Signals the actor that [`Inner::local`] changed.
     fn bump_local(&self) {
         self.local_changed.set(self.local_changed.get() + 1).ok();
     }
@@ -501,15 +507,19 @@ impl Inner {
 /// A member's announcement in the room's gossip map.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Announcement {
+    /// The member's name and broadcasts.
     peer: RoomPeer,
     /// Whether the member left, so the others drop it before its lease runs out.
     left: bool,
 }
 
+/// The task behind a room: it announces this member and follows the others.
 struct Actor {
     inner: Arc<Inner>,
     kv: iroh_smol_kv::Client,
+    /// Writes this member's announcement into the gossip map.
     writer: WriteScope,
+    /// The other members, as their announcements last said.
     peers: BTreeMap<EndpointId, RoomPeer>,
     /// The members the replay after a resubscription has shown so far.
     resync: Option<BTreeSet<EndpointId>>,
@@ -525,6 +535,7 @@ impl Drop for Actor {
 }
 
 impl Actor {
+    /// Runs until the room is left, the rooms shut down, or the gossip map ends.
     async fn run(mut self, mut inbox: mpsc::Receiver<oneshot::Sender<()>>) {
         let mut updates = Self::subscribe_map(self.kv.clone());
 
@@ -668,6 +679,7 @@ impl Actor {
         }
     }
 
+    /// Applies one change of the gossip map to the membership.
     fn handle_item(&mut self, item: SubscribeItem) {
         match item {
             SubscribeItem::Entry(entry) => self.handle_entry(entry),
@@ -702,6 +714,7 @@ impl Actor {
         }
     }
 
+    /// Applies a member's announcement to the membership.
     fn handle_entry(&mut self, (remote, key, value): (EndpointId, Bytes, SignedValue)) {
         if remote == self.inner.me || key != PEER_STATE_KEY {
             return;
@@ -845,6 +858,7 @@ mod tests {
         assert!(!publish_scope(SecretKey::from_bytes(&[4; 32]).public()).matches(&path));
     }
 
+    /// Mounting the service, or taking its handler, is what stops the unmounted warning.
     #[tokio::test]
     async fn mounting_marks_the_rooms_mounted() {
         let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");

@@ -14,7 +14,8 @@ use n0_error::e;
 use tracing::info;
 
 use crate::{
-    Error, Grant, LinkSample, SessionRequest, Subscription, link::LinkState, node::Shared, route,
+    Error, Grant, LinkId, LinkSample, SessionRequest, Subscription, link::LinkState, node::Shared,
+    route,
 };
 
 /// A direct session with a peer.
@@ -22,13 +23,13 @@ use crate::{
 /// Cheap to clone. Dropping the handles does not close it: it ends when either
 /// side closes it, the connection fails, or the node shuts down.
 #[derive(Clone, derive_more::Debug)]
-#[debug("Session({}, link {}, dialed {})", inner.remote.fmt_short(), inner.link, inner.dialed)]
+#[debug("Session({}, {}, dialed {})", inner.remote.fmt_short(), inner.link, inner.dialed)]
 pub struct Session {
     pub(crate) inner: Arc<SessionInner>,
 }
 
 pub(crate) struct SessionInner {
-    pub(crate) link: u64,
+    pub(crate) link: LinkId,
     pub(crate) remote: EndpointId,
     pub(crate) dialed: bool,
     pub(crate) grant: std::sync::Mutex<Grant>,

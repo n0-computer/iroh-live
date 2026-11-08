@@ -42,7 +42,7 @@ impl FrameSlot {
         self.tx.send_replace(Some(frame));
     }
 
-    /// Records why the stream is about to end, for [`FrameReader::failure`].
+    /// Records why the stream is about to end, for `FrameReader::failure`.
     pub(crate) fn fail(&self, failure: Arc<Error>) {
         let _ = self.failure.set(failure);
     }
@@ -86,10 +86,10 @@ impl FrameReader {
 
 /// Latest-frame-wins video frames.
 ///
-/// Returned by [`VideoSource::frames`](crate::VideoSource::frames) for a local
-/// preview and by a player for playback. Each
-/// clone keeps its own cursor. A frame comes as an `Arc` because upstream
-/// frames are not `Clone`: a GPU surface is shared, not copied.
+/// [`VideoSource::frames`](crate::VideoSource::frames) returns it for a local
+/// preview, and a player returns it for playback. Each clone keeps its own
+/// cursor. A frame comes as an `Arc` because upstream frames are not `Clone`:
+/// a GPU surface is shared, not copied.
 ///
 /// On a fresh handle, the first [`next`](Self::next) returns at once if a
 /// picture is already there.
@@ -140,7 +140,9 @@ impl VideoFrames {
         }
     }
 
-    /// Waits until the producer is gone. Cancellation safe.
+    /// Waits until the producer is gone.
+    ///
+    /// Cancellation safe.
     pub async fn closed(&self) {
         let mut rx = self.rx.clone();
         while rx.changed().await.is_ok() {}

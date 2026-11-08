@@ -306,6 +306,7 @@ struct Slot {
     task: SlotTask,
 }
 
+/// The state every clone of a [`LocalBroadcast`] shares.
 #[derive(derive_more::Debug)]
 #[debug("Shared {{ status: {status:?} }}")]
 struct Shared {
@@ -525,7 +526,7 @@ impl LocalBroadcast {
         self.clear(Medium::Audio);
     }
 
-    /// Returns the state of both slots and of every rendition.
+    /// Returns a receiver of the state of both slots and of every rendition.
     ///
     /// A borrow of the receiver blocks the broadcast's writes, so keep it short
     /// and do not hold it across a call into the broadcast.

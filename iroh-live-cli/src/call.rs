@@ -456,6 +456,7 @@ mod window {
     }
 
     impl Direction {
+        /// Returns the other side of the call.
         fn peer(self) -> EndpointId {
             match self {
                 Self::Outgoing(peer) | Self::Incoming(peer) => peer,

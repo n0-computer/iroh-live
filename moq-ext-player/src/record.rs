@@ -156,7 +156,7 @@ impl Recording {
         let result = (&mut self.task)
             .await
             .unwrap_or_else(|err| Err(Error::broadcast(err)));
-        self.finished = Some(result.as_ref().map(|written| *written).map_err(|_| ()));
+        self.finished = Some(result.as_ref().copied().map_err(|_| ()));
         result
     }
 
@@ -207,6 +207,7 @@ enum Export {
 type CatalogStream = moq_mux::catalog::Select<moq_mux::catalog::Consumer>;
 
 impl Export {
+    /// Returns the next chunk of the file, `None` once the export is complete.
     async fn next(&mut self) -> Result<Option<Bytes>, Error> {
         match self {
             Self::Fmp4(export) => export.next().await.map_err(Error::catalog),
@@ -226,7 +227,7 @@ fn selection(rendition: Option<&str>) -> select::Broadcast {
         .audio(select::Audio::default())
 }
 
-/// Runs an empty private route table for the exporter.
+/// An empty private route table for the exporter, with the task that drives it.
 ///
 /// The exporter resolves a rendition that names a sibling broadcast through a
 /// route table. A bare broadcast has no siblings, so nothing resolves here. A

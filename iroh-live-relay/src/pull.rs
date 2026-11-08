@@ -109,10 +109,12 @@ pub fn serving(cluster: &Cluster, path: &str) -> Cluster {
         .unwrap_or_else(|| cluster.clone())
 }
 
-/// Shared state for pull operations.
+/// The relay's pulls, shared by every session that names a ticket.
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
+    /// The node that dials publishers, with the cluster origin as its route table.
     moq: Node,
+    /// How long a pull without sessions stays connected.
     linger: Duration,
     /// Live or dialing pulls, by local broadcast name.
     ///
@@ -139,12 +141,14 @@ enum Dial {
 /// One pulled ticket.
 #[derive(Debug)]
 struct Pull {
+    /// The outcome of the dial.
     dial: watch::Sender<Dial>,
     /// Local sessions that named this ticket and have not disconnected yet.
     claims: watch::Sender<usize>,
 }
 
 impl Pull {
+    /// Creates a pull whose dial is pending and that no session has claimed.
     fn new() -> Self {
         Self {
             dial: watch::Sender::new(Dial::Pending),
@@ -178,6 +182,7 @@ impl PullState {
     /// The node writes what publishers announce into the cluster origin
     /// directly. Its base grant is nothing, so a publisher announces only the
     /// paths a pull claims, and only if it owns them, see [`owner`].
+    #[must_use]
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         let config = NodeConfig {
             table: Some(cluster.origin.clone()),
@@ -203,9 +208,9 @@ impl PullState {
         self
     }
 
-    /// Pulls the broadcast `ticket` names into the cluster, for a session that asked for `requested`.
+    /// Pulls the broadcast `ticket` names into the cluster.
     ///
-    /// Hold the returned [`PullGuard`] while the session that asked runs, and
+    /// The pull is for a session that asked for `requested`. Hold the returned [`PullGuard`] while the session that asked runs, and
     /// serve that session the cluster [`mounted`] at `requested`. Concurrent
     /// pulls of one name share a dial.
     ///
@@ -252,7 +257,7 @@ impl PullState {
                 // Counted for the whole of the pull, dial included, so a
                 // retiring pull cannot close the session this one is about to
                 // use.
-                let outcome = match state.do_connect(&ticket, &name, &pull).await {
+                let outcome = match state.establish(&ticket, &name, &pull).await {
                     Ok(()) => Dial::Connected,
                     Err(err) => {
                         // Retire it, so the next pull dials again.
@@ -284,8 +289,8 @@ impl PullState {
         Ok(guard)
     }
 
-    /// Resolves the ticket's broadcast, and spawns the task that holds the pull until it retires.
-    async fn do_connect(
+    /// Resolves the ticket's broadcast and spawns the task that holds the pull.
+    async fn establish(
         &self,
         ticket: &BroadcastTicket,
         local_name: &str,
@@ -412,9 +417,9 @@ impl PullState {
         None
     }
 
-    /// Waits until no session has claimed the pull for the linger window, then retires its entry.
+    /// Waits until no session has claimed the pull for the linger window.
     ///
-    /// The final check runs under the lock [`Self::pull`] claims under, so a
+    /// Then it retires the pull's entry. The final check runs under the lock [`Self::pull`] claims under, so a
     /// pull claimed during the linger keeps running.
     async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
         loop {
@@ -466,6 +471,7 @@ type Publishers = Arc<Mutex<HashMap<EndpointId, usize>>>;
 /// with it.
 struct PublisherClaim {
     publisher: EndpointId,
+    /// The count this claim is part of, shared with [`PullState`].
     publishers: Publishers,
     moq: Node,
     /// Declared last, so the session closes before the path is released.
@@ -519,6 +525,7 @@ impl Drop for PublisherClaim {
 mod tests {
     use super::*;
 
+    /// Parses `path`, which must be valid.
     fn path(path: &str) -> Path {
         Path::new(path).expect("a path")
     }

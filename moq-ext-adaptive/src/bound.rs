@@ -800,7 +800,7 @@ mod tests {
         let mut playing = "720p".to_string();
         let mut now = start;
         let mut ups = Vec::new();
-        // Plenty is read while 720p plays; 1080p, once it plays, is short.
+        // Plenty is read while 720p plays. Once 1080p plays, the reading is short.
         while now < start + Duration::from_secs(200) {
             let reading = match playing.as_str() {
                 "1080p" => estimate(3_000_000),

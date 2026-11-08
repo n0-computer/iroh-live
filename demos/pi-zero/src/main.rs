@@ -21,17 +21,26 @@ mod watch;
 #[cfg(target_os = "linux")]
 mod app {
     use clap::{Parser, Subcommand};
-    use iroh_live::{BroadcastTicket, Node, layout::LiveLayout, media::remote_broadcast};
+    use iroh_live::{
+        BroadcastTicket, Node,
+        layout::LiveLayout,
+        media::{
+            VideoSource, remote_broadcast,
+            video::{FrameRate, Size},
+        },
+    };
 
     use crate::{epaper, publish, watch};
 
+    /// Command line of the Pi Zero 2 demo.
     #[derive(Parser)]
-    #[command(about = "Pi Zero 2 demo: camera streaming + e-paper QR ticket")]
+    #[command(about = "Pi Zero 2 demo: camera streaming and e-paper QR ticket")]
     pub(crate) struct Cli {
         #[command(subcommand)]
         command: Command,
     }
 
+    /// The demo subcommands.
     #[derive(Subcommand)]
     enum Command {
         /// Test the e-paper display with a "hello" label and a bogus QR code.
@@ -44,6 +53,7 @@ mod app {
         FbDemo,
     }
 
+    /// Options of the `watch` subcommand.
     #[derive(Parser, Debug)]
     struct WatchOpts {
         /// The broadcast ticket.
@@ -56,6 +66,7 @@ mod app {
         fullscreen: bool,
     }
 
+    /// Runs the subcommand that `cli` selects.
     pub(crate) async fn run(cli: Cli) -> n0_error::Result {
         match cli.command {
             Command::EpaperDemo => cmd_epaper_demo(),
@@ -84,6 +95,7 @@ mod app {
         Ok(())
     }
 
+    /// Blocks until the user presses Enter.
     fn wait_for_enter() {
         println!("  press Enter to continue...");
         let mut buf = String::new();
@@ -92,11 +104,6 @@ mod app {
 
     /// Renders a test pattern straight to HDMI, without network or camera.
     async fn cmd_fb_demo() -> n0_error::Result {
-        use iroh_live::media::{
-            VideoSource,
-            video::{FrameRate, Size},
-        };
-
         let source = VideoSource::test_pattern(
             Size::new(640, 480),
             FrameRate::new(30, 1).expect("a valid rate"),

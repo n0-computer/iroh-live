@@ -381,7 +381,7 @@ mod tests {
         VideoSourceSpec::Test(crate::source_spec::TestPattern::Timing);
 
     #[test]
-    fn sizes_parse() {
+    fn height_and_dimension_sizes_parse_and_round_up_to_even() {
         assert_eq!(parse_size("720p"), Some(Size::new(1280, 720)));
         assert_eq!(parse_size("1080p"), Some(Size::new(1920, 1080)));
         assert_eq!(parse_size("480p"), Some(Size::new(854, 480)));
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn rendition_rungs_parse() {
+    fn rungs_parse_by_height_name_and_source() {
         assert_eq!(
             rung("720p").unwrap(),
             Rung {

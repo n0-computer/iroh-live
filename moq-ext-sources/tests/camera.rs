@@ -16,8 +16,9 @@ use moq_video as video;
 /// How long a reopened camera may take to deliver a frame.
 const FRAME_PATIENCE: Duration = Duration::from_secs(10);
 
-/// Opens `source`, waits for a frame, drops it, and does that `rounds` times
-/// back to back, the way an application switching sources does.
+/// Opens `source` and waits for a frame, `rounds` times in a row.
+///
+/// This is how an application behaves when it switches sources.
 async fn reopen(source: video::capture::Source, rounds: usize) {
     for round in 0..rounds {
         let started = Instant::now();

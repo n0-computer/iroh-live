@@ -61,6 +61,7 @@ impl Peer {
         }
     }
 
+    /// Returns the endpoint id of the peer.
     pub(crate) fn id(&self) -> iroh::EndpointId {
         self.endpoint.id()
     }

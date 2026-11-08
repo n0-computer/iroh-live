@@ -44,6 +44,7 @@ struct Options {
 }
 
 impl From<&WatchArgs> for Options {
+    /// Copies the window options, leaving `scan_camera` and `output` for the caller.
     fn from(args: &WatchArgs) -> Self {
         Self {
             rendition: args.rendition.clone(),
@@ -517,6 +518,7 @@ mod window {
         }))
     }
 
+    /// The `irl watch` window.
     struct WatchApp {
         live: Transport,
         options: Options,

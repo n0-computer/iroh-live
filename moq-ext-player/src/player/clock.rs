@@ -35,7 +35,7 @@ enum Delay {
 ///
 /// Clones share state. Each player has one, shared by its video and audio
 /// paths.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PlayoutClock {
     inner: Arc<Inner>,
 }
@@ -161,11 +161,11 @@ impl PlayoutClock {
             return Delay::Closed;
         }
         // No reference yet: render now.
-        let Some(current_ref) = state.reference else {
+        let Some(reference) = state.reference else {
             return Delay::Now;
         };
 
-        let sleep_ms = (current_ref - (self.now_ms() - timestamp_ms)) + state.latency_ms();
+        let sleep_ms = (reference - (self.now_ms() - timestamp_ms)) + state.latency_ms();
         if sleep_ms > 0 {
             Delay::After(Duration::from_millis(sleep_ms as u64))
         } else {
@@ -192,7 +192,7 @@ impl PlayoutClock {
     /// the audio path that reported it.
     fn set_audio_buffered(&self, latency: Option<Duration>) {
         let mut state = self.inner.state.lock().expect("poisoned");
-        state.audio_ms = latency.map(|d| d.as_millis() as i64);
+        state.audio_ms = latency.map(|buffered| buffered.as_millis() as i64);
         self.inner.changed.notify_waiters();
     }
 
@@ -261,17 +261,23 @@ mod tests {
         {
             let state = sync.inner.state.lock().expect("poisoned");
             assert!(state.reference.is_some());
-            let first_ref = state.reference.expect("checked above");
-            assert!(first_ref > 0, "reference should be positive for pts=0");
+            let first_reference = state.reference.expect("checked above");
+            assert!(
+                first_reference > 0,
+                "reference should be positive for pts=0"
+            );
             drop(state);
         }
 
         // A later frame at a worse offset leaves the reference alone.
         thread::sleep(Duration::from_millis(10));
-        let ref_before = sync.inner.state.lock().expect("poisoned").reference;
+        let reference_before = sync.inner.state.lock().expect("poisoned").reference;
         sync.received(Duration::from_millis(0));
-        let ref_after = sync.inner.state.lock().expect("poisoned").reference;
-        assert_eq!(ref_before, ref_after, "reference should not increase");
+        let reference_after = sync.inner.state.lock().expect("poisoned").reference;
+        assert_eq!(
+            reference_before, reference_after,
+            "reference should not increase"
+        );
     }
 
     #[tokio::test]
@@ -310,7 +316,7 @@ mod tests {
         sync.received(Duration::ZERO);
         assert!(
             matches!(sync.delay(Duration::ZERO), Delay::After(_)),
-            "the new timeline's first frame is not held for the jitter allowance"
+            "the new timeline's first frame is held for the jitter allowance"
         );
     }
 

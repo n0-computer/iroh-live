@@ -1,8 +1,11 @@
+//! Builds the web client that the relay embeds.
+
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
+/// Installs the web client's dependencies and bundles it into `web/dist`.
 fn main() {
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -21,6 +24,7 @@ fn main() {
     run_npm(&ui_dir, &["run", "build"]);
 }
 
+/// Runs `npm` with `args` in `ui_dir`, and panics if it fails.
 fn run_npm(ui_dir: &Path, args: &[&str]) {
     let status = Command::new("npm")
         .args(args)

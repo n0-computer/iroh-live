@@ -44,6 +44,7 @@ impl IrohSessions {
     ///
     /// With `pulls` set, a session that names a ticket in its path pulls the
     /// ticket's broadcast, as a browser's does.
+    #[must_use]
     pub fn new(cluster: Cluster, pulls: Option<Arc<PullState>>) -> Self {
         Self {
             cluster,
@@ -53,6 +54,7 @@ impl IrohSessions {
     }
 
     /// Spawns a router on `endpoint` with this handler.
+    #[must_use]
     pub fn router(self, endpoint: Endpoint) -> Router {
         let mut router = Router::builder(endpoint);
         for alpn in moq_transport_iroh::alpns() {
@@ -199,8 +201,10 @@ mod tests {
         assert!(!matches("rooms/topic/someone/cam"));
     }
 
-    /// Pulls are read at the ticket's spelling, which always has a `/`
-    /// between the endpoint id and the name, so no browser can publish there.
+    /// A browser cannot publish at the name a pull is read under.
+    ///
+    /// Pulls are read at the ticket's spelling, which always has a `/` between
+    /// the endpoint id and the name.
     #[test]
     fn a_browser_cannot_publish_at_a_pulled_name() {
         let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();

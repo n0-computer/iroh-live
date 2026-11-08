@@ -27,7 +27,7 @@ const DEFAULT_ROOT: &str = "live";
 ///
 /// Extends a [`LiveLayout`]'s own scope: `layout.config(&[Arc::new(rooms::publish_scope)])`
 /// lets peers publish room broadcasts too. A closure over a second layout or
-/// application state works as well, since the grant function of a node owns it.
+/// application state works as well.
 pub type Scope = Arc<dyn Fn(EndpointId) -> Pattern + Send + Sync>;
 
 /// The `<root>/<peer>/<name>` layout, with the root `live` by default.
@@ -150,9 +150,9 @@ impl LiveLayout {
         Grant::publish_under(publish)
     }
 
-    /// Returns the [`NodeConfig`] of a node on this layout: open admission, with [`grant`](Self::grant).
+    /// Returns the [`NodeConfig`] of a node on this layout.
     ///
-    /// Pass `&[]` for no extra scopes.
+    /// It admits every peer and applies [`grant`](Self::grant). Pass `&[]` for no extra scopes.
     #[must_use]
     pub fn config(&self, extra: &[Scope]) -> NodeConfig {
         let layout = self.clone();

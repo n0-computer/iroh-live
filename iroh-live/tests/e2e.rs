@@ -29,6 +29,7 @@ use tracing::{Instrument, info_span};
 /// Generous, because tests run in parallel and openh264 encodes in software.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
 async fn endpoint() -> Endpoint {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     let lookup = LOOKUP.get_or_init(MemoryLookup::new);

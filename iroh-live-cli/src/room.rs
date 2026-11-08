@@ -638,6 +638,7 @@ mod window {
         (remote, name, opened)
     }
 
+    /// Subscribes to `name` of `remote` and starts playing it, or returns `None` on failure.
     async fn open_inner(
         room: Room,
         remote: EndpointId,

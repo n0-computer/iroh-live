@@ -37,8 +37,8 @@ use super::VideoFormat;
 use crate::{
     Error,
     frames::FrameSlot,
-    local_task::LocalTask,
-    video::{Frame, I420, Size, Surface},
+    local_task::{self, LocalTask},
+    video::{Frame, FrameRate, I420, Size, Surface},
 };
 
 /// The camera app this module runs.
@@ -217,12 +217,12 @@ pub(super) async fn open_raw(
     stop: CancellationToken,
 ) -> Result<(VideoFormat, LocalTask), Error> {
     let size = aligned(config.size);
-    let rate = crate::video::FrameRate::new(config.framerate.max(1), 1)
+    let rate = FrameRate::new(config.framerate.max(1), 1)
         .map_err(|err| Error::invalid(err.to_string()))?;
     let format = VideoFormat { size, rate };
     let mut pictures = frames(size, config.framerate, moq_mux::Clock::new())?;
     let (first_tx, first) = tokio::sync::oneshot::channel();
-    let task = crate::local_task::spawn("rpicam", stop, move |stop| async move {
+    let task = local_task::spawn("rpicam", stop, move |stop| async move {
         let mut first_tx = Some(first_tx);
         loop {
             let frame = tokio::select! {

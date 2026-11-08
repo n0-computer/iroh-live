@@ -16,6 +16,7 @@ use iroh_live::{
 use n0_error::StdResultExt;
 use tracing::{info, warn};
 
+/// Command-line arguments of the example.
 #[derive(Parser)]
 #[command(about = "Publishes the default camera and microphone over iroh-node")]
 struct Args {

@@ -240,7 +240,7 @@ pub(super) async fn run_raw(
                 None => break,
             },
             Some(joined) = encoders.join_next() => {
-                if let Some(failure) = report(joined) {
+                if let Some(failure) = encoder_failure(joined) {
                     failed += 1;
                     last_failure = Some(failure);
                 }
@@ -258,7 +258,7 @@ pub(super) async fn run_raw(
     }
     // The encoders see the same end or the same stop, and finish their tracks.
     while let Some(joined) = encoders.join_next().await {
-        report(joined);
+        encoder_failure(joined);
     }
     if stop.is_cancelled() {
         return;
@@ -278,7 +278,9 @@ pub(super) async fn run_raw(
 /// Returns why an encoder stopped, if it failed or panicked.
 ///
 /// A failed encoder has already reported itself in its rendition's state.
-fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Option<Arc<Error>> {
+fn encoder_failure(
+    joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>,
+) -> Option<Arc<Error>> {
     match joined {
         Ok(failure) => failure,
         Err(err) => {
@@ -309,7 +311,7 @@ async fn probe(config: &mut encode::Config) -> Result<hang::catalog::VideoConfig
 }
 
 /// Returns whether an encoder of `kind` falls back to software.
-fn falls_back(kind: &encode::Kind) -> bool {
+fn allows_fallback(kind: &encode::Kind) -> bool {
     matches!(kind, encode::Kind::Auto | encode::Kind::Hardware)
 }
 
@@ -317,7 +319,7 @@ fn falls_back(kind: &encode::Kind) -> bool {
 ///
 /// Returns whether it switched.
 fn fall_back(config: &mut encode::Config, err: &moq_video::Error) -> bool {
-    if !falls_back(&config.kind) {
+    if !allows_fallback(&config.kind) {
         return false;
     }
     warn!(error = %err, "the hardware encoder failed, falling back to software");
@@ -421,6 +423,9 @@ impl Encoder {
         Ok(Stopped::Done)
     }
 
+    /// Encodes frames for as long as someone watches, one demand cycle at a time.
+    ///
+    /// Returns how the encoder stopped without failing.
     async fn encode(&mut self) -> Result<Stopped, Error> {
         let target = self.config.size();
         self.stats.update(|stats| stats.size = Some(target));
@@ -539,7 +544,7 @@ impl Encoder {
                 }
                 self.pending.push_back((frame.timestamp, mapped));
                 let started = Instant::now();
-                let encoded = match encoder.encode(frame).await {
+                let mut encoded = match encoder.encode(frame).await {
                     Ok(encoded) => encoded,
                     Err(err) if fall_back(&mut self.config, &err) => {
                         encoder = encode::Sink::open(&self.config)
@@ -551,7 +556,6 @@ impl Encoder {
                     Err(err) => return Err(encode_error(err)),
                 };
                 let took = started.elapsed();
-                let mut encoded = encoded;
                 self.restamp(&mut encoded);
                 let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
                 let rates = meter.tick(bytes as u64);
@@ -773,11 +777,11 @@ mod tests {
     }
 
     #[test]
-    fn only_an_open_choice_falls_back() {
-        assert!(falls_back(&encode::Kind::Auto));
-        assert!(falls_back(&encode::Kind::Hardware));
-        assert!(!falls_back(&encode::Kind::Software));
-        assert!(!falls_back(&encode::Kind::Named("vaapi".into())));
+    fn only_an_open_choice_allows_fallback() {
+        assert!(allows_fallback(&encode::Kind::Auto));
+        assert!(allows_fallback(&encode::Kind::Hardware));
+        assert!(!allows_fallback(&encode::Kind::Software));
+        assert!(!allows_fallback(&encode::Kind::Named("vaapi".into())));
     }
 
     #[test]

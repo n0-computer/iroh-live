@@ -13,7 +13,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::{FIRST_FRAME_PATIENCE, VideoFormat};
-use crate::{Error, frames::FrameSlot, local_task::LocalTask, video};
+use crate::{
+    Error,
+    frames::FrameSlot,
+    local_task::{self, LocalTask},
+    video,
+};
 
 /// How long an opened camera may take over its first frame.
 ///
@@ -44,6 +49,7 @@ struct Releases {
     state: Mutex<ReleasesState>,
 }
 
+/// The captures a [`Releases`] tracks, and the next id to hand out.
 #[derive(Debug)]
 struct ReleasesState {
     next_id: u64,
@@ -56,7 +62,7 @@ struct Tracked {
     id: u64,
     /// The device, for the warning about a capture that does not let go.
     label: String,
-    /// Cancelled once the capture was told to stop.
+    /// Cancelled once the capture is told to stop.
     stop: CancellationToken,
     /// Cancelled once its thread has finished and the device is closed.
     released: CancellationToken,
@@ -168,7 +174,7 @@ pub(super) async fn open(
         CAMERAS.settle(RELEASE_PATIENCE).await;
     }
     let (opened_tx, opened) = oneshot::channel::<Result<VideoFormat, Error>>();
-    let task = crate::local_task::spawn("video-capture", stop.clone(), move |stop| async move {
+    let task = local_task::spawn("video-capture", stop.clone(), move |stop| async move {
         let opened = tokio::select! {
             opened = video::capture::open(&config) => opened,
             () = stop.cancelled() => return,

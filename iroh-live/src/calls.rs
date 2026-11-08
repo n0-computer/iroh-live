@@ -116,7 +116,9 @@ impl Stream for CallEvents {
 /// An error from [`Calls`].
 #[stack_error(derive, add_meta, from_sources)]
 pub enum Error {
-    /// The node's grant does not let this node publish its call side, or the peer's session does not let it publish its own.
+    /// A grant does not let a peer publish its call side.
+    ///
+    /// Either the node's grant refuses this node, or the session's grant refuses the peer.
     #[error("the grant does not let {peer} publish {path}")]
     NotGranted { path: Path, peer: EndpointId },
     /// The peer is not calling this node.
@@ -163,13 +165,17 @@ impl CallState {
     }
 }
 
+/// The shared state behind every clone of [`Calls`] and every [`Call`].
 struct Inner {
     node: Node,
     layout: LiveLayout,
     /// Who this node's side is offered to.
     audience: Watchable<BTreeSet<EndpointId>>,
+    /// Carries [`CallEvent`]s to every [`CallEvents`] stream.
     events: events_channel::Sender<CallEvent>,
+    /// The peers that ring, as [`CallState::ringing`] derives them.
     ringing: Watchable<BTreeSet<EndpointId>>,
+    /// Cancelled once the service ends.
     closed: CancellationToken,
     state: Mutex<CallState>,
     /// Keeps the announce watcher alive for as long as the service is.
@@ -191,6 +197,7 @@ impl Inner {
         self.ringing.set(now).ok();
     }
 
+    /// Locks the call state.
     fn lock(&self) -> std::sync::MutexGuard<'_, CallState> {
         self.state.lock().expect("poisoned")
     }
@@ -237,10 +244,13 @@ impl Calls {
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
-        let me = node.id();
-        let path = layout.path(me, CALL)?;
-        if !node.grant_for(me).allows_publish(path.as_str()) {
-            return Err(e!(Error::NotGranted { path, peer: me }));
+        let local_id = node.id();
+        let path = layout.path(local_id, CALL)?;
+        if !node.grant_for(local_id).allows_publish(path.as_str()) {
+            return Err(e!(Error::NotGranted {
+                path,
+                peer: local_id
+            }));
         }
         let audience = Watchable::new(BTreeSet::new());
         let (publication, side) =
@@ -260,7 +270,7 @@ impl Calls {
         });
         let task = tokio::spawn(watch_rings(Arc::downgrade(&inner), publication));
         inner.task.set(AbortOnDropHandle::new(task)).ok();
-        info!(id = %me.fmt_short(), "calls started");
+        info!(id = %local_id.fmt_short(), "calls started");
         Ok((Self { inner }, side))
     }
 
@@ -377,7 +387,7 @@ impl Calls {
         Ok(Pending {
             inner: self.inner.clone(),
             peer,
-            converted: false,
+            connected: false,
         })
     }
 
@@ -400,7 +410,7 @@ impl Calls {
         state.pending.remove(&peer);
         state.active.insert(peer);
         self.inner.recompute(&state);
-        pending.converted = true;
+        pending.connected = true;
         info!(remote = %peer.fmt_short(), "call connected");
         Ok(Call {
             inner: self.inner.clone(),
@@ -411,16 +421,19 @@ impl Calls {
     }
 }
 
-/// A call being placed. Dropping it before the call connects hangs up.
+/// A call being placed.
+///
+/// Dropping it before the call connects hangs up.
 struct Pending {
     inner: Arc<Inner>,
     peer: EndpointId,
-    converted: bool,
+    /// Set once the call connects, so the drop does not hang up.
+    connected: bool,
 }
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        if self.converted {
+        if self.connected {
             return;
         }
         let mut state = self.inner.lock();
@@ -504,7 +517,7 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
     let node = strong.node.clone();
     let layout = strong.layout.clone();
     drop(strong);
-    let me = node.id();
+    let local_id = node.id();
     let mut announced = node.origin().announced();
     let node_closed = node.closed();
     tokio::pin!(node_closed);
@@ -529,7 +542,7 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
         let Some((peer, CALL)) = layout.parse(&announce.prefix) else {
             continue;
         };
-        if peer == me {
+        if peer == local_id {
             continue;
         }
         let mut state = inner.lock();

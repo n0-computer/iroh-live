@@ -20,8 +20,8 @@ The [cargo-make](https://crates.io/crates/cargo-make) tasks in
 
 | Task | What it runs |
 |---|---|
-| `cargo make check-all` | `cargo check` and `cargo clippy -D warnings` with all features, no default features, and default features, then `format-check` |
-| `cargo make check` | Only the three `cargo check` runs |
+| `cargo make check-all` | `cargo check` with all features, no default features, default features, the relay and the facade without media, then `cargo clippy -D warnings` with the first three, then `format-check` |
+| `cargo make check` | Only the five `cargo check` runs |
 | `cargo make clippy` | Only the three clippy runs |
 | `cargo make format` | `cargo fmt` with the import grouping the project uses |
 | `cargo make test` | `cargo nextest run --workspace` |

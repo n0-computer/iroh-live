@@ -29,8 +29,9 @@ fn local(broadcast: &LocalBroadcast) -> RemoteBroadcast {
 /// rest of the suite.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-fn fps(n: u32) -> moq_video::FrameRate {
-    moq_video::FrameRate::new(n, 1).expect("a valid rate")
+/// Returns a frame rate of `frames_per_second`.
+fn fps(frames_per_second: u32) -> moq_video::FrameRate {
+    moq_video::FrameRate::new(frames_per_second, 1).expect("a valid rate")
 }
 
 /// Returns `encoding` on the software encoder, which every build has.
@@ -629,7 +630,10 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
         assert!(!frame.duration().is_zero());
         assert!(previous.is_none_or(|previous| frame.timestamp > previous));
         previous = Some(frame.timestamp);
-        peak = frame.samples.iter().fold(peak, |peak, s| peak.max(s.abs()));
+        peak = frame
+            .samples
+            .iter()
+            .fold(peak, |peak, sample| peak.max(sample.abs()));
     }
     assert!(
         peak > 0.01,

@@ -69,6 +69,7 @@ pub struct SendConfig {
 }
 
 impl<'de> Deserialize<'de> for SendConfig {
+    /// Takes `name`, then reads the remaining keys as [`CaptureArgs`].
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut table = toml::Table::deserialize(deserializer)?;
         let name = table

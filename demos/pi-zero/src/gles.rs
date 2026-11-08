@@ -1,9 +1,10 @@
 //! A GLES2 video renderer over `glow`.
 //!
-//! The Pi Zero has no Vulkan or wgpu, so `iroh_live::media::video::render` cannot draw here.
-//! I420 frames from openh264 go up as three `LUMINANCE` textures, and a shader
-//! converts the colour. This keeps the CPU free for decoding. Other surfaces
-//! go up as one RGBA texture. Works with any EGL/GLES2 context.
+//! The Pi Zero has no Vulkan or wgpu, so `iroh_live::media::video::render`
+//! cannot draw here. I420 frames from openh264 go up as three `LUMINANCE`
+//! textures, and a shader converts the colour. This keeps the CPU free for
+//! decoding. Other surfaces go up as one RGBA texture. The renderer works with
+//! any EGL/GLES2 context.
 
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
@@ -84,6 +85,7 @@ pub(crate) struct GlesRenderer {
     chroma_tex_height: u32,
 }
 
+/// Compiles a shader of `kind` from `source`.
 fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
     let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyhow::anyhow!(e))?;
     unsafe { gl.shader_source(shader, source) };
@@ -136,12 +138,12 @@ impl GlesRenderer {
         let a_pos_loc = unsafe { gl.get_attrib_location(rgba_program, "a_pos") }
             .context("a_pos not found in RGBA program")?;
 
-        let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
-        let i420_program = link_program(&gl, vs, nv12_fs)?;
-        unsafe { gl.delete_shader(nv12_fs) };
+        let i420_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
+        let i420_program = link_program(&gl, vs, i420_fs)?;
+        unsafe { gl.delete_shader(i420_fs) };
         unsafe { gl.delete_shader(vs) };
         let i420_a_pos_loc = unsafe { gl.get_attrib_location(i420_program, "a_pos") }
-            .context("a_pos not found in NV12 program")?;
+            .context("a_pos not found in I420 program")?;
 
         // The Y, U and V samplers read texture units 0, 1 and 2.
         unsafe { gl.use_program(Some(i420_program)) };

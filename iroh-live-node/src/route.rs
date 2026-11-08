@@ -76,7 +76,7 @@ pub struct Subscription {
 
 /// The link a subscription reads from, and the stream it announced.
 struct Pin {
-    link: u64,
+    link: LinkId,
     /// The instance the link announced, if it declared one.
     instance: Instance,
 }
@@ -141,7 +141,7 @@ impl Subscription {
         path: Path,
         origin: origin::Consumer,
         broadcast: broadcast::Consumer,
-        pin: Option<(u64, Instance)>,
+        pin: Option<(LinkId, Instance)>,
         shared: Weak<Shared>,
     ) -> Self {
         let routes = Routes::new(&origin, &path);
@@ -202,14 +202,14 @@ impl Subscription {
         let state = shared.state.lock().expect("poisoned");
         let (link, entry) = self.serving(&state)?;
         Some(ServingLink {
-            id: LinkId(link),
+            id: link,
             kind: entry.kind,
             sample: entry.link_state.get(),
         })
     }
 
     /// Returns the link serving the broadcast now: the pinned one, or the best route's.
-    fn serving<'a>(&self, state: &'a State) -> Option<(u64, &'a LinkEntry)> {
+    fn serving<'a>(&self, state: &'a State) -> Option<(LinkId, &'a LinkEntry)> {
         let link = match &self.inner.pin {
             Some(pin) => pin.link,
             None => {

@@ -346,7 +346,9 @@ pub struct EncodedVideoSource {
     guard: Option<Box<dyn std::any::Any + Send>>,
 }
 
-/// The parts of an [`EncodedVideoSource`], as [`EncodedVideoSource::into_parts`] returns them.
+/// The byte stream and the guard of an [`EncodedVideoSource`].
+///
+/// [`EncodedVideoSource::into_parts`] returns this pair.
 pub type EncodedParts = (
     n0_future::boxed::BoxStream<bytes::Bytes>,
     Option<Box<dyn std::any::Any + Send>>,
@@ -456,9 +458,6 @@ impl MicrophoneConfig {
     }
 
     /// Returns the capture config with the echo canceller attached.
-    ///
-    /// Fails if echo cancellation is not compiled in, or if the output already
-    /// feeds another canceller.
     ///
     /// Not part of the stable API: the publication that encodes the microphone
     /// calls it when it starts.
