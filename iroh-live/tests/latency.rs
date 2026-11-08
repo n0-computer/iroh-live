@@ -45,6 +45,7 @@ const SIZE: Size = Size {
 /// The nominal gap between two frames, in microseconds.
 const FRAME_MICROS: u64 = 33_333;
 
+/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
 async fn endpoint() -> Endpoint {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     let lookup = LOOKUP.get_or_init(MemoryLookup::new);
@@ -192,6 +193,7 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
     (join, latencies)
 }
 
+/// Prints the latency figures under `label` and returns the median.
 fn report(label: &str, join: Duration, latencies: &mut [Duration]) -> Duration {
     latencies.sort();
     let at = |fraction: f64| latencies[((latencies.len() - 1) as f64 * fraction) as usize];

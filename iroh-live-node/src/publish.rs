@@ -333,7 +333,7 @@ mod tests {
         assert!(matches!(check("live/**"), Err(Error::InvalidPath { .. })));
     }
 
-    /// A peers task that set_audience replaced cannot write its old set back.
+    /// A peers task that `set_audience` replaced cannot write its old set back.
     ///
     /// Aborting the task does not stop one that already waits on the lock, so
     /// this calls the step it takes under the lock with its old generation.

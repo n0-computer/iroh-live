@@ -34,6 +34,7 @@ struct Cli {
     command: Command,
 }
 
+/// The `irl` subcommands.
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Place or answer a 1:1 video call.
@@ -53,6 +54,7 @@ enum Command {
     Watch(Box<args::WatchArgs>),
 }
 
+/// Parses the command line and runs the chosen command.
 fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();

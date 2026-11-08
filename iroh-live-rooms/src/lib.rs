@@ -17,8 +17,8 @@
 //! no other peer can stand in for it. Membership itself is open to anyone with
 //! the ticket.
 //!
-//! The node's [`NodeConfig::grant`](iroh_live_node::NodeConfig::grant) has to let each
-//! peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
+//! The node's [`NodeConfig::grant`](iroh_live_node::NodeConfig::grant) has to
+//! let each peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
 //! `iroh_live::layout::LiveLayout::config(&[Arc::new(publish_scope)])` does
 //! that.
 //!

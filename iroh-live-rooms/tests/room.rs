@@ -7,8 +7,8 @@ mod common;
 use std::time::Duration;
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
-use iroh_live_node::Reach;
-use iroh_live_rooms::{Error, Room, RoomTicket};
+use iroh_live_node::{Audience, Reach};
+use iroh_live_rooms::{Error, Room, RoomState, RoomTicket};
 use moq_net::{Timestamp, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -202,10 +202,7 @@ async fn room_broadcasts_are_private() {
     // In a's own scope, outside the room.
     let public = peer_a
         .moq
-        .publish(
-            format!("rooms/elsewhere/{a}/public"),
-            iroh_live_node::Audience::Everyone,
-        )
+        .publish(format!("rooms/elsewhere/{a}/public"), Audience::Everyone)
         .expect("publish");
     let _public_writer = counting_into(public.broadcast(), 0);
     wait_for_state(&room_b, "b sees a's cam", |state| {
@@ -305,7 +302,7 @@ async fn unpublishing_takes_the_name_out_of_the_room() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let a = peer_a.id();
     let _cam = publish_counter(&room_a, "cam").expect("publish");
-    let lists_cam = |state: &iroh_live_rooms::RoomState| {
+    let lists_cam = |state: &RoomState| {
         state
             .peers
             .get(&a)
@@ -409,7 +406,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
     let forgery = mallory
         .moq
-        .publish(path.as_str(), iroh_live_node::Audience::Everyone)
+        .publish(path.as_str(), Audience::Everyone)
         .expect("publish at b's path");
     let _forger = counting_into(forgery.broadcast(), FORGED);
     tokio::time::timeout(TIMEOUT, mallory.moq.connect(peer_c.endpoint.addr()))

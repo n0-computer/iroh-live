@@ -13,7 +13,6 @@ use std::{
 
 use eframe::egui;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::layout::LiveLayout;
 use iroh_live::media::RpicamConfig;
 use iroh_live::{
     BroadcastTicket,
@@ -100,6 +99,7 @@ impl Camera {
         }
     }
 
+    /// Opens a camera by id, or the default camera, and waits for a first frame.
     async fn open_capture(id: Option<String>) -> Result<Self, String> {
         let label = match &id {
             Some(id) => format!("camera {id}"),
@@ -126,6 +126,7 @@ impl Camera {
     }
 
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    /// Opens the Raspberry Pi camera and waits for a first frame.
     async fn open_rpicam() -> Result<Self, String> {
         let config = RpicamConfig::new(SCAN_SIZE, SCAN_FRAMERATE);
         let source = VideoSource::rpicam(config)
@@ -249,6 +250,7 @@ impl ScanView {
         Self::start(ctx, render_state, skip, Pictures::Borrowed(frames))
     }
 
+    /// Spawns the scan task over `pictures` and returns the handle that reads its state.
     fn start(
         ctx: &egui::Context,
         render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
@@ -757,6 +759,8 @@ fn gaussian_blur(image: &Luma, sigma: f64) -> Luma {
 
 #[cfg(test)]
 mod tests {
+    use iroh_live::layout::LiveLayout;
+
     use super::*;
 
     /// Pixels per QR module in the rendered test images.

@@ -506,7 +506,7 @@ async fn a_peer_cannot_route_another_publishers_path() {
     .await
     .expect("subscribe");
     // The serving link is recorded when the first track is requested, which
-    // moq-net's origin now only sees once a reader asks for one.
+    // moq-net's origin only sees once a reader asks for one.
     assert!(read_counter(&subscription.as_moq()).await < FORGED);
     assert_eq!(
         subscription.session().map(|session| session.remote_id()),

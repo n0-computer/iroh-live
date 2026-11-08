@@ -25,14 +25,14 @@ use tracing::debug;
 
 use moq_ext_access::LinkRole;
 
-use crate::{Grant, LinkKind, Session, link::LinkState, publish::AudienceKind};
+use crate::{Grant, LinkId, LinkKind, Session, link::LinkState, publish::AudienceKind};
 
 /// The node's publications and links.
 #[derive(Debug, Default)]
 pub(crate) struct State {
     next_id: u64,
     pub(crate) publications: BTreeMap<u64, PubEntry>,
-    pub(crate) links: BTreeMap<u64, LinkEntry>,
+    pub(crate) links: BTreeMap<LinkId, LinkEntry>,
     /// Set once the node shuts down; nothing is added after that.
     pub(crate) closed: bool,
     /// Paths that tickets widened a peer's grant to, with how many claims hold each.
@@ -116,7 +116,7 @@ impl State {
     }
 
     /// Adds a link and authorizes it for what it may see now.
-    pub(crate) fn add_link(&mut self, id: u64, link: LinkEntry) {
+    pub(crate) fn add_link(&mut self, id: LinkId, link: LinkEntry) {
         self.links.insert(id, link);
         self.authorize(id);
     }
@@ -124,7 +124,7 @@ impl State {
     /// Removes a link.
     ///
     /// Its session takes its routes out of the route table as it ends.
-    pub(crate) fn remove_link(&mut self, id: u64) {
+    pub(crate) fn remove_link(&mut self, id: LinkId) {
         self.links.remove(&id);
     }
 
@@ -159,7 +159,7 @@ impl State {
     }
 
     /// Sets the base grant of link `id`, and re-authorizes it.
-    pub(crate) fn set_grant(&mut self, id: u64, grant: Grant) {
+    pub(crate) fn set_grant(&mut self, id: LinkId, grant: Grant) {
         let Some(link) = self.links.get_mut(&id) else {
             return;
         };
@@ -243,7 +243,7 @@ impl State {
     ///
     /// moq skips a grant equal to the last one, so a change that leaves the
     /// link's view alone costs its session nothing.
-    fn authorize(&self, id: u64) {
+    fn authorize(&self, id: LinkId) {
         let Some(link) = self.links.get(&id) else {
             return;
         };
@@ -298,7 +298,7 @@ impl State {
     /// its own, as moq-relay does, and maps to the oldest relay link. `None`
     /// for a route published on this node, and for an unknown hop while no
     /// relay is attached.
-    pub(crate) fn link_for(&self, source: Source) -> Option<u64> {
+    pub(crate) fn link_for(&self, source: Source) -> Option<LinkId> {
         let Source::Peer(hop) = source else {
             return None;
         };
@@ -316,7 +316,7 @@ impl State {
     }
 
     /// Returns the link whose peer carries `hop`, if any.
-    pub(crate) fn link_with_hop(&self, hop: u64) -> Option<u64> {
+    pub(crate) fn link_with_hop(&self, hop: u64) -> Option<LinkId> {
         self.links
             .iter()
             .find(|(_, link)| link.hop.get() == hop)

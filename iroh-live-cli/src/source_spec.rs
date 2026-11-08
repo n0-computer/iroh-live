@@ -228,7 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_kinds() {
+    fn video_specifiers_parse_to_their_kinds() {
         assert_eq!(
             VideoSourceSpec::parse("cam").unwrap(),
             VideoSourceSpec::Camera(None)
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    fn video_rpicam() {
+    fn rpicam_specifiers_parse_with_and_without_raw() {
         assert_eq!(
             VideoSourceSpec::parse("rpicam").unwrap(),
             VideoSourceSpec::Rpicam(RpicamMode::Encoded)
@@ -308,7 +308,7 @@ mod tests {
     /// `:raw` asks for pictures instead of the hardware encoder's H.264.
     #[test]
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    fn video_rpicam_raw() {
+    fn rpicam_raw_is_a_mode_of_rpicam() {
         assert_eq!(
             VideoSourceSpec::parse("rpicam:raw").unwrap(),
             VideoSourceSpec::Rpicam(RpicamMode::Raw)
@@ -324,13 +324,13 @@ mod tests {
     /// A build without the source names the missing feature.
     #[test]
     #[cfg(not(all(target_os = "linux", feature = "rpicam")))]
-    fn video_rpicam_needs_the_feature() {
+    fn rpicam_is_refused_without_the_feature() {
         let err = VideoSourceSpec::parse("rpicam").unwrap_err();
         assert!(err.contains("'rpicam' feature"), "{err}");
     }
 
     #[test]
-    fn video_forms_that_need_an_id() {
+    fn forms_that_need_an_id_are_refused_without_one() {
         assert!(VideoSourceSpec::parse("window").is_err());
         assert!(VideoSourceSpec::parse("app").is_err());
         assert!(VideoSourceSpec::parse("file").is_err());
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn video_file_loop_suffix() {
+    fn a_video_file_takes_a_loop_suffix() {
         assert_eq!(
             VideoSourceSpec::parse("file:/tmp/clip.mp4:loop").unwrap(),
             VideoSourceSpec::File {
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_kinds() {
+    fn audio_specifiers_parse_to_their_kinds() {
         assert_eq!(
             AudioSourceSpec::parse("mic").unwrap(),
             AudioSourceSpec::Microphone(None)
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_unknown_is_a_device_name() {
+    fn an_unknown_audio_specifier_is_a_device_name() {
         assert_eq!(
             AudioSourceSpec::parse("hw:0,1").unwrap(),
             AudioSourceSpec::Microphone(Some("hw:0,1".into()))
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_file_loop_suffix() {
+    fn an_audio_file_takes_a_loop_suffix() {
         assert_eq!(
             AudioSourceSpec::parse("file:/tmp/song.flac:loop").unwrap(),
             AudioSourceSpec::File {

@@ -27,6 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hang::catalog::Reference as _;
 use moq_ext_adaptive::{Abandoned, Outcome, Switcher, Target, Verdict};
 use n0_future::{
     FutureExt,
@@ -565,7 +566,7 @@ async fn spawn_reader(
     let (tx, frames) = mpsc::channel(READ_AHEAD);
     let name = rendition.to_string();
     let on_screen = Arc::new(AtomicBool::new(false));
-    let writes = on_screen.clone();
+    let is_on_screen = on_screen.clone();
     let failure = Arc::new(OnceLock::new());
     let gave_up = failure.clone();
     let task = spawn(
@@ -588,7 +589,7 @@ async fn spawn_reader(
                         // Includes the transport read, since both happen
                         // inside one `read`.
                         let took = timing.record(started.elapsed());
-                        if writes.load(Ordering::Relaxed) {
+                        if is_on_screen.load(Ordering::Relaxed) {
                             stats.video.update(|video| {
                                 if let Some(video) = video.as_mut() {
                                     video.decode_time = Some(took);
@@ -623,7 +624,7 @@ async fn spawn_reader(
                         return;
                     }
                     Err(err) => {
-                        if writes.load(Ordering::Relaxed) {
+                        if is_on_screen.load(Ordering::Relaxed) {
                             stats.video.update(|video| {
                                 if let Some(video) = video.as_mut() {
                                     video.skipped += 1;
@@ -672,8 +673,6 @@ fn watch_arrivals(
     rendition: &str,
     arrivals: &Arrivals,
 ) -> Option<AbortOnDropHandle<()>> {
-    use hang::catalog::Reference as _;
-
     let container = moq_mux::catalog::hang::Container::try_from(config).ok()?;
     let track = settings.consumer.track(config.track(rendition)).ok()?;
     // What `moq_video::decode::Consumer` asks for, so the publisher sees one
@@ -721,10 +720,10 @@ mod tests {
         height: 240,
     };
 
-    /// Pictures per test stream: three groups of [`GOP`].
+    /// Pictures per test stream: three groups of [`PICTURES_PER_GROUP`].
     const PICTURES: u64 = 30;
     /// The keyframe interval of the test stream.
-    const GOP: u32 = 10;
+    const PICTURES_PER_GROUP: u32 = 10;
 
     /// The interval between pictures at the 30fps the stream is encoded for.
     const FRAME_MICROS: u64 = 33_333;
@@ -750,12 +749,12 @@ mod tests {
         let mut config = encode::Config::new(SIZE.width, SIZE.height, framerate);
         config.kind = encode::Kind::Software;
         // Ten frames at 30 fps.
-        config.join = std::time::Duration::from_secs(1) * GOP / 30;
+        config.join = Duration::from_secs(1) * PICTURES_PER_GROUP / 30;
         let mut encoder = encode::Encoder::new(&config).expect("the software encoder always opens");
 
         let mut units = Vec::new();
         for index in 0..PICTURES {
-            if index % u64::from(GOP) == 0 {
+            if index % u64::from(PICTURES_PER_GROUP) == 0 {
                 encoder.cut().expect("the software encoder can cut a group");
             }
             let mut rgba = vec![0u8; SIZE.pixels() as usize * 4];
@@ -834,8 +833,9 @@ mod tests {
 
         // Publish only the first group, so the reader opens inside it. Split by
         // presentation time, as `feed` explains.
-        let boundary =
-            units.partition_point(|unit| (unit.timestamp.as_micros() as u64) < pts(GOP.into()));
+        let boundary = units.partition_point(|unit| {
+            (unit.timestamp.as_micros() as u64) < pts(PICTURES_PER_GROUP.into())
+        });
         feed(&mut import, &mut split, &units[..boundary], None)?;
 
         // A long max age, so the consumer delivers the break instead of
@@ -906,7 +906,7 @@ mod tests {
     ///
     /// It lies in the second group, after the reader's start in the first. The
     /// keyframe opening the third group repairs it.
-    const BROKEN: u64 = GOP as u64 + 3;
+    const BROKEN: u64 = PICTURES_PER_GROUP as u64 + 3;
 
     /// Publishes one stream and reads it to the end.
     ///
@@ -932,7 +932,7 @@ mod tests {
         // differently: macOS delivers the truncated picture and Linux drops it.
         // Both confine the loss to the broken group.
         let lost: Vec<u64> = intact.difference(&broken).copied().collect();
-        let group = pts(BROKEN)..pts(u64::from(GOP) * 2);
+        let group = pts(BROKEN)..pts(u64::from(PICTURES_PER_GROUP) * 2);
 
         assert!(
             broken.iter().any(|&picture| picture < group.start),
@@ -951,7 +951,7 @@ mod tests {
             );
         }
         assert!(
-            broken.contains(&pts(u64::from(GOP) * 2)),
+            broken.contains(&pts(u64::from(PICTURES_PER_GROUP) * 2)),
             "the keyframe after the break never arrived: got {broken:?}",
         );
         assert!(

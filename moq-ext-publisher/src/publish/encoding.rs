@@ -7,6 +7,12 @@ use moq_net::bandwidth::Rate;
 use moq_ext_media_core::Error;
 use moq_ext_sources::AudioFormat;
 
+/// The frame durations Opus accepts, in microseconds.
+///
+/// Another one would fail later in the publication, after `set_audio` has
+/// returned.
+const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_000];
+
 /// How a video source is encoded: one or more renditions of the same picture.
 #[derive(Debug, Clone)]
 pub struct VideoEncoding {
@@ -21,11 +27,13 @@ pub struct VideoEncoding {
 
 impl VideoEncoding {
     /// Encodes one rendition.
+    #[must_use]
     pub fn single(rendition: VideoRendition) -> Self {
         Self::ladder([rendition])
     }
 
     /// Encodes a simulcast ladder: several renditions of the same picture.
+    #[must_use]
     pub fn ladder(renditions: impl IntoIterator<Item = VideoRendition>) -> Self {
         Self {
             renditions: renditions.into_iter().collect(),
@@ -115,6 +123,7 @@ pub struct VideoRendition {
 
 impl VideoRendition {
     /// Creates a rendition at the source's size with a keyframe every two seconds.
+    #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -128,21 +137,25 @@ impl VideoRendition {
     }
 
     /// Returns `180p`: 320x180 at 150 kbit/s.
+    #[must_use]
     pub fn p180() -> Self {
         Self::preset("180p", 320, 180, 150)
     }
 
     /// Returns `360p`: 640x360 at 500 kbit/s.
+    #[must_use]
     pub fn p360() -> Self {
         Self::preset("360p", 640, 360, 500)
     }
 
     /// Returns `720p`: 1280x720 at 1.8 Mbit/s.
+    #[must_use]
     pub fn p720() -> Self {
         Self::preset("720p", 1280, 720, 1_800)
     }
 
     /// Returns `1080p`: 1920x1080 at 4 Mbit/s.
+    #[must_use]
     pub fn p1080() -> Self {
         Self::preset("1080p", 1920, 1080, 4_000)
     }
@@ -200,6 +213,7 @@ pub struct AudioEncoding {
 
 impl AudioEncoding {
     /// Returns Opus mono at 32 kbit/s, for speech.
+    #[must_use]
     pub fn voice() -> Self {
         Self {
             codec: moq_audio::encode::Codec::Opus,
@@ -210,6 +224,7 @@ impl AudioEncoding {
     }
 
     /// Returns Opus stereo at 128 kbit/s, for music.
+    #[must_use]
     pub fn music() -> Self {
         Self {
             codec: moq_audio::encode::Codec::Opus,
@@ -220,6 +235,7 @@ impl AudioEncoding {
     }
 
     /// Returns uncompressed PCM at the source's own rate and layout.
+    #[must_use]
     pub fn pcm() -> Self {
         Self {
             codec: moq_audio::encode::Codec::Pcm,
@@ -244,9 +260,6 @@ impl AudioEncoding {
         if self.frame_duration.is_zero() {
             return Err(Error::invalid("an audio frame duration cannot be zero"));
         }
-        // Opus accepts only these frame sizes. Another one would fail later in
-        // the publication, after this call has returned.
-        const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_000];
         if self.codec == moq_audio::encode::Codec::Opus
             && !OPUS_FRAMES_MICROS.contains(&self.frame_duration.as_micros())
         {

@@ -23,7 +23,7 @@ use crate::{
     RemoteBroadcast, SwitchError,
     catalog::VideoRenditions as _,
     frames::{FrameSlot, VideoFrames},
-    stats::{FrameTiming, PlaybackStats, Timeline},
+    stats::{AudioPlaybackStats, FrameTiming, PlaybackStats, Timeline, VideoPlaybackStats},
 };
 
 mod arrivals;
@@ -116,8 +116,8 @@ pub struct PlayerConfig {
     /// It bounds every handover: automatic, pinned, or to another decoder. The
     /// replacement subscribes to the other rendition, waits for its next
     /// keyframe, and decodes until it catches up with the picture on screen.
-    /// On a two second GOP over an impaired link, the keyframe alone takes
-    /// seconds. The incumbent keeps playing either way. 15 s by default.
+    /// With a keyframe every two seconds on an impaired link, waiting for
+    /// the keyframe alone takes seconds. The incumbent keeps playing either way. 15 s by default.
     pub switch_deadline: Duration,
 }
 
@@ -190,8 +190,8 @@ pub(crate) enum Abandon {
 /// The writers behind [`PlaybackStats`].
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlaybackRecorder {
-    pub(crate) video: Cell<Option<crate::stats::VideoPlaybackStats>>,
-    pub(crate) audio: Cell<Option<crate::stats::AudioPlaybackStats>>,
+    pub(crate) video: Cell<Option<VideoPlaybackStats>>,
+    pub(crate) audio: Cell<Option<AudioPlaybackStats>>,
     /// Written by the video task as it presents pictures.
     pub(crate) video_timeline: Timeline,
     /// Written by the audio task as it writes to the output.

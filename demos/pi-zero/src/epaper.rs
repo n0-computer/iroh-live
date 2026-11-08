@@ -22,6 +22,7 @@
 //! | DC       | 25       | 22           |
 //! | RST      | 17       | 11           |
 //! | BUSY     | 24       | 18           |
+
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{MonoTextStyle, ascii::FONT_4X6},
@@ -31,7 +32,10 @@ use embedded_graphics::{
     text::Text,
 };
 use gpio_cdev::{Chip, LineRequestFlags};
-use linux_embedded_hal::{CdevPin, SpidevDevice};
+use linux_embedded_hal::{
+    CdevPin, SpidevDevice,
+    spidev::{SpiModeFlags, SpidevOptions},
+};
 use qrcode::{EcLevel, QrCode, types::QrError};
 use tracing::{debug, info};
 
@@ -43,11 +47,14 @@ const GPIO_CHIP: &str = "/dev/gpiochip0";
 /// SPI device for the e-paper display.
 const SPI_DEV: &str = "/dev/spidev0.0";
 
-// BCM GPIO pins of the HAT.
+/// BCM GPIO pin of the DC line.
 const PIN_DC: u32 = 25;
+/// BCM GPIO pin of the RST line.
 const PIN_RST: u32 = 17;
+/// BCM GPIO pin of the BUSY line.
 const PIN_BUSY: u32 = 24;
 
+/// The e-paper driver with the Pi's SPI and GPIO types.
 type Epd = Epd2in13V4<SpidevDevice, CdevPin, CdevPin, CdevPin>;
 
 /// A 1-bit framebuffer in the panel's wire format.
@@ -57,12 +64,14 @@ struct DisplayBuffer {
 }
 
 impl DisplayBuffer {
+    /// Creates a buffer with every pixel white.
     fn new_white() -> Self {
         Self {
             buf: [0xFF; epd_v4::BUF_LEN],
         }
     }
 
+    /// Returns the bytes to send to the panel.
     fn buffer(&self) -> &[u8] {
         &self.buf
     }
@@ -110,7 +119,6 @@ impl OriginDimensions for DisplayBuffer {
 fn open_epd() -> anyhow::Result<(SpidevDevice, Epd)> {
     debug!(spi = SPI_DEV, "opening SPI device");
     let mut spi = SpidevDevice::open(SPI_DEV)?;
-    use linux_embedded_hal::spidev::{SpiModeFlags, SpidevOptions};
     let opts = SpidevOptions::new()
         .bits_per_word(8)
         .max_speed_hz(4_000_000)
@@ -165,7 +173,9 @@ struct QrLayout {
     scale: usize,
     /// Edge length of the drawn code in pixels.
     size_px: usize,
+    /// Left edge of the code in pixels.
     x_offset: usize,
+    /// Top edge of the code in pixels.
     y_offset: usize,
 }
 

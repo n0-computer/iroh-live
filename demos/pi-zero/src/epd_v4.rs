@@ -4,6 +4,7 @@
 //! refresh command 0x22 takes 0xF7 where V3 takes 0xC7. The `epd-waveshare`
 //! crate supports only V2 and V3, so this follows Waveshare's Python driver
 //! `epd2in13_V4.py`.
+
 use std::{thread, time::Duration};
 
 use embedded_hal::{
@@ -46,12 +47,14 @@ where
         Ok(epd)
     }
 
+    /// Sends a command byte with the DC pin low.
     fn send_command(&mut self, spi: &mut SPI, cmd: u8) -> Result<(), SPI::Error> {
         let _ = self.dc.set_low();
         spi.write(&[cmd])?;
         Ok(())
     }
 
+    /// Sends data bytes with the DC pin high.
     fn send_data(&mut self, spi: &mut SPI, data: &[u8]) -> Result<(), SPI::Error> {
         let _ = self.dc.set_high();
         // Chunks stay under the spidev transfer size limit.
@@ -61,12 +64,14 @@ where
         Ok(())
     }
 
+    /// Sends a command byte followed by its data bytes.
     fn send_command_data(&mut self, spi: &mut SPI, cmd: u8, data: &[u8]) -> Result<(), SPI::Error> {
         self.send_command(spi, cmd)?;
         self.send_data(spi, data)?;
         Ok(())
     }
 
+    /// Blocks until the controller releases the BUSY pin.
     fn wait_busy(&mut self) {
         // The BUSY pin is high while the controller works.
         while let Ok(true) = self.busy.is_high() {
@@ -74,6 +79,7 @@ where
         }
     }
 
+    /// Pulses the RST pin to reset the controller.
     fn hw_reset(&mut self) {
         let _ = self.rst.set_high();
         thread::sleep(Duration::from_millis(20));
@@ -105,6 +111,7 @@ where
         Ok(())
     }
 
+    /// Sets the RAM window that the next write fills.
     fn set_window(
         &mut self,
         spi: &mut SPI,
@@ -127,12 +134,14 @@ where
         Ok(())
     }
 
+    /// Sets the RAM address counter.
     fn set_cursor(&mut self, spi: &mut SPI, x: u32, y: u32) -> Result<(), SPI::Error> {
         self.send_command_data(spi, 0x4E, &[x as u8])?;
         self.send_command_data(spi, 0x4F, &[y as u8, (y >> 8) as u8])?;
         Ok(())
     }
 
+    /// Refreshes the panel from the display RAM.
     fn turn_on_display(&mut self, spi: &mut SPI) -> Result<(), SPI::Error> {
         self.send_command_data(spi, 0x22, &[0xF7])?; // V4 uses 0xF7, V3 uses 0xC7
         self.send_command(spi, 0x20)?; // Master activation

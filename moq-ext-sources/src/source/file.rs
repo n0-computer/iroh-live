@@ -9,7 +9,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use n0_error::AnyError;
@@ -31,8 +31,12 @@ use crate::Error;
 /// Opens `path` and decodes it into `fanout` on its own thread.
 ///
 /// Decoding runs until the file ends or `stop` is cancelled. Returns the
-/// file's own sample rate and layout. Fails if the file cannot be read, holds
-/// no audio track, or uses a codec this build cannot decode.
+/// file's own sample rate and layout.
+///
+/// # Errors
+///
+/// Fails if the file cannot be read, holds no audio track, or uses a codec
+/// this build cannot decode.
 pub(crate) fn spawn(
     path: PathBuf,
     looping: bool,
@@ -156,7 +160,7 @@ fn decode_loop(
     fanout: &PcmFanout,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let mut published = Duration::ZERO;
 
     loop {
@@ -181,7 +185,7 @@ fn decode_once(
     path: &Path,
     fanout: &PcmFanout,
     stop: &CancellationToken,
-    started: &std::time::Instant,
+    started: &Instant,
     published: &mut Duration,
 ) -> Result<usize, Error> {
     let decode_err = |source: symphonia::core::errors::Error| file_error(path, source);
@@ -381,11 +385,7 @@ mod tests {
     /// A looping file that decodes to nothing stops instead of retrying.
     #[test]
     fn a_file_with_no_samples_stops_instead_of_looping() {
-        let path =
-            std::env::temp_dir().join(format!("iroh-live-media-empty-{}.wav", std::process::id()));
-        std::fs::File::create(&path)
-            .and_then(|mut file| file.write_all(&empty_wav()))
-            .expect("write the test file");
+        let path = temp_file("empty", &empty_wav());
 
         // On its own thread with a deadline, because the failure is a loop
         // that never returns.

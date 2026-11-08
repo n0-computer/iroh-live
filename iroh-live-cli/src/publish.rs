@@ -208,6 +208,7 @@ mod preview {
         .map_err(|err| anyerr!("eframe failed: {err:#}"))
     }
 
+    /// The `irl publish --preview` window.
     struct PreviewApp {
         live: Transport,
         broadcast: LocalBroadcast,
@@ -264,8 +265,10 @@ mod preview {
     }
 
     impl PickedSource {
+        /// Every choice, in menu order.
         const ALL: [Self; 4] = [Self::Camera, Self::Screen, Self::Test, Self::None];
 
+        /// Returns the menu label.
         fn label(self) -> &'static str {
             match self {
                 Self::Camera => "Camera",
@@ -327,6 +330,7 @@ mod preview {
     }
 
     impl SourcePicker {
+        /// Creates a picker that starts on the source `capture` names.
         fn new(capture: CaptureArgs, sources: Opened) -> Self {
             let selected = capture
                 .video_source()
@@ -342,6 +346,7 @@ mod preview {
             }
         }
 
+        /// Draws the source menu and swaps the broadcast video when the choice changes.
         fn ui(&mut self, ui: &mut egui::Ui, broadcast: &LocalBroadcast) {
             ui.label("Video");
             let label = match self.selected {

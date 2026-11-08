@@ -52,12 +52,14 @@ impl Backend {
             .ok_or_else(|| serde::de::Error::custom(format!("unknown encoder '{value}'")))
     }
 
+    /// Returns the strategies followed by one choice per name in `names`.
     fn choices(names: &'static [&'static str]) -> impl Iterator<Item = Self> {
         [Self::Auto, Self::Hardware, Self::Software]
             .into_iter()
             .chain(names.iter().map(|name| Self::Named(name)))
     }
 
+    /// Parses a strategy, its short alias, or a name in `names`, ignoring case.
     fn parse(value: &str, names: &'static [&'static str]) -> Option<Self> {
         match value.to_lowercase().as_str() {
             "auto" => Some(Self::Auto),
@@ -70,6 +72,7 @@ impl Backend {
         }
     }
 
+    /// Returns a clap parser that accepts exactly the choices for `names`.
     fn parser(names: &'static [&'static str]) -> impl TypedValueParser<Value = Self> {
         let values = Self::choices(names).map(|choice| match choice {
             Self::Hardware => PossibleValue::new("hardware").alias("hw"),
@@ -118,6 +121,7 @@ mod tests {
         decoder: Backend,
     }
 
+    /// Parses `args` as if typed after `irl`.
     fn parse(args: &[&str]) -> Result<Flags, clap::Error> {
         Flags::try_parse_from(std::iter::once("irl").chain(args.iter().copied()))
     }

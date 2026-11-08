@@ -23,7 +23,9 @@ use moq_ext_publisher::{PublishStats, PublishStatus, RenditionState};
 /// Height of the overlay bar, text and padding included.
 const BAR_HEIGHT: f32 = 15.0;
 
-/// Returns the largest size that fits `available` and keeps `aspect`, width over height.
+/// Returns the largest size that fits `available` and keeps `aspect`.
+///
+/// The aspect is width over height.
 #[must_use]
 pub fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
     let h_by_width = available.x / aspect;
@@ -35,6 +37,7 @@ pub fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
     }
 }
 
+/// The alpha of the translucent black behind bars and panels.
 const BG_ALPHA: u8 = 200;
 
 /// How often the overlay records history, so its length does not depend on the repaint rate.
@@ -43,8 +46,10 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 /// Points kept per series: twelve seconds at [`SAMPLE_INTERVAL`].
 const HISTORY_LEN: usize = 120;
 
-const SPARK_W: f32 = 100.0;
+/// The width of a sparkline, in points.
+const SPARK_WIDTH: f32 = 100.0;
 
+// Colors that grade a figure, and the one for plain information.
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(100, 220, 100);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(220, 200, 80);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(220, 80, 80);
@@ -73,6 +78,7 @@ pub enum StatCategory {
 
 impl StatCategory {
     /// Returns the short label shown in the bottom bar.
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Net => "NET",
@@ -84,7 +90,7 @@ impl StatCategory {
     }
 }
 
-/// Debug overlay with a bottom bar and detail panels.
+/// A debug overlay with a bottom bar and detail panels.
 ///
 /// The bar shows a short summary for each enabled category. Clicking a section
 /// toggles a panel above the bar with all figures and their sparklines.
@@ -114,9 +120,13 @@ static OVERLAY_SALT: AtomicU64 = AtomicU64::new(0);
 
 impl DebugOverlay {
     /// Creates an overlay with the given categories enabled, all collapsed.
+    #[must_use]
     pub fn new(categories: &[StatCategory]) -> Self {
         Self {
-            categories: categories.iter().map(|&cat| (cat, false)).collect(),
+            categories: categories
+                .iter()
+                .map(|&category| (category, false))
+                .collect(),
             history: History::default(),
             link: Vec::new(),
             timeline_scroll: 0.0,
@@ -137,6 +147,7 @@ impl DebugOverlay {
     }
 
     /// Returns whether any detail panel is open.
+    #[must_use]
     pub fn any_expanded(&self) -> bool {
         self.categories.iter().any(|&(_, expanded)| expanded)
     }
@@ -158,7 +169,7 @@ impl DebugOverlay {
         let sections: Vec<Section> = self
             .categories
             .iter()
-            .filter_map(|&(cat, _)| match cat {
+            .filter_map(|&(category, _)| match category {
                 StatCategory::Net => Some(net_playback(stats.network.as_ref(), &self.link)),
                 StatCategory::Render => Some(render_playback(stats, status)),
                 StatCategory::Audio => Some(audio_playback(stats, status)),
@@ -173,6 +184,7 @@ impl DebugOverlay {
     ///
     /// Use it to decide whether to fetch the player's timeline for
     /// [`show_playback`](Self::show_playback).
+    #[must_use]
     pub fn timeline_open(&self) -> bool {
         self.is_expanded(StatCategory::Time)
     }
@@ -192,7 +204,7 @@ impl DebugOverlay {
         let sections: Vec<Section> = self
             .categories
             .iter()
-            .filter_map(|&(cat, _)| match cat {
+            .filter_map(|&(category, _)| match category {
                 StatCategory::Capture => Some(capture_publish(stats, status)),
                 StatCategory::Net => Some(net_publish(stats)),
                 StatCategory::Render | StatCategory::Audio | StatCategory::Time => None,
@@ -201,10 +213,11 @@ impl DebugOverlay {
         self.draw(ui, video_rect, &sections, &[]);
     }
 
-    fn is_expanded(&self, cat: StatCategory) -> bool {
+    /// Returns whether the panel of `category` is open.
+    fn is_expanded(&self, category: StatCategory) -> bool {
         self.categories
             .iter()
-            .any(|&(c, expanded)| c == cat && expanded)
+            .any(|&(candidate, expanded)| candidate == category && expanded)
     }
 
     /// Records the history, then paints the open panels and the bottom bar.
@@ -233,10 +246,10 @@ impl DebugOverlay {
             );
             self.paint_panel(ui.painter(), rect, &section.lines, &font);
             if section.category == StatCategory::Time {
-                y_cursor -= TIMELINE_H;
+                y_cursor -= TIMELINE_HEIGHT;
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(video_rect.min.x, y_cursor),
-                    egui::vec2(video_rect.width(), TIMELINE_H),
+                    egui::vec2(video_rect.width(), TIMELINE_HEIGHT),
                 );
                 self.paint_timeline(ui, rect, timeline);
             }
@@ -293,9 +306,9 @@ impl DebugOverlay {
             }
         }
 
-        for cat in clicks {
-            for (c, expanded) in &mut self.categories {
-                if *c == cat {
+        for clicked in clicks {
+            for (category, expanded) in &mut self.categories {
+                if *category == clicked {
                     *expanded = !*expanded;
                 }
             }
@@ -326,8 +339,8 @@ impl DebugOverlay {
                 .filter(|values| values.len() >= 2);
             if let Some(values) = history {
                 let spark_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.max.x - SPARK_W - 6.0, y + 2.0),
-                    egui::vec2(SPARK_W, BAR_HEIGHT - 4.0),
+                    egui::pos2(rect.max.x - SPARK_WIDTH - 6.0, y + 2.0),
+                    egui::vec2(SPARK_WIDTH, BAR_HEIGHT - 4.0),
                 );
                 paint_sparkline(painter, spark_rect, values, line.color);
             }
@@ -398,16 +411,21 @@ impl Line {
 /// point for that many samples is dropped, so the history stays bounded.
 #[derive(Debug, Default)]
 struct History {
+    /// When the history last took a sample.
     last_sample: Option<Instant>,
+    /// How many samples the history has taken.
     tick: u64,
+    /// The plotted figures, by key.
     series: BTreeMap<String, Series>,
 }
 
+/// The recorded points of one plotted figure.
 #[derive(Debug, Default)]
 struct Series {
     values: VecDeque<f64>,
     /// When each value was recorded, for the timeline.
     times: VecDeque<Instant>,
+    /// The history tick of the latest point, for dropping idle series.
     last_tick: u64,
 }
 
@@ -514,6 +532,7 @@ fn higher_is_better(value: f64, good: f64, warn: f64) -> egui::Color32 {
     }
 }
 
+/// Returns `duration` in milliseconds.
 fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
@@ -928,23 +947,26 @@ const TIMELINE_WINDOW_SECS: f32 = 10.0;
 ///
 /// About as far as the recorded history reaches.
 const TIMELINE_SCROLL_MAX: f32 = 12.0;
-const HOLD_LANE_H: f32 = 36.0;
-const VIDEO_LANE_H: f32 = 20.0;
-const AUDIO_LANE_H: f32 = 16.0;
-const AV_LANE_H: f32 = 20.0;
-const BUFFER_LANE_H: f32 = 26.0;
-const RTT_LANE_H: f32 = 26.0;
-const AXIS_H: f32 = 14.0;
+
+// The heights of the timeline's lanes and its axis.
+const HOLD_LANE_HEIGHT: f32 = 36.0;
+const VIDEO_LANE_HEIGHT: f32 = 20.0;
+const AUDIO_LANE_HEIGHT: f32 = 16.0;
+const AV_LANE_HEIGHT: f32 = 20.0;
+const BUFFER_LANE_HEIGHT: f32 = 26.0;
+const RTT_LANE_HEIGHT: f32 = 26.0;
+const AXIS_HEIGHT: f32 = 14.0;
 /// The timeline's height: every lane and the axis, plus a small margin.
-const TIMELINE_H: f32 = HOLD_LANE_H
-    + VIDEO_LANE_H
-    + AUDIO_LANE_H
-    + AV_LANE_H
-    + BUFFER_LANE_H
-    + RTT_LANE_H
-    + AXIS_H
+const TIMELINE_HEIGHT: f32 = HOLD_LANE_HEIGHT
+    + VIDEO_LANE_HEIGHT
+    + AUDIO_LANE_HEIGHT
+    + AV_LANE_HEIGHT
+    + BUFFER_LANE_HEIGHT
+    + RTT_LANE_HEIGHT
+    + AXIS_HEIGHT
     + 4.0;
 
+// Colors of the timeline's audio lanes, RTT lane and grid.
 const COLOR_AUDIO: egui::Color32 = egui::Color32::from_rgb(68, 136, 204);
 const COLOR_RTT: egui::Color32 = egui::Color32::from_rgb(0, 200, 200);
 const COLOR_GRID: egui::Color32 = egui::Color32::from_rgb(50, 50, 50);
@@ -1018,7 +1040,7 @@ impl DebugOverlay {
             painter.line_segment(
                 [
                     egui::pos2(x, rect.min.y),
-                    egui::pos2(x, rect.max.y - AXIS_H),
+                    egui::pos2(x, rect.max.y - AXIS_HEIGHT),
                 ],
                 egui::Stroke::new(1.0_f32, COLOR_GRID),
             );
@@ -1052,7 +1074,7 @@ impl DebugOverlay {
 
         // HOLD: time from decode to screen, per frame.
         let mut top = 0.0;
-        let hold_rect = lanes.lane(top, HOLD_LANE_H);
+        let hold_rect = lanes.lane(top, HOLD_LANE_HEIGHT);
         label(hold_rect, "HOLD", COLOR_DIM);
         let holds: Vec<(f32, f32)> = video
             .iter()
@@ -1086,10 +1108,10 @@ impl DebugOverlay {
             let color = lower_is_better(f64::from(hold), 100.0, 200.0);
             value(hold_rect, format!("{hold:.0}ms"), color);
         }
-        top += HOLD_LANE_H;
+        top += HOLD_LANE_HEIGHT;
 
         // VIDEO: one box per frame, colored by its gap to the previous frame.
-        let video_rect = lanes.lane(top, VIDEO_LANE_H);
+        let video_rect = lanes.lane(top, VIDEO_LANE_HEIGHT);
         label(video_rect, "VIDEO", COLOR_DIM);
         let mut gaps: Vec<f32> = video
             .windows(2)
@@ -1113,15 +1135,15 @@ impl DebugOverlay {
             };
             let frame = egui::Rect::from_min_size(
                 egui::pos2(x, video_rect.min.y + 7.0),
-                egui::vec2(width, VIDEO_LANE_H - 8.0),
+                egui::vec2(width, VIDEO_LANE_HEIGHT - 8.0),
             );
             painter.rect_filled(frame, 1.0, gap_color(gap, expected));
         }
-        top += VIDEO_LANE_H;
+        top += VIDEO_LANE_HEIGHT;
 
         // AUDIO: one box per audio block, red if it played more than 100 ms
         // after it was decoded.
-        let audio_rect = lanes.lane(top, AUDIO_LANE_H);
+        let audio_rect = lanes.lane(top, AUDIO_LANE_HEIGHT);
         label(audio_rect, "AUDIO", COLOR_AUDIO);
         for (index, timing) in audio.iter().enumerate() {
             let x = lanes.x(timing.presented);
@@ -1136,14 +1158,14 @@ impl DebugOverlay {
             };
             let block = egui::Rect::from_min_size(
                 egui::pos2(x, audio_rect.min.y + 5.0),
-                egui::vec2(width, AUDIO_LANE_H - 6.0),
+                egui::vec2(width, AUDIO_LANE_HEIGHT - 6.0),
             );
             painter.rect_filled(block, 1.0, color);
         }
-        top += AUDIO_LANE_H;
+        top += AUDIO_LANE_HEIGHT;
 
         // A/V: how much later each frame was presented than its audio.
-        let av_rect = lanes.lane(top, AV_LANE_H);
+        let av_rect = lanes.lane(top, AV_LANE_HEIGHT);
         let zero = av_rect.center().y;
         painter.line_segment(
             [
@@ -1175,13 +1197,13 @@ impl DebugOverlay {
         if let Some(&(_, offset)) = offsets.last() {
             value(av_rect, format!("{offset:+.0}ms"), av_color(offset));
         }
-        top += AV_LANE_H;
+        top += AV_LANE_HEIGHT;
 
         // BUFFER and RTT come from the overlay's history of the AUDIO and NET
         // figures.
         for (key, name, height, color) in [
-            ("audio.buffered", "BUFFER", BUFFER_LANE_H, COLOR_AUDIO),
-            ("net.rtt", "RTT", RTT_LANE_H, COLOR_RTT),
+            ("audio.buffered", "BUFFER", BUFFER_LANE_HEIGHT, COLOR_AUDIO),
+            ("net.rtt", "RTT", RTT_LANE_HEIGHT, COLOR_RTT),
         ] {
             let strip = lanes.lane(top, height);
             let points: Vec<(Instant, f64)> = self
@@ -1214,7 +1236,7 @@ impl DebugOverlay {
         }
 
         // Axis labels show seconds before now.
-        let axis_y = rect.max.y - AXIS_H;
+        let axis_y = rect.max.y - AXIS_HEIGHT;
         let axis_color = egui::Color32::from_rgb(120, 120, 120);
         let offset = now.saturating_duration_since(right).as_secs_f32();
         for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {

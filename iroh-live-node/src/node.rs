@@ -23,8 +23,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, Incoming, OwnerFn,
-    Publication, RelayConfig, RelayLink, Session, Subscription,
+    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, Incoming, LinkId,
+    OwnerFn, Publication, RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
     handshake::{SessionParts, hop_for},
@@ -150,7 +150,7 @@ pub(crate) struct Tasks {
     /// Runs the route table's driver, unless the caller supplied the table.
     _table: Option<AbortOnDropHandle<()>>,
     /// Relay links, by link id.
-    pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
+    pub(crate) relays: Mutex<HashMap<LinkId, crate::relay::RelayTask>>,
 }
 
 impl Drop for Tasks {

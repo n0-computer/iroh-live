@@ -57,6 +57,7 @@ async fn main() -> n0_error::Result {
     Ok(())
 }
 
+/// Command-line arguments of the example.
 #[derive(Parser)]
 struct Cli {
     /// The relay's endpoint id.

@@ -11,13 +11,16 @@ use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use serial_test::serial;
 
+/// How long any one wait may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Returns the address lookup every test endpoint registers with.
 fn lookup() -> &'static MemoryLookup {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     LOOKUP.get_or_init(MemoryLookup::new)
 }
 
+/// Binds an endpoint with a fresh identity that the other test endpoints can dial.
 async fn endpoint() -> iroh::Endpoint {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(lookup().clone())
@@ -47,6 +50,7 @@ struct Publisher {
 }
 
 impl Publisher {
+    /// Starts the node and publishes `name`.
     async fn start(name: &str) -> Self {
         let endpoint = endpoint().await;
         let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
@@ -60,6 +64,7 @@ impl Publisher {
         publisher
     }
 
+    /// Publishes `name` to everyone and returns its ticket.
     fn publish(&self, name: &str) -> BroadcastTicket {
         let path = LiveLayout::default()
             .path(self.node.id(), name)
@@ -73,6 +78,7 @@ impl Publisher {
         publication.ticket()
     }
 
+    /// Shuts down the node, its router and its endpoint.
     async fn shutdown(self) {
         self.node.shutdown().await;
         self.router.shutdown().await.expect("router");
@@ -80,6 +86,7 @@ impl Publisher {
     }
 }
 
+/// Returns whether `cluster` routes `name` within half a second.
 async fn routed(cluster: &Cluster, name: &str) -> bool {
     let consumer = cluster.origin.consume();
     let follow = async {
@@ -94,6 +101,7 @@ async fn routed(cluster: &Cluster, name: &str) -> bool {
         .is_ok_and(|found| found.is_ok())
 }
 
+/// A ticket that names another peer's path is refused.
 #[tokio::test]
 #[serial]
 async fn a_pull_of_another_peers_path_is_refused() {
@@ -117,6 +125,7 @@ async fn a_pull_of_another_peers_path_is_refused() {
     victim.shutdown().await;
 }
 
+/// A path outside the `live/` and `rooms/` schemes has no owner the relay can verify.
 #[tokio::test]
 #[serial]
 async fn a_path_in_a_custom_scheme_is_refused() {
@@ -134,6 +143,7 @@ async fn a_path_in_a_custom_scheme_is_refused() {
     publisher.shutdown().await;
 }
 
+/// A ticket with reserved characters is mounted under its raw string and routed at its own path.
 #[tokio::test]
 #[serial]
 async fn a_ticket_with_reserved_characters_mounts_once() {

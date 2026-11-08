@@ -59,6 +59,7 @@ pub mod pull;
 
 pub use self::iroh_sessions::{IrohSessions, browser_auth};
 
+/// The bundled web viewer, embedded at build time.
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
 /// The name this relay gives its auth requests.

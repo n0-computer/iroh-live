@@ -131,7 +131,7 @@ pub struct RelayLink {
 
 #[derive(derive_more::Debug)]
 struct RelayInner {
-    link: u64,
+    link: LinkId,
     url: Url,
     link_state: LinkState,
     status: Watchable<RelayStatus>,
@@ -156,7 +156,7 @@ impl RelayLink {
 
     /// Returns this link's id, as [`ServingLink::id`](crate::ServingLink::id) names it.
     pub fn id(&self) -> LinkId {
-        LinkId(self.inner.link)
+        self.inner.link
     }
 
     /// Returns the connection monitor's latest reading of this link.
@@ -208,7 +208,7 @@ pub(crate) struct RelayTask {
 
 impl Tasks {
     /// Keeps a relay link's task running until the link detaches.
-    fn insert_relay(&self, link: u64, task: RelayTask) {
+    fn insert_relay(&self, link: LinkId, task: RelayTask) {
         let mut relays = self.relays.lock().expect("poisoned");
         // Drop the handles of links whose client gave up.
         relays.retain(|_, relay| !relay.task.is_finished());
@@ -216,7 +216,7 @@ impl Tasks {
     }
 
     /// Takes a relay link's task out, to be finished.
-    fn remove_relay(&self, link: u64) -> Option<RelayTask> {
+    fn remove_relay(&self, link: LinkId) -> Option<RelayTask> {
         self.relays.lock().expect("poisoned").remove(&link)
     }
 
@@ -335,7 +335,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
             }
             return Err(e!(Error::ShutDown));
         }
-        let link = state.next_id();
+        let link = LinkId(state.next_id());
         // Authorizes the link before its first session is up, which takes
         // at least a round trip.
         state.add_link(
@@ -370,7 +370,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
                 status.clone(),
                 stop.clone(),
             );
-            tokio::spawn(run.instrument(info_span!("relay", %url, link)))
+            tokio::spawn(run.instrument(info_span!("relay", %url, %link)))
         }
         (Uplink::Tokio(connection), _) => {
             let run = tokio_uplink(
@@ -380,7 +380,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
                 link_state.clone(),
                 status.clone(),
             );
-            tokio::spawn(run.instrument(info_span!("relay", %url, link)))
+            tokio::spawn(run.instrument(info_span!("relay", %url, %link)))
         }
         (Uplink::Iroh(_), None) => unreachable!("an iroh uplink names its relay"),
     };
@@ -431,7 +431,7 @@ const REDIAL_MAX: Duration = Duration::from_secs(30);
 async fn tokio_uplink(
     shared: Arc<Shared>,
     connection: moq_tokio::Connection,
-    link: u64,
+    link: LinkId,
     link_state: LinkState,
     status: Watchable<RelayStatus>,
 ) {
@@ -483,7 +483,7 @@ async fn iroh_uplink(
     config: RelayConfig,
     auth: auth::Handle,
     subscriber: Option<origin::Producer>,
-    link: u64,
+    link: LinkId,
     link_state: LinkState,
     status: Watchable<RelayStatus>,
     stop: CancellationToken,

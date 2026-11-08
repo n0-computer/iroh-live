@@ -143,6 +143,8 @@ pub(crate) async fn watch(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn ts(micros: u64) -> moq_net::Timestamp {
@@ -155,12 +157,12 @@ mod tests {
         let arrivals = Arrivals::default();
         let start = Instant::now();
         for index in 0..ARRIVALS_LEN as u64 + 10 {
-            arrivals.record(ts(index), start + std::time::Duration::from_millis(index));
+            arrivals.record(ts(index), start + Duration::from_millis(index));
         }
         assert_eq!(arrivals.get(ts(5)), None, "the oldest frames are dropped");
         assert_eq!(
             arrivals.get(ts(20)),
-            Some(start + std::time::Duration::from_millis(20))
+            Some(start + Duration::from_millis(20))
         );
         assert_eq!(arrivals.get(ts(ARRIVALS_LEN as u64 + 100)), None);
     }

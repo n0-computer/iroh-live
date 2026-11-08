@@ -12,7 +12,7 @@ use tokio::{
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    ConnectOptions, Error, LinkKind, Session,
+    ConnectOptions, Error, LinkId, LinkKind, Session,
     handshake::{SessionParts, dial_session, hop_for},
     link::{self, LinkState},
     node::Shared,
@@ -66,7 +66,7 @@ pub(crate) struct Actor {
     peers: HashMap<EndpointId, Vec<Session>>,
     sessions: JoinSet<moq_net::Error>,
     /// What each session task runs, so a task that panics is still cleaned up.
-    session_ids: HashMap<tokio::task::Id, (u64, EndpointId)>,
+    session_ids: HashMap<tokio::task::Id, (LinkId, EndpointId)>,
     pending: HashMap<EndpointId, Vec<oneshot::Sender<Result<Session, Error>>>>,
     dials: JoinSet<Result<SessionParts, Error>>,
     dial_ids: HashMap<tokio::task::Id, EndpointId>,
@@ -266,7 +266,7 @@ impl Actor {
         let link_state = LinkState::default();
         let hop = hop_for(&remote);
         let mut state = self.shared.state.lock().expect("poisoned");
-        let link = state.next_id();
+        let link = LinkId(state.next_id());
         let session = Session {
             inner: Arc::new(SessionInner {
                 link,
@@ -313,7 +313,7 @@ impl Actor {
             }
         }
 
-        info!(remote = %remote.fmt_short(), link, dialed, "session started");
+        info!(remote = %remote.fmt_short(), %link, dialed, "session started");
         let cancel = self.shared.shutdown.child_token();
         let task_session = session.clone();
         let handle = self.sessions.spawn(
@@ -341,7 +341,7 @@ impl Actor {
                 drop(task_session);
                 err
             }
-            .instrument(info_span!("session", remote = %remote.fmt_short(), link)),
+            .instrument(info_span!("session", remote = %remote.fmt_short(), %link)),
         );
         self.session_ids.insert(handle.id(), (link, remote));
         session
@@ -358,10 +358,10 @@ impl Actor {
         };
         match result {
             Ok(moq_net::Error::Closed | moq_net::Error::Cancel) => {
-                info!(remote = %remote.fmt_short(), link, "session closed");
+                info!(remote = %remote.fmt_short(), %link, "session closed");
             }
-            Ok(err) => info!(remote = %remote.fmt_short(), link, %err, "session ended"),
-            Err(err) => error!(remote = %remote.fmt_short(), link, %err, "session task failed"),
+            Ok(err) => info!(remote = %remote.fmt_short(), %link, %err, "session ended"),
+            Err(err) => error!(remote = %remote.fmt_short(), %link, %err, "session task failed"),
         }
         if let Some(sessions) = self.peers.get_mut(&remote) {
             sessions.retain(|session| session.inner.link != link);

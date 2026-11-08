@@ -3,14 +3,37 @@
 //! Both backends draw with [`GlesRenderer`] and manage their own EGL context.
 
 use std::{
+    os::{fd::AsFd, unix::io::AsRawFd},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result};
+use drm::{Device as _, control::Device as ControlDevice};
+use gbm::AsRaw;
 use glow::HasContext;
 use iroh_live::media::{Player, VideoFrames, video::Frame};
+use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{info, warn};
+#[cfg(feature = "windowed")]
+use {
+    glutin::{
+        config::ConfigTemplateBuilder,
+        context::{ContextAttributesBuilder, NotCurrentGlContext, Version},
+        display::{GetGlDisplay, GlDisplay},
+        surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
+    },
+    glutin_winit::DisplayBuilder,
+    raw_window_handle::HasWindowHandle,
+    std::num::NonZeroU32,
+    winit::{
+        application::ApplicationHandler,
+        event::{ElementState, KeyEvent, WindowEvent},
+        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+        keyboard::{Key, NamedKey},
+        window::{Fullscreen, Window, WindowId},
+    },
+};
 
 use crate::gles::GlesRenderer;
 
@@ -65,13 +88,7 @@ fn print_stats(player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
     );
 }
 
-// DRM/KMS output straight to HDMI.
-
-use std::os::fd::AsFd;
-
-use drm::{Device as _, control::Device as ControlDevice};
-use gbm::AsRaw;
-
+/// A DRM device node opened for modesetting.
 struct Card(std::fs::File);
 impl AsFd for Card {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
@@ -87,9 +104,8 @@ impl ControlDevice for Card {}
 struct VtGuard(std::fs::File);
 
 impl VtGuard {
+    /// Switches the current VT to graphics mode.
     fn activate() -> Result<Self> {
-        use std::os::unix::io::AsRawFd;
-
         let tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -114,13 +130,12 @@ impl VtGuard {
 
 impl Drop for VtGuard {
     fn drop(&mut self) {
-        use std::os::unix::io::AsRawFd;
         // KD_TEXT = 0x00
         unsafe { libc::ioctl(self.0.as_raw_fd(), 0x4B3A, 0x00) };
     }
 }
 
-/// DRM/KMS + GBM + EGL display - owns all GPU resources for direct HDMI output.
+/// A DRM/KMS, GBM and EGL display that owns the GPU resources for HDMI output.
 struct DrmDisplay {
     renderer: GlesRenderer,
     egl: khronos_egl::DynamicInstance<khronos_egl::EGL1_4>,
@@ -139,6 +154,7 @@ struct DrmDisplay {
 }
 
 impl DrmDisplay {
+    /// Opens the first DRM device with a connected output and sets up GLES2 on it.
     fn init() -> Result<Self> {
         let card = {
             let mut found = None;
@@ -372,8 +388,6 @@ impl DrmDisplay {
 ///
 /// Rendering runs on its own thread, so it does not block the tokio runtime.
 pub(crate) async fn run_drm(player: Player) -> Result<()> {
-    use tokio::sync::mpsc as tokio_mpsc;
-
     let (frame_tx, frame_rx) = tokio_mpsc::channel::<Arc<Frame>>(4);
 
     let render_handle = std::thread::Builder::new()
@@ -460,24 +474,7 @@ pub(crate) async fn run_fb_demo(mut frames: VideoFrames) -> Result<()> {
 /// Renders video in a glutin and winit window.
 #[cfg(feature = "windowed")]
 pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
-    use std::num::NonZeroU32;
-
-    use glutin::{
-        config::ConfigTemplateBuilder,
-        context::{ContextAttributesBuilder, NotCurrentGlContext, Version},
-        display::{GetGlDisplay, GlDisplay},
-        surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
-    };
-    use glutin_winit::DisplayBuilder;
-    use raw_window_handle::HasWindowHandle;
-    use winit::{
-        application::ApplicationHandler,
-        event::{ElementState, KeyEvent, WindowEvent},
-        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-        keyboard::{Key, NamedKey},
-        window::{Fullscreen, Window, WindowId},
-    };
-
+    /// The winit application state.
     struct App {
         renderer: Option<GlesRenderer>,
         surface: Option<glutin::surface::Surface<WindowSurface>>,

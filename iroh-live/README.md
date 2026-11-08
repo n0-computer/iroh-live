@@ -119,11 +119,11 @@ let mut frames = player.video();
 
 No feature is on by default. `full` turns on `media`, `capture`, `render`,
 `sound-server` and `record`. `media` is the media stack. Without it the crate
-is the layout, calls and endpoint setup only, which is how the relay uses it. `playback`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia`,
-and `v4l2` add devices and codecs, imply `media`, and pass through to the
-media crates. `sound-server`
-reaches audio devices through PipeWire or PulseAudio, through moq-audio's
-`pipewire` and `pulseaudio` features.
+is the layout, calls and endpoint setup only, which is how the relay uses it.
+`playback`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia` and `v4l2` add
+devices and codecs, imply `media`, and pass through to the media crates.
+`sound-server` reaches audio devices through PipeWire or PulseAudio, through
+moq-audio's `pipewire` and `pulseaudio` features.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node by adding

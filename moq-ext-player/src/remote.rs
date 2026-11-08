@@ -171,7 +171,7 @@ impl RemoteBroadcast {
         *self.shared.network.lock().expect("poisoned") = Some(Arc::new(signals));
     }
 
-    /// Returns the catalog, `None` until the first arrives.
+    /// Returns a receiver for the catalog, `None` until the first arrives.
     ///
     /// A publisher may announce its broadcast before it creates the catalog
     /// track. The catalog is then asked for again, with a growing wait, until
@@ -397,12 +397,12 @@ async fn read_catalog(
     let mut reader = loop {
         match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await {
             Ok(reader) => break reader,
-            // A local origin answers `NotFound`; a peer's answer arrives as a
+            // A local origin answers `NotFound`. A peer's answer arrives as a
             // stream error.
             Err(moq_mux::Error::Moq(
                 moq_net::Error::NotFound | moq_net::Error::Stream(moq_net::StreamError::NotFound),
             )) => {
-                debug!(retry = ?retry, "no catalog track yet, asking again");
+                debug!(?retry, "no catalog track yet, asking again");
                 tokio::select! {
                     () = tokio::time::sleep(retry) => {}
                     () = consumer.closed() => {
@@ -425,7 +425,7 @@ async fn read_catalog(
     loop {
         match reader.next().await {
             Ok(Some(next)) => {
-                trace!(catalog = ?next, "catalog");
+                trace!(catalog = ?next, "catalog updated");
                 catalog.send_replace(Some(Arc::new(next)));
             }
             Ok(None) => {

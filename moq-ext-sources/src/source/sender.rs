@@ -29,7 +29,7 @@ impl Demand {
         }
     }
 
-    /// Returns whether anything wants frames.
+    /// Returns a receiver that reports whether anything wants frames.
     pub fn watch(&self) -> watch::Receiver<bool> {
         self.wanted.subscribe()
     }

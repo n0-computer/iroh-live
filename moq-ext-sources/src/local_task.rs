@@ -20,8 +20,9 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 pub struct LocalTask {
     shutdown: CancellationToken,
-    /// Cancelled once the thread has finished, also when it panicked or never
-    /// started.
+    /// Cancelled once the thread has finished.
+    ///
+    /// This includes a thread that panicked or never started.
     released: CancellationToken,
 }
 

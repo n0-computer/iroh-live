@@ -1,4 +1,4 @@
-//! Publish command: streams the camera's hardware H.264 over iroh.
+//! The `publish` command, which streams the camera's hardware H.264 over iroh.
 //!
 //! The encoder output is read through `rpicam-vid`.
 
@@ -22,6 +22,7 @@ use crate::epaper;
 /// The datasheet asks for a refresh at least every 24 h and at most every 180 s.
 const EPAPER_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 
+/// Options of the `publish` subcommand.
 #[derive(Parser, Debug)]
 pub(crate) struct PublishOpts {
     /// Show the connection ticket as a QR code on the e-paper HAT.

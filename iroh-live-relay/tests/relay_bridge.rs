@@ -19,9 +19,12 @@ use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
 use serial_test::serial;
+use tracing::{debug, info, warn};
 
+/// How long any one wait may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The address lookup every test endpoint registers with.
 static ADDRESS_LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
 
 /// Returns the shared MemoryLookup, creating it if needed.
@@ -55,6 +58,7 @@ impl TestRelay {
         Self::start_with(true).await
     }
 
+    /// Starts a relay with the admission of the shipped relay if `shipped`, else an open one.
     async fn start_with(shipped: bool) -> Self {
         let mut quic = moq_tokio::quic::Config::default();
         quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
@@ -177,7 +181,7 @@ impl iroh::protocol::ProtocolHandler for OpenSessions {
             .await
             .map_err(AcceptError::from_err)?;
         let err = moq_net::time::run(driver).await;
-        tracing::debug!(%err, "iroh session ended");
+        debug!(%err, "iroh session ended");
         Ok(())
     }
 }
@@ -336,13 +340,7 @@ async fn iroh_publish_iroh_subscribe() {
     let relay_id = relay.iroh_id;
 
     // Publisher
-    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind pub");
-    shared_lookup().add_endpoint_info(pub_ep.addr());
+    let pub_ep = bind_endpoint().await;
     let publisher = iroh_live::Node::new(pub_ep.clone(), LiveLayout::default().config(&[]));
     let _router = serve(&publisher);
     let broadcast = publish_video(&publisher, "relay-test");
@@ -354,13 +352,7 @@ async fn iroh_publish_iroh_subscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Subscriber
-    let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind sub");
-    shared_lookup().add_endpoint_info(sub_ep.addr());
+    let sub_ep = bind_endpoint().await;
     let subscriber = iroh_live::Node::new(sub_ep.clone(), LiveLayout::default().config(&[]));
     // Through the relay's session, at the path that names the publisher: the
     // same path the publisher offers on a direct session.
@@ -445,13 +437,7 @@ async fn noq_publish_iroh_subscribe() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Subscriber: iroh, through `Node::subscribe`.
-    let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind sub");
-    shared_lookup().add_endpoint_info(sub_ep.addr());
+    let sub_ep = bind_endpoint().await;
     let subscriber = iroh_live::Node::new(sub_ep.clone(), LiveLayout::default().config(&[]));
 
     // Retry subscribe a few times: the relay may need time to propagate
@@ -476,7 +462,7 @@ async fn noq_publish_iroh_subscribe() {
                 })
                 .await;
                 let Ok(Some(parsed)) = parsed else {
-                    tracing::warn!(attempt, "subscribed, but no catalog arrived; retrying");
+                    warn!(attempt, "subscribed, but no catalog arrived; retrying");
                     last_err = Some("no catalog arrived".to_string());
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
@@ -486,19 +472,19 @@ async fn noq_publish_iroh_subscribe() {
                 let video = &parsed.video.renditions;
                 assert_eq!(video.len(), 1, "the bridged catalog: {video:?}");
                 assert_eq!(video["video/h264"].coded_height, Some(240));
-                tracing::info!(attempt, "subscribed to browser-stream via iroh");
+                info!(attempt, "subscribed to browser-stream via iroh");
                 drop(sub);
                 drop(_pub_session);
                 sub_ep.close().await;
                 return;
             }
             Ok(Err(e)) => {
-                tracing::warn!(attempt, %e, "subscribe attempt failed, retrying");
+                warn!(attempt, %e, "subscribe attempt failed, retrying");
                 last_err = Some(format!("{e:#}"));
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             Err(_) => {
-                tracing::warn!(attempt, "subscribe attempt timed out, retrying");
+                warn!(attempt, "subscribe attempt timed out, retrying");
                 last_err = Some("timeout".into());
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -521,7 +507,7 @@ async fn pull_remote_broadcast_via_ticket() {
 
     let local_name = ticket.to_string();
     let pull_state =
-        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+        iroh_live_relay::pull::PullState::new(bind_endpoint().await, relay.cluster.clone())
             .with_linger(PULL_LINGER);
     let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
@@ -543,7 +529,7 @@ async fn pull_remote_broadcast_via_ticket() {
     // The pulled broadcast, read without a copy at the name it asked for.
     let bc = announced_at(&sub_origin, "").await;
     let _frame = first_frame(&bc, "catalog.json").await;
-    tracing::info!("pull mode test: received catalog from pulled broadcast");
+    info!("pull mode test: received catalog from pulled broadcast");
 
     drop(_sub_session);
     drop(guard);
@@ -561,13 +547,7 @@ async fn iroh_publish_noq_subscribe() {
     let relay_id = relay.iroh_id;
 
     // Publisher (iroh via iroh-live)
-    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind pub");
-    shared_lookup().add_endpoint_info(pub_ep.addr());
+    let pub_ep = bind_endpoint().await;
     let publisher = iroh_live::Node::new(pub_ep.clone(), LiveLayout::default().config(&[]));
     let _router = serve(&publisher);
     let broadcast = publish_video(&publisher, "cli-stream");
@@ -594,7 +574,7 @@ async fn iroh_publish_noq_subscribe() {
         .to_string();
     announced_at(&sub_origin, named.as_str()).await;
 
-    tracing::info!("noq subscriber received cli-stream announcement");
+    info!("noq subscriber received cli-stream announcement");
 
     drop(_pub_session);
     drop(_sub_session);
@@ -637,13 +617,7 @@ async fn start_publisher(
     iroh_live::media::LocalBroadcast,
     iroh_live::BroadcastTicket,
 ) {
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind pub");
-    shared_lookup().add_endpoint_info(endpoint.addr());
+    let endpoint = bind_endpoint().await;
 
     let live = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     let router = serve(&live);
@@ -654,14 +628,14 @@ async fn start_publisher(
     (endpoint, live, router, broadcast, ticket)
 }
 
-/// Binds the iroh endpoint a relay dials tickets over.
-async fn pull_endpoint() -> iroh::Endpoint {
+/// Binds an endpoint with a fresh identity that the other test endpoints can dial.
+async fn bind_endpoint() -> iroh::Endpoint {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
-        .expect("bind pull");
+        .expect("bind endpoint");
     shared_lookup().add_endpoint_info(endpoint.addr());
     endpoint
 }
@@ -713,7 +687,7 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
     assert_ne!(bare, canonical);
 
     let pull_state =
-        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+        iroh_live_relay::pull::PullState::new(bind_endpoint().await, relay.cluster.clone())
             .with_linger(PULL_LINGER);
 
     let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&bare, &ticket))
@@ -740,7 +714,7 @@ async fn pull_retires_an_unwatched_session() {
     let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("retired-stream").await;
     let local_name = ticket.to_string();
 
-    let pull_ep = pull_endpoint().await;
+    let pull_ep = bind_endpoint().await;
     let pull_id = pull_ep.id();
     let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
         .with_linger(PULL_LINGER);
@@ -800,7 +774,7 @@ async fn a_pull_survives_the_publisher_republishing() {
     let local_name = ticket.to_string();
 
     let pull_state =
-        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+        iroh_live_relay::pull::PullState::new(bind_endpoint().await, relay.cluster.clone())
             .with_linger(PULL_LINGER);
     let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
@@ -846,13 +820,7 @@ async fn a_relay_link_publishes_and_consumes() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
 
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind node");
-    shared_lookup().add_endpoint_info(endpoint.addr());
+    let endpoint = bind_endpoint().await;
     let live = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     let moq = &live;
 
@@ -945,13 +913,7 @@ async fn a_relay_link_publishes_and_consumes() {
 ///
 /// It only dials. Mount it with [`serve`] to accept sessions.
 async fn relay_node() -> (iroh::Endpoint, iroh_live::Node) {
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind node");
-    shared_lookup().add_endpoint_info(endpoint.addr());
+    let endpoint = bind_endpoint().await;
     let live = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     (endpoint, live)
 }
@@ -1489,7 +1451,7 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
         .expect("a valid broadcast name");
     let (first_name, second_name) = (first.to_string(), second.to_string());
 
-    let pull_ep = pull_endpoint().await;
+    let pull_ep = bind_endpoint().await;
     let pull_id = pull_ep.id();
     let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
         .with_linger(PULL_LINGER);
@@ -1577,7 +1539,7 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     let cluster = relay.cluster.origin.consume();
     let mut announced = cluster.announced();
     let pull_state =
-        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+        iroh_live_relay::pull::PullState::new(bind_endpoint().await, relay.cluster.clone())
             .with_linger(PULL_LINGER);
     let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&wanted.to_string(), &wanted))
         .await
@@ -1620,13 +1582,7 @@ async fn room_node() -> (
     iroh_live_rooms::Rooms,
     iroh::protocol::Router,
 ) {
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind node");
-    shared_lookup().add_endpoint_info(endpoint.addr());
+    let endpoint = bind_endpoint().await;
     let moq = iroh_live_node::Node::new(
         endpoint.clone(),
         LiveLayout::default().config(&[Arc::new(iroh_live_rooms::publish_scope)]),

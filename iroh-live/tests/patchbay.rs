@@ -10,7 +10,10 @@
 
 #![cfg(all(target_os = "linux", feature = "media"))]
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_live::layout::LiveLayout;
@@ -192,6 +195,7 @@ impl Fixture {
         info!("link cleared");
     }
 
+    /// Applies `condition` to the links of both nodes, or clears them for `None`.
     async fn set_condition(&self, condition: Option<LinkCondition>) {
         for node in [self.publisher_node, self.subscriber_node] {
             self.lab
@@ -228,6 +232,7 @@ impl Fixture {
             .await
     }
 
+    /// Plays the broadcast with `mode` and `adaptation`, once the catalog lists `renditions` renditions.
     async fn play_with(
         &self,
         renditions: usize,
@@ -259,6 +264,7 @@ impl Fixture {
         Viewer { player, frames }
     }
 
+    /// Shuts down both nodes.
     async fn shutdown(self) {
         self.publisher.shutdown().await;
         self.subscriber.shutdown().await;
@@ -342,7 +348,7 @@ impl Viewer {
     }
 
     /// Waits for the next frame.
-    async fn next(&mut self) -> Option<std::sync::Arc<Frame>> {
+    async fn next(&mut self) -> Option<Arc<Frame>> {
         self.frames.next().await
     }
 }
@@ -681,8 +687,8 @@ async fn adaptation_follows_a_real_link() {
 /// A rate limit with no loss steps the ladder down, and lifting it steps back up.
 ///
 /// No packets are dropped. The cap shows as goodput pinned to it and a round
-/// trip inflated by the queue. The test checks both in the
-/// signals before it waits for the downgrade.
+/// trip inflated by the queue. The test checks both in the signals before it
+/// waits for the downgrade.
 #[tokio::test]
 #[traced_test]
 async fn adaptation_follows_a_rate_limit() {
@@ -721,7 +727,8 @@ async fn adaptation_follows_a_rate_limit() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "the clear link never carried {clear_enough} bps, so a {cap_kbit} kbit/s cap is not              a shortfall and this test has nothing to measure",
+            "the clear link never carried {clear_enough} bps, so a {cap_kbit} kbit/s cap is not \
+             a shortfall and this test has nothing to measure",
         )
     });
 

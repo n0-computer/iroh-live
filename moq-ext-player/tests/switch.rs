@@ -24,25 +24,28 @@ use n0_future::task::AbortOnDropHandle;
 ///
 /// A new source shows at its first keyframe, so this is mostly the time to
 /// open an encoder and a decoder in a debug build.
-const SWITCH: Duration = Duration::from_secs(2);
+const SWITCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long the first picture may take, with every codec still to open.
-const FIRST: Duration = Duration::from_secs(30);
+const FIRST_PICTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How many frames the player must show after a switch to count as playing.
-const PLAYING: usize = 10;
+const FRAMES_AFTER_SWITCH: usize = 10;
 
+/// The standard-definition size of the test sources.
 const SD: Size = Size {
     width: 640,
     height: 360,
 };
+/// The high-definition size of the test sources.
 const HD: Size = Size {
     width: 1280,
     height: 720,
 };
 
-fn fps(n: u32) -> FrameRate {
-    FrameRate::new(n, 1).expect("a valid rate")
+/// Returns a frame rate of `frames_per_second`.
+fn fps(frames_per_second: u32) -> FrameRate {
+    FrameRate::new(frames_per_second, 1).expect("a valid rate")
 }
 
 /// Returns one software-encoded rendition named `video`, at `size` or the source's.
@@ -155,7 +158,7 @@ fn feed(
     AbortOnDropHandle::new(task)
 }
 
-/// Returns a source that shows `feed`, and the task that feeds it.
+/// Returns a source that shows what `feed_with` describes, and the task that feeds it.
 fn fed(feed_with: (Look, u32, Clock)) -> (VideoSource, AbortOnDropHandle<()>) {
     let (look, rate, _) = feed_with;
     let (sender, source) = VideoSource::push(VideoFormat {
@@ -165,7 +168,9 @@ fn fed(feed_with: (Look, u32, Clock)) -> (VideoSource, AbortOnDropHandle<()>) {
     (source, feed(sender, feed_with))
 }
 
-/// Waits until `frames` shows `look`, then until it has shown it [`PLAYING`] times.
+/// Waits until `frames` shows `look`, then until it has shown it [`FRAMES_AFTER_SWITCH`] times.
+///
+/// # Panics
 ///
 /// Panics if the first matching frame takes longer than `bound`, or if the
 /// frames after it stop or show something else.
@@ -189,8 +194,8 @@ async fn shows(frames: &mut VideoFrames, look: Look, bound: Duration, what: &str
         Ok(Some(())) => {}
     }
     let switched = started.elapsed();
-    for index in 0..PLAYING {
-        let frame = tokio::time::timeout(SWITCH, frames.next())
+    for index in 0..FRAMES_AFTER_SWITCH {
+        let frame = tokio::time::timeout(SWITCH_TIMEOUT, frames.next())
             .await
             .unwrap_or_else(|_| panic!("{what}: frame {index} after the switch never came"))
             .unwrap_or_else(|| panic!("{what}: the video ended {index} frames after the switch"));
@@ -229,7 +234,13 @@ async fn switching_what_feeds_a_pushed_source_keeps_playing() {
     let (_player, mut frames) = play(&broadcast);
 
     let mut feeder = feed(sender.clone(), PATTERN);
-    shows(&mut frames, PATTERN.0, FIRST, "first pattern").await;
+    shows(
+        &mut frames,
+        PATTERN.0,
+        FIRST_PICTURE_TIMEOUT,
+        "first pattern",
+    )
+    .await;
     for round in 0..3 {
         for (name, source) in [("camera", CAMERA), ("pattern", PATTERN)] {
             drop(feeder);
@@ -244,7 +255,7 @@ async fn switching_what_feeds_a_pushed_source_keeps_playing() {
             shows(
                 &mut frames,
                 look,
-                SWITCH,
+                SWITCH_TIMEOUT,
                 &format!("{name} in round {round}"),
             )
             .await;
@@ -268,11 +279,23 @@ async fn a_pushed_source_plays_on_after_a_pause() {
     let (_player, mut frames) = play(&broadcast);
 
     let feeder = feed(sender.clone(), PATTERN);
-    shows(&mut frames, PATTERN.0, FIRST, "first pattern").await;
+    shows(
+        &mut frames,
+        PATTERN.0,
+        FIRST_PICTURE_TIMEOUT,
+        "first pattern",
+    )
+    .await;
     drop(feeder);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let _feeder = feed(sender.clone(), (Look::flat(SD, 120), 30, Clock::Pattern));
-    shows(&mut frames, Look::flat(SD, 120), SWITCH, "after the pause").await;
+    shows(
+        &mut frames,
+        Look::flat(SD, 120),
+        SWITCH_TIMEOUT,
+        "after the pause",
+    )
+    .await;
 }
 
 /// `set_video` with the test pattern at another size, a camera, the same size, and back.
@@ -283,7 +306,13 @@ async fn replacing_the_video_source_keeps_playing() {
         .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
         .expect("a valid encoding");
     let (_player, mut frames) = play(&broadcast);
-    shows(&mut frames, Look::pattern(SD), FIRST, "first pattern").await;
+    shows(
+        &mut frames,
+        Look::pattern(SD),
+        FIRST_PICTURE_TIMEOUT,
+        "first pattern",
+    )
+    .await;
 
     for round in 0..2 {
         broadcast
@@ -292,7 +321,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             Look::pattern(HD),
-            SWITCH,
+            SWITCH_TIMEOUT,
             &format!("HD pattern in round {round}"),
         )
         .await;
@@ -304,7 +333,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             CAMERA.0,
-            SWITCH,
+            SWITCH_TIMEOUT,
             &format!("camera in round {round}"),
         )
         .await;
@@ -317,7 +346,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             PATTERN.0,
-            SWITCH,
+            SWITCH_TIMEOUT,
             &format!("dark SD in round {round}"),
         )
         .await;
@@ -329,7 +358,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             bright.0,
-            SWITCH,
+            SWITCH_TIMEOUT,
             &format!("bright SD in round {round}"),
         )
         .await;
@@ -340,7 +369,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             Look::pattern(SD),
-            SWITCH,
+            SWITCH_TIMEOUT,
             &format!("SD pattern in round {round}"),
         )
         .await;
@@ -355,7 +384,13 @@ async fn a_source_that_fails_does_not_stop_the_next() {
         .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
         .expect("a valid encoding");
     let (_player, mut frames) = play(&broadcast);
-    shows(&mut frames, Look::pattern(SD), FIRST, "first pattern").await;
+    shows(
+        &mut frames,
+        Look::pattern(SD),
+        FIRST_PICTURE_TIMEOUT,
+        "first pattern",
+    )
+    .await;
 
     let format = VideoFormat {
         size: HD,
@@ -376,7 +411,7 @@ async fn a_source_that_fails_does_not_stop_the_next() {
     shows(
         &mut frames,
         Look::pattern(HD),
-        SWITCH,
+        SWITCH_TIMEOUT,
         "pattern after the failure",
     )
     .await;

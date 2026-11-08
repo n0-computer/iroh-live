@@ -135,6 +135,7 @@ pub struct CursorIdle {
 }
 
 impl Default for CursorIdle {
+    /// Returns a tracker that starts visible.
     fn default() -> Self {
         Self {
             visible: true,

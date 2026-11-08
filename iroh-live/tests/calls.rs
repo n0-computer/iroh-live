@@ -23,6 +23,7 @@ use n0_watcher::Watcher as _;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
 async fn endpoint() -> Endpoint {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     let lookup = LOOKUP.get_or_init(MemoryLookup::new);
@@ -44,12 +45,13 @@ struct Peer {
 }
 
 impl Peer {
+    /// Starts a mounted node with its call service.
     async fn start() -> Self {
-        let raw = Self::raw().await;
-        let (calls, side) = Calls::new(&raw.0, &LiveLayout::default()).expect("calls");
+        let (node, router) = Self::raw().await;
+        let (calls, side) = Calls::new(&node, &LiveLayout::default()).expect("calls");
         Self {
-            node: raw.0,
-            router: raw.1,
+            node,
+            router,
             calls,
             _side: side,
         }
@@ -63,10 +65,12 @@ impl Peer {
         (node, router)
     }
 
+    /// Returns the endpoint id of the node.
     fn id(&self) -> EndpointId {
         self.node.id()
     }
 
+    /// Shuts down the node and its router.
     async fn shutdown(self) {
         self.node.shutdown().await;
         self.router.shutdown().await.expect("router");
@@ -82,6 +86,7 @@ async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
+/// Awaits `future`, or fails after [`TIMEOUT`].
 async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(TIMEOUT, future)
         .await

@@ -36,6 +36,10 @@ use std::sync::Arc;
 
 pub use egui_wgpu;
 use moq_ext_player::VideoFrames;
+/// The `wgpu` crate the renderer links.
+///
+/// Use it to name `wgpu` types, so they always match the renderer's version.
+pub use moq_video::render::wgpu;
 use tracing::warn;
 #[cfg(target_os = "linux")]
 use tracing::{debug, info};
@@ -53,12 +57,7 @@ pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {
     }
 }
 
-/// The `wgpu` crate the renderer links.
-///
-/// Use it to name `wgpu` types, so they always match the renderer's version.
-pub use moq_video::render::wgpu;
-
-/// Renderer that draws decoded frames into an egui texture.
+/// A renderer that draws decoded frames into an egui texture.
 ///
 /// It is bound to one `wgpu` device and queue.
 #[derive(derive_more::Debug)]
@@ -90,7 +89,7 @@ impl EguiVideoRenderer {
     fn render(&mut self, frame: &moq_video::Frame) -> Result<(), moq_video::Error> {
         let texture = self.renderer.render(frame)?;
         let view = texture.create_view(&Default::default());
-        let dims = (texture.width(), texture.height());
+        let size = (texture.width(), texture.height());
 
         let device = &self.render_state.device;
         let mut egui_renderer = self.render_state.renderer.write();
@@ -106,7 +105,7 @@ impl EguiVideoRenderer {
             }
             None => egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
         };
-        self.texture = Some((id, dims));
+        self.texture = Some((id, size));
         Ok(())
     }
 }
@@ -123,7 +122,7 @@ impl Drop for EguiVideoRenderer {
     }
 }
 
-/// View that draws the frames you hand it.
+/// A view that draws the frames you hand it.
 ///
 /// It shows the last drawn frame, or a black placeholder before the first.
 /// [`VideoView`] builds on it and reads frames from a [`VideoFrames`] stream.
@@ -146,8 +145,8 @@ impl FrameView {
         name: &str,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
-        let renderer = render_state.and_then(|rs| {
-            EguiVideoRenderer::new(rs)
+        let renderer = render_state.and_then(|render_state| {
+            EguiVideoRenderer::new(render_state)
                 .inspect_err(|err| warn!(error = %err, "wgpu video renderer init failed"))
                 .ok()
         });
@@ -193,7 +192,7 @@ impl FrameView {
     }
 }
 
-/// View that draws a [`VideoFrames`] stream.
+/// A view that draws a [`VideoFrames`] stream.
 ///
 /// It wakes the window when a frame arrives and draws the newest frame on the
 /// next pass.
@@ -342,7 +341,7 @@ fn device_descriptor(
 fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
-            device_descriptor: std::sync::Arc::new(|adapter| {
+            device_descriptor: Arc::new(|adapter| {
                 device_descriptor(adapter, wgpu::Features::empty())
             }),
             ..egui_wgpu::WgpuSetupCreateNew::without_display_handle()

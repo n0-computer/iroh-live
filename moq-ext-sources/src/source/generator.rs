@@ -242,10 +242,12 @@ struct Band {
 }
 
 impl Band {
+    /// Returns the number of rows in the band.
     fn height(self) -> u32 {
         self.bottom.saturating_sub(self.top)
     }
 
+    /// Returns the band's row indices.
     fn rows(self) -> std::ops::Range<u32> {
         self.top..self.bottom
     }
@@ -271,6 +273,7 @@ struct Layout {
 }
 
 impl Layout {
+    /// Cuts the bands for a frame of `size`.
     fn new(size: Size) -> Self {
         let band = |from: u32, to: u32| Band {
             top: size.height * from / 16,
@@ -661,8 +664,9 @@ mod tests {
         (left, top, bottom)
     }
 
-    /// The counter and the clock share a digit size and a left edge, and the
-    /// top sixteenth of the frame stays clear.
+    /// Checks that the counter and the clock share a digit size and a left edge.
+    ///
+    /// It also checks that the top sixteenth of the frame stays clear.
     #[test]
     fn the_counter_matches_the_clock() {
         let layout = Layout::new(SIZE);

@@ -346,9 +346,9 @@ pub(crate) async fn run(inputs: Inputs) {
             _ => false,
         };
         desired.send_if_modified(|desired| {
-            let changed = desired.as_ref().map(|d| &d.target) != next.as_ref().map(|d| &d.target);
+            let changed = desired.as_ref().map(|wanted| &wanted.target) != next.as_ref().map(|next| &next.target);
             if changed || retry {
-                trace!(target = ?next.as_ref().map(|d| &d.target), retry, "desired rendition");
+                trace!(target = ?next.as_ref().map(|next| &next.target), retry, "desired rendition");
                 *desired = next;
                 failed = None;
             }
@@ -372,7 +372,7 @@ fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
 fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error> {
     Arc::new(match problem {
         PinProblem::Excluded(name) => Error::decoder_msg(format!(
-            "the decoder for {name} failed; playing another rendition until it is retried"
+            "the decoder for {name} failed, so another rendition plays until it is retried"
         )),
         PinProblem::Unknown(name) => catalog
             .video_rendition(&name)
@@ -450,7 +450,7 @@ mod tests {
                 if let Some(target) = desired
                     .borrow_and_update()
                     .as_ref()
-                    .map(|d| d.target.clone())
+                    .map(|wanted| wanted.target.clone())
                     && Some(&target) != not
                 {
                     return target;
