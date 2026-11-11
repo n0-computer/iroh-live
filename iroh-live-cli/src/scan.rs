@@ -160,7 +160,8 @@ pub fn camera_spec(spec: Option<&str>) -> Result<Option<VideoSourceSpec>, String
             crate::source_spec::RpicamMode::Raw,
         ))),
         _ => Err(format!(
-            "--scan-camera reads a camera: 'cam' for the default one, 'cam:<id>' for one              `irl devices` lists, or 'rpicam' for the Raspberry Pi camera; got '{spec}'"
+            "--scan-camera reads a camera: 'cam' for the default one, 'cam:<id>' for one \
+             `irl devices` lists, or 'rpicam' for the Raspberry Pi camera; got '{spec}'"
         )),
     }
 }

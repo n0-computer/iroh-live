@@ -134,14 +134,20 @@ pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) ->
     let mut report = tokio::time::interval_at(started + REPORT_INTERVAL, REPORT_INTERVAL);
     let mut stop = std::pin::pin!(stop);
     let written = loop {
-        tokio::select! {
+        let stopped = tokio::select! {
             result = recording.wait() => break result?,
-            () = &mut stop => break recording.stop().await?,
-            _ = report.tick() => println!(
-                "[{:.0}s] {}",
-                started.elapsed().as_secs_f64(),
-                ByteSize(recording.written())
-            ),
+            () = &mut stop => true,
+            _ = report.tick() => {
+                println!(
+                    "[{:.0}s] {}",
+                    started.elapsed().as_secs_f64(),
+                    ByteSize(recording.written())
+                );
+                false
+            }
+        };
+        if stopped {
+            break recording.stop().await?;
         }
     };
     info!(bytes = written, "recording finished");
