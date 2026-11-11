@@ -2,9 +2,15 @@
 //!
 //! Browsers connect over WebTransport, iroh clients over iroh. Anyone may
 //! connect and subscribe to anything. An iroh client may publish only at the
-//! paths that name its endpoint id (see [`IrohSessions`]), and a browser only
+//! paths that name its endpoint id (see [`relay_policy`]), and a browser only
 //! at names of one segment. A session that names a broadcast ticket gets that
 //! broadcast pulled from its publisher (see [`pull`]).
+//!
+//! With `--auth-key`, a browser or an iroh client that presents a JWT signed
+//! by one of the keys gets what the token grants instead, and one with an
+//! invalid token is refused. `--auth-url` and the `--auth-public` flags hand
+//! browser sessions to moq-relay's own auth instead, which then also decides
+//! the sessions that name a ticket, without a pull.
 //!
 //! The binary wraps [`run`]. Another CLI can embed the relay by flattening
 //! [`Config`] into its arguments.
@@ -43,9 +49,12 @@ use anyhow::Context;
 use axum::{extract::Path, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
-use iroh::SecretKey;
+use iroh::{EndpointId, SecretKey};
 use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
-use moq_auth::lease;
+use iroh_live_node::{SessionRequest, policy::DynPolicy};
+use moq_auth::{KeySet, lease};
+use moq_ext_access::policy::{JwtVerifier, Verify};
+use moq_net::Pattern;
 use moq_relay::auth::Admissions;
 use n0_error::e;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
@@ -57,7 +66,7 @@ pub mod pull;
 
 pub use self::{
     error::Error,
-    iroh_sessions::{IrohSessions, browser_grant},
+    iroh_sessions::{IrohSessions, browser_grant, relay_policy},
 };
 
 /// The bundled web viewer, embedded at build time.
@@ -75,6 +84,37 @@ pub struct Config {
     /// Defaults to the --bind address, over TCP.
     #[arg(long)]
     pub http_bind: Option<SocketAddr>,
+
+    /// Verifies the JWTs that browsers and iroh clients present with the keys in this file.
+    ///
+    /// The file holds a JWK or a JWK set, as `moq auth` writes them. A valid
+    /// token grants what its claims grant, an invalid one is refused, and a
+    /// session without a token keeps the public rules.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["auth_url", "auth_public", "auth_public_publish", "auth_public_subscribe"])]
+    pub auth_key: Option<PathBuf>,
+
+    /// Asks this auth server about every browser session, as moq-relay does.
+    #[arg(long, value_name = "URL", conflicts_with_all = ["auth_public", "auth_public_publish", "auth_public_subscribe"])]
+    pub auth_url: Option<url::Url>,
+
+    /// Lets every browser session publish and subscribe at these patterns, as moq-relay does.
+    #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
+    pub auth_public: Vec<Pattern>,
+
+    /// Lets every browser session publish at these patterns, as moq-relay does.
+    #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
+    pub auth_public_publish: Vec<Pattern>,
+
+    /// Lets every browser session subscribe at these patterns, as moq-relay does.
+    #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
+    pub auth_public_subscribe: Vec<Pattern>,
+
+    /// Decides the sessions of iroh clients, instead of the default.
+    ///
+    /// The default is [`relay_policy`], or with `--auth-key` a [`Verify`] of
+    /// the same keys with [`relay_policy`] as its fallback.
+    #[arg(skip)]
+    pub iroh_policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
 }
 
 /// Runs the relay server until a shutdown signal or an error.
@@ -101,7 +141,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
+    let keys = config.auth_key.as_deref().map(load_keys).transpose()?;
     let mut relay_config = moq_relay::Config::default();
+    relay_config.auth.url = config.auth_url.clone();
+    relay_config.auth.public = config.auth_public.clone();
+    relay_config.auth.public_publish = config.auth_public_publish.clone();
+    relay_config.auth.public_subscribe = config.auth_public_subscribe.clone();
     relay_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(config.bind));
     // Self-signed TLS. No ACME yet.
     relay_config.listen.tls.generate = vec!["localhost".to_string()];
@@ -109,21 +154,34 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // The viewer serves `/` and every other path, which the WebSocket
     // fallback would take.
     relay_config.web.ws = false;
-    // No `[auth]` source, so `admit` decides every session.
     let mut relay = moq_relay::Relay::load(relay_config).await?;
-    let admissions = relay
-        .admissions()
-        .context("the relay config names an auth source")?;
-
     // Pulls dial over the relay's own endpoint, with its stable identity.
     let pulls = Arc::new(pull::PullState::new(
         iroh_endpoint.clone(),
         relay.cluster().clone(),
     ));
-    let _admit_task = AbortOnDropHandle::new(tokio::spawn(admit(admissions, Some(pulls.clone()))));
+    // Without an auth source of moq-relay's own, `admit` decides every
+    // browser session.
+    let _admit_task = match relay.admissions() {
+        Some(admissions) => Some(AbortOnDropHandle::new(tokio::spawn(admit(
+            admissions,
+            Some(pulls.clone()),
+            keys.clone(),
+        )))),
+        None => {
+            info!("moq-relay's auth decides browser sessions, which pull no tickets");
+            None
+        }
+    };
+    let iroh_policy = config.iroh_policy.unwrap_or_else(|| match keys {
+        Some(keys) => Arc::new(Verify::new(JwtVerifier::new(keys)).fallback(relay_policy())),
+        None => Arc::new(relay_policy()),
+    });
     // Not moq-relay's iroh listener: `IrohSessions` accepts iroh clients,
     // since it knows who they are.
-    let iroh_router = IrohSessions::new(relay.cluster().clone(), Some(pulls)).router(iroh_endpoint);
+    let iroh_router = IrohSessions::new(relay.cluster().clone(), Some(pulls))
+        .with_policy(iroh_policy)
+        .router(iroh_endpoint);
 
     let quic_port = relay.quic_addr()?.port();
     let http_port = relay
@@ -162,10 +220,17 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
 /// Answers the relay's admissions until the relay drops its auth.
 ///
-/// Every session gets [`browser_grant`]. A session whose path names a ticket
-/// reads the ticket's broadcast at that name, see [`pull::mounted`]. With
-/// `pulls` set, it also holds a pull of that broadcast while it runs.
-pub async fn admit(mut admissions: Admissions, pulls: Option<Arc<pull::PullState>>) {
+/// A session gets [`browser_grant`]. With `keys`, a session that presents a
+/// JWT gets what the token grants at its path instead, until the token
+/// expires, and one whose token the keys reject is refused. A session whose
+/// path names a ticket reads the ticket's broadcast at that name, see
+/// [`pull::mounted`]. With `pulls` set, it also holds a pull of that
+/// broadcast while it runs.
+pub async fn admit(
+    mut admissions: Admissions,
+    pulls: Option<Arc<pull::PullState>>,
+    keys: Option<KeySet>,
+) {
     // One task per session that holds a pull, until the session ends.
     let mut held = JoinSet::new();
     loop {
@@ -180,7 +245,14 @@ pub async fn admit(mut admissions: Admissions, pulls: Option<Arc<pull::PullState
         let ticket = name
             .as_deref()
             .and_then(|name| name.parse::<BroadcastTicket>().ok());
-        let mut grant = browser_grant();
+        let mut grant = match browser_session_grant(&admission, keys.as_ref()) {
+            Ok(grant) => grant,
+            Err(err) => {
+                info!(path = %admission.request.path, %err, "refusing a browser session");
+                admission.refuse(err);
+                continue;
+            }
+        };
         if let Some(ticket) = &ticket {
             // The session's root is the ticket it dialed, so this mounts the
             // broadcast at that name.
@@ -207,6 +279,59 @@ pub async fn admit(mut admissions: Admissions, pulls: Option<Arc<pull::PullState
             lease.closed().await;
         });
     }
+}
+
+/// Returns the grant of a browser session: its token's with `keys`, else [`browser_grant`].
+fn browser_session_grant(
+    admission: &moq_relay::auth::Admission,
+    keys: Option<&KeySet>,
+) -> Result<moq_auth::Grant, moq_relay::auth::Error> {
+    let Some(keys) = keys else {
+        return Ok(browser_grant());
+    };
+    let request = &admission.request;
+    let token = if admission.attached() {
+        // The credential presented in band, for a session already held.
+        request.auth.clone()
+    } else {
+        let target = match &request.query {
+            Some(query) => format!("{}?{query}", request.path),
+            None => request.path.clone(),
+        };
+        let setup = request
+            .token
+            .as_ref()
+            .filter(|token| token.kind == moq_net::setup::Token::OUT_OF_BAND)
+            .and_then(|token| std::str::from_utf8(&token.value).ok());
+        let session = SessionRequest::new(&target);
+        let session = match setup {
+            Some(token) => session.with_token(token),
+            None => session,
+        };
+        session.token().map(str::to_owned)
+    };
+    let Some(token) = token else {
+        return Ok(browser_grant());
+    };
+    let refused =
+        |err: moq_auth::Error| moq_relay::auth::Error::Forbidden(format!("invalid token: {err}"));
+    let claims = keys.verify(&token).map_err(refused)?;
+    let permissions = claims.authorize(&request.path).map_err(refused)?;
+    let mut grant = moq_auth::Grant::new(permissions.publish, permissions.subscribe);
+    grant.expires = claims.expires;
+    Ok(grant)
+}
+
+/// Loads the JWT keys from a file that holds a JWK set or a single JWK.
+fn load_keys(path: &std::path::Path) -> anyhow::Result<KeySet> {
+    if let Ok(keys) = KeySet::from_file(path) {
+        return Ok(keys);
+    }
+    let key = moq_auth::Key::from_file(path)
+        .with_context(|| format!("reading the JWT keys from {}", path.display()))?;
+    Ok(KeySet {
+        keys: vec![Arc::new(key)],
+    })
 }
 
 /// Pulls the broadcast a session named, if the name is a ticket.
@@ -278,5 +403,52 @@ fn mime_from_path(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        relay: Config,
+    }
+
+    fn parse(args: &[&str]) -> Result<Config, clap::Error> {
+        Cli::try_parse_from(std::iter::once("relay").chain(args.iter().copied()))
+            .map(|cli| cli.relay)
+    }
+
+    #[test]
+    fn the_auth_flags_parse() {
+        Cli::command().debug_assert();
+        let config = parse(&[]).expect("no flags");
+        assert!(config.auth_key.is_none() && config.auth_public.is_empty());
+        let config = parse(&["--auth-key", "keys.jwk"]).expect("a key");
+        assert_eq!(
+            config.auth_key.as_deref(),
+            Some(std::path::Path::new("keys.jwk"))
+        );
+        let config = parse(&["--auth-public", "anon/**,demo/**"]).expect("patterns");
+        assert_eq!(config.auth_public.len(), 2);
+    }
+
+    #[test]
+    fn a_key_and_another_auth_source_conflict() {
+        assert!(parse(&["--auth-key", "k", "--auth-url", "https://auth.example"]).is_err());
+        assert!(parse(&["--auth-key", "k", "--auth-public", "anon/**"]).is_err());
+        assert!(
+            parse(&[
+                "--auth-url",
+                "https://auth.example",
+                "--auth-public",
+                "anon/**"
+            ])
+            .is_err()
+        );
     }
 }

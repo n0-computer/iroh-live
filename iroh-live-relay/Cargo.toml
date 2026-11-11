@@ -18,6 +18,8 @@ moq-tokio = { workspace = true, default-features = false, features = ["net", "qu
 # The grants and leases the relay answers its admissions with.
 moq-auth = { workspace = true, features = ["async"] }
 moq-net = { workspace = true }
+# The policy types, and the JWT verifier for iroh clients' tokens.
+moq-ext-access = { workspace = true, features = ["jwt"] }
 iroh = { workspace = true }
 iroh-live-node = { workspace = true }
 # Plain MoQ over iroh for the relay's own sessions: dial, accept, ALPNs.
@@ -43,6 +45,7 @@ include_dir = "0.7"
 dirs = "7"
 # Decodes the broadcast name in a request path. Already in the tree through `url`.
 percent-encoding = "2"
+url = "2"
 
 [dev-dependencies]
 iroh = { workspace = true }

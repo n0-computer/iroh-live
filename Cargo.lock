@@ -4528,6 +4528,7 @@ dependencies = [
  "iroh-live-node",
  "iroh-live-rooms",
  "moq-auth",
+ "moq-ext-access",
  "moq-net",
  "moq-relay",
  "moq-tokio",

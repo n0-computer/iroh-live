@@ -1,21 +1,26 @@
-//! Sessions from iroh clients, scoped by their endpoint id.
+//! Sessions from iroh clients, decided by a policy on their endpoint id.
 //!
 //! moq-tokio's server has no iroh backend, and an iroh session's auth request
 //! would carry no peer identity anyway. So the relay accepts iroh sessions
-//! itself with [`IrohSessions`]. It lets each client publish only at the paths
-//! that name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
-//! Browsers come in through moq-relay's server, and [`browser_grant`] keeps
-//! them to names of one segment.
+//! itself with [`IrohSessions`], and asks a [`Policy`] about each. The
+//! default, [`relay_policy`], lets each client publish only at the paths that
+//! name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers
+//! come in through moq-relay's server, and [`browser_grant`] keeps them to
+//! names of one segment.
 
 use std::{sync::Arc, time::Duration};
 
 use iroh::{
-    Endpoint,
+    Endpoint, EndpointId,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use iroh_live::layout::LiveLayout;
-use moq_net::Pattern;
+use iroh_live_node::{
+    DECIDE_TIMEOUT, SessionRequest,
+    policy::{self, Authorization, DynPolicy, Event, PeerRequest, Policy, Rejection},
+};
+use moq_net::{Pattern, server::Handshake, setup::Token};
 use moq_relay::cluster::Cluster;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -35,12 +40,14 @@ pub struct IrohSessions {
     cluster: Cluster,
     /// Pulls the broadcasts that sessions name by ticket, if enabled.
     pulls: Option<Arc<PullState>>,
+    /// Decides who may hold a session, and what it may publish and read.
+    policy: Arc<dyn DynPolicy<EndpointId>>,
     /// Cancelled when the router shuts down, which closes every session.
     shutdown: CancellationToken,
 }
 
 impl IrohSessions {
-    /// Creates the handler for `cluster`.
+    /// Creates the handler for `cluster`, deciding sessions with [`relay_policy`].
     ///
     /// With `pulls` set, a session that names a ticket in its path pulls the
     /// ticket's broadcast, as a browser's does.
@@ -49,8 +56,22 @@ impl IrohSessions {
         Self {
             cluster,
             pulls,
+            policy: Arc::new(relay_policy()),
             shutdown: CancellationToken::new(),
         }
+    }
+
+    /// Returns this handler with `policy` deciding sessions.
+    ///
+    /// The relay asks it after a client's MoQ SETUP. A rejection closes the
+    /// session with the rejection's code. An authorization's grant bounds
+    /// what the client publishes into the cluster and what it reads from it,
+    /// and the session closes when the authorization expires. The relay does
+    /// not decide again: a client whose session closed reconnects.
+    #[must_use]
+    pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
+        self.policy = Arc::new(policy);
+        self
     }
 
     /// Spawns a router on `endpoint` with this handler.
@@ -76,10 +97,24 @@ impl IrohSessions {
         .map_err(AcceptError::from_err)?;
         let path = handshake.path().to_owned();
         let name = requested_name(&path);
+        let request = PeerRequest::new(remote, session_request(&handshake), false, Event::Connect);
+        let authorization = match self.decide(&request).await {
+            Ok(authorization) => authorization,
+            Err(rejection) => {
+                info!(
+                    reason = rejection.reason(),
+                    code = %rejection.code(),
+                    "the policy rejected the iroh client",
+                );
+                handshake.close(rejection.code().clone());
+                return Err(AcceptError::from_err(rejection));
+            }
+        };
+        let grant = &authorization.grant;
         let publish = self
             .cluster
             .origin
-            .scope("", &relay_grant(remote).publish)
+            .scope("", &grant.publish)
             .map_err(AcceptError::from_err)?;
         // A session that names a ticket reads the pulled broadcast at that name.
         let serving = name
@@ -89,7 +124,9 @@ impl IrohSessions {
             .map_or_else(
                 || self.cluster.origin.consume(),
                 |cluster| cluster.origin.consume(),
-            );
+            )
+            .scope("", &grant.subscribe)
+            .map_err(AcceptError::from_err)?;
         let (session, driver) = tokio::time::timeout(
             moq_transport_iroh::HANDSHAKE_TIMEOUT,
             handshake
@@ -100,7 +137,7 @@ impl IrohSessions {
         .await
         .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
         .map_err(AcceptError::from_err)?;
-        info!(%path, "iroh client admitted, publishing under its own id only");
+        info!(%path, grant = ?authorization.grant, expires = ?authorization.expires, "iroh client admitted");
 
         // Held while the session runs.
         let _pull = self
@@ -110,21 +147,74 @@ impl IrohSessions {
 
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
-        let ended = tokio::select! {
-            err = &mut run => Some(err),
-            () = self.shutdown.cancelled() => None,
-        };
-        match ended {
-            Some(err) => debug!(%err, "iroh session ended"),
-            // The driver keeps running, so the session can tell its peer.
-            None => {
-                session.abort(moq_net::Error::Cancel);
-                if tokio::time::timeout(CLOSE_GRACE, run).await.is_err() {
-                    warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
-                }
+        let expiry = expiry(&authorization);
+        tokio::pin!(expiry);
+        let close = tokio::select! {
+            err = &mut run => {
+                debug!(%err, "iroh session ended");
+                return Ok(());
             }
+            () = self.shutdown.cancelled() => moq_net::Error::Cancel,
+            () = &mut expiry => {
+                info!("the iroh client's authorization expired, closing its session");
+                moq_net::Error::Expired
+            }
+        };
+        // The driver keeps running, so the session can tell its peer.
+        session.abort(close);
+        if tokio::time::timeout(CLOSE_GRACE, run).await.is_err() {
+            warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
         }
         Ok(())
+    }
+
+    /// Asks the policy about `request`, within [`DECIDE_TIMEOUT`].
+    ///
+    /// A policy that takes longer is a rejection with
+    /// [`moq_net::Error::Timeout`]. So is an authorization whose transit is
+    /// not the default, since the relay forwards the whole cluster anyway.
+    async fn decide(&self, request: &PeerRequest) -> Result<Authorization, Rejection> {
+        let decided =
+            tokio::time::timeout(DECIDE_TIMEOUT, DynPolicy::decide(&*self.policy, request)).await;
+        let Ok(decision) = decided else {
+            return Err(Rejection::new("the policy did not decide in time")
+                .with_code(moq_net::Error::Timeout));
+        };
+        let authorization = decision?;
+        if !authorization.transit.is_none() {
+            warn!(transit = ?authorization.transit, "transit is not supported, rejecting the session");
+            return Err(Rejection::new("transit is not supported"));
+        }
+        Ok(authorization)
+    }
+}
+
+/// Waits until `authorization` expires, or forever without an expiry.
+async fn expiry(authorization: &Authorization) {
+    match authorization.expires {
+        Some(expires) => {
+            let left = expires
+                .duration_since(std::time::SystemTime::now())
+                .unwrap_or_default();
+            tokio::time::sleep(left).await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Returns what the client asked for in its SETUP: a path, and maybe a token.
+///
+/// The SETUP of moq-lite-06 and older has no token field. On those versions
+/// [`SessionRequest::token`] reads the `jwt` or `token` query of the path.
+fn session_request(handshake: &Handshake) -> SessionRequest {
+    let request = SessionRequest::new(handshake.path());
+    let token = handshake
+        .token()
+        .filter(|token| token.kind == Token::OUT_OF_BAND)
+        .and_then(|token| std::str::from_utf8(&token.value).ok());
+    match token {
+        Some(token) => request.with_token(token),
+        None => request,
     }
 }
 
@@ -171,8 +261,18 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 /// Returns what an iroh peer may publish into the relay.
 ///
 /// That is its own `live/` broadcasts and its room broadcasts.
-pub(crate) fn relay_grant(peer: iroh::EndpointId) -> iroh_live_node::Grant {
+pub(crate) fn relay_grant(peer: EndpointId) -> iroh_live_node::Grant {
     LiveLayout::default().grant(peer, &[Arc::new(iroh_live::rooms::publish_scope)])
+}
+
+/// Returns the relay's default policy for iroh clients.
+///
+/// It admits every client to read the whole cluster and to publish its own
+/// `live/` broadcasts and its room broadcasts, at the paths that name its
+/// endpoint id. Use it as the fallback of a [`Verify`](moq_ext_access::policy::Verify)
+/// to let a token widen what a client may publish.
+pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
+    policy::from_fn(|request: &PeerRequest| Ok(relay_grant(*request.peer()).into()))
 }
 
 #[cfg(test)]
