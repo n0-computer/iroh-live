@@ -35,7 +35,7 @@ use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription};
 use moq_net::Path;
 use moq_relay::cluster::Cluster;
 use n0_watcher::Watcher;
-use tokio::sync::watch;
+use tokio::{sync::watch, task::JoinSet};
 use tracing::{debug, info, warn};
 
 /// Default for [`PullState::with_linger`].
@@ -110,8 +110,22 @@ pub fn serving(cluster: &Cluster, path: &str) -> Cluster {
 }
 
 /// The relay's pulls, shared by every session that names a ticket.
+///
+/// Cheap to clone. Each pull runs in a task that the clones own together, so
+/// dropping the last clone ends every pull.
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
+    inner: Pulls,
+    /// The task of each pull: its dial, and then its hold.
+    #[debug(skip)]
+    tasks: Arc<Mutex<JoinSet<()>>>,
+}
+
+/// What the pull tasks share: all of [`PullState`] but its tasks.
+///
+/// A task holds this, so it never keeps its own set alive.
+#[derive(Clone, derive_more::Debug)]
+struct Pulls {
     /// The node that dials publishers, with the cluster origin as its route table.
     node: Node,
     /// How long a pull without sessions stays connected.
@@ -192,10 +206,13 @@ impl PullState {
             ..Default::default()
         };
         Self {
-            node: Node::new(endpoint, config),
-            linger: DEFAULT_LINGER,
-            pulls: Arc::new(Mutex::new(HashMap::new())),
-            publishers: Arc::new(Mutex::new(HashMap::new())),
+            inner: Pulls {
+                node: Node::new(endpoint, config),
+                linger: DEFAULT_LINGER,
+                pulls: Arc::new(Mutex::new(HashMap::new())),
+                publishers: Arc::new(Mutex::new(HashMap::new())),
+            },
+            tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
@@ -205,7 +222,7 @@ impl PullState {
     /// connection.
     #[must_use]
     pub fn with_linger(mut self, linger: Duration) -> Self {
-        self.linger = linger;
+        self.inner.linger = linger;
         self
     }
 
@@ -236,7 +253,7 @@ impl PullState {
         // Claimed under the lock retirement takes, so an entry found here
         // outlives this call.
         let (pull, dial) = {
-            let mut pulls = self.pulls.lock().expect("poisoned");
+            let mut pulls = self.inner.pulls.lock().expect("poisoned");
             let (pull, dial) = match pulls.get(&local_name) {
                 Some(pull) => (Arc::clone(pull), false),
                 None => {
@@ -251,21 +268,25 @@ impl PullState {
         let guard = PullGuard { pull };
 
         if dial {
-            let state = self.clone();
+            let inner = self.inner.clone();
             let ticket = ticket.clone();
             let name = local_name.clone();
             let pull = Arc::clone(&guard.pull);
-            tokio::spawn(async move {
-                let outcome = match state.establish(&ticket, &name, &pull).await {
-                    Ok(()) => Dial::Connected,
+            self.spawn(async move {
+                match inner.establish(&ticket, &name).await {
+                    Ok((subscription, publisher)) => {
+                        pull.dial.send_replace(Dial::Connected);
+                        inner
+                            .hold(ticket, name, pull, subscription, publisher)
+                            .await;
+                    }
                     Err(err) => {
                         // Retire it, so the next pull dials again.
                         warn!(local_name = %name, %err, "pull dial failed");
-                        state.retire(&name, &pull);
-                        Dial::Failed(format!("{err:#}"))
+                        inner.retire(&name, &pull);
+                        pull.dial.send_replace(Dial::Failed(format!("{err:#}")));
                     }
-                };
-                pull.dial.send_replace(outcome);
+                }
             });
         } else {
             debug!(%local_name, "joining an existing pull");
@@ -288,13 +309,29 @@ impl PullState {
         Ok(guard)
     }
 
-    /// Resolves the ticket's broadcast and spawns the task that holds the pull.
+    /// Spawns a pull task into the set, and drops the tasks that finished.
+    fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.tasks.lock().expect("poisoned");
+        while let Some(finished) = tasks.try_join_next() {
+            if let Err(err) = finished
+                && err.is_panic()
+            {
+                warn!(%err, "a pull task panicked");
+            }
+        }
+        tasks.spawn(task);
+    }
+}
+
+impl Pulls {
+    /// Resolves the ticket's broadcast, and returns it with the publisher's claim.
+    ///
+    /// The caller holds the pull with [`hold`](Self::hold).
     async fn establish(
         &self,
         ticket: &BroadcastTicket,
         local_name: &str,
-        pull: &Arc<Pull>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<(Subscription, PublisherClaim)> {
         info!(
             remote = %ticket.peer().fmt_short(),
             path = %ticket.path(),
@@ -311,14 +348,7 @@ impl PullState {
             path = %subscription.path(),
             "remote broadcast available in the cluster"
         );
-        tokio::spawn(self.clone().hold(
-            ticket.clone(),
-            local_name.to_owned(),
-            Arc::clone(pull),
-            subscription,
-            publisher,
-        ));
-        Ok(())
+        Ok((subscription, publisher))
     }
 
     /// Waits for the publisher to announce the ticket's broadcast into the cluster.
@@ -354,7 +384,7 @@ impl PullState {
     /// pull retires once nobody wants it, or once resolving fails
     /// [`MAX_RESOLVES`] times in a row.
     async fn hold(
-        self,
+        &self,
         ticket: BroadcastTicket,
         local_name: String,
         pull: Arc<Pull>,
@@ -471,7 +501,7 @@ type Publishers = Arc<Mutex<HashMap<EndpointId, usize>>>;
 /// with it.
 struct PublisherClaim {
     publisher: EndpointId,
-    /// The count this claim is part of, shared with [`PullState`].
+    /// The count this claim is part of, shared with [`Pulls`].
     publishers: Publishers,
     node: Node,
     /// Released after [`Drop::drop`] closes the session, as fields drop after it.
@@ -480,7 +510,7 @@ struct PublisherClaim {
 
 impl PublisherClaim {
     /// Claims the ticket's path for its peer, if the peer owns it.
-    fn new(state: &PullState, ticket: &BroadcastTicket) -> anyhow::Result<Self> {
+    fn new(state: &Pulls, ticket: &BroadcastTicket) -> anyhow::Result<Self> {
         let publisher = ticket.peer();
         let path = state.node.claim_path(publisher, ticket.path())?;
         *state
