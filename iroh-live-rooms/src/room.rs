@@ -824,6 +824,20 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
     format!("rooms/{topic}/{publisher}/{name}")
 }
 
+/// Returns the topic, publisher and name of a room broadcast's path.
+///
+/// The inverse of the room path layout, `rooms/<topic>/<publisher>/<name>`.
+/// Returns `None` for any other path, and for a topic or publisher that is
+/// not spelled the way the layout spells it.
+pub fn parse_room_path(path: &str) -> Option<(TopicId, EndpointId, &str)> {
+    let (topic_str, rest) = path.strip_prefix("rooms/")?.split_once('/')?;
+    let (publisher_str, name) = rest.split_once('/')?;
+    let topic: TopicId = topic_str.parse().ok()?;
+    let publisher: EndpointId = publisher_str.parse().ok()?;
+    let canonical = topic.to_string() == topic_str && publisher.to_string() == publisher_str;
+    (canonical && !name.is_empty()).then_some((topic, publisher, name))
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::{Endpoint, SecretKey, endpoint::presets, protocol::Router};
@@ -871,5 +885,27 @@ mod tests {
         let router = rooms.mount(Router::builder(endpoint)).spawn();
         assert!(rooms.mounted.load(Ordering::Relaxed));
         router.shutdown().await.expect("the router shuts down");
+    }
+
+    #[test]
+    fn a_room_path_parses_back() {
+        let topic = TopicId::from_bytes([3; 32]);
+        let publisher = SecretKey::from_bytes(&[4; 32]).public();
+        let path = room_path(topic, publisher, "cam/hd");
+        assert_eq!(parse_room_path(&path), Some((topic, publisher, "cam/hd")));
+        assert_eq!(
+            parse_room_path(&format!("rooms/{topic}/{publisher}/")),
+            None
+        );
+        assert_eq!(
+            parse_room_path(&format!("rooms/topic/{publisher}/cam")),
+            None
+        );
+        assert_eq!(
+            parse_room_path(&format!("live/{topic}/{publisher}/cam")),
+            None
+        );
+        let upper = publisher.to_string().to_uppercase();
+        assert_eq!(parse_room_path(&format!("rooms/{topic}/{upper}/cam")), None);
     }
 }

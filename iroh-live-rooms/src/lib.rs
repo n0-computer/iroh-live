@@ -63,6 +63,6 @@ mod room;
 mod ticket;
 
 pub use self::{
-    room::{ALPN, Error, Room, RoomPeer, RoomState, Rooms, publish_scope},
+    room::{ALPN, Error, Room, RoomPeer, RoomState, Rooms, parse_room_path, publish_scope},
     ticket::RoomTicket,
 };

@@ -69,14 +69,7 @@ pub fn owner(path: &Path) -> Option<EndpointId> {
     {
         return Some(peer);
     }
-    let mut parts = path.parts();
-    let (Some("rooms"), Some(_topic), Some(member), Some(_name)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return None;
-    };
-    let peer: EndpointId = member.parse().ok()?;
-    (peer.to_string() == member).then_some(peer)
+    iroh_live::rooms::parse_room_path(path.as_str()).map(|(_topic, member, _name)| member)
 }
 
 /// Returns `cluster` with `requested` reading the broadcast its ticket names.
@@ -559,8 +552,10 @@ mod tests {
         let other = iroh::SecretKey::from_bytes(&[4; 32]).public();
         assert_eq!(owner(&path(&format!("live/{peer}/cam"))), Some(peer));
         assert_eq!(owner(&path(&format!("live/{peer}/cam/hd"))), Some(peer));
-        assert_eq!(owner(&path(&format!("rooms/topic/{peer}/cam"))), Some(peer));
-        assert_eq!(owner(&path(&format!("rooms/topic/{peer}"))), None);
+        let topic = iroh_live::rooms::RoomTicket::generate().topic_id();
+        assert_eq!(owner(&path(&format!("rooms/{topic}/{peer}/cam"))), Some(peer));
+        assert_eq!(owner(&path(&format!("rooms/{topic}/{peer}"))), None);
+        assert_eq!(owner(&path(&format!("rooms/topic/{peer}/cam"))), None);
         assert_eq!(owner(&path("fleet/robot/cam")), None);
         assert_eq!(owner(&path(&format!("live/{peer}"))), None);
         assert_eq!(owner(&path(&format!("other/{peer}/cam"))), None);
