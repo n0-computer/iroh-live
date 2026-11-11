@@ -12,6 +12,7 @@
 //! [`iroh_uplink`], which redials the same way.
 
 use std::{
+    fmt,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -51,8 +52,14 @@ pub struct RelayConfig {
     /// The path is the one the session requests, such as a ticket the relay
     /// pulls. Over iroh it rides the MoQ SETUP.
     pub url: Url,
-    /// Sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
-    pub token: Option<String>,
+    /// Returns the token to present, sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
+    ///
+    /// An `iroh://` link asks it on every dial, so a link whose token expired
+    /// presents a fresh one when it redials. An `https://`, `moqt://` or
+    /// `moql://` link asks it once, when it attaches, since moq-tokio's
+    /// connection redials on its own: detach and attach again for a new
+    /// token there. Use [`TokenFn::fixed`] for a token that never changes.
+    pub token: Option<TokenFn>,
     /// Added to every route through this relay.
     ///
     /// Defaults to [`DEFAULT_RELAY_COST`].
@@ -89,13 +96,59 @@ impl RelayConfig {
         Self::new(url)
     }
 
-    /// Returns the URL to dial, with the token in its query.
+    /// Returns the URL to dial, with a token from [`token`](Self::token) in its query.
     fn dial_url(&self) -> Url {
         let mut url = self.url.clone();
-        if let Some(token) = &self.token {
-            url.query_pairs_mut().append_pair("jwt", token);
+        if let Some(token) = self.token.as_ref().and_then(TokenFn::token) {
+            url.query_pairs_mut().append_pair("jwt", &token);
         }
         url
+    }
+}
+
+/// Returns the token a relay link presents, each time the link asks.
+///
+/// See [`RelayConfig::token`].
+///
+/// # Examples
+///
+/// ```
+/// use iroh_live_node::TokenFn;
+///
+/// let fixed = TokenFn::fixed("secret");
+/// assert_eq!(fixed.token().as_deref(), Some("secret"));
+///
+/// // A token from a store the application refreshes.
+/// let store = std::sync::Arc::new(std::sync::Mutex::new(String::from("first")));
+/// let current = TokenFn::new(move || Some(store.lock().expect("poisoned").clone()));
+/// assert_eq!(current.token().as_deref(), Some("first"));
+/// ```
+#[derive(Clone)]
+pub struct TokenFn(Arc<dyn Fn() -> Option<String> + Send + Sync>);
+
+impl TokenFn {
+    /// Creates a token source that calls `f` each time a token is asked for.
+    ///
+    /// `None` presents no token.
+    pub fn new(f: impl Fn() -> Option<String> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// Creates a token source that always returns `token`.
+    pub fn fixed(token: impl Into<String>) -> Self {
+        let token = token.into();
+        Self::new(move || Some(token.clone()))
+    }
+
+    /// Returns the token to present now.
+    pub fn token(&self) -> Option<String> {
+        (self.0)()
+    }
+}
+
+impl fmt::Debug for TokenFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TokenFn(..)")
     }
 }
 
@@ -550,8 +603,8 @@ async fn iroh_uplink(
 ) {
     let publish = served(&shared.table);
     let path = config.url.path().trim_start_matches('/');
-    let options = ConnectOptions {
-        token: config.token.clone(),
+    let mut options = ConnectOptions {
+        token: None,
         path: (!path.is_empty()).then(|| path.to_owned()),
         cost: Some(config.cost),
         grant: Some(Grant::everything()),
@@ -560,6 +613,8 @@ async fn iroh_uplink(
     let mut pause = REDIAL_MIN;
     let sampler = link::SharedSampler::default();
     loop {
+        // Asked on every dial, so a redial presents a fresh token.
+        options.token = config.token.as_ref().and_then(TokenFn::token);
         let dialed = tokio::select! {
             _ = stop.cancelled() => break,
             _ = shared.shutdown.cancelled() => break,
@@ -678,7 +733,7 @@ mod tests {
     fn dial_url_carries_the_token_as_jwt() {
         let mut config = RelayConfig::new("https://relay.example/room".parse().expect("url"));
         assert_eq!(config.dial_url().as_str(), "https://relay.example/room");
-        config.token = Some("a+b".into());
+        config.token = Some(TokenFn::fixed("a+b"));
         assert_eq!(
             config.dial_url().as_str(),
             "https://relay.example/room?jwt=a%2Bb"

@@ -148,7 +148,7 @@ pub use iroh_live_node as node;
 pub use iroh_live_node::net;
 pub use iroh_live_node::{
     Audience, BroadcastTicket, Congestion, ConnectOptions, MoqPreset, Node, NodeConfig,
-    Publication, Reach, RelayConfig, Session, Subscription,
+    Publication, Reach, RelayConfig, Session, Subscription, TokenFn,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;

@@ -128,7 +128,7 @@ pub use self::{
     link::{LinkId, LinkKind, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     publish::{Audience, Publication},
-    relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
+    relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus, TokenFn},
     route::Subscription,
     session::Session,
     ticket::BroadcastTicket,

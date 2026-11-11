@@ -1778,7 +1778,7 @@ fn attach_with_token(
 ) -> iroh_live_node::RelayLink {
     node.attach_relay(RelayConfig {
         offer: RelayOffer::Public,
-        token,
+        token: token.map(iroh_live_node::TokenFn::fixed),
         ..RelayConfig::iroh(relay.iroh_id)
     })
     .expect("attach")
@@ -1932,6 +1932,59 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     // The redial presents the same expired token, which the relay refuses.
     retracted(&mut updates, "tokens/cam").await;
     assert!(!routed_soon(&relay.cluster.origin, "tokens/cam").await);
+
+    holder.shutdown().await;
+}
+
+/// An iroh relay link asks its token function on every dial, so a redial presents a fresh token.
+#[tokio::test]
+async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay = TestRelay::start_keyed(keys.clone()).await;
+    // The first token expires, so the relay closes the session, and every later one lasts.
+    let mut expiring = Claims::default()
+        .with_publish(["tokens/**".parse().expect("a pattern")])
+        .with_subscribe([moq_net::Pattern::all()]);
+    expiring.expires = Some(
+        (std::time::SystemTime::now() + Duration::from_secs(2))
+            .try_into()
+            .expect("after 1970"),
+    );
+    let first = keys.sign(&expiring).expect("signed");
+    let fresh = token_for(&keys, "tokens");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let token = iroh_live_node::TokenFn::new(move || {
+        let call = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(if call == 0 {
+            first.clone()
+        } else {
+            fresh.clone()
+        })
+    });
+
+    let (_endpoint, holder) = relay_node().await;
+    let cam = holder
+        .publish("tokens/cam", Audience::Everyone)
+        .expect("publish");
+    let _cam = counter(cam.broadcast(), "data");
+    let mut updates = relay.cluster.origin.consume().announced();
+    let _link = holder
+        .attach_relay(RelayConfig {
+            offer: RelayOffer::Public,
+            token: Some(token),
+            ..RelayConfig::iroh(relay.iroh_id)
+        })
+        .expect("attach");
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    retracted(&mut updates, "tokens/cam").await;
+    // Back with the fresh token, which the relay verified on the redial.
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    assert!(
+        calls.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "the link asked for a token once only"
+    );
 
     holder.shutdown().await;
 }
