@@ -305,7 +305,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
             kind: LinkKind::Relay,
             remote: iroh_relay,
             hop,
-            grant: Grant::everything(),
+            grant: Some(Grant::everything()),
             public: matches!(config.offer, RelayOffer::Public),
             consume: config.consume,
             auth: auth.clone(),

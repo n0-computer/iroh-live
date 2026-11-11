@@ -72,9 +72,10 @@ pub struct ConnectOptions {
     ///
     /// `None` takes it from [`NodeConfig::grant`](crate::NodeConfig::grant).
     /// A new session is authorized for it before its handshake, so nothing
-    /// outside it ever reaches the route table or the peer. A session that
-    /// already exists keeps its grant: change that with
-    /// [`Session::set_grant`](crate::Session::set_grant).
+    /// outside it ever reaches the route table or the peer. The grant is the
+    /// peer's, so it also holds for every other session with the peer. A
+    /// session that already exists is returned as it is: change its grant
+    /// with [`Session::set_grant`](crate::Session::set_grant).
     pub grant: Option<Grant>,
     /// The congestion controller of this connection.
     ///
@@ -126,6 +127,9 @@ impl Incoming {
     }
 
     /// Admits the session with `grant`.
+    ///
+    /// The grant is the peer's: it replaces the grant of every other live
+    /// session with the peer too.
     ///
     /// Cancellation safe: dropping the future before the handshake completes
     /// rejects the session, and dropping it after admits the session.

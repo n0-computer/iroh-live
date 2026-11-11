@@ -5,9 +5,10 @@ mod common;
 use std::{sync::Arc, time::Duration};
 
 use common::{Peer, announced, ends, publish, reading, stays_pending, step};
-use iroh_live_node::{Audience, Error, Grant, NodeConfig, Reach};
+use iroh_live_node::{Audience, Error, Grant, NodeConfig, Reach, Session};
 use moq_net::Path;
 use n0_tracing_test::traced_test;
+use n0_watcher::Watcher;
 
 /// Returns a node whose grant lets every peer subscribe and publish nothing.
 async fn viewer() -> Peer {
@@ -187,6 +188,76 @@ async fn set_grant_leaves_claimed_paths_alone() {
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Returns the sessions of `node` with `peer`, waiting up to a second for two.
+///
+/// The accepted session of a simultaneous dial registers a moment after the
+/// dialed one.
+async fn two_sessions_with(node: &iroh_live_node::Node, peer: iroh::EndpointId) -> Vec<Session> {
+    let mut sessions = node.sessions();
+    let with_peer = |all: Vec<Session>| -> Vec<Session> {
+        all.into_iter()
+            .filter(|listed| listed.peer() == peer)
+            .collect()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let current = with_peer(sessions.get());
+        if current.len() >= 2 {
+            return current;
+        }
+        match tokio::time::timeout_at(deadline, sessions.updated()).await {
+            Ok(Ok(_)) => {}
+            _ => return current,
+        }
+    }
+}
+
+#[tokio::test]
+#[traced_test]
+async fn the_sessions_of_one_peer_share_its_grant() {
+    // A simultaneous dial leaves two sessions with one peer on at least one
+    // side almost every time. Try a few pairs until one does.
+    const PAIRS: usize = 8;
+    for _ in 0..PAIRS {
+        let alice = Peer::spawn().await;
+        let bob = Peer::spawn().await;
+        let (at_alice, at_bob) = step("both dial at once", async {
+            tokio::join!(
+                alice.moq.connect(bob.endpoint.addr()),
+                bob.moq.connect(alice.endpoint.addr()),
+            )
+        })
+        .await;
+        at_alice.expect("alice's dial failed");
+        at_bob.expect("bob's dial failed");
+
+        let mut checked = false;
+        for (node, peer) in [(&alice, &bob), (&bob, &alice)] {
+            let with_peer = two_sessions_with(&node.moq, peer.id()).await;
+            let [first, second] = with_peer.as_slice() else {
+                continue;
+            };
+            assert_eq!(first.grant(), common::own_paths(peer.id()));
+            assert_eq!(first.grant(), second.grant());
+
+            first.set_grant(Grant::nothing());
+            assert_eq!(second.base_grant(), Grant::nothing(), "set on the first");
+            assert_eq!(second.grant(), Grant::nothing());
+
+            second.set_grant(Grant::everything());
+            assert_eq!(first.grant(), Grant::everything(), "set on the second");
+            checked = true;
+        }
+
+        alice.shutdown().await;
+        bob.shutdown().await;
+        if checked {
+            return;
+        }
+    }
+    panic!("no simultaneous dial in {PAIRS} pairs left two sessions with one peer");
 }
 
 #[tokio::test]

@@ -124,6 +124,7 @@ impl Actor {
             state.closed = true;
             state.publications.clear();
             state.links.clear();
+            state.clear_peers();
         }
         self.shared.sessions.set(Vec::new()).ok();
         // Anyone still waiting on a dial learns it will not come.
@@ -271,7 +272,6 @@ impl Actor {
                 link,
                 remote,
                 dialed,
-                grant: std::sync::Mutex::new(grant.clone()),
                 request,
                 connection,
                 moq,
@@ -281,13 +281,16 @@ impl Actor {
                 closing: Default::default(),
             }),
         };
+        // The peer's grant holds for every session with it, so this session's
+        // admission sets it for older ones too.
+        state.admit_peer(remote, grant);
         state.add_link(
             link,
             LinkEntry {
                 kind: LinkKind::Direct,
                 remote: Some(remote),
                 hop,
-                grant,
+                grant: None,
                 public: true,
                 consume: true,
                 auth,
@@ -376,17 +379,20 @@ impl Actor {
             Ok(err) => info!(remote = %remote.fmt_short(), %link, %err, "session ended"),
             Err(err) => error!(remote = %remote.fmt_short(), %link, %err, "session task failed"),
         }
+        let mut last = false;
         if let Some(sessions) = self.peers.get_mut(&remote) {
             sessions.retain(|session| session.inner.link != link);
             if sessions.is_empty() {
                 self.peers.remove(&remote);
+                last = true;
             }
         }
-        self.shared
-            .state
-            .lock()
-            .expect("poisoned")
-            .remove_link(link);
+        let mut state = self.shared.state.lock().expect("poisoned");
+        state.remove_link(link);
+        if last {
+            state.remove_peer(&remote);
+        }
+        drop(state);
         self.publish_sessions();
     }
 

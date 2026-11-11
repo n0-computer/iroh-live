@@ -128,8 +128,8 @@ pub(crate) struct Shared {
     pub(crate) table: origin::Producer,
     /// The node's publications and links.
     ///
-    /// Lock order: this lock first, then a session's `SessionInner::grant`,
-    /// then a subscription's `routes`. Never await while holding any of them.
+    /// Lock order: this lock first, then a subscription's `routes`. Never
+    /// await while holding either.
     pub(crate) state: Mutex<State>,
     pub(crate) sessions: Watchable<Vec<Session>>,
     pub(crate) actor: mpsc::Sender<ActorMessage>,

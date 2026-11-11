@@ -48,11 +48,12 @@
 //! table's local view: this node's publications, never a route it learned from
 //! another link. What a link's peer sees is the grant moq enforces on the live
 //! session: the exact paths of the publications whose audience admits the
-//! peer, within the session's [`Grant`]. The node re-authorizes every session
-//! when a publication or an audience changes, so a peer taken out of an
-//! audience loses the path at once, and what it read there ends with
-//! [`moq_net::Error::Unauthorized`]. This holds on both sides of a session,
-//! dialed or accepted, and on every protocol version.
+//! peer, within the peer's [`Grant`], which every session with the peer
+//! shares. The node re-authorizes every session when a publication or an
+//! audience changes, so a peer taken out of an audience loses the path at
+//! once, and what it read there ends with [`moq_net::Error::Unauthorized`].
+//! This holds on both sides of a session, dialed or accepted, and on every
+//! protocol version.
 //!
 //! [`NodeConfig::grant`] gives each peer its grant from its endpoint id.
 //! Without it, a peer may subscribe to anything and publish nothing.

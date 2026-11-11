@@ -38,6 +38,11 @@ pub(crate) struct State {
     pub(crate) closed: bool,
     /// Paths that tickets widened a peer's grant to, with how many claims hold each.
     tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
+    /// The base grant of each peer with a live direct session.
+    ///
+    /// Every direct session with the peer shares it. Set when a session is
+    /// registered, and removed when the peer's last session ends.
+    base: HashMap<EndpointId, Grant>,
 }
 
 /// How many paths a ticket may widen one peer's grant to.
@@ -93,8 +98,10 @@ pub(crate) struct LinkEntry {
     pub(crate) remote: Option<EndpointId>,
     /// The identity the link's routes are attributed to in the route table.
     pub(crate) hop: Hop,
-    /// What the link's peer may do at most, before audiences.
-    pub(crate) grant: Grant,
+    /// What a relay may do at most, before audiences.
+    ///
+    /// `None` for a direct link, which takes its peer's base grant.
+    pub(crate) grant: Option<Grant>,
     /// For a relay, whether `Everyone` publications go to it.
     pub(crate) public: bool,
     /// Whether the link feeds the route table.
@@ -159,13 +166,45 @@ impl State {
         self.authorize_all();
     }
 
-    /// Sets the base grant of link `id`, and re-authorizes it.
-    pub(crate) fn set_grant(&mut self, id: LinkId, grant: Grant) {
-        let Some(link) = self.links.get_mut(&id) else {
+    /// Sets the base grant of `peer`, and re-authorizes every link with it.
+    ///
+    /// Called as a session with the peer is registered, so the grant holds
+    /// for every session with the peer, older ones included.
+    pub(crate) fn admit_peer(&mut self, peer: EndpointId, grant: Grant) {
+        self.base.insert(peer, grant);
+        self.authorize_peer(&peer);
+    }
+
+    /// Replaces the base grant of `peer`, if it has a live session, and re-authorizes its links.
+    pub(crate) fn set_peer_grant(&mut self, peer: &EndpointId, grant: Grant) {
+        let Some(base) = self.base.get_mut(peer) else {
             return;
         };
-        link.grant = grant;
-        self.authorize(id);
+        *base = grant;
+        self.authorize_peer(peer);
+    }
+
+    /// Forgets the base grant of `peer`, once its last session has ended.
+    pub(crate) fn remove_peer(&mut self, peer: &EndpointId) {
+        self.base.remove(peer);
+    }
+
+    /// Returns the base grant of `peer`, if it has a live session.
+    pub(crate) fn peer_grant(&self, peer: &EndpointId) -> Option<&Grant> {
+        self.base.get(peer)
+    }
+
+    /// Returns what `peer` may do on its direct sessions: its base grant and its ticket paths.
+    ///
+    /// `None` if the peer has no live session.
+    pub(crate) fn peer_effective_grant(&self, peer: &EndpointId) -> Option<Grant> {
+        let base = self.base.get(peer)?;
+        Some(self.effective_grant(Some(peer), base))
+    }
+
+    /// Forgets every peer, as the node shuts down.
+    pub(crate) fn clear_peers(&mut self) {
+        self.base.clear();
     }
 
     /// Adds one claim on `path` for `peer`, and widens the peer's links to it.
@@ -254,8 +293,22 @@ impl State {
         let Some(link) = self.links.get(&id) else {
             return;
         };
-        let grant = self.grant_for(link.kind, link.remote.as_ref(), &link.grant, link.public);
+        let grant = self.link_grant(link);
         link.auth.authorize(&grant);
+    }
+
+    /// Returns the moq grant of `link`, from its own grant or its peer's.
+    ///
+    /// A direct link whose peer has no base grant yet, which registration
+    /// rules out, may do nothing.
+    fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
+        let nothing = Grant::nothing();
+        let base = match (&link.grant, &link.remote) {
+            (Some(grant), _) => grant,
+            (None, Some(peer)) => self.base.get(peer).unwrap_or(&nothing),
+            (None, None) => &nothing,
+        };
+        self.grant_for(link.kind, link.remote.as_ref(), base, link.public)
     }
 
     /// Returns the moq grant of a link, from the publications it may see.
@@ -404,8 +457,18 @@ mod tests {
 
     /// Returns the moq grant `state` gives link `id` now.
     fn grant_of(state: &State, id: LinkId) -> auth::Grant {
-        let link = &state.links[&id];
-        state.grant_for(link.kind, link.remote.as_ref(), &link.grant, link.public)
+        state.link_grant(&state.links[&id])
+    }
+
+    /// Adds `link` as link `id`, admitting a direct link's peer with every right first.
+    fn add(state: &mut State, id: LinkId, link: LinkEntry) {
+        if link.kind == LinkKind::Direct {
+            let peer = link.remote.expect("a direct link has a peer");
+            if state.peer_grant(&peer).is_none() {
+                state.admit_peer(peer, Grant::everything());
+            }
+        }
+        state.add_link(id, link);
     }
 
     /// Returns a grant that lets a peer subscribe anywhere and publish under `live/<peer>/`.
@@ -421,7 +484,7 @@ mod tests {
             kind,
             remote: Some(remote),
             hop: Hop::of(&remote),
-            grant: Grant::everything(),
+            grant: (kind == LinkKind::Relay).then(Grant::everything),
             public: true,
             consume: true,
             auth: auth::Handle::new(),
@@ -440,21 +503,22 @@ mod tests {
         let mut state = State::default();
         assert_eq!(state.link_for(unknown_hop()), None);
 
-        state.add_link(LinkId(1), link(LinkKind::Direct));
+        add(&mut state, LinkId(1), link(LinkKind::Direct));
         assert_eq!(state.link_for(unknown_hop()), None);
 
-        state.add_link(LinkId(2), link(LinkKind::Relay));
+        add(&mut state, LinkId(2), link(LinkKind::Relay));
         assert_eq!(state.link_for(unknown_hop()), Some(LinkId(2)));
 
-        state.add_link(LinkId(3), link(LinkKind::Relay));
+        add(&mut state, LinkId(3), link(LinkKind::Relay));
         assert_eq!(state.link_for(unknown_hop()), None);
     }
 
     #[test]
     fn link_for_ignores_a_relay_that_feeds_nothing() {
         let mut state = State::default();
-        state.add_link(LinkId(1), link(LinkKind::Relay));
-        state.add_link(
+        add(&mut state, LinkId(1), link(LinkKind::Relay));
+        add(
+            &mut state,
             LinkId(2),
             LinkEntry {
                 consume: false,
@@ -469,9 +533,9 @@ mod tests {
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
         let hop = direct.hop;
-        state.add_link(LinkId(1), direct);
-        state.add_link(LinkId(2), link(LinkKind::Relay));
-        state.add_link(LinkId(3), link(LinkKind::Relay));
+        add(&mut state, LinkId(1), direct);
+        add(&mut state, LinkId(2), link(LinkKind::Relay));
+        add(&mut state, LinkId(3), link(LinkKind::Relay));
         assert_eq!(
             state.link_for(Source::Peer(hop.id().get())),
             Some(LinkId(1))
@@ -484,13 +548,8 @@ mod tests {
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
         let peer = direct.remote.expect("a peer");
-        state.add_link(
-            LinkId(1),
-            LinkEntry {
-                grant: own_paths(peer),
-                ..direct
-            },
-        );
+        state.admit_peer(peer, own_paths(peer));
+        add(&mut state, LinkId(1), direct);
         let own = format!("live/{peer}/cam");
         let claimed = Path::new("shows/news").expect("a valid path");
         assert!(grant_of(&state, LinkId(1)).publish.matches(&own));
@@ -542,8 +601,8 @@ mod tests {
         let alice = link(LinkKind::Direct);
         let bob = link(LinkKind::Direct);
         let alice_id = alice.remote.expect("a peer");
-        state.add_link(LinkId(1), alice);
-        state.add_link(LinkId(2), bob);
+        add(&mut state, LinkId(1), alice);
+        add(&mut state, LinkId(2), bob);
 
         let path = "live/me/cam";
         state.add_publication(
@@ -567,8 +626,9 @@ mod tests {
         let mut state = State::default();
         let relay = link(LinkKind::Relay);
         let relay_id = relay.remote.expect("a peer");
-        state.add_link(LinkId(1), relay);
-        state.add_link(
+        add(&mut state, LinkId(1), relay);
+        add(
+            &mut state,
             LinkId(2),
             LinkEntry {
                 public: false,
@@ -607,8 +667,8 @@ mod tests {
     async fn a_removed_publication_leaves_every_grant() {
         let table = Table::new();
         let mut state = State::default();
-        state.add_link(LinkId(1), link(LinkKind::Direct));
-        state.add_link(LinkId(2), link(LinkKind::Relay));
+        add(&mut state, LinkId(1), link(LinkKind::Direct));
+        add(&mut state, LinkId(2), link(LinkKind::Relay));
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
         state.add_publication(11, table.publication("live/me/mic", AudienceKind::Everyone));
         assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
@@ -627,17 +687,51 @@ mod tests {
     async fn the_base_grant_bounds_what_a_link_sees() {
         let table = Table::new();
         let mut state = State::default();
-        state.add_link(
-            LinkId(1),
-            LinkEntry {
-                grant: Grant::nothing(),
-                ..link(LinkKind::Direct)
-            },
-        );
+        let direct = link(LinkKind::Direct);
+        let peer = direct.remote.expect("a peer");
+        state.admit_peer(peer, Grant::nothing());
+        add(&mut state, LinkId(1), direct);
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
 
-        state.set_grant(LinkId(1), Grant::subscribe_only());
+        state.set_peer_grant(&peer, Grant::subscribe_only());
         assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
+    }
+
+    #[tokio::test]
+    async fn the_links_of_one_peer_share_its_base_grant() {
+        let table = Table::new();
+        let mut state = State::default();
+        let first = link(LinkKind::Direct);
+        let peer = first.remote.expect("a peer");
+        let second = LinkEntry {
+            remote: Some(peer),
+            hop: first.hop,
+            ..link(LinkKind::Direct)
+        };
+        state.admit_peer(peer, Grant::nothing());
+        add(&mut state, LinkId(1), first);
+        add(&mut state, LinkId(2), second);
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
+        for id in [LinkId(1), LinkId(2)] {
+            assert!(grant_of(&state, id).subscribe.is_empty(), "{id:?}");
+        }
+
+        state.set_peer_grant(&peer, Grant::subscribe_only());
+        for id in [LinkId(1), LinkId(2)] {
+            assert!(
+                grant_of(&state, id).subscribe.matches("live/me/cam"),
+                "{id:?}"
+            );
+        }
+
+        // A later session's grant holds for the earlier one too.
+        state.admit_peer(peer, Grant::nothing());
+        assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
+
+        // Once the peer is gone, a late change does not bring it back.
+        state.remove_peer(&peer);
+        state.set_peer_grant(&peer, Grant::everything());
+        assert_eq!(state.peer_grant(&peer), None);
     }
 }

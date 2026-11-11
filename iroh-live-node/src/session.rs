@@ -45,7 +45,6 @@ pub(crate) struct SessionInner {
     pub(crate) link: LinkId,
     pub(crate) remote: EndpointId,
     pub(crate) dialed: bool,
-    pub(crate) grant: std::sync::Mutex<Grant>,
     pub(crate) request: SessionRequest,
     pub(crate) connection: Connection,
     pub(crate) moq: moq_net::Session,
@@ -78,39 +77,53 @@ impl Session {
 
     /// Returns what the peer may do on this node.
     ///
-    /// That is the base grant, widened by the paths that live ticket
+    /// That is the peer's base grant, widened by the paths that live ticket
     /// subscriptions claimed for the peer (see [`Node::claim_path`](crate::Node::claim_path)).
+    /// Every session with the peer has the same grant. Once the peer's last
+    /// session has ended, the grant is [`Grant::nothing`].
     pub fn grant(&self) -> Grant {
-        let Some(shared) = self.inner.shared.upgrade() else {
-            return self.inner.grant.lock().expect("poisoned").clone();
-        };
-        let state = shared.state.lock().expect("poisoned");
-        let base = self.inner.grant.lock().expect("poisoned");
-        state.effective_grant(Some(&self.inner.remote), &base)
+        self.inner
+            .shared
+            .upgrade()
+            .and_then(|shared| {
+                let state = shared.state.lock().expect("poisoned");
+                state.peer_effective_grant(&self.inner.remote)
+            })
+            .unwrap_or_else(Grant::nothing)
     }
 
-    /// Returns the base grant: what [`set_grant`](Self::set_grant) last set.
+    /// Returns the peer's base grant: what admission or [`set_grant`](Self::set_grant) last set.
     ///
     /// Without live ticket claims this equals [`grant`](Self::grant).
     pub fn base_grant(&self) -> Grant {
-        self.inner.grant.lock().expect("poisoned").clone()
+        self.inner
+            .shared
+            .upgrade()
+            .and_then(|shared| {
+                let state = shared.state.lock().expect("poisoned");
+                state.peer_grant(&self.inner.remote).cloned()
+            })
+            .unwrap_or_else(Grant::nothing)
     }
 
-    /// Changes the base grant of the peer, on the live session.
+    /// Changes the base grant of the peer, on every live session with it.
     ///
+    /// The grant belongs to the peer, not to this session: a second session
+    /// with the same peer, as a simultaneous dial leaves, changes with it.
     /// moq enforces it at once, in both directions. A narrower subscribe half
     /// takes paths from the peer and resets what it reads there, and a
     /// narrower publish half takes the peer's broadcasts outside it out of the
     /// route table. A wider one brings them back, with no bound from the grant
     /// the session started with. Paths that live ticket claims added stay until
-    /// their claims drop.
+    /// their claims drop. A new session with the peer sets the grant again, as
+    /// its admission decides. Does nothing once the peer's last session has
+    /// ended.
     pub fn set_grant(&self, grant: Grant) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;
         };
         let mut state = shared.state.lock().expect("poisoned");
-        *self.inner.grant.lock().expect("poisoned") = grant.clone();
-        state.set_grant(self.inner.link, grant);
+        state.set_peer_grant(&self.inner.remote, grant);
     }
 
     /// Returns what the peer asked for when it opened the session.
