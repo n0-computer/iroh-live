@@ -1,7 +1,9 @@
 //! The relay's bridging, pulls and admission, over real connections.
 //!
 //! Endpoints use `presets::Minimal` and a shared `MemoryLookup`, so no test
-//! needs network discovery.
+//! needs network discovery. Each test binds its own relay and endpoints, on
+//! random ports and with fresh keys, and each endpoint has its own entry in
+//! the lookup. The tests therefore share nothing and run in parallel.
 
 use std::{
     collections::BTreeSet,
@@ -19,8 +21,7 @@ use moq_net::{announce::Event, origin};
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use serial_test::serial;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// How long any one wait may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -292,7 +293,6 @@ async fn first_frame(
 
 /// Baseline: noq publish -> relay -> noq subscribe.
 #[tokio::test]
-#[serial]
 async fn noq_publish_noq_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -336,7 +336,6 @@ async fn noq_publish_noq_subscribe() {
 
 /// iroh publish -> relay -> iroh subscribe (using iroh-live Node API).
 #[tokio::test]
-#[serial]
 async fn iroh_publish_iroh_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -352,14 +351,14 @@ async fn iroh_publish_iroh_subscribe() {
         .await
         .expect("timeout")
         .expect("connect");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Through the relay's session, at the path that names the publisher: the
+    // same path the publisher offers on a direct session.
+    let path = live_path(pub_ep.id(), "relay-test");
+    routed(&relay.cluster.origin.consume(), &path).await;
 
     // Subscriber
     let sub_ep = bind_endpoint().await;
     let subscriber = iroh_live::Node::new(sub_ep.clone(), LiveLayout::default().config(&[]));
-    // Through the relay's session, at the path that names the publisher: the
-    // same path the publisher offers on a direct session.
-    let path = live_path(pub_ep.id(), "relay-test");
     let sub = tokio::time::timeout(TIMEOUT, async {
         let session = subscriber.connect_with(relay_id, trusted()).await?;
         let subscription = session.subscribe(path).await?;
@@ -390,7 +389,6 @@ async fn iroh_publish_iroh_subscribe() {
 
 /// noq publish -> relay -> iroh subscribe through `Node::subscribe`.
 #[tokio::test]
-#[serial]
 async fn noq_publish_iroh_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -433,72 +431,41 @@ async fn noq_publish_iroh_subscribe() {
     )
     .await;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    routed(&relay.cluster.origin.consume(), "browser-stream").await;
 
     // Subscriber: iroh, through `Node::subscribe`.
     let sub_ep = bind_endpoint().await;
     let subscriber = iroh_live::Node::new(sub_ep.clone(), LiveLayout::default().config(&[]));
+    let sub = tokio::time::timeout(TIMEOUT, async {
+        let session = subscriber.connect_with(relay_id, trusted()).await?;
+        let subscription = session.subscribe("browser-stream").await?;
+        Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
+    })
+    .await
+    .expect("subscribe timeout")
+    .expect("subscribe");
 
-    // Retry subscribe a few times: the relay may need time to propagate
-    // the noq publisher's announcement to the iroh side.
-    let mut last_err = None;
-    for attempt in 0..3 {
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
-            let session = subscriber.connect_with(relay_id, trusted()).await?;
-            let subscription = session.subscribe("browser-stream").await?;
-            Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
-        })
-        .await;
+    // Subscribing proves the route. The catalog arriving and parsing proves
+    // the bridge carried the broadcast itself.
+    let mut catalog = sub.catalog();
+    let parsed = tokio::time::timeout(TIMEOUT, catalog.wait_for(Option::is_some))
+        .await
+        .expect("no catalog arrived")
+        .expect("the broadcast ended")
+        .clone()
+        .expect("a catalog");
+    // The one rendition the noq side wrote, parsed on the far side of the bridge.
+    let video = &parsed.video.renditions;
+    assert_eq!(video.len(), 1, "the bridged catalog: {video:?}");
+    assert_eq!(video["video/h264"].coded_height, Some(240));
 
-        match result {
-            Ok(Ok(sub)) => {
-                // Subscribing proves the route; the catalog arriving and
-                // parsing proves the bridge carried the broadcast itself.
-                let mut catalog = sub.catalog();
-                let parsed = tokio::time::timeout(Duration::from_secs(5), async {
-                    let parsed = catalog.wait_for(Option::is_some).await.ok()?;
-                    parsed.clone()
-                })
-                .await;
-                let Ok(Some(parsed)) = parsed else {
-                    warn!(attempt, "subscribed, but no catalog arrived; retrying");
-                    last_err = Some("no catalog arrived".to_string());
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                };
-                // The one rendition the noq side wrote, parsed on the far
-                // side of the bridge.
-                let video = &parsed.video.renditions;
-                assert_eq!(video.len(), 1, "the bridged catalog: {video:?}");
-                assert_eq!(video["video/h264"].coded_height, Some(240));
-                info!(attempt, "subscribed to browser-stream via iroh");
-                drop(sub);
-                drop(_pub_session);
-                sub_ep.close().await;
-                return;
-            }
-            Ok(Err(err)) => {
-                warn!(attempt, %err, "subscribe attempt failed, retrying");
-                last_err = Some(format!("{err:#}"));
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-            Err(_) => {
-                warn!(attempt, "subscribe attempt timed out, retrying");
-                last_err = Some("timeout".into());
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        }
-    }
-
-    panic!(
-        "noq->iroh subscribe failed after 3 attempts. Last error: {}",
-        last_err.unwrap_or_default()
-    );
+    drop(sub);
+    drop(_pub_session);
+    sub_ep.close().await;
 }
 
 /// A noq subscriber reads a broadcast the relay pulls from a ticket.
 #[tokio::test]
-#[serial]
 async fn pull_remote_broadcast_via_ticket() {
     let _ = tracing_subscriber::fmt::try_init();
     // Shipped, since its admission mounts the ticket a browser dials.
@@ -540,7 +507,6 @@ async fn pull_remote_broadcast_via_ticket() {
 
 /// A relay link over iroh requests the path of its URL, so the relay pulls the ticket it names.
 #[tokio::test]
-#[serial]
 async fn an_iroh_relay_url_requests_its_path() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start_pulling().await;
@@ -572,7 +538,6 @@ async fn an_iroh_relay_url_requests_its_path() {
 
 /// A browser that dials a ticket holds a pull of it until its session ends.
 #[tokio::test]
-#[serial]
 async fn a_browser_that_dials_a_ticket_holds_its_pull() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start_pulling().await;
@@ -591,7 +556,9 @@ async fn a_browser_that_dials_a_ticket_holds_its_pull() {
     let bc = announced_at(&sub_origin, "").await;
     let _frame = first_frame(&bc, "catalog.json").await;
 
-    // Past the linger window, the live session still holds the pull.
+    // Past the linger window, the live session still holds the pull. The
+    // sleep is the span under test: nothing marks a retirement that does not
+    // happen.
     tokio::time::sleep(PULL_LINGER * 3).await;
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
@@ -612,7 +579,6 @@ async fn a_browser_that_dials_a_ticket_holds_its_pull() {
 
 /// iroh publish -> relay -> noq subscribe.
 #[tokio::test]
-#[serial]
 async fn iroh_publish_noq_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -628,9 +594,8 @@ async fn iroh_publish_noq_subscribe() {
         .await
         .expect("timeout")
         .expect("connect");
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Subscriber (noq)
+    // Subscriber (noq). `announced_at` waits for the relay to route the path.
     let sub_origin = moq_tokio::origin::spawn();
     let _sub_session = established(
         noq_client()
@@ -752,7 +717,6 @@ async fn wait_for_broadcast(cluster: &Cluster, name: &str, present: bool) -> boo
 ///
 /// A subscriber is announced only the exact path it subscribed to.
 #[tokio::test]
-#[serial]
 async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -787,7 +751,6 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
 
 /// An unwatched pull retires and closes its connection, and the next pull dials anew.
 #[tokio::test]
-#[serial]
 async fn pull_retires_an_unwatched_session() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -840,7 +803,6 @@ async fn pull_retires_an_unwatched_session() {
 
 /// A pull outlives its publisher re-publishing the broadcast, while a session holds it.
 #[tokio::test]
-#[serial]
 async fn a_pull_survives_the_publisher_republishing() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -889,7 +851,6 @@ async fn a_pull_survives_the_publisher_republishing() {
 
 /// A relay link publishes the node's public broadcasts and consumes the relay's.
 #[tokio::test]
-#[serial]
 async fn a_relay_link_publishes_and_consumes() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1026,10 +987,12 @@ async fn routed(origin: &origin::Consumer, path: &str) {
 
 /// Gives a relay's route to a path that a direct route already serves time to arrive.
 ///
-/// The route table announces only the best route of a path, so a second one
-/// cannot be waited for. The relay link is connected, and a moment is plenty on
-/// loopback.
-async fn relay_route_arrives() {
+/// Waits until the relay routes `path`, so only the hop from the relay to the
+/// node is left. The node's route table announces only the best route of a
+/// path, so the relay's second route there cannot be waited for. The relay
+/// link is connected, and a moment is plenty on loopback.
+async fn relay_route_arrives(relay: &TestRelay, path: &str) {
+    routed(&relay.cluster.origin.consume(), path).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
@@ -1061,7 +1024,6 @@ async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
 
 /// A relay-served subscription carries the relay link's readings to the player.
 #[tokio::test]
-#[serial]
 async fn a_relay_served_subscription_carries_link_samples() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1131,7 +1093,6 @@ async fn a_relay_served_subscription_carries_link_samples() {
 
 /// Only public publications reach a relay, and only on a link that offers them.
 #[tokio::test]
-#[serial]
 async fn a_relay_gets_public_publications_only() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1179,7 +1140,6 @@ async fn a_relay_gets_public_publications_only() {
 
 /// Shutting a node down detaches its relay links.
 #[tokio::test]
-#[serial]
 async fn shutdown_detaches_relay_links() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1217,7 +1177,6 @@ async fn shutdown_detaches_relay_links() {
 ///
 /// It does not move over on its own, since a relay route cannot vouch for the publisher.
 #[tokio::test]
-#[serial]
 async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1239,7 +1198,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     .expect("subscribe");
     let mut reader = subscribed(&subscription.broadcast()).await;
     let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
-    relay_route_arrives().await;
+    relay_route_arrives(&relay, publication.path().as_str()).await;
 
     subscription
         .session()
@@ -1297,7 +1256,6 @@ fn hop_of(id: iroh::EndpointId) -> std::num::NonZeroU64 {
 ///
 /// Not even once the direct session goes. The test relay lets anyone publish anywhere.
 #[tokio::test]
-#[serial]
 async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     const FORGED: u64 = 1_000_000;
 
@@ -1355,7 +1313,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     .expect("subscribe");
     let mut reader = subscribed(&subscription.broadcast()).await;
     let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
-    relay_route_arrives().await;
+    relay_route_arrives(&relay, publication.path().as_str()).await;
 
     subscription
         .session()
@@ -1384,7 +1342,6 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
 
 /// The shipped relay keeps iroh clients to their own paths, browsers to one segment.
 #[tokio::test]
-#[serial]
 async fn the_shipped_relay_refuses_forged_paths() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start_shipped().await;
@@ -1476,7 +1433,6 @@ async fn the_shipped_relay_refuses_forged_paths() {
 
 /// Two pulls of one publisher share a session, which closes with the last.
 #[tokio::test]
-#[serial]
 async fn a_publisher_session_outlives_all_but_its_last_pull() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1548,7 +1504,6 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
 
 /// A pull lets none of the publisher's other broadcasts into the cluster, not even while it dials.
 #[tokio::test]
-#[serial]
 async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
@@ -1619,7 +1574,6 @@ async fn room_node() -> (
 ///
 /// The room reads each member over its own session, even with the forgery routed first.
 #[tokio::test]
-#[serial]
 async fn a_relay_cannot_forge_a_room_members_broadcast() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
