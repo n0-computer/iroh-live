@@ -2,6 +2,7 @@
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
+pub(crate) use iroh_live_node::test_util::TIMEOUT;
 use iroh_live_node::{
     Grant, Layout, NodeConfig,
     policy::{self, PeerRequest},
@@ -9,8 +10,6 @@ use iroh_live_node::{
 };
 use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms, RoomsLayout};
 use n0_watcher::Watcher;
-
-pub(crate) use iroh_live_node::test_util::TIMEOUT;
 
 /// A [`TestNode`] with rooms, whose router accepts both.
 #[derive(Debug, derive_more::Deref)]
