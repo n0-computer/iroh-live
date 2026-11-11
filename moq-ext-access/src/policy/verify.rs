@@ -4,7 +4,7 @@ use std::fmt;
 
 use n0_future::boxed::BoxStream;
 
-use super::{Closed, Decision, PeerRequest, Policy};
+use super::{Closed, Decision, Event, PeerRequest, Policy};
 use crate::PeerId;
 
 /// Checks a token a peer presents, and returns what it authorizes.
@@ -26,6 +26,12 @@ pub trait TokenVerifier<P: PeerId>: fmt::Debug + Send + Sync + 'static {
 /// fallback's rights with a forged token. Without a token, the fallback
 /// policy decides. The default fallback, [`Closed`], makes the token
 /// required.
+///
+/// One case falls through: when a node decides again about a live session
+/// and the verifier rejects its token with [`moq_net::Error::Expired`], the
+/// fallback decides. A session whose token expires thus narrows to the
+/// fallback's rights, or closes under [`Closed`]. A new session with an
+/// expired token is rejected.
 ///
 /// The token is the one [`SessionRequest::token`](crate::SessionRequest::token)
 /// returns.
@@ -90,9 +96,17 @@ where
     F: Policy<P>,
 {
     async fn decide(&self, request: &PeerRequest<P>) -> Decision {
-        match request.token() {
-            Some(token) => self.verifier.verify(token, request),
-            None => self.fallback.decide(request).await,
+        let Some(token) = request.token() else {
+            return self.fallback.decide(request).await;
+        };
+        match self.verifier.verify(token, request) {
+            Err(rejection)
+                if request.event() != Event::Connect
+                    && matches!(rejection.code(), moq_net::Error::Expired) =>
+            {
+                self.fallback.decide(request).await
+            }
+            decision => decision,
         }
     }
 

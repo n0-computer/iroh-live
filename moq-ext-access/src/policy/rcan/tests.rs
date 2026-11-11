@@ -188,7 +188,7 @@ fn the_earliest_link_sets_the_expiry() {
     .expect("admitted");
     assert_eq!(
         authorization.expires,
-        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000_000))
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000_001))
     );
     let forever = Rcan::issuing_builder(&alice, bob.verifying_key(), publish_under("bob"))
         .sign(Expires::Never);

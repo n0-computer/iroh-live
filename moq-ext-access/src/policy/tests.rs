@@ -450,3 +450,40 @@ fn verify_takes_its_changes_from_the_fallback() {
     assert_eq!(block_on(changes.next()), Some(()));
     assert!(Policy::<Peer>::changes(&Verify::new(Stub)).is_none());
 }
+
+/// Rejects every token as expired.
+#[derive(Debug)]
+struct Lapsed;
+
+impl TokenVerifier<Peer> for Lapsed {
+    fn verify(&self, _token: &str, _request: &PeerRequest<Peer>) -> Decision {
+        Err(Rejection::new("expired").with_code(moq_net::Error::Expired))
+    }
+}
+
+#[test]
+fn an_expired_token_falls_through_only_when_deciding_again() {
+    let policy = Verify::new(Lapsed).fallback(Open(Grant::subscribe_only()));
+    let session = SessionRequest::new("/?jwt=old");
+    let connect = PeerRequest::new("bob".to_owned(), session.clone(), false, Event::Connect);
+    let rejection = decide(&policy, &connect).expect_err("a new session is rejected");
+    assert!(matches!(rejection.code(), moq_net::Error::Expired));
+    for event in [Event::Revalidate, Event::Reauthorize] {
+        let again = PeerRequest::new("bob".to_owned(), session.clone(), false, event);
+        assert_eq!(
+            decide(&policy, &again).expect("narrowed").grant,
+            Grant::subscribe_only()
+        );
+        // Under the default fallback, the session closes.
+        decide(&Verify::new(Lapsed), &again).expect_err("closed");
+    }
+    // A token rejected for another reason never falls through.
+    let forged = PeerRequest::new(
+        "bob".to_owned(),
+        SessionRequest::new("/?jwt=forged"),
+        false,
+        Event::Reauthorize,
+    );
+    let policy = Verify::new(Stub).fallback(Open(Grant::everything()));
+    decide(&policy, &forged).expect_err("rejected");
+}

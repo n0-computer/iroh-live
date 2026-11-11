@@ -143,7 +143,8 @@ impl TryFrom<Wire> for MoqCapability {
 ///
 /// A valid chain admits the peer with the last link's capability, which must
 /// lie within the verifier's root. The authorization expires with the
-/// earliest link.
+/// earliest link: rcan's `valid_until` names the last second a link is
+/// valid, so the authorization expires one second after it.
 ///
 /// The peer id must borrow as its 32-byte ed25519 public key, as iroh's
 /// `EndpointId` does.
@@ -221,7 +222,10 @@ where
             .iter()
             .filter_map(|link| match link.expires() {
                 Expires::Never => None,
-                Expires::At(secs) => Some(SystemTime::UNIX_EPOCH + Duration::from_secs(*secs)),
+                // Valid through the whole second it names.
+                Expires::At(secs) => {
+                    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs.saturating_add(1)))
+                }
             })
             .min();
         Ok(Authorization {
