@@ -117,6 +117,7 @@ router.shutdown().await?;
 //! add devices and codecs, and imply `media`. `rooms` re-exports
 //! `iroh-live-rooms`.
 
+mod app;
 pub mod calls;
 mod endpoint;
 mod error;
@@ -188,6 +189,7 @@ pub use iroh_live_rooms as rooms;
 pub use moq_json as json;
 
 pub use self::{
+    app::BoundNode,
     endpoint::{EndpointConfig, Mdns, secret_key_file},
     error::Error,
 };

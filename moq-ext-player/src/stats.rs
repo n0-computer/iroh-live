@@ -33,6 +33,34 @@ pub struct PlaybackStats {
     pub network: Option<NetworkSample>,
 }
 
+impl PlaybackStats {
+    /// Returns a one-line summary for a status bar or a log.
+    ///
+    /// It names the rendition on screen with its size and frame rate, then
+    /// the round trip and the playout latency. A figure not known yet shows
+    /// as `-`.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let video = match &self.video {
+            Some(video) => {
+                let size = video
+                    .size
+                    .map_or_else(|| "-".to_string(), |size| size.to_string());
+                let fps = video
+                    .fps
+                    .map_or_else(|| "-".to_string(), |fps| fps.to_string());
+                format!("{} {size} {fps}fps", video.rendition)
+            }
+            None => "no video".to_string(),
+        };
+        let rtt = self
+            .network
+            .and_then(|network| network.rtt)
+            .map_or_else(|| "-".to_string(), |rtt| rtt.as_millis().to_string());
+        format!("{video} | rtt:{rtt}ms lat:{}ms", self.latency.as_millis())
+    }
+}
+
 /// The video decoder.
 ///
 /// The running decoder backend is in [`PlayerStatus::decoder`](crate::PlayerStatus::decoder).
@@ -187,5 +215,22 @@ mod tests {
         assert_eq!(feedback["high"].errors, 2);
         assert_eq!(feedback["voice"].frames, 50);
         assert_eq!(feedback["voice"].latency, Some(Duration::from_millis(150)));
+    }
+
+    /// The summary names what it knows and marks the rest.
+    #[test]
+    fn the_summary_marks_figures_not_known_yet() {
+        let mut stats = PlaybackStats {
+            latency: Duration::from_millis(150),
+            ..Default::default()
+        };
+        assert_eq!(stats.summary(), "no video | rtt:-ms lat:150ms");
+        stats.video = Some(VideoPlaybackStats {
+            rendition: "high".to_string(),
+            size: Some(moq_video::Size::new(1280, 720)),
+            fps: Some(30),
+            ..Default::default()
+        });
+        assert_eq!(stats.summary(), "high 1280x720 30fps | rtt:-ms lat:150ms");
     }
 }

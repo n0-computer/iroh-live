@@ -147,6 +147,13 @@ impl Error {
         })
     }
 
+    /// Creates an [`Error::Catalog`] from a message.
+    pub fn catalog_msg(message: impl std::fmt::Display) -> Self {
+        n0_error::e!(Self::Catalog {
+            source: AnyError::from_display(message)
+        })
+    }
+
     /// Creates an [`Error::Broadcast`] from an upstream error.
     pub fn broadcast(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Broadcast {

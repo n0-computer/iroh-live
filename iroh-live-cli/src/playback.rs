@@ -3,12 +3,11 @@
 use std::{sync::Arc, time::Duration};
 
 use iroh_live::media::{
-    AudioTarget, Catalog, Player, PlayerConfig, RemoteBroadcast, RenditionMode, video_rendition,
+    AudioTarget, Catalog, Error, Player, PlayerConfig, RemoteBroadcast, RenditionMode,
+    video_rendition,
 };
 use n0_error::{Result, anyerr};
 use tracing::info;
-#[cfg(feature = "playback")]
-use tracing::warn;
 
 use crate::{args::PlaybackArgs, transport::Subscribed};
 
@@ -42,24 +41,13 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// Fails if the broadcast closes first or sends none in time.
 pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
-    let mut catalog = broadcast.catalog();
-    let first = async {
-        // A broadcast that closes sends no catalog update to wake on.
-        tokio::select! {
-            catalog = catalog.wait_for(Option::is_some) => catalog.ok().and_then(|catalog| catalog.clone()),
-            () = broadcast.closed() => None,
-        }
-    };
-    tokio::time::timeout(CATALOG_TIMEOUT, first)
+    broadcast
+        .catalog_within(CATALOG_TIMEOUT)
         .await
-        .map_err(|_| {
-            anyerr!(
-                "the broadcast sent no catalog within {}s, or sent one this build \
-                 could not read (the log says which)",
-                CATALOG_TIMEOUT.as_secs()
-            )
-        })?
-        .ok_or_else(|| anyerr!("the broadcast closed before it described itself"))
+        .map_err(|err| match err {
+            Error::Closed { .. } => anyerr!("the broadcast closed before it described itself"),
+            other => anyerr!("{other:#} (the log says why a catalog was not readable)"),
+        })
 }
 
 /// Opens the audio output for playback.
@@ -74,7 +62,7 @@ pub async fn output(device: Option<String>) -> Result<AudioTarget> {
     #[cfg(feature = "playback")]
     {
         if let Some(device) = device {
-            let output = open_engine(Some(device.clone())).await.map_err(|err| {
+            let output = open_engine(device.clone()).await.map_err(|err| {
                 anyerr!(
                     "cannot open audio output '{device}': {err:#}. \
                      Run `irl devices` for the ids this machine accepts"
@@ -83,13 +71,7 @@ pub async fn output(device: Option<String>) -> Result<AudioTarget> {
             info!(%device, "audio output selected");
             return Ok(output.into());
         }
-        match open_engine(None).await {
-            Ok(output) => Ok(output.into()),
-            Err(err) => {
-                warn!(error = %format!("{err:#}"), "no audio output, playing silently");
-                Ok(AudioTarget::null())
-            }
-        }
+        Ok(AudioTarget::default_or_null().await)
     }
     #[cfg(not(feature = "playback"))]
     {
@@ -99,12 +81,12 @@ pub async fn output(device: Option<String>) -> Result<AudioTarget> {
     }
 }
 
-/// Opens the speaker engine for `device`, or the system default for `None`.
+/// Opens the speaker engine for `device`.
 #[cfg(feature = "playback")]
 async fn open_engine(
-    device: Option<String>,
+    device: String,
 ) -> Result<iroh_live::media::audio::playback::Engine, iroh_live::media::audio::Error> {
     let mut config = iroh_live::media::audio::playback::Config::default();
-    config.device = device;
+    config.device = Some(device);
     iroh_live::media::audio::playback::Engine::open(config).await
 }

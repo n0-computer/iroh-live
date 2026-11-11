@@ -74,20 +74,7 @@ fn print_stats(player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
     *frame_count = 0;
     *fps_last = Instant::now();
 
-    let rtt = player
-        .stats()
-        .network
-        .and_then(|network| network.rtt)
-        .map_or_else(|| "-".to_string(), |rtt| rtt.as_millis().to_string());
-    println!(
-        "fps: {fps:.0}  rtt: {rtt}ms  rendition: {}",
-        player
-            .status()
-            .borrow()
-            .rendition
-            .clone()
-            .unwrap_or_default(),
-    );
+    println!("fps: {fps:.0}  {}", player.stats().summary());
 }
 
 /// A DRM device node opened for modesetting.

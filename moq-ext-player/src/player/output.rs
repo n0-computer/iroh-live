@@ -51,6 +51,20 @@ impl AudioTarget {
         Self { inner: Inner::Null }
     }
 
+    /// Opens the default speaker, or returns a [null](Self::null) target if it does not open.
+    ///
+    /// For an app that plays video whether or not the device has a speaker.
+    #[cfg(feature = "playback")]
+    pub async fn default_or_null() -> Self {
+        match playback::Engine::open(playback::Config::default()).await {
+            Ok(engine) => engine.into(),
+            Err(err) => {
+                tracing::warn!(error = %format!("{err:#}"), "no audio output, playing audio nowhere");
+                Self::null()
+            }
+        }
+    }
+
     /// Returns the engine behind this target, `None` for a [null](Self::null) one.
     #[cfg(feature = "playback")]
     pub fn engine(&self) -> Option<&playback::Engine> {

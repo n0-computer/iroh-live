@@ -183,6 +183,33 @@ impl RemoteBroadcast {
         self.shared.catalog.subscribe()
     }
 
+    /// Waits for the first catalog, at most `timeout`.
+    ///
+    /// Cancellation safe.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::Closed`] if the broadcast closes first, and with
+    /// [`Error::Catalog`] if no catalog this build can read arrives in time.
+    pub async fn catalog_within(&self, timeout: Duration) -> Result<Arc<Catalog>, Error> {
+        let mut catalog = self.catalog();
+        let first = async {
+            // A broadcast that closes sends no catalog update to wake on.
+            tokio::select! {
+                catalog = catalog.wait_for(Option::is_some) => catalog.ok().and_then(|catalog| catalog.clone()),
+                () = self.closed() => None,
+            }
+        };
+        match tokio::time::timeout(timeout, first).await {
+            Ok(Some(catalog)) => Ok(catalog),
+            Ok(None) => Err(n0_error::e!(Error::Closed)),
+            Err(_) => Err(Error::catalog_msg(format!(
+                "the broadcast sent no catalog within {}s, or sent one this build could not read",
+                timeout.as_secs()
+            ))),
+        }
+    }
+
     /// Starts one playback of the broadcast.
     ///
     /// # Errors
@@ -452,6 +479,18 @@ mod tests {
     use moq_net::{Instance, origin::RouteOptions};
 
     use super::*;
+
+    /// A broadcast that never describes itself fails the wait, and one that closes fails it at once.
+    #[tokio::test]
+    async fn a_catalog_wait_ends_on_timeout_and_on_close() {
+        let producer = moq_net::broadcast::Info::new().produce();
+        let remote = RemoteBroadcast::from_consumer(producer.consume());
+        let waited = remote.catalog_within(Duration::from_millis(100)).await;
+        assert!(matches!(waited, Err(Error::Catalog { .. })), "{waited:?}");
+        drop(producer);
+        let closed = remote.catalog_within(Duration::from_secs(10)).await;
+        assert!(matches!(closed, Err(Error::Closed { .. })), "{closed:?}");
+    }
 
     /// A catalog track created after the broadcast is read is still found.
     #[tokio::test]

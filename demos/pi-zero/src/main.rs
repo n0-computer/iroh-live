@@ -120,12 +120,13 @@ mod app {
         // The ticket has no addresses. The viewer finds the publisher through
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
         // network without internet.
-        let endpoint = iroh_live::EndpointConfig::from_env()?.bind().await?;
-        // Only dials, so it needs no router, and closes the endpoint itself.
-        let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
-        let result = watch_with(&node, opts).await;
-        node.shutdown().await;
-        endpoint.close().await;
+        let bound = iroh_live::BoundNode::bind(
+            iroh_live::EndpointConfig::from_env()?,
+            LiveLayout::default().config(&[]),
+        )
+        .await?;
+        let result = watch_with(bound.node(), opts).await;
+        bound.shutdown().await;
         result
     }
 
@@ -138,25 +139,10 @@ mod app {
         println!("connected!");
 
         // Wait for a readable catalog, so a bad publisher gives an error and
-        // not a black screen. Also watch for close: a closed broadcast sends
-        // no catalog update.
-        let mut catalog = remote.catalog();
-        let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            tokio::select! {
-                catalog = catalog.wait_for(Option::is_some) => catalog.ok().map(|_| ()),
-                () = remote.closed() => None,
-            }
-        })
-        .await;
-        match described {
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(n0_error::anyerr!("the broadcast closed")),
-            Err(_) => {
-                return Err(n0_error::anyerr!(
-                    "the broadcast sent no catalog this build could read within 15s"
-                ));
-            }
-        }
+        // not a black screen.
+        remote
+            .catalog_within(std::time::Duration::from_secs(15))
+            .await?;
 
         // `remote_broadcast` attached the link's signals, so the player picks
         // the rendition on its own.
