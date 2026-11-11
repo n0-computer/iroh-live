@@ -11,7 +11,7 @@ either. Most applications never name it: the other crates re-export what they
 need.
 
 - `Error`: the one error all three crates report.
-- `Closed`: what pushing to a source that has gone returns.
+- `SourceClosed`: what pushing to a source that has gone returns.
 - `SlotState`, `ByPtr`, `send_if_changed`: the state of a rendition slot, and
   helpers to publish it through a watch channel only when it changed.
 - `stats`: rate counters, so both sides count the same way.

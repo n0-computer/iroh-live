@@ -40,7 +40,7 @@
 mod publish;
 mod stats;
 
-pub use moq_ext_media_core::{Closed, Error, SlotState};
+pub use moq_ext_media_core::{Error, SlotState, SourceClosed};
 
 pub use self::{
     publish::{

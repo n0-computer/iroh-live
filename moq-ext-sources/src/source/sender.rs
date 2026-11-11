@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Closed, audio, frames::FrameSlot, video};
+use crate::{SourceClosed, audio, frames::FrameSlot, video};
 
 /// Whether anything currently wants a source's frames.
 ///
@@ -124,11 +124,11 @@ impl<T: 'static> FrameSender<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`Closed`] once every handle to the source has been dropped.
+    /// Returns [`SourceClosed`] once every handle to the source has been dropped.
     /// A producing loop should stop then.
-    pub fn push(&self, frame: T) -> Result<(), Closed> {
+    pub fn push(&self, frame: T) -> Result<(), SourceClosed> {
         if self.closed.is_cancelled() {
-            return Err(Closed);
+            return Err(SourceClosed);
         }
         self.sink.deliver(frame);
         Ok(())
@@ -185,6 +185,6 @@ mod tests {
         let size = video::Size::new(2, 2);
         let surface = video::Surface::rgba(&[0; 16], size).expect("2x2");
         let frame = video::Frame::new(surface, moq_net::Timestamp::from_micros(0).expect("0"));
-        assert_eq!(sender.push(frame), Err(Closed));
+        assert_eq!(sender.push(frame), Err(SourceClosed));
     }
 }

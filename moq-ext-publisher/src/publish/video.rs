@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
-    Job, Timeline,
+    Job, SourceClock,
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
@@ -135,7 +135,7 @@ pub(super) async fn run_raw(
     let rate = format.rate;
     // Anchors at the first frame any rendition encodes. The clones share the
     // anchor, so every rendition carries the same timestamp for a picture.
-    let timeline = Timeline::new(clock).recording(timestamps);
+    let timeline = SourceClock::new(clock).recording(timestamps);
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
@@ -344,7 +344,7 @@ struct Encoder {
     frames: VideoFrames,
     source: VideoSource,
     /// Maps source timestamps onto the broadcast clock, shared with the other renditions.
-    timeline: Timeline,
+    timeline: SourceClock,
     /// The source and broadcast timestamps of frames in the encoder, oldest first.
     pending: VecDeque<(moq_net::Timestamp, moq_net::Timestamp)>,
     /// Where the track goes when a successor takes it over.
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn a_timeline_keeps_the_source_cadence() {
-        let mut timeline = Timeline::new(moq_mux::Clock::new());
+        let mut timeline = SourceClock::new(moq_mux::Clock::new());
         let first = timeline.map(at(1_000_000));
         let later = timeline.map(at(1_033_333));
         assert_eq!(later.as_micros() - first.as_micros(), 33_333);
@@ -717,7 +717,7 @@ mod tests {
     /// A camera whose timestamps start at zero after a pattern on a later clock.
     #[test]
     fn a_timeline_that_goes_back_anchors_again_after_the_last_frame() {
-        let mut timeline = Timeline::new(moq_mux::Clock::new());
+        let mut timeline = SourceClock::new(moq_mux::Clock::new());
         let pattern = timeline.map(at(80_000_000));
         let camera = timeline.map(at(20_000));
         assert!(camera > pattern, "{camera:?} is not after {pattern:?}");
@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_timeline_that_jumps_ahead_anchors_at_the_clock() {
-        let mut timeline = Timeline::new(moq_mux::Clock::new());
+        let mut timeline = SourceClock::new(moq_mux::Clock::new());
         let first = timeline.map(at(20_000));
         let jumped = timeline.map(at(3_600_000_000));
         assert!(jumped.as_micros() - first.as_micros() < 1_000_000);
@@ -737,7 +737,7 @@ mod tests {
     /// Every rendition carries the same timestamp for the same picture.
     #[test]
     fn renditions_share_the_offset() {
-        let mut first = Timeline::new(moq_mux::Clock::new());
+        let mut first = SourceClock::new(moq_mux::Clock::new());
         let mut second = first.clone();
         assert_eq!(first.map(at(20_000)), second.map(at(20_000)));
         assert_eq!(first.map(at(90_000_000)), second.map(at(90_000_000)));
@@ -748,15 +748,15 @@ mod tests {
     fn a_taken_over_track_goes_on_after_its_last_timestamp() {
         let clock = moq_mux::Clock::new();
         let ahead = at(clock.now().as_micros() as u64 + 500_000);
-        let mut timeline = Timeline::new(clock).after(Some(ahead));
+        let mut timeline = SourceClock::new(clock).after(Some(ahead));
         assert!(timeline.map(at(0)) > ahead);
     }
 
-    /// A recording timeline finds the source timestamp of each frame it mapped, across a break.
+    /// A recording source clock finds the source timestamp of each frame it mapped, across a break.
     #[test]
     fn a_recording_timeline_maps_back_to_the_source() {
         let log = TimestampLog::default();
-        let mut timeline = Timeline::new(moq_mux::Clock::new()).recording(log.clone());
+        let mut timeline = SourceClock::new(moq_mux::Clock::new()).recording(log.clone());
         let pattern = timeline.map(at(80_000_000));
         let camera = timeline.map(at(20_000));
         assert_eq!(log.source(pattern), Some(at(80_000_000)));

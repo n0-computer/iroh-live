@@ -10,6 +10,6 @@ pub mod stats;
 mod status;
 
 pub use self::{
-    error::{Closed, Error},
+    error::{Error, SourceClosed},
     status::{ByPtr, SlotState, send_if_changed},
 };

@@ -22,7 +22,7 @@ use crate::{
     RemoteBroadcast, SwitchError,
     catalog::VideoRenditions as _,
     frames::{FrameSlot, VideoFrames},
-    stats::{AudioPlaybackStats, FrameTiming, PlaybackStats, Timeline, VideoPlaybackStats},
+    stats::{AudioPlaybackStats, FrameLog, FrameTiming, PlaybackStats, VideoPlaybackStats},
 };
 
 mod arrivals;
@@ -192,9 +192,9 @@ pub(crate) struct PlaybackRecorder {
     pub(crate) video: Cell<Option<VideoPlaybackStats>>,
     pub(crate) audio: Cell<Option<AudioPlaybackStats>>,
     /// Written by the video task as it presents pictures.
-    pub(crate) video_timeline: Timeline,
+    pub(crate) video_timeline: FrameLog,
     /// Written by the audio task as it writes to the output.
-    pub(crate) audio_timeline: Timeline,
+    pub(crate) audio_timeline: FrameLog,
 }
 
 /// What the player's controls ask for, shared with its tasks.

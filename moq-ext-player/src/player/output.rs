@@ -237,14 +237,14 @@ mod tests {
             echo_reference: Some(Arc::new(AudioTarget::from(engine))),
             ..moq_ext_sources::MicrophoneConfig::default()
         }
-        .resolve()
+        .capture_config()
         .expect("the canceller builds");
         assert!(
             capture.aec.is_some(),
             "the microphone config carries no canceller"
         );
         let plain = moq_ext_sources::MicrophoneConfig::default()
-            .resolve()
+            .capture_config()
             .expect("resolves");
         assert!(plain.aec.is_none());
     }
@@ -257,7 +257,7 @@ mod tests {
             ..moq_ext_sources::MicrophoneConfig::default()
         };
         assert!(matches!(
-            config.resolve(),
+            config.capture_config(),
             Err(moq_ext_sources::Error::InvalidConfig { .. })
         ));
     }

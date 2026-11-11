@@ -206,18 +206,18 @@ impl TimestampLog {
 /// Clones share the anchor, so every rendition of a ladder carries the same
 /// timestamp for the same picture. Each clone keeps its own last timestamp.
 #[derive(Debug, Clone)]
-struct Timeline {
+struct SourceClock {
     clock: moq_mux::Clock,
     anchor: Arc<Mutex<Anchor>>,
     /// The last timestamp this clone mapped.
     last: Option<moq_net::Timestamp>,
     /// The breaks this clone has seen, to tell it about a new one once.
     breaks: u64,
-    /// Where each mapping is recorded, for a timeline that records them.
+    /// Where each mapping is recorded, for a clock that records them.
     log: Option<TimestampLog>,
 }
 
-/// Where a [`Timeline`] is anchored.
+/// Where a [`SourceClock`] is anchored.
 #[derive(Debug, Default)]
 struct Anchor {
     /// Broadcast micros minus source micros, unset before the first frame.
@@ -226,8 +226,8 @@ struct Anchor {
     breaks: u64,
 }
 
-impl Timeline {
-    /// Creates a timeline on `clock` that anchors at its first frame.
+impl SourceClock {
+    /// Creates a source clock on `clock` that anchors at its first frame.
     fn new(clock: moq_mux::Clock) -> Self {
         Self {
             clock,
@@ -471,7 +471,7 @@ impl LocalBroadcast {
             .iter()
             .map(|rendition| rendition.name.clone())
             .collect();
-        info!(parent: &self.shared.span, source = source.kind(), renditions = ?names, "video set");
+        info!(parent: &self.shared.span, source = source.label(), renditions = ?names, "video set");
         self.replace(Medium::Video, names, move |job, stop| {
             video::run_raw(job, source, encoding, stop)
         });
@@ -512,7 +512,7 @@ impl LocalBroadcast {
         self.check_open()?;
         encoding.validate()?;
         let name = encoding.track_name();
-        info!(parent: &self.shared.span, source = source.kind_name(), track = %name, "audio set");
+        info!(parent: &self.shared.span, source = source.label(), track = %name, "audio set");
         self.replace(Medium::Audio, vec![name], move |job, stop| {
             audio::run(job, source, encoding, stop)
         });

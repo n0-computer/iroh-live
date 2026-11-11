@@ -167,6 +167,6 @@ impl From<std::io::Error> for Error {
 /// to stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
 #[display("the source has closed")]
-pub struct Closed;
+pub struct SourceClosed;
 
-impl std::error::Error for Closed {}
+impl std::error::Error for SourceClosed {}

@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "capture")]
 use super::status::Reporter;
-use super::{Job, Timeline, encoding::AudioEncoding, status::RenditionState};
+use super::{Job, SourceClock, encoding::AudioEncoding, status::RenditionState};
 use crate::stats::AudioEncodeStats;
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
@@ -32,7 +32,7 @@ pub(super) async fn run(
             // Resolved after `take_over`, because an output hands its echo
             // canceller to one microphone at a time, and the publication this
             // one replaces holds it until it stops.
-            match config.resolve() {
+            match config.capture_config() {
                 Ok(capture) => microphone(&job, capture, &encoding, &stop).await,
                 Err(err) => Err(err),
             }
@@ -99,7 +99,7 @@ async fn pcm(
         },
     );
 
-    let mut timeline = Timeline::new(job.clock.clone());
+    let mut timeline = SourceClock::new(job.clock.clone());
     loop {
         let frame = tokio::select! {
             frame = frames.recv() => frame,

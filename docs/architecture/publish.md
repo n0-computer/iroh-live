@@ -43,8 +43,8 @@ previews can read it.
 
 `FrameSender::push` never blocks: a new video frame replaces one not yet taken.
 `FrameSender::demand()` reports whether any rendition is encoding, so an
-application camera can idle while nobody watches. `push` returns `Closed` once
-the source is gone, and the producing loop should stop then.
+application camera can idle while nobody watches. `push` returns `SourceClosed`
+once the source is gone, and the producing loop should stop then.
 
 `EncodedVideoSource` takes an H.264 Annex-B stream that is already encoded,
 through `annex_b(stream)` or `rpicam(config)`. On a Raspberry Pi,

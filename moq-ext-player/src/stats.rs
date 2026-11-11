@@ -102,16 +102,16 @@ pub struct FrameTiming {
     pub presented: Instant,
 }
 
-/// How many frames a [`Timeline`] keeps per medium.
+/// How many frames a [`FrameLog`] keeps per medium.
 ///
 /// That is ten seconds of 50 Hz audio, and more of 30 fps video.
 const TIMELINE_LEN: usize = 512;
 
 /// The last frames of one medium, oldest first, written by the presenting task.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Timeline(Cell<VecDeque<FrameTiming>>);
+pub(crate) struct FrameLog(Cell<VecDeque<FrameTiming>>);
 
-impl Timeline {
+impl FrameLog {
     /// Records one frame, dropping the oldest once full.
     pub(crate) fn push(&self, timing: FrameTiming) {
         self.0.update(|frames| {

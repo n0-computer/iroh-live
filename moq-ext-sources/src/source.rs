@@ -81,8 +81,8 @@ enum Driver {
 /// The shared half of a [`VideoSource`].
 #[derive(Debug)]
 struct VideoInner {
-    /// What kind of source this is, for logs and status.
-    kind: String,
+    /// A short name of the source, for logs and status.
+    label: String,
     format: VideoFormat,
     frames: FrameReader,
     demand: Demand,
@@ -108,7 +108,7 @@ pub struct VideoSource {
 
 impl VideoSource {
     fn new(
-        kind: impl Into<String>,
+        label: impl Into<String>,
         format: VideoFormat,
         frames: FrameReader,
         stop: CancellationToken,
@@ -116,7 +116,7 @@ impl VideoSource {
     ) -> Self {
         Self {
             inner: Arc::new(VideoInner {
-                kind: kind.into(),
+                label: label.into(),
                 format,
                 frames,
                 demand: Demand::default(),
@@ -241,7 +241,7 @@ impl VideoSource {
     /// with `tokio::runtime::Handle::current().block_on`. The source ends once
     /// `run` returns and every clone of its sender is dropped. If `run` fails,
     /// the source fails with its error. `run` should return once
-    /// [`FrameSender::push`] reports [`Closed`](crate::Closed).
+    /// [`FrameSender::push`] reports [`SourceClosed`](crate::SourceClosed).
     ///
     /// # Errors
     ///
@@ -324,9 +324,9 @@ impl VideoSource {
         self.inner.frames.failure()
     }
 
-    /// Returns the kind of source, for logs.
-    pub fn kind(&self) -> &str {
-        &self.inner.kind
+    /// Returns a short name of the source, for logs.
+    pub fn label(&self) -> &str {
+        &self.inner.label
     }
 }
 
@@ -441,11 +441,7 @@ impl MicrophoneConfig {
     }
 
     /// Checks that echo cancellation, if asked for, is compiled in.
-    ///
-    /// Not part of the stable API: a publication calls it, and applications
-    /// have no use for it.
-    #[doc(hidden)]
-    pub fn check(&self) -> Result<(), Error> {
+    fn check(&self) -> Result<(), Error> {
         if self.echo_reference.is_some() && !cfg!(feature = "aec") {
             return Err(Error::invalid(
                 "echo cancellation needs the `aec` feature, which this build was \
@@ -455,18 +451,19 @@ impl MicrophoneConfig {
         Ok(())
     }
 
-    /// Returns the capture config with the echo canceller attached.
+    /// Returns the capture config to open, with the echo canceller attached.
     ///
-    /// Not part of the stable API: the publication that encodes the microphone
-    /// calls it when it starts.
+    /// The publication that encodes the microphone calls this when it starts.
+    /// Each call asks the echo reference for a new canceller, and an output
+    /// cancels the echo of one microphone at a time.
     ///
     /// # Errors
     ///
-    /// Fails with an invalid-config error if echo cancellation is asked for
-    /// but not compiled in, and with a device error if the echo reference
-    /// cannot hand over its canceller.
-    #[doc(hidden)]
-    pub fn resolve(&self) -> Result<audio::capture::Config, Error> {
+    /// Returns [`Error::InvalidConfig`] if echo cancellation is asked for but
+    /// not compiled in, or if the echo reference already cancels another
+    /// microphone. Returns [`Error::Device`] if the echo reference cannot
+    /// build its canceller.
+    pub fn capture_config(&self) -> Result<audio::capture::Config, Error> {
         self.check()?;
         #[cfg_attr(not(feature = "aec"), allow(unused_mut, reason = "only aec attaches"))]
         let mut capture = self.capture.clone();
@@ -501,7 +498,7 @@ pub enum AudioKind {
 /// The shared half of an [`AudioSource`].
 #[derive(Debug)]
 struct AudioInner {
-    kind_name: &'static str,
+    label: &'static str,
     kind: AudioKind,
     /// Held while a broadcast publishes this source.
     demand: Demand,
@@ -526,15 +523,10 @@ pub struct AudioSource {
 }
 
 impl AudioSource {
-    fn new(
-        kind_name: &'static str,
-        kind: AudioKind,
-        stop: CancellationToken,
-        driver: Driver,
-    ) -> Self {
+    fn new(label: &'static str, kind: AudioKind, stop: CancellationToken, driver: Driver) -> Self {
         Self {
             inner: Arc::new(AudioInner {
-                kind_name,
+                label,
                 kind,
                 demand: Demand::default(),
                 stop,
@@ -717,9 +709,9 @@ impl AudioSource {
         &self.inner.kind
     }
 
-    /// Returns the kind of source, for logs.
-    pub fn kind_name(&self) -> &'static str {
-        self.inner.kind_name
+    /// Returns a short name of the source, for logs.
+    pub fn label(&self) -> &str {
+        self.inner.label
     }
 }
 

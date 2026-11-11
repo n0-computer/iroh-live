@@ -81,7 +81,7 @@ pub mod local_task;
 mod source;
 
 use moq_audio as audio;
-pub use moq_ext_media_core::{Closed, Error};
+pub use moq_ext_media_core::{Error, SourceClosed};
 use moq_video as video;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
