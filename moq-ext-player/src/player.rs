@@ -59,6 +59,9 @@ pub struct Latency {
     pub max: Duration,
 }
 
+/// How far below [`Latency::max`] a publisher's jitter may raise the playout delay: a frame at 30 fps.
+const JITTER_HEADROOM: Duration = Duration::from_millis(33);
+
 impl Latency {
     /// No buffer and no pacing: a frame presents as soon as it decodes.
     ///
@@ -77,10 +80,16 @@ impl Latency {
     /// Returns the playout clock's delay, given the publisher's `jitter`.
     ///
     /// A publisher that flushes frames up to `jitter` late needs a buffer that
-    /// deep. An unpaced latency ignores `jitter`.
+    /// deep. The jitter raises the delay to at most [`JITTER_HEADROOM`] below
+    /// `max`, the age at which the transport skips media, so a frame that
+    /// arrives a little late is not past `max` before it is due. It never
+    /// lowers the delay below `min`. An unpaced latency ignores `jitter`.
     pub(crate) fn playout_delay(&self, jitter: Option<Duration>) -> Duration {
         match jitter {
-            Some(jitter) if self.paced() => self.min.max(jitter).min(self.max),
+            Some(jitter) if self.paced() => {
+                let ceiling = self.max.saturating_sub(JITTER_HEADROOM);
+                self.min.max(jitter.min(ceiling))
+            }
             _ => self.min,
         }
     }
@@ -488,7 +497,19 @@ mod tests {
         assert_eq!(latency.playout_delay(None), ms(100));
         assert_eq!(latency.playout_delay(Some(ms(40))), ms(100));
         assert_eq!(latency.playout_delay(Some(ms(250))), ms(250));
-        assert_eq!(latency.playout_delay(Some(ms(2000))), ms(400));
+        assert_eq!(
+            latency.playout_delay(Some(ms(2000))),
+            ms(400) - JITTER_HEADROOM,
+            "a frame's worth of headroom stays below the skip threshold"
+        );
+        // The default keeps headroom at its maximum, and stays at or above its minimum.
+        let delay = Latency::default().playout_delay(Some(ms(150)));
+        assert!(delay < ms(150) && delay >= ms(100), "{delay:?}");
+        let tight = Latency {
+            min: ms(150),
+            max: ms(150),
+        };
+        assert_eq!(tight.playout_delay(Some(ms(400))), ms(150));
         assert_eq!(
             Latency::IMMEDIATE.playout_delay(Some(ms(250))),
             Duration::ZERO
