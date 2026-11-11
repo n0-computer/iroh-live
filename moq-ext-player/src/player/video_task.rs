@@ -178,40 +178,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     return;
                 }
                 let next = desired.borrow_and_update().clone();
-                match next {
-                    Some(next) => {
-                        let Desired { target, settings, config, step_down } = next;
-                        let outcome = switcher.request(target, tokio::time::Instant::now().into_std(), |_, target| {
-                            open_replacement(target, &settings, &config, &stats)
-                        });
-                        if step_down && switcher.switching_to().is_some() && switcher.current().is_some() {
-                            info!(
-                                from = ?switcher.current().map(|target| &target.rendition),
-                                to = ?switcher.switching_to().map(|target| &target.rendition),
-                                "stepping down: letting go of the rendition on screen so the next can arrive",
-                            );
-                            switcher.release_incumbent();
-                        }
-                        outcome
-                    }
-                    None => {
-                        // Video is off or nothing is left to play. Drop both
-                        // decoders and keep the last picture up.
-                        switcher = VideoSwitcher::new(switch_deadline);
-                        delivery = None;
-                        stats.video.update(|video| *video = None);
-                        send_if_changed(&status, |status| {
-                            // The selector sets Off. Anything else means the
-                            // catalog has no video left.
-                            let video = match status.video {
-                                SlotState::Off => SlotState::Off,
-                                _ => SlotState::Ended,
-                            };
-                            status.clear_video(video);
-                        });
-                        Outcome::Idle
-                    }
-                }
+                apply_desired(next, &mut switcher, &mut delivery, &out)
             }
 
             () = async { tokio::time::sleep_until(deadline.expect("guarded")).await },
@@ -223,82 +190,167 @@ pub(crate) async fn run(inputs: Inputs) {
             due = async { delivery.as_mut().expect("guarded").due.as_mut().await },
                 if delivering =>
             {
-                let Delivery { frame, arrivals, decoded, .. } = delivery.take().expect("guarded");
+                let delivered = delivery.take().expect("guarded");
                 if due {
-                    let arrived = arrivals.get(frame.timestamp);
-                    stats.video_timeline.push(FrameTiming {
-                        kind: MediaKind::Video,
-                        pts: frame.timestamp.into(),
-                        arrived,
-                        decoded,
-                        presented: Instant::now(),
-                    });
-                    frames.send(Arc::new(frame));
+                    show(delivered, &frames, &stats);
                 }
                 Outcome::Idle
             }
 
-            event = next_event(&mut switcher, delivering) => match event {
-                Event::Opened(result) => {
-                    let generation = switcher.replacement_generation().unwrap_or_default();
-                    let result = result.unwrap_or_else(|err| {
-                        Err(Error::decoder_msg(format!(
-                            "the decoder open task failed: {err}"
-                        )))
-                    });
-                    switcher.opened(generation, result)
-                }
-                Event::Replacement(Some(frame)) => {
-                    match switcher.replacement_frame(frame.frame.timestamp.into(), tokio::time::Instant::now().into_std()) {
-                        (Verdict::Promote, outcome) => {
-                            // The incumbent's pending picture is older, so it
-                            // is replaced.
-                            delivery = Some(pace(frame, &mut shown, &clock, &controls, &stats));
-                            outcome
-                        }
-                        (Verdict::Discard, outcome) => outcome,
-                    }
-                }
-                Event::Replacement(None) => {
-                    ends.replacement = switcher
-                        .warming_mut()
-                        .and_then(|reader| reader.failure.get().cloned());
-                    switcher.replacement_ended()
-                }
-                Event::Incumbent(Some(frame)) => {
-                    switcher.incumbent_frame(frame.frame.timestamp.into());
-                    delivery = Some(pace(frame, &mut shown, &clock, &controls, &stats));
-                    Outcome::Idle
-                }
-                Event::Incumbent(None) => {
-                    let failure = switcher
-                        .incumbent_mut()
-                        .and_then(|reader| reader.failure.get().cloned());
-                    ends.incumbent = switcher.current().cloned().map(|target| (target, failure));
-                    switcher.incumbent_ended()
-                }
-            },
+            event = next_event(&mut switcher, delivering) => {
+                let mut pacer = |frame| pace(frame, &mut shown, &clock, &controls, &stats);
+                on_event(event, &mut switcher, &mut delivery, &mut ends, &mut pacer)
+            }
         };
 
-        // Written before any event goes out, so a waiter that reads the status
-        // on an event sees the switch that follows it.
-        let switching = switcher
-            .switching_to()
-            .map(|target| target.rendition.clone());
-        let on_screen = switcher.current().cloned();
-        playing.send_if_modified(|playing| {
-            let changed = *playing != on_screen;
-            if changed {
-                playing.clone_from(&on_screen);
-            }
-            changed
-        });
-        send_if_changed(&status, |status| status.switching_to = switching);
+        publish_switch(&switcher, &playing, &status);
         if matches!(outcome, Outcome::Ended) {
             delivery = None;
         }
         report(outcome, &mut switcher, ends, &out);
     }
+}
+
+/// Switches to the selector's target, or drops both decoders if it wants none.
+fn apply_desired(
+    next: Option<Desired>,
+    switcher: &mut VideoSwitcher,
+    delivery: &mut Option<Delivery>,
+    out: &Outlets<'_>,
+) -> Outcome<Error> {
+    let Some(Desired {
+        target,
+        settings,
+        config,
+        step_down,
+    }) = next
+    else {
+        // Video is off or nothing is left to play. Drop both decoders and keep
+        // the last picture up.
+        *switcher = VideoSwitcher::new(out.switch_deadline);
+        *delivery = None;
+        out.stats.video.update(|video| *video = None);
+        send_if_changed(out.status, |status| {
+            // The selector sets Off. Anything else means the catalog has no
+            // video left.
+            let video = match status.video {
+                SlotState::Off => SlotState::Off,
+                _ => SlotState::Ended,
+            };
+            status.clear_video(video);
+        });
+        return Outcome::Idle;
+    };
+    let outcome = switcher.request(
+        target,
+        tokio::time::Instant::now().into_std(),
+        |_, target| open_replacement(target, &settings, &config, out.stats),
+    );
+    if step_down && switcher.switching_to().is_some() && switcher.current().is_some() {
+        info!(
+            from = ?switcher.current().map(|target| &target.rendition),
+            to = ?switcher.switching_to().map(|target| &target.rendition),
+            "stepping down: letting go of the rendition on screen so the next can arrive",
+        );
+        switcher.release_incumbent();
+    }
+    outcome
+}
+
+/// Shows a picture the playout clock found due, and records its timing.
+fn show(delivery: Delivery, frames: &FrameSlot, stats: &PlaybackRecorder) {
+    let Delivery {
+        frame,
+        arrivals,
+        decoded,
+        ..
+    } = delivery;
+    let arrived = arrivals.get(frame.timestamp);
+    stats.video_timeline.push(FrameTiming {
+        kind: MediaKind::Video,
+        pts: frame.timestamp.into(),
+        arrived,
+        decoded,
+        presented: Instant::now(),
+    });
+    frames.send(Arc::new(frame));
+}
+
+/// Feeds a decoder event to the switcher, and starts pacing a picture to show.
+///
+/// Records in `ends` why a decoder's track stopped, before the switcher drops
+/// its reader.
+fn on_event(
+    event: Event,
+    switcher: &mut VideoSwitcher,
+    delivery: &mut Option<Delivery>,
+    ends: &mut Ends,
+    pace: &mut impl FnMut(Decoded) -> Delivery,
+) -> Outcome<Error> {
+    match event {
+        Event::Opened(result) => {
+            let generation = switcher.replacement_generation().unwrap_or_default();
+            let result = result.unwrap_or_else(|err| {
+                Err(Error::decoder_msg(format!(
+                    "the decoder open task failed: {err}"
+                )))
+            });
+            switcher.opened(generation, result)
+        }
+        Event::Replacement(Some(frame)) => {
+            let now = tokio::time::Instant::now().into_std();
+            match switcher.replacement_frame(frame.frame.timestamp.into(), now) {
+                (Verdict::Promote, outcome) => {
+                    // The incumbent's pending picture is older, so it is
+                    // replaced.
+                    *delivery = Some(pace(frame));
+                    outcome
+                }
+                (Verdict::Discard, outcome) => outcome,
+            }
+        }
+        Event::Replacement(None) => {
+            ends.replacement = switcher
+                .warming_mut()
+                .and_then(|reader| reader.failure.get().cloned());
+            switcher.replacement_ended()
+        }
+        Event::Incumbent(Some(frame)) => {
+            switcher.incumbent_frame(frame.frame.timestamp.into());
+            *delivery = Some(pace(frame));
+            Outcome::Idle
+        }
+        Event::Incumbent(None) => {
+            let failure = switcher
+                .incumbent_mut()
+                .and_then(|reader| reader.failure.get().cloned());
+            ends.incumbent = switcher.current().cloned().map(|target| (target, failure));
+            switcher.incumbent_ended()
+        }
+    }
+}
+
+/// Tells the selector and the status what is on screen and what is on its way.
+///
+/// Written before any event goes out, so a waiter that reads the status on
+/// an event sees the switch that follows it.
+fn publish_switch(
+    switcher: &VideoSwitcher,
+    playing: &watch::Sender<Option<Target>>,
+    status: &watch::Sender<PlayerStatus>,
+) {
+    let switching = switcher
+        .switching_to()
+        .map(|target| target.rendition.clone());
+    let on_screen = switcher.current().cloned();
+    playing.send_if_modified(|playing| {
+        let changed = *playing != on_screen;
+        if changed {
+            playing.clone_from(&on_screen);
+        }
+        changed
+    });
+    send_if_changed(status, |status| status.switching_to = switching);
 }
 
 /// Where the video task reports what a transition did.
