@@ -95,14 +95,11 @@ impl IrohSessions {
         .await
         .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
         .map_err(AcceptError::from_err)?;
-        let path = handshake.path().to_owned();
-        let name = requested_name(&path);
-        let request = PeerRequest::new(
-            remote,
-            SessionRequest::from_handshake(&handshake),
-            false,
-            Event::Connect,
-        );
+        let name = requested_name(handshake.path());
+        // Logged without the query: a token rides it as `?jwt=`.
+        let session = SessionRequest::from_handshake(&handshake);
+        let path = session.path().to_owned();
+        let request = PeerRequest::new(remote, session, false, Event::Connect);
         let authorization = match self.decide(&request).await {
             Ok(authorization) => authorization,
             Err(rejection) => {

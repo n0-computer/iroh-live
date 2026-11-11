@@ -487,3 +487,28 @@ fn an_expired_token_falls_through_only_when_deciding_again() {
     let policy = Verify::new(Stub).fallback(Open(Grant::everything()));
     decide(&policy, &forged).expect_err("rejected");
 }
+
+#[test]
+fn debug_output_never_shows_a_token() {
+    let session = SessionRequest::new("/space?jwt=secret-query&mode=x").with_token("secret-setup");
+    let request = PeerRequest::new("bob".to_owned(), session.clone(), false, Event::Connect);
+    let queue = Queue::new(1);
+    let mut deciding = std::pin::pin!(Policy::decide(&queue, &request));
+    assert!(
+        block_on(future::poll_once(&mut deciding)).is_none(),
+        "the request waits"
+    );
+    let pending = block_on(queue.next()).expect("a queued request");
+    for printed in [
+        format!("{session:?}"),
+        format!("{request:?}"),
+        format!("{pending:?}"),
+        format!("{:?}", SessionRequest::new("/a?jwt=secret")),
+    ] {
+        assert!(!printed.contains("secret"), "{printed}");
+    }
+    assert!(
+        format!("{session:?}").contains("mode"),
+        "query keys are shown"
+    );
+}

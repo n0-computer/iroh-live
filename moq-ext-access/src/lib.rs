@@ -14,7 +14,7 @@
 
 use std::{
     collections::BTreeSet,
-    fmt::{Debug, Display},
+    fmt::{self, Debug, Display},
     hash::Hash,
     sync::Arc,
 };
@@ -166,11 +166,25 @@ pub mod token {
 }
 
 /// What a peer asked for when it opened a session.
-#[derive(Debug, Clone, Default)]
+///
+/// Its `Debug` output names the query keys and whether a token is present,
+/// but never a query value or the token, so a request is safe to log.
+#[derive(Clone, Default)]
 pub struct SessionRequest {
     path: String,
     query: Vec<(String, String)>,
     token: Option<String>,
+}
+
+impl fmt::Debug for SessionRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let keys: Vec<&str> = self.query.iter().map(|(key, _)| key.as_str()).collect();
+        f.debug_struct("SessionRequest")
+            .field("path", &self.path)
+            .field("query_keys", &keys)
+            .field("token", &self.token().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl SessionRequest {
