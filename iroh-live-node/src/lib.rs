@@ -96,7 +96,9 @@ mod relay;
 mod route;
 mod session;
 mod state;
+// Helpers for this workspace's tests, not part of the public API.
 #[cfg(feature = "test-util")]
+#[doc(hidden)]
 pub mod test_util;
 mod ticket;
 

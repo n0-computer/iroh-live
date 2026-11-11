@@ -57,7 +57,9 @@ mod player;
 mod record;
 mod remote;
 mod stats;
+// Helpers for this workspace's tests, not part of the public API.
 #[cfg(feature = "test-util")]
+#[doc(hidden)]
 pub mod test_util;
 
 pub use hang::catalog::Catalog;
