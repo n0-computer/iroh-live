@@ -553,7 +553,10 @@ mod tests {
         assert_eq!(owner(&path(&format!("live/{peer}/cam"))), Some(peer));
         assert_eq!(owner(&path(&format!("live/{peer}/cam/hd"))), Some(peer));
         let topic = iroh_live::rooms::RoomTicket::generate().topic_id();
-        assert_eq!(owner(&path(&format!("rooms/{topic}/{peer}/cam"))), Some(peer));
+        assert_eq!(
+            owner(&path(&format!("rooms/{topic}/{peer}/cam"))),
+            Some(peer)
+        );
         assert_eq!(owner(&path(&format!("rooms/{topic}/{peer}"))), None);
         assert_eq!(owner(&path(&format!("rooms/topic/{peer}/cam"))), None);
         assert_eq!(owner(&path("fleet/robot/cam")), None);
