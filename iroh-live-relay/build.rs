@@ -9,19 +9,37 @@ use std::{
 fn main() {
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let ui_dir = manifest_dir
-        .parent()
-        .expect("workspace root")
-        .join("iroh-live-relay/web");
+    let ui_dir = manifest_dir.join("web");
     println!("cargo:rerun-if-changed=web/package.json");
     println!("cargo:rerun-if-changed=web/package-lock.json");
+    // Only files that exist: cargo reruns the script on every build while a
+    // listed file is missing.
     println!("cargo:rerun-if-changed=web/vite.config.ts");
-    println!("cargo:rerun-if-changed=web/tsconfig.json");
-    println!("cargo:rerun-if-changed=web/tsconfig.node.json");
-    println!("cargo:rerun-if-changed=web/index.html");
     println!("cargo:rerun-if-changed=web/src");
-    run_npm(&ui_dir, &["install"]);
+    if needs_install(&ui_dir) {
+        run_npm(&ui_dir, &["install"]);
+    }
     run_npm(&ui_dir, &["run", "build"]);
+}
+
+/// Reports whether `node_modules` is missing or older than the manifest or the lockfile.
+///
+/// npm records the tree it installed in `node_modules/.package-lock.json`.
+/// That file is older than `package.json` or `package-lock.json` only when
+/// one of them changed since. The lockfile is not checked in, so a missing
+/// one also needs an install.
+fn needs_install(ui_dir: &Path) -> bool {
+    let modified =
+        |name: &str| std::fs::metadata(ui_dir.join(name)).and_then(|meta| meta.modified());
+    let Ok(installed) = modified("node_modules/.package-lock.json") else {
+        return true;
+    };
+    ["package.json", "package-lock.json"]
+        .into_iter()
+        .any(|name| match modified(name) {
+            Ok(changed) => changed > installed,
+            Err(_) => true,
+        })
 }
 
 /// Runs `npm` with `args` in `ui_dir`, and panics if it fails.
