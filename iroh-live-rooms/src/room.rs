@@ -1,234 +1,22 @@
-//! Rooms, the room handle, and the actor behind it.
+//! The room handle, and the path layout of room broadcasts.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    sync::{Arc, Mutex},
 };
 
-use bytes::Bytes;
-use iroh::{
-    EndpointId,
-    endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler, RouterBuilder},
-};
-use iroh_gossip::{Gossip, TopicId};
+use iroh::EndpointId;
+use iroh_gossip::TopicId;
 use iroh_live_node::{Audience, Node, Publication, Subscription};
-use iroh_smol_kv::{
-    ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
-};
 use moq_net::{Pattern, broadcast};
-use n0_error::{e, stack_error};
-use n0_future::{StreamExt, task::AbortOnDropHandle};
+use n0_error::e;
+use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{OnceCell, mpsc, oneshot};
-use tracing::{Instrument, debug, info, info_span, trace, warn};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, info};
 
-use crate::ticket::RoomTicket;
-
-/// The ALPN rooms speak, iroh-gossip's.
-///
-/// Mount [`Rooms::protocol_handler`] under it.
-pub const ALPN: &[u8] = iroh_gossip::ALPN;
-
-/// The key a member's announcement is stored under in the room's gossip map.
-const PEER_STATE_KEY: &[u8] = b"s";
-
-/// How long a member's announcement lives in the gossip map without renewal.
-///
-/// smol-kv 0.4 sweeps every 30 seconds, so a vanished member drops off two to
-/// two and a half minutes after its last renewal. The age is measured by the
-/// member's own clock: a member whose clock runs more than this far behind is
-/// never seen.
-const STATE_HORIZON: Duration = Duration::from_secs(2 * 60);
-
-/// How often a member rewrites its announcement to renew its lease.
-const STATE_REFRESH: Duration = Duration::from_secs(30);
-
-/// How often the gossip map should look for announcements past the horizon.
-///
-/// smol-kv 0.4 ignores it and sweeps every 30 seconds.
-const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
-
-/// How long leaving waits for each step that needs the network.
-///
-/// Telling the others and stopping the gossip map wait on peers, who may be
-/// gone.
-const LEAVE_STEP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How many times in a row the room resubscribes to its gossip map.
-///
-/// smol-kv ends a subscription that falls behind, and a fresh one replays the
-/// map. One that keeps ending means the map is gone.
-const MAP_RESUBSCRIBES: u32 = 3;
-
-/// An error from a room or the room service.
-#[stack_error(derive, add_meta, from_sources)]
-pub enum Error {
-    /// The room's gossip topic could not be joined.
-    #[error(transparent)]
-    Gossip(iroh_gossip::api::ApiError),
-    /// The transport failed a publication, a subscription or a dial.
-    #[error(transparent)]
-    Transport(iroh_live_node::Error),
-    /// A broadcast name that is empty or holds a slash.
-    #[error("invalid broadcast name {name:?}")]
-    InvalidName { name: String },
-    /// The room was left.
-    #[error("the room was left")]
-    Left,
-}
-
-/// Rooms on one endpoint.
-///
-/// Owns the gossip instance all rooms on the endpoint share. Cheap to clone,
-/// and [`shutdown`](Self::shutdown) ends it for every clone.
-#[derive(Debug, Clone)]
-pub struct Rooms {
-    node: Node,
-    gossip: Gossip,
-    /// Set once the gossip has shut down, so the router's shutdown does not repeat it.
-    shut_down: Arc<OnceCell<()>>,
-    /// Set when [`shutdown`](Self::shutdown) starts.
-    ///
-    /// The rooms joined here read it, so the gossip map ending under them is
-    /// a clean stop and not a failure.
-    closing: Arc<AtomicBool>,
-    /// Set once the service is mounted on a router, or its handler is taken.
-    mounted: Arc<AtomicBool>,
-    /// Set once a join has warned that the service is not mounted.
-    warned_unmounted: Arc<AtomicBool>,
-}
-
-impl Rooms {
-    /// Creates the room service on `node`'s endpoint, with its own gossip.
-    #[must_use]
-    pub fn new(node: &Node) -> Self {
-        let gossip = Gossip::builder().spawn(node.endpoint().clone());
-        Self::with_gossip(node, gossip)
-    }
-
-    /// Creates the room service over an existing gossip instance.
-    ///
-    /// The service takes over the gossip: [`shutdown`](Self::shutdown) shuts
-    /// it down.
-    #[must_use]
-    pub fn with_gossip(node: &Node, gossip: Gossip) -> Self {
-        Self {
-            node: node.clone(),
-            gossip,
-            shut_down: Arc::default(),
-            closing: Arc::default(),
-            mounted: Arc::default(),
-            warned_unmounted: Arc::default(),
-        }
-    }
-
-    /// Mounts the service's gossip protocol on `router` under [`ALPN`].
-    ///
-    /// Without it, other members cannot reach this one's gossip. The router's
-    /// shutdown calls [`shutdown`](Self::shutdown).
-    pub fn mount(&self, router: RouterBuilder) -> RouterBuilder {
-        router.accept(ALPN, self.protocol_handler())
-    }
-
-    /// Returns the handler to mount under [`ALPN`] on the endpoint's router.
-    ///
-    /// Prefer [`mount`](Self::mount). The router's shutdown calls
-    /// [`shutdown`](Self::shutdown).
-    pub fn protocol_handler(&self) -> impl ProtocolHandler + use<> {
-        self.mounted.store(true, Ordering::Relaxed);
-        Handler(self.clone())
-    }
-
-    /// Shuts the gossip down for every clone.
-    ///
-    /// Leaves every gossip topic, so the rooms joined here stop. Call
-    /// [`Room::leave`] first to tell the other members at once. Idempotent,
-    /// and concurrent calls wait for the same shutdown.
-    pub async fn shutdown(&self) {
-        self.closing.store(true, Ordering::Relaxed);
-        self.shut_down
-            .get_or_init(|| async {
-                if let Err(err) = self.gossip.shutdown().await {
-                    warn!(%err, "failed to shut down the rooms' gossip");
-                }
-                debug!("rooms shut down");
-            })
-            .await;
-    }
-
-    /// Joins the room `ticket` names, as `display_name` if given.
-    ///
-    /// Subscribes to the room's gossip topic and starts announcing this
-    /// member.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the gossip topic cannot be joined.
-    pub async fn join(
-        &self,
-        ticket: &RoomTicket,
-        display_name: Option<String>,
-    ) -> Result<Room, Error> {
-        if !self.mounted.load(Ordering::Relaxed)
-            && !self.warned_unmounted.swap(true, Ordering::Relaxed)
-        {
-            warn!("rooms are not mounted on a router: peers cannot reach this member's gossip");
-        }
-        let topic = ticket.topic_id();
-        let me = self.node.endpoint().id();
-        let gossip_topic = self
-            .gossip
-            .subscribe(topic, ticket.bootstrap().to_vec())
-            .await?;
-        let kv = iroh_smol_kv::Client::local(
-            gossip_topic,
-            iroh_smol_kv::Config {
-                anti_entropy_interval: Duration::from_secs(60),
-                fast_anti_entropy_interval: Duration::from_secs(1),
-                expiry: Some(ExpiryConfig {
-                    check_interval: EXPIRY_CHECK_INTERVAL,
-                    horizon: STATE_HORIZON,
-                }),
-            },
-        );
-        let writer = kv.write(self.node.endpoint().secret_key().clone());
-
-        let (leave, inbox) = mpsc::channel(1);
-        let inner = Arc::new(Inner {
-            me,
-            ticket: ticket.clone(),
-            node: self.node.clone(),
-            state: Watchable::new(RoomState::default()),
-            members: Watchable::new(BTreeSet::new()),
-            leave,
-            local: Mutex::new(BTreeMap::new()),
-            local_changed: Watchable::new(0),
-            display_name: Watchable::new(display_name),
-            done: Watchable::new(false),
-        });
-        let actor = Actor {
-            inner: inner.clone(),
-            kv,
-            writer,
-            peers: BTreeMap::new(),
-            resync: None,
-            rooms_closing: self.closing.clone(),
-        };
-        let span = info_span!("room", topic = %topic.fmt_short(), me = %me.fmt_short());
-        let task = tokio::spawn(actor.run(inbox).instrument(span));
-        info!(topic = %topic.fmt_short(), "joined room");
-        Ok(Room {
-            inner,
-            _actor: Arc::new(AbortOnDropHandle::new(task)),
-        })
-    }
-}
+use crate::{rooms::Error, ticket::RoomTicket};
 
 /// Who is in a room, and what each member publishes into it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -252,38 +40,38 @@ pub struct RoomPeer {
 /// [`leave`](Self::leave) ends it for all of them.
 #[derive(Debug, Clone)]
 pub struct Room {
-    inner: Arc<Inner>,
-    _actor: Arc<AbortOnDropHandle<()>>,
+    pub(crate) inner: Arc<Inner>,
+    pub(crate) _actor: Arc<AbortOnDropHandle<()>>,
 }
 
 /// What every handle of a room shares with its actor.
 #[derive(derive_more::Debug)]
-struct Inner {
+pub(crate) struct Inner {
     /// This node's endpoint id.
-    me: EndpointId,
-    ticket: RoomTicket,
+    pub(crate) me: EndpointId,
+    pub(crate) ticket: RoomTicket,
     #[debug(skip)]
-    node: Node,
-    state: Watchable<RoomState>,
+    pub(crate) node: Node,
+    pub(crate) state: Watchable<RoomState>,
     /// The members' ids, which every publication into the room is offered to.
-    members: Watchable<BTreeSet<EndpointId>>,
+    pub(crate) members: Watchable<BTreeSet<EndpointId>>,
     /// Asks the actor to leave, and hears back once it did.
     #[debug(skip)]
-    leave: mpsc::Sender<oneshot::Sender<()>>,
+    pub(crate) leave: mpsc::Sender<oneshot::Sender<()>>,
     /// This member's publications, by name.
     #[debug(skip)]
-    local: Mutex<BTreeMap<String, Local>>,
+    pub(crate) local: Mutex<BTreeMap<String, Local>>,
     /// Bumped whenever [`Inner::local`] changes, so the actor re-announces.
-    local_changed: Watchable<u64>,
+    pub(crate) local_changed: Watchable<u64>,
     /// The name this member announces.
-    display_name: Watchable<Option<String>>,
+    pub(crate) display_name: Watchable<Option<String>>,
     /// Set once the actor has stopped.
-    done: Watchable<bool>,
+    pub(crate) done: Watchable<bool>,
 }
 
 /// One of this member's publications.
-struct Local {
-    publication: Publication,
+pub(crate) struct Local {
+    pub(crate) publication: Publication,
     /// Forgets the entry once the publication is withdrawn, however it goes.
     _withdrawn: AbortOnDropHandle<()>,
 }
@@ -447,20 +235,6 @@ impl Room {
     }
 }
 
-/// The gossip handler of a [`Rooms`], which shuts the rooms down with the router.
-#[derive(Debug, Clone)]
-struct Handler(Rooms);
-
-impl ProtocolHandler for Handler {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.0.gossip.accept(connection).await
-    }
-
-    async fn shutdown(&self) {
-        self.0.shutdown().await;
-    }
-}
-
 impl Drop for Inner {
     /// Unpublishes this member's broadcasts when the last handle drops.
     ///
@@ -478,7 +252,7 @@ impl Inner {
     ///
     /// Compared by identity: `name` may have been published anew since, and
     /// the new publication must stay.
-    fn remove_local(&self, name: &str, publication: &Publication) {
+    pub(crate) fn remove_local(&self, name: &str, publication: &Publication) {
         let mut local = self.local.lock().expect("poisoned");
         if local
             .get(name)
@@ -491,322 +265,18 @@ impl Inner {
     }
 
     /// Signals the actor that [`Inner::local`] changed.
-    fn bump_local(&self) {
+    pub(crate) fn bump_local(&self) {
         self.local_changed.set(self.local_changed.get() + 1).ok();
     }
 
     /// Returns the names this member publishes into the room.
-    fn local_names(&self) -> BTreeSet<String> {
+    pub(crate) fn local_names(&self) -> BTreeSet<String> {
         self.local
             .lock()
             .expect("poisoned")
             .keys()
             .cloned()
             .collect()
-    }
-}
-
-/// A member's announcement in the room's gossip map.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Announcement {
-    /// The member's name and broadcasts.
-    peer: RoomPeer,
-    /// Whether the member left, so the others drop it before its lease runs out.
-    left: bool,
-}
-
-/// The task behind a room: it announces this member and follows the others.
-struct Actor {
-    inner: Arc<Inner>,
-    kv: iroh_smol_kv::Client,
-    /// Writes this member's announcement into the gossip map.
-    writer: WriteScope,
-    /// The other members, as their announcements last said.
-    peers: BTreeMap<EndpointId, RoomPeer>,
-    /// The members the replay after a resubscription has shown so far.
-    resync: Option<BTreeSet<EndpointId>>,
-    /// Set once the [`Rooms`] this room belongs to shut down.
-    rooms_closing: Arc<AtomicBool>,
-}
-
-impl Drop for Actor {
-    /// Lets [`Room::leave`] return, even if the actor panicked.
-    fn drop(&mut self) {
-        self.inner.done.set(true).ok();
-    }
-}
-
-impl Actor {
-    /// Runs until the room is left, the rooms shut down, or the gossip map ends.
-    async fn run(mut self, mut inbox: mpsc::Receiver<oneshot::Sender<()>>) {
-        let mut updates = Self::subscribe_map(self.kv.clone());
-
-        // One writer, so announcements go out in the order they were decided.
-        let desired = Watchable::new(self.announcement(false));
-        let announcer = AbortOnDropHandle::new(tokio::spawn(
-            announce(
-                self.writer.clone(),
-                desired.watch(),
-                self.rooms_closing.clone(),
-            )
-            .in_current_span(),
-        ));
-        let mut local_changed = self.inner.local_changed.watch();
-        let mut display_name = self.inner.display_name.watch();
-        let mut resubscribes = 0;
-
-        let leave = loop {
-            let mut ended = false;
-            tokio::select! {
-                update = updates.next() => match update {
-                    None => ended = true,
-                    Some(Err(err)) if self.closing() => {
-                        debug!(%err, "gossip map update failed while the rooms shut down");
-                    }
-                    Some(Err(err)) => warn!(%err, "gossip map update failed"),
-                    Some(Ok(item)) => {
-                        resubscribes = 0;
-                        self.handle_item(item);
-                    }
-                },
-                changed = local_changed.updated() => {
-                    if changed.is_err() {
-                        break None;
-                    }
-                    desired.set(self.announcement(false)).ok();
-                }
-                changed = display_name.updated() => {
-                    if changed.is_err() {
-                        break None;
-                    }
-                    desired.set(self.announcement(false)).ok();
-                }
-                reply = inbox.recv() => break reply,
-            }
-            if ended {
-                // The gossip stopped under the map, which is how the rooms
-                // shut down a room nobody left.
-                if self.closing() {
-                    debug!("the rooms shut down, stopping the room");
-                    break None;
-                }
-                if resubscribes == MAP_RESUBSCRIBES {
-                    warn!("the room's gossip map ended");
-                    break None;
-                }
-                resubscribes += 1;
-                warn!(
-                    attempt = resubscribes,
-                    "gossip map subscription ended, resubscribing"
-                );
-                updates = Self::subscribe_map(self.kv.clone());
-                self.resync = Some(BTreeSet::new());
-            }
-        };
-        // Stopped first, so a refresh cannot write over the announcement that
-        // says this member left.
-        drop(announcer);
-        self.shut_down(leave.is_some()).await;
-        if let Some(reply) = leave {
-            reply.send(()).ok();
-        }
-    }
-
-    /// Returns whether the [`Rooms`] this room belongs to are shutting down.
-    fn closing(&self) -> bool {
-        self.rooms_closing.load(Ordering::Relaxed)
-    }
-
-    /// Subscribes to the gossip map: every entry there is now, then changes.
-    fn subscribe_map(
-        kv: iroh_smol_kv::Client,
-    ) -> std::pin::Pin<
-        Box<impl n0_future::Stream<Item = Result<SubscribeItem, impl std::fmt::Display>> + Send>,
-    > {
-        // The raw stream rather than `stream()`, which drops the expiry items
-        // membership is read out of.
-        Box::pin(
-            kv.subscribe_with_opts(Subscribe {
-                mode: SubscribeMode::Both,
-                filter: Filter::ALL,
-            })
-            .stream_raw(),
-        )
-    }
-
-    /// Withdraws this member's publications, and tells the others if `leaving`.
-    async fn shut_down(&mut self, leaving: bool) {
-        if leaving {
-            info!("leaving the room");
-            let told = tokio::time::timeout(
-                LEAVE_STEP_TIMEOUT,
-                put(&self.writer, &self.announcement(true), &self.rooms_closing),
-            )
-            .await;
-            if told.is_err() {
-                warn!(
-                    "could not tell the others in time; they drop this member when its lease ends"
-                );
-            }
-        }
-        let local: Vec<Local> = std::mem::take(&mut *self.inner.local.lock().expect("poisoned"))
-            .into_values()
-            .collect();
-        for entry in local {
-            entry.publication.unpublish();
-        }
-        self.peers.clear();
-        self.publish_state();
-        match tokio::time::timeout(LEAVE_STEP_TIMEOUT, self.kv.shutdown()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => debug!(%err, "gossip map already stopped"),
-            Err(_) => warn!("the gossip map did not stop in time"),
-        }
-        self.inner.done.set(true).ok();
-    }
-
-    /// Returns this member's announcement as it stands.
-    fn announcement(&self, left: bool) -> Announcement {
-        let broadcasts = if left {
-            BTreeSet::new()
-        } else {
-            self.inner.local_names()
-        };
-        Announcement {
-            peer: RoomPeer {
-                display_name: self.inner.display_name.get(),
-                broadcasts,
-            },
-            left,
-        }
-    }
-
-    /// Applies one change of the gossip map to the membership.
-    fn handle_item(&mut self, item: SubscribeItem) {
-        match item {
-            SubscribeItem::Entry(entry) => self.handle_entry(entry),
-            SubscribeItem::Expired((remote, key, _timestamp)) => {
-                if remote != self.inner.me
-                    && key == PEER_STATE_KEY
-                    && self.peers.remove(&remote).is_some()
-                {
-                    info!(
-                        remote = %remote.fmt_short(),
-                        horizon = ?STATE_HORIZON,
-                        "member stopped announcing, treating it as gone",
-                    );
-                    self.publish_state();
-                }
-            }
-            // The replay is complete. After a resubscription, a member it did
-            // not show expired in the meantime.
-            SubscribeItem::CurrentDone => {
-                if let Some(seen) = self.resync.take() {
-                    let before = self.peers.len();
-                    self.peers.retain(|remote, _| seen.contains(remote));
-                    if self.peers.len() != before {
-                        info!(
-                            gone = before - self.peers.len(),
-                            "members expired while resubscribing"
-                        );
-                        self.publish_state();
-                    }
-                }
-            }
-        }
-    }
-
-    /// Applies a member's announcement to the membership.
-    fn handle_entry(&mut self, (remote, key, value): (EndpointId, Bytes, SignedValue)) {
-        if remote == self.inner.me || key != PEER_STATE_KEY {
-            return;
-        }
-        let Ok(announcement) = postcard::from_bytes::<Announcement>(&value.value) else {
-            warn!(
-                remote = %remote.fmt_short(),
-                len = value.value.len(),
-                "member announcement does not decode",
-            );
-            return;
-        };
-        if announcement.left {
-            if self.peers.remove(&remote).is_some() {
-                info!(remote = %remote.fmt_short(), "member left the room");
-                self.publish_state();
-            }
-            return;
-        }
-        if let Some(seen) = self.resync.as_mut() {
-            seen.insert(remote);
-        }
-        // Every member rewrites its announcement to renew its lease, so most of
-        // these say nothing new.
-        let peer = announcement.peer;
-        match self.peers.get(&remote) {
-            Some(known) if *known == peer => {
-                trace!(remote = %remote.fmt_short(), "announcement renewed");
-                return;
-            }
-            Some(_) => debug!(
-                remote = %remote.fmt_short(),
-                broadcasts = ?peer.broadcasts,
-                "member announcement changed",
-            ),
-            None => info!(
-                remote = %remote.fmt_short(),
-                display_name = ?peer.display_name,
-                "member joined the room",
-            ),
-        }
-        self.peers.insert(remote, peer);
-        self.publish_state();
-    }
-
-    /// Publishes the membership to the state watcher and the audience set.
-    fn publish_state(&self) {
-        let members: BTreeSet<EndpointId> = self.peers.keys().copied().collect();
-        self.inner.members.set(members).ok();
-        self.inner
-            .state
-            .set(RoomState {
-                members: self.peers.clone(),
-            })
-            .ok();
-    }
-}
-
-/// Writes `desired` whenever it changes, and every [`STATE_REFRESH`].
-async fn announce(
-    writer: WriteScope,
-    mut desired: n0_watcher::Direct<Announcement>,
-    rooms_closing: Arc<AtomicBool>,
-) {
-    let mut refresh = tokio::time::interval(STATE_REFRESH);
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        put(&writer, &desired.get(), &rooms_closing).await;
-        tokio::select! {
-            changed = desired.updated() => {
-                if changed.is_err() {
-                    return;
-                }
-            }
-            _ = refresh.tick() => trace!("renewing the announcement"),
-        }
-    }
-}
-
-/// Writes `announcement` under [`PEER_STATE_KEY`].
-///
-/// A failure while the rooms shut down is expected, and logs at DEBUG only.
-async fn put(writer: &WriteScope, announcement: &Announcement, rooms_closing: &AtomicBool) {
-    let bytes = postcard::to_stdvec(announcement).expect("an announcement serializes");
-    if let Err(err) = writer.put(PEER_STATE_KEY, bytes).await {
-        if rooms_closing.load(Ordering::Relaxed) {
-            debug!(%err, "could not write the announcement while the rooms shut down");
-        } else {
-            warn!(%err, "failed to write the announcement");
-        }
     }
 }
 
@@ -840,29 +310,9 @@ pub fn parse_room_path(path: &str) -> Option<(TopicId, EndpointId, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use iroh::{Endpoint, SecretKey, endpoint::presets, protocol::Router};
-    use iroh_live_node::NodeConfig;
+    use iroh::SecretKey;
 
     use super::*;
-
-    /// A member survives two missed refreshes.
-    #[test]
-    fn several_refreshes_fit_inside_the_expiry_horizon() {
-        assert!(STATE_REFRESH * 3 <= STATE_HORIZON);
-        assert!(EXPIRY_CHECK_INTERVAL < STATE_REFRESH);
-    }
-
-    /// A member leaving says so, and the flag survives the wire.
-    #[test]
-    fn a_leaving_announcement_decodes_as_left() {
-        let announcement = Announcement {
-            left: true,
-            ..Announcement::default()
-        };
-        let bytes = postcard::to_stdvec(&announcement).expect("encode");
-        let decoded: Announcement = postcard::from_bytes(&bytes).expect("decode");
-        assert_eq!(decoded, announcement);
-    }
 
     #[test]
     fn a_room_path_names_topic_and_publisher() {
@@ -872,19 +322,6 @@ mod tests {
         assert_eq!(path, format!("rooms/{topic}/{publisher}/cam"));
         assert!(publish_scope(publisher).matches(&path));
         assert!(!publish_scope(SecretKey::from_bytes(&[4; 32]).public()).matches(&path));
-    }
-
-    /// Mounting the service, or taking its handler, is what stops the unmounted warning.
-    #[tokio::test]
-    async fn mounting_marks_the_rooms_mounted() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");
-        let node = Node::new(endpoint.clone(), NodeConfig::default());
-        let rooms = Rooms::new(&node);
-        assert!(!rooms.mounted.load(Ordering::Relaxed));
-
-        let router = rooms.mount(Router::builder(endpoint)).spawn();
-        assert!(rooms.mounted.load(Ordering::Relaxed));
-        router.shutdown().await.expect("the router shuts down");
     }
 
     #[test]

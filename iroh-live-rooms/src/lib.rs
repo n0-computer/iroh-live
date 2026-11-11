@@ -59,10 +59,13 @@
 //! `join` leaves the topic, and a dropped `subscribe` leaves its dial running.
 //! [`Room::leave`] is not. It is idempotent: call it again to finish.
 
+mod actor;
 mod room;
+mod rooms;
 mod ticket;
 
 pub use self::{
-    room::{ALPN, Error, Room, RoomPeer, RoomState, Rooms, parse_room_path, publish_scope},
+    room::{Room, RoomPeer, RoomState, parse_room_path, publish_scope},
+    rooms::{ALPN, Error, Rooms},
     ticket::RoomTicket,
 };
