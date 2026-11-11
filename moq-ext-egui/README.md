@@ -25,7 +25,7 @@ placeholder.
 
 ## wgpu setup
 
-`create_egui_wgpu_config()` returns an `egui_wgpu::WgpuConfiguration` to pass
+`egui_wgpu_config()` returns an `egui_wgpu::WgpuConfiguration` to pass
 to eframe. On Linux it builds a Vulkan device with DMA-BUF import when the
 adapter supports it, so screen capture frames reach the GPU without a CPU
 copy. On every platform the device requests only the adapter's own limits.

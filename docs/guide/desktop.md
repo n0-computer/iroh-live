@@ -53,7 +53,7 @@ inside a Tokio runtime.
 
 Without a render state, both views show a black placeholder.
 
-`create_egui_wgpu_config()` returns the `egui_wgpu::WgpuConfiguration` to pass
+`egui_wgpu_config()` returns the `egui_wgpu::WgpuConfiguration` to pass
 to eframe. On Linux it selects Vulkan and enables
 `VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter supports it. eframe does not
 request that feature on its own.

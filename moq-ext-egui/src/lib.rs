@@ -22,7 +22,7 @@
 //! ```
 //!
 //! [`VideoView`] draws a [`VideoFrames`] stream, and [`FrameView`] the frames
-//! you hand it. [`create_egui_wgpu_config`] builds the `wgpu` setup for eframe,
+//! you hand it. [`egui_wgpu_config`] builds the `wgpu` setup for eframe,
 //! and [`overlay::DebugOverlay`] paints stats over a video.
 
 pub mod overlay;
@@ -305,10 +305,10 @@ impl VideoView {
 /// egui builds the device and the renderer uploads frames from the CPU. The
 /// device always requests the adapter's own limits.
 #[must_use]
-pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
+pub fn egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     #[cfg(target_os = "linux")]
     {
-        create_egui_wgpu_config_dmabuf()
+        egui_wgpu_config_dmabuf()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -348,7 +348,7 @@ fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
 /// [`moq_video::render::request_device`] adds the DMA-BUF feature and the
 /// timeline-semaphore extension that the zero-copy paths need.
 #[cfg(target_os = "linux")]
-fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
+fn egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     // DMA-BUF import needs Vulkan. If `WGPU_BACKEND` asks for another
     // backend, fall back to egui's setup, which reads the same variable.
     if let Some(requested) = wgpu::Backends::from_env()

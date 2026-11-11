@@ -306,7 +306,7 @@ pub(crate) fn shutdown_publish_blocking(node: &SharedNode, broadcast: &LocalBroa
 fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: moq_ext_egui::create_egui_wgpu_config(),
+        wgpu_options: moq_ext_egui::egui_wgpu_config(),
         viewport: egui::ViewportBuilder::default().with_fullscreen(fullscreen),
         ..Default::default()
     }
