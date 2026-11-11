@@ -4,6 +4,7 @@
 use std::{fmt, str::FromStr, sync::Arc};
 
 use iroh::endpoint::{Builder, QuicTransportConfig, presets};
+use n0_error::stack_error;
 use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig, NewRenoConfig};
 
 /// iroh's [`N0`](presets::N0) preset with BBR3 congestion control.
@@ -114,20 +115,10 @@ impl FromStr for Congestion {
 }
 
 /// An error returned when a name is not that of a [`Congestion`] controller.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[stack_error(derive)]
+#[derive(Clone, PartialEq, Eq)]
+#[error("unknown congestion controller {_0:?}: expected bbr3, cubic or newreno")]
 pub struct UnknownCongestion(String);
-
-impl fmt::Display for UnknownCongestion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "unknown congestion controller {:?}: expected bbr3, cubic or newreno",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for UnknownCongestion {}
 
 #[cfg(test)]
 mod tests {
