@@ -8,14 +8,14 @@
 //! Run it with `cargo run -p iroh-live --example moq_only`.
 
 use iroh::protocol::Router;
-use iroh_live::{Audience, EndpointOptions, Node, NodeConfig};
+use iroh_live::{Audience, EndpointConfig, Node, NodeConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-    // `EndpointOptions` is optional too: any endpoint built with `MoqPreset`
+    // `EndpointConfig` is optional too: any endpoint built with `MoqPreset`
     // or a preset of your own will do.
-    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
     // The default config lets peers subscribe to anything and publish
     // nothing. Set `grant` to let them publish somewhere.
     let node = Node::new(endpoint.clone(), NodeConfig::default());

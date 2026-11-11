@@ -38,7 +38,7 @@ microphone.
 ```rust
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
@@ -49,7 +49,7 @@ use iroh_live::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = LiveLayout::default();
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(endpoint.clone(), layout.config(&[]));
     // Accepts the viewers. Dropping the router stops accepting.
     let router = node.mount(Router::builder(endpoint)).spawn();
@@ -98,7 +98,7 @@ subscribe to audio.
 use std::time::Duration;
 
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Node, NodeConfig,
+    BroadcastTicket, EndpointConfig, Node, NodeConfig,
     media::{PlayerConfig, remote_broadcast},
 };
 
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: watch <ticket>")?
         .parse()?;
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(endpoint.clone(), NodeConfig::default());
 
     let subscription = node.subscribe_ticket(&ticket).await?;
@@ -146,7 +146,7 @@ use std::time::Duration;
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     calls::Calls,
     layout::LiveLayout,
     media::{
@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: call <peer id>")?
         .parse()?;
     let layout = LiveLayout::default();
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(endpoint.clone(), layout.config(&[]));
     // The peer dials in to read our side.
     let router = node.mount(Router::builder(endpoint)).spawn();
@@ -215,7 +215,7 @@ use std::sync::Arc;
 
 use iroh::{Watcher, protocol::Router};
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{
         LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
@@ -227,7 +227,7 @@ use iroh_live::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = LiveLayout::default();
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(
         endpoint.clone(),
         layout.config(&[Arc::new(iroh_live::rooms::publish_scope)]),
@@ -300,7 +300,7 @@ use iroh::{EndpointId, protocol::Router};
 use std::sync::Arc;
 
 use iroh_live::{
-    Audience, EndpointOptions, Node, Reach,
+    Audience, EndpointConfig, Node, Reach,
     layout::LiveLayout,
     media::{
         LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
@@ -316,7 +316,7 @@ fn stage_scope(peer: EndpointId) -> Pattern {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let config = LiveLayout::default().config(&[Arc::new(stage_scope)]);
     let node = Node::new(endpoint.clone(), config);
     let router = node.mount(Router::builder(endpoint)).spawn();
@@ -370,7 +370,7 @@ does not need the relay's other routes sets `consume: false`.
 ```rust
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    EndpointOptions, Node, RelayConfig,
+    EndpointConfig, Node, RelayConfig,
     layout::LiveLayout,
     media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
 };
@@ -382,7 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: relay <relay id>")?
         .parse()?;
     let layout = LiveLayout::default();
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(endpoint.clone(), layout.config(&[]));
     // Direct viewers still dial in. A relay-only publisher can skip the router
     // and close the endpoint itself.
@@ -428,7 +428,7 @@ use std::time::Duration;
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    Audience, EndpointOptions, Node, Reach,
+    Audience, EndpointConfig, Node, Reach,
     layout::LiveLayout,
     net::{Timescale, Timestamp, track},
 };
@@ -436,7 +436,7 @@ use iroh_live::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = LiveLayout::default();
-    let endpoint = EndpointOptions::default().bind().await?;
+    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(endpoint.clone(), layout.config(&[]));
     let router = node.mount(Router::builder(endpoint)).spawn();
 

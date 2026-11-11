@@ -59,7 +59,7 @@ under a name:
 ```rust
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
@@ -68,7 +68,7 @@ use iroh_live::{
 };
 
 let layout = LiveLayout::default();
-let endpoint = EndpointOptions::default().bind().await?;
+let endpoint = EndpointConfig::default().bind().await?;
 let node = Node::new(endpoint.clone(), layout.config(&[]));
 // Keep the router: dropping it stops accepting viewers.
 let router = node.mount(Router::builder(endpoint)).spawn();
@@ -92,12 +92,12 @@ A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
 use iroh_live::{
-    EndpointOptions, Node, NodeConfig,
+    EndpointConfig, Node, NodeConfig,
     media::{AudioTarget, PlayerConfig, audio::playback::Engine, remote_broadcast},
 };
 
 // Only dials, so it needs no router and no layout.
-let node = Node::new(EndpointOptions::default().bind().await?, NodeConfig::default());
+let node = Node::new(EndpointConfig::default().bind().await?, NodeConfig::default());
 let subscription = node.subscribe_ticket(&ticket).await?;
 let engine = Engine::open(Default::default()).await?;
 let player = remote_broadcast(&subscription).play(PlayerConfig {
@@ -136,7 +136,7 @@ The paths, the grant and the endpoint are defaults, and each can be replaced:
   reads the media of the result.
 - `LiveLayout::path` and `LiveLayout::parse` build and parse the
   `live/<id>/<name>` paths.
-- `EndpointOptions::apply(builder)` adds the preset, the key and mDNS to your
+- `EndpointConfig::apply(builder)` adds the preset, the key and mDNS to your
   own endpoint builder, so you can set the relay mode or another address
   lookup. `bind()` does the same on a default one.
 

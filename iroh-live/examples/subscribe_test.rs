@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::Parser;
 use iroh::EndpointId;
 use iroh_live::{
-    EndpointOptions, Mdns, Node,
+    EndpointConfig, Mdns, Node,
     layout::LiveLayout,
     media::{PlayerConfig, remote_broadcast},
     node::{Reach, RelayConfig, RelayOffer},
@@ -22,7 +22,7 @@ async fn main() -> n0_error::Result {
     let cli = Cli::parse();
 
     // The relay is the only peer, so skip mDNS.
-    let endpoint = EndpointOptions {
+    let endpoint = EndpointConfig {
         mdns: Mdns::Off,
         ..Default::default()
     }

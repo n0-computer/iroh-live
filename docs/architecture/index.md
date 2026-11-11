@@ -46,9 +46,9 @@ The rest is upstream. See [the media stack](media-stack.md) for what we use.
 ## iroh-live
 
 `iroh-live` is the application's entry to the node for live media. The
-application binds an endpoint, usually with `EndpointOptions::default().bind()`:
+application binds an endpoint, usually with `EndpointConfig::default().bind()`:
 `MoqPreset` (iroh's N0 preset with BBR3 congestion control), a key and mDNS.
-`EndpointOptions::apply` does the same on your own endpoint builder.
+`EndpointConfig::apply` does the same on your own endpoint builder.
 
 ```rust
 let layout = LiveLayout::default();
@@ -84,7 +84,7 @@ player that adapts with nothing further to wire.
 
 The facade's error is `iroh_live::Error`: `Transport` wraps an
 `iroh_live_node::Error`, `Media` a `moq_ext_player::Error`, `SecretKey` and
-`Bind` come from `EndpointOptions`, and `InvalidTicket` from parsing a ticket.
+`Bind` come from `EndpointConfig`, and `InvalidTicket` from parsing a ticket.
 Audiences, admission, relays and routes belong to
 [`iroh-live-node`](transport.md).
 

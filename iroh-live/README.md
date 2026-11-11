@@ -39,13 +39,13 @@ Publish a camera, then share the ticket:
 ```rust
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
 };
 
 let layout = LiveLayout::default();
-let endpoint = EndpointOptions::default().bind().await?;
+let endpoint = EndpointConfig::default().bind().await?;
 let node = Node::new(endpoint.clone(), layout.config(&[]));
 // Accepts the viewers. Keep it: dropping it stops accepting.
 let router = node.mount(Router::builder(endpoint)).spawn();
@@ -106,8 +106,8 @@ let mut frames = player.video();
   `answer(peer)` resolves the other side. Each returns a `Call`, and dropping
   it hangs up. `events()` streams `CallEvent`, and `ringing()` watches the
   peers that ring.
-- `EndpointOptions` binds an endpoint with `MoqPreset`, a secret key and mDNS.
-  `EndpointOptions::apply` does the same on your own endpoint builder.
+- `EndpointConfig` binds an endpoint with `MoqPreset`, a secret key and mDNS.
+  `EndpointConfig::apply` does the same on your own endpoint builder.
 - `NodeConfig::default()` is subscribe-only: peers may read and publish
   nothing. `LiveLayout::config` lets each peer publish under its own id.
 - `Error` wraps an `iroh_live_node::Error` as `Transport` and, with `media`, a

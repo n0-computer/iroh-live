@@ -24,7 +24,7 @@ use std::{
 
 use iroh::protocol::Router;
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Node,
+    BroadcastTicket, EndpointConfig, Node,
     calls::{CALL, Call, CallEvent, Calls},
     layout::LiveLayout,
     media::{
@@ -115,7 +115,7 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// Returns the node with the router that accepts its peers. The demo stores
 /// no key, so without `IROH_SECRET` every screen gets a new endpoint id.
 async fn bind_live() -> Result<(Node, Router)> {
-    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
     let live = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     let router = live.mount(Router::builder(endpoint)).spawn();
     Ok((live, router))

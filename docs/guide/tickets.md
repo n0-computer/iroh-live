@@ -52,7 +52,7 @@ that the ticket's publisher owns the path: exactly one segment is the peer's
 `NotOwner`.
 
 The ticket holds no addresses. iroh finds them from the endpoint id through
-pkarr and DNS, and `EndpointOptions` adds mDNS for local networks without
+pkarr and DNS, and `EndpointConfig` adds mDNS for local networks without
 internet access. A ticket without addresses also makes a smaller QR code,
 which matters on the Pi demo's small e-paper panel.
 

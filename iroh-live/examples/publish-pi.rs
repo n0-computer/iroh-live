@@ -26,7 +26,7 @@ fn main() {
 use iroh::protocol::Router;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
 };
@@ -44,7 +44,7 @@ const BROADCAST: &str = "pi-cam";
 async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
 
-    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
     let layout = LiveLayout::default();
     let node = Node::new(endpoint.clone(), layout.config(&[]));
     let router = node.mount(Router::builder(endpoint)).spawn();

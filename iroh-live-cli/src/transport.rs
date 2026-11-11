@@ -4,7 +4,7 @@ use std::{ops::Deref, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Mdns, Node, Session, Subscription,
+    BroadcastTicket, EndpointConfig, Mdns, Node, Session, Subscription,
     layout::LiveLayout,
     media::{RemoteBroadcast, remote_broadcast},
     node::{RelayConfig, RelayLink},
@@ -86,7 +86,7 @@ impl Deref for Transport {
 /// With `serve` set, a router accepts incoming subscribers. Without it, only
 /// outbound connections work.
 pub async fn setup_live(serve: bool) -> Result<Transport> {
-    setup_live_with(EndpointOptions::from_env()?, serve).await
+    setup_live_with(EndpointConfig::from_env()?, serve).await
 }
 
 /// Binds an endpoint with `options` and starts the MoQ transport on it.
@@ -94,9 +94,9 @@ pub async fn setup_live(serve: bool) -> Result<Transport> {
 /// A ticket carries no addresses, so the endpoint uses mDNS on top of the
 /// preset's pkarr and DNS lookup. A node that does not serve only looks up
 /// others and does not announce itself.
-pub async fn setup_live_with(options: EndpointOptions, serve: bool) -> Result<Transport> {
+pub async fn setup_live_with(options: EndpointConfig, serve: bool) -> Result<Transport> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
-    let endpoint = EndpointOptions { mdns, ..options }.bind().await?;
+    let endpoint = EndpointConfig { mdns, ..options }.bind().await?;
     Ok(Transport::new(
         Node::new(endpoint, LiveLayout::default().config(&[])),
         serve,

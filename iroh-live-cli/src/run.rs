@@ -8,7 +8,7 @@ use std::path::Path;
 
 use iroh::SecretKey;
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Node,
+    BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
     secret_key_file,
@@ -138,11 +138,11 @@ fn parse_config(path: &Path) -> Result<RunConfig> {
 async fn run_session(config: RunConfig) -> Result {
     let serve = !config.send.is_empty();
     let options = match &config.secret_key_name {
-        Some(name) => EndpointOptions {
+        Some(name) => EndpointConfig {
             secret_key: Some(stored_secret_key(name)?),
-            ..EndpointOptions::default()
+            ..EndpointConfig::default()
         },
-        None => EndpointOptions::from_env()?,
+        None => EndpointConfig::from_env()?,
     };
     let live = transport::setup_live_with(options, serve).await?;
     let result = run_streams(&live, &config).await;

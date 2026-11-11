@@ -47,7 +47,7 @@ use axum::{
 use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::SecretKey;
-use iroh_live::{BroadcastTicket, EndpointOptions, Mdns};
+use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
 use moq_relay::{Connection, cluster::Cluster};
 use moq_tokio::tls::Certificates;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
@@ -97,10 +97,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // mDNS finds a ticket's publisher on this machine or LAN at once, where
     // pkarr and DNS take seconds and need internet. `Announce`, since clients
     // reach the relay by endpoint id.
-    let iroh_endpoint = EndpointOptions {
+    let iroh_endpoint = EndpointConfig {
         secret_key: Some(iroh_secret),
         mdns: Mdns::Announce,
-        ..EndpointOptions::default()
+        ..EndpointConfig::default()
     }
     .bind()
     .await?;

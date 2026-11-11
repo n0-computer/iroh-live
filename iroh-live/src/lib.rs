@@ -33,7 +33,7 @@ This publishes a test pattern and plays someone else's broadcast:
 ```no_run
 use iroh::protocol::Router;
 use iroh_live::{
-    BroadcastTicket, EndpointOptions, Node,
+    BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     media::{
         LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
@@ -43,7 +43,7 @@ use iroh_live::{
 
 # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
 let layout = LiveLayout::default();
-let endpoint = EndpointOptions::from_env()?.bind().await?;
+let endpoint = EndpointConfig::from_env()?.bind().await?;
 let node = Node::new(endpoint.clone(), layout.config(&[]));
 // Accepts the peers that read the broadcast. Keep the router alive.
 let router = node.mount(Router::builder(endpoint)).spawn();
@@ -76,7 +76,7 @@ router.shutdown().await?;
 "#
 )]
 //!
-//! [`EndpointOptions::apply`] composes with your own endpoint builder, and
+//! [`EndpointConfig::apply`] composes with your own endpoint builder, and
 //! [`calls::Calls`] places and answers one-to-one calls over a layout.
 //!
 //! The main types:
@@ -95,10 +95,10 @@ router.shutdown().await?;
 //!
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
-//! | [`EndpointOptions::bind`] | yes | nothing is bound |
+//! | [`EndpointConfig::bind`] | yes | nothing is bound |
 //! | [`Node::subscribe`], [`Node::subscribe_ticket`] | yes | abandons the wait, and a dial it started continues for other callers |
 //! | [`calls::Calls::call`], [`calls::Calls::answer`] | yes | hangs up |
-//! | [`EndpointOptions::apply`] | yes | the builder is lost, nothing is bound |
+//! | [`EndpointConfig::apply`] | yes | the builder is lost, nothing is bound |
 //! | [`Node::shutdown`] | no, idempotent | call again to finish |
 //!
 //! [`Node::shutdown`] does not close the endpoint. Whoever binds it closes
@@ -188,6 +188,6 @@ pub use iroh_live_rooms as rooms;
 pub use moq_json as json;
 
 pub use self::{
-    endpoint::{EndpointOptions, Mdns, secret_key_file},
+    endpoint::{EndpointConfig, Mdns, secret_key_file},
     error::Error,
 };

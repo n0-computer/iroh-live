@@ -1,6 +1,6 @@
 //! Binding an endpoint: [`MoqPreset`] plus a secret key and mDNS.
 //!
-//! [`EndpointOptions`] adds what a preset cannot. [`secret_key_file`] keeps a
+//! [`EndpointConfig`] adds what a preset cannot. [`secret_key_file`] keeps a
 //! key across restarts.
 
 use std::{io::Write, path::Path};
@@ -30,10 +30,9 @@ pub enum Mdns {
     Off,
 }
 
-// TODO: rename to `EndpointConfig`, once its call sites across repos can change together.
 /// An endpoint with [`MoqPreset`], a key, mDNS and a congestion controller.
 #[derive(Debug, Clone, Default)]
-pub struct EndpointOptions {
+pub struct EndpointConfig {
     /// The endpoint's identity. `None` generates an ephemeral one.
     pub secret_key: Option<SecretKey>,
     /// How the endpoint uses mDNS.
@@ -46,8 +45,8 @@ pub struct EndpointOptions {
     pub congestion: Congestion,
 }
 
-impl EndpointOptions {
-    /// Returns the default options with the secret key in `IROH_SECRET`, if set.
+impl EndpointConfig {
+    /// Returns the default config with the secret key in `IROH_SECRET`, if set.
     ///
     /// Set `IROH_SECRET` to keep one endpoint id, and so the same tickets,
     /// across restarts.
@@ -67,11 +66,11 @@ impl EndpointOptions {
         })
     }
 
-    /// Applies these options to `builder` and returns it.
+    /// Applies this config to `builder` and returns it.
     ///
     /// This sets [`MoqPreset`], the key, mDNS and the congestion controller.
-    /// It is for a caller that builds its own endpoint and sets what these options
-    /// do not, such as the relay mode or another address lookup. The preset
+    /// It is for a caller that builds its own endpoint and sets what this config
+    /// does not, such as the relay mode or another address lookup. The preset
     /// sets the relay mode, the address lookups and the QUIC transport config,
     /// so make your own settings after this call, not before. A transport
     /// config set afterwards replaces the one that carries
@@ -83,9 +82,9 @@ impl EndpointOptions {
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// use iroh::{RelayMode, endpoint::Builder};
-    /// use iroh_live::EndpointOptions;
+    /// use iroh_live::EndpointConfig;
     ///
-    /// let endpoint = EndpointOptions::from_env()?
+    /// let endpoint = EndpointConfig::from_env()?
     ///     .apply(Builder::empty())
     ///     .await
     ///     .relay_mode(RelayMode::Disabled)
@@ -125,7 +124,7 @@ impl EndpointOptions {
         }
     }
 
-    /// Binds an endpoint with [`MoqPreset`] and these options.
+    /// Binds an endpoint with [`MoqPreset`] and this config.
     ///
     /// The endpoint accepts no ALPN until a router mounts handlers on it. The
     /// caller owns it: close it, or shut down the router built on it, which

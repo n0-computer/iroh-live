@@ -6,7 +6,7 @@
 use clap::Parser;
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding,
@@ -39,7 +39,7 @@ async fn main() -> n0_error::Result {
     let args = Args::parse();
 
     // Set `IROH_SECRET` to keep the same ticket across restarts.
-    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
     let layout = LiveLayout::default();
     let node = Node::new(endpoint.clone(), layout.config(&[]));
     // Accepts the viewers. Dropping the router stops accepting.

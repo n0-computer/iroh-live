@@ -58,7 +58,7 @@ pub(crate) struct PublishOpts {
 pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // The ticket carries only the endpoint id. A viewer on the same network
     // finds the Pi over mDNS, a viewer elsewhere over pkarr and DNS.
-    let endpoint = iroh_live::EndpointOptions::from_env()?.bind().await?;
+    let endpoint = iroh_live::EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
     // Accepts the viewers that dial the Pi directly.
     let router = node.mount(Router::builder(endpoint)).spawn();

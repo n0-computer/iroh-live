@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointConfig, Node,
     layout::LiveLayout,
     media::{AudioTarget, LocalBroadcast},
     rooms::{Room, RoomTicket, Rooms},
@@ -57,7 +57,7 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     // Opened first so the microphone can cancel its echo.
     let output = crate::playback::output(None).await?;
     // Rooms always serve, since other participants dial in.
-    let endpoint = EndpointOptions::from_env()?.bind().await?;
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(
         endpoint.clone(),
         LiveLayout::default().config(&[Arc::new(iroh_live::rooms::publish_scope)]),

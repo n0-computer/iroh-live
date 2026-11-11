@@ -50,7 +50,7 @@ version without PROBE sends none, and the field reads `None`.
 On iroh the estimate is the congestion window over the round trip. Under
 CUBIC, iroh's default, an application-limited sender's window grows until
 something is lost, so the estimate overstates the link. `MoqPreset`, which
-`EndpointOptions` binds with, uses BBR3 instead, whose window follows the
+`EndpointConfig` binds with, uses BBR3 instead, whose window follows the
 delivery rate it measures.
 
 Loss is the other figure the selector reads. A subscriber sends little but
