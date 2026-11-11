@@ -24,7 +24,7 @@ use std::{
 
 use moq_ext_media_core::{
     ByPtr, Error, SlotState,
-    stats::{Cell, RateMeter, Smoothed},
+    stats::{RateMeter, Smoothed},
 };
 use moq_ext_sources::{EncodedVideoSource, VideoSource, frames::VideoFrames};
 use moq_video::encode;
@@ -37,7 +37,7 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
-use crate::stats::EncodeStats;
+use crate::stats::RenditionWriter;
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
@@ -204,7 +204,7 @@ pub(super) async fn run_raw(
             _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
             reporter: reporter.clone(),
-            stats: stats.rendition(&rendition.name),
+            stats: stats.rendition(&rendition.name, &rendition.name),
             stop: stop.clone(),
         };
         encoders.spawn(
@@ -356,7 +356,7 @@ struct Encoder {
     /// The gap between kept frames, for a rendition slower than its source.
     interval: Option<Duration>,
     reporter: Reporter,
-    stats: Cell<EncodeStats>,
+    stats: RenditionWriter,
     stop: CancellationToken,
 }
 
@@ -426,7 +426,7 @@ impl Encoder {
     /// Returns how the encoder stopped without failing.
     async fn encode(&mut self) -> Result<Stopped, Error> {
         let target = self.config.size();
-        self.stats.update(|stats| stats.size = Some(target));
+        self.stats.stats.update(|stats| stats.size = Some(target));
 
         loop {
             let mut demand = self.producer.demand();
@@ -559,8 +559,8 @@ impl Encoder {
                 let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
                 let rates = meter.tick(bytes as u64);
                 let smoothed = timing.record(took);
-                self.stats.update(|stats| {
-                    stats.record(bytes as u64, rates);
+                self.stats.stats.update(|stats| {
+                    stats.record(rates);
                     stats.encode_time = Some(smoothed);
                 });
                 self.producer.publish(&encoded).map_err(Error::broadcast)?;
@@ -569,6 +569,10 @@ impl Encoder {
                 // to a newly named track and finishes the old one. Follow the
                 // demand of the track the producer writes now.
                 demand = self.producer.demand();
+                if self.stats.track.get() != demand.name() {
+                    let track = demand.name().to_string();
+                    self.stats.track.update(|name| *name = track);
+                }
             }
         }
     }
@@ -582,8 +586,6 @@ impl Encoder {
                 encoder: encoder.to_string(),
             },
         );
-        let encoder = encoder.to_string();
-        self.stats.update(|stats| stats.encoder = Some(encoder));
     }
 
     /// Moves encoded timestamps onto the broadcast clock.
@@ -637,8 +639,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
                 .map_err(Error::catalog)?;
         let mut split = moq_mux::codec::h264::Split::new();
-        let entry = stats.rendition(ENCODED_RENDITION);
-        entry.update(|stats| stats.encoder = Some("pre-encoded".to_string()));
+        let entry = stats.rendition(ENCODED_RENDITION, ENCODED_RENDITION);
         info!("publishing pre-encoded video");
 
         let mut units = 0u64;
@@ -660,12 +661,15 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
                 );
             }
             for frame in &frames {
-                let bytes = frame.payload.len() as u64;
-                let rates = meter.tick(bytes);
-                entry.update(|stats| stats.record(bytes, rates));
+                let rates = meter.tick(frame.payload.len() as u64);
+                entry.stats.update(|stats| stats.record(rates));
             }
             units += frames.len() as u64;
             import.decode(frames).map_err(Error::decoder)?;
+            if entry.track.get() != import.track().name() {
+                let track = import.track().name().to_string();
+                entry.track.update(|name| *name = track);
+            }
         }
         // The splitter holds the final access unit until the next start code,
         // so the end of the stream has to flush it explicitly.

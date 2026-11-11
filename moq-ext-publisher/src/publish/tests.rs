@@ -149,3 +149,40 @@ async fn a_pushed_audio_source_ends_when_its_senders_go() {
     drop(sender);
     audio_becomes(&broadcast, SlotState::Ended).await;
 }
+
+/// A watched rendition's frame counter comes from the catalog's counters of its track.
+#[tokio::test]
+async fn a_watched_rendition_counts_its_frames() {
+    let source = VideoSource::test_pattern(
+        moq_video::Size::new(320, 180),
+        moq_video::FrameRate::new(30, 1).expect("a valid rate"),
+    )
+    .expect("the pattern thread starts");
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            crate::VideoEncoding::single(crate::VideoRendition::p180()),
+        )
+        .expect("a valid encoding");
+    let name = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(name) = broadcast.stats().renditions.keys().next() {
+                return name.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the rendition starts");
+    let track = broadcast.consume().track(&name).expect("the track exists");
+    let _subscribing = track.subscribe(None);
+    tokio::time::timeout(TIMEOUT, async {
+        while broadcast.stats().renditions[&name].frames == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the rendition counts its frames");
+    assert!(broadcast.stats().renditions[&name].bytes > 0);
+}

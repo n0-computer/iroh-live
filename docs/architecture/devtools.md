@@ -12,17 +12,20 @@ snapshot has current values only. The code is in `moq-ext-player/src/stats.rs`
 and `moq-ext-publisher/src/stats.rs`.
 
 `PublishStats` has the source's frame rate, one `EncodeStats` per video
-rendition, and an `AudioEncodeStats`. `EncodeStats` has the encoder backend,
-the encoded size, frames per second, bitrate, a smoothed encode time, and frame
-and byte counts. `AudioEncodeStats` has the codec, the frames written, and the
+rendition, and an `AudioEncodeStats`. `EncodeStats` has the encoded size,
+frames per second, bitrate and a smoothed encode time. Its frame and byte counts
+come from the catalog's counters (`hang::stats::Rendition`) of the rendition's
+track. The encoder backend is in `PublishStatus`. `AudioEncodeStats` has the codec, the frames written, and the
 frames dropped because the broadcast fell behind its source.
 
 `PlaybackStats` has a `VideoPlaybackStats` while video plays: the rendition,
-the decoder backend, the picture size, frames per second, a smoothed
+the picture size, frames per second, a smoothed
 read-and-decode time, frames shown and access units skipped. It has an
 `AudioPlaybackStats` while audio plays: the rendition, the audio queued ahead
 of the speaker, the latest peak and the frame count. It also has the playout
 latency and the last `NetworkSample`, if the broadcast has network signals.
+The decoder backend is in `PlayerStatus`. A `From` maps `PlaybackStats` onto
+the `hang::echo::Rendition` entries of viewer feedback.
 
 Every figure has one writer. Each rendition's encoder writes its own entry, the
 task that reads the source writes the source frame rate, and the player's video

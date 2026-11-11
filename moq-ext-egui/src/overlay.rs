@@ -622,10 +622,7 @@ fn render_playback(stats: &PlaybackStats, status: &PlayerStatus) -> Section {
         .map(|v| v.rendition.as_str())
         .filter(|r| !r.is_empty())
         .or(status.rendition.as_deref());
-    let decoder = video
-        .map(|v| v.decoder.as_str())
-        .filter(|d| !d.is_empty())
-        .or(status.decoder.as_deref());
+    let decoder = status.decoder.as_deref();
 
     let mut parts = Vec::new();
     let mut lines = vec![
@@ -784,10 +781,10 @@ fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> Section {
             lines.push(Line::colored(text, color));
             continue;
         };
-        let encoder = encode.encoder.as_deref().or(match state {
+        let encoder = match state {
             Some(RenditionState::Encoding { encoder }) => Some(encoder.as_str()),
             _ => None,
-        });
+        };
         let mut fields: Vec<String> = Vec::new();
         fields.extend(encoder.map(str::to_string));
         fields.extend(encode.size.map(|size| size.to_string()));

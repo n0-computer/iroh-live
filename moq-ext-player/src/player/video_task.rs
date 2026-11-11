@@ -306,7 +306,6 @@ pub(crate) async fn run(inputs: Inputs) {
                 stats.video.update(|video| {
                     let video = video.get_or_insert_with(VideoPlaybackStats::default);
                     video.rendition = target.rendition.clone();
-                    video.decoder = decoder.clone();
                 });
                 send_if_changed(&status, |status| {
                     status.video = SlotState::Running;

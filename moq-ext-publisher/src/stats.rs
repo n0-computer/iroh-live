@@ -4,7 +4,8 @@
 //! [`LocalBroadcast::stats`](crate::LocalBroadcast::stats) as often as it
 //! draws. Every figure has exactly one writer. Each rendition's encoder writes
 //! its own entry, and the task that reads the source writes the source frame
-//! rate.
+//! rate. The frame and byte counters come from the catalog's own counters
+//! ([`hang::stats::Rendition`]), read when the snapshot is taken.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -23,10 +24,11 @@ pub struct PublishStats {
 }
 
 /// One video rendition's encoder.
+///
+/// The running encoder backend is in the rendition's
+/// [`RenditionState`](crate::RenditionState).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EncodeStats {
-    /// The encoder backend that opened, such as `openh264` or `vaapi`.
-    pub encoder: Option<String>,
     /// The encoded picture size.
     pub size: Option<moq_video::Size>,
     /// Frames encoded per second, over the last second.
@@ -35,19 +37,15 @@ pub struct EncodeStats {
     pub bitrate: Option<Rate>,
     /// How long one encode takes, smoothed.
     pub encode_time: Option<Duration>,
-    /// Frames encoded since the rendition started.
+    /// Frames published on the rendition's track since the broadcast started.
     pub frames: u64,
-    /// Bytes published since the rendition started.
+    /// Media bytes published on the rendition's track since the broadcast started.
     pub bytes: u64,
 }
 
 impl EncodeStats {
-    /// Counts one encoded frame of `bytes` and stores the rates of a `RateMeter`.
-    ///
-    /// `rates` holds frames and bytes per second.
-    pub(crate) fn record(&mut self, bytes: u64, rates: Option<(f64, f64)>) {
-        self.frames += 1;
-        self.bytes += bytes;
+    /// Stores the rates of a `RateMeter`, which holds frames and bytes per second.
+    pub(crate) fn record(&mut self, rates: Option<(f64, f64)>) {
         if let Some((fps, bytes_per_second)) = rates {
             self.fps = Some(fps as f32);
             self.bitrate = Some(Rate::from_bps((bytes_per_second * 8.0) as u64));
@@ -66,24 +64,43 @@ pub struct AudioEncodeStats {
     pub dropped: u64,
 }
 
+/// The writers of one rendition's entry.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RenditionWriter {
+    /// The encoder's own figures.
+    pub(crate) stats: Cell<EncodeStats>,
+    /// The name of the track the rendition writes now, its key in the catalog's counters.
+    ///
+    /// A frame that changes the decoder identity moves the rendition to a new track.
+    pub(crate) track: Cell<String>,
+}
+
 /// The writers behind [`PublishStats`], one per figure.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PublishRecorder {
     source_fps: Cell<Option<f32>>,
-    renditions: Cell<BTreeMap<String, Cell<EncodeStats>>>,
+    renditions: Cell<BTreeMap<String, RenditionWriter>>,
     audio: Cell<Option<Cell<AudioEncodeStats>>>,
 }
 
 impl PublishRecorder {
-    /// Returns the snapshot.
-    pub(crate) fn snapshot(&self) -> PublishStats {
+    /// Returns the snapshot, with the counters of each rendition's track from `sent`.
+    pub(crate) fn snapshot(&self, sent: &BTreeMap<String, hang::stats::Rendition>) -> PublishStats {
+        let rendition = |writer: RenditionWriter| {
+            let mut stats = writer.stats.get();
+            if let Some(sent) = sent.get(&writer.track.get()) {
+                stats.frames = sent.frames;
+                stats.bytes = sent.bytes;
+            }
+            stats
+        };
         PublishStats {
             source_fps: self.source_fps.get(),
             renditions: self
                 .renditions
                 .get()
                 .into_iter()
-                .map(|(name, cell)| (name, cell.get()))
+                .map(|(name, writer)| (name, rendition(writer)))
                 .collect(),
             audio: self.audio.get().map(|cell| cell.get()),
         }
@@ -94,12 +111,13 @@ impl PublishRecorder {
         self.source_fps.clone()
     }
 
-    /// Starts an entry for rendition `name` and returns its writer.
-    pub(crate) fn rendition(&self, name: &str) -> Cell<EncodeStats> {
-        let cell = Cell::default();
+    /// Starts an entry for rendition `name`, written to track `track`, and returns its writer.
+    pub(crate) fn rendition(&self, name: &str, track: &str) -> RenditionWriter {
+        let writer = RenditionWriter::default();
+        writer.track.update(|name| *name = track.to_string());
         self.renditions
-            .update(|renditions| drop(renditions.insert(name.to_string(), cell.clone())));
-        cell
+            .update(|renditions| drop(renditions.insert(name.to_string(), writer.clone())));
+        writer
     }
 
     /// Drops every video entry when the video slot is cleared.
@@ -125,18 +143,30 @@ impl PublishRecorder {
 mod tests {
     use super::*;
 
-    /// Each rendition writes its own entry, so two renditions never mix.
+    fn sent(frames: u64) -> hang::stats::Rendition {
+        let mut sent = hang::stats::Rendition::default();
+        sent.frames = frames;
+        sent
+    }
+
+    /// Each rendition reads the counters of its own track, so two renditions never mix.
     #[test]
     fn two_renditions_keep_separate_entries() {
         let recorder = PublishRecorder::default();
-        let high = recorder.rendition("high");
-        let low = recorder.rendition("low");
-        high.update(|stats| stats.frames = 30);
-        low.update(|stats| stats.frames = 15);
-        let snapshot = recorder.snapshot();
+        let high = recorder.rendition("high", "high");
+        let _low = recorder.rendition("low", "low");
+        let mut counters = BTreeMap::from([
+            ("high".to_string(), sent(30)),
+            ("low".to_string(), sent(15)),
+        ]);
+        let snapshot = recorder.snapshot(&counters);
         assert_eq!(snapshot.renditions["high"].frames, 30);
         assert_eq!(snapshot.renditions["low"].frames, 15);
+        // A rendition moved to a new track reads that track's counters.
+        high.track.update(|track| *track = "high.1".to_string());
+        counters.insert("high.1".to_string(), sent(2));
+        assert_eq!(recorder.snapshot(&counters).renditions["high"].frames, 2);
         recorder.clear_video();
-        assert!(recorder.snapshot().renditions.is_empty());
+        assert!(recorder.snapshot(&counters).renditions.is_empty());
     }
 }
