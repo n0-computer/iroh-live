@@ -356,9 +356,63 @@ pub(crate) fn served(table: &origin::Producer) -> origin::Consumer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use iroh::SecretKey;
+    use moq_net::origin::RouteOptions;
 
     use super::*;
+
+    /// A route table, with the task that drives it.
+    struct Table {
+        producer: origin::Producer,
+        _driver: AbortOnDropHandle<()>,
+    }
+
+    impl Table {
+        /// Creates a route table and drives it on the current runtime.
+        fn new() -> Self {
+            let hop = Hop::of(&SecretKey::generate().public());
+            let (producer, driver) = origin::Producer::new(origin::Config::new(hop.id()));
+            let driver = tokio::spawn(async move {
+                moq_net::time::run(driver).await;
+            });
+            Self {
+                producer,
+                _driver: AbortOnDropHandle::new(driver),
+            }
+        }
+
+        /// Returns a publication at `path` for `audience`, as `publish` records it.
+        fn publication(&self, path: &str, audience: AudienceKind) -> PubEntry {
+            let path = Path::new(path).expect("a valid path");
+            let publication = self
+                .producer
+                .route(path.clone(), RouteOptions::hidden())
+                .expect("a route");
+            PubEntry {
+                path,
+                publication,
+                audience,
+                peers_task: None,
+                audience_generation: 0,
+                _closed_task: AbortOnDropHandle::new(tokio::spawn(async {})),
+                withdrawn: CancellationToken::new(),
+            }
+        }
+    }
+
+    /// Returns the moq grant `state` gives link `id` now.
+    fn grant_of(state: &State, id: LinkId) -> auth::Grant {
+        let link = &state.links[&id];
+        state.grant_for(link.kind, link.remote.as_ref(), &link.grant, link.public)
+    }
+
+    /// Returns a grant that lets a peer subscribe anywhere and publish under `live/<peer>/`.
+    fn own_paths(peer: EndpointId) -> Grant {
+        let own: Pattern = format!("live/{peer}/**").parse().expect("a pattern");
+        Grant::publish_under(own)
+    }
 
     /// Returns a link entry of `kind` with a peer of its own, which feeds the table.
     fn link(kind: LinkKind) -> LinkEntry {
@@ -423,5 +477,167 @@ mod tests {
             Some(LinkId(1))
         );
         assert_eq!(state.link_for(Source::Local), None);
+    }
+
+    #[tokio::test]
+    async fn a_ticket_claim_widens_the_base_grant_to_its_path() {
+        let mut state = State::default();
+        let direct = link(LinkKind::Direct);
+        let peer = direct.remote.expect("a peer");
+        state.add_link(
+            LinkId(1),
+            LinkEntry {
+                grant: own_paths(peer),
+                ..direct
+            },
+        );
+        let own = format!("live/{peer}/cam");
+        let claimed = Path::new("shows/news").expect("a valid path");
+        assert!(grant_of(&state, LinkId(1)).publish.matches(&own));
+        assert!(
+            !grant_of(&state, LinkId(1))
+                .publish
+                .matches(claimed.as_str())
+        );
+
+        state.claim_path(peer, &claimed).expect("claim");
+        state.claim_path(peer, &claimed).expect("a second claim");
+        let widened = grant_of(&state, LinkId(1));
+        assert!(widened.publish.matches(claimed.as_str()));
+        assert!(widened.publish.matches(&own), "the base grant stays");
+        assert!(
+            !widened.publish.matches("shows/news/extra"),
+            "a claim covers exactly its path"
+        );
+
+        // The first release leaves the other claim in place.
+        state.release_path(&peer, &claimed);
+        assert!(
+            grant_of(&state, LinkId(1))
+                .publish
+                .matches(claimed.as_str())
+        );
+        state.release_path(&peer, &claimed);
+        assert!(
+            !grant_of(&state, LinkId(1))
+                .publish
+                .matches(claimed.as_str())
+        );
+
+        // Another peer's claim does not reach this link.
+        state
+            .claim_path(SecretKey::generate().public(), &claimed)
+            .expect("claim");
+        assert!(
+            !grant_of(&state, LinkId(1))
+                .publish
+                .matches(claimed.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_audience_change_moves_a_publication_between_links() {
+        let table = Table::new();
+        let mut state = State::default();
+        let alice = link(LinkKind::Direct);
+        let bob = link(LinkKind::Direct);
+        let alice_id = alice.remote.expect("a peer");
+        state.add_link(LinkId(1), alice);
+        state.add_link(LinkId(2), bob);
+
+        let path = "live/me/cam";
+        state.add_publication(
+            10,
+            table.publication(path, AudienceKind::Peers(BTreeSet::from([alice_id]))),
+        );
+        assert!(grant_of(&state, LinkId(1)).subscribe.matches(path));
+        assert!(!grant_of(&state, LinkId(2)).subscribe.matches(path));
+
+        state.set_audience(10, AudienceKind::Peers(BTreeSet::new()));
+        assert!(!grant_of(&state, LinkId(1)).subscribe.matches(path));
+
+        state.set_audience(10, AudienceKind::Everyone);
+        assert!(grant_of(&state, LinkId(1)).subscribe.matches(path));
+        assert!(grant_of(&state, LinkId(2)).subscribe.matches(path));
+    }
+
+    #[tokio::test]
+    async fn a_relay_link_sees_public_publications_only() {
+        let table = Table::new();
+        let mut state = State::default();
+        let relay = link(LinkKind::Relay);
+        let relay_id = relay.remote.expect("a peer");
+        state.add_link(LinkId(1), relay);
+        state.add_link(
+            LinkId(2),
+            LinkEntry {
+                public: false,
+                ..link(LinkKind::Relay)
+            },
+        );
+
+        // Even a `Peers` audience that names the relay stays off it.
+        state.add_publication(
+            10,
+            table.publication(
+                "live/me/private",
+                AudienceKind::Peers(BTreeSet::from([relay_id])),
+            ),
+        );
+        state.add_publication(
+            11,
+            table.publication("live/me/public", AudienceKind::Everyone),
+        );
+        let grant = grant_of(&state, LinkId(1));
+        assert!(!grant.subscribe.matches("live/me/private"));
+        assert!(grant.subscribe.matches("live/me/public"));
+        assert!(
+            grant.publish.matches("anything/at/all"),
+            "a relay is trusted with what it forwards"
+        );
+        assert!(
+            !grant_of(&state, LinkId(2))
+                .subscribe
+                .matches("live/me/public"),
+            "a relay that is offered nothing sees nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_publication_leaves_every_grant() {
+        let table = Table::new();
+        let mut state = State::default();
+        state.add_link(LinkId(1), link(LinkKind::Direct));
+        state.add_link(LinkId(2), link(LinkKind::Relay));
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
+        state.add_publication(11, table.publication("live/me/mic", AudienceKind::Everyone));
+        assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
+
+        let removed = state.remove_publication(10).expect("the publication");
+        assert_eq!(removed.path.as_str(), "live/me/cam");
+        for id in [LinkId(1), LinkId(2)] {
+            let grant = grant_of(&state, id);
+            assert!(!grant.subscribe.matches("live/me/cam"), "{id:?}");
+            assert!(grant.subscribe.matches("live/me/mic"), "{id:?}");
+        }
+        assert!(state.remove_publication(10).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_base_grant_bounds_what_a_link_sees() {
+        let table = Table::new();
+        let mut state = State::default();
+        state.add_link(
+            LinkId(1),
+            LinkEntry {
+                grant: Grant::nothing(),
+                ..link(LinkKind::Direct)
+            },
+        );
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
+        assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
+
+        state.set_grant(LinkId(1), Grant::subscribe_only());
+        assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
     }
 }
