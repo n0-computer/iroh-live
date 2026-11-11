@@ -113,6 +113,7 @@ impl VideoFrames {
     /// Returns the newest frame, seen or not, without moving the cursor.
     ///
     /// For render loops that redraw every vsync.
+    #[must_use]
     pub fn current(&self) -> Option<Arc<video::Frame>> {
         self.rx.borrow().clone()
     }
@@ -136,6 +137,7 @@ impl VideoFrames {
     /// Returns a newer frame without waiting, if there is one.
     ///
     /// For a render loop that draws only when the picture changed.
+    #[must_use]
     pub fn try_next(&mut self) -> Option<Arc<video::Frame>> {
         let frame = self.rx.borrow_and_update();
         if frame.has_changed() {

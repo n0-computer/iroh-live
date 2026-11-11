@@ -132,6 +132,7 @@ impl FrameView {
     ///
     /// `name` names the placeholder texture. If `render_state` is `None` or the
     /// renderer fails to build, the view only shows the placeholder.
+    #[must_use]
     pub fn new(
         ctx: &egui::Context,
         name: &str,
@@ -231,6 +232,7 @@ impl VideoView {
     /// # Panics
     ///
     /// Panics when called outside a Tokio runtime with `frames` given.
+    #[must_use]
     pub fn new(
         ctx: &egui::Context,
         name: &str,

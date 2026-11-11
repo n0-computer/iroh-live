@@ -292,6 +292,7 @@ impl VideoSource {
     ///
     /// Every call returns a handle onto the same stream. Reading it does not
     /// encode and does not count as demand.
+    #[must_use]
     pub fn frames(&self) -> VideoFrames {
         self.inner.frames.frames()
     }
@@ -299,6 +300,7 @@ impl VideoSource {
     /// Returns the format the source opened at.
     ///
     /// It may differ from what the config asked for.
+    #[must_use]
     pub fn format(&self) -> VideoFormat {
         self.inner.format
     }
@@ -309,11 +311,13 @@ impl VideoSource {
     }
 
     /// Returns why the source stopped, if it failed.
+    #[must_use]
     pub fn failure(&self) -> Option<Arc<Error>> {
         self.inner.frames.failure()
     }
 
     /// Returns a short name of the source, for logs.
+    #[must_use]
     pub fn label(&self) -> &str {
         &self.inner.label
     }
@@ -357,6 +361,7 @@ impl EncodedVideoSource {
     /// Splits the source into its byte stream and a guard.
     ///
     /// Drop the guard to stop the producer of the bytes.
+    #[must_use]
     pub fn into_parts(self) -> EncodedParts {
         (self.bytes, self.guard)
     }
@@ -681,11 +686,13 @@ impl AudioSource {
     }
 
     /// Returns what the source produces.
+    #[must_use]
     pub fn kind(&self) -> &AudioKind {
         &self.inner.kind
     }
 
     /// Returns a short name of the source, for logs.
+    #[must_use]
     pub fn label(&self) -> &str {
         self.inner.label
     }

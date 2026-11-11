@@ -12,6 +12,7 @@ use moq_ext_player::{NetworkSample, RemoteBroadcast};
 /// adapt to the link that serves it. A subscription on one session
 /// re-resolves through that session only. The catalog arrives later: watch
 /// [`RemoteBroadcast::catalog`] for it.
+#[must_use]
 pub fn remote_broadcast(subscription: &Subscription) -> RemoteBroadcast {
     let remote = RemoteBroadcast::from_resolved(
         subscription.origin(),

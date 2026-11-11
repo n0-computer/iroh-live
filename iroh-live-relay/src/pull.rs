@@ -62,6 +62,7 @@ fn pull_layout() -> (LiveLayout, RoomsLayout) {
 /// Hand it to the session that named the ticket, which then finds the pulled
 /// broadcast at `requested`. `None` if `requested` is no ticket, or the origin
 /// refuses the mount.
+#[must_use]
 pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
     let ticket = requested.parse::<BroadcastTicket>().ok()?;
     match cluster.origin.mount(requested, ticket.path()) {

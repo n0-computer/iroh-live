@@ -199,6 +199,7 @@ impl Node {
     /// Creates a node on `endpoint`.
     ///
     /// Must be called within a tokio runtime.
+    #[must_use]
     pub fn new(endpoint: Endpoint, config: NodeConfig) -> Self {
         let id = endpoint.id();
         let (table, table_task) = match config.table {
@@ -259,6 +260,7 @@ impl Node {
     ///
     /// Without a router, or an accept loop that hands connections to the
     /// node, the endpoint refuses every incoming connection.
+    #[must_use]
     pub fn mount(&self, mut router: RouterBuilder) -> RouterBuilder {
         debug_assert_eq!(
             router.endpoint().id(),
@@ -273,6 +275,7 @@ impl Node {
     }
 
     /// Returns the endpoint id of the node.
+    #[must_use]
     pub fn id(&self) -> EndpointId {
         self.shared.id
     }
@@ -283,6 +286,7 @@ impl Node {
     /// on top of it, which [`Session::grant`] includes. An expired
     /// authorization stays here until the policy decides again, while
     /// [`Session::grant`] already grants nothing.
+    #[must_use]
     pub fn grant_for(&self, peer: EndpointId) -> Option<Authorization> {
         self.shared
             .state
@@ -332,6 +336,7 @@ impl Node {
     }
 
     /// Returns the endpoint the node runs on.
+    #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
         &self.shared.endpoint
     }
@@ -454,6 +459,7 @@ impl Node {
     ///
     /// It holds what [`subscribe`](Self::subscribe) resolves in, and its
     /// [`announced`](origin::Consumer::announced) stream lists the paths.
+    #[must_use]
     pub fn origin(&self) -> origin::Consumer {
         self.shared.table.consume()
     }
@@ -508,6 +514,7 @@ impl Node {
     }
 
     /// Returns the open direct sessions, dialed and accepted, as they change.
+    #[must_use]
     pub fn sessions(&self) -> n0_watcher::Direct<Vec<Session>> {
         self.shared.sessions.watch()
     }

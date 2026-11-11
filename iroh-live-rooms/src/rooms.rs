@@ -115,6 +115,7 @@ impl Rooms {
     ///
     /// Without it, other members cannot reach this one's gossip. The router's
     /// shutdown calls [`shutdown`](Self::shutdown).
+    #[must_use]
     pub fn mount(&self, router: RouterBuilder) -> RouterBuilder {
         router.accept(ALPN, self.protocol_handler())
     }
@@ -123,6 +124,7 @@ impl Rooms {
     ///
     /// Prefer [`mount`](Self::mount). The router's shutdown calls
     /// [`shutdown`](Self::shutdown).
+    #[must_use]
     pub fn protocol_handler(&self) -> impl ProtocolHandler + use<> {
         self.mounted.store(true, Ordering::Relaxed);
         Handler(self.clone())

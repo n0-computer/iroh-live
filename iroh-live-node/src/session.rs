@@ -66,11 +66,13 @@ impl Eq for Session {}
 
 impl Session {
     /// Returns the peer's endpoint id.
+    #[must_use]
     pub fn peer(&self) -> EndpointId {
         self.inner.peer
     }
 
     /// Reports whether this node dialed the session.
+    #[must_use]
     pub fn dialed(&self) -> bool {
         self.inner.dialed
     }
@@ -80,6 +82,7 @@ impl Session {
     /// That is the peer's base grant, widened by the paths that live ticket
     /// subscriptions claimed for the peer (see [`Node::claim_path`](crate::Node::claim_path)).
     /// Once the peer's last session has ended, the grant is [`Grant::nothing`].
+    #[must_use]
     pub fn grant(&self) -> Grant {
         self.inner
             .shared
@@ -94,6 +97,7 @@ impl Session {
     /// Returns what the peer asked for when it opened the session.
     ///
     /// For a dialed session, the path this node requested, without a token.
+    #[must_use]
     pub fn request(&self) -> &SessionRequest {
         &self.inner.request
     }
@@ -165,11 +169,13 @@ impl Session {
     }
 
     /// Returns the connection monitor's latest reading of this session.
+    #[must_use]
     pub fn link_sample(&self) -> LinkSample {
         self.inner.link_state.get()
     }
 
     /// Returns the QUIC connection under the session.
+    #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.inner.connection
     }

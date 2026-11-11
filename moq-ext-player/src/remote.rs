@@ -157,6 +157,7 @@ impl RemoteBroadcast {
     ///
     /// A borrow of the receiver blocks the next catalog update, so keep it
     /// short.
+    #[must_use]
     pub fn catalog(&self) -> watch::Receiver<Option<Arc<Catalog>>> {
         self.shared.catalog.subscribe()
     }
@@ -233,6 +234,7 @@ impl RemoteBroadcast {
     ///
     /// Lags a routed publisher's hang-up by the same three seconds as
     /// [`closed`](Self::closed).
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.shared.closed.is_cancelled()
     }

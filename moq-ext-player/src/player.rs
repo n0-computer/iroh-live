@@ -374,6 +374,7 @@ impl Player {
     }
 
     /// Returns the broadcast this player plays.
+    #[must_use]
     pub fn broadcast(&self) -> &RemoteBroadcast {
         &self.broadcast
     }

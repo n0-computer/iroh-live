@@ -39,11 +39,13 @@ impl Default for Mode {
 
 impl Mode {
     /// Returns automatic selection.
+    #[must_use]
     pub const fn auto() -> Self {
         Self::Auto
     }
 
     /// Returns a mode holding the rendition `name`.
+    #[must_use]
     pub fn pinned(name: impl Into<String>) -> Self {
         Self::Pinned(name.into())
     }

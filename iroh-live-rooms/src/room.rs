@@ -131,6 +131,7 @@ impl Room {
     ///
     /// The broadcast stays open for whoever holds it, unannounced. Returns
     /// whether `name` was published.
+    #[must_use]
     pub fn unpublish(&self, name: &str) -> bool {
         let publication = self
             .inner

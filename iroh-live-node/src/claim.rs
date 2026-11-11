@@ -28,11 +28,13 @@ pub struct PathClaim {
 
 impl PathClaim {
     /// Returns the peer the claim is for.
+    #[must_use]
     pub fn peer(&self) -> EndpointId {
         self.peer
     }
 
     /// Returns the claimed path.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }

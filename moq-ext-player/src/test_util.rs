@@ -56,11 +56,13 @@ pub const HD: Size = Size {
 };
 
 /// Returns a frame rate of `frames_per_second`.
+#[must_use]
 pub fn fps(frames_per_second: u32) -> FrameRate {
     FrameRate::new(frames_per_second, 1).expect("a valid rate")
 }
 
 /// Returns one software-encoded rendition named `video`, at `size` or the source's.
+#[must_use]
 pub fn single(size: Option<Size>) -> VideoEncoding {
     VideoEncoding {
         prefer_hardware: false,
@@ -104,6 +106,7 @@ pub struct Look {
 
 impl Look {
     /// Returns a flat look of `size` with every pixel at `luma`.
+    #[must_use]
     pub const fn flat(size: Size, luma: u8) -> Self {
         Self {
             size,
@@ -112,6 +115,7 @@ impl Look {
     }
 
     /// Returns the look of the test pattern at `size`.
+    #[must_use]
     pub const fn pattern(size: Size) -> Self {
         Self { size, luma: None }
     }

@@ -38,11 +38,13 @@ impl BoundNode {
     /// Wraps `node` and the `router` that serves it, or `None` for a node that only dials.
     ///
     /// For a router with services of its own beside the node, such as rooms.
+    #[must_use]
     pub fn new(node: Node, router: Option<Router>) -> Self {
         Self { node, router }
     }
 
     /// Returns the node.
+    #[must_use]
     pub fn node(&self) -> &Node {
         &self.node
     }

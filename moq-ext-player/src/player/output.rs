@@ -48,6 +48,7 @@ impl AudioTarget {
     /// is queued at a speaker, so audio is not paced and video is held for the
     /// jitter allowance alone. A microphone asked to cancel a null target's
     /// echo gets no canceller.
+    #[must_use]
     pub fn null() -> Self {
         Self { inner: Inner::Null }
     }
@@ -71,6 +72,7 @@ impl AudioTarget {
 
     /// Returns the engine behind this target, `None` for a [null](Self::null) one.
     #[cfg(feature = "playback")]
+    #[must_use]
     pub fn engine(&self) -> Option<&playback::Engine> {
         match &self.inner {
             Inner::Engine(engine) => Some(engine),
@@ -79,6 +81,7 @@ impl AudioTarget {
     }
 
     /// Reports whether this target discards what it is given.
+    #[must_use]
     pub fn is_null(&self) -> bool {
         matches!(self.inner, Inner::Null)
     }

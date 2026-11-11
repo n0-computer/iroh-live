@@ -56,6 +56,7 @@ pub struct Target {
 
 impl Target {
     /// Creates a target for `rendition` under decoder configuration `config`.
+    #[must_use]
     pub fn new(rendition: impl Into<String>, config: u64) -> Self {
         Self {
             rendition: rendition.into(),
@@ -152,6 +153,7 @@ impl<R, O> Switcher<R, O> {
     ///
     /// `patience` is how long a replacement may take, from its request to
     /// taking over, before it is given up.
+    #[must_use]
     pub fn new(patience: Duration) -> Self {
         Self {
             incumbent: None,
@@ -162,11 +164,13 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the target playing, if any.
+    #[must_use]
     pub fn current(&self) -> Option<&Target> {
         self.incumbent.as_ref().map(|playing| &playing.target)
     }
 
     /// Returns the target on its way in, if any.
+    #[must_use]
     pub fn switching_to(&self) -> Option<&Target> {
         self.replacement
             .as_ref()
@@ -174,6 +178,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the moment the replacement is given up, if there is one.
+    #[must_use]
     pub fn deadline(&self) -> Option<Instant> {
         self.replacement
             .as_ref()
@@ -181,6 +186,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the generation of the replacement, if there is one.
+    #[must_use]
     pub fn replacement_generation(&self) -> Option<u64> {
         self.replacement
             .as_ref()
@@ -188,11 +194,13 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the running incumbent decoder.
+    #[must_use]
     pub fn incumbent_mut(&mut self) -> Option<&mut R> {
         self.incumbent.as_mut().map(|playing| &mut playing.reader)
     }
 
     /// Returns the open task of a replacement that is still opening.
+    #[must_use]
     pub fn opening_mut(&mut self) -> Option<&mut O> {
         match &mut self.replacement {
             Some(Replacement {
@@ -204,6 +212,7 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Returns the decoder of a replacement that has opened.
+    #[must_use]
     pub fn warming_mut(&mut self) -> Option<&mut R> {
         match &mut self.replacement {
             Some(Replacement {

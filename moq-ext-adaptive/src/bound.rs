@@ -156,6 +156,7 @@ pub struct Bound {
 
 impl Bound {
     /// Creates a bound with nothing learned yet.
+    #[must_use]
     pub fn new(adaptation: Adaptation) -> Self {
         Self {
             adaptation,

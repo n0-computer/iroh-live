@@ -98,6 +98,7 @@ impl TestNode {
     }
 
     /// Returns the endpoint id of the node.
+    #[must_use]
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()
     }

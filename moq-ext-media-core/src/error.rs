@@ -92,6 +92,7 @@ pub enum Error {
 
 impl Error {
     /// Creates an [`Error::InvalidConfig`] with `reason`.
+    #[must_use]
     pub fn invalid(reason: impl Into<String>) -> Self {
         n0_error::e!(Self::InvalidConfig {
             reason: reason.into()
@@ -99,6 +100,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Device`] from an upstream error.
+    #[must_use]
     pub fn device(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_std(source)
@@ -106,6 +108,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Device`] from a message.
+    #[must_use]
     pub fn device_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Device {
             source: AnyError::from_display(message)
@@ -113,6 +116,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Encoder`] from an upstream error.
+    #[must_use]
     pub fn encoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Encoder {
             source: AnyError::from_std(source)
@@ -120,6 +124,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Encoder`] from a message.
+    #[must_use]
     pub fn encoder_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Encoder {
             source: AnyError::from_display(message)
@@ -127,6 +132,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Decoder`] from an upstream error.
+    #[must_use]
     pub fn decoder(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Decoder {
             source: AnyError::from_std(source)
@@ -134,6 +140,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Decoder`] from a message.
+    #[must_use]
     pub fn decoder_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Decoder {
             source: AnyError::from_display(message)
@@ -141,6 +148,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Catalog`] from an upstream error.
+    #[must_use]
     pub fn catalog(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Catalog {
             source: AnyError::from_std(source)
@@ -148,6 +156,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Catalog`] from a message.
+    #[must_use]
     pub fn catalog_msg(message: impl std::fmt::Display) -> Self {
         n0_error::e!(Self::Catalog {
             source: AnyError::from_display(message)
@@ -155,6 +164,7 @@ impl Error {
     }
 
     /// Creates an [`Error::Broadcast`] from an upstream error.
+    #[must_use]
     pub fn broadcast(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         n0_error::e!(Self::Broadcast {
             source: AnyError::from_std(source)

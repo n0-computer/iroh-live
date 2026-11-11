@@ -136,6 +136,7 @@ impl LinkSampler {
     ///
     /// `delivery` is the peer's bandwidth estimate, as `peek` returns it.
     /// Returns `None` while the connection has no selected path.
+    #[must_use]
     pub fn sample_connection(
         &mut self,
         session: &moq_net::Session,
@@ -158,6 +159,7 @@ impl LinkSampler {
     /// Reads `stats` of session number `session` of a link that reconnects.
     ///
     /// A new session number starts a new path, as a new QUIC path does.
+    #[must_use]
     pub fn sample_session(&mut self, session: u64, stats: &Stats, now: Instant) -> LinkSample {
         self.sample(PathKey::Session(session), stats, None, now)
     }

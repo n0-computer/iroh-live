@@ -117,17 +117,20 @@ impl TokenFn {
     /// Creates a token source that calls `f` each time a token is asked for.
     ///
     /// `None` presents no token.
+    #[must_use]
     pub fn new(f: impl Fn() -> Option<String> + Send + Sync + 'static) -> Self {
         Self(Arc::new(f))
     }
 
     /// Creates a token source that always returns `token`.
+    #[must_use]
     pub fn fixed(token: impl Into<String>) -> Self {
         let token = token.into();
         Self::new(move || Some(token.clone()))
     }
 
     /// Returns the token to present now.
+    #[must_use]
     pub fn token(&self) -> Option<String> {
         (self.0)()
     }
@@ -195,11 +198,13 @@ struct RelayInner {
 
 impl RelayLink {
     /// Returns the relay's status, as it changes.
+    #[must_use]
     pub fn status(&self) -> n0_watcher::Direct<RelayStatus> {
         self.inner.status.watch()
     }
 
     /// Returns this link's id, as [`ServingLink::id`](crate::ServingLink::id) names it.
+    #[must_use]
     pub fn id(&self) -> LinkId {
         self.inner.link
     }

@@ -162,11 +162,13 @@ impl Subscription {
     }
 
     /// Returns the path this subscription resolves.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.inner.path
     }
 
     /// Returns the route table the path was resolved in.
+    #[must_use]
     pub fn origin(&self) -> origin::Consumer {
         self.inner.origin.clone()
     }
@@ -174,11 +176,13 @@ impl Subscription {
     /// Returns the broadcast that serves the path now.
     ///
     /// A later call may return a newer broadcast than an earlier one.
+    #[must_use]
     pub fn broadcast(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
     }
 
     /// Returns the session serving the broadcast now, if a direct session does.
+    #[must_use]
     pub fn session(&self) -> Option<Session> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
@@ -192,6 +196,7 @@ impl Subscription {
     /// node, and once the serving link is gone. Also `None` when a relay
     /// serves the route and several relays feed the table, since a relay's
     /// route does not say which relay it came from.
+    #[must_use]
     pub fn serving_link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");

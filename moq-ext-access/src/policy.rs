@@ -88,36 +88,43 @@ impl<P: PeerId> PeerRequest<P> {
     }
 
     /// Returns the peer, as the transport authenticated it.
+    #[must_use]
     pub fn peer(&self) -> &P {
         &self.peer
     }
 
     /// Reports whether this node dialed the session.
+    #[must_use]
     pub fn dialed(&self) -> bool {
         self.dialed
     }
 
     /// Returns why the node asks.
+    #[must_use]
     pub fn event(&self) -> Event {
         self.event
     }
 
     /// Returns the authorization the peer holds, when the node decides again.
+    #[must_use]
     pub fn current(&self) -> Option<&Authorization> {
         self.current.as_ref()
     }
 
     /// Returns the path the session requested, without its query.
+    #[must_use]
     pub fn path(&self) -> &str {
         self.request.path()
     }
 
     /// Returns a query parameter of the session's request.
+    #[must_use]
     pub fn query(&self, key: &str) -> Option<&str> {
         self.request.query(key)
     }
 
     /// Returns the token the peer presented, as [`SessionRequest::token`] does.
+    #[must_use]
     pub fn token(&self) -> Option<&str> {
         self.request.token()
     }
@@ -204,6 +211,7 @@ pub struct Transit {
 
 impl Transit {
     /// Reports whether the transit forwards nothing, as the default does.
+    #[must_use]
     pub fn is_none(&self) -> bool {
         self.forward_to.is_empty() && self.forward_from.is_empty() && !self.peer_forwards
     }
@@ -248,11 +256,13 @@ impl Rejection {
     }
 
     /// Returns the code the session closes with.
+    #[must_use]
     pub fn code(&self) -> &moq_net::Error {
         &self.code
     }
 
     /// Returns why the policy rejected the session.
+    #[must_use]
     pub fn reason(&self) -> &str {
         &self.reason
     }
@@ -403,6 +413,7 @@ impl<P: PeerId> Policy<P> for Closed {
 /// });
 /// # drop(policy);
 /// ```
+#[must_use]
 pub fn from_fn<P, F>(decide: F) -> FromFn<F>
 where
     P: PeerId,

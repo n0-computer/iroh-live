@@ -30,6 +30,7 @@ impl Demand {
     }
 
     /// Returns a receiver that reports whether anything wants frames.
+    #[must_use]
     pub fn watch(&self) -> watch::Receiver<bool> {
         self.wanted.subscribe()
     }
@@ -139,11 +140,13 @@ impl<T: 'static> FrameSender<T> {
     /// It is true while a broadcast this source feeds encodes it, which for
     /// video means while somebody watches. A camera the application drives
     /// itself can idle while it is false.
+    #[must_use]
     pub fn demand(&self) -> watch::Receiver<bool> {
         self.demand.watch()
     }
 
     /// Reports whether the source is gone.
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.closed.is_cancelled()
     }

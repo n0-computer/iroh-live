@@ -143,6 +143,7 @@ impl<P: PeerId> fmt::Debug for Pending<P> {
 
 impl<P: PeerId> Pending<P> {
     /// Returns the request to answer.
+    #[must_use]
     pub fn request(&self) -> &PeerRequest<P> {
         &self.request
     }

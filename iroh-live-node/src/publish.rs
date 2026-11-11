@@ -87,6 +87,7 @@ impl Eq for Publication {}
 
 impl Publication {
     /// Returns the path the broadcast is published at.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.inner.path
     }
@@ -103,6 +104,7 @@ impl Publication {
     ///
     /// Tracks created here are what peers read. Closing it withdraws the
     /// publication.
+    #[must_use]
     pub fn broadcast(&self) -> &broadcast::Producer {
         &self.inner.broadcast
     }
@@ -115,6 +117,7 @@ impl Publication {
     }
 
     /// Reports whether the publication has been withdrawn.
+    #[must_use]
     pub fn is_withdrawn(&self) -> bool {
         self.inner.withdrawn.is_cancelled()
     }

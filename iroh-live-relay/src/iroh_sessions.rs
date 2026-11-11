@@ -261,6 +261,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 /// `live/` broadcasts and its room broadcasts, at the paths that name its
 /// endpoint id. Use it as the fallback of a [`Verify`](moq_ext_access::policy::Verify)
 /// to let a token widen what a client may publish.
+#[must_use]
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
     LiveLayout::default().policy(&[Arc::new(RoomsLayout)])
 }
