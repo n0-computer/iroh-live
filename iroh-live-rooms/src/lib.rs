@@ -20,9 +20,9 @@
 //! read every member's broadcasts and publish into the room. Share it only
 //! with the people you want in the room, over a channel you trust.
 //!
-//! The node's [`NodeConfig::grant`](iroh_live_node::NodeConfig::grant) has to
-//! let each peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
-//! `iroh_live::layout::LiveLayout::config(&[Arc::new(publish_scope)])` does
+//! The node's [policy](iroh_live_node::NodeConfig::with_policy) has to let
+//! each peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
+//! `iroh_live::layout::LiveLayout::policy(&[Arc::new(publish_scope)])` does
 //! that.
 //!
 //! ```no_run

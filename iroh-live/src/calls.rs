@@ -273,10 +273,11 @@ impl Calls {
     ///
     /// Both sides of a call read each other's side over a direct session, so
     /// each node's policy has to let the other publish under the layout:
-    /// `<root>/<peer id>/call`. A node built with
-    /// [`LiveLayout::config`](crate::LiveLayout::config) does. On a node whose
-    /// policy does not, [`call`](Self::call) and [`answer`](Self::answer) fail
-    /// with [`NotGranted`](iroh_live_node::Error::NotGranted).
+    /// `<root>/<peer id>/call`. [`LiveLayout::policy`] does, and a
+    /// [`filter`](iroh_live_node::policy::Policy::filter) on it admits only
+    /// some callers. On a node whose policy does not, [`call`](Self::call)
+    /// and [`answer`](Self::answer) fail with
+    /// [`NotGranted`](iroh_live_node::Error::NotGranted).
     ///
     /// # Errors
     ///

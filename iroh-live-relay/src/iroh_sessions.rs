@@ -18,7 +18,7 @@ use iroh::{
 use iroh_live::layout::LiveLayout;
 use iroh_live_node::{
     DECIDE_TIMEOUT, SessionRequest,
-    policy::{self, Authorization, DynPolicy, Event, PeerRequest, Policy, Rejection},
+    policy::{Authorization, DynPolicy, Event, PeerRequest, Policy, Rejection},
 };
 use moq_net::{Pattern, server::Handshake, setup::Token};
 use moq_relay::cluster::Cluster;
@@ -258,13 +258,6 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.into_owned())
 }
 
-/// Returns what an iroh peer may publish into the relay.
-///
-/// That is its own `live/` broadcasts and its room broadcasts.
-pub(crate) fn relay_grant(peer: EndpointId) -> iroh_live_node::Grant {
-    LiveLayout::default().grant(peer, &[Arc::new(iroh_live::rooms::publish_scope)])
-}
-
 /// Returns the relay's default policy for iroh clients.
 ///
 /// It admits every client to read the whole cluster and to publish its own
@@ -272,7 +265,7 @@ pub(crate) fn relay_grant(peer: EndpointId) -> iroh_live_node::Grant {
 /// endpoint id. Use it as the fallback of a [`Verify`](moq_ext_access::policy::Verify)
 /// to let a token widen what a client may publish.
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
-    policy::from_fn(|request: &PeerRequest| Ok(relay_grant(*request.peer()).into()))
+    LiveLayout::default().policy(&[Arc::new(iroh_live::rooms::publish_scope)])
 }
 
 #[cfg(test)]
@@ -283,7 +276,11 @@ mod tests {
     fn a_client_publishes_only_under_its_own_id() {
         let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
-        let scope = relay_grant(id).publish;
+        let request = PeerRequest::new(id, SessionRequest::default(), false, Event::Connect);
+        let scope = n0_future::future::block_on(Policy::decide(&relay_policy(), &request))
+            .expect("admitted")
+            .grant
+            .publish;
         assert!(scope.matches(&format!("live/{id}/cam")));
         assert!(scope.matches(&format!("rooms/topic/{id}/cam")));
         assert!(!scope.matches(&format!("live/{other}/cam")));

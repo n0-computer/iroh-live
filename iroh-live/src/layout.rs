@@ -5,7 +5,7 @@
 //! lets a peer publish only there, so no peer can publish at a path that names
 //! another. Every use names the layout. An application with another scheme
 //! writes its paths through [`Node::publish`](crate::Node::publish) and
-//! [`Node::subscribe`](crate::Node::subscribe), and gives its node a grant of
+//! [`Node::subscribe`](crate::Node::subscribe), and gives its node a policy of
 //! its own.
 //!
 //! Rooms paths (`rooms/...`) belong to `iroh-live-rooms`.
@@ -16,6 +16,7 @@ use iroh::EndpointId;
 use iroh_live_node::{
     Audience, BroadcastTicket, Error, Grant, Node, NodeConfig, Publication,
     net::{Path, Pattern, Patterns},
+    policy::{self, PeerRequest, Policy},
 };
 use moq_net::broadcast;
 use n0_error::e;
@@ -25,7 +26,7 @@ const DEFAULT_ROOT: &str = "live";
 
 /// A function that names the paths a peer may publish under, given its id.
 ///
-/// Extends a [`LiveLayout`]'s own scope: `layout.config(&[Arc::new(rooms::publish_scope)])`
+/// Extends a [`LiveLayout`]'s own scope: `layout.policy(&[Arc::new(rooms::publish_scope)])`
 /// lets peers publish room broadcasts too. A closure over a second layout or
 /// application state works as well.
 pub type Scope = Arc<dyn Fn(EndpointId) -> Pattern + Send + Sync>;
@@ -33,7 +34,7 @@ pub type Scope = Arc<dyn Fn(EndpointId) -> Pattern + Send + Sync>;
 /// The `<root>/<peer>/<name>` layout, with the root `live` by default.
 ///
 /// A node publishes its broadcasts at `<root>/<its id>/<name>`, and a node
-/// that uses [`config`](Self::config) lets each peer publish only under its
+/// that uses [`policy`](Self::policy) lets each peer publish only under its
 /// own id. Two peers with different roots do not see each other's broadcasts:
 /// the node reports [`NotGranted`](iroh_live_node::Error::NotGranted).
 ///
@@ -141,18 +142,43 @@ impl LiveLayout {
         Grant::publish_under(publish)
     }
 
-    /// Returns the [`NodeConfig`] of a node on this layout.
+    /// Returns a policy that admits every peer with its [`grant`](Self::grant).
     ///
-    /// It admits every peer and applies [`grant`](Self::grant). Pass `&[]`
-    /// for no extra scopes.
+    /// Pass `&[]` for no extra scopes. Narrow it with
+    /// [`Policy::filter`], and call `Node::reauthorize` when the filter's
+    /// state changes.
+    ///
+    /// # Examples
+    ///
+    /// Admit only contacts:
+    ///
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// use iroh_live::{NodeConfig, layout::LiveLayout, node::policy::Policy};
+    /// use n0_watcher::{Watchable, Watcher};
+    ///
+    /// let contacts = Watchable::new(BTreeSet::<iroh::EndpointId>::new());
+    /// let known = contacts.clone();
+    /// let policy = LiveLayout::default()
+    ///     .policy(&[])
+    ///     .filter(move |request| known.get().contains(request.peer()));
+    /// let config = NodeConfig::default().with_policy(policy);
+    /// # drop((config, contacts));
+    /// ```
     #[must_use]
-    pub fn config(&self, extra: &[Scope]) -> NodeConfig {
+    pub fn policy(&self, extra: &[Scope]) -> impl Policy<EndpointId> + Clone + use<> {
         let layout = self.clone();
         let extra: Arc<[Scope]> = extra.into();
-        NodeConfig {
-            grant: Some(Arc::new(move |peer| layout.grant(peer, &extra))),
-            ..Default::default()
-        }
+        policy::from_fn(move |request: &PeerRequest| {
+            Ok(layout.grant(*request.peer(), &extra).into())
+        })
+    }
+
+    /// Returns the [`NodeConfig`] of a node on this layout, with its [`policy`](Self::policy).
+    #[must_use]
+    pub fn config(&self, extra: &[Scope]) -> NodeConfig {
+        NodeConfig::default().with_policy(self.policy(extra))
     }
 
     /// Publishes a broadcast at `<root>/<this node's id>/<name>` to everyone, and returns it.
@@ -236,6 +262,7 @@ impl LiveLayout {
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
+    use iroh_live_node::SessionRequest;
 
     use super::*;
 
@@ -308,8 +335,15 @@ mod tests {
         let (a, b) = (LiveLayout::new("a"), LiveLayout::new("b"));
         let peer = id();
         let b_scope: Scope = Arc::new(move |peer| b.scope(peer));
-        let config = a.config(&[b_scope]);
-        let grant = config.grant.as_ref().expect("a grant")(peer);
+        let request = PeerRequest::new(
+            peer,
+            SessionRequest::default(),
+            false,
+            policy::Event::Connect,
+        );
+        let grant = n0_future::future::block_on(Policy::decide(&a.policy(&[b_scope]), &request))
+            .expect("admitted")
+            .grant;
         assert!(grant.allows_publish(&format!("a/{peer}/cam")));
         assert!(grant.allows_publish(&format!("b/{peer}/cam")));
         assert!(!grant.allows_publish(&format!("c/{peer}/cam")));

@@ -219,7 +219,7 @@ impl Room {
     ///
     /// Fails with [`Error::Left`] once the room was left, and with
     /// [`Error::Node`] if the member cannot be dialed, if the node's
-    /// grant does not let the member publish under [`publish_scope`], or if
+    /// policy does not let the member publish under [`publish_scope`], or if
     /// the session ends before the member announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
         if self.inner.done.get() {
@@ -302,7 +302,7 @@ impl Inner {
 
 /// Returns the paths `member` publishes room broadcasts under, `rooms/*/<member>/**`.
 ///
-/// A node that runs rooms adds this to every peer's grant.
+/// A node that runs rooms adds this to the grant its policy gives every peer.
 pub fn publish_scope(member: EndpointId) -> Pattern {
     format!("rooms/*/{member}/**")
         .parse()

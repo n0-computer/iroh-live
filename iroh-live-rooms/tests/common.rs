@@ -2,13 +2,13 @@
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_live_node::{Grant, Node, NodeConfig};
+use iroh_live_node::{
+    Grant, Node, NodeConfig,
+    policy::{self, PeerRequest},
+};
 use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms};
 use n0_watcher::Watcher;
 
@@ -41,12 +41,10 @@ impl Peer {
     /// Spawns a peer whose peers may publish only under their room scope.
     pub(crate) async fn spawn() -> Self {
         let endpoint = endpoint().await;
-        let config = NodeConfig {
-            grant: Some(Arc::new(|peer| {
-                Grant::publish_under(iroh_live_rooms::publish_scope(peer))
-            })),
-            ..Default::default()
-        };
+        let config = NodeConfig::default().with_policy(policy::from_fn(|request: &PeerRequest| {
+            let scope = iroh_live_rooms::publish_scope(*request.peer());
+            Ok(Grant::publish_under(scope).into())
+        }));
         let node = Node::new(endpoint.clone(), config);
         let rooms = Rooms::new(&node);
         let router = rooms

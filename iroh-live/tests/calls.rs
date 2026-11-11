@@ -12,14 +12,15 @@ use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
 use iroh_live::{
-    Audience, Node, Reach,
+    Audience, Node, NodeConfig, Reach,
     calls::{Call, CallEvent, Calls, Error, HungUp},
     layout::LiveLayout,
+    node::policy::Policy,
 };
 use moq_net::broadcast;
 use n0_future::StreamExt;
 use n0_tracing_test::traced_test;
-use n0_watcher::Watcher as _;
+use n0_watcher::{Watchable, Watcher as _};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -47,7 +48,12 @@ struct Peer {
 impl Peer {
     /// Starts a mounted node with its call service.
     async fn start() -> Self {
-        let (node, router) = Self::raw().await;
+        Self::start_with(LiveLayout::default().config(&[])).await
+    }
+
+    /// Starts a mounted node with `config` and its call service.
+    async fn start_with(config: NodeConfig) -> Self {
+        let (node, router) = Self::raw_with(config).await;
         let (calls, side) = Calls::new(&node, &LiveLayout::default()).expect("calls");
         Self {
             node,
@@ -59,8 +65,13 @@ impl Peer {
 
     /// A node on the default layout and its router, with no call service.
     async fn raw() -> (Node, Router) {
+        Self::raw_with(LiveLayout::default().config(&[])).await
+    }
+
+    /// A node with `config` and its router, with no call service.
+    async fn raw_with(config: NodeConfig) -> (Node, Router) {
         let endpoint = endpoint().await;
-        let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+        let node = Node::new(endpoint.clone(), config);
         let router = node.mount(Router::builder(endpoint)).spawn();
         (node, router)
     }
@@ -417,4 +428,38 @@ async fn a_lagging_event_reader_is_told_it_lagged() {
     raw.shutdown().await;
     router.shutdown().await.expect("router");
     b.shutdown().await;
+}
+
+/// A callee that admits only its contacts refuses a stranger's ring, and drops a removed contact.
+#[tokio::test]
+#[traced_test]
+async fn a_contacts_only_callee_refuses_strangers_and_drops_removed_contacts() {
+    let (alice, carol) = (Peer::start().await, Peer::start().await);
+    let contacts = Watchable::new(BTreeSet::from([alice.id()]));
+    let known = contacts.clone();
+    let policy = LiveLayout::default()
+        .policy(&[])
+        .filter(move |request| known.get().contains(request.peer()));
+    let bob = Peer::start_with(NodeConfig::default().with_policy(policy)).await;
+
+    // Bob's policy refuses carol's session, so her ring never reaches him.
+    let refused = step("a stranger's call", carol.calls.call(bob.id())).await;
+    assert!(refused.is_err(), "a stranger's call fails");
+    assert!(!bob.calls.ringing().get().contains(&carol.id()));
+
+    // Alice is a contact, so her call goes through.
+    let (call_alice, _call_bob) = connect(&alice, &bob).await;
+
+    // Once she is no longer a contact, a re-decision closes her session.
+    contacts.set(BTreeSet::new()).ok();
+    bob.node.reauthorize(alice.id());
+    assert_eq!(
+        step("the call ends", call_alice.ended()).await,
+        HungUp::Lost
+    );
+    assert!(bob.node.grant_for(alice.id()).is_none());
+
+    for peer in [alice, bob, carol] {
+        peer.shutdown().await;
+    }
 }
