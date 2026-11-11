@@ -18,6 +18,7 @@ mod publish;
 #[cfg(target_os = "linux")]
 mod watch;
 
+/// The command line and the dispatch to each command.
 #[cfg(target_os = "linux")]
 mod app {
     use clap::{Parser, Subcommand};

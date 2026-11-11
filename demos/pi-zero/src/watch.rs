@@ -175,8 +175,8 @@ impl DrmDisplay {
         // Hide the console and take DRM master.
         let vt = match VtGuard::activate() {
             Ok(vt) => Some(vt),
-            Err(e) => {
-                warn!(error = %e, "VT switch failed - may need root or a linux console");
+            Err(err) => {
+                warn!(error = %err, "could not switch the VT, which needs root or a Linux console");
                 None
             }
         };

@@ -109,11 +109,12 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
                 info!("QR code displayed on e-paper");
                 true
             }
-            Err(e) => {
+            Err(err) => {
                 warn!(
-                    error = format_args!("{e:#}"),
-                    "could not display QR on e-paper - is the HAT attached and SPI enabled? \
-                     (the stream is publishing normally, use the ticket above to connect)"
+                    error = format_args!("{err:#}"),
+                    "could not display the QR code on the e-paper. Check that the HAT is \
+                     attached and SPI is enabled. The stream publishes normally, so connect \
+                     with the ticket above."
                 );
                 false
             }
@@ -130,13 +131,13 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
                 let ticket = ticket.clone();
                 match tokio::task::spawn_blocking(move || epaper::display_qr(&ticket)).await {
                     Ok(Ok(())) => debug!("periodic e-paper refresh complete"),
-                    Ok(Err(e)) => {
+                    Ok(Err(err)) => {
                         warn!(
-                            error = format_args!("{e:#}"),
+                            error = format_args!("{err:#}"),
                             "periodic e-paper refresh failed"
                         )
                     }
-                    Err(e) => warn!(error = %e, "periodic e-paper refresh panicked"),
+                    Err(err) => warn!(error = %err, "periodic e-paper refresh panicked"),
                 }
             }
         }))
@@ -151,11 +152,11 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     if has_epaper {
         match tokio::task::spawn_blocking(epaper::clear_display).await {
             Ok(Ok(())) => info!("e-paper cleared for storage"),
-            Ok(Err(e)) => warn!(
-                error = format_args!("{e:#}"),
+            Ok(Err(err)) => warn!(
+                error = format_args!("{err:#}"),
                 "could not clear e-paper on exit"
             ),
-            Err(e) => warn!(error = %e, "clearing the e-paper panicked"),
+            Err(err) => warn!(error = %err, "clearing the e-paper panicked"),
         }
     }
 
