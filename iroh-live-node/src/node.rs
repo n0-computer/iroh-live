@@ -357,7 +357,7 @@ impl Node {
     /// - [`Error::Moq`] or [`Error::InvalidPath`] for a path that cannot be
     ///   published, as [`publish`](Self::publish) does.
     /// - [`Error::NoRoute`] if `reach` allows no way to reach the path.
-    /// - [`Error::Connect`] if the publisher cannot be dialed and no relay can
+    /// - [`Error::Transport`] if the publisher cannot be dialed and no relay can
     ///   stand in.
     /// - [`Error::NotGranted`] if the publisher's grant does not let it
     ///   publish the path and no relay can stand in.
@@ -410,7 +410,7 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Connect`] if the dial fails, [`Error::Refused`] if
+    /// Fails with [`Error::Transport`] if the dial fails, [`Error::Refused`] if
     /// a peer on an older protocol version refuses during the handshake, and
     /// [`Error::ShutDown`] once the node has shut down. A handshake that takes
     /// longer than [`HANDSHAKE_TIMEOUT`](crate::HANDSHAKE_TIMEOUT) fails with

@@ -23,26 +23,6 @@ use crate::{
 /// How long [`Node::shutdown`] gives a session to tell its peer it is closing.
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
-/// Returns a copy of `err` for one of several callers waiting on one dial.
-fn share(err: &Error) -> Error {
-    match err {
-        Error::Connect { source, .. } => e!(Error::Connect {
-            source: source.clone()
-        }),
-        Error::UnsupportedAlpn { alpn, .. } => e!(Error::UnsupportedAlpn { alpn: alpn.clone() }),
-        Error::Moq { source, .. } => e!(Error::Moq {
-            source: source.clone()
-        }),
-        Error::Refused { source, .. } => e!(Error::Refused {
-            source: source.clone()
-        }),
-        Error::ShutDown { .. } => e!(Error::ShutDown),
-        other => e!(Error::Connect {
-            source: Arc::new(AnyError::from_display(other))
-        }),
-    }
-}
-
 /// What the node asks of its actor.
 pub(crate) enum ActorMessage {
     Connect {
@@ -118,8 +98,10 @@ impl Actor {
                         Err(err) => {
                             let id = err.id();
                             error!(%err, "dial task failed");
-                            let failure = e!(Error::Connect {
-                                source: Arc::new(AnyError::from_display(&err))
+                            let failure = e!(Error::Transport {
+                                source: e!(moq_transport_iroh::Error::Connect {
+                                    source: Arc::new(AnyError::from_display(&err))
+                                })
                             });
                             self.dialed(id, Err(failure));
                         }
@@ -245,7 +227,7 @@ impl Actor {
             Err(err) => {
                 info!(remote = %remote.fmt_short(), %err, "dial failed");
                 for reply in self.pending.remove(&remote).into_iter().flatten() {
-                    reply.send(Err(share(&err))).ok();
+                    reply.send(Err(err.clone())).ok();
                 }
             }
         }

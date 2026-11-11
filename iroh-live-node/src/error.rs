@@ -8,20 +8,21 @@ use n0_error::{AnyError, stack_error};
 
 /// An error from a [`Node`](crate::Node) or one of its handles.
 ///
-/// moq-net's errors stay typed, and the rest carry an [`AnyError`].
+/// moq-net's and the transport's errors stay typed, and the rest carry an
+/// [`AnyError`]. The error is cheap to clone, so the callers waiting on one
+/// dial each get the same failure.
 #[stack_error(derive, add_meta)]
+#[derive(Clone)]
 pub enum Error {
-    /// The peer could not be dialed.
+    /// The QUIC connection could not be set up.
     ///
-    /// The source is shared between the callers waiting on one dial.
-    #[error("failed to connect to the peer")]
-    Connect {
+    /// The peer could not be dialed, or it negotiated an ALPN this build does
+    /// not speak.
+    #[error("the transport failed")]
+    Transport {
         #[error(source, std_err)]
-        source: Arc<AnyError>,
+        source: moq_transport_iroh::Error,
     },
-    /// The peer negotiated an ALPN this build does not speak.
-    #[error("the peer negotiated an ALPN this build does not speak: {alpn}")]
-    UnsupportedAlpn { alpn: String },
     /// moq-net refused an operation.
     ///
     /// The MoQ handshake or the session failed, a path did not parse, or the
@@ -37,7 +38,7 @@ pub enum Error {
     #[error("failed to fill the broadcast")]
     Fill {
         #[error(source, std_err)]
-        source: AnyError,
+        source: Arc<AnyError>,
     },
     /// The peer refused the session this node opened.
     #[error("the peer refused the session")]
@@ -102,7 +103,7 @@ pub enum Error {
     #[error("the relay link failed")]
     Relay {
         #[error(source, std_err)]
-        source: AnyError,
+        source: Arc<AnyError>,
     },
     /// A string is not a [`BroadcastTicket`](crate::BroadcastTicket).
     #[error("invalid broadcast ticket: {reason}")]
@@ -113,15 +114,8 @@ pub enum Error {
 }
 
 impl From<moq_transport_iroh::Error> for Error {
-    fn from(err: moq_transport_iroh::Error) -> Self {
-        match err {
-            moq_transport_iroh::Error::Connect { source, .. } => {
-                n0_error::e!(Self::Connect { source })
-            }
-            moq_transport_iroh::Error::UnsupportedAlpn { alpn, .. } => {
-                n0_error::e!(Self::UnsupportedAlpn { alpn })
-            }
-        }
+    fn from(source: moq_transport_iroh::Error) -> Self {
+        n0_error::e!(Self::Transport { source })
     }
 }
 

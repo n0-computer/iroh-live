@@ -293,7 +293,7 @@ where
         Err(err) => {
             publication.broadcast().close();
             Err(e!(Error::Fill {
-                source: AnyError::from_std_box(err.into())
+                source: Arc::new(AnyError::from_std_box(err.into()))
             }))
         }
     }

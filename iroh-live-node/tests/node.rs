@@ -496,7 +496,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     assert!(
         matches!(
             err,
-            Error::NotAnnounced { .. } | Error::Refused { .. } | Error::Connect { .. }
+            Error::NotAnnounced { .. } | Error::Refused { .. } | Error::Transport { .. }
         ),
         "{err:#}"
     );

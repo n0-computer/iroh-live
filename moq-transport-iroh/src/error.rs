@@ -11,6 +11,7 @@ use n0_error::{AnyError, stack_error};
 
 /// An error from dialing or accepting a MoQ connection.
 #[stack_error(derive, add_meta)]
+#[derive(Clone)]
 pub enum Error {
     /// The peer could not be dialed, or the handshake failed.
     ///

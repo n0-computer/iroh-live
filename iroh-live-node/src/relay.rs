@@ -347,14 +347,14 @@ fn iroh_relay(url: &Url) -> Result<Option<EndpointId>, Error> {
             .map(Some)
             .ok_or_else(|| {
                 e!(Error::Relay {
-                    source: AnyError::from_string(format!("{url} names no endpoint id")),
+                    source: Arc::new(AnyError::from_string(format!("{url} names no endpoint id"))),
                 })
             }),
         "https" | "http" | "moqt" | "moql" => Ok(None),
         scheme => Err(e!(Error::Relay {
-            source: AnyError::from_string(format!(
+            source: Arc::new(AnyError::from_string(format!(
                 "unsupported relay URL scheme {scheme:?}, use iroh:// or https://"
-            )),
+            ))),
         })),
     }
 }
@@ -378,7 +378,7 @@ fn uplink(
         .init()
         .map_err(|err| {
             e!(Error::Relay {
-                source: AnyError::from_std(err)
+                source: Arc::new(AnyError::from_std(err))
             })
         })?
         .with_publisher(served(&shared.table))

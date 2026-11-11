@@ -164,7 +164,8 @@ speaks. `moq_transport_iroh::alpns()` returns all of `moq_net::ALPNS`, newest
 first. Mount the node under all of them. A dial offers only the newest: iroh's
 `Router` sorts the ALPNs it accepts and TLS picks the server's first match, so
 a dial that offered the older ones too would settle on moq-lite-03. An ALPN this build does not speak fails with
-`Error::UnsupportedAlpn`.
+`moq_transport_iroh::Error::UnsupportedAlpn`, which the node wraps as
+`Error::Transport`.
 
 MoQ runs on raw QUIC. Raw QUIC has no request URI, so the request path and the
 token travel in the MoQ SETUP. The dialing node sets the token with moq-net's
