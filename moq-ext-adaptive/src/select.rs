@@ -99,9 +99,10 @@ impl Backoffs {
 
 /// Picks the rendition to play, and why a pin could not be honoured.
 ///
-/// `rungs` is the ladder, most expensive first. `current` is the rendition
-/// last asked for and `on_screen` the one playing. `sample` is the link, if
-/// the transport measures one. Without it the best allowed rendition plays.
+/// `rungs` is the ladder, most expensive first, and `constraints` rules
+/// renditions out. `current` is the rendition last asked for and `on_screen`
+/// the one playing. `sample` is the link, if the transport measures one.
+/// Without it the best allowed rendition plays.
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
@@ -110,7 +111,7 @@ impl Backoffs {
 pub fn choose(
     mode: &RenditionMode,
     rungs: &[Rung],
-    excluded: &BTreeSet<String>,
+    constraints: &Constraints,
     current: Option<&str>,
     on_screen: Option<&str>,
     sample: Option<&NetworkSample>,
@@ -125,7 +126,7 @@ pub fn choose(
             };
         }
         RenditionMode::Pinned(name) => {
-            if excluded.contains(name) {
+            if constraints.excluded.contains(name) {
                 Some(PinProblem::Excluded(name.clone()))
             } else if !rungs.iter().any(|rung| rung.name == *name) {
                 Some(PinProblem::Unknown(name.clone()))
@@ -138,13 +139,10 @@ pub fn choose(
         }
         RenditionMode::Auto => None,
     };
-    let constraints = Constraints {
-        excluded: excluded.clone(),
-    };
     let rendition = match sample {
-        Some(sample) => bound.decide(rungs, current, on_screen, &constraints, sample, now),
+        Some(sample) => bound.decide(rungs, current, on_screen, constraints, sample, now),
         // Nothing to adapt to: the best rendition allowed plays.
-        None => best(rungs, &constraints),
+        None => best(rungs, constraints),
     };
     Choice { rendition, pin }
 }
@@ -198,12 +196,14 @@ mod tests {
     }
 
     fn pick(mode: &RenditionMode, excluded: &[&str]) -> Choice {
-        let excluded = excluded.iter().map(|name| name.to_string()).collect();
+        let constraints = Constraints {
+            excluded: excluded.iter().map(|name| name.to_string()).collect(),
+        };
         let mut bound = Bound::new(Adaptation::default());
         choose(
             mode,
             &ladder(),
-            &excluded,
+            &constraints,
             None,
             None,
             None,

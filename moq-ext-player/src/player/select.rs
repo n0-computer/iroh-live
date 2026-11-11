@@ -6,7 +6,9 @@
 
 use std::{sync::Arc, time::Duration};
 
-use moq_ext_adaptive::{Adaptation, Backoffs, Bound, PinProblem, RenditionMode, Target};
+use moq_ext_adaptive::{
+    Adaptation, Backoffs, Bound, Constraints, PinProblem, RenditionMode, Target,
+};
 use moq_ext_media_core::{Error, SlotState, send_if_changed};
 use moq_net::track::Delay;
 use tokio::{
@@ -345,7 +347,9 @@ impl Selector {
         let chosen = moq_ext_adaptive::choose(
             &mode,
             &rungs,
-            &self.backoffs.excluded(std_now),
+            &Constraints {
+                excluded: self.backoffs.excluded(std_now),
+            },
             current.as_deref(),
             on_screen.as_deref(),
             sample.as_ref(),
