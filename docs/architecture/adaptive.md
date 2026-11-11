@@ -72,8 +72,7 @@ the same size by the higher advertised bitrate. The selector walks that list
 from the top, and the first rendition that passes every check wins.
 
 The caller's constraints rule renditions out before any network reading
-counts: a `max_height` from `RenditionMode::Auto` (a grid tile has no use for
-1080p), a `stalled` flag the publisher set in the catalog, and any rendition
+counts: a `stalled` flag the publisher set in the catalog, and any rendition
 whose decoder failed in the last 10 seconds. When every rendition is ruled out,
 the smallest still plays.
 
@@ -167,8 +166,8 @@ that holds because it has nothing to judge against.
 
 ## Choosing by hand
 
-`Player::set_rendition` takes a `RenditionMode`. `Auto { max_height }` is the
-selector described here. `Pinned(name)` holds one rendition. If it cannot be
+`Player::set_rendition` takes a `RenditionMode`. `Auto` is the selector
+described here. `Pinned(name)` holds one rendition. If it cannot be
 played, because it is not in the catalog or its decoder failed, the player
 plays as `Auto` would, says why in `PlayerStatus::switch_error`, and returns to
 the pinned rendition when it becomes available. `Off` unsubscribes video while

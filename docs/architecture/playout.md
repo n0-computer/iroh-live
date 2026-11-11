@@ -59,7 +59,7 @@ The whole `Latency` becomes the moq subscription's `Delay` on
 the publisher see the range too. Upstream skips media older than `max` to
 return to the live edge. The default is 150 ms. Raise it when continuity through congestion
 matters more than staying live, and lower it to skip stalls instead of playing
-them out. `play` and `set_latency` refuse a `min` above `max`, since a skip
+them out. `play` refuses a `min` above `max`, since a skip
 threshold below the hold would drop the frames the hold waits for.
 
 A `min` of zero turns pacing off, and frames go to the renderer as they decode.
@@ -86,10 +86,9 @@ platform's hardware decoders and falls back to software. A named backend is the
 only one tried, so a machine without it fails to open instead of falling back.
 That helps tell a driver problem from a stream problem.
 
-A changed `max` or decoder applies to a running player without a gap:
-`set_latency` and `set_decoder` build a replacement video decoder behind the
-picture, which takes over once it has caught up. An audio track keeps its `max`
-until it next reopens.
+A changed decoder applies to a running player without a gap: `set_decoder`
+builds a replacement video decoder behind the picture, which takes over once it
+has caught up.
 
 ## Timing metrics
 

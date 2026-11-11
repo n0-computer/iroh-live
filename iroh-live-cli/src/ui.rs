@@ -466,7 +466,7 @@ impl RemoteView {
         egui::ComboBox::from_id_salt(format!("{id}-rendition"))
             .selected_text(label)
             .show_ui(ui, |ui| {
-                let auto = matches!(status.mode, RenditionMode::Auto { .. });
+                let auto = matches!(status.mode, RenditionMode::Auto);
                 if ui.selectable_label(auto, "Auto").clicked() {
                     chosen = Some(RenditionMode::auto());
                 }

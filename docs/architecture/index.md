@@ -26,7 +26,7 @@ No `moq-ext-*` crate depends on iroh, so each could move upstream into moq.
 That includes the UI crate `moq-ext-egui`. `moq-ext-player` and `moq-ext-publisher` do not
 depend on each other. A transport publishes a `LocalBroadcast` by reading it
 through `moq_net::Consume`, and builds a `RemoteBroadcast` from a route table
-with `from_origin` or `from_resolved`.
+with `from_resolved`.
 `iroh-live-rooms` has no media dependency. `iroh-live` depends on both and is
 the only crate that joins them.
 

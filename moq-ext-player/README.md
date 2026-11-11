@@ -8,7 +8,7 @@ blank picture, and keeps audio and video in step.
 
 It does not depend on iroh or on a publisher. A transport builds a
 `RemoteBroadcast` from a `moq_net::broadcast::Consumer` (`from_consumer`) or from
-a route table (`from_origin`, `from_resolved`), and attaches its view of the
+a route table (`from_resolved`), and attaches its view of the
 link with `set_network`. A broadcast announced before its catalog track exists
 is read once the catalog appears.
 

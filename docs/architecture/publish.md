@@ -66,8 +66,7 @@ publishes one rendition and `VideoEncoding::ladder` several. A
 `bitrate` and `rate`, a `keyframe_interval` (two seconds by default), a
 `codec` and an `encoder` backend. `VideoRendition::new(name)` encodes at the
 source's size.
-`p180`, `p360`, `p720` and `p1080` are 16:9 presets at 150 kbit/s,
-500 kbit/s, 1.8 Mbit/s and 4 Mbit/s.
+`p360` and `p720` are 16:9 presets at 500 kbit/s and 1.8 Mbit/s.
 
 `set_video` fails at once for an empty ladder, an empty or duplicate name, an
 odd or zero size, a rate above the source's, a zero keyframe interval, or H.265

@@ -105,30 +105,12 @@ impl RemoteBroadcast {
         Self::spawn(Origin::Consumer, Some(broadcast), span)
     }
 
-    /// Follows `path` in a route table.
-    ///
-    /// When a change of route ends the broadcast, it is requested again through
-    /// the next route, and players see a switch instead of an end. The
-    /// broadcast closes once no route serves the path, as
-    /// [`closed`](Self::closed) explains.
-    ///
-    /// The first request waits without limit, since the publisher may not have
-    /// announced the path yet. If you already resolved the path, use
-    /// [`from_resolved`](Self::from_resolved).
-    ///
-    /// # Panics
-    ///
-    /// Panics when called outside a Tokio runtime.
-    #[must_use]
-    pub fn from_origin(origin: moq_net::origin::Consumer, path: moq_net::Path) -> Self {
-        Self::routed_to(origin, path, None)
-    }
-
     /// Follows `path` in a route table, starting from a resolved `broadcast`.
     ///
-    /// Works like [`from_origin`](Self::from_origin), except that nothing
-    /// waits for a first route. Every later request is a failover with a time
-    /// limit, so a publisher that is already gone closes the broadcast. This is
+    /// When a change of route ends the broadcast, it is requested again through
+    /// the next route, and players see a switch instead of an end. Every such
+    /// request is a failover with a time limit, so a publisher that is already
+    /// gone closes the broadcast, as [`closed`](Self::closed) explains. This is
     /// what `iroh-live` uses on subscribe, after resolving the path.
     ///
     /// # Panics
@@ -144,6 +126,8 @@ impl RemoteBroadcast {
     }
 
     /// Follows `path` in a route table, from `first` if given.
+    ///
+    /// Without `first`, the first request waits without limit.
     fn routed_to(
         origin: moq_net::origin::Consumer,
         path: moq_net::Path,
@@ -220,15 +204,6 @@ impl RemoteBroadcast {
         Player::start(self.clone(), config)
     }
 
-    /// Returns the broadcast consumer players read right now.
-    ///
-    /// It is `None` while a broadcast that follows a route table waits for a
-    /// route, and once the broadcast has closed. A change of route replaces it,
-    /// so ask again rather than keeping it.
-    pub fn consumer(&self) -> Option<moq_net::broadcast::Consumer> {
-        self.shared.epoch.borrow().consumer.clone()
-    }
-
     /// Starts recording the broadcast into `out`, remuxed without decoding.
     ///
     /// The recording starts once the broadcast has a route and a catalog.
@@ -250,7 +225,6 @@ impl RemoteBroadcast {
     ///
     /// A broadcast read with [`from_consumer`](Self::from_consumer) closes when
     /// its consumer does. One that follows a route table, from
-    /// [`from_origin`](Self::from_origin) or
     /// [`from_resolved`](Self::from_resolved), cannot tell a publisher that
     /// left from a change of route. It asks the table again and closes once no
     /// route has answered for three seconds. So a hang-up shows here about
@@ -587,9 +561,10 @@ mod tests {
                 RouteOptions::default().with_instance(Instance::random(), 1),
             )
             .expect("published");
-        let remote = RemoteBroadcast::from_origin(
+        let remote = RemoteBroadcast::routed_to(
             origin.consume(),
             moq_net::Path::new("live/cam").expect("a valid path"),
+            None,
         );
         let mut epoch = remote.epoch();
         let seen = tokio::time::timeout(
@@ -625,9 +600,10 @@ mod tests {
         let first = origin
             .route("live/cam", RouteOptions::default())
             .expect("published");
-        let remote = RemoteBroadcast::from_origin(
+        let remote = RemoteBroadcast::routed_to(
             origin.consume(),
             moq_net::Path::new("live/cam").expect("a valid path"),
+            None,
         );
         let mut epoch = remote.epoch();
         let seen = tokio::time::timeout(

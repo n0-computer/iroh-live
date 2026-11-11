@@ -136,12 +136,6 @@ impl VideoRendition {
         }
     }
 
-    /// Returns `180p`: 320x180 at 150 kbit/s.
-    #[must_use]
-    pub fn p180() -> Self {
-        Self::preset("180p", 320, 180, 150)
-    }
-
     /// Returns `360p`: 640x360 at 500 kbit/s.
     #[must_use]
     pub fn p360() -> Self {
@@ -152,12 +146,6 @@ impl VideoRendition {
     #[must_use]
     pub fn p720() -> Self {
         Self::preset("720p", 1280, 720, 1_800)
-    }
-
-    /// Returns `1080p`: 1920x1080 at 4 Mbit/s.
-    #[must_use]
-    pub fn p1080() -> Self {
-        Self::preset("1080p", 1920, 1080, 4_000)
     }
 
     /// Creates a 16:9 preset with a bitrate chosen for 30 fps camera content.

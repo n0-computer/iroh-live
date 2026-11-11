@@ -24,8 +24,7 @@ read-and-decode time, frames shown and access units skipped. It has an
 `AudioPlaybackStats` while audio plays: the rendition, the audio queued ahead
 of the speaker, the latest peak and the frame count. It also has the playout
 latency and the last `NetworkSample`, if the broadcast has network signals.
-The decoder backend is in `PlayerStatus`. A `From` maps `PlaybackStats` onto
-the `hang::echo::Rendition` entries of viewer feedback.
+The decoder backend is in `PlayerStatus`.
 
 Every figure has one writer. Each rendition's encoder writes its own entry, the
 task that reads the source writes the source frame rate, and the player's video

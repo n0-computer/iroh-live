@@ -10,7 +10,7 @@
 //! by the count.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     time::{Duration, Instant},
 };
 
@@ -93,34 +93,6 @@ pub struct AudioPlaybackStats {
     pub frames: u64,
 }
 
-impl From<&PlaybackStats> for BTreeMap<String, hang::echo::Rendition> {
-    /// Returns the viewer feedback of each rendition playing, keyed by rendition.
-    ///
-    /// This is the `renditions` part of a [`hang::echo::Snapshot`]. Frames
-    /// played count as received and decoded, skipped access units count as
-    /// errors, and every entry carries the playout latency. The player keeps no
-    /// byte counter, so `bytes` stays zero.
-    fn from(stats: &PlaybackStats) -> Self {
-        let entry = |rendition: &str, frames: u64, errors: u64| {
-            let mut feedback = hang::echo::Rendition::default();
-            feedback.frames = frames;
-            feedback.decoded = frames;
-            feedback.errors = errors;
-            feedback.latency = Some(stats.latency);
-            (rendition.to_string(), feedback)
-        };
-        let video = stats
-            .video
-            .as_ref()
-            .map(|video| entry(&video.rendition, video.frames, video.skipped));
-        let audio = stats
-            .audio
-            .as_ref()
-            .map(|audio| entry(&audio.rendition, audio.frames, 0));
-        video.into_iter().chain(audio).collect()
-    }
-}
-
 /// Which medium a [`FrameTiming`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
@@ -192,31 +164,6 @@ mod tests {
     use super::*;
 
     /// Each medium playing becomes one feedback entry under its rendition.
-    #[test]
-    fn playback_maps_onto_viewer_feedback() {
-        let stats = PlaybackStats {
-            video: Some(VideoPlaybackStats {
-                rendition: "high".to_string(),
-                frames: 30,
-                skipped: 2,
-                ..Default::default()
-            }),
-            audio: Some(AudioPlaybackStats {
-                rendition: "voice".to_string(),
-                frames: 50,
-                ..Default::default()
-            }),
-            latency: Duration::from_millis(150),
-            network: None,
-        };
-        let feedback = BTreeMap::<String, hang::echo::Rendition>::from(&stats);
-        assert_eq!(feedback.len(), 2);
-        assert_eq!(feedback["high"].decoded, 30);
-        assert_eq!(feedback["high"].errors, 2);
-        assert_eq!(feedback["voice"].frames, 50);
-        assert_eq!(feedback["voice"].latency, Some(Duration::from_millis(150)));
-    }
-
     /// The summary names what it knows and marks the rest.
     #[test]
     fn the_summary_marks_figures_not_known_yet() {

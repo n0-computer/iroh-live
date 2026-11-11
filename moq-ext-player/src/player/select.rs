@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::{debug, info, trace};
 
-use super::{Controls, Latency, PlayerStatus};
+use super::{Controls, PlayerStatus};
 use crate::RemoteBroadcast;
 
 /// How long a rendition whose decoder failed is left alone.
@@ -140,7 +140,6 @@ pub(crate) async fn run(inputs: Inputs) {
         record_arrivals,
     } = inputs;
     let mut mode = controls.mode.subscribe();
-    let mut latency = controls.latency.subscribe();
     let mut decoder = controls.decoder.subscribe();
     let mut catalog = broadcast.catalog();
     let mut epoch = broadcast.epoch();
@@ -172,7 +171,7 @@ pub(crate) async fn run(inputs: Inputs) {
     // nothing else would.
     let mut first = true;
     loop {
-        let auto = matches!(*mode.borrow(), Mode::Auto { .. });
+        let auto = matches!(*mode.borrow(), Mode::Auto);
         let ticking = (auto && network.is_some())
             || backoffs.any_excluded(Instant::now().into_std())
             || vanished_since.is_some();
@@ -185,7 +184,6 @@ pub(crate) async fn run(inputs: Inputs) {
                     return;
                 }
                 changed = mode.changed() => if changed.is_err() { return },
-                changed = latency.changed() => if changed.is_err() { return },
                 changed = decoder.changed() => if changed.is_err() { return },
                 changed = playing.changed() => {
                     if changed.is_err() {
@@ -264,7 +262,7 @@ pub(crate) async fn run(inputs: Inputs) {
             continue;
         };
 
-        let latency: Latency = *latency.borrow();
+        let latency = controls.latency;
         // The ladder's largest jitter, so a switch never moves the schedule.
         let jitter = catalog
             .video
@@ -413,6 +411,7 @@ fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::Latency;
 
     /// A running selector and what drives it.
     struct Running {
@@ -449,7 +448,7 @@ mod tests {
             broadcast: RemoteBroadcast::from_consumer(broadcast.consume()),
             controls: Arc::new(Controls {
                 mode: watch::Sender::new(Mode::auto()),
-                latency: watch::Sender::new(Latency::default()),
+                latency: Latency::default(),
                 decoder: watch::Sender::new(moq_video::decode::Kind::Software),
                 volume: watch::Sender::new(1.0),
             }),

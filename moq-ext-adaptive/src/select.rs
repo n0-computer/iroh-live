@@ -17,13 +17,10 @@ use crate::{
 /// How the rendition is chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
-    /// Follows the link, never above `max_height` rows when set (a grid tile).
+    /// Follows the link.
     ///
     /// Without network signals, holds the best rendition that fits.
-    Auto {
-        /// The tallest rendition allowed.
-        max_height: Option<u32>,
-    },
+    Auto,
     /// Holds the named rendition.
     ///
     /// If it cannot be played, plays as [`Auto`](Self::Auto) would, reports
@@ -34,23 +31,16 @@ pub enum Mode {
 }
 
 impl Default for Mode {
-    /// Automatic selection with no height limit.
+    /// Automatic selection.
     fn default() -> Self {
-        Self::auto()
+        Self::Auto
     }
 }
 
 impl Mode {
-    /// Returns automatic selection with no height limit.
+    /// Returns automatic selection.
     pub const fn auto() -> Self {
-        Self::Auto { max_height: None }
-    }
-
-    /// Returns automatic selection that never goes above `max_height`.
-    pub const fn auto_below(max_height: u32) -> Self {
-        Self::Auto {
-            max_height: Some(max_height),
-        }
+        Self::Auto
     }
 
     /// Returns a mode holding the rendition `name`.
@@ -137,7 +127,7 @@ pub fn choose(
     bound: &mut Bound,
     now: Instant,
 ) -> Choice {
-    let (max_height, pin) = match mode {
+    let pin = match mode {
         Mode::Off => {
             return Choice {
                 rendition: None,
@@ -146,9 +136,9 @@ pub fn choose(
         }
         Mode::Pinned(name) => {
             if excluded.contains(name) {
-                (None, Some(PinProblem::Excluded(name.clone())))
+                Some(PinProblem::Excluded(name.clone()))
             } else if !rungs.iter().any(|rung| rung.name == *name) {
-                (None, Some(PinProblem::Unknown(name.clone())))
+                Some(PinProblem::Unknown(name.clone()))
             } else {
                 return Choice {
                     rendition: Some(name.clone()),
@@ -156,10 +146,9 @@ pub fn choose(
                 };
             }
         }
-        Mode::Auto { max_height } => (*max_height, None),
+        Mode::Auto => None,
     };
     let constraints = Constraints {
-        max_height,
         excluded: excluded.clone(),
     };
     let rendition = match sample {
@@ -194,7 +183,7 @@ pub fn step_down(
     on_screen: Option<&str>,
 ) -> bool {
     let rank = |name: &str| rungs.iter().position(|rung| rung.name == name);
-    matches!(mode, Mode::Auto { .. })
+    matches!(mode, Mode::Auto)
         && match (choice, on_screen) {
             (Some(choice), Some(playing)) => rank(choice) > rank(playing),
             _ => false,
@@ -206,17 +195,16 @@ mod tests {
     use super::*;
     use crate::Adaptation;
 
-    fn rung(name: &str, height: u32, bitrate: u64) -> Rung {
+    fn rung(name: &str, bitrate: u64) -> Rung {
         Rung {
             name: name.into(),
             bitrate: Some(bitrate),
-            height: Some(height),
             stalled: false,
         }
     }
 
     fn ladder() -> Vec<Rung> {
-        vec![rung("1080p", 1080, 4_000_000), rung("360p", 360, 500_000)]
+        vec![rung("1080p", 4_000_000), rung("360p", 500_000)]
     }
 
     fn pick(mode: &Mode, excluded: &[&str]) -> Choice {
@@ -237,12 +225,6 @@ mod tests {
     #[test]
     fn auto_without_signals_plays_the_best() {
         assert_eq!(pick(&Mode::auto(), &[]).rendition.as_deref(), Some("1080p"));
-    }
-
-    #[test]
-    fn auto_respects_the_height_limit() {
-        let mode = Mode::auto_below(720);
-        assert_eq!(pick(&mode, &[]).rendition.as_deref(), Some("360p"));
     }
 
     #[test]

@@ -162,7 +162,7 @@ async fn a_watched_rendition_counts_its_frames() {
     broadcast
         .set_video(
             source,
-            crate::VideoEncoding::single(crate::VideoRendition::p180()),
+            crate::VideoEncoding::single(crate::VideoRendition::new("180p")),
         )
         .expect("a valid encoding");
     let name = tokio::time::timeout(TIMEOUT, async {

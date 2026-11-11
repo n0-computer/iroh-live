@@ -16,15 +16,13 @@ watches an `Option<Arc<Catalog>>` that reads `None` until the first catalog
 arrives.
 A background task follows the catalog track and publishes each update.
 
-`RemoteBroadcast::from_origin(origin, path)` follows a path in a route table.
-When a change of route ends the broadcast, it is requested again through the
-next route, and players see a new generation of the broadcast instead of an
+`RemoteBroadcast::from_resolved(origin, path, consumer)` follows a path in a
+route table, starting from a consumer the caller already resolved in that
+table. When a change of route ends the broadcast, it is requested again through
+the next route, and players see a new generation of the broadcast instead of an
 end. The broadcast closes once no route has served the path for three seconds
 (`REROUTE_PATIENCE`), so `closed()` resolves about three seconds after a
-publisher ends its broadcast. `RemoteBroadcast::from_resolved(origin, path,
-consumer)` does the same, starting from a consumer the caller already resolved
-in that table. Nothing waits for a first route, and a publisher that is already
-gone closes the broadcast. `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
+publisher ends its broadcast, and a publisher that is already gone closes it. `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
 `LocalBroadcast` in-process, without a transport.
 
 `Catalog` is hang's catalog, re-exported. Its `video.ranked()` lists the video
@@ -141,11 +139,8 @@ decode options, where upstream drops stale groups. The default holds for
 100 ms and skips past 150 ms. `decoder` becomes the video decode options'
 `kind`.
 
-`Player::set_latency` changes the hold at once. A changed `max` rebuilds the
-video decoder behind the picture, and the new one takes over once it has
-caught up, as in a switch. An audio track keeps its `max` until it next
-reopens. `Player::set_decoder` also opens the new backend behind the picture. A
-backend that fails to open leaves the incumbent playing and says why in
+`Player::set_decoder` opens the new backend behind the picture, and it takes
+over once it has caught up, as in a switch. A backend that fails to open leaves the incumbent playing and says why in
 `PlayerStatus::switch_error`.
 
 See [playout and sync](playout.md) for what the clock does with `min`.

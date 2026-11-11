@@ -40,7 +40,6 @@ pub(crate) fn rungs(catalog: &Catalog) -> Vec<Rung> {
         .map(|(name, config)| Rung {
             name: name.clone(),
             bitrate: config.bitrate,
-            height: config.coded_height,
             stalled: !config.enabled,
         })
         .collect()

@@ -468,7 +468,7 @@ fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -
 
 /// A player keeps playing when its route goes and another serves the path.
 ///
-/// The transport ends a broadcast when its session closes, so `from_origin`
+/// The transport ends a broadcast when its session closes, so `from_resolved`
 /// asks for the path again. The player takes the new broadcast as a switch and
 /// never reports the video ended.
 #[tokio::test]
@@ -480,10 +480,16 @@ async fn a_player_keeps_playing_when_its_route_goes() {
     let direct_route = serve(&origin, 1, moq_video::Size::new(320, 180));
     let relayed_route = serve(&origin, 10, moq_video::Size::new(640, 360));
 
-    let remote = RemoteBroadcast::from_origin(
-        origin.consume(),
-        moq_net::Path::new("live/cam").expect("a valid path"),
-    );
+    let path = moq_net::Path::new("live/cam").expect("a valid path");
+    let first = origin
+        .consume()
+        .follow(path.clone(), None)
+        .expect("the path can be followed")
+        .available()
+        .await
+        .expect("the path resolves")
+        .expect("a route serves the path");
+    let remote = RemoteBroadcast::from_resolved(origin.consume(), path, first);
     let player = remote.play(PlayerConfig::default()).expect("valid");
     let mut frames = player.video();
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;

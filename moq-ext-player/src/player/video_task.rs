@@ -513,8 +513,7 @@ async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
 
 /// Starts pacing one frame against the playout clock.
 ///
-/// Counts the frame in `shown`. Reads the latency mode on every frame, so a
-/// change takes effect at once.
+/// Counts the frame in `shown`.
 fn pace(
     Decoded { frame, arrivals }: Decoded,
     shown: &mut RateMeter,
@@ -533,7 +532,7 @@ fn pace(
             video.fps = Some(fps.round() as u32);
         }
     });
-    let paced = controls.latency.borrow().paced();
+    let paced = controls.latency.paced();
     let due = if paced {
         clock.received(timestamp);
         let clock = clock.clone();

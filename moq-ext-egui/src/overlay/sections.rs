@@ -117,10 +117,7 @@ pub(super) fn slot_line(name: &str, state: &SlotState) -> Line {
 /// Describes a rendition mode in a few words.
 pub(super) fn mode_text(mode: &RenditionMode) -> String {
     match mode {
-        RenditionMode::Auto { max_height: None } => "auto".to_string(),
-        RenditionMode::Auto {
-            max_height: Some(height),
-        } => format!("auto, up to {height}p"),
+        RenditionMode::Auto => "auto".to_string(),
         RenditionMode::Pinned(name) => format!("pinned to {name}"),
         RenditionMode::Off => "off".to_string(),
     }

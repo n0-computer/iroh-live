@@ -220,7 +220,7 @@ pub(crate) struct PlaybackRecorder {
 #[derive(Debug)]
 pub(crate) struct Controls {
     pub(crate) mode: watch::Sender<RenditionMode>,
-    pub(crate) latency: watch::Sender<Latency>,
+    pub(crate) latency: Latency,
     pub(crate) decoder: watch::Sender<moq_video::decode::Kind>,
     pub(crate) volume: watch::Sender<f32>,
 }
@@ -269,7 +269,7 @@ impl Player {
         });
         let controls = Arc::new(Controls {
             mode: watch::Sender::new(config.rendition.clone()),
-            latency: watch::Sender::new(config.latency),
+            latency: config.latency,
             decoder: watch::Sender::new(config.decoder.clone()),
             volume: watch::Sender::new(1.0),
         });
@@ -398,23 +398,6 @@ impl Player {
     pub fn set_rendition(&self, mode: RenditionMode) {
         send_if_changed(&self.status, |status| status.mode = mode.clone());
         self.controls.mode.send_replace(mode);
-    }
-
-    /// Changes how far behind live the player runs.
-    ///
-    /// A new playout delay starts a new playout clock, so the schedule jumps
-    /// once. The video decoder is rebuilt behind the picture, so the
-    /// subscription asks for the new range, and the new decoder takes over
-    /// once it has caught up. Audio keeps its old range until it next opens,
-    /// because a rebuild would be audible.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `latency.min` is above `latency.max`.
-    pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
-        latency.validate()?;
-        self.controls.latency.send_replace(latency);
-        Ok(())
     }
 
     /// Changes the video decoder backend.

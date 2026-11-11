@@ -7,8 +7,8 @@
 //!   estimate covers [`Adaptation::fit_ratio`] of its advertised bitrate.
 //! - Sustained loss lowers a ceiling one rung at a time, and emergency loss
 //!   drops it to the bottom. A clean stretch raises it one rung at a time.
-//! - The caller's constraints exclude the rest: a height limit, a catalog
-//!   `stalled` flag, and renditions whose decoders failed.
+//! - The caller's constraints exclude the rest: a catalog `stalled` flag and
+//!   renditions whose decoders failed.
 //! - When nothing fits, the smallest eligible rendition plays.
 //!
 //! Time enters only as hysteresis around that answer. A lower target has to
@@ -38,8 +38,6 @@ pub struct Rung {
     pub name: String,
     /// The advertised bitrate in bits per second, if the catalog gives one.
     pub bitrate: Option<u64>,
-    /// The coded height, if the catalog gives one.
-    pub height: Option<u32>,
     /// Whether the publisher flagged the rendition to be avoided.
     pub stalled: bool,
 }
@@ -47,22 +45,15 @@ pub struct Rung {
 /// What the caller rules out, whatever the network says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Constraints {
-    /// No rendition taller than this, if set.
-    pub max_height: Option<u32>,
     /// Renditions whose decoders recently failed.
     pub excluded: BTreeSet<String>,
 }
 
 impl Constraints {
-    /// Reports whether `rung` is not stalled, not excluded and not too tall.
+    /// Reports whether `rung` is neither stalled nor excluded.
     #[must_use]
     pub fn allows(&self, rung: &Rung) -> bool {
-        !rung.stalled
-            && !self.excluded.contains(&rung.name)
-            && match (self.max_height, rung.height) {
-                (Some(max), Some(height)) => height <= max,
-                _ => true,
-            }
+        !rung.stalled && !self.excluded.contains(&rung.name)
     }
 }
 
@@ -403,20 +394,19 @@ impl Bound {
 mod tests {
     use super::*;
 
-    fn rung(name: &str, bitrate: u64, height: u32) -> Rung {
+    fn rung(name: &str, bitrate: u64) -> Rung {
         Rung {
             name: name.into(),
             bitrate: Some(bitrate),
-            height: Some(height),
             stalled: false,
         }
     }
 
     fn ladder() -> Vec<Rung> {
         vec![
-            rung("1080p", 4_000_000, 1080),
-            rung("720p", 2_000_000, 720),
-            rung("360p", 500_000, 360),
+            rung("1080p", 4_000_000),
+            rung("720p", 2_000_000),
+            rung("360p", 500_000),
         ]
     }
 
@@ -506,7 +496,7 @@ mod tests {
     /// An estimate that wanders just above the top rung's fit threshold steps up.
     #[test]
     fn an_application_limited_estimate_still_climbs_back() {
-        let ranked = vec![rung("high", 800_000, 480), rung("low", 200_000, 240)];
+        let ranked = vec![rung("high", 800_000), rung("low", 200_000)];
         let mut bound = Bound::default();
         let mut playing = "low".to_string();
         let mut now = Instant::now();
@@ -601,16 +591,6 @@ mod tests {
         assert_eq!(playing, "1080p");
     }
 
-    #[test]
-    fn the_height_limit_caps_the_choice() {
-        let constraints = Constraints {
-            max_height: Some(720),
-            ..Constraints::default()
-        };
-        let chosen = first(&mut Bound::default(), &constraints, &estimate(100_000_000));
-        assert_eq!(chosen.as_deref(), Some("720p"));
-    }
-
     /// A rendition ruled out while it plays is left at once, without a hold.
     #[test]
     fn an_excluded_rendition_is_left_at_once() {
@@ -647,8 +627,7 @@ mod tests {
     #[test]
     fn with_everything_ruled_out_the_smallest_still_plays() {
         let constraints = Constraints {
-            max_height: Some(100),
-            ..Constraints::default()
+            excluded: ladder().into_iter().map(|rung| rung.name).collect(),
         };
         let chosen = first(&mut Bound::default(), &constraints, &estimate(100_000_000));
         assert_eq!(chosen.as_deref(), Some("360p"));
