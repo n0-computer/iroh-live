@@ -47,6 +47,8 @@ use n0_future::{MergeBounded, boxed::BoxStream, future};
 
 #[cfg(feature = "jwt")]
 pub use self::jwt::JwtVerifier;
+#[cfg(feature = "rcan")]
+pub use self::rcan::{MAX_LINK_BYTES, MAX_LINKS, MoqCapability, RcanVerifier, encode_chain};
 pub use self::{
     queue::{Pending, Queue},
     verify::{TokenVerifier, Verify},
@@ -56,6 +58,8 @@ use crate::{Grant, PeerId, SessionRequest};
 #[cfg(feature = "jwt")]
 mod jwt;
 mod queue;
+#[cfg(feature = "rcan")]
+mod rcan;
 mod verify;
 
 /// A peer's request for a session, as a policy sees it.

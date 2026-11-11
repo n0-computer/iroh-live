@@ -5522,11 +5522,16 @@ name = "moq-ext-access"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "data-encoding",
+ "ed25519-dalek",
  "moq-auth",
  "moq-net",
  "n0-error",
  "n0-future",
  "n0-watcher",
+ "postcard",
+ "rcan",
+ "serde",
  "url",
 ]
 
@@ -8147,6 +8152,22 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+]
+
+[[package]]
+name = "rcan"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24c2990cfe6fc2f9a033be6689566d53e926b0ff41597426f807d2b9e55d7fdf"
+dependencies = [
+ "anyhow",
+ "derive_more",
+ "ed25519-dalek",
+ "hex",
+ "n0-future",
+ "postcard",
+ "serde",
+ "serdect",
 ]
 
 [[package]]
