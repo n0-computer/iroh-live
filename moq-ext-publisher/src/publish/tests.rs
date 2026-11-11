@@ -31,7 +31,7 @@ async fn a_replacement_waits_for_the_track_names() {
     for target in [&broadcast, &control] {
         target
             .set_audio(
-                AudioSource::tone(440.0, moq_audio::Layout::Mono),
+                AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
                 AudioEncoding::voice(),
             )
             .expect("a valid encoding");
@@ -56,7 +56,8 @@ async fn a_replacement_waits_for_the_track_names() {
 #[tokio::test]
 async fn two_audio_sets_in_a_row_keep_publishing() {
     let broadcast = LocalBroadcast::new();
-    let tone = || AudioSource::tone(440.0, moq_audio::Layout::Mono);
+    let tone =
+        || AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts");
     broadcast
         .set_audio(tone(), AudioEncoding::voice())
         .expect("valid");
@@ -88,7 +89,7 @@ async fn clearing_audio_turns_it_off() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("valid");
@@ -104,7 +105,7 @@ async fn closing_finishes_the_broadcast() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("valid");
@@ -119,7 +120,7 @@ async fn closing_finishes_the_broadcast() {
         .expect("subscribers saw the end");
     assert!(matches!(
         broadcast.set_audio(
-            AudioSource::tone(1.0, moq_audio::Layout::Mono),
+            AudioSource::tone(1.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice()
         ),
         Err(Error::Closed { .. })

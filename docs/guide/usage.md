@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
     )?;
     broadcast.set_audio(
-        AudioSource::test_pattern(Layout::Mono),
+        AudioSource::test_pattern(Layout::Mono)?,
         AudioEncoding::voice(),
     )?;
     println!("{}", layout.ticket(node.id(), "pattern")?);
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         VideoEncoding::single(VideoRendition::p360()),
     )?;
     broadcast.set_audio(
-        AudioSource::test_pattern(Layout::Mono),
+        AudioSource::test_pattern(Layout::Mono)?,
         AudioEncoding::voice(),
     )?;
 

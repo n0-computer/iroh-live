@@ -226,7 +226,7 @@ async fn publish_subscribe_audio() {
     set_pattern(&broadcast, Size::new(320, 240));
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, audio::Layout::Mono),
+            AudioSource::tone(440.0, audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("failed to set audio");

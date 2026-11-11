@@ -21,7 +21,7 @@ broadcast.set_video(
     camera,
     VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
 )?;
-broadcast.set_audio(AudioSource::tone(440.0, moq_audio::Layout::Mono), AudioEncoding::voice())?;
+broadcast.set_audio(AudioSource::tone(440.0, moq_audio::Layout::Mono)?, AudioEncoding::voice())?;
 ```
 
 The source is opened once and every rendition gets its own encoder. A rendition

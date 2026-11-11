@@ -563,7 +563,7 @@ async fn audio_plays_through_a_null_output() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("a valid encoding");
@@ -592,7 +592,7 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("a valid encoding");
@@ -648,7 +648,7 @@ async fn closing_the_broadcast_ends_the_audio() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("a valid encoding");
@@ -669,7 +669,7 @@ async fn an_audio_only_broadcast_ends_the_video() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
-            AudioSource::tone(440.0, moq_audio::Layout::Mono),
+            AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
             AudioEncoding::voice(),
         )
         .expect("a valid encoding");
@@ -687,7 +687,8 @@ async fn an_audio_only_broadcast_ends_the_video() {
 #[tokio::test]
 async fn audio_comes_back_after_the_publisher_replaces_it() {
     let broadcast = LocalBroadcast::new();
-    let tone = || AudioSource::tone(440.0, moq_audio::Layout::Mono);
+    let tone =
+        || AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts");
     broadcast
         .set_audio(tone(), AudioEncoding::voice())
         .expect("a valid encoding");

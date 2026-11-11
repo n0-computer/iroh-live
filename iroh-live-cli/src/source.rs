@@ -355,8 +355,8 @@ async fn audio_source(
             config.capture.source = audio::capture::Source::System;
             AudioSource::microphone(config).await?
         }
-        AudioSourceSpec::Test(TestTone::Beeps) => AudioSource::test_pattern(TEST_TONE_LAYOUT),
-        AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT),
+        AudioSourceSpec::Test(TestTone::Beeps) => AudioSource::test_pattern(TEST_TONE_LAYOUT)?,
+        AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT)?,
         AudioSourceSpec::File { path, looping } => AudioSource::file(path, *looping).await?,
     };
     Ok(Some(source))

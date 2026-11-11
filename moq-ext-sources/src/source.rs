@@ -611,9 +611,12 @@ impl AudioSource {
     }
 
     /// Returns a steady sine tone at `hz`, at 48 kHz in `layout`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the thread that generates the tone cannot be started.
     #[cfg(feature = "pattern")]
-    #[must_use]
-    pub fn tone(hz: f32, layout: audio::Layout) -> Self {
+    pub fn tone(hz: f32, layout: audio::Layout) -> Result<Self, Error> {
         Self::generated("tone", f64::from(hz), layout, generator::Gate::Continuous)
     }
 
@@ -621,9 +624,12 @@ impl AudioSource {
     ///
     /// It beeps for a tenth of a second every second, on the timeline the
     /// pattern's marker flashes on, so a viewer can check lip sync.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the thread that generates the tone cannot be started.
     #[cfg(feature = "pattern")]
-    #[must_use]
-    pub fn test_pattern(layout: audio::Layout) -> Self {
+    pub fn test_pattern(layout: audio::Layout) -> Result<Self, Error> {
         Self::generated("test-pattern", generator::BEEP_HZ, layout, generator::BEEP)
     }
 
@@ -634,7 +640,7 @@ impl AudioSource {
         hz: f64,
         layout: audio::Layout,
         gate: generator::Gate,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let format = AudioFormat {
             sample_rate: generator::TONE_RATE,
             layout,
@@ -642,16 +648,13 @@ impl AudioSource {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let weak = fanout.downgrade();
         let stop = CancellationToken::new();
-        let spawned = {
+        {
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name(name.into())
-                .spawn(move || generator::run_tone(hz, format, gate, fanout, stop))
-        };
-        if let Err(err) = spawned {
-            warn!(error = %err, "the tone thread did not start");
+                .spawn(move || generator::run_tone(hz, format, gate, fanout, stop))?;
         }
-        Self::new(
+        Ok(Self::new(
             name,
             AudioKind::Pcm {
                 format,
@@ -659,7 +662,7 @@ impl AudioSource {
             },
             stop,
             Driver::Thread,
-        )
+        ))
     }
 
     /// Returns a source fed by the returned sender.
