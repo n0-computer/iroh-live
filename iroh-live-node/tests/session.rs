@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{Peer, TIMEOUT, step};
-use iroh_live_node::Error;
+use common::{Peer, TIMEOUT, publish, read_counter, step};
+use iroh_live_node::{Audience, Error, Reach};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
@@ -198,4 +198,86 @@ async fn the_peer_sees_the_close_code() {
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Two nodes that dial each other at once each end up with a usable session.
+///
+/// Both dials may complete, which leaves each side with two sessions to the
+/// other. `connect` then hands out the same one every time, and paths resolve
+/// in both directions. Whether the dials collide depends on timing, so the
+/// test runs a few pairs and reports how many did.
+#[tokio::test]
+#[traced_test]
+async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
+    const PAIRS: usize = 3;
+    let mut collided = 0;
+    for _ in 0..PAIRS {
+        let alice = Peer::spawn().await;
+        let bob = Peer::spawn().await;
+        let _alice_cam =
+            publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+        let _bob_cam = publish(&bob.moq, bob.path("cam"), Audience::Everyone).expect("publish");
+
+        let (at_alice, at_bob) = step("both dial at once", async {
+            tokio::join!(
+                alice.moq.connect(bob.endpoint.addr()),
+                bob.moq.connect(alice.endpoint.addr()),
+            )
+        })
+        .await;
+        let at_alice = at_alice.expect("alice's dial failed");
+        let at_bob = at_bob.expect("bob's dial failed");
+        assert_eq!(at_alice.peer(), bob.id());
+        assert_eq!(at_bob.peer(), alice.id());
+
+        for (node, peer, session) in [(&alice, &bob, &at_alice), (&bob, &alice, &at_bob)] {
+            let again = step("connect again", node.moq.connect(peer.endpoint.addr()))
+                .await
+                .expect("the second connect failed");
+            assert_eq!(&again, session, "connect handed out another session");
+            let with_peer: Vec<_> = node
+                .moq
+                .sessions()
+                .get()
+                .into_iter()
+                .filter(|listed| listed.peer() == peer.id())
+                .collect();
+            assert!(
+                (1..=2).contains(&with_peer.len()),
+                "{} sessions with one peer",
+                with_peer.len()
+            );
+            assert!(
+                with_peer
+                    .iter()
+                    .all(|listed| listed.connection().close_reason().is_none()),
+                "a session with the peer closed"
+            );
+            if with_peer.len() == 2 {
+                collided += 1;
+            }
+        }
+
+        let from_alice = step(
+            "bob subscribes to alice",
+            bob.moq
+                .subscribe(alice.path("cam"), Reach::Direct(alice.id())),
+        )
+        .await
+        .expect("bob's subscribe failed");
+        read_counter(&from_alice.broadcast()).await;
+        let from_bob = step(
+            "alice subscribes to bob",
+            alice
+                .moq
+                .subscribe(bob.path("cam"), Reach::Direct(bob.id())),
+        )
+        .await
+        .expect("alice's subscribe failed");
+        read_counter(&from_bob.broadcast()).await;
+
+        alice.shutdown().await;
+        bob.shutdown().await;
+    }
+    eprintln!("{collided} of {} sides saw two sessions", PAIRS * 2);
 }
