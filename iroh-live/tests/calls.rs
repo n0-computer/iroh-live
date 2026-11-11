@@ -263,6 +263,32 @@ async fn losing_the_session_ends_the_call_as_lost() {
 
 #[tokio::test]
 #[traced_test]
+async fn a_callee_that_shuts_down_is_reported_as_lost() {
+    let (a, b) = (Peer::start().await, Peer::start().await);
+    let mut events = a.calls.events();
+    let (call_a, call_b) = connect(&a, &b).await;
+
+    // b keeps its call, so its side goes only with its node.
+    let peer = b.id();
+    b.shutdown().await;
+    assert_eq!(step("lost", call_a.ended()).await, HungUp::Lost);
+    let hung_up = step("hang-up event", async {
+        loop {
+            match events.next().await.expect("an event") {
+                CallEvent::HungUp(from, reason) => break (from, reason),
+                _ => continue,
+            }
+        }
+    })
+    .await;
+    assert_eq!(hung_up, (peer, HungUp::Lost));
+
+    drop(call_b);
+    a.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
 async fn a_cancelled_call_withdraws_the_ring() {
     let (a, b) = (Peer::start().await, Peer::start().await);
 

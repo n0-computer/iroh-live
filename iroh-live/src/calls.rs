@@ -202,6 +202,26 @@ impl Inner {
         self.ringing.set(now).ok();
     }
 
+    /// Returns the open session with `peer`, if there is one.
+    fn session_with(&self, peer: EndpointId) -> Option<Session> {
+        self.node
+            .sessions()
+            .get()
+            .into_iter()
+            .find(|session| session.remote_id() == peer)
+            .filter(|session| session.connection().close_reason().is_none())
+    }
+
+    /// Returns why the call with `peer` ended, once its side is gone.
+    ///
+    /// The side goes when the peer withdraws it, or when the session ends.
+    fn hung_up(&self, peer: EndpointId) -> HungUp {
+        match self.session_with(peer) {
+            Some(_) => HungUp::Withdrawn,
+            None => HungUp::Lost,
+        }
+    }
+
     /// Locks the call state.
     fn lock(&self) -> MutexGuard<'_, CallState> {
         self.state.lock().expect("poisoned")
@@ -426,7 +446,6 @@ impl Calls {
         Ok(Call {
             inner: self.inner.clone(),
             peer,
-            session: subscription.session(),
             subscription,
         })
     }
@@ -466,7 +485,6 @@ pub struct Call {
     inner: Arc<Inner>,
     peer: EndpointId,
     subscription: Subscription,
-    session: Option<Session>,
 }
 
 impl Call {
@@ -490,18 +508,23 @@ impl Call {
     /// Cancellation safe.
     pub async fn ended(&self) -> HungUp {
         let broadcast = self.subscription.as_moq();
-        let Some(session) = &self.session else {
-            broadcast.closed().await;
-            return HungUp::Withdrawn;
-        };
-        select! {
-            _ = session.closed() => HungUp::Lost,
-            _ = broadcast.closed() => {
-                if session.connection().close_reason().is_some() {
-                    HungUp::Lost
-                } else {
-                    HungUp::Withdrawn
+        let mut sessions = self.inner.node.sessions();
+        // The session is looked up on every pass rather than kept from the
+        // connect, since the node may list it only after the subscribe returns.
+        loop {
+            match self.inner.session_with(self.peer) {
+                Some(session) => {
+                    return select! {
+                        _ = session.closed() => HungUp::Lost,
+                        _ = broadcast.closed() => self.inner.hung_up(self.peer),
+                    };
                 }
+                None => select! {
+                    _ = broadcast.closed() => return HungUp::Lost,
+                    updated = sessions.updated() => if updated.is_err() {
+                        return HungUp::Lost;
+                    },
+                },
             }
         }
     }
@@ -566,10 +589,8 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
             state.visible.remove(&peer);
             state.ended.remove(&peer);
             if state.active.contains(&peer) {
-                inner
-                    .events
-                    .send(CallEvent::HungUp(peer, HungUp::Withdrawn))
-                    .ok();
+                let reason = inner.hung_up(peer);
+                inner.events.send(CallEvent::HungUp(peer, reason)).ok();
             }
         }
         inner.recompute(&state);
