@@ -113,14 +113,14 @@ impl Session {
     }
 }
 
-/// Dials `remote` with `subscriber` and `publisher` as the session's origins.
+/// Dials `peer` with `subscriber` and `publisher` as the session's origins.
 async fn dial(
     endpoint: &Endpoint,
-    remote: impl Into<EndpointAddr>,
+    peer: impl Into<EndpointAddr>,
     subscriber: origin::Producer,
     publisher: Option<origin::Consumer>,
 ) -> Session {
-    let transport = moq_transport_iroh::dial(endpoint, remote)
+    let transport = moq_transport_iroh::dial(endpoint, peer)
         .await
         .expect("dial failed");
     let mut client = moq_net::Client::new().with_subscriber(subscriber);

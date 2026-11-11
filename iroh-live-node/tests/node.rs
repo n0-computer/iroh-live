@@ -1120,14 +1120,14 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     carol.shutdown().await;
 }
 
-/// Waits until `node` has a session with `remote`, and returns it.
-async fn session_with(node: &Peer, remote: iroh::EndpointId) -> iroh_live_node::Session {
+/// Waits until `node` has a session with `peer`, and returns it.
+async fn session_with(node: &Peer, peer: iroh::EndpointId) -> iroh_live_node::Session {
     let mut sessions = node.node.sessions();
     loop {
         if let Some(session) = sessions
             .get()
             .into_iter()
-            .find(|session| session.peer() == remote)
+            .find(|session| session.peer() == peer)
         {
             return session;
         }

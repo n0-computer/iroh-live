@@ -26,7 +26,7 @@ use tracing::debug;
 
 use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 
-/// Dials `remote` and returns the MoQ transport over the connection.
+/// Dials `peer` and returns the MoQ transport over the connection.
 ///
 /// Offers only [`ALPN`], the newest MoQ version. iroh's
 /// [`Router`](iroh::protocol::Router) sorts the ALPNs it accepts, and TLS picks
@@ -40,30 +40,24 @@ use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 ///
 /// Fails if the dial fails, or if the peer negotiates an ALPN this build does
 /// not speak.
-pub async fn dial(
-    endpoint: &Endpoint,
-    remote: impl Into<EndpointAddr>,
-) -> Result<Transport, Error> {
-    let connection = endpoint
-        .connect(remote, ALPN)
-        .await
-        .map_err(connect_error)?;
+pub async fn dial(endpoint: &Endpoint, peer: impl Into<EndpointAddr>) -> Result<Transport, Error> {
+    let connection = endpoint.connect(peer, ALPN).await.map_err(connect_error)?;
     Transport::new(connection)
 }
 
-/// Dials `remote` with iroh's connect `options`, as [`dial`] does.
+/// Dials `peer` with iroh's connect `options`, as [`dial`] does.
 ///
 /// The options can give this one connection its own QUIC transport config,
 /// such as another [`Congestion`](crate::Congestion) controller, while the
 /// endpoint keeps its own for every other connection:
 ///
 /// ```no_run
-/// # async fn run(endpoint: iroh::Endpoint, remote: iroh::EndpointId) -> Result<(), moq_transport_iroh::Error> {
+/// # async fn run(endpoint: iroh::Endpoint, peer: iroh::EndpointId) -> Result<(), moq_transport_iroh::Error> {
 /// use iroh::endpoint::ConnectOptions;
 /// use moq_transport_iroh::{Congestion, dial_with};
 ///
 /// let options = ConnectOptions::new().with_transport_config(Congestion::Cubic.transport_config());
-/// let transport = dial_with(&endpoint, remote, options).await?;
+/// let transport = dial_with(&endpoint, peer, options).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -75,11 +69,11 @@ pub async fn dial(
 /// As [`dial`].
 pub async fn dial_with(
     endpoint: &Endpoint,
-    remote: impl Into<EndpointAddr>,
+    peer: impl Into<EndpointAddr>,
     options: endpoint::ConnectOptions,
 ) -> Result<Transport, Error> {
     let connection = endpoint
-        .connect_with_opts(remote, ALPN, options)
+        .connect_with_opts(peer, ALPN, options)
         .await
         .map_err(connect_error)?
         .await
@@ -175,7 +169,7 @@ impl Transport {
 impl fmt::Debug for Transport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Transport")
-            .field("remote", &self.conn.remote_id().fmt_short().to_string())
+            .field("peer", &self.conn.remote_id().fmt_short().to_string())
             .field("alpn", &String::from_utf8_lossy(self.conn.alpn()))
             .finish_non_exhaustive()
     }
