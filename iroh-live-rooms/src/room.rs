@@ -22,12 +22,12 @@ use crate::{rooms::Error, ticket::RoomTicket};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RoomState {
     /// Every other member, by endpoint id. This node is not among them.
-    pub members: BTreeMap<EndpointId, RoomPeer>,
+    pub members: BTreeMap<EndpointId, RoomMember>,
 }
 
 /// One member of a room.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomPeer {
+pub struct RoomMember {
     /// The name the member announced, if any.
     pub display_name: Option<String>,
     /// The broadcasts the member publishes into the room, by name.

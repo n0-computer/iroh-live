@@ -68,7 +68,7 @@ mod rooms;
 mod ticket;
 
 pub use self::{
-    room::{Room, RoomPeer, RoomState, RoomsLayout},
+    room::{Room, RoomMember, RoomState, RoomsLayout},
     rooms::{ALPN, Error, Rooms},
     ticket::RoomTicket,
 };

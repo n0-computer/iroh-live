@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, debug, info, trace, warn};
 
-use crate::room::{Inner, Local, RoomPeer, RoomState};
+use crate::room::{Inner, Local, RoomMember, RoomState};
 
 /// The key a member's announcement is stored under in the room's gossip map.
 pub(crate) const PEER_STATE_KEY: &[u8] = b"s";
@@ -55,7 +55,7 @@ pub(crate) const MAP_RESUBSCRIBES: u32 = 3;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Announcement {
     /// The member's name and broadcasts.
-    peer: RoomPeer,
+    member: RoomMember,
     /// Whether the member left, so the others drop it before its lease runs out.
     left: bool,
 }
@@ -67,7 +67,7 @@ pub(crate) struct Actor {
     /// Writes this member's announcement into the gossip map.
     pub(crate) writer: WriteScope,
     /// The other members, as their announcements last said.
-    pub(crate) peers: BTreeMap<EndpointId, RoomPeer>,
+    pub(crate) members: BTreeMap<EndpointId, RoomMember>,
     /// The members the replay after a resubscription has shown so far.
     pub(crate) resync: Option<BTreeSet<EndpointId>>,
     /// Set once the [`Rooms`](crate::Rooms) this room belongs to shut down.
@@ -214,7 +214,7 @@ impl Actor {
         for entry in local {
             entry.publication.unpublish();
         }
-        self.peers.clear();
+        self.members.clear();
         self.publish_state();
         match tokio::time::timeout(LEAVE_STEP_TIMEOUT, self.kv.shutdown()).await {
             Ok(Ok(())) => {}
@@ -232,7 +232,7 @@ impl Actor {
             self.inner.local_names()
         };
         Announcement {
-            peer: RoomPeer {
+            member: RoomMember {
                 display_name: self.inner.display_name.get(),
                 broadcasts,
             },
@@ -244,13 +244,13 @@ impl Actor {
     fn handle_item(&mut self, item: SubscribeItem) {
         match item {
             SubscribeItem::Entry(entry) => self.handle_entry(entry),
-            SubscribeItem::Expired((remote, key, _timestamp)) => {
-                if remote != self.inner.me
+            SubscribeItem::Expired((peer, key, _timestamp)) => {
+                if peer != self.inner.me
                     && key == PEER_STATE_KEY
-                    && self.peers.remove(&remote).is_some()
+                    && self.members.remove(&peer).is_some()
                 {
                     info!(
-                        peer = %remote.fmt_short(),
+                        peer = %peer.fmt_short(),
                         horizon = ?STATE_HORIZON,
                         "member stopped announcing, treating it as gone",
                     );
@@ -261,11 +261,11 @@ impl Actor {
             // not show expired in the meantime.
             SubscribeItem::CurrentDone => {
                 if let Some(seen) = self.resync.take() {
-                    let before = self.peers.len();
-                    self.peers.retain(|remote, _| seen.contains(remote));
-                    if self.peers.len() != before {
+                    let before = self.members.len();
+                    self.members.retain(|peer, _| seen.contains(peer));
+                    if self.members.len() != before {
                         info!(
-                            gone = before - self.peers.len(),
+                            gone = before - self.members.len(),
                             "members expired while resubscribing"
                         );
                         self.publish_state();
@@ -276,59 +276,59 @@ impl Actor {
     }
 
     /// Applies a member's announcement to the membership.
-    fn handle_entry(&mut self, (remote, key, value): (EndpointId, Bytes, SignedValue)) {
-        if remote == self.inner.me || key != PEER_STATE_KEY {
+    fn handle_entry(&mut self, (peer, key, value): (EndpointId, Bytes, SignedValue)) {
+        if peer == self.inner.me || key != PEER_STATE_KEY {
             return;
         }
         let Ok(announcement) = postcard::from_bytes::<Announcement>(&value.value) else {
             warn!(
-                peer = %remote.fmt_short(),
+                peer = %peer.fmt_short(),
                 len = value.value.len(),
                 "member announcement does not decode",
             );
             return;
         };
         if announcement.left {
-            if self.peers.remove(&remote).is_some() {
-                info!(peer = %remote.fmt_short(), "member left the room");
+            if self.members.remove(&peer).is_some() {
+                info!(peer = %peer.fmt_short(), "member left the room");
                 self.publish_state();
             }
             return;
         }
         if let Some(seen) = self.resync.as_mut() {
-            seen.insert(remote);
+            seen.insert(peer);
         }
         // Every member rewrites its announcement to renew its lease, so most of
         // these say nothing new.
-        let peer = announcement.peer;
-        match self.peers.get(&remote) {
-            Some(known) if *known == peer => {
-                trace!(peer = %remote.fmt_short(), "announcement renewed");
+        let member = announcement.member;
+        match self.members.get(&peer) {
+            Some(known) if *known == member => {
+                trace!(peer = %peer.fmt_short(), "announcement renewed");
                 return;
             }
             Some(_) => debug!(
-                peer = %remote.fmt_short(),
-                broadcasts = ?peer.broadcasts,
+                peer = %peer.fmt_short(),
+                broadcasts = ?member.broadcasts,
                 "member announcement changed",
             ),
             None => info!(
-                peer = %remote.fmt_short(),
-                display_name = ?peer.display_name,
+                peer = %peer.fmt_short(),
+                display_name = ?member.display_name,
                 "member joined the room",
             ),
         }
-        self.peers.insert(remote, peer);
+        self.members.insert(peer, member);
         self.publish_state();
     }
 
     /// Publishes the membership to the state watcher and the audience set.
     fn publish_state(&self) {
-        let members: BTreeSet<EndpointId> = self.peers.keys().copied().collect();
+        let members: BTreeSet<EndpointId> = self.members.keys().copied().collect();
         self.inner.members.set(members).ok();
         self.inner
             .state
             .set(RoomState {
-                members: self.peers.clone(),
+                members: self.members.clone(),
             })
             .ok();
     }

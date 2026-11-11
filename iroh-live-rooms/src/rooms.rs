@@ -212,7 +212,7 @@ impl Rooms {
             inner: inner.clone(),
             kv,
             writer,
-            peers: BTreeMap::new(),
+            members: BTreeMap::new(),
             resync: None,
             rooms_closing: self.closing.clone(),
         };
