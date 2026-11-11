@@ -53,7 +53,7 @@ let broadcast: LocalBroadcast = layout.publish(&node, "studio")?;
 let source = VideoSource::test_pattern(
     video::Size::new(1280, 720),
     video::FrameRate::new(30, 1).expect("a valid rate"),
-);
+)?;
 broadcast.set_video(
     source,
     VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),

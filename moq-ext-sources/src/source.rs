@@ -192,28 +192,26 @@ impl VideoSource {
     ///
     /// The pattern shows a sweeping bar, a frame counter and a clock. A marker
     /// flashes in step with the beep of [`AudioSource::test_pattern`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if the thread that draws the pattern cannot be started.
     #[cfg(feature = "pattern")]
-    #[must_use]
-    pub fn test_pattern(size: video::Size, rate: video::FrameRate) -> Self {
+    pub fn test_pattern(size: video::Size, rate: video::FrameRate) -> Result<Self, Error> {
         let slot = FrameSlot::new();
         let reader = slot.reader();
         let stop = CancellationToken::new();
         let token = stop.clone();
-        let spawned = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("test-pattern".into())
-            .spawn(move || generator::run_pattern(size, rate, slot, token));
-        if let Err(err) = spawned {
-            // The slot closes with the unstarted thread, so the source reads
-            // as ended.
-            warn!(error = %err, "the test pattern thread did not start");
-        }
-        Self::new(
+            .spawn(move || generator::run_pattern(size, rate, slot, token))?;
+        Ok(Self::new(
             "test-pattern",
             VideoFormat { size, rate },
             reader,
             stop,
             Driver::Thread,
-        )
+        ))
     }
 
     /// Returns a source fed by the returned sender.
@@ -743,7 +741,8 @@ mod tests {
     #[cfg(feature = "pattern")]
     #[tokio::test]
     async fn a_test_pattern_produces_frames_and_stops_with_its_source() {
-        let source = VideoSource::test_pattern(video::Size::new(64, 48), rate(30));
+        let source = VideoSource::test_pattern(video::Size::new(64, 48), rate(30))
+            .expect("the pattern thread starts");
         let mut frames = source.frames();
         let first = tokio::time::timeout(Duration::from_secs(5), frames.next())
             .await

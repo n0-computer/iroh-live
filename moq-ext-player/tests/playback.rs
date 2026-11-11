@@ -70,7 +70,8 @@ async fn push_frames(sender: FrameSender<moq_video::Frame>, format: VideoFormat)
 
 /// Returns a two-rung ladder of the test pattern.
 fn ladder() -> (LocalBroadcast, VideoSource) {
-    let source = VideoSource::test_pattern(moq_video::Size::new(640, 360), fps(30));
+    let source = VideoSource::test_pattern(moq_video::Size::new(640, 360), fps(30))
+        .expect("the pattern thread starts");
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_video(
@@ -167,7 +168,8 @@ async fn a_player_started_after_the_catalog_plays() {
 /// A bandwidth shortfall that holds moves the player down a rendition.
 #[tokio::test]
 async fn a_held_shortfall_moves_the_player_down() {
-    let source = VideoSource::test_pattern(moq_video::Size::new(640, 360), fps(30));
+    let source = VideoSource::test_pattern(moq_video::Size::new(640, 360), fps(30))
+        .expect("the pattern thread starts");
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_video(
@@ -328,7 +330,8 @@ async fn a_decoder_that_will_not_open_fails_the_video() {
 /// This holds even with no other rendition to step to.
 #[tokio::test]
 async fn a_failed_first_decoder_is_tried_again() {
-    let source = VideoSource::test_pattern(moq_video::Size::new(320, 180), fps(30));
+    let source = VideoSource::test_pattern(moq_video::Size::new(320, 180), fps(30))
+        .expect("the pattern thread starts");
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_video(
@@ -360,7 +363,7 @@ fn single(size: moq_video::Size) -> LocalBroadcast {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_video(
-            VideoSource::test_pattern(size, fps(30)),
+            VideoSource::test_pattern(size, fps(30)).expect("the pattern thread starts"),
             software(VideoEncoding::single(VideoRendition {
                 size: Some(size),
                 ..VideoRendition::new("video")
@@ -521,7 +524,7 @@ async fn video_comes_back_after_the_publisher_replaces_it() {
     let size = moq_video::Size::new(640, 360);
     broadcast
         .set_video(
-            VideoSource::test_pattern(size, fps(30)),
+            VideoSource::test_pattern(size, fps(30)).expect("the pattern thread starts"),
             software(VideoEncoding::single(VideoRendition {
                 size: Some(size),
                 ..VideoRendition::new("video")
@@ -799,7 +802,8 @@ async fn a_source_that_fails_shows_in_the_status() {
 
 #[tokio::test]
 async fn an_empty_ladder_is_refused_at_once() {
-    let source = VideoSource::test_pattern(moq_video::Size::new(64, 48), fps(30));
+    let source = VideoSource::test_pattern(moq_video::Size::new(64, 48), fps(30))
+        .expect("the pattern thread starts");
     let broadcast = LocalBroadcast::new();
     let result = broadcast.set_video(source, VideoEncoding::ladder([]));
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));

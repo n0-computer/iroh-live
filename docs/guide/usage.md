@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = video::Size::new(1280, 720);
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
-        VideoSource::test_pattern(size, rate),
+        VideoSource::test_pattern(size, rate)?,
         VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
     )?;
     broadcast.set_audio(
@@ -171,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(&node, &layout)?;
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
-        VideoSource::test_pattern(video::Size::new(640, 360), rate),
+        VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
         VideoEncoding::single(VideoRendition::p360()),
     )?;
     broadcast.set_audio(
@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broadcast: LocalBroadcast = room.publish("cam")?;
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
-        VideoSource::test_pattern(video::Size::new(640, 360), rate),
+        VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
         VideoEncoding::single(VideoRendition::p360()),
     )?;
 
@@ -336,7 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let broadcast = LocalBroadcast::new_in(publication.broadcast().clone())?;
             let rate = video::FrameRate::new(30, 1).expect("a valid rate");
             broadcast.set_video(
-                VideoSource::test_pattern(video::Size::new(640, 360), rate),
+                VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
                 VideoEncoding::single(VideoRendition::p360()),
             )?;
             tokio::signal::ctrl_c().await?;
@@ -397,7 +397,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broadcast: LocalBroadcast = layout.publish(&node, "pattern")?;
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
-        VideoSource::test_pattern(video::Size::new(640, 360), rate),
+        VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
         VideoEncoding::single(VideoRendition::p360()),
     )?;
     println!("{}", layout.ticket(node.id(), "pattern")?);

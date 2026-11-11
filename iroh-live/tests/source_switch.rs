@@ -304,7 +304,10 @@ async fn replacing_the_video_source_keeps_a_peer_playing() {
     let peers = Peers::new("replaced").await;
     peers
         .broadcast
-        .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
+        .set_video(
+            VideoSource::test_pattern(SD, fps(30)).expect("the pattern thread starts"),
+            single(None),
+        )
         .expect("a valid encoding");
     let (_player, mut frames) = peers.play("replaced").await;
     shows(&mut frames, Look::pattern(SD), FIRST, "first pattern").await;
@@ -312,7 +315,10 @@ async fn replacing_the_video_source_keeps_a_peer_playing() {
     for round in 0..2 {
         peers
             .broadcast
-            .set_video(VideoSource::test_pattern(HD, fps(30)), single(None))
+            .set_video(
+                VideoSource::test_pattern(HD, fps(30)).expect("the pattern thread starts"),
+                single(None),
+            )
             .expect("a valid encoding");
         shows(
             &mut frames,
@@ -341,7 +347,10 @@ async fn replacing_the_video_source_keeps_a_peer_playing() {
 
         peers
             .broadcast
-            .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
+            .set_video(
+                VideoSource::test_pattern(SD, fps(30)).expect("the pattern thread starts"),
+                single(None),
+            )
             .expect("a valid encoding");
         shows(
             &mut frames,

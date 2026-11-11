@@ -16,7 +16,7 @@ use moq_ext_sources::{AudioSource, VideoSource};
 
 // `size` and `rate` are moq-video's `Size` and `FrameRate`, `layout` is
 // moq-audio's `Layout`.
-let video = VideoSource::test_pattern(size, rate);
+let video = VideoSource::test_pattern(size, rate)?;
 let audio = AudioSource::test_pattern(layout);
 ```
 

@@ -470,7 +470,8 @@ mod tests {
                 moq_ext_sources::VideoSource::test_pattern(
                     moq_video::Size::new(320, 180),
                     moq_video::FrameRate::new(30, 1).expect("a valid rate"),
-                ),
+                )
+                .expect("the pattern thread starts"),
                 moq_ext_publisher::VideoEncoding {
                     prefer_hardware: false,
                     ..moq_ext_publisher::VideoEncoding::single(

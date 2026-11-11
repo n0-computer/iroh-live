@@ -303,7 +303,10 @@ async fn a_pushed_source_plays_on_after_a_pause() {
 async fn replacing_the_video_source_keeps_playing() {
     let broadcast = LocalBroadcast::new();
     broadcast
-        .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
+        .set_video(
+            VideoSource::test_pattern(SD, fps(30)).expect("the pattern thread starts"),
+            single(None),
+        )
         .expect("a valid encoding");
     let (_player, mut frames) = play(&broadcast);
     shows(
@@ -316,7 +319,10 @@ async fn replacing_the_video_source_keeps_playing() {
 
     for round in 0..2 {
         broadcast
-            .set_video(VideoSource::test_pattern(HD, fps(30)), single(None))
+            .set_video(
+                VideoSource::test_pattern(HD, fps(30)).expect("the pattern thread starts"),
+                single(None),
+            )
             .expect("a valid encoding");
         shows(
             &mut frames,
@@ -364,7 +370,10 @@ async fn replacing_the_video_source_keeps_playing() {
         .await;
 
         broadcast
-            .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
+            .set_video(
+                VideoSource::test_pattern(SD, fps(30)).expect("the pattern thread starts"),
+                single(None),
+            )
             .expect("a valid encoding");
         shows(
             &mut frames,
@@ -381,7 +390,10 @@ async fn replacing_the_video_source_keeps_playing() {
 async fn a_source_that_fails_does_not_stop_the_next() {
     let broadcast = LocalBroadcast::new();
     broadcast
-        .set_video(VideoSource::test_pattern(SD, fps(30)), single(None))
+        .set_video(
+            VideoSource::test_pattern(SD, fps(30)).expect("the pattern thread starts"),
+            single(None),
+        )
         .expect("a valid encoding");
     let (_player, mut frames) = play(&broadcast);
     shows(
@@ -406,7 +418,10 @@ async fn a_source_that_fails_does_not_stop_the_next() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     broadcast
-        .set_video(VideoSource::test_pattern(HD, fps(30)), single(None))
+        .set_video(
+            VideoSource::test_pattern(HD, fps(30)).expect("the pattern thread starts"),
+            single(None),
+        )
         .expect("a valid encoding");
     shows(
         &mut frames,

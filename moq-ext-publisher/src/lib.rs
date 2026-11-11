@@ -21,7 +21,8 @@
 //! let source = VideoSource::test_pattern(
 //!     video::Size::new(1280, 720),
 //!     video::FrameRate::new(30, 1).expect("a valid rate"),
-//! );
+//! )
+//! .expect("the pattern thread starts");
 //! let broadcast = LocalBroadcast::new();
 //! broadcast.set_video(
 //!     source,

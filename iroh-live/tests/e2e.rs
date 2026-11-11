@@ -75,7 +75,8 @@ async fn subscribe(node: &Node, publisher: &Node, name: &str) -> RemoteBroadcast
 
 /// Sets a generated pattern of `size` on `broadcast`, as one rendition.
 fn set_pattern(broadcast: &LocalBroadcast, size: Size) {
-    let source = VideoSource::test_pattern(size, FrameRate::new(30, 1).expect("a valid rate"));
+    let source = VideoSource::test_pattern(size, FrameRate::new(30, 1).expect("a valid rate"))
+        .expect("the pattern thread starts");
     broadcast
         .set_video(source, VideoEncoding::single(VideoRendition::new("video")))
         .expect("failed to set video");
@@ -269,7 +270,8 @@ async fn adaptive_rendition_switching() {
     let broadcast = publish(&publisher, "adaptive-stream");
     broadcast
         .set_video(
-            VideoSource::test_pattern(Size::new(640, 480), FrameRate::new(30, 1).expect("valid")),
+            VideoSource::test_pattern(Size::new(640, 480), FrameRate::new(30, 1).expect("valid"))
+                .expect("the pattern thread starts"),
             VideoEncoding::ladder([
                 VideoRendition {
                     bitrate: Some(Rate::from_bps(2_000_000)),

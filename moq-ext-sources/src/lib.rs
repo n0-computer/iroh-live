@@ -64,7 +64,8 @@
 //! let source = VideoSource::test_pattern(
 //!     moq_video::Size::new(640, 360),
 //!     moq_video::FrameRate::new(30, 1).expect("a valid rate"),
-//! );
+//! )
+//! .expect("the pattern thread starts");
 //! let mut frames = source.frames();
 //! while let Some(frame) = frames.next().await {
 //!     // draw `frame`

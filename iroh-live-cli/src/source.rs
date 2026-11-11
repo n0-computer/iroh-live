@@ -262,7 +262,7 @@ fn test_pattern(
     let rate = video::FrameRate::new(framerate.generated(), 1)
         .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE");
     match pattern {
-        TestPattern::Timing => Ok(VideoSource::test_pattern(size, rate)),
+        TestPattern::Timing => Ok(VideoSource::test_pattern(size, rate)?),
         TestPattern::Gradient => gradient(size, framerate.generated()),
     }
 }

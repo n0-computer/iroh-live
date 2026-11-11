@@ -107,7 +107,7 @@ mod app {
         let source = VideoSource::test_pattern(
             Size::new(640, 480),
             FrameRate::new(30, 1).expect("a valid rate"),
-        );
+        )?;
         watch::run_fb_demo(source.frames()).await?;
         Ok(())
     }
