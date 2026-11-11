@@ -539,9 +539,9 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Relay`] if the client cannot be set up, for example
-    /// for an unsupported URL scheme, and [`Error::ShutDown`] once the node
-    /// has shut down.
+    /// Fails with [`Error::InvalidRelayUrl`] for an unsupported URL scheme or
+    /// an `iroh://` URL without an endpoint id, [`Error::Relay`] if the client
+    /// cannot be set up, and [`Error::ShutDown`] once the node has shut down.
     ///
     /// # Panics
     ///

@@ -107,6 +107,12 @@ pub enum Error {
         #[error(source, std_err)]
         source: moq_net::Error,
     },
+    /// A relay URL names no relay this node can attach to.
+    #[error("invalid relay URL {url}: {reason}")]
+    InvalidRelayUrl {
+        url: Box<url::Url>,
+        reason: &'static str,
+    },
     /// A relay link could not be set up.
     #[error("the relay link failed")]
     Relay {

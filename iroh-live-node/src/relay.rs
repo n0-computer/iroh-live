@@ -374,15 +374,15 @@ fn iroh_relay(url: &Url) -> Result<Option<EndpointId>, Error> {
             .and_then(|host| host.parse::<EndpointId>().ok())
             .map(Some)
             .ok_or_else(|| {
-                e!(Error::Relay {
-                    source: Arc::new(AnyError::from_string(format!("{url} names no endpoint id"))),
+                e!(Error::InvalidRelayUrl {
+                    url: Box::new(url.clone()),
+                    reason: "the host is not an endpoint id",
                 })
             }),
         "https" | "http" | "moqt" | "moql" => Ok(None),
-        scheme => Err(e!(Error::Relay {
-            source: Arc::new(AnyError::from_string(format!(
-                "unsupported relay URL scheme {scheme:?}, use iroh:// or https://"
-            ))),
+        _ => Err(e!(Error::InvalidRelayUrl {
+            url: Box::new(url.clone()),
+            reason: "unsupported scheme, use iroh:// or https://",
         })),
     }
 }
