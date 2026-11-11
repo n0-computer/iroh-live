@@ -17,6 +17,9 @@
 //! of a publisher retires, the relay closes its session with that publisher.
 //! An idle timer on the connection cannot stand in for the guards, since
 //! iroh's keep-alives move its counters too.
+//!
+//! [`run`](crate::run) sets this up. The module is public for a binary that
+//! embeds the relay, and for the tests.
 
 use std::{
     collections::HashMap,
@@ -145,37 +148,37 @@ enum Dial {
 struct Pull {
     /// The outcome of the dial.
     dial: watch::Sender<Dial>,
-    /// Local sessions that named this ticket and have not disconnected yet.
-    claims: watch::Sender<usize>,
+    /// How many local sessions that named this ticket hold a guard on it.
+    holders: watch::Sender<usize>,
 }
 
 impl Pull {
-    /// Creates a pull whose dial is pending and that no session has claimed.
+    /// Creates a pull whose dial is pending and that no session holds.
     fn new() -> Self {
         Self {
             dial: watch::Sender::new(Dial::Pending),
-            claims: watch::Sender::new(0),
+            holders: watch::Sender::new(0),
         }
     }
 
-    /// Returns whether a local session that named this ticket is still connected.
-    fn claimed(&self) -> bool {
-        *self.claims.borrow() > 0
+    /// Returns whether a local session that named this ticket still holds it.
+    fn is_held(&self) -> bool {
+        *self.holders.borrow() > 0
     }
 }
 
 /// Keeps a pull alive while the local session that asked for it runs.
 ///
-/// Dropping it withdraws the session's claim on the pull.
+/// Dropping it releases the session's hold on the pull.
 #[derive(Debug)]
-#[must_use = "dropping the guard withdraws the claim on the pull"]
+#[must_use = "dropping the guard releases the hold on the pull"]
 pub struct PullGuard {
     pull: Arc<Pull>,
 }
 
 impl Drop for PullGuard {
     fn drop(&mut self) {
-        self.pull.claims.send_modify(|claims| *claims -= 1);
+        self.pull.holders.send_modify(|holders| *holders -= 1);
     }
 }
 
@@ -220,7 +223,7 @@ impl PullState {
     /// cluster [`mounted`] at `requested`. Concurrent pulls of one name share
     /// a dial.
     ///
-    /// Cancellation safe: dropping this future only drops the caller's claim.
+    /// Cancellation safe: dropping this future only drops the caller's hold.
     /// The dial runs on, and the pull retires as usual.
     ///
     /// # Errors
@@ -236,10 +239,10 @@ impl PullState {
     ) -> Result<PullGuard, Error> {
         // Keyed by the name the client asked for, as its mount is. Two
         // spellings of one ticket share the publisher's session, but are
-        // claimed apart.
+        // held apart.
         let local_name = requested.to_owned();
 
-        // Claimed under the lock retirement takes, so an entry found here
+        // Held under the lock retirement takes, so an entry found here
         // outlives this call.
         let (pull, dial) = {
             let mut pulls = self.inner.pulls.lock().expect("poisoned");
@@ -251,7 +254,7 @@ impl PullState {
                     (pull, true)
                 }
             };
-            pull.claims.send_modify(|claims| *claims += 1);
+            pull.holders.send_modify(|holders| *holders += 1);
             (pull, dial)
         };
         let guard = PullGuard { pull };
@@ -398,7 +401,7 @@ impl Pulls {
             if !broadcast_ended {
                 break;
             }
-            if !pull.claimed() {
+            if !pull.is_held() {
                 self.retire(&local_name, &pull);
                 break;
             }
@@ -416,7 +419,7 @@ impl Pulls {
 
     /// Resolves the ticket's broadcast again, backing off between attempts.
     ///
-    /// Does not look at the pull's claims. A pull that loses its last session
+    /// Does not look at the pull's holders. A pull that loses its last session
     /// while this runs still tries [`MAX_RESOLVES`] times, about 90 seconds at
     /// worst, and redials the publisher for nobody.
     async fn resolve_again(
@@ -438,16 +441,16 @@ impl Pulls {
         None
     }
 
-    /// Waits until no session has claimed the pull for the linger window.
+    /// Waits until no session has held the pull for the linger window.
     ///
-    /// The final check runs under the lock that [`Self::pull`] claims under,
-    /// so a pull claimed during the linger keeps running.
+    /// The final check runs under the lock that [`Self::pull`] takes a hold
+    /// under, so a pull held during the linger keeps running.
     async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
         loop {
-            if pull.claimed() {
-                let mut claims = pull.claims.subscribe();
+            if pull.is_held() {
+                let mut holders = pull.holders.subscribe();
                 // `Err` needs every sender gone, and this task holds `pull`.
-                let _ = claims.wait_for(|claims| *claims == 0).await;
+                let _ = holders.wait_for(|holders| *holders == 0).await;
                 continue;
             }
 
@@ -455,7 +458,7 @@ impl Pulls {
             tokio::time::sleep(self.linger).await;
 
             let mut pulls = self.pulls.lock().expect("poisoned");
-            if pull.claimed() {
+            if pull.is_held() {
                 continue;
             }
             remove_current(&mut pulls, local_name, pull);

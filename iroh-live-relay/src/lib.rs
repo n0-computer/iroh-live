@@ -234,6 +234,9 @@ fn relay_error(err: anyhow::Error) -> Error {
 /// the token expires. A session whose path names a ticket reads the ticket's
 /// broadcast at that name, and with `pulls` set it holds a pull of that
 /// broadcast while it runs.
+///
+/// [`run`] calls it. It is public for a binary that embeds the relay with a
+/// moq-relay of its own, and for the tests.
 pub async fn admit(
     mut admissions: Admissions,
     pulls: Option<Arc<pull::PullState>>,
@@ -345,7 +348,7 @@ fn load_keys(path: &std::path::Path) -> Result<KeySet, Error> {
 /// Pulls the broadcast a session named, if the name is a ticket.
 ///
 /// Runs alongside the session, so a session that names an unreachable ticket
-/// still starts. Dropping the handle drops the session's claim on the pull.
+/// still starts. Dropping the handle releases the session's hold on the pull.
 pub(crate) fn pull_for(
     pull_state: Arc<pull::PullState>,
     name: String,

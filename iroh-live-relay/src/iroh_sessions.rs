@@ -90,6 +90,23 @@ impl IrohSessions {
 
     /// Runs one session until it closes or the relay shuts down.
     async fn serve(&self, connection: Connection) -> Result<(), AcceptError> {
+        let Admitted {
+            session,
+            driver,
+            authorization,
+            name,
+        } = self.admit(connection).await?;
+        // Held while the session runs.
+        let _pull = self
+            .pulls
+            .as_ref()
+            .and_then(|pulls| crate::pull_for(pulls.clone(), name?));
+        self.run(session, driver, &authorization).await;
+        Ok(())
+    }
+
+    /// Decides an iroh client's session and completes its handshake.
+    async fn admit(&self, connection: Connection) -> Result<Admitted, AcceptError> {
         let peer = connection.remote_id();
         let transport = moq_transport_iroh::accept(connection).map_err(AcceptError::from_err)?;
         let handshake = tokio::time::timeout(
@@ -147,21 +164,29 @@ impl IrohSessions {
         .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
         .map_err(AcceptError::from_err)?;
         info!(%path, grant = ?authorization.grant, expires = ?authorization.expires, "iroh client admitted");
+        Ok(Admitted {
+            session,
+            driver,
+            authorization,
+            name,
+        })
+    }
 
-        // Held while the session runs.
-        let _pull = self
-            .pulls
-            .as_ref()
-            .and_then(|pulls| crate::pull_for(pulls.clone(), name.clone()?));
-
+    /// Runs an admitted session until it ends, its authorization expires, or the relay shuts down.
+    async fn run(
+        &self,
+        session: moq_net::Session,
+        driver: moq_net::Driver,
+        authorization: &Authorization,
+    ) {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
-        let expiry = expiry(&authorization);
+        let expiry = expiry(authorization);
         tokio::pin!(expiry);
         let close = tokio::select! {
             err = &mut run => {
                 debug!(error = %err, "iroh session ended");
-                return Ok(());
+                return;
             }
             () = self.shutdown.cancelled() => moq_net::Error::Cancel,
             () = &mut expiry => {
@@ -174,8 +199,16 @@ impl IrohSessions {
         if tokio::time::timeout(CLOSE_GRACE, run).await.is_err() {
             warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
         }
-        Ok(())
     }
+}
+
+/// An iroh client's session after its handshake, before it runs.
+struct Admitted {
+    session: moq_net::Session,
+    driver: moq_net::Driver,
+    authorization: Authorization,
+    /// The broadcast name the session asked for, if its path names one.
+    name: Option<String>,
 }
 
 /// Waits until `authorization` expires, or forever without an expiry.
