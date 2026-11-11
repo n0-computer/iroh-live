@@ -12,6 +12,7 @@ use std::{
 
 use bytes::BytesMut;
 use n0_error::{Result, StdResultExt, anyerr};
+use n0_future::task::AbortOnDropHandle;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{info, warn};
 
@@ -109,12 +110,17 @@ impl Importer {
 }
 
 /// A file import that has parsed its header and is ready to run.
+///
+/// Dropping it stops the ffmpeg child of a `--transcode` import.
 #[derive(derive_more::Debug)]
 pub struct FileImport {
     #[debug(skip)]
     importer: Importer,
     #[debug(skip)]
     input: Input,
+    /// Waits on the ffmpeg child, which is killed when this drops.
+    #[debug(skip)]
+    _ffmpeg: Option<AbortOnDropHandle<()>>,
 }
 
 impl FileImport {
@@ -127,7 +133,7 @@ impl FileImport {
         mut broadcast: moq_net::broadcast::Producer,
         source: FileSource,
     ) -> Result<Self> {
-        let mut input = open_input(&source).await?;
+        let (mut input, ffmpeg) = open_input(&source).await?;
         let catalog =
             moq_mux::catalog::Producer::new(&mut broadcast, Default::default()).anyerr()?;
 
@@ -167,16 +173,23 @@ impl FileImport {
         };
         info!(bytes = read, "file header parsed, catalog published");
 
-        Ok(Self { importer, input })
+        Ok(Self {
+            importer,
+            input,
+            _ffmpeg: ffmpeg,
+        })
     }
 
     /// Reads the rest of the file, publishing as it goes.
     ///
     /// On a read or demux error, aborts the tracks with it and returns it.
     pub async fn run(self) -> Result<()> {
+        // `_ffmpeg` lives until the end of this function, so the child runs
+        // for as long as the import reads from it.
         let Self {
             mut importer,
             mut input,
+            _ffmpeg,
         } = self;
         let mut buffer = BytesMut::new();
 
@@ -239,26 +252,33 @@ fn catalog_is_empty(catalog: &moq_mux::catalog::Producer) -> bool {
 }
 
 /// Opens the file, optionally behind an ffmpeg transcode.
-async fn open_input(source: &FileSource) -> Result<Input> {
+///
+/// For a transcode, also returns the task that waits on ffmpeg. Dropping it
+/// kills the child.
+async fn open_input(source: &FileSource) -> Result<(Input, Option<AbortOnDropHandle<()>>)> {
     if source.transcode {
-        return Ok(Box::pin(transcode_file(source).await?));
+        let (stdout, ffmpeg) = transcode_file(source).await?;
+        return Ok((Box::pin(stdout), Some(ffmpeg)));
     }
     let file = tokio::fs::File::open(&source.path)
         .await
         .map_err(|err| anyerr!("failed to open {}: {err}", source.path.display()))?;
-    Ok(Box::pin(file))
+    Ok((Box::pin(file), None))
 }
 
 /// Spawns ffmpeg to remux or re-encode the source to stdout.
 ///
-/// A background task awaits the child. Otherwise ffmpeg lingers as a zombie
-/// after it exits on SIGPIPE.
-async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
+/// Returns its stdout and the task that awaits the child, so ffmpeg does not
+/// linger as a zombie after it exits on SIGPIPE. Dropping the task kills
+/// ffmpeg. The child reads no stdin, so it leaves the terminal alone.
+async fn transcode_file(
+    source: &FileSource,
+) -> Result<(impl AsyncRead + use<>, AbortOnDropHandle<()>)> {
     let input = source.path.clone();
     let copy_video = is_h264(&input).await?;
 
     let mut command = tokio::process::Command::new("ffmpeg");
-    command.args(["-hide_banner", "-loglevel", "error"]);
+    command.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
     if source.looping {
         command.args(["-stream_loop", "-1"]);
     }
@@ -291,13 +311,15 @@ async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
     command.arg("-");
 
     let mut child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|err| anyerr!("failed to spawn ffmpeg, is it installed? {err}"))?;
     let stdout = child.stdout.take().expect("stdout was piped");
 
-    tokio::spawn(async move {
+    let wait = tokio::spawn(async move {
         match child.wait().await {
             Ok(status) if !status.success() => {
                 warn!(code = ?status.code(), "ffmpeg exited with a non-zero status");
@@ -307,7 +329,7 @@ async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
         }
     });
 
-    Ok(stdout)
+    Ok((stdout, AbortOnDropHandle::new(wait)))
 }
 
 /// Returns whether the first video stream of the file is H.264.
