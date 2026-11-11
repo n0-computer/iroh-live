@@ -1,16 +1,16 @@
 //! Shared transport setup: binding, subscribing, and advertising.
 
-use std::{ops::Deref, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BroadcastTicket, EndpointConfig, Mdns, Node, Session, Subscription,
+    BoundNode, BroadcastTicket, EndpointConfig, Mdns, Node, Session, Subscription,
     layout::LiveLayout,
     media::{RemoteBroadcast, remote_broadcast},
     node::{RelayConfig, RelayLink},
 };
 use n0_error::Result;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::args::TransportArgs;
 
@@ -29,57 +29,8 @@ const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
 /// A live node, and the router that accepts its sessions if it serves.
 ///
-/// Derefs to [`Node`]. Cheap to clone. [`shutdown`](Self::shutdown) shuts the
-/// node down and closes its endpoint, which [`Node::shutdown`] alone does not.
-#[derive(Debug, Clone)]
-pub struct Transport {
-    live: Node,
-    /// Accepts incoming sessions. `None` for a node that only dials.
-    router: Option<Router>,
-}
-
-impl Transport {
-    /// Wraps `live`, mounting it on a new router if `serve` is set.
-    pub fn new(live: Node, serve: bool) -> Self {
-        let router = serve.then(|| live.mount(Router::builder(live.endpoint().clone())).spawn());
-        Self { live, router }
-    }
-
-    /// Wraps `live`, which `router` already serves.
-    ///
-    /// For a node with services of its own on the router, such as rooms.
-    pub fn serving(live: Node, router: Router) -> Self {
-        Self {
-            live,
-            router: Some(router),
-        }
-    }
-
-    /// Shuts the node down, then closes the endpoint.
-    ///
-    /// Sessions say goodbye before the endpoint closes. Idempotent.
-    pub async fn shutdown(&self) {
-        self.live.shutdown().await;
-        match &self.router {
-            // Closes the endpoint once the router's handlers have shut down.
-            Some(router) => {
-                if let Err(err) = router.shutdown().await {
-                    error!(error = %err, "failed to shut down the iroh router");
-                    self.live.endpoint().close().await;
-                }
-            }
-            None => self.live.endpoint().close().await,
-        }
-    }
-}
-
-impl Deref for Transport {
-    type Target = Node;
-
-    fn deref(&self) -> &Node {
-        &self.live
-    }
-}
+/// Shared by the windows of a command, and shut down by whichever ends it.
+pub type Transport = Arc<BoundNode>;
 
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
@@ -97,16 +48,15 @@ pub async fn setup_live(serve: bool) -> Result<Transport> {
 pub async fn setup_live_with(options: EndpointConfig, serve: bool) -> Result<Transport> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointConfig { mdns, ..options }.bind().await?;
-    Ok(Transport::new(
-        Node::new(endpoint, LiveLayout::default().config(&[])),
-        serve,
-    ))
+    let live = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+    let router = serve.then(|| live.mount(Router::builder(endpoint)).spawn());
+    Ok(Arc::new(BoundNode::new(live, router)))
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.
 ///
-/// An endpoint dropped without [`Transport::shutdown`] logs an error, and its
-/// peers have to time out.
+/// A [`BoundNode`] dropped without [`BoundNode::shutdown`] shuts down in the
+/// background, which a command that exits right after does not wait for.
 pub async fn with_live<T>(
     transport: Transport,
     setup: impl AsyncFnOnce(&Transport) -> Result<T>,

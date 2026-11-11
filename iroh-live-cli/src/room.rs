@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use iroh::protocol::Router;
 use iroh_live::{
-    EndpointConfig, Node,
+    BoundNode, EndpointConfig, Node,
     layout::LiveLayout,
     media::{AudioTarget, LocalBroadcast},
     rooms::{Room, RoomTicket, Rooms},
@@ -65,7 +65,7 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     let rooms = Rooms::new(&node);
     // Mounts rooms' gossip next to the moq ALPNs.
     let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
-    let live = Transport::serving(node, router);
+    let live = Arc::new(BoundNode::new(node, Some(router)));
     let (_, joined) =
         transport::with_live(live, async |live| join(live, &rooms, args, output).await).await?;
     Ok(joined)
