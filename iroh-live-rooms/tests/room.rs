@@ -96,7 +96,7 @@ async fn a_member_subscribes_on_demand() {
         .expect("timed out subscribing")
         .expect("subscribe");
     let mut track = subscription
-        .as_moq()
+        .broadcast()
         .track(DATA_TRACK)
         .expect("data track")
         .subscribe(None)
@@ -394,7 +394,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
         .expect("timed out subscribing")
         .expect("subscribe");
     let mut track = subscription
-        .as_moq()
+        .broadcast()
         .track(DATA_TRACK)
         .expect("data track")
         .subscribe(None)

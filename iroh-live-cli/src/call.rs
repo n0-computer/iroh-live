@@ -376,7 +376,7 @@ mod window {
         ///
         /// The peer withdrawing its offer ends the broadcast at once.
         fn ended(&self) -> bool {
-            self.sub.subscription().as_moq().is_closed() || self.sub.broadcast().is_closed()
+            self.sub.subscription().broadcast().is_closed() || self.sub.broadcast().is_closed()
         }
     }
 

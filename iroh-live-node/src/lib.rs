@@ -22,7 +22,7 @@
 //!
 //! // Resolve a peer's broadcast, dialing the peer if no route exists yet.
 //! let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
-//! let remote = subscription.as_moq();
+//! let remote = subscription.broadcast();
 //! # drop(remote);
 //! # Ok(())
 //! # }

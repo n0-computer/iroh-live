@@ -34,7 +34,7 @@ let track = publication.broadcast().create_track("video", None)?;
 
 // Resolve a peer's broadcast, dialing the peer if no route exists yet.
 let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
-let consumer = subscription.as_moq();
+let consumer = subscription.broadcast();
 ```
 
 ## Who sees what

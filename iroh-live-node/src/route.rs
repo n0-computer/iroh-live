@@ -70,7 +70,7 @@ pub enum LinkKind {
 /// moq moves the broadcast between routes of one instance, such as a direct
 /// link and a relay, without ending it. A task the subscription owns follows
 /// the path: when another instance takes it over, or the broadcast ends while
-/// a route still serves the path, [`as_moq`](Self::as_moq) switches to what
+/// a route still serves the path, [`broadcast`](Self::broadcast) switches to what
 /// serves it now. Cheap to clone.
 #[derive(Clone, derive_more::Debug)]
 #[debug("Subscription({}, pinned {})", inner.path, inner.pin.is_some())]
@@ -81,7 +81,7 @@ pub struct Subscription {
 struct SubscriptionInner {
     path: Path,
     origin: origin::Consumer,
-    /// The broadcast [`Subscription::as_moq`] returns, which the follow task updates.
+    /// The broadcast [`Subscription::broadcast`] returns, which the follow task updates.
     current: Arc<Mutex<broadcast::Consumer>>,
     /// Cancelled once nothing serves the path.
     ended: CancellationToken,
@@ -183,7 +183,7 @@ impl Subscription {
     }
 
     /// Returns the route table the path was resolved in.
-    pub fn as_origin(&self) -> origin::Consumer {
+    pub fn origin(&self) -> origin::Consumer {
         self.inner.origin.clone()
     }
 
@@ -191,7 +191,7 @@ impl Subscription {
     ///
     /// The subscription's own task re-resolves the path, so a later call may
     /// return a newer broadcast than an earlier one.
-    pub fn as_moq(&self) -> broadcast::Consumer {
+    pub fn broadcast(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
     }
 
@@ -238,7 +238,7 @@ impl Subscription {
     /// Waits until nothing serves the path.
     ///
     /// The subscription follows the path on its own, so awaiting this has no
-    /// effect on what [`as_moq`](Self::as_moq) returns. A pinned subscription
+    /// effect on what [`broadcast`](Self::broadcast) returns. A pinned subscription
     /// ends when another instance takes its path over.
     ///
     /// Cancellation safe: dropping the future loses nothing.

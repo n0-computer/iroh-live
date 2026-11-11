@@ -33,7 +33,7 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     )
     .await
     .expect("subscribe");
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
     let session = subscription.session().expect("served by a direct session");
     assert_eq!(session.remote_id(), alice.id());
     let link = subscription.serving_link().expect("a serving link");
@@ -97,7 +97,7 @@ async fn an_own_publication_resolves_locally() {
     )
     .await
     .expect("subscribe");
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
     assert!(subscription.serving_link().is_none(), "served over a link");
     assert!(alice.moq.sessions().get().is_empty(), "dialed itself");
     alice.shutdown().await;
@@ -116,7 +116,7 @@ async fn a_subscription_follows_a_new_instance_on_its_own() {
     )
     .await
     .expect("subscribe");
-    assert!(read_counter(&subscription.as_moq()).await < 1000);
+    assert!(read_counter(&subscription.broadcast()).await < 1000);
 
     // The publisher replaces its broadcast with a new instance at the same path.
     first.broadcast().close();
@@ -126,7 +126,7 @@ async fn a_subscription_follows_a_new_instance_on_its_own() {
 
     step("the subscription moves to the new instance", async {
         loop {
-            let broadcast = subscription.as_moq();
+            let broadcast = subscription.broadcast();
             if !broadcast.is_closed()
                 && let Ok(Some(counter)) =
                     tokio::time::timeout(Duration::from_millis(500), try_counter(&broadcast)).await
@@ -255,7 +255,7 @@ async fn a_peers_audience_follows_its_set() {
     )
     .await
     .expect("bob is a member");
-    reading(&for_bob.as_moq()).await;
+    reading(&for_bob.broadcast()).await;
 
     // Carol has a session, but nothing is offered on it.
     let session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
@@ -278,7 +278,7 @@ async fn a_peers_audience_follows_its_set() {
     )
     .await
     .expect("carol after joining the set");
-    reading(&for_carol.as_moq()).await;
+    reading(&for_carol.broadcast()).await;
 
     // Taking her out again withdraws the path from her, and only from her.
     let path = publication.path().as_str();
@@ -292,7 +292,7 @@ async fn a_peers_audience_follows_its_set() {
         session.subscribe(publication.path()),
     )
     .await;
-    read_counter(&for_bob.as_moq()).await;
+    read_counter(&for_bob.broadcast()).await;
 
     // An empty set offers to nobody.
     let mut bob_updates = bob.moq.origin().announced();
@@ -356,7 +356,7 @@ async fn unpublishing_withdraws_the_path() {
     )
     .await
     .expect("subscribe");
-    reading(&subscription.as_moq()).await;
+    reading(&subscription.broadcast()).await;
     let mut updates = bob.moq.origin().announced();
     announced(&mut updates, publication.path().as_str()).await;
     assert!(!publication.is_withdrawn());
@@ -386,7 +386,7 @@ async fn closing_a_session_cuts_the_peer_off() {
     )
     .await
     .expect("subscribe");
-    let mut bob_reading = reading(&subscription.as_moq()).await;
+    let mut bob_reading = reading(&subscription.broadcast()).await;
 
     let session = step("alice sees bob", session_with(&alice, bob.id())).await;
     session.close("cut off");
@@ -447,7 +447,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     )
     .await
     .expect("the offered publication");
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
     assert_eq!(session.remote_id(), alice.id());
 
     // The grant does not cover the secret one, so it is not offered.
@@ -564,7 +564,7 @@ async fn a_peer_cannot_route_another_publishers_path() {
     .expect("subscribe");
     // The serving link is recorded when the first track is requested, which
     // moq-net's origin only sees once a reader asks for one.
-    assert!(read_counter(&subscription.as_moq()).await < FORGED);
+    assert!(read_counter(&subscription.broadcast()).await < FORGED);
     assert_eq!(
         subscription.session().map(|session| session.remote_id()),
         Some(alice.id()),
@@ -597,7 +597,7 @@ async fn a_subscriber_started_first_gets_the_named_path() {
         .expect("task")
         .expect("subscribe");
     assert_eq!(subscription.path().as_str(), path);
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -713,7 +713,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     )
     .await
     .expect("subscribe");
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
     let err = step(
         "outside the grant",
         alice.moq.subscribe(other.path(), Reach::Direct(bob.id())),
@@ -871,7 +871,7 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     let subscription = step("bob subscribes", from_alice.subscribe(publication.path()))
         .await
         .expect("bob is in the set");
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
 
     // Carol sees the public one, and never the one for bob.
     let mut carol_table = carol.moq.origin().announced();
@@ -918,7 +918,7 @@ async fn a_changed_audience_retracts_and_grants_live() {
     )
     .await
     .expect("bob is in the set");
-    let mut bob_reading = reading(&for_bob.as_moq()).await;
+    let mut bob_reading = reading(&for_bob.broadcast()).await;
     let carol_session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
@@ -937,10 +937,10 @@ async fn a_changed_audience_retracts_and_grants_live() {
     )
     .await
     .expect("carol was added");
-    read_counter(&for_carol.as_moq()).await;
+    read_counter(&for_carol.broadcast()).await;
 
     // The audience can change wholesale, too.
-    let mut carol_reading = reading(&for_carol.as_moq()).await;
+    let mut carol_reading = reading(&for_carol.broadcast()).await;
     publication.set_audience(Audience::peers([]));
     let err = reset(&mut carol_reading).await;
     assert!(unauthorized(&err), "carol's read ended with {err:#}");
@@ -952,7 +952,7 @@ async fn a_changed_audience_retracts_and_grants_live() {
     )
     .await
     .expect("everyone may see it");
-    read_counter(&again.as_moq()).await;
+    read_counter(&again.broadcast()).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -988,7 +988,7 @@ async fn a_peer_reads_the_publishers_own_broadcast() {
     let mut subscriber = step(
         "bob subscribes to the track",
         subscription
-            .as_moq()
+            .broadcast()
             .track("video")
             .expect("track")
             .subscribe(common::subscription()),
@@ -1052,7 +1052,7 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     let subscription = step("carol's session", with_carol.subscribe(publication.path()))
         .await
         .expect("carol's session resolves her own path");
-    read_counter(&subscription.as_moq()).await;
+    read_counter(&subscription.broadcast()).await;
     stays_pending(
         "bob's session resolved a path only carol publishes",
         QUIET,

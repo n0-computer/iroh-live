@@ -922,7 +922,7 @@ async fn a_relay_link_publishes_and_consumes() {
             .await
             .expect("subscribe timeout")
             .expect("subscribe through the relay");
-    let frame = first_frame(&subscription.as_moq(), "data").await;
+    let frame = first_frame(&subscription.broadcast(), "data").await;
     assert_eq!(&frame.payload[..], b"from-the-browser");
     let serving = subscription.serving_link().expect("a serving link");
     assert_eq!(serving.kind, LinkKind::Relay);
@@ -1066,7 +1066,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
             .expect("subscribe through the relay");
 
     // A link serves a path once a reader asks it for a track.
-    first_frame(&subscription.as_moq(), "catalog.json").await;
+    first_frame(&subscription.broadcast(), "catalog.json").await;
 
     // The transport: the relay link serves the path, and its monitor has
     // measured the link.
@@ -1218,7 +1218,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     .await
     .expect("subscribe timeout")
     .expect("subscribe");
-    let mut reader = subscribed(&subscription.as_moq()).await;
+    let mut reader = subscribed(&subscription.broadcast()).await;
     let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
     relay_route_arrives().await;
 
@@ -1236,7 +1236,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
         .await
         .expect("subscribe timeout")
         .expect("subscribe through the relay");
-    subscribed(&again.as_moq()).await;
+    subscribed(&again.broadcast()).await;
     assert_eq!(
         again.serving_link().map(|link| link.kind),
         Some(LinkKind::Relay),
@@ -1334,7 +1334,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     .await
     .expect("subscribe timeout")
     .expect("subscribe");
-    let mut reader = subscribed(&subscription.as_moq()).await;
+    let mut reader = subscribed(&subscription.broadcast()).await;
     let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
     relay_route_arrives().await;
 
@@ -1446,7 +1446,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     .await
     .expect("subscribe timeout")
     .expect("subscribe through the relay");
-    let frame = first_frame(&subscription.as_moq(), "data").await;
+    let frame = first_frame(&subscription.broadcast(), "data").await;
     assert_eq!(&frame.payload[..], b"from-the-browser");
 
     drop((browser_forged, browser_own));
@@ -1654,7 +1654,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         .await
         .expect("subscribe timeout")
         .expect("subscribe");
-    let frame = first_frame(&subscription.as_moq(), "data").await;
+    let frame = first_frame(&subscription.broadcast(), "data").await;
     assert_ne!(
         &frame.payload[..],
         b"forged",

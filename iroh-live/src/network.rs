@@ -14,9 +14,9 @@ use moq_ext_player::{NetworkSample, RemoteBroadcast};
 /// [`RemoteBroadcast::catalog`] for it.
 pub fn remote_broadcast(subscription: &Subscription) -> RemoteBroadcast {
     let remote = RemoteBroadcast::from_resolved(
-        subscription.as_origin(),
+        subscription.origin(),
         subscription.path().clone(),
-        subscription.as_moq(),
+        subscription.broadcast(),
     );
     remote.set_network(signals(subscription.clone()));
     remote

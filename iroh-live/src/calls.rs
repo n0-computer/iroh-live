@@ -507,7 +507,7 @@ impl Call {
     ///
     /// Cancellation safe.
     pub async fn ended(&self) -> HungUp {
-        let broadcast = self.subscription.as_moq();
+        let broadcast = self.subscription.broadcast();
         let mut sessions = self.inner.node.sessions();
         // The session is looked up on every pass rather than kept from the
         // connect, since the node may list it only after the subscribe returns.

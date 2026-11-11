@@ -461,7 +461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let path = layout.path(peer, "control")?;
             let subscription = node.subscribe(path, Reach::Direct(peer)).await?;
             let mut control = subscription
-                .as_moq()
+                .broadcast()
                 .track("control")?
                 .subscribe(None)
                 .await?

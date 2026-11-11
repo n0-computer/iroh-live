@@ -121,7 +121,7 @@ async fn read_once(
     ctx: &egui::Context,
 ) -> Result<()> {
     let subscription = room.subscribe(from, NAME).await?;
-    let broadcast = subscription.as_moq();
+    let broadcast = subscription.broadcast();
     let mut chat = Subscriber::subscribe(&broadcast)
         .await
         .std_context("subscribing to the chat")?;

@@ -177,7 +177,7 @@ pub use iroh_live_rooms as rooms;
 ///
 /// // On another node.
 /// let subscription = other.subscribe(&path, Reach::Direct(node.id())).await?;
-/// let track = subscription.as_moq().track("latency")?;
+/// let track = subscription.broadcast().track("latency")?;
 /// let mut latency = snapshot::Consumer::<u64>::new(track, Default::default());
 /// while let Some(newest) = latency.latest().await? {
 ///     println!("latency {} ms", newest.value);

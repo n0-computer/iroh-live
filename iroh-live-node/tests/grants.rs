@@ -49,7 +49,7 @@ async fn a_default_viewer_reads_a_claimed_path() {
     )
     .await
     .expect("subscribe with the claim");
-    reading(&subscription.as_moq()).await;
+    reading(&subscription.broadcast()).await;
     drop(claim);
 
     alice.shutdown().await;
@@ -83,7 +83,7 @@ async fn a_claim_widens_a_session_bob_accepted() {
         .await
         .expect("subscribe over the accepted session");
         let track = subscription
-            .as_moq()
+            .broadcast()
             .track("video")
             .expect("track")
             .subscribe(common::subscription())
@@ -148,7 +148,7 @@ async fn dropping_the_last_claim_narrows_the_grant_again() {
     )
     .await
     .expect("subscribe");
-    let mut track = reading(&subscription.as_moq()).await;
+    let mut track = reading(&subscription.broadcast()).await;
     let session = subscription.session().expect("a session");
     assert!(session.grant().allows_publish(path.as_str()));
 
@@ -366,7 +366,7 @@ async fn a_default_viewer_subscribes_to_a_ticket() {
     let subscription = step("subscribe", bob.moq.subscribe_ticket(&ticket))
         .await
         .expect("a ticket subscribe needs no grant");
-    reading(&subscription.as_moq()).await;
+    reading(&subscription.broadcast()).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -446,7 +446,7 @@ async fn an_own_ticket_resolves_locally() {
     .await
     .expect("subscribe");
     assert!(subscription.session().is_none(), "no session with oneself");
-    reading(&subscription.as_moq()).await;
+    reading(&subscription.broadcast()).await;
 
     alice.shutdown().await;
 }
