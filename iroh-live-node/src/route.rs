@@ -106,13 +106,7 @@ impl Routes {
     fn source(&mut self) -> Option<Source> {
         let announced = self.announced.as_mut()?;
         while let Some(event) = announced.try_next() {
-            self.source = match event {
-                RouteEvent::End(_) => None,
-                RouteEvent::Update(announce)
-                | RouteEvent::Start(announce)
-                | RouteEvent::Restart(announce)
-                | RouteEvent::Takeover { announce, .. } => Some(announce.route.source()),
-            };
+            self.source = live_route(&event).map(|announce| announce.route.source());
         }
         self.source
     }
@@ -304,19 +298,24 @@ pub(crate) async fn announced_by(
         .map_err(|_| moq_net::Error::Unauthorized)?;
     let mut announced = view.scope("", &Patterns::from(pattern))?.routes();
     while let Some(event) = announced.next().await {
-        match event {
-            RouteEvent::End(_) => {}
-            RouteEvent::Update(announce)
-            | RouteEvent::Start(announce)
-            | RouteEvent::Restart(announce)
-            | RouteEvent::Takeover { announce, .. } => {
-                if Hop::of_route(announce.route.source()).is_some_and(&from) {
-                    return Ok(announce.route.instance().clone());
-                }
-            }
+        if let Some(announce) = live_route(&event)
+            && Hop::of_route(announce.route.source()).is_some_and(&from)
+        {
+            return Ok(announce.route.instance().clone());
         }
     }
     Err(moq_net::Error::Closed)
+}
+
+/// Returns the route an event leaves covering the prefix, or `None` once no route does.
+fn live_route(event: &RouteEvent) -> Option<&moq_net::announce::Announce> {
+    match event {
+        RouteEvent::End(_) => None,
+        RouteEvent::Update(announce)
+        | RouteEvent::Start(announce)
+        | RouteEvent::Restart(announce)
+        | RouteEvent::Takeover { announce, .. } => Some(announce),
+    }
 }
 
 /// Resolves `path` in the route table, for [`Node::subscribe`](crate::Node::subscribe).
