@@ -236,9 +236,7 @@ mod preview {
             let image = self.view.render();
             ui.centered_and_justified(|ui| ui.add_sized(size, image));
 
-            let stats = self.broadcast.stats();
-            let status = self.broadcast.status().borrow().clone();
-            self.overlay.show_publish(ui, video_rect, &stats, &status);
+            self.overlay.show_broadcast(ui, video_rect, &self.broadcast);
 
             crate::ui::control_panel(&ctx, "publish-controls", |ui| {
                 self.picker.ui(ui, &self.broadcast);

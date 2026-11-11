@@ -324,13 +324,9 @@ pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
 /// desktop limits, for example eight color attachments. The Raspberry Pi 4
 /// Vulkan driver allows four, so the request fails and eframe exits before a
 /// window opens. Video rendering needs nothing beyond the adapter's limits.
-fn device_descriptor(
-    adapter: &wgpu::Adapter,
-    required_features: wgpu::Features,
-) -> wgpu::DeviceDescriptor<'static> {
+fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     wgpu::DeviceDescriptor {
         label: Some("moq-ext-egui video device"),
-        required_features,
         required_limits: adapter.limits(),
         ..Default::default()
     }
@@ -342,16 +338,17 @@ fn device_descriptor(
 fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
-            device_descriptor: Arc::new(|adapter| {
-                device_descriptor(adapter, wgpu::Features::empty())
-            }),
+            device_descriptor: Arc::new(device_descriptor),
             ..egui_wgpu::WgpuSetupCreateNew::without_display_handle()
         }),
         ..Default::default()
     }
 }
 
-/// Builds a Vulkan device, with DMA-BUF import if the adapter supports it.
+/// Builds a Vulkan device that imports DMA-BUF memory where the adapter can.
+///
+/// [`moq_video::render::request_device`] adds the DMA-BUF feature and the
+/// timeline-semaphore extension that the zero-copy paths need.
 #[cfg(target_os = "linux")]
 fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     // DMA-BUF import needs Vulkan. If `WGPU_BACKEND` asks for another
@@ -382,25 +379,24 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
         }
     };
 
-    let dma_buf = wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
-    let required_features = if adapter.features().contains(dma_buf) {
-        dma_buf
-    } else {
-        debug!(
-            "the adapter cannot import DMA-BUF memory, so video frames are uploaded from the CPU"
-        );
-        wgpu::Features::empty()
-    };
-
-    let (device, queue) = match pollster::block_on(
-        adapter.request_device(&device_descriptor(&adapter, required_features)),
-    ) {
+    let (device, queue) = match pollster::block_on(moq_video::render::request_device(
+        &adapter,
+        &device_descriptor(&adapter),
+    )) {
         Ok(pair) => pair,
         Err(err) => {
             warn!(error = %err, "wgpu device request failed, letting egui build one");
             return adapter_limits_config();
         }
     };
+    if !device
+        .features()
+        .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
+    {
+        debug!(
+            "the adapter cannot import DMA-BUF memory, so video frames are uploaded from the CPU"
+        );
+    }
 
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::Existing(egui_wgpu::WgpuSetupExisting {

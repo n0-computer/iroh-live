@@ -51,11 +51,11 @@ tile, with one clickable section per `StatCategory`: `Net`, `Capture`,
 bar. Values that change over time get a sparkline. The overlay keeps the
 history itself: one point every 100 ms, twelve seconds in all.
 
-`show_publish(ui, rect, &stats, &status)` draws a broadcast. `Capture` shows the
+`show_broadcast(ui, rect, &broadcast)` draws a `LocalBroadcast`. `Capture` shows the
 source frame rate, each rendition's encoder, the audio encoder and each slot's
 state. `Net` shows the encoded video bitrate summed over the renditions.
 
-`show_playback(ui, rect, &stats, &status, &timeline)` draws a player. `Net`
+`show_player(ui, rect, &player)` draws a `Player`. `Net`
 shows the round trip, loss and the publisher's delivery estimate, plus any
 lines the caller set with `set_link`. `Render` shows the rendition mode, the
 rendition, the decoder, the frame rate, the decode time and the last switch
@@ -63,8 +63,10 @@ error. `Audio` shows the buffer and the playout latency. `Time` draws the
 player's timeline over the last ten seconds: how long each picture was held
 between decoder and screen, picture and audio cadence, the A/V offset, the
 audio buffer and the round trip. Scrolling over it pauses it and moves back in
-time, and a double click returns to the live edge. Read `Player::timeline()`
-only while `timeline_open()` is true.
+time, and a double click returns to the live edge. The overlay copies
+`Player::timeline()` only while the `Time` panel is open. The code that turns
+stats into lines is in `overlay/sections.rs`, and the timeline is in
+`overlay/timeline.rs`.
 
 `irl publish --preview` shows `Capture` and `Net`. `irl watch` shows `Net`,
 `Render`, `Audio` and `Time`.

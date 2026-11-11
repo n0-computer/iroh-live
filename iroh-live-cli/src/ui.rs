@@ -359,8 +359,6 @@ impl RemoteView {
 
     /// Draws the stats overlay over `rect`.
     pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        let stats = self.player.stats();
-        let status = self.player.status().borrow().clone();
         if let Some(lines) = self
             .link
             .as_mut()
@@ -368,14 +366,7 @@ impl RemoteView {
         {
             self.overlay.set_link(lines);
         }
-        // Copy the timeline only while the TIME panel is open.
-        let timeline = if self.overlay.timeline_open() {
-            self.player.timeline()
-        } else {
-            Vec::new()
-        };
-        self.overlay
-            .show_playback(ui, rect, &stats, &status, &timeline);
+        self.overlay.show_player(ui, rect, &self.player);
     }
 
     /// Draws the rendition and decoder pickers and the volume slider.

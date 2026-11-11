@@ -34,8 +34,8 @@ egui's defaults are too high for some drivers, such as the Raspberry Pi 4.
 ## Debug overlay
 
 `overlay::DebugOverlay` draws a translucent bar along the bottom of a video,
-with one clickable section per `StatCategory`. `show_playback` shows a
-`Player`'s stats and timeline, and `show_publish` shows a `LocalBroadcast`'s
+with one clickable section per `StatCategory`. `show_player` shows a
+`Player`'s stats and timeline, and `show_broadcast` shows a `LocalBroadcast`'s
 stats. Clicking a section opens a detail panel with sparklines.
 
 ## wgpu
