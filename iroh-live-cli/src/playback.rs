@@ -2,11 +2,38 @@
 
 use std::{sync::Arc, time::Duration};
 
-use iroh_live::media::{AudioTarget, Catalog, RemoteBroadcast};
+use iroh_live::media::{
+    AudioTarget, Catalog, Player, PlayerConfig, RemoteBroadcast, RenditionMode, video_rendition,
+};
 use n0_error::{Result, anyerr};
 use tracing::info;
 #[cfg(feature = "playback")]
 use tracing::warn;
+
+use crate::{args::PlaybackArgs, transport::Subscribed};
+
+/// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
+pub fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
+    PlayerConfig {
+        decoder: args.decoder.into(),
+        latency: args.latency.latency(),
+        audio: output.cloned(),
+        ..PlayerConfig::default()
+    }
+}
+
+/// Waits for the catalog of `sub`'s broadcast and plays it with `config`.
+///
+/// A broadcast without a catalog fails here instead of opening a black
+/// window, and so does a pinned rendition the catalog does not offer.
+pub async fn open(sub: Subscribed, config: PlayerConfig) -> Result<(Subscribed, Player)> {
+    let catalog = catalog(sub.broadcast()).await?;
+    if let RenditionMode::Pinned(name) = &config.rendition {
+        video_rendition(&catalog, name)?;
+    }
+    let player = sub.broadcast().play(config)?;
+    Ok((sub, player))
+}
 
 /// How long a broadcast's catalog may take to arrive once subscribed.
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);

@@ -121,7 +121,7 @@ mod window {
         rooms::{Room, RoomState},
     };
     use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
-    use n0_error::{Result, anyerr};
+    use n0_error::Result;
     use n0_future::task::AbortOnDropHandle;
     use n0_watcher::Watcher;
     use tokio::{sync::mpsc, task::JoinSet};
@@ -170,45 +170,39 @@ mod window {
             ticket,
             display_name,
         } = joined;
-        eframe::run_native(
-            "irl room",
-            crate::ui::native_options(fullscreen),
-            Box::new(move |cc| {
-                crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
-                let (chat_tx, chat_rx) = mpsc::channel(CHAT_QUEUE);
-                Ok(Box::new(RoomApp {
-                    live,
-                    state: room.state(),
-                    known: RoomState::default(),
-                    _wake: wake_on_room(&cc.egui_ctx, &room),
-                    ctx: cc.egui_ctx.clone(),
-                    chat_tx,
-                    chat_rx,
-                    chat_readers: HashMap::new(),
-                    chat_writer: chat,
-                    room,
-                    ticket,
-                    display_name,
-                    peers: Vec::new(),
-                    opening_keys: HashSet::new(),
-                    opening: JoinSet::new(),
-                    reconcile_at: None,
-                    chat: ChatState::default(),
-                    preview: VideoView::new(
-                        &cc.egui_ctx,
-                        "room-preview",
-                        sources.video.as_ref().map(VideoSource::frames),
-                        cc.wgpu_render_state.as_ref(),
-                    ),
-                    _sources: sources,
-                    output,
-                    render_state: cc.wgpu_render_state.clone(),
-                    playback,
-                    broadcast,
-                }))
-            }),
-        )
-        .map_err(|err| anyerr!("eframe failed: {err:#}"))
+        crate::ui::run_window("irl room", fullscreen, move |cc| {
+            let (chat_tx, chat_rx) = mpsc::channel(CHAT_QUEUE);
+            RoomApp {
+                live,
+                state: room.state(),
+                known: RoomState::default(),
+                _wake: wake_on_room(&cc.egui_ctx, &room),
+                ctx: cc.egui_ctx.clone(),
+                chat_tx,
+                chat_rx,
+                chat_readers: HashMap::new(),
+                chat_writer: chat,
+                room,
+                ticket,
+                display_name,
+                peers: Vec::new(),
+                opening_keys: HashSet::new(),
+                opening: JoinSet::new(),
+                reconcile_at: None,
+                chat: ChatState::default(),
+                preview: VideoView::new(
+                    &cc.egui_ctx,
+                    "room-preview",
+                    sources.video.as_ref().map(VideoSource::frames),
+                    cc.wgpu_render_state.as_ref(),
+                ),
+                _sources: sources,
+                output,
+                render_state: cc.wgpu_render_state.clone(),
+                playback,
+                broadcast,
+            }
+        })
     }
 
     /// The room window.
@@ -646,33 +640,23 @@ mod window {
         playback: PlaybackArgs,
         output: AudioTarget,
     ) -> Option<Opened> {
+        let config = crate::playback::player_config(&playback, Some(&output));
         // A member may announce a name it never publishes.
         let opened = tokio::time::timeout(PEER_TIMEOUT, async {
             let subscription = room.subscribe(remote, name).await?;
-            let sub = Subscribed::open(subscription);
-            crate::playback::catalog(sub.broadcast()).await?;
-            n0_error::Ok(sub)
+            crate::playback::open(Subscribed::open(subscription), config).await
         });
-        let sub = match opened.await {
-            Ok(Ok(sub)) => sub,
+        match opened.await {
+            Ok(Ok((sub, player))) => Some(Opened { sub, player }),
             Ok(Err(err)) => {
-                warn!(remote = %short(remote), %name, error = %err, "peer broadcast failed to open");
-                return None;
+                warn!(remote = %short(remote), %name, error = %format!("{err:#}"), "peer broadcast failed to open");
+                None
             }
             Err(_) => {
                 warn!(remote = %short(remote), %name, "peer broadcast produced no catalog");
-                return None;
+                None
             }
-        };
-        let config = crate::ui::player_config(&playback, Some(&output));
-        let player = match sub.broadcast().play(config) {
-            Ok(player) => player,
-            Err(err) => {
-                warn!(remote = %short(remote), %name, error = %err, "peer broadcast failed to play");
-                return None;
-            }
-        };
-        Some(Opened { sub, player })
+        }
     }
 
     /// Returns columns, rows, and cell size for `count` tiles in `available`.

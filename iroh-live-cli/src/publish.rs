@@ -154,8 +154,6 @@ mod preview {
     //!
     //! The picker swaps the device without restarting the broadcast.
 
-    use std::time::Duration;
-
     use eframe::egui;
     use iroh_live::media::{LocalBroadcast, VideoSource};
     use moq_ext_egui::{
@@ -163,8 +161,6 @@ mod preview {
         overlay::{DebugOverlay, StatCategory, fit_to_aspect},
     };
     use n0_error::{Result, anyerr};
-    use n0_future::task::AbortOnDropHandle;
-    use tokio::sync::oneshot;
     use tracing::{info, warn};
 
     use crate::{
@@ -172,6 +168,7 @@ mod preview {
         source::{self, Opened},
         source_spec::VideoSourceSpec,
         transport::Transport,
+        ui::Pending,
     };
 
     /// Opens the preview window and runs it until it closes.
@@ -183,28 +180,22 @@ mod preview {
         args: &PublishArgs,
     ) -> Result {
         let capture = args.capture.clone();
-        eframe::run_native(
-            "irl publish",
-            crate::ui::native_options(args.fullscreen),
-            Box::new(move |cc| {
-                crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
-                let view = VideoView::new(
-                    &cc.egui_ctx,
-                    "preview",
-                    sources.video.as_ref().map(VideoSource::frames),
-                    cc.wgpu_render_state.as_ref(),
-                );
-                Ok(Box::new(PreviewApp {
-                    live,
-                    broadcast,
-                    ticket,
-                    view,
-                    picker: SourcePicker::new(capture, sources),
-                    overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
-                }))
-            }),
-        )
-        .map_err(|err| anyerr!("eframe failed: {err:#}"))
+        crate::ui::run_window("irl publish", args.fullscreen, move |cc| {
+            let view = VideoView::new(
+                &cc.egui_ctx,
+                "preview",
+                sources.video.as_ref().map(VideoSource::frames),
+                cc.wgpu_render_state.as_ref(),
+            );
+            PreviewApp {
+                live,
+                broadcast,
+                ticket,
+                view,
+                picker: SourcePicker::new(capture, sources),
+                overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
+            }
+        })
     }
 
     /// The `irl publish --preview` window.
@@ -221,7 +212,6 @@ mod preview {
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
             crate::ui::escape_leaves_fullscreen(&ctx);
-            ctx.request_repaint_after(Duration::from_millis(16));
 
             if let Some(frames) = self.picker.poll() {
                 self.view.set_frames(frames);
@@ -316,14 +306,7 @@ mod preview {
         /// The sources publishing now, held to keep them running.
         sources: Opened,
         /// A source switch in flight.
-        opening: Option<Opening>,
-    }
-
-    /// A source switch in flight.
-    #[derive(Debug)]
-    struct Opening {
-        done: oneshot::Receiver<Result<Option<VideoSource>>>,
-        _task: AbortOnDropHandle<()>,
+        opening: Option<Pending<Result<Option<VideoSource>>>>,
     }
 
     impl SourcePicker {
@@ -363,7 +346,7 @@ mod preview {
 
             if changed {
                 self.error = None;
-                self.apply(broadcast);
+                self.apply(ui.ctx(), broadcast);
             }
             if self.opening.is_some() {
                 ui.label("opening ...");
@@ -376,13 +359,10 @@ mod preview {
         /// Collects a finished switch and returns the new frames, if any.
         fn poll(&mut self) -> Option<Option<iroh_live::media::VideoFrames>> {
             let opening = self.opening.as_mut()?;
-            let result = match opening.done.try_recv() {
-                Ok(result) => result,
-                Err(oneshot::error::TryRecvError::Empty) => return None,
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    Err(anyerr!("the source switch was abandoned"))
-                }
+            let std::task::Poll::Ready(result) = opening.poll() else {
+                return None;
             };
+            let result = result.unwrap_or_else(|| Err(anyerr!("the source switch was abandoned")));
             self.opening = None;
             match result {
                 Ok(video) => {
@@ -402,7 +382,7 @@ mod preview {
         /// Opens the selected source in a task and publishes it.
         ///
         /// A new switch aborts one still opening.
-        fn apply(&mut self, broadcast: &LocalBroadcast) {
+        fn apply(&mut self, ctx: &egui::Context, broadcast: &LocalBroadcast) {
             let Some(selected) = self.selected else {
                 return;
             };
@@ -412,21 +392,16 @@ mod preview {
                 ..self.capture.clone()
             };
             let broadcast = broadcast.clone();
-            let (done, report) = oneshot::channel();
-            let task = tokio::spawn(async move {
-                let result = match selected {
+            let switch = async move {
+                match selected {
                     PickedSource::None => {
                         broadcast.clear_video();
                         Ok(None)
                     }
                     _ => source::configure_video(&broadcast, &capture).await,
-                };
-                let _ = done.send(result);
-            });
-            self.opening = Some(Opening {
-                done: report,
-                _task: AbortOnDropHandle::new(task),
-            });
+                }
+            };
+            self.opening = Some(Pending::spawn(ctx, switch, drop));
         }
     }
 }

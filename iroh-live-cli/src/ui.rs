@@ -1,25 +1,100 @@
 //! Widgets and lifecycle helpers shared by the egui windows.
 
-use std::time::{Duration, Instant};
+use std::{
+    task::Poll,
+    time::{Duration, Instant},
+};
 
 use eframe::egui;
-use iroh_live::media::{AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode};
+use iroh_live::media::{LocalBroadcast, Player, RenditionMode};
 use moq_ext_egui::{
     VideoView,
     overlay::{DebugOverlay, StatCategory},
 };
+use n0_error::{Result, anyerr};
 use n0_future::task::{AbortOnDropHandle, spawn};
+use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::{args::PlaybackArgs, backend::Backend, transport::Transport};
+use crate::{backend::Backend, transport::Transport};
 
-/// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
-pub fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
-    PlayerConfig {
-        decoder: args.decoder.into(),
-        latency: args.latency.latency(),
-        audio: output.cloned(),
-        ..PlayerConfig::default()
+/// How often a window's state machine runs while nothing draws the window.
+const HEARTBEAT: Duration = Duration::from_millis(100);
+
+/// The size of the buttons on screens without a picture.
+///
+/// Larger than the egui default, for small touchscreens.
+pub const BUTTON: egui::Vec2 = egui::vec2(200.0, 40.0);
+
+/// Opens a media window titled `title` and runs it until it closes.
+///
+/// `build` makes the app from eframe's creation context. Ctrl+C in the
+/// terminal closes the window.
+pub fn run_window<A: eframe::App + 'static>(
+    title: &str,
+    fullscreen: bool,
+    build: impl FnOnce(&eframe::CreationContext<'_>) -> A + 'static,
+) -> Result {
+    eframe::run_native(
+        title,
+        native_options(fullscreen),
+        Box::new(move |cc| {
+            spawn_ctrl_c_handler(&cc.egui_ctx);
+            Ok(Box::new(build(cc)))
+        }),
+    )
+    .map_err(|err| anyerr!("eframe failed: {err:#}"))
+}
+
+/// A task whose one result a window collects on a later pass.
+///
+/// Dropping it aborts the task.
+#[derive(Debug)]
+pub struct Pending<T> {
+    rx: oneshot::Receiver<T>,
+    task: AbortOnDropHandle<()>,
+}
+
+impl<T: Send + 'static> Pending<T> {
+    /// Runs `future` in a task and repaints `ctx` when it finishes.
+    ///
+    /// A result that arrives after the window gave up on it goes to `late`.
+    pub fn spawn(
+        ctx: &egui::Context,
+        future: impl Future<Output = T> + Send + 'static,
+        late: impl FnOnce(T) + Send + 'static,
+    ) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let ctx = ctx.clone();
+        let task = spawn(async move {
+            if let Err(result) = tx.send(future.await) {
+                late(result);
+            }
+            ctx.request_repaint();
+        });
+        Self {
+            rx,
+            task: AbortOnDropHandle::new(task),
+        }
+    }
+
+    /// Returns the result once the task has finished.
+    ///
+    /// Returns `Ready(None)` for a task that stopped without a result, which
+    /// only happens while the runtime shuts down.
+    pub fn poll(&mut self) -> Poll<Option<T>> {
+        match self.rx.try_recv() {
+            Ok(result) => Poll::Ready(Some(result)),
+            Err(oneshot::error::TryRecvError::Empty) => Poll::Pending,
+            Err(oneshot::error::TryRecvError::Closed) => Poll::Ready(None),
+        }
+    }
+
+    /// Stops the task and returns a result it delivered before it stopped.
+    pub fn cancel(&mut self) -> Option<T> {
+        self.rx.close();
+        self.task.abort();
+        self.rx.try_recv().ok()
     }
 }
 
@@ -172,9 +247,9 @@ pub fn escape_leaves_fullscreen(ctx: &egui::Context) {
 
 /// Closes the egui viewport on Ctrl-C.
 ///
-/// Call this from the eframe creation closure. The task handle is dropped on
+/// Called from the eframe creation closure. The task handle is dropped on
 /// purpose: an abort-on-drop guard would cancel it when the closure returns.
-pub fn spawn_ctrl_c_handler(ctx: &egui::Context) {
+fn spawn_ctrl_c_handler(ctx: &egui::Context) {
     let ctx = ctx.clone();
     tokio::runtime::Handle::current().spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
@@ -182,16 +257,16 @@ pub fn spawn_ctrl_c_handler(ctx: &egui::Context) {
     });
 }
 
-/// Repaints the window every `period` while the returned handle is held.
+/// Repaints the window every [`HEARTBEAT`] while the returned handle is held.
 ///
 /// eframe stops running passes for an unfocused, occluded, or minimized window,
 /// because repaints requested inside a pass are never delivered. Windows with
 /// off-screen work, such as a call waiting to be answered, need this.
 #[must_use = "the heartbeat stops when the handle is dropped"]
-pub fn spawn_heartbeat(ctx: &egui::Context, period: Duration) -> AbortOnDropHandle<()> {
+pub fn spawn_heartbeat(ctx: &egui::Context) -> AbortOnDropHandle<()> {
     let ctx = ctx.clone();
     AbortOnDropHandle::new(spawn(async move {
-        let mut interval = tokio::time::interval(period);
+        let mut interval = tokio::time::interval(HEARTBEAT);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
@@ -223,7 +298,7 @@ pub fn shutdown_publish_blocking(live: &Transport, broadcast: &LocalBroadcast) {
 ///
 /// Video frames arrive as `wgpu::Texture`s, so the window needs eframe's wgpu
 /// renderer. The glow backend cannot draw them.
-pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
+fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: moq_ext_egui::create_egui_wgpu_config(),

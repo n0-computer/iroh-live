@@ -130,7 +130,7 @@ fn same_device(left: &Spec, right: &Spec) -> bool {
 mod window {
     //! The call window, with the same chrome as `irl watch`.
 
-    use std::{collections::BTreeSet, sync::Arc, time::Duration};
+    use std::{collections::BTreeSet, sync::Arc, task::Poll, time::Duration};
 
     use eframe::egui;
     use iroh::EndpointId;
@@ -141,9 +141,8 @@ mod window {
     };
     use moq_ext_egui::{VideoView, egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
-    use n0_future::task::{AbortOnDropHandle, spawn};
+    use n0_future::task::AbortOnDropHandle;
     use n0_watcher::Watcher as _;
-    use tokio::sync::oneshot;
     use tracing::{debug, info, warn};
 
     use super::{Camera, Local};
@@ -151,22 +150,14 @@ mod window {
         args::{CallArgs, PlaybackArgs},
         scan::ScanView,
         transport::{PEER_TIMEOUT, Subscribed, Transport},
-        ui::{CursorIdle, RemoteView, TicketQr},
+        ui::{BUTTON, CursorIdle, Pending, RemoteView, TicketQr},
     };
-
-    /// How often the state machine runs while nothing draws the window.
-    const HEARTBEAT: Duration = Duration::from_millis(100);
 
     /// Width of the local picture-in-picture, in points.
     const PIP_WIDTH: f32 = 240.0;
 
     /// Aspect ratio of the local preview and the picture-in-picture.
     const ASPECT: f32 = 16.0 / 9.0;
-
-    /// Size of the buttons outside a call.
-    ///
-    /// Larger than the egui default, for small touchscreens.
-    const BUTTON: egui::Vec2 = egui::vec2(160.0, 36.0);
 
     /// Width of the calling screen's dialog, in points.
     const DIALOG_WIDTH: f32 = 280.0;
@@ -199,52 +190,46 @@ mod window {
         // terminal.
         let scan_camera = crate::scan::camera_spec(args.scan_camera.as_deref())
             .map_err(|err| anyerr!("{err}"))?;
-        eframe::run_native(
-            "irl call",
-            crate::ui::native_options(args.fullscreen),
-            Box::new(move |cc| {
-                let ctx = &cc.egui_ctx;
-                crate::ui::spawn_ctrl_c_handler(ctx);
-                let ringing = calls.ringing();
-                let preview = VideoView::new(
-                    ctx,
-                    "call-preview",
-                    sources.video.as_ref().map(VideoSource::frames),
-                    cc.wgpu_render_state.as_ref(),
-                );
-                let mut app = CallApp {
-                    qr: TicketQr::new(ctx, "call-ticket", &ticket),
-                    ticket,
-                    camera: Camera::of(&args.capture, scan_camera.as_ref()),
-                    capture: args.capture.clone(),
-                    restoring: None,
-                    camera_owed: false,
-                    camera_epoch: Arc::default(),
-                    notice: None,
-                    local_video: sources.video,
-                    _local_audio: sources.audio,
-                    output,
-                    scan_camera,
-                    playback: args.playback,
-                    preview,
-                    render_state: cc.wgpu_render_state.clone(),
-                    _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
-                    live,
-                    broadcast,
-                    calls,
-                    ringing,
-                    ended: BTreeSet::new(),
-                    pending: None,
-                    screen: Screen::waiting(),
-                    cursor: CursorIdle::default(),
-                };
-                if let Some(ticket) = args.ticket {
-                    app.dial(ctx, ticket);
-                }
-                Ok(Box::new(app))
-            }),
-        )
-        .map_err(|err| anyerr!("eframe failed: {err:#}"))
+        crate::ui::run_window("irl call", args.fullscreen, move |cc| {
+            let ctx = &cc.egui_ctx;
+            let ringing = calls.ringing();
+            let preview = VideoView::new(
+                ctx,
+                "call-preview",
+                sources.video.as_ref().map(VideoSource::frames),
+                cc.wgpu_render_state.as_ref(),
+            );
+            let mut app = CallApp {
+                qr: TicketQr::new(ctx, "call-ticket", &ticket),
+                ticket,
+                camera: Camera::of(&args.capture, scan_camera.as_ref()),
+                capture: args.capture.clone(),
+                restoring: None,
+                camera_owed: false,
+                camera_epoch: Arc::default(),
+                notice: None,
+                local_video: sources.video,
+                _local_audio: sources.audio,
+                output,
+                scan_camera,
+                playback: args.playback,
+                preview,
+                render_state: cc.wgpu_render_state.clone(),
+                _heartbeat: crate::ui::spawn_heartbeat(ctx),
+                live,
+                broadcast,
+                calls,
+                ringing,
+                ended: BTreeSet::new(),
+                pending: None,
+                screen: Screen::waiting(),
+                cursor: CursorIdle::default(),
+            };
+            if let Some(ticket) = args.ticket {
+                app.dial(ctx, ticket);
+            }
+            app
+        })
     }
 
     /// The call window.
@@ -268,7 +253,7 @@ mod window {
         /// The capture flags, kept to reopen the camera after a scan.
         capture: crate::args::CaptureArgs,
         /// The publisher's camera reopening after a scan.
-        restoring: Option<Restoring>,
+        restoring: Option<Pending<Result<Option<VideoSource>>>>,
         /// Whether the scan screen took the publisher's camera and has not returned it.
         ///
         /// Settled whenever the scan screen is not up. A call answered mid-scan
@@ -290,7 +275,7 @@ mod window {
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
         /// The attempt in flight. There is at most one.
-        pending: Option<Pending>,
+        pending: Option<Attempt>,
         screen: Screen,
         preview: VideoView,
         render_state: Option<RenderState>,
@@ -299,12 +284,6 @@ mod window {
         playback: PlaybackArgs,
         /// Which camera the scan screen opens.
         scan_camera: Option<crate::source_spec::VideoSourceSpec>,
-    }
-
-    /// A task reopening the publisher's camera after a scan.
-    struct Restoring {
-        done: oneshot::Receiver<n0_error::Result<Option<VideoSource>>>,
-        _task: AbortOnDropHandle<()>,
     }
 
     /// How many times the camera is tried while the scan screen releases it.
@@ -381,12 +360,11 @@ mod window {
     }
 
     /// A dial or an answer in flight.
-    struct Pending {
+    struct Attempt {
         /// Which side started it.
         direction: Direction,
-        rx: oneshot::Receiver<Answer>,
-        /// Aborting this abandons the attempt, which withdraws the offer.
-        _task: AbortOnDropHandle<()>,
+        /// Dropping this abandons the attempt, which withdraws the offer.
+        answer: Pending<Answer>,
     }
 
     /// The outcome of one attempt to reopen the publisher's camera.
@@ -493,13 +471,12 @@ mod window {
         /// eframe skips `ui` while the window is minimized or occluded, and the
         /// window still has to answer calls then.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            ctx.request_repaint_after(Duration::from_millis(16));
             self.poll_scan(ctx);
             self.poll_restore();
             self.poll_pending(ctx);
             self.poll_hangup();
             self.answer_next(ctx);
-            self.settle_camera();
+            self.settle_camera(ctx);
             self.show_notice();
         }
 
@@ -542,15 +519,12 @@ mod window {
             let Some(pending) = self.pending.as_mut() else {
                 return;
             };
-            let answer = match pending.rx.try_recv() {
-                Ok(answer) => answer,
-                Err(oneshot::error::TryRecvError::Empty) => return,
-                // The task dropped its sender, which only happens at shutdown.
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    Answer::Failed("the call attempt stopped".to_string())
-                }
+            let Poll::Ready(answer) = pending.answer.poll() else {
+                return;
             };
-            let Pending { direction, .. } = self
+            let answer =
+                answer.unwrap_or_else(|| Answer::Failed("the call attempt stopped".to_string()));
+            let Attempt { direction, .. } = self
                 .pending
                 .take()
                 .expect("the attempt was borrowed a moment ago");
@@ -649,19 +623,10 @@ mod window {
                 self.playback,
                 self.output.clone(),
             );
-            let (tx, rx) = oneshot::channel();
-            let ctx = ctx.clone();
-            let task = spawn(async move {
-                if tx.send(attempt.await).is_err() {
-                    info!("the call landed after it was given up on, dropping it");
-                }
-                ctx.request_repaint();
+            let answer = Pending::spawn(ctx, attempt, |_| {
+                info!("the call landed after it was given up on, dropping it");
             });
-            self.pending = Some(Pending {
-                direction,
-                rx,
-                _task: AbortOnDropHandle::new(task),
-            });
+            self.pending = Some(Attempt { direction, answer });
         }
 
         /// Abandons the attempt in flight, withdrawing this node's offer.
@@ -729,10 +694,10 @@ mod window {
         }
 
         /// Gives the publisher its camera back once the scan screen is gone.
-        fn settle_camera(&mut self) {
+        fn settle_camera(&mut self, ctx: &egui::Context) {
             if self.camera_owed && !matches!(self.screen, Screen::Scanning(_)) {
                 self.camera_owed = false;
-                self.restore_camera();
+                self.restore_camera(ctx);
             }
         }
 
@@ -741,33 +706,30 @@ mod window {
         /// An attempt counts only once the video runs. A new `rpicam-vid` that
         /// finds the sensor busy exits, which shows as a failed video, not as
         /// an error from setting the source.
-        fn restore_camera(&mut self) {
+        fn restore_camera(&mut self, ctx: &egui::Context) {
             let broadcast = self.broadcast.clone();
             let capture = self.capture.clone();
             let epoch = self.camera_epoch.clone();
             let mine = *epoch.lock().expect("poisoned");
-            let (done, report) = oneshot::channel();
-            let task = tokio::spawn(async move {
+            let restore = async move {
                 let mut attempt = 0;
-                let result = loop {
+                loop {
                     attempt += 1;
                     let outcome = restore_once(&broadcast, &capture, &epoch, mine).await;
                     match outcome {
                         Ok(Restored::Running(video)) => break Ok(video),
-                        Ok(Restored::Superseded) => return,
+                        Ok(Restored::Superseded) => {
+                            break Err(anyerr!("the camera restore was abandoned"));
+                        }
                         Err(err) if attempt >= RESTORE_ATTEMPTS => break Err(err),
                         Err(err) => {
                             debug!(error = %format!("{err:#}"), attempt, "the camera is not free yet");
                             tokio::time::sleep(RESTORE_DELAY).await;
                         }
                     }
-                };
-                let _ = done.send(result);
-            });
-            self.restoring = Some(Restoring {
-                done: report,
-                _task: AbortOnDropHandle::new(task),
-            });
+                }
+            };
+            self.restoring = Some(Pending::spawn(ctx, restore, drop));
         }
 
         /// Collects the result of reopening the publisher's camera.
@@ -775,13 +737,10 @@ mod window {
             let Some(restoring) = self.restoring.as_mut() else {
                 return;
             };
-            let result = match restoring.done.try_recv() {
-                Ok(result) => result,
-                Err(oneshot::error::TryRecvError::Empty) => return,
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    Err(n0_error::anyerr!("the camera restore was abandoned"))
-                }
+            let Poll::Ready(result) = restoring.poll() else {
+                return;
             };
+            let result = result.unwrap_or_else(|| Err(anyerr!("the camera restore was abandoned")));
             self.restoring = None;
             match result {
                 Ok(video) => {
@@ -1024,9 +983,9 @@ mod window {
             }
         };
         let sub = Subscribed::open(call.subscription().clone());
-        let config = crate::ui::player_config(&playback, Some(&output));
-        match sub.broadcast().play(config) {
-            Ok(player) => Answer::Connected(Box::new(Connected { call, sub, player })),
+        let config = crate::playback::player_config(&playback, Some(&output));
+        match crate::playback::open(sub, config).await {
+            Ok((sub, player)) => Answer::Connected(Box::new(Connected { call, sub, player })),
             Err(err) => Answer::Failed(format!("{err:#}")),
         }
     }

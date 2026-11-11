@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, Node,
-    media::{AudioTarget, Player, PlayerConfig, RenditionMode, video_rendition},
+    media::{AudioTarget, Player, PlayerConfig, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 
@@ -169,13 +169,7 @@ async fn connect(
             })??,
         None => subscribing.await?,
     };
-    // A broadcast without a catalog fails here instead of opening a black window.
-    let catalog = crate::playback::catalog(sub.broadcast()).await?;
-    if let Some(name) = &options.rendition {
-        video_rendition(&catalog, name)?;
-    }
-
-    let config = crate::ui::player_config(&options.playback, Some(&options.output));
+    let config = crate::playback::player_config(&options.playback, Some(&options.output));
     let rendition = match (options.no_video, &options.rendition) {
         // An unused video decoder would still cost a core.
         (true, _) => RenditionMode::Off,
@@ -186,8 +180,7 @@ async fn connect(
         rendition,
         ..config
     };
-    let player = sub.broadcast().play(config)?;
-    Ok((sub, player))
+    crate::playback::open(sub, config).await
 }
 
 /// Plays until the user interrupts, with no window.
@@ -210,7 +203,10 @@ fn wait_for_ctrl_c(
 mod window {
     //! The player window, with its scan, connecting and stopped screens.
 
-    use std::time::{Duration, Instant};
+    use std::{
+        task::Poll,
+        time::{Duration, Instant},
+    };
 
     use eframe::egui;
     use iroh_live::{
@@ -218,31 +214,19 @@ mod window {
         media::{Player, RenditionMode},
     };
     use moq_ext_egui::egui_wgpu::RenderState;
-    use n0_error::{Result, anyerr};
-    use n0_future::task::{AbortOnDropHandle, spawn};
-    use tokio::sync::oneshot;
+    use n0_error::Result;
+    use n0_future::task::AbortOnDropHandle;
     use tracing::{info, warn};
 
     use super::{Options, connect};
     use crate::{
         scan::{ScanView, Skip},
         transport::{Subscribed, Transport},
-        ui::{CursorIdle, RemoteView},
+        ui::{BUTTON, CursorIdle, Pending, RemoteView},
     };
 
     /// The top bar title while nothing is playing.
     const IDLE_TITLE: &str = "irl watch";
-
-    /// How often the window is woken while nothing draws it.
-    ///
-    /// A dial can finish while the window is hidden, and the state machine
-    /// still has to pick it up.
-    const HEARTBEAT: Duration = Duration::from_millis(100);
-
-    /// The size of the buttons on screens without a picture.
-    ///
-    /// Large enough to hit on a small touchscreen.
-    const BUTTON: egui::Vec2 = egui::vec2(200.0, 40.0);
 
     /// How many characters of a broadcast name a button label shows.
     const LABEL_CHARS: usize = 24;
@@ -264,41 +248,37 @@ mod window {
         options: Options,
         fullscreen: bool,
     ) -> Result {
-        eframe::run_native(
-            "irl watch",
-            crate::ui::native_options(fullscreen),
-            Box::new(move |cc| {
-                let ctx = &cc.egui_ctx;
-                crate::ui::spawn_ctrl_c_handler(ctx);
-                let render_state = cc.wgpu_render_state.clone();
-                let mode = match opening {
-                    Opening::Watching(connected) => {
-                        watching(ctx, *connected, &options, render_state.as_ref())
-                    }
-                    Opening::Connecting(ticket) => {
-                        Mode::Connecting(Box::new(connecting(ctx, &live, &options, *ticket, None)))
-                    }
-                    Opening::Scanning => scanning(
-                        ctx,
-                        render_state.as_ref(),
-                        None,
-                        None,
-                        options.scan_camera.clone(),
-                    ),
-                };
-                Ok(Box::new(WatchApp {
-                    live,
-                    options,
-                    render_state,
-                    mode,
-                    message: None,
-                    cursor: CursorIdle::default(),
-                    refused: None,
-                    _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
-                }))
-            }),
-        )
-        .map_err(|err| anyerr!("eframe failed: {err:#}"))
+        crate::ui::run_window("irl watch", fullscreen, move |cc| {
+            let ctx = &cc.egui_ctx;
+            let render_state = cc.wgpu_render_state.clone();
+            let mode = match opening {
+                Opening::Watching(connected) => {
+                    watching(ctx, *connected, &options, render_state.as_ref())
+                }
+                Opening::Connecting(ticket) => {
+                    Mode::Connecting(Box::new(connecting(ctx, &live, &options, *ticket, None)))
+                }
+                Opening::Scanning => scanning(
+                    ctx,
+                    render_state.as_ref(),
+                    None,
+                    None,
+                    options.scan_camera.clone(),
+                ),
+            };
+            WatchApp {
+                live,
+                options,
+                render_state,
+                mode,
+                message: None,
+                cursor: CursorIdle::default(),
+                refused: None,
+                // A dial can finish while the window is hidden, and the
+                // state machine still has to pick it up.
+                _heartbeat: crate::ui::spawn_heartbeat(ctx),
+            }
+        })
     }
 
     /// What the window is doing.
@@ -378,8 +358,7 @@ mod window {
         ticket: BroadcastTicket,
         /// What the stopped screen offers to go back to if this is cancelled.
         previous: Option<Previous>,
-        rx: oneshot::Receiver<Attempt>,
-        task: AbortOnDropHandle<()>,
+        attempt: Pending<Attempt>,
     }
 
     /// The outcome of a dial.
@@ -459,34 +438,32 @@ mod window {
             broadcast = %ticket.path(),
             "dialing"
         );
-        let (tx, rx) = oneshot::channel();
         let live = live.clone();
         let options = options.clone();
         let dialing = ticket.clone();
-        let ctx = ctx.clone();
-        let task = spawn(async move {
+        let dial = async move {
             // Bounded here because the terminal can wait for Ctrl+C, but a
             // touchscreen would otherwise spin until someone taps Cancel.
             let dial = connect(&live, &dialing, &options, Some(DIAL_DEADLINE));
-            let attempt = match dial.await {
+            match dial.await {
                 Ok((sub, player)) => Attempt::Connected(Box::new(Connected {
                     ticket: dialing,
                     sub,
                     player,
                 })),
                 Err(err) => Attempt::Failed(format!("{err:#}")),
-            };
-            if let Err(Attempt::Connected(connected)) = tx.send(attempt) {
+            }
+        };
+        let attempt = Pending::spawn(ctx, dial, |late| {
+            if let Attempt::Connected(connected) = late {
                 info!("the connection landed after it was cancelled, closing it");
                 connected.discard();
             }
-            ctx.request_repaint();
         });
         Connecting {
             ticket,
             previous,
-            rx,
-            task: AbortOnDropHandle::new(task),
+            attempt,
         }
     }
 
@@ -538,7 +515,6 @@ mod window {
         /// eframe skips `ui` while the window is minimized or hidden, but a
         /// dial that finishes then must still be picked up.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            ctx.request_repaint_after(Duration::from_millis(16));
             self.poll_scan(ctx);
             self.poll_connecting(ctx);
         }
@@ -581,14 +557,11 @@ mod window {
             let Mode::Connecting(pending) = &mut self.mode else {
                 return;
             };
-            let attempt = match pending.rx.try_recv() {
-                Ok(attempt) => attempt,
-                Err(oneshot::error::TryRecvError::Empty) => return,
-                // Only happens while the runtime shuts down.
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    Attempt::Failed("the connection attempt stopped".to_string())
-                }
+            let Poll::Ready(attempt) = pending.attempt.poll() else {
+                return;
             };
+            let attempt = attempt
+                .unwrap_or_else(|| Attempt::Failed("the connection attempt stopped".to_string()));
             let previous = pending.previous.clone();
             let ticket = pending.ticket.clone();
             match attempt {
@@ -673,14 +646,10 @@ mod window {
                     watching.sub.close();
                 }
                 Mode::Connecting(pending) => {
-                    // Closing before draining means a dial that has not answered
-                    // yet fails its send and closes its own subscription. One
-                    // that has answered is closed here.
-                    pending.rx.close();
-                    if let Ok(Attempt::Connected(connected)) = pending.rx.try_recv() {
+                    // A dial that has answered is closed here.
+                    if let Some(Attempt::Connected(connected)) = pending.attempt.cancel() {
                         connected.discard();
                     }
-                    pending.task.abort();
                 }
                 Mode::Stopped(_) | Mode::Scanning(_) => {}
             }
