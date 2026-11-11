@@ -22,7 +22,7 @@ use moq_net::{
     origin::{self, Link},
 };
 use n0_error::{AnyError, e};
-use n0_future::task::AbortOnDropHandle;
+use n0_future::{join_all, task::AbortOnDropHandle};
 use n0_watcher::Watchable;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -238,13 +238,11 @@ impl Tasks {
 
     /// Waits for every relay link's task to close its session.
     ///
-    /// Each task gets up to the shutdown grace. The node's shutdown token must
-    /// be cancelled already.
+    /// The tasks close at once, and each gets up to the shutdown grace. The
+    /// node's shutdown token must be cancelled already.
     pub(crate) async fn shutdown_relays(&self) {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
-        for (_, relay) in relays {
-            relay.finish().await;
-        }
+        join_all(relays.into_values().map(RelayTask::finish)).await;
     }
 }
 
