@@ -195,6 +195,23 @@ impl SessionRequest {
         }
     }
 
+    /// Returns what a client asked for in its MoQ SETUP: a path, and maybe a token.
+    ///
+    /// The SETUP of moq-lite-06 and older has no token field. On those versions
+    /// [`token`](Self::token) reads the query of the path instead.
+    #[must_use]
+    pub fn from_handshake(handshake: &moq_net::server::Handshake) -> Self {
+        let request = Self::new(handshake.path());
+        let token = handshake
+            .token()
+            .filter(|token| token.kind == moq_net::setup::Token::OUT_OF_BAND)
+            .and_then(|token| std::str::from_utf8(&token.value).ok());
+        match token {
+            Some(token) => request.with_token(token),
+            None => request,
+        }
+    }
+
     /// Sets the token the peer presented outside the target, such as in its MoQ SETUP.
     #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {

@@ -11,12 +11,8 @@ use n0_error::e;
 use tracing::{debug, info, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkKind, SessionRequest,
-    admission::decide,
-    node::Shared,
-    policy::{Authorization, Event, PeerRequest},
-    state::served,
-    transport,
+    ConnectOptions, Error, Grant, LinkKind, SessionRequest, admission::authorize, node::Shared,
+    policy::Authorization, state::served, transport,
 };
 
 /// The moq hop id the routes of one link carry.
@@ -108,7 +104,12 @@ pub(crate) async fn dial_session(
 ) -> Result<SessionParts, Error> {
     let remote_id = remote.id;
     let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
-    let authorization = dial_authorization(&shared, remote_id, &request).await?;
+    let authorization = authorize(&shared, remote_id, &request, true)
+        .await
+        .map_err(|source| {
+            info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
+            e!(Error::Rejected { source })
+        })?;
     let grant = &authorization.grant;
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
@@ -138,33 +139,6 @@ pub(crate) async fn dial_session(
         moq,
         driver,
         auth,
-    })
-}
-
-/// Returns the authorization a dial to `remote` starts with.
-///
-/// The authorization a live session with the peer already holds wins.
-/// Otherwise the policy decides, with `dialed` set and `request`, the path the
-/// dial requests.
-async fn dial_authorization(
-    shared: &Shared,
-    remote: EndpointId,
-    request: &SessionRequest,
-) -> Result<Authorization, Error> {
-    let stored = shared
-        .state
-        .lock()
-        .expect("poisoned")
-        .peer_authorization(&remote)
-        .cloned();
-    if let Some(authorization) = stored {
-        debug!("the peer already holds an authorization");
-        return Ok(authorization);
-    }
-    let request = PeerRequest::new(remote, request.clone(), true, Event::Connect);
-    decide(shared, &request).await.map_err(|source| {
-        info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
-        e!(Error::Rejected { source })
     })
 }
 

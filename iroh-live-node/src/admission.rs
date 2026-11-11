@@ -9,7 +9,6 @@ use iroh::{EndpointId, endpoint::Connection};
 pub use moq_ext_access::Grant;
 /// What a peer asked for when it opened a session.
 pub use moq_ext_access::SessionRequest;
-use moq_net::{server::Handshake, setup::Token};
 use moq_transport_iroh::Congestion;
 use n0_error::e;
 use tracing::{debug, info, warn};
@@ -80,10 +79,10 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
             }));
         }
     };
-    let request = session_request(&handshake);
+    let request = SessionRequest::from_handshake(&handshake);
     debug!(remote = %remote.fmt_short(), path = request.path(), "session requested");
     let decided = tokio::select! {
-        decided = accept_authorization(shared, remote, &request) => decided,
+        decided = authorize(shared, remote, &request, false) => decided,
         _ = shared.shutdown.cancelled() => {
             handshake.close(moq_net::Error::Cancel);
             return Err(e!(Error::ShutDown));
@@ -141,15 +140,16 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     Ok(())
 }
 
-/// Returns the authorization of an incoming session.
+/// Returns the authorization a session with `remote` starts with.
 ///
 /// A peer that already holds a live session keeps that session's
 /// authorization, so a second session is not decided again. Otherwise the
-/// policy decides.
-async fn accept_authorization(
+/// policy decides, with `dialed` set when this node dialed.
+pub(crate) async fn authorize(
     shared: &Shared,
     remote: EndpointId,
     request: &SessionRequest,
+    dialed: bool,
 ) -> Result<Authorization, Rejection> {
     let stored = shared
         .state
@@ -161,7 +161,7 @@ async fn accept_authorization(
         debug!(remote = %remote.fmt_short(), "the peer already holds an authorization");
         return Ok(authorization);
     }
-    let request = PeerRequest::new(remote, request.clone(), false, Event::Connect);
+    let request = PeerRequest::new(remote, request.clone(), dialed, Event::Connect);
     decide(shared, &request).await
 }
 
@@ -196,20 +196,4 @@ pub(crate) async fn decide(
         return Err(Rejection::new("transit is not supported yet"));
     }
     Ok(authorization)
-}
-
-/// Returns what the peer asked for in its SETUP: a path, and maybe a token.
-///
-/// The SETUP of moq-lite-06 and older has no token field. On those versions
-/// [`SessionRequest::token`] reads the `jwt` query of the path instead.
-fn session_request(handshake: &Handshake) -> SessionRequest {
-    let request = SessionRequest::new(handshake.path());
-    let token = handshake
-        .token()
-        .filter(|token| token.kind == Token::OUT_OF_BAND)
-        .and_then(|token| std::str::from_utf8(&token.value).ok());
-    match token {
-        Some(token) => request.with_token(token),
-        None => request,
-    }
 }

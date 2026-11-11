@@ -20,7 +20,7 @@ use iroh_live_node::{
     DECIDE_TIMEOUT, SessionRequest,
     policy::{Authorization, DynPolicy, Event, PeerRequest, Policy, Rejection},
 };
-use moq_net::{Pattern, server::Handshake, setup::Token};
+use moq_net::Pattern;
 use moq_relay::cluster::Cluster;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -97,7 +97,12 @@ impl IrohSessions {
         .map_err(AcceptError::from_err)?;
         let path = handshake.path().to_owned();
         let name = requested_name(&path);
-        let request = PeerRequest::new(remote, session_request(&handshake), false, Event::Connect);
+        let request = PeerRequest::new(
+            remote,
+            SessionRequest::from_handshake(&handshake),
+            false,
+            Event::Connect,
+        );
         let authorization = match self.decide(&request).await {
             Ok(authorization) => authorization,
             Err(rejection) => {
@@ -199,22 +204,6 @@ async fn expiry(authorization: &Authorization) {
             tokio::time::sleep(left).await;
         }
         None => std::future::pending().await,
-    }
-}
-
-/// Returns what the client asked for in its SETUP: a path, and maybe a token.
-///
-/// The SETUP of moq-lite-06 and older has no token field. On those versions
-/// [`SessionRequest::token`] reads the `jwt` or `token` query of the path.
-fn session_request(handshake: &Handshake) -> SessionRequest {
-    let request = SessionRequest::new(handshake.path());
-    let token = handshake
-        .token()
-        .filter(|token| token.kind == Token::OUT_OF_BAND)
-        .and_then(|token| std::str::from_utf8(&token.value).ok());
-    match token {
-        Some(token) => request.with_token(token),
-        None => request,
     }
 }
 
