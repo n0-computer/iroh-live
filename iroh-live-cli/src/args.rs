@@ -68,14 +68,14 @@ pub struct CaptureArgs {
     /// `rpicam[:raw]`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or
     /// `none`. Run `irl devices` to list the ids.
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
-    pub video: String,
+    pub video: VideoSourceSpec,
 
     /// Audio source.
     ///
     /// `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test[:beeps|:tone]`,
     /// or `none`. Anything else is a device name, such as `hw:0,1`.
     #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
-    pub audio: String,
+    pub audio: AudioSourceSpec,
 
     /// Publish the test pattern and tone, as `--video test --audio test`.
     ///
@@ -148,8 +148,12 @@ impl Default for CaptureArgs {
     /// Returns the defaults clap applies.
     fn default() -> Self {
         Self {
-            video: DEFAULT_VIDEO.to_string(),
-            audio: DEFAULT_AUDIO.to_string(),
+            video: DEFAULT_VIDEO
+                .parse()
+                .expect("the default video source parses"),
+            audio: DEFAULT_AUDIO
+                .parse()
+                .expect("the default audio source parses"),
             test_source: false,
             codec: VideoCodecArg::default(),
             encoder: Backend::default(),
@@ -167,20 +171,20 @@ impl Default for CaptureArgs {
 }
 
 impl CaptureArgs {
-    /// Parses `--video`, or returns the test pattern under `--test-source`.
-    pub fn video_source(&self) -> Result<VideoSourceSpec> {
+    /// Returns `--video`, or the test pattern under `--test-source`.
+    pub fn video_source(&self) -> VideoSourceSpec {
         if self.test_source {
-            return Ok(VideoSourceSpec::Test(TestPattern::default()));
+            return VideoSourceSpec::Test(TestPattern::default());
         }
-        VideoSourceSpec::parse(&self.video).map_err(|err| anyerr!("--video: {err}"))
+        self.video.clone()
     }
 
-    /// Parses `--audio`, or returns the test tone under `--test-source`.
-    pub fn audio_source(&self) -> Result<AudioSourceSpec> {
+    /// Returns `--audio`, or the test tone under `--test-source`.
+    pub fn audio_source(&self) -> AudioSourceSpec {
         if self.test_source {
-            return Ok(AudioSourceSpec::Test(TestTone::default()));
+            return AudioSourceSpec::Test(TestTone::default());
         }
-        AudioSourceSpec::parse(&self.audio).map_err(|err| anyerr!("--audio: {err}"))
+        self.audio.clone()
     }
 }
 
@@ -322,8 +326,8 @@ pub struct CallArgs {
     pub playback: PlaybackArgs,
 
     /// Camera for the QR scanner, as in `irl watch --scan-camera`.
-    #[arg(long, value_name = "SPEC")]
-    pub scan_camera: Option<String>,
+    #[arg(long, value_name = "SPEC", value_parser = crate::scan::camera_spec)]
+    pub scan_camera: Option<VideoSourceSpec>,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
@@ -420,8 +424,8 @@ pub struct WatchArgs {
     ///
     /// Default: the Raspberry Pi camera where available, else the default
     /// camera. On a Pi with a USB webcam, pass `cam`.
-    #[arg(long, value_name = "SPEC")]
-    pub scan_camera: Option<String>,
+    #[arg(long, value_name = "SPEC", value_parser = crate::scan::camera_spec)]
+    pub scan_camera: Option<VideoSourceSpec>,
 
     /// Pin a rendition by name instead of adapting to the downlink.
     #[arg(long)]

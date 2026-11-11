@@ -10,7 +10,7 @@ use iroh_live::{
     media::{AudioTarget, LocalBroadcast, Player, VideoSource},
 };
 use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
-use n0_error::{Result, anyerr};
+use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher as _;
 use tracing::{debug, info, warn};
@@ -38,8 +38,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
     } = local;
     // Parsed before the window opens, so a bad specifier fails in the
     // terminal.
-    let scan_camera =
-        crate::scan::camera_spec(args.scan_camera.as_deref()).map_err(|err| anyerr!("{err}"))?;
+    let scan_camera = args.scan_camera.clone();
     crate::ui::run_window("irl call", args.fullscreen, move |cc| {
         let ctx = &cc.egui_ctx;
         let ringing = calls.ringing();

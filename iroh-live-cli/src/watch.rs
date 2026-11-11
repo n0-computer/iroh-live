@@ -63,8 +63,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     let start = start(&args)?;
 
     let mut options = Options::from(&args);
-    options.scan_camera =
-        crate::scan::camera_spec(args.scan_camera.as_deref()).map_err(|err| anyerr!("{err}"))?;
+    options.scan_camera = args.scan_camera.clone();
     let (live, output) = rt.block_on(setup(&args))?;
     options.output = output;
 

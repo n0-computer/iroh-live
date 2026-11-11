@@ -75,7 +75,7 @@ pub async fn configure(
     output: Option<&AudioTarget>,
 ) -> Result<Opened> {
     let video = configure_video(broadcast, args).await?;
-    let audio = match audio_source(&args.audio_source()?, output).await? {
+    let audio = match audio_source(&args.audio_source(), output).await? {
         Some(source) => {
             broadcast.set_audio(source.clone(), audio_encoding(args))?;
             Some(source)
@@ -112,7 +112,7 @@ pub struct OpenedVideo {
 ///
 /// Returns `None` for `--video none`.
 pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
-    let spec = args.video_source()?;
+    let spec = args.video_source();
     let ladder = rendition::ladder(&spec, args)?;
     Ok(video_source(&spec, args, ladder.framerate)
         .await?
@@ -380,7 +380,7 @@ fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
 
 /// Returns whether `--audio` names a microphone.
 fn is_microphone(args: &CaptureArgs) -> bool {
-    matches!(args.audio_source(), Ok(AudioSourceSpec::Microphone(_)))
+    matches!(args.audio_source(), AudioSourceSpec::Microphone(_))
 }
 
 #[cfg(test)]

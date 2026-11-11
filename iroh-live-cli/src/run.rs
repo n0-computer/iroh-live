@@ -361,6 +361,7 @@ mod tests {
     use crate::{
         args::{AudioCodecArg, DEFAULT_AUDIO, DEFAULT_VIDEO, VideoCodecArg},
         backend::Backend,
+        source_spec::VideoSourceSpec,
     };
 
     #[test]
@@ -373,8 +374,8 @@ mod tests {
         )
         .expect("only `name` is required");
         let send = &config.send[0].capture;
-        assert_eq!(send.video, DEFAULT_VIDEO);
-        assert_eq!(send.audio, DEFAULT_AUDIO);
+        assert_eq!(send.video.to_string(), DEFAULT_VIDEO);
+        assert_eq!(send.audio.to_string(), DEFAULT_AUDIO);
         assert_eq!(send.encoder, Backend::Auto);
         assert_eq!(send.codec, VideoCodecArg::H264);
         assert_eq!(send.audio_codec, AudioCodecArg::Opus);
@@ -400,7 +401,7 @@ mod tests {
         )
         .expect("a full send block");
         let capture = &config.send[0].capture;
-        assert_eq!(capture.video, "screen");
+        assert_eq!(capture.video, VideoSourceSpec::Display(None));
         assert_eq!(capture.codec, VideoCodecArg::H265);
         assert_eq!(capture.encoder, Backend::Named("vaapi"));
         assert_eq!(capture.renditions, ["low:320x180", "720p"]);

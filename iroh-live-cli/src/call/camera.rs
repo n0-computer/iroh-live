@@ -25,12 +25,9 @@ pub(super) enum Camera {
 impl Camera {
     /// Works out who holds the camera, from `--video` and `--scan-camera`.
     ///
-    /// A `--video` that does not parse opened nothing, so the camera counts as
-    /// free. A scan camera on another device leaves the publisher alone.
+    /// A scan camera on another device leaves the publisher alone.
     pub(super) fn of(args: &CaptureArgs, scan: Option<&Spec>) -> Self {
-        let Ok(publishing) = args.video_source() else {
-            return Self::Free;
-        };
+        let publishing = args.video_source();
         let holds_a_camera = match &publishing {
             Spec::Camera(_) => true,
             // `rpicam-vid` goes through libcamera, not V4L2, and the two still
@@ -255,7 +252,7 @@ mod tests {
     /// Returns capture flags with the given `--video` specifier.
     fn capture(video: &str) -> CaptureArgs {
         CaptureArgs {
-            video: video.to_string(),
+            video: video.parse().expect("a valid specifier"),
             ..Default::default()
         }
     }
@@ -289,11 +286,5 @@ mod tests {
         );
         assert_eq!(Camera::of(&capture("cam"), Some(&usb)), Camera::Publisher);
         assert_eq!(Camera::of(&capture("screen"), Some(&usb)), Camera::Free);
-    }
-
-    /// A `--video` that does not parse holds no camera.
-    #[test]
-    fn a_specifier_that_never_opened_anything_holds_nothing() {
-        assert_eq!(Camera::of(&capture("nonsense:"), None), Camera::Free);
     }
 }

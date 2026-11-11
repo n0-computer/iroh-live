@@ -104,17 +104,13 @@ impl Camera {
 /// # Errors
 ///
 /// Returns a message listing the accepted forms.
-pub fn camera_spec(spec: Option<&str>) -> Result<Option<VideoSourceSpec>, String> {
-    let Some(spec) = spec else {
-        return Ok(None);
-    };
-    let parsed = VideoSourceSpec::parse(spec)?;
-    match parsed {
-        VideoSourceSpec::Camera(id) => Ok(Some(VideoSourceSpec::Camera(id))),
+pub fn camera_spec(spec: &str) -> Result<VideoSourceSpec, String> {
+    match spec.parse::<VideoSourceSpec>()? {
+        VideoSourceSpec::Camera(id) => Ok(VideoSourceSpec::Camera(id)),
         #[cfg(all(target_os = "linux", feature = "rpicam"))]
-        VideoSourceSpec::Rpicam(_) => Ok(Some(VideoSourceSpec::Rpicam(
-            crate::source_spec::RpicamMode::Raw,
-        ))),
+        VideoSourceSpec::Rpicam(_) => {
+            Ok(VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Raw))
+        }
         _ => Err(format!(
             "--scan-camera reads a camera: 'cam' for the default one, 'cam:<id>' for one \
              `irl devices` lists, or 'rpicam' for the Raspberry Pi camera; got '{spec}'"
@@ -148,21 +144,20 @@ mod tests {
     #[test]
     fn the_scan_camera_takes_a_camera_by_id() {
         assert_eq!(
-            camera_spec(Some("cam")).expect("a camera"),
-            Some(VideoSourceSpec::Camera(None))
+            camera_spec("cam").expect("a camera"),
+            VideoSourceSpec::Camera(None)
         );
         assert_eq!(
-            camera_spec(Some("cam:/dev/video2")).expect("a camera"),
-            Some(VideoSourceSpec::Camera(Some("/dev/video2".into())))
+            camera_spec("cam:/dev/video2").expect("a camera"),
+            VideoSourceSpec::Camera(Some("/dev/video2".into()))
         );
-        assert_eq!(camera_spec(None).expect("no flag is fine"), None);
     }
 
     /// `--scan-camera` rejects sources that are not cameras.
     #[test]
     fn the_scan_camera_refuses_what_is_not_a_camera() {
         for spec in ["screen", "test", "file:clip.mp4", "none"] {
-            let err = camera_spec(Some(spec)).expect_err(spec);
+            let err = camera_spec(spec).expect_err(spec);
             assert!(err.contains("--scan-camera"), "{spec}: {err}");
             assert!(err.contains(spec), "{spec}: {err}");
         }
@@ -175,8 +170,8 @@ mod tests {
         use crate::source_spec::RpicamMode;
         for spec in ["rpicam", "rpicam:raw", "picam"] {
             assert_eq!(
-                camera_spec(Some(spec)).expect(spec),
-                Some(VideoSourceSpec::Rpicam(RpicamMode::Raw)),
+                camera_spec(spec).expect(spec),
+                VideoSourceSpec::Rpicam(RpicamMode::Raw),
                 "{spec}"
             );
         }

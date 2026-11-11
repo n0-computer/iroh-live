@@ -3,8 +3,17 @@
 //! A specifier is a kind and an optional id, such as `cam:2` or
 //! `file:clip.mp4`. The ids are the ones `irl devices` prints. There is no
 //! backend segment: the platform picks the backend for a device.
+//!
+//! Both specifiers implement [`FromStr`], so clap rejects a bad one while it
+//! parses the arguments, and a config file while it loads.
 
-use std::path::PathBuf;
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
+
+use serde::{Deserialize, Deserializer, de};
 
 /// A parsed `--video` specifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,14 +47,14 @@ pub enum VideoSourceSpec {
     None,
 }
 
-impl VideoSourceSpec {
+impl FromStr for VideoSourceSpec {
+    type Err = String;
+
     /// Parses a `--video` specifier.
     ///
-    /// # Errors
-    ///
-    /// Returns a message naming the accepted forms if `spec` is not one of
+    /// Fails with a message naming the accepted forms if `spec` is not one of
     /// them, or if a form that needs an identifier was given without one.
-    pub fn parse(spec: &str) -> Result<Self, String> {
+    fn from_str(spec: &str) -> Result<Self, String> {
         let (kind, rest) = split_once(spec);
         match kind.to_lowercase().as_str() {
             "cam" | "camera" => Ok(Self::Camera(rest.map(str::to_string))),
@@ -171,12 +180,14 @@ pub enum TestTone {
     Tone,
 }
 
-impl AudioSourceSpec {
+impl FromStr for AudioSourceSpec {
+    type Err = String;
+
     /// Parses an `--audio` specifier.
     ///
     /// An unknown kind is a device name, such as `hw:0,1`. Fails for `file:`
     /// without a path and for an unknown test tone.
-    pub fn parse(spec: &str) -> Result<Self, String> {
+    fn from_str(spec: &str) -> Result<Self, String> {
         let (kind, rest) = split_once(spec);
         match kind.to_lowercase().as_str() {
             "mic" | "microphone" | "default" => Ok(Self::Microphone(rest.map(str::to_string))),
@@ -201,6 +212,73 @@ impl AudioSourceSpec {
             _ => Ok(Self::Microphone(Some(spec.to_string()))),
         }
     }
+}
+
+impl fmt::Display for VideoSourceSpec {
+    /// Writes the specifier in the form [`FromStr`] reads.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Camera(id) => with_id(f, "cam", id.as_deref()),
+            Self::Display(id) => with_id(f, "screen", id.as_deref()),
+            Self::Window(id) => with_id(f, "window", Some(id)),
+            Self::App(id) => with_id(f, "app", Some(id)),
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Self::Rpicam(RpicamMode::Encoded) => f.write_str("rpicam"),
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Self::Rpicam(RpicamMode::Raw) => f.write_str("rpicam:raw"),
+            Self::Test(TestPattern::Timing) => f.write_str("test"),
+            Self::Test(TestPattern::Gradient) => f.write_str("test:gradient"),
+            Self::File { path, looping } => file(f, path, *looping),
+            Self::None => f.write_str("none"),
+        }
+    }
+}
+
+impl fmt::Display for AudioSourceSpec {
+    /// Writes the specifier in the form [`FromStr`] reads.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Microphone(id) => with_id(f, "mic", id.as_deref()),
+            Self::System => f.write_str("system"),
+            Self::Test(TestTone::Beeps) => f.write_str("test"),
+            Self::Test(TestTone::Tone) => f.write_str("test:tone"),
+            Self::File { path, looping } => file(f, path, *looping),
+            Self::None => f.write_str("none"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for VideoSourceSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for AudioSourceSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
+/// Writes `kind`, then `:id` if there is an id.
+fn with_id(f: &mut fmt::Formatter<'_>, kind: &str, id: Option<&str>) -> fmt::Result {
+    match id {
+        Some(id) => write!(f, "{kind}:{id}"),
+        None => f.write_str(kind),
+    }
+}
+
+/// Writes a `file:` specifier, with the `:loop` suffix if it loops.
+fn file(f: &mut fmt::Formatter<'_>, path: &Path, looping: bool) -> fmt::Result {
+    write!(f, "file:{}", path.display())?;
+    if looping {
+        f.write_str(":loop")?;
+    }
+    Ok(())
 }
 
 /// Splits the `:loop` suffix off a file path, if it carries one.
@@ -230,19 +308,19 @@ mod tests {
     #[test]
     fn video_specifiers_parse_to_their_kinds() {
         assert_eq!(
-            VideoSourceSpec::parse("cam").unwrap(),
+            "cam".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Camera(None)
         );
         assert_eq!(
-            VideoSourceSpec::parse("screen").unwrap(),
+            "screen".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Display(None)
         );
         assert_eq!(
-            VideoSourceSpec::parse("test").unwrap(),
+            "test".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Test(TestPattern::Timing)
         );
         assert_eq!(
-            VideoSourceSpec::parse("none").unwrap(),
+            "none".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::None
         );
     }
@@ -251,39 +329,39 @@ mod tests {
     #[test]
     fn test_patterns_by_name() {
         assert_eq!(
-            VideoSourceSpec::parse("test:timing").unwrap(),
+            "test:timing".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Test(TestPattern::Timing)
         );
         assert_eq!(
-            VideoSourceSpec::parse("test:GRADIENT").unwrap(),
+            "test:GRADIENT".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Test(TestPattern::Gradient)
         );
-        let err = VideoSourceSpec::parse("test:bars").unwrap_err();
+        let err = "test:bars".parse::<VideoSourceSpec>().unwrap_err();
         assert!(err.contains("timing"), "{err}");
     }
 
     #[test]
     fn test_tones_by_name() {
         assert_eq!(
-            AudioSourceSpec::parse("test:beeps").unwrap(),
+            "test:beeps".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::Test(TestTone::Beeps)
         );
         assert_eq!(
-            AudioSourceSpec::parse("test:tone").unwrap(),
+            "test:tone".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::Test(TestTone::Tone)
         );
-        let err = AudioSourceSpec::parse("test:sine").unwrap_err();
+        let err = "test:sine".parse::<AudioSourceSpec>().unwrap_err();
         assert!(err.contains("beeps"), "{err}");
     }
 
     #[test]
     fn video_device_ids_survive_colons() {
         assert_eq!(
-            VideoSourceSpec::parse("cam:/dev/video2").unwrap(),
+            "cam:/dev/video2".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Camera(Some("/dev/video2".into()))
         );
         assert_eq!(
-            VideoSourceSpec::parse("file:C:/clips/demo.mp4").unwrap(),
+            "file:C:/clips/demo.mp4".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::File {
                 path: "C:/clips/demo.mp4".into(),
                 looping: false,
@@ -295,14 +373,14 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     fn rpicam_specifiers_parse_with_and_without_raw() {
         assert_eq!(
-            VideoSourceSpec::parse("rpicam").unwrap(),
+            "rpicam".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Rpicam(RpicamMode::Encoded)
         );
         assert_eq!(
-            VideoSourceSpec::parse("picam").unwrap(),
+            "picam".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Rpicam(RpicamMode::Encoded)
         );
-        assert!(VideoSourceSpec::parse("rpicam:0").is_err());
+        assert!("rpicam:0".parse::<VideoSourceSpec>().is_err());
     }
 
     /// `:raw` asks for pictures instead of the hardware encoder's H.264.
@@ -310,14 +388,14 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     fn rpicam_raw_is_a_mode_of_rpicam() {
         assert_eq!(
-            VideoSourceSpec::parse("rpicam:raw").unwrap(),
+            "rpicam:raw".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Rpicam(RpicamMode::Raw)
         );
         assert_eq!(
-            VideoSourceSpec::parse("picam:RAW").unwrap(),
+            "picam:RAW".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Rpicam(RpicamMode::Raw)
         );
-        let err = VideoSourceSpec::parse("rpicam:yuv").unwrap_err();
+        let err = "rpicam:yuv".parse::<VideoSourceSpec>().unwrap_err();
         assert!(err.contains(":raw"), "{err}");
     }
 
@@ -325,22 +403,24 @@ mod tests {
     #[test]
     #[cfg(not(all(target_os = "linux", feature = "rpicam")))]
     fn rpicam_is_refused_without_the_feature() {
-        let err = VideoSourceSpec::parse("rpicam").unwrap_err();
+        let err = "rpicam".parse::<VideoSourceSpec>().unwrap_err();
         assert!(err.contains("'rpicam' feature"), "{err}");
     }
 
     #[test]
     fn forms_that_need_an_id_are_refused_without_one() {
-        assert!(VideoSourceSpec::parse("window").is_err());
-        assert!(VideoSourceSpec::parse("app").is_err());
-        assert!(VideoSourceSpec::parse("file").is_err());
-        assert!(VideoSourceSpec::parse("webcam").is_err());
+        assert!("window".parse::<VideoSourceSpec>().is_err());
+        assert!("app".parse::<VideoSourceSpec>().is_err());
+        assert!("file".parse::<VideoSourceSpec>().is_err());
+        assert!("webcam".parse::<VideoSourceSpec>().is_err());
     }
 
     #[test]
     fn a_video_file_takes_a_loop_suffix() {
         assert_eq!(
-            VideoSourceSpec::parse("file:/tmp/clip.mp4:loop").unwrap(),
+            "file:/tmp/clip.mp4:loop"
+                .parse::<VideoSourceSpec>()
+                .unwrap(),
             VideoSourceSpec::File {
                 path: "/tmp/clip.mp4".into(),
                 looping: true,
@@ -349,21 +429,54 @@ mod tests {
     }
 
     #[test]
+    fn specifiers_display_in_the_form_they_parse_from() {
+        for spec in [
+            "cam",
+            "cam:/dev/video2",
+            "screen:1",
+            "window:1042",
+            "app:com.apple.Safari",
+            "test",
+            "test:gradient",
+            "file:C:/clips/demo.mp4:loop",
+            "none",
+        ] {
+            let parsed: VideoSourceSpec = spec.parse().expect(spec);
+            assert_eq!(parsed.to_string(), spec);
+            assert_eq!(parsed.to_string().parse(), Ok(parsed));
+        }
+        for spec in [
+            "mic",
+            "mic:hw:0,1",
+            "system",
+            "test",
+            "test:tone",
+            "file:a.mp3",
+            "none",
+        ] {
+            let parsed: AudioSourceSpec = spec.parse().expect(spec);
+            assert_eq!(parsed.to_string(), spec);
+        }
+        let device: AudioSourceSpec = "hw:0,1".parse().expect("a device name");
+        assert_eq!(device.to_string().parse(), Ok(device));
+    }
+
+    #[test]
     fn audio_specifiers_parse_to_their_kinds() {
         assert_eq!(
-            AudioSourceSpec::parse("mic").unwrap(),
+            "mic".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::Microphone(None)
         );
         assert_eq!(
-            AudioSourceSpec::parse("test").unwrap(),
+            "test".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::Test(TestTone::Beeps)
         );
         assert_eq!(
-            AudioSourceSpec::parse("none").unwrap(),
+            "none".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::None
         );
         assert_eq!(
-            AudioSourceSpec::parse("system").unwrap(),
+            "system".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::System
         );
     }
@@ -371,7 +484,7 @@ mod tests {
     #[test]
     fn an_unknown_audio_specifier_is_a_device_name() {
         assert_eq!(
-            AudioSourceSpec::parse("hw:0,1").unwrap(),
+            "hw:0,1".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::Microphone(Some("hw:0,1".into()))
         );
     }
@@ -379,14 +492,16 @@ mod tests {
     #[test]
     fn an_audio_file_takes_a_loop_suffix() {
         assert_eq!(
-            AudioSourceSpec::parse("file:/tmp/song.flac:loop").unwrap(),
+            "file:/tmp/song.flac:loop"
+                .parse::<AudioSourceSpec>()
+                .unwrap(),
             AudioSourceSpec::File {
                 path: "/tmp/song.flac".into(),
                 looping: true,
             }
         );
         assert_eq!(
-            AudioSourceSpec::parse("file:music.mp3").unwrap(),
+            "file:music.mp3".parse::<AudioSourceSpec>().unwrap(),
             AudioSourceSpec::File {
                 path: "music.mp3".into(),
                 looping: false,

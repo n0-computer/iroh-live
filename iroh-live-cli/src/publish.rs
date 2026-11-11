@@ -17,7 +17,7 @@ use crate::{
 
 /// Runs the `publish` command.
 pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    match args.capture.video_source()? {
+    match args.capture.video_source() {
         VideoSourceSpec::File { path, looping } => {
             publish_file(FileSource::new(path, looping, &args)?, &args, rt)
         }
@@ -51,15 +51,10 @@ async fn setup_capture(
         let sources = source::configure(&broadcast, &args.capture, None).await?;
         let ticket = transport::advertise(live, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.
-        let (video, audio) = if args.capture.test_source {
-            ("test", "test")
-        } else {
-            (args.capture.video.as_str(), args.capture.audio.as_str())
-        };
         info!(
             name = %args.transport.name,
-            video,
-            audio,
+            video = %args.capture.video_source(),
+            audio = %args.capture.audio_source(),
             "publishing"
         );
         Ok((broadcast, sources, ticket))
@@ -166,7 +161,7 @@ mod preview {
     use crate::{
         args::{CaptureArgs, PublishArgs},
         source::{self, Opened},
-        source_spec::VideoSourceSpec,
+        source_spec::{TestPattern, VideoSourceSpec},
         transport::Transport,
         ui::Pending,
     };
@@ -266,12 +261,12 @@ mod preview {
         }
 
         /// Returns the `--video` specifier of this entry.
-        fn spec(self) -> &'static str {
+        fn spec(self) -> VideoSourceSpec {
             match self {
-                Self::Camera => "cam",
-                Self::Screen => "screen",
-                Self::Test => "test",
-                Self::None => "none",
+                Self::Camera => VideoSourceSpec::Camera(None),
+                Self::Screen => VideoSourceSpec::Display(None),
+                Self::Test => VideoSourceSpec::Test(TestPattern::default()),
+                Self::None => VideoSourceSpec::None,
             }
         }
 
@@ -312,11 +307,7 @@ mod preview {
     impl SourcePicker {
         /// Creates a picker that starts on the source `capture` names.
         fn new(capture: CaptureArgs, sources: Opened) -> Self {
-            let selected = capture
-                .video_source()
-                .ok()
-                .as_ref()
-                .and_then(PickedSource::from_spec);
+            let selected = PickedSource::from_spec(&capture.video_source());
             Self {
                 selected,
                 capture,
@@ -331,7 +322,7 @@ mod preview {
             ui.label("Video");
             let label = match self.selected {
                 Some(source) => source.label(),
-                None => self.capture.video.as_str(),
+                None => &self.capture.video.to_string(),
             };
             let mut changed = false;
             egui::ComboBox::from_id_salt("preview-source")
@@ -387,7 +378,7 @@ mod preview {
                 return;
             };
             let capture = CaptureArgs {
-                video: selected.spec().to_string(),
+                video: selected.spec(),
                 test_source: false,
                 ..self.capture.clone()
             };
