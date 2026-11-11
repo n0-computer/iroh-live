@@ -130,181 +130,212 @@ struct Config {
 
 /// Runs the selector until the player is dropped.
 pub(crate) async fn run(inputs: Inputs) {
-    let Inputs {
-        broadcast,
-        controls,
-        status,
-        mut reports,
-        mut playing,
-        desired,
-        clock,
-        adaptation,
-        record_arrivals,
-    } = inputs;
-    let mut mode = controls.mode.subscribe();
-    let mut decoder = controls.decoder.subscribe();
-    let mut catalog = broadcast.catalog();
-    let mut epoch = broadcast.epoch();
-    let mut player = status.subscribe();
-    let network = broadcast.network();
-
-    let mut ticker = tokio::time::interval(adaptation.tick);
-    let mut bound = Bound::new(adaptation);
-    let mut backoffs = Backoffs::default();
-    let mut generation = 0u64;
-    let mut last_config: Option<Config> = None;
-    let mut restart = 0u64;
-    // The target whose track ended with nothing to follow it, and when to ask
-    // for it again if neither the catalog nor the route changes first.
-    let mut ended: Option<Target> = None;
-    let mut revive_at: Option<Instant> = None;
-    // Since when the catalog has had nothing to play while something was asked for.
-    let mut vanished_since: Option<Instant> = None;
-    // The pin error this selector last wrote, so it replaces only its own
-    // errors and leaves a failed switch's alone.
-    let mut last_why: Option<Arc<Error>> = None;
-    // The last target the supervisor gave up on. Choosing the same target
-    // again leaves the desired value unchanged, so this forces a resend.
-    let mut failed: Option<Failure> = None;
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
+    let mut selector = Selector::new(inputs);
     // The first pass decides at once. A catalog that arrived before the player
-    // started wakes nothing below, and without audio or network signals
+    // started wakes nothing in `wait`, and without audio or network signals
     // nothing else would.
-    let mut first = true;
     loop {
-        let auto = matches!(*mode.borrow(), RenditionMode::Auto);
-        let ticking = (auto && network.is_some())
-            || backoffs.any_excluded(Instant::now().into_std())
-            || vanished_since.is_some();
-        if !std::mem::take(&mut first) {
-            tokio::select! {
-                // Returning drops the desired sender. That ends the video task
-                // and the player's frames, so a reader in `next()` sees the end.
-                () = broadcast.closed() => {
-                    debug!("the broadcast closed");
-                    return;
-                }
-                changed = mode.changed() => if changed.is_err() { return },
-                changed = decoder.changed() => if changed.is_err() { return },
-                changed = playing.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    if playing.borrow_and_update().is_some() {
-                        ended = None;
-                        revive_at = None;
-                    }
-                }
-                changed = catalog.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    // A new catalog means the publisher republished, so a
-                    // video that ended is rebuilt.
-                    if ended.take().is_some() {
-                        restart += 1;
-                        revive_at = None;
-                    }
-                }
-                changed = epoch.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    clock.restart();
-                }
-                changed = player.changed() => if changed.is_err() { return },
-                () = async { tokio::time::sleep_until(revive_at.expect("guarded")).await },
-                    if revive_at.is_some() =>
-                {
-                    revive_at = None;
-                    // Ask again only if nothing changed meanwhile. A new route
-                    // or catalog has already asked for something.
-                    let still = desired
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|desired| Some(&desired.target) == ended.as_ref());
-                    if ended.take().is_some() && still && playing.borrow().is_none() {
-                        debug!("asking again for video that ended");
-                        restart += 1;
-                    }
-                }
-                report = reports.recv() => match report {
-                    None => return,
-                    Some(Report::Ended(target)) => {
-                        debug!(rendition = %target.rendition, "video ended, asking again shortly");
-                        revive_at = Some(Instant::now() + REVIVE_AFTER);
-                        ended = Some(target);
-                    }
-                    Some(Report::Failed(reported)) => {
-                        let rendition = &reported.target.rendition;
-                        if reported.exclude && !reported.config_only {
-                            backoffs.fail(rendition, (Instant::now() + EXCLUSION).into_std());
-                            info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
-                        }
-                        failed = Some(reported);
-                    }
-                },
-                _ = ticker.tick(), if ticking => {}
-            }
+        selector.decide();
+        if !selector.wait().await {
+            return;
         }
+    }
+}
 
+/// The selector's inputs, and the state it carries from one pass to the next.
+struct Selector {
+    broadcast: RemoteBroadcast,
+    controls: Arc<Controls>,
+    status: watch::Sender<PlayerStatus>,
+    reports: mpsc::Receiver<Report>,
+    playing: watch::Receiver<Option<Target>>,
+    desired: watch::Sender<Option<Desired>>,
+    clock: super::PlayoutClock,
+    record_arrivals: bool,
+    mode: watch::Receiver<RenditionMode>,
+    decoder: watch::Receiver<moq_video::decode::Kind>,
+    catalog: watch::Receiver<Option<Arc<hang::catalog::Catalog>>>,
+    epoch: watch::Receiver<crate::remote::Epoch>,
+    player: watch::Receiver<PlayerStatus>,
+    network: Option<crate::network::NetworkSignals>,
+    ticker: tokio::time::Interval,
+    bound: Bound,
+    backoffs: Backoffs,
+    generation: u64,
+    last_config: Option<Config>,
+    restart: u64,
+    /// The target whose track ended with nothing to follow it.
+    ended: Option<Target>,
+    /// When to ask for `ended` again, if neither the catalog nor the route
+    /// changes first.
+    revive_at: Option<Instant>,
+    /// Since when the catalog has had nothing to play while something was asked for.
+    vanished_since: Option<Instant>,
+    /// The pin error this selector last wrote.
+    ///
+    /// The selector replaces only its own errors, and leaves a failed
+    /// switch's alone.
+    last_why: Option<Arc<Error>>,
+    /// The last target the supervisor gave up on.
+    ///
+    /// Choosing the same target again leaves the desired value unchanged, so
+    /// this forces a resend.
+    failed: Option<Failure>,
+}
+
+impl Selector {
+    /// Creates a selector that has decided nothing yet.
+    fn new(inputs: Inputs) -> Self {
+        let Inputs {
+            broadcast,
+            controls,
+            status,
+            reports,
+            playing,
+            desired,
+            clock,
+            adaptation,
+            record_arrivals,
+        } = inputs;
+        let mut ticker = tokio::time::interval(adaptation.tick);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Self {
+            mode: controls.mode.subscribe(),
+            decoder: controls.decoder.subscribe(),
+            catalog: broadcast.catalog(),
+            epoch: broadcast.epoch(),
+            player: status.subscribe(),
+            network: broadcast.network(),
+            broadcast,
+            controls,
+            status,
+            reports,
+            playing,
+            desired,
+            clock,
+            record_arrivals,
+            ticker,
+            bound: Bound::new(adaptation),
+            backoffs: Backoffs::default(),
+            generation: 0,
+            last_config: None,
+            restart: 0,
+            ended: None,
+            revive_at: None,
+            vanished_since: None,
+            last_why: None,
+            failed: None,
+        }
+    }
+
+    /// Waits for the next input to change, and records what it means.
+    ///
+    /// Returns `false` once the broadcast closed or the player is gone.
+    async fn wait(&mut self) -> bool {
+        let auto = matches!(*self.mode.borrow(), RenditionMode::Auto);
+        let ticking = (auto && self.network.is_some())
+            || self.backoffs.any_excluded(Instant::now().into_std())
+            || self.vanished_since.is_some();
+        let revive_at = self.revive_at;
+        tokio::select! {
+            // Returning drops the desired sender. That ends the video task
+            // and the player's frames, so a reader in `next()` sees the end.
+            () = self.broadcast.closed() => {
+                debug!("the broadcast closed");
+                return false;
+            }
+            changed = self.mode.changed() => return changed.is_ok(),
+            changed = self.decoder.changed() => return changed.is_ok(),
+            changed = self.playing.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+                if self.playing.borrow_and_update().is_some() {
+                    self.ended = None;
+                    self.revive_at = None;
+                }
+            }
+            changed = self.catalog.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+                // A new catalog means the publisher republished, so a
+                // video that ended is rebuilt.
+                if self.ended.take().is_some() {
+                    self.restart += 1;
+                    self.revive_at = None;
+                }
+            }
+            changed = self.epoch.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+                self.clock.restart();
+            }
+            changed = self.player.changed() => return changed.is_ok(),
+            () = async { tokio::time::sleep_until(revive_at.expect("guarded")).await },
+                if revive_at.is_some() =>
+            {
+                self.revive_at = None;
+                // Ask again only if nothing changed meanwhile. A new route
+                // or catalog has already asked for something.
+                let still = self
+                    .desired
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|desired| Some(&desired.target) == self.ended.as_ref());
+                if self.ended.take().is_some() && still && self.playing.borrow().is_none() {
+                    debug!("asking again for video that ended");
+                    self.restart += 1;
+                }
+            }
+            report = self.reports.recv() => match report {
+                None => return false,
+                Some(Report::Ended(target)) => {
+                    debug!(rendition = %target.rendition, "video ended, asking again shortly");
+                    self.revive_at = Some(Instant::now() + REVIVE_AFTER);
+                    self.ended = Some(target);
+                }
+                Some(Report::Failed(reported)) => {
+                    let rendition = &reported.target.rendition;
+                    if reported.exclude && !reported.config_only {
+                        self.backoffs.fail(rendition, (Instant::now() + EXCLUSION).into_std());
+                        info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
+                    }
+                    self.failed = Some(reported);
+                }
+            },
+            _ = self.ticker.tick(), if ticking => {}
+        }
+        true
+    }
+
+    /// Chooses the rendition to play, and tells the supervisor if it changed.
+    fn decide(&mut self) {
         let now = Instant::now();
         let std_now = now.into_std();
 
-        let mode = mode.borrow().clone();
-        let Some(catalog) = catalog.borrow_and_update().clone() else {
-            continue;
+        let mode = self.mode.borrow().clone();
+        let Some(catalog) = self.catalog.borrow_and_update().clone() else {
+            return;
         };
         let (route, consumer) = {
-            let epoch = epoch.borrow_and_update();
+            let epoch = self.epoch.borrow_and_update();
             (epoch.generation, epoch.consumer.clone())
         };
         let Some(consumer) = consumer else {
-            continue;
+            return;
         };
+        let settings = self.settings(&catalog, route, consumer);
 
-        let latency = controls.latency;
-        // The ladder's largest jitter, so a switch never moves the schedule.
-        let jitter = catalog
-            .video
-            .renditions
-            .values()
-            .filter_map(|config| config.jitter)
-            .max();
-        let playout = latency.playout_delay(jitter);
-        if playout != clock.latency() {
-            debug!(?playout, ?jitter, "playout delay changed");
-            clock.set_delay(playout);
-        }
-        let config = Config {
-            decoder: decoder.borrow().clone(),
-            delay: Delay::from(latency),
-            epoch: route,
-            restart,
-        };
-        if last_config.as_ref() != Some(&config) {
-            generation += 1;
-            debug!(generation, ?config, "decoder configuration changed");
-            last_config = Some(config);
-            // A rendition that failed under the old configuration gets a try
-            // under the new one.
-            backoffs.clear();
-        }
-        let settings = DecodeSettings {
-            consumer,
-            decoder: decoder.borrow().clone(),
-            delay: Delay::from(latency),
-            record_arrivals,
-        };
-
-        let sample = network.as_ref().map(|network| network());
-        let on_screen = status.borrow().rendition.clone();
+        let sample = self.network.as_ref().map(|network| network());
+        let on_screen = self.status.borrow().rendition.clone();
         let nothing_playing = on_screen.is_none();
         // The bound weighs its target against what this selector last asked
         // for, on screen or on its way. Weighed against the old rendition still
         // on screen, each pass would restart the hold and undo the switch.
-        let current = desired
+        let current = self
+            .desired
             .borrow()
             .as_ref()
             .map(|desired| desired.target.rendition.clone())
@@ -314,17 +345,17 @@ pub(crate) async fn run(inputs: Inputs) {
         let chosen = moq_ext_adaptive::choose(
             &mode,
             &rungs,
-            &backoffs.excluded(std_now),
+            &self.backoffs.excluded(std_now),
             current.as_deref(),
             on_screen.as_deref(),
             sample.as_ref(),
-            &mut bound,
+            &mut self.bound,
             std_now,
         );
         let choice = chosen.rendition;
         let why = chosen.pin.map(|problem| pin_error(problem, &catalog));
-        let why_changed = !same_error(&last_why, &why);
-        send_if_changed(&status, |status| {
+        let why_changed = !same_error(&self.last_why, &why);
+        send_if_changed(&self.status, |status| {
             if why_changed {
                 status.switch_error = why.clone().map(Into::into);
             }
@@ -337,14 +368,14 @@ pub(crate) async fn run(inputs: Inputs) {
             }
         });
         if why_changed {
-            last_why = why;
+            self.last_why = why;
         }
         let step_down =
             moq_ext_adaptive::step_down(&mode, &rungs, choice.as_deref(), on_screen.as_deref());
         let next = choice.and_then(|name| {
             let config = catalog.video.renditions.get(&name)?.clone();
             Some(Desired {
-                target: Target::new(name, generation),
+                target: Target::new(name, self.generation),
                 settings: settings.clone(),
                 config,
                 step_down,
@@ -354,36 +385,87 @@ pub(crate) async fn run(inputs: Inputs) {
         // broadcast ends its video instead of starting forever.
         let vanished = next.is_none()
             && !matches!(mode, RenditionMode::Off)
-            && status.borrow().video != SlotState::Ended;
+            && self.status.borrow().video != SlotState::Ended;
         if vanished {
-            let since = *vanished_since.get_or_insert(now);
+            let since = *self.vanished_since.get_or_insert(now);
             if now.duration_since(since) < VANISH_GRACE {
-                continue;
+                return;
             }
             debug!("the catalog has had no video for a while, so the video is over");
-            send_if_changed(&status, |status| status.video = SlotState::Ended);
+            send_if_changed(&self.status, |status| status.video = SlotState::Ended);
         }
-        vanished_since = None;
+        self.vanished_since = None;
         // Ask again for a target given up on once its backoff is over. A
         // configuration that failed beside a working one waits until nothing
         // plays.
-        let retry = match (&failed, &next) {
+        let retry = match (&self.failed, &next) {
             (Some(failed), Some(next)) => {
                 failed.target == next.target
-                    && !backoffs.is_excluded(&failed.target.rendition, std_now)
+                    && !self.backoffs.is_excluded(&failed.target.rendition, std_now)
                     && (!failed.config_only || nothing_playing)
             }
             _ => false,
         };
-        desired.send_if_modified(|desired| {
+        let failed = &mut self.failed;
+        self.desired.send_if_modified(|desired| {
             let changed = desired.as_ref().map(|wanted| &wanted.target) != next.as_ref().map(|next| &next.target);
             if changed || retry {
                 trace!(desired = ?next.as_ref().map(|next| &next.target), retry, "desired rendition");
                 *desired = next;
-                failed = None;
+                *failed = None;
             }
             changed || retry
         });
+    }
+
+    /// Returns the decoder settings for this pass, and follows the latency and the configuration.
+    ///
+    /// Sets the playout delay from the latency and the ladder's jitter. A new
+    /// decoder configuration starts a new target generation, and gives every
+    /// rendition that failed under the old one another try.
+    fn settings(
+        &mut self,
+        catalog: &hang::catalog::Catalog,
+        route: u64,
+        consumer: moq_net::broadcast::Consumer,
+    ) -> DecodeSettings {
+        let latency = self.controls.latency;
+        // The ladder's largest jitter, so a switch never moves the schedule.
+        let jitter = catalog
+            .video
+            .renditions
+            .values()
+            .filter_map(|config| config.jitter)
+            .max();
+        let playout = latency.playout_delay(jitter);
+        if playout != self.clock.latency() {
+            debug!(?playout, ?jitter, "playout delay changed");
+            self.clock.set_delay(playout);
+        }
+        let config = Config {
+            decoder: self.decoder.borrow().clone(),
+            delay: Delay::from(latency),
+            epoch: route,
+            restart: self.restart,
+        };
+        if self.last_config.as_ref() != Some(&config) {
+            self.generation += 1;
+            debug!(
+                generation = self.generation,
+                ?config,
+                "decoder configuration changed"
+            );
+            self.last_config = Some(config);
+            // A rendition that failed under the old configuration gets a try
+            // under the new one.
+            self.backoffs.clear();
+        }
+        DecodeSettings {
+            consumer,
+            decoder: self.decoder.borrow().clone(),
+            delay: Delay::from(latency),
+            record_arrivals: self.record_arrivals,
+        }
     }
 }
 
