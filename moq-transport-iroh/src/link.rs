@@ -9,7 +9,7 @@ use std::{
 use iroh::endpoint::{Connection, PathId};
 use moq_net::session::Stats;
 
-/// How often [`watch`] reads the session.
+/// How often [`sample_link`] reads the session.
 pub const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 
 /// The span loss and goodput are measured across.
@@ -69,7 +69,7 @@ enum PathKey {
 /// bandwidth estimate is what asks the peer to probe.
 ///
 /// The future is cancel-safe: dropping it only stops the sampling.
-pub async fn watch(
+pub async fn sample_link(
     session: moq_net::Session,
     connection: Connection,
     sampler: Arc<Mutex<LinkSampler>>,
@@ -109,7 +109,7 @@ struct Reading {
 /// Turns readings of a session's statistics into [`LinkSample`]s.
 ///
 /// Keeps the history rates and minimums are taken over, and the path
-/// generation. [`watch`] drives one on a timer. Call the `sample_*` methods
+/// generation. [`sample_link`] drives one on a timer. Call the `sample_*` methods
 /// directly to read on your own schedule.
 #[derive(Debug, Default)]
 pub struct LinkSampler {

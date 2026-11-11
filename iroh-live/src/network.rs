@@ -34,7 +34,7 @@ pub(crate) fn signals(
     // that pair changed.
     let last = Mutex::new((None::<(LinkId, u64)>, 0));
     move || {
-        let link = subscription.link();
+        let link = subscription.serving_link();
         let mut sample = NetworkSample::default();
         let mut last = last.lock().expect("poisoned");
         let path = link

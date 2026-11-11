@@ -179,7 +179,7 @@ impl Session {
     }
 
     /// Returns the connection monitor's latest reading of this session.
-    pub fn link(&self) -> LinkSample {
+    pub fn link_sample(&self) -> LinkSample {
         self.inner.link_state.get()
     }
 

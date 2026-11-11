@@ -522,7 +522,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .subscribe("demo/hello", Reach::Direct(publisher))
         .await?;
     println!("subscribed to {}", subscription.path());
-    if let Some(link) = subscription.link() {
+    if let Some(link) = subscription.serving_link() {
         println!(
             "served by a {:?} link, rtt {:?}",
             link.kind, link.sample.rtt
@@ -536,5 +536,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Node::sessions`, `Node::accept` with `Admission::Manual`, and `Session::link`
+`Node::sessions`, `Node::accept` with `Admission::Manual`, and `Session::link_sample`
 cover the rest of the node. See [the transport page](../architecture/transport.md).

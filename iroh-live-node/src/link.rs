@@ -66,7 +66,7 @@ pub(crate) async fn monitor_direct(
     state: LinkState,
     sampler: SharedSampler,
 ) {
-    moq_transport_iroh::watch(session, connection, sampler, move |sample| {
+    moq_transport_iroh::sample_link(session, connection, sampler, move |sample| {
         state.set(sample);
     })
     .await;

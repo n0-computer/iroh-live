@@ -61,9 +61,9 @@
 //! peer's own endpoint id (see [`NodeConfig::owner`]). A claim therefore never
 //! overlaps another peer's paths, which hop pinning and the route table rely on.
 //!
-//! Every link runs a connection monitor. [`Session::link`],
-//! [`RelayLink::link`] and [`Subscription::link`] return its latest
-//! [`LinkSample`].
+//! Every link runs a connection monitor. [`Session::link_sample`],
+//! [`RelayLink::link_sample`] and [`Subscription::serving_link`] return its
+//! latest [`LinkSample`].
 //!
 //! # Cancellation safety
 //!

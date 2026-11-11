@@ -310,7 +310,7 @@ impl Link {
     /// Returns the latest reading, or an empty one while no link serves.
     fn read(&self) -> LinkSample {
         self.0
-            .link()
+            .serving_link()
             .map(|serving| serving.sample)
             .unwrap_or_default()
     }

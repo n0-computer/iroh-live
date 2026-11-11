@@ -212,7 +212,7 @@ impl Subscription {
     /// serving link is gone. Also `None` when a relay serves the route and
     /// several relays feed the table, since a relay's route does not say
     /// which relay it came from.
-    pub fn link(&self) -> Option<ServingLink> {
+    pub fn serving_link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
         let (link, entry) = self.serving(&state)?;

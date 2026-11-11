@@ -36,7 +36,7 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     read_counter(&subscription.as_moq()).await;
     let session = subscription.session().expect("served by a direct session");
     assert_eq!(session.remote_id(), alice.id());
-    let link = subscription.link().expect("a serving link");
+    let link = subscription.serving_link().expect("a serving link");
     assert_eq!(link.kind, LinkKind::Direct);
 
     alice.shutdown().await;
@@ -98,7 +98,7 @@ async fn an_own_publication_resolves_locally() {
     .await
     .expect("subscribe");
     read_counter(&subscription.as_moq()).await;
-    assert!(subscription.link().is_none(), "served over a link");
+    assert!(subscription.serving_link().is_none(), "served over a link");
     assert!(alice.moq.sessions().get().is_empty(), "dialed itself");
     alice.shutdown().await;
 }

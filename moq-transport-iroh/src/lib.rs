@@ -39,7 +39,7 @@ use std::time::Duration;
 
 pub use self::{
     error::{Error, TransportError},
-    link::{LinkSample, LinkSampler, SAMPLE_INTERVAL, watch},
+    link::{LinkSample, LinkSampler, SAMPLE_INTERVAL, sample_link},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     stream::{RecvStream, SendStream},
     transport::{Transport, accept, dial, dial_with},

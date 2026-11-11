@@ -924,7 +924,7 @@ async fn a_relay_link_publishes_and_consumes() {
             .expect("subscribe through the relay");
     let frame = first_frame(&subscription.as_moq(), "data").await;
     assert_eq!(&frame.payload[..], b"from-the-browser");
-    let serving = subscription.link().expect("a serving link");
+    let serving = subscription.serving_link().expect("a serving link");
     assert_eq!(serving.kind, LinkKind::Relay);
     // Detaching withdraws what the relay taught the route table.
     let mut updates = node.origin().announced();
@@ -1072,7 +1072,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
     // measured the link.
     let serving = tokio::time::timeout(TIMEOUT, async {
         loop {
-            if let Some(serving) = subscription.link()
+            if let Some(serving) = subscription.serving_link()
                 && serving.sample.rtt.is_some()
             {
                 return serving;
@@ -1085,7 +1085,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
     assert_eq!(serving.kind, LinkKind::Relay);
     assert_eq!(serving.id, link.id());
     assert!(serving.sample.min_rtt.is_some(), "{serving:?}");
-    assert!(link.link().rtt.is_some(), "{:?}", link.link());
+    assert!(link.link_sample().rtt.is_some(), "{:?}", link.link_sample());
 
     // The facade: the player's network signals carry the same readings.
     let player = iroh_live::media::remote_broadcast(&subscription)
@@ -1238,7 +1238,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
         .expect("subscribe through the relay");
     subscribed(&again.as_moq()).await;
     assert_eq!(
-        again.link().map(|link| link.kind),
+        again.serving_link().map(|link| link.kind),
         Some(LinkKind::Relay),
         "not served by the relay"
     );

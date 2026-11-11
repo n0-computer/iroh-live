@@ -277,7 +277,7 @@ impl Link {
 
     /// Returns the overlay's NET lines: the path kind and the arriving bitrate.
     fn lines(&self) -> Vec<String> {
-        let Some(serving) = self.subscription.link() else {
+        let Some(serving) = self.subscription.serving_link() else {
             return vec!["no link serves the broadcast".to_string()];
         };
         let link = serving.sample;

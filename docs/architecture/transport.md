@@ -35,7 +35,7 @@ one instance does not end the broadcast. When the instance's last route goes,
 the broadcast ends, and `Subscription::closed` asks the table again.
 
 The node can still say which link serves a path (`Subscription::session`,
-`Subscription::link`), from the hop of the route that serves it. `None` means
+`Subscription::serving_link`), from the hop of the route that serves it. `None` means
 no link: the path is the node's own publication, or no route is announced yet.
 A relay that declares a hop of its own is matched to the oldest relay link.
 `Session::subscribe` resolves a path over one session only, and follows only
@@ -119,13 +119,13 @@ admits it with a `Grant` or rejects it. `Node::sessions()` watches the open
 sessions.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
-statistics every 200 ms. `Session::link()` returns the latest `LinkSample`:
+statistics every 200 ms. `Session::link_sample()` returns the latest `LinkSample`:
 round trip, minimum round trip over 15 s, loss rate and goodput over 2 s, the
 peer's delivery estimate, a path generation and whether the path is relayed.
 Every figure is an `Option` and reads `None` until measured. A switch to
 another QUIC path bumps `path_generation` and starts the history over.
-`Subscription::link()` returns the `ServingLink` (`id`, `kind`, `sample`) of
-whichever link serves the subscription. `iroh-live/src/network.rs` turns that
+`Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
+`sample`) of whichever link serves the subscription. `iroh-live/src/network.rs` turns that
 into the media crate's `NetworkSample`. The monitor logs every sample at TRACE
 as `link sample`.
 
@@ -151,7 +151,7 @@ The node still serves only the table's local view within each session's grant,
 so its peers never see the rest of the cluster.
 
 A relay link runs the same monitor over its current MoQ session, and
-`RelayLink::link()` returns the sample. `relayed` is always false there, and
+`RelayLink::link_sample()` returns the sample. `relayed` is always false there, and
 each reconnect starts a new path generation.
 
 ## ALPN negotiation
