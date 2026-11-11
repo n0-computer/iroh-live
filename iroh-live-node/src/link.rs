@@ -7,6 +7,7 @@ use std::{
     time::Instant,
 };
 
+use moq_ext_access::LinkKind;
 use moq_transport_iroh::{LinkSample, LinkSampler, SAMPLE_INTERVAL};
 use tracing::trace;
 
@@ -14,15 +15,6 @@ use tracing::trace;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
 #[display("link-{_0}")]
 pub struct LinkId(pub(crate) u64);
-
-/// What kind of link serves a subscription.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LinkKind {
-    /// A session with a peer, dialed or accepted.
-    Direct,
-    /// A moq relay this node is attached to.
-    Relay,
-}
 
 /// The link serving a subscription, and its latest reading.
 #[derive(Debug, Clone, PartialEq)]

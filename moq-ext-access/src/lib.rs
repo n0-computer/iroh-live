@@ -4,7 +4,7 @@
 //! - [`SessionRequest`]: what a peer asked for when it opened a session.
 //! - [`Audience`]: who may see a publication, generic over the peer id.
 //! - [`AudienceKind`]: an [`Audience`] as a registry keeps it, the current set.
-//! - [`visible_paths`]: the paths a link may see, given its [`LinkRole`].
+//! - [`visible_paths`]: the paths a link may see, given its [`LinkKind`].
 //! - [`policy`]: who may hold a session, and with which [`Grant`].
 //! - [`Layout`]: a path convention, which says where each peer publishes and
 //!   who owns a path.
@@ -306,10 +306,12 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
     }
 }
 
-/// What kind of link a publication may be offered on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkRole {
-    /// A session with a peer.
+/// What kind of link a session or a relay attachment is.
+///
+/// The kind decides which publications a link may be offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinkKind {
+    /// A session with a peer, dialed or accepted.
     Direct,
     /// A moq relay, which gets the [`Audience::Granted`] publications.
     Relay,
@@ -369,12 +371,12 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 pub fn visible_paths<'a, P: PeerId>(
     publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,
     grant: &Grant,
-    role: LinkRole,
+    kind: LinkKind,
     peer: Option<&P>,
 ) -> Patterns {
     publications
         .into_iter()
-        .filter(|(path, audience)| visible(path, audience, grant, role, peer))
+        .filter(|(path, audience)| visible(path, audience, grant, kind, peer))
         .filter_map(|(path, _)| Pattern::literal(path).ok())
         .collect()
 }
@@ -384,15 +386,15 @@ fn visible<P: PeerId>(
     path: &str,
     audience: &AudienceKind<P>,
     grant: &Grant,
-    role: LinkRole,
+    kind: LinkKind,
     peer: Option<&P>,
 ) -> bool {
     if !grant.allows_subscribe(path) {
         return false;
     }
-    match (audience, role) {
+    match (audience, kind) {
         (AudienceKind::Granted, _) => true,
-        (AudienceKind::Peers(peers), LinkRole::Direct) => {
+        (AudienceKind::Peers(peers), LinkKind::Direct) => {
             peer.is_some_and(|peer| peers.contains(peer))
         }
         _ => false,
@@ -526,15 +528,15 @@ mod tests {
         let grant = Grant::everything();
         let granted = AudienceKind::<String>::Granted;
         let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
-        let direct = LinkRole::Direct;
+        let direct = LinkKind::Direct;
         let a = "a".to_string();
         let b = "b".to_string();
         assert!(visible("p", &granted, &grant, direct, Some(&b)));
         assert!(visible("p", &peers, &grant, direct, Some(&a)));
         assert!(!visible("p", &peers, &grant, direct, Some(&b)));
         assert!(!visible("p", &peers, &grant, direct, None));
-        assert!(visible("p", &granted, &grant, LinkRole::Relay, None));
-        assert!(!visible("p", &peers, &grant, LinkRole::Relay, Some(&a)));
+        assert!(visible("p", &granted, &grant, LinkKind::Relay, None));
+        assert!(!visible("p", &peers, &grant, LinkKind::Relay, Some(&a)));
         let none = Grant {
             subscribe: Patterns::new(),
             publish: Patterns::new(),
@@ -550,7 +552,7 @@ mod tests {
         let grant = Grant::everything();
         let (a, b) = ("a".to_string(), "b".to_string());
 
-        let for_a = visible_paths(publications, &grant, LinkRole::Direct, Some(&a));
+        let for_a = visible_paths(publications, &grant, LinkKind::Direct, Some(&a));
         assert!(for_a.matches("live/x/public"));
         assert!(for_a.matches("live/x/secret"));
         assert!(
@@ -562,11 +564,11 @@ mod tests {
             "a path nobody published here"
         );
 
-        let for_b = visible_paths(publications, &grant, LinkRole::Direct, Some(&b));
+        let for_b = visible_paths(publications, &grant, LinkKind::Direct, Some(&b));
         assert!(for_b.matches("live/x/public"));
         assert!(!for_b.matches("live/x/secret"));
 
-        let relay = visible_paths(publications, &grant, LinkRole::Relay, None);
+        let relay = visible_paths(publications, &grant, LinkKind::Relay, None);
         assert!(relay.matches("live/x/public"));
         assert!(!relay.matches("live/x/secret"));
     }

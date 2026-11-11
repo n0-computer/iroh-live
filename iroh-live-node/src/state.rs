@@ -15,7 +15,6 @@ use std::{
 };
 
 use iroh::EndpointId;
-use moq_ext_access::LinkRole;
 use moq_net::{Path, Pattern, auth, origin, origin::Source};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
@@ -556,17 +555,13 @@ impl State {
         peer: Option<&EndpointId>,
         base: &Grant,
     ) -> auth::Grant {
-        let role = match kind {
-            LinkKind::Direct => LinkRole::Direct,
-            LinkKind::Relay => LinkRole::Relay,
-        };
         let base = &self.effective_grant(peer, base);
         let subscribe = moq_ext_access::visible_paths(
             self.publications
                 .values()
                 .map(|publication| (publication.path.as_str(), &publication.audience)),
             base,
-            role,
+            kind,
             peer,
         );
         let publish = match kind {

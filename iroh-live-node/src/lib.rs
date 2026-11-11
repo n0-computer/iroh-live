@@ -102,7 +102,7 @@ mod state;
 pub mod test_util;
 mod ticket;
 
-pub use moq_ext_access::Layout;
+pub use moq_ext_access::{Layout, LinkKind};
 /// The moq-net this crate builds against.
 pub use moq_net as net;
 use moq_transport_iroh as transport;
@@ -112,7 +112,7 @@ pub use self::{
     admission::{ConnectOptions, Grant, SessionRequest},
     claim::PathClaim,
     error::Error,
-    link::{LinkId, LinkKind, ServingLink},
+    link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     publish::{Audience, Publication},
     relay::{RelayConfig, RelayLink, RelayStatus, TokenFn},
