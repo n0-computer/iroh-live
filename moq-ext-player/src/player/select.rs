@@ -30,6 +30,8 @@ pub(crate) struct DecodeSettings {
     pub decoder: moq_video::decode::Kind,
     /// What the subscription asks for: the latency's minimum and maximum.
     pub delay: Delay,
+    /// Whether to record when each frame arrives.
+    pub record_arrivals: bool,
 }
 
 /// What the video supervisor should play.
@@ -98,6 +100,8 @@ pub(crate) struct Inputs {
     pub clock: super::PlayoutClock,
     /// The thresholds and timers the choice follows.
     pub adaptation: Adaptation,
+    /// Whether decoders record when their frames arrive.
+    pub record_arrivals: bool,
 }
 
 /// The decoder configuration a target was last built under.
@@ -122,6 +126,7 @@ pub(crate) async fn run(inputs: Inputs) {
         desired,
         clock,
         adaptation,
+        record_arrivals,
     } = inputs;
     let mut mode = controls.mode.subscribe();
     let mut latency = controls.latency.subscribe();
@@ -279,6 +284,7 @@ pub(crate) async fn run(inputs: Inputs) {
             consumer,
             decoder: decoder.borrow().clone(),
             delay: Delay::from(latency),
+            record_arrivals,
         };
 
         let sample = network.as_ref().map(|network| network());
@@ -444,6 +450,7 @@ mod tests {
             desired,
             clock: super::super::PlayoutClock::new(Duration::from_millis(100)),
             adaptation: Adaptation::default(),
+            record_arrivals: false,
         };
         let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));
         Running {

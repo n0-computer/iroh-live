@@ -140,6 +140,12 @@ pub struct PlayerConfig {
     /// link the wait for the keyframe alone takes seconds. The incumbent keeps
     /// playing either way. 15 s by default.
     pub switch_deadline: Duration,
+    /// Whether to record when each video frame arrives, for
+    /// [`FrameTiming::arrived`](crate::stats::FrameTiming::arrived).
+    ///
+    /// The record reads every video track a second time, beside its decoder.
+    /// Off by default, which leaves `arrived` at `None`.
+    pub record_arrivals: bool,
 }
 
 impl Default for PlayerConfig {
@@ -151,6 +157,7 @@ impl Default for PlayerConfig {
             decoder: moq_video::decode::Kind::default(),
             adaptation: Adaptation::default(),
             switch_deadline: Duration::from_secs(15),
+            record_arrivals: false,
         }
     }
 }
@@ -302,6 +309,7 @@ impl Player {
                 desired: desired_tx,
                 clock: clock.clone(),
                 adaptation: config.adaptation,
+                record_arrivals: config.record_arrivals,
             })
             .instrument(debug_span!(parent: &span, "select")),
         )));
@@ -484,6 +492,7 @@ impl Player {
     ///
     /// ```no_run
     /// # async fn run(player: moq_ext_player::Player) {
+    /// // The player was started with `PlayerConfig::record_arrivals` on.
     /// let mut frames = player.video();
     /// while let Some(frame) = frames.next().await {
     ///     let timing = player.video_timing(frame.timestamp.into());

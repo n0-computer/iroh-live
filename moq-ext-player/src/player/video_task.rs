@@ -562,7 +562,10 @@ async fn spawn_reader(
     let decoder = consumer.name().to_string();
     info!(rendition, decoder = %decoder, "video decoding");
     let arrivals = Arrivals::default();
-    let watch_arrivals = watch_arrivals(settings, config, rendition, &arrivals);
+    let watch_arrivals = settings
+        .record_arrivals
+        .then(|| watch_arrivals(settings, config, rendition, &arrivals))
+        .flatten();
 
     let (tx, frames) = mpsc::channel(READ_AHEAD);
     let name = rendition.to_string();
@@ -845,6 +848,7 @@ mod tests {
             consumer: consumer.clone(),
             decoder: moq_video::decode::Kind::Software,
             delay: moq_net::track::Delay::default().with_max(Duration::from_secs(60)),
+            record_arrivals: true,
         };
         let remote = RemoteBroadcast::from_consumer(consumer);
         // The catalog has its own track, so the first snapshot may not have

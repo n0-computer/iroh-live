@@ -89,8 +89,11 @@ pub struct FrameTiming {
     pub pts: Duration,
     /// When the frame's data was complete on this node, before decoding.
     ///
-    /// Set for pictures. It is `None` for audio, and for a picture whose data
-    /// arrived before the player watched its track.
+    /// Set for pictures when [`PlayerConfig::record_arrivals`] is on. It is
+    /// `None` otherwise, for audio, and for a picture whose data arrived
+    /// before the player watched its track.
+    ///
+    /// [`PlayerConfig::record_arrivals`]: crate::PlayerConfig::record_arrivals
     pub arrived: Option<Instant>,
     /// When the decoder handed the frame over.
     pub decoded: Instant,

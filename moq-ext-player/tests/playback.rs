@@ -926,7 +926,10 @@ async fn a_presented_frame_knows_when_its_data_arrived() {
         )
         .expect("valid");
     let player = local(&broadcast)
-        .play(PlayerConfig::default())
+        .play(PlayerConfig {
+            record_arrivals: true,
+            ..PlayerConfig::default()
+        })
         .expect("valid");
     let mut frames = player.video();
     let mut arrived = 0;
