@@ -320,16 +320,20 @@ pub(crate) async fn announced_by(
 }
 
 /// Resolves `path` in the route table, for [`Node::subscribe`](crate::Node::subscribe).
-pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Subscription, Error> {
+pub(crate) async fn subscribe(
+    node: &Node,
+    path: Path,
+    reach: Reach,
+) -> Result<Subscription, Error> {
     check_path(&path)?;
-    if moq.shared.shutdown.is_cancelled() {
+    if node.shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
-    let table = moq.shared.table.consume();
+    let table = node.shared.table.consume();
     // A route the table already knows answers at once.
     if let Ok(broadcast) = table.request(&path, None).await {
         debug!(%path, "resolved through an existing route");
-        return Ok(subscription(&moq.shared, path, table, broadcast));
+        return Ok(subscription(&node.shared, path, table, broadcast));
     }
 
     let (dial, relays) = match reach {
@@ -337,15 +341,15 @@ pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Su
         Reach::Relays => (None, true),
         Reach::Both(peer) => (Some(peer), true),
     };
-    let relays = relays && moq.shared.state.lock().expect("poisoned").has_relays();
+    let relays = relays && node.shared.state.lock().expect("poisoned").has_relays();
     // This node's own publications are in the table already.
-    let Some(peer) = dial.filter(|peer| *peer != moq.shared.id) else {
+    let Some(peer) = dial.filter(|peer| *peer != node.shared.id) else {
         if !relays {
             return Err(e!(Error::NoRoute { path }));
         }
         debug!(%path, "waiting for a relay to route the path");
         let resolved = routed(&table, &path).await;
-        return outcome(&moq.shared, path, table, resolved);
+        return outcome(&node.shared, path, table, resolved);
     };
 
     debug!(%path, peer = %peer.fmt_short(), relays, "dialing the publisher");
@@ -355,8 +359,8 @@ pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Su
     };
     tokio::pin!(routed);
     let connected = tokio::select! {
-        resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
-        connected = moq.connect(peer) => connected,
+        resolved = &mut routed => return outcome(&node.shared, path, table, resolved),
+        connected = node.connect(peer) => connected,
     };
     match connected {
         // The peer's announcement of the path would never enter the table.
@@ -370,7 +374,7 @@ pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Su
             // The session ending is the end of the wait unless a relay can
             // still bring the path.
             tokio::select! {
-                resolved = &mut routed => return outcome(&moq.shared, path, table, resolved),
+                resolved = &mut routed => return outcome(&node.shared, path, table, resolved),
                 _ = session.closed() => {}
             }
             if !relays {
@@ -383,7 +387,7 @@ pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Su
         Err(err) => return Err(err),
     }
     let resolved = routed.await;
-    outcome(&moq.shared, path, table, resolved)
+    outcome(&node.shared, path, table, resolved)
 }
 
 /// Waits until a route serves `path`, and resolves it.

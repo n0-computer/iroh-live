@@ -139,7 +139,8 @@ impl FromStr for BroadcastTicket {
     /// Parses the string form, with a case-insensitive scheme and peer id.
     ///
     /// Fails with [`Error::InvalidTicket`] if the string is not a ticket, has
-    /// more than 31 path segments or 4000 bytes, or its path is not valid.
+    /// more than [`MAX_PARTS`](Self::MAX_PARTS) path segments or
+    /// [`MAX_LEN`](Self::MAX_LEN) bytes, or its path is not valid.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         if s.len() > Self::MAX_LEN {

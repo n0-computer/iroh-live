@@ -55,7 +55,9 @@ pub use moq_ext_access::policy::{
     Timeout, TokenVerifier, Transit, Union, Verify, from_fn,
 };
 #[cfg(feature = "rcan")]
-pub use moq_ext_access::policy::{MoqCapability, RcanVerifier, encode_chain};
+pub use moq_ext_access::policy::{
+    MAX_LINK_BYTES, MAX_LINKS, MoqCapability, RcanVerifier, encode_chain,
+};
 
 /// A peer's request for a session with this node, as a policy sees it.
 pub type PeerRequest = moq_ext_access::policy::PeerRequest<EndpointId>;

@@ -29,7 +29,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub(crate) struct State {
     next_id: u64,
-    pub(crate) publications: BTreeMap<u64, PubEntry>,
+    pub(crate) publications: BTreeMap<u64, PublicationEntry>,
     pub(crate) links: BTreeMap<LinkId, LinkEntry>,
     /// Set once the node shuts down. Nothing is added after that.
     pub(crate) closed: bool,
@@ -144,7 +144,7 @@ pub(crate) enum ClaimRefused {
 
 /// One publication.
 #[derive(derive_more::Debug)]
-pub(crate) struct PubEntry {
+pub(crate) struct PublicationEntry {
     pub(crate) path: Path,
     /// The broadcast in the route table, and its announcement.
     #[debug(skip)]
@@ -164,7 +164,7 @@ pub(crate) struct PubEntry {
     pub(crate) withdrawn: CancellationToken,
 }
 
-impl Drop for PubEntry {
+impl Drop for PublicationEntry {
     fn drop(&mut self) {
         // Out of the table, for local readers too. The broadcast lives on for
         // whoever holds it, unannounced.
@@ -215,7 +215,7 @@ impl State {
     }
 
     /// Adds a publication and re-authorizes every link for it.
-    pub(crate) fn add_publication(&mut self, id: u64, publication: PubEntry) {
+    pub(crate) fn add_publication(&mut self, id: u64, publication: PublicationEntry) {
         self.publications.insert(id, publication);
         self.authorize_all();
     }
@@ -223,7 +223,7 @@ impl State {
     /// Removes a publication, and re-authorizes every link without it.
     ///
     /// The path leaves the route table when the returned entry drops.
-    pub(crate) fn remove_publication(&mut self, id: u64) -> Option<PubEntry> {
+    pub(crate) fn remove_publication(&mut self, id: u64) -> Option<PublicationEntry> {
         let entry = self.publications.remove(&id)?;
         self.authorize_all();
         Some(entry)
@@ -657,13 +657,13 @@ mod tests {
         }
 
         /// Returns a publication at `path` for `audience`, as `publish` records it.
-        fn publication(&self, path: &str, audience: AudienceKind) -> PubEntry {
+        fn publication(&self, path: &str, audience: AudienceKind) -> PublicationEntry {
             let path = Path::new(path).expect("a valid path");
             let publication = self
                 .producer
                 .route(path.clone(), RouteOptions::hidden())
                 .expect("a route");
-            PubEntry {
+            PublicationEntry {
                 path,
                 publication,
                 audience,

@@ -51,6 +51,12 @@ pub enum Reach {
 /// How long the node waits for its policy by default.
 pub const DECIDE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How many messages may wait for the node's actor.
+///
+/// Every message is a connect or a session to register. Sixteen absorb a
+/// burst of dials, and a full inbox only makes the next sender wait.
+const ACTOR_INBOX: usize = 16;
+
 /// The configuration of a [`Node`].
 #[derive(Clone, derive_more::Debug)]
 pub struct NodeConfig {
@@ -221,7 +227,7 @@ impl Node {
         let policy = config
             .policy
             .unwrap_or_else(|| Arc::new(policy::Open(Grant::subscribe_only())));
-        let (actor_tx, actor_rx) = mpsc::channel(16);
+        let (actor_tx, actor_rx) = mpsc::channel(ACTOR_INBOX);
         let shared = Arc::new(Shared {
             endpoint,
             id,

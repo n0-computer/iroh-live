@@ -299,9 +299,9 @@ impl RelayTask {
     }
 }
 
-/// Attaches `moq` to a relay, for [`Node::attach_relay`].
-pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error> {
-    let shared = &moq.shared;
+/// Attaches `node` to a relay, for [`Node::attach_relay`].
+pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Error> {
+    let shared = &node.shared;
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
@@ -341,7 +341,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         link_state,
         status.clone(),
     );
-    moq.tasks.insert_relay(
+    node.tasks.insert_relay(
         link,
         RelayTask {
             task: AbortOnDropHandle::new(task),
@@ -351,7 +351,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
     // A shutdown that ran between the check above and the insert found no
     // task to stop, so stop it here instead.
     if shared.shutdown.is_cancelled() {
-        moq.tasks.detach_relays();
+        node.tasks.detach_relays();
         return Err(e!(Error::ShutDown));
     }
     Ok(RelayLink {
@@ -361,7 +361,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
             status,
             uplink,
             shared: Arc::downgrade(shared),
-            tasks: Arc::downgrade(&moq.tasks),
+            tasks: Arc::downgrade(&node.tasks),
         }),
     })
 }

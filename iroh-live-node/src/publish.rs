@@ -19,7 +19,7 @@ use tracing::{Instrument, debug, debug_span, info};
 use crate::{
     BroadcastTicket, Error,
     node::Shared,
-    state::{PubEntry, State},
+    state::{PublicationEntry, State},
 };
 
 /// Who may see a publication.
@@ -67,7 +67,7 @@ pub struct Publication {
 struct PublicationInner {
     id: u64,
     /// The id of the node that published.
-    peer: EndpointId,
+    publisher: EndpointId,
     path: Path,
     #[debug(skip)]
     broadcast: broadcast::Producer,
@@ -97,7 +97,7 @@ impl Publication {
     /// It holds the node's endpoint id and the path, and nothing about layouts.
     #[must_use]
     pub fn ticket(&self) -> BroadcastTicket {
-        BroadcastTicket::at(self.inner.peer, self.inner.path.clone())
+        BroadcastTicket::at(self.inner.publisher, self.inner.path.clone())
     }
 
     /// Returns the broadcast to fill.
@@ -275,7 +275,7 @@ where
     let withdrawn = CancellationToken::new();
     state.add_publication(
         id,
-        PubEntry {
+        PublicationEntry {
             path: path.clone(),
             publication,
             audience: AudienceKind::from(&audience),
@@ -288,7 +288,7 @@ where
     let publication = Publication {
         inner: Arc::new(PublicationInner {
             id,
-            peer: shared.id,
+            publisher: shared.id,
             path,
             broadcast,
             shared: weak,
