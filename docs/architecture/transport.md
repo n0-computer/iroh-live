@@ -43,8 +43,8 @@ the instance that session announced. Rooms read each member this way. Both
 rest on hops, which a peer may declare, so they are only as strong as grants
 that keep each peer to its own paths.
 
-A direct session's routes enter the table only within the grant. `NodeConfig::grant`
-computes it from the peer's endpoint id, and the default is
+A direct session's routes enter the table only within the grant. The node's
+policy decides it for each peer, and the default policy grants
 `Grant::subscribe_only()`: a peer may read anything and publish nothing.
 `LiveLayout::config` lets a peer publish under `live/<peer>/`, and adding
 `iroh_live::rooms::RoomsLayout` adds `rooms/*/<peer>/`. The table is shared by
@@ -91,8 +91,8 @@ them for endpoint ids.
 
 The node works the grants out again, and re-authorizes the sessions whose view
 changed, when a publication is added or removed, when an audience or a `Peers`
-set changes (`Publication::set_audience`), when a session's grant changes
-(`Session::set_grant`), and when a session or relay link is added. A narrower
+set changes (`Publication::set_audience`), when the policy decides a peer
+again (`Node::reauthorize`), and when a session or relay link is added. A narrower
 grant retracts the path from the peer and resets what it reads there with
 `Unauthorized`. A wider one announces the path again. The rest of the session
 carries on.
@@ -112,8 +112,7 @@ ALPN in `alpns()`, and incoming connections arrive through its
 `ProtocolHandler`. A node that is never mounted refuses every incoming
 connection. After the peer's setup, the node asks its policy
 (`NodeConfig::policy`) whether to admit the session, and with which grant.
-Without a policy, every session is admitted with the grant `NodeConfig::grant`
-gives the peer, or `Grant::subscribe_only()` if none is set. A
+Without a policy, every session is admitted with `Grant::subscribe_only()`. A
 `policy::Queue` hands each decision to the application: it reads the request
 (the path, the query, the token the peer presented) and admits it with a
 `Grant` or rejects it. Each decision may take up to

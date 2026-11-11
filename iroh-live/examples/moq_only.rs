@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // or a preset of your own will do.
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     // The default config lets peers subscribe to anything and publish
-    // nothing. Set `grant` to let them publish somewhere.
+    // nothing. Set a policy to let them publish somewhere.
     let node = Node::new(endpoint.clone(), NodeConfig::default());
     let router = node.mount(Router::builder(endpoint.clone())).spawn();
 

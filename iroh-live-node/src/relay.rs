@@ -607,7 +607,6 @@ async fn iroh_uplink(
         token: None,
         path: (!path.is_empty()).then(|| path.to_owned()),
         cost: Some(config.cost),
-        grant: Some(Grant::everything()),
         congestion: None,
     };
     let mut pause = REDIAL_MIN;

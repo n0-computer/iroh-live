@@ -2,7 +2,10 @@
 
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use common::{Peer, announced, ends, publish, reading, stays_pending, step};
 use iroh::EndpointId;
@@ -14,13 +17,43 @@ use moq_net::{Path, Pattern, Patterns};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
-/// Returns a node whose grant lets every peer subscribe and publish nothing.
+/// Returns a node whose default policy lets every peer subscribe and publish nothing.
 async fn viewer() -> Peer {
-    Peer::bare(NodeConfig {
-        grant: Some(Arc::new(|_| Grant::subscribe_only())),
-        ..Default::default()
+    Peer::bare(NodeConfig::default()).await
+}
+
+/// Returns a node whose policy grants what `current` holds, or [`common::own_paths`] while it holds `None`.
+async fn switchable(current: Arc<Mutex<Option<Grant>>>) -> Peer {
+    let policy = policy::from_fn(move |request: &PeerRequest| {
+        let grant = current.lock().expect("poisoned").clone();
+        Ok(grant
+            .unwrap_or_else(|| common::own_paths(*request.peer()))
+            .into())
+    });
+    Peer::bare(NodeConfig::default().with_policy(policy)).await
+}
+
+/// Returns the grant `node`'s policy gave the peer of `session`, without its claims.
+fn policy_grant(node: &Peer, session: &Session) -> Grant {
+    node.moq
+        .grant_for(session.peer())
+        .map_or_else(Grant::nothing, |authorization| authorization.grant)
+}
+
+/// Waits until `node` holds `grant` as the policy grant of `peer`.
+async fn until_granted(node: &Peer, peer: EndpointId, grant: &Grant) {
+    step("the policy grant changes", async {
+        while node
+            .moq
+            .grant_for(peer)
+            .map(|current| current.grant)
+            .as_ref()
+            != Some(grant)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     })
-    .await
+    .await;
 }
 
 fn path_of(peer: &Peer, name: &str) -> Path {
@@ -172,9 +205,10 @@ async fn dropping_the_last_claim_narrows_the_grant_again() {
 
 #[tokio::test]
 #[traced_test]
-async fn set_grant_leaves_claimed_paths_alone() {
+async fn a_narrower_policy_grant_leaves_claimed_paths_alone() {
     let alice = Peer::spawn().await;
-    let bob = viewer().await;
+    let policy_grant = Arc::new(Mutex::new(Some(Grant::subscribe_only())));
+    let bob = switchable(policy_grant.clone()).await;
     let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let path = publication.path();
     let session = step("dial", bob.moq.connect(alice.endpoint.addr()))
@@ -182,12 +216,13 @@ async fn set_grant_leaves_claimed_paths_alone() {
         .expect("connect");
 
     let _claim = bob.moq.claim_path(alice.id(), path).expect("claim");
-    session.set_grant(Grant::nothing());
+    *policy_grant.lock().expect("poisoned") = Some(Grant::nothing());
+    bob.moq.reauthorize(alice.id());
+    until_granted(&bob, alice.id(), &Grant::nothing()).await;
     assert!(
         session.grant().allows_publish(path.as_str()),
         "a live claim survives a narrower base"
     );
-    assert_eq!(session.base_grant(), Grant::nothing());
     assert!(!session.grant().allows_publish("live/other"));
 
     alice.shutdown().await;
@@ -225,8 +260,10 @@ async fn the_sessions_of_one_peer_share_its_grant() {
     // side almost every time. Try a few pairs until one does.
     const PAIRS: usize = 8;
     for _ in 0..PAIRS {
-        let alice = Peer::spawn().await;
-        let bob = Peer::spawn().await;
+        let alice_grant = Arc::new(Mutex::new(None));
+        let bob_grant = Arc::new(Mutex::new(None));
+        let alice = switchable(alice_grant.clone()).await;
+        let bob = switchable(bob_grant.clone()).await;
         let (at_alice, at_bob) = step("both dial at once", async {
             tokio::join!(
                 alice.moq.connect(bob.endpoint.addr()),
@@ -238,7 +275,8 @@ async fn the_sessions_of_one_peer_share_its_grant() {
         at_bob.expect("bob's dial failed");
 
         let mut checked = false;
-        for (node, peer) in [(&alice, &bob), (&bob, &alice)] {
+        for (node, peer, policy_grant) in [(&alice, &bob, &alice_grant), (&bob, &alice, &bob_grant)]
+        {
             let with_peer = two_sessions_with(&node.moq, peer.id()).await;
             let [first, second] = with_peer.as_slice() else {
                 continue;
@@ -246,12 +284,13 @@ async fn the_sessions_of_one_peer_share_its_grant() {
             assert_eq!(first.grant(), common::own_paths(peer.id()));
             assert_eq!(first.grant(), second.grant());
 
-            first.set_grant(Grant::nothing());
-            assert_eq!(second.base_grant(), Grant::nothing(), "set on the first");
-            assert_eq!(second.grant(), Grant::nothing());
-
-            second.set_grant(Grant::everything());
-            assert_eq!(first.grant(), Grant::everything(), "set on the second");
+            for grant in [Grant::nothing(), Grant::everything()] {
+                *policy_grant.lock().expect("poisoned") = Some(grant.clone());
+                node.moq.reauthorize(peer.id());
+                until_granted(node, peer.id(), &grant).await;
+                assert_eq!(first.grant(), grant, "on the first session");
+                assert_eq!(second.grant(), grant, "on the second session");
+            }
             checked = true;
         }
 
@@ -307,7 +346,7 @@ async fn a_claim_stays_on_its_peers_links() {
     let path = path_of(&alice, "cam");
     let _claim = bob.moq.claim_path(alice.id(), &path).expect("claim");
     assert!(with_alice.grant().allows_publish(path.as_str()));
-    assert_eq!(with_carol.grant(), with_carol.base_grant());
+    assert_eq!(with_carol.grant(), policy_grant(&bob, &with_carol));
 
     alice.shutdown().await;
     carol.shutdown().await;
@@ -339,7 +378,7 @@ async fn concurrent_claims_all_land() {
         assert!(session.grant().allows_publish(path.as_str()), "cam{n}");
     }
     drop(claims);
-    assert_eq!(session.grant(), session.base_grant());
+    assert_eq!(session.grant(), policy_grant(&bob, &session));
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -395,9 +434,8 @@ impl Layout<EndpointId> for Fleet {
 async fn a_layout_replaces_the_generic_owner_rule() {
     let alice = Peer::spawn().await;
     let bob = Peer::bare(NodeConfig {
-        grant: Some(Arc::new(|_| Grant::nothing())),
         layout: Some(Arc::new(Fleet(alice.id()))),
-        ..Default::default()
+        ..NodeConfig::default().with_policy(policy::Open(Grant::nothing()))
     })
     .await;
 
@@ -437,7 +475,7 @@ async fn a_forged_claim_reaches_nothing() {
         announced(&mut announces, publication.path().as_str()),
     )
     .await;
-    assert_eq!(session.grant(), session.base_grant());
+    assert_eq!(session.grant(), policy_grant(&mallory, &session));
 
     alice.shutdown().await;
     mallory.shutdown().await;
@@ -473,12 +511,16 @@ async fn a_ticket_subscription_releases_its_claim_on_drop() {
         .expect("subscribe");
     let session = subscription.session().expect("a session");
     let clone = subscription.clone();
-    assert_ne!(session.grant(), session.base_grant());
+    assert_ne!(session.grant(), policy_grant(&bob, &session));
 
     drop(subscription);
-    assert_ne!(session.grant(), session.base_grant(), "a clone holds it");
+    assert_ne!(
+        session.grant(),
+        policy_grant(&bob, &session),
+        "a clone holds it"
+    );
     drop(clone);
-    assert_eq!(session.grant(), session.base_grant());
+    assert_eq!(session.grant(), policy_grant(&bob, &session));
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -500,7 +542,7 @@ async fn a_cancelled_ticket_subscribe_releases_its_claim() {
     )
     .await;
     assert!(waited.is_err(), "nothing is published at the path");
-    assert_eq!(session.grant(), session.base_grant());
+    assert_eq!(session.grant(), policy_grant(&bob, &session));
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -517,7 +559,7 @@ async fn a_covered_ticket_claims_nothing() {
         .await
         .expect("subscribe");
     let session = subscription.session().expect("a session");
-    assert_eq!(session.grant(), session.base_grant());
+    assert_eq!(session.grant(), policy_grant(&bob, &session));
 
     alice.shutdown().await;
     bob.shutdown().await;

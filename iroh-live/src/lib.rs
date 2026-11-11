@@ -18,8 +18,8 @@
 //! `<root>/<peer>/<name>` (the root is `live` by default) and lets each peer
 //! publish only under its own id. Every use names the layout, so nothing
 //! about it is implicit. An application with its own scheme calls the node
-//! with its own paths and gives it a grant of its own, see
-//! [`NodeConfig::grant`].
+//! with its own paths and gives it a policy of its own, see
+//! [`NodeConfig::with_policy`].
 //!
 //! A [`BroadcastTicket`] names a peer and the path it publishes at, whatever
 //! the layout. [`Node::subscribe_ticket`] reads one on any node: it grants the

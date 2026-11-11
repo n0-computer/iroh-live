@@ -6,15 +6,15 @@
     reason = "a `tests/common.rs` would become a test binary of its own"
 )]
 
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::OnceLock, time::Duration};
 
 use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
-use iroh_live_node::{Audience, Grant, Node, NodeConfig, Publication};
+use iroh_live_node::{
+    Audience, Grant, Node, NodeConfig, Publication,
+    policy::{self, PeerRequest, Policy},
+};
 use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
 
@@ -60,13 +60,16 @@ impl Peer {
         format!("live/{}/{name}", self.id())
     }
 
-    /// Spawns a node with `config`, filling in the grant `spawn` gives.
-    pub(crate) async fn with_config(mut config: NodeConfig) -> Self {
-        config.grant.get_or_insert_with(|| Arc::new(own_paths));
+    /// Spawns a node with `config`, filling in the policy `spawn` gives.
+    pub(crate) async fn with_config(config: NodeConfig) -> Self {
+        let config = match config.policy {
+            Some(_) => config,
+            None => config.with_policy(own_paths_policy()),
+        };
         Self::bare(config).await
     }
 
-    /// Spawns a node with exactly `config`, the default grant included.
+    /// Spawns a node with exactly `config`, the default policy included.
     pub(crate) async fn bare(config: NodeConfig) -> Self {
         let endpoint = endpoint().await;
         let moq = Node::new(endpoint.clone(), config);
@@ -93,6 +96,11 @@ impl Peer {
 pub(crate) fn own_paths(peer: EndpointId) -> Grant {
     let own: Pattern = format!("live/{peer}/**").parse().expect("pattern");
     Grant::publish_under(own)
+}
+
+/// Returns a policy that admits every peer with [`own_paths`].
+pub(crate) fn own_paths_policy() -> impl Policy<EndpointId> + Clone {
+    policy::from_fn(|request: &PeerRequest| Ok(own_paths(*request.peer()).into()))
 }
 
 /// A broadcast whose one track writes a counter every few milliseconds.

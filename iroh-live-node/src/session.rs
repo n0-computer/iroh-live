@@ -92,40 +92,6 @@ impl Session {
             .unwrap_or_else(Grant::nothing)
     }
 
-    /// Returns the peer's base grant: what admission or [`set_grant`](Self::set_grant) last set.
-    ///
-    /// Without live ticket claims this equals [`grant`](Self::grant).
-    pub fn base_grant(&self) -> Grant {
-        self.inner
-            .shared
-            .upgrade()
-            .and_then(|shared| {
-                let state = shared.state.lock().expect("poisoned");
-                state.peer_grant(&self.inner.remote).cloned()
-            })
-            .unwrap_or_else(Grant::nothing)
-    }
-
-    /// Changes the base grant of the peer, on every live session with it.
-    ///
-    /// The grant belongs to the peer, not to this session: a second session
-    /// with the same peer, as a simultaneous dial leaves, changes with it.
-    /// moq enforces it at once, in both directions. A narrower subscribe half
-    /// takes paths from the peer and resets what it reads there, and a
-    /// narrower publish half takes the peer's broadcasts outside it out of the
-    /// route table. A wider one brings them back, with no bound from the grant
-    /// the session started with. Paths that live ticket claims added stay until
-    /// their claims drop. A new session with the peer sets the grant again, as
-    /// its admission decides. Does nothing once the peer's last session has
-    /// ended.
-    pub fn set_grant(&self, grant: Grant) {
-        let Some(shared) = self.inner.shared.upgrade() else {
-            return;
-        };
-        let mut state = shared.state.lock().expect("poisoned");
-        state.set_peer_grant(&self.inner.remote, grant);
-    }
-
     /// Returns what the peer asked for when it opened the session.
     ///
     /// For a session this node dialed, the path it requested, without a token.

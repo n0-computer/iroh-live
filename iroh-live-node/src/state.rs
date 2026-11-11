@@ -207,15 +207,6 @@ impl State {
         self.authorize_peer(&peer);
     }
 
-    /// Replaces the base grant of `peer`, if it has a live session, and re-authorizes its links.
-    pub(crate) fn set_peer_grant(&mut self, peer: &EndpointId, grant: Grant) {
-        let Some(entry) = self.peers.get_mut(peer) else {
-            return;
-        };
-        entry.authorization.grant = grant;
-        self.authorize_peer(peer);
-    }
-
     /// Forgets the authorization of `peer`, and narrows its links to nothing.
     ///
     /// Called once the peer's last session has ended, or when a re-decide
@@ -600,7 +591,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_ticket_claim_widens_the_base_grant_to_its_path() {
+    async fn a_ticket_claim_widens_the_policy_grant_to_its_path() {
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
         let peer = direct.remote.expect("a peer");
@@ -740,7 +731,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_base_grant_bounds_what_a_link_sees() {
+    async fn the_policy_grant_bounds_what_a_link_sees() {
         let table = Table::new();
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
@@ -750,12 +741,12 @@ mod tests {
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
 
-        state.set_peer_grant(&peer, Grant::subscribe_only());
+        state.admit_peer(peer, Grant::subscribe_only().into());
         assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
     }
 
     #[tokio::test]
-    async fn the_links_of_one_peer_share_its_base_grant() {
+    async fn the_links_of_one_peer_share_its_policy_grant() {
         let table = Table::new();
         let mut state = State::default();
         let first = link(LinkKind::Direct);
@@ -773,7 +764,7 @@ mod tests {
             assert!(grant_of(&state, id).subscribe.is_empty(), "{id:?}");
         }
 
-        state.set_peer_grant(&peer, Grant::subscribe_only());
+        state.admit_peer(peer, Grant::subscribe_only().into());
         for id in [LinkId(1), LinkId(2)] {
             assert!(
                 grant_of(&state, id).subscribe.matches("live/me/cam"),
@@ -785,9 +776,9 @@ mod tests {
         state.admit_peer(peer, Grant::nothing().into());
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
 
-        // Once the peer is gone, a late change does not bring it back.
+        // Once the peer is gone, its links see nothing.
         state.remove_peer(&peer);
-        state.set_peer_grant(&peer, Grant::everything());
         assert_eq!(state.peer_grant(&peer), None);
+        assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
     }
 }

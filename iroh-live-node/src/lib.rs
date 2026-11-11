@@ -59,9 +59,7 @@
 //! accept and on dial (see [`NodeConfig::policy`]). The node asks it again
 //! when an authorization expires, when the policy reports a change, and on
 //! [`Node::reauthorize`], and applies the answer to the peer's live sessions.
-//! Without a policy, [`NodeConfig::grant`] gives each peer its grant from its
-//! endpoint id, and without that, a peer may subscribe to anything and
-//! publish nothing. [`Grant::publish_under`] lets a peer publish only at
+//! Without a policy, a peer may subscribe to anything and publish nothing. [`Grant::publish_under`] lets a peer publish only at
 //! paths that name it, so it cannot stand in for another peer.
 //!
 //! A [`BroadcastTicket`] names a peer and the path it publishes at.
@@ -123,7 +121,7 @@ use moq_transport_iroh as transport;
 pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
 
 pub use self::{
-    admission::{Admission, ConnectOptions, Grant, GrantFn, SessionRequest},
+    admission::{ConnectOptions, Grant, SessionRequest},
     claim::PathClaim,
     error::Error,
     link::{LinkId, LinkKind, ServingLink},

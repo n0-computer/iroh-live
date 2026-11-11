@@ -492,10 +492,8 @@ grants the publisher `demo/**`. The publishing side is
 serves `demo/hello`.
 
 ```rust
-use std::sync::Arc;
-
 use iroh::EndpointId;
-use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, net::Pattern};
+use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, net::Pattern, policy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -507,10 +505,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let demo: Pattern = "demo/**".parse()?;
     let moq = Node::new(
         endpoint.clone(),
-        NodeConfig {
-            grant: Some(Arc::new(move |_peer| Grant::publish_under(demo.clone()))),
-            ..Default::default()
-        },
+        NodeConfig::default().with_policy(policy::Open(Grant::publish_under(demo))),
     );
     // Mount your own protocols on the same router.
     let router = moq

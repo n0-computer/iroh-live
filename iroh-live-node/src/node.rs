@@ -24,12 +24,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, Layout, LinkId,
-    Publication, RelayConfig, RelayLink, Session, Subscription,
+    Audience, BroadcastTicket, ConnectOptions, Error, Grant, Layout, LinkId, Publication,
+    RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission,
     handshake::{Hop, SessionParts},
-    policy::{self, Authorization, DynPolicy, PeerRequest, Policy},
+    policy::{self, Authorization, DynPolicy, Policy},
     publish, reauth, relay, route,
     state::State,
 };
@@ -57,10 +57,10 @@ pub struct NodeConfig {
     /// Decides who may hold a session with the node, and with which rights.
     ///
     /// The node asks it when it accepts a session, after the peer's MoQ
-    /// SETUP, and before it dials a peer without [`ConnectOptions::grant`].
-    /// A rejection closes an accepted session with the rejection's code, and
-    /// fails a dial with [`Error::Rejected`]. Every session with one peer
-    /// shares the authorization the first of them got. Set it with
+    /// SETUP, and before it dials a peer. A rejection closes an accepted
+    /// session with the rejection's code, and fails a dial with
+    /// [`Error::Rejected`]. Every session with one peer shares the
+    /// authorization the first of them got. Set it with
     /// [`with_policy`](Self::with_policy).
     ///
     /// The node asks again about a live peer:
@@ -74,9 +74,8 @@ pub struct NodeConfig {
     /// A new authorization replaces the old one on every live session with
     /// the peer, and a rejection closes them.
     ///
-    /// `None` builds a policy from [`grant`](Self::grant): every peer is
-    /// admitted with the grant it returns, or with
-    /// [`Grant::subscribe_only`] without one.
+    /// `None` is [`policy::Open`] with [`Grant::subscribe_only`]: every peer
+    /// may subscribe to anything and publish nothing.
     pub policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
     /// How long the node waits for each decision of its policy.
     ///
@@ -84,22 +83,6 @@ pub struct NodeConfig {
     /// [`moq_net::Error::Timeout`]. The default is [`DECIDE_TIMEOUT`]. Raise it
     /// when a person answers, as with a [`policy::Queue`].
     pub decide_timeout: Duration,
-    /// How incoming sessions are admitted.
-    pub admission: Admission,
-    /// Returns the grant of a session with a peer, from its endpoint id.
-    ///
-    /// Used when [`policy`](Self::policy) is `None`, for accepted sessions
-    /// and for dials without [`ConnectOptions::grant`].
-    ///
-    /// `None` is the secure default: [`Grant::subscribe_only`], so any peer may
-    /// subscribe to anything but no peer may publish. Return
-    /// [`Grant::everything`] to allow any peer to publish at any path.
-    ///
-    /// A grant's publish patterns decide which paths the peer may put into the
-    /// route table. Let each peer publish only under paths that name it, or
-    /// one peer can stand in for another.
-    #[debug("{}", grant.is_some())]
-    pub grant: Option<GrantFn>,
     /// A route table to use instead of a new one, such as a relay's cluster origin.
     ///
     /// The caller runs its driver. The node creates its publications in it,
@@ -124,8 +107,6 @@ impl Default for NodeConfig {
         Self {
             policy: None,
             decide_timeout: DECIDE_TIMEOUT,
-            admission: Admission::default(),
-            grant: None,
             table: None,
             layout: None,
         }
@@ -249,7 +230,7 @@ impl Node {
         };
         let policy = config
             .policy
-            .unwrap_or_else(|| legacy_policy(config.grant.clone()));
+            .unwrap_or_else(|| Arc::new(policy::Open(Grant::subscribe_only())));
         let (actor_tx, actor_rx) = mpsc::channel(16);
         let shared = Arc::new(Shared {
             endpoint,
@@ -524,11 +505,10 @@ impl Node {
         self.connect_with(peer, ConnectOptions::default()).await
     }
 
-    /// Dials `peer` with a token, a cost, or a grant.
+    /// Dials `peer` with a token, a path, a cost, or a congestion controller.
     ///
     /// An existing session with the peer, or a dial in flight to it, is
-    /// returned as it is, and the options go unused. To be sure of a session's
-    /// grant, call [`Session::set_grant`] on the session this returns.
+    /// returned as it is, and the options go unused.
     ///
     /// # Errors
     ///
@@ -609,19 +589,6 @@ impl ProtocolHandler for Node {
     async fn shutdown(&self) {
         // Resolves to the inherent method.
         Self::shutdown(self).await;
-    }
-}
-
-/// Returns the policy that stands in for a configuration without one.
-///
-/// It admits every peer with the grant `grant` gives it, and with
-/// [`Grant::subscribe_only`] without a grant function.
-fn legacy_policy(grant: Option<GrantFn>) -> Arc<dyn DynPolicy<EndpointId>> {
-    match grant {
-        Some(grant) => Arc::new(policy::from_fn(move |request: &PeerRequest| {
-            Ok(grant(*request.peer()).into())
-        })),
-        None => Arc::new(policy::Open(Grant::subscribe_only())),
     }
 }
 

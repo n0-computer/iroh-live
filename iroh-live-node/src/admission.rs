@@ -23,19 +23,6 @@ use crate::{
     transport::{self, HANDSHAKE_TIMEOUT},
 };
 
-/// A function that gives a peer its grant, from its endpoint id.
-pub type GrantFn = Arc<dyn Fn(EndpointId) -> Grant + Send + Sync>;
-
-/// How a node treats incoming sessions.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Admission {
-    /// Admits the sessions [`NodeConfig::policy`] admits.
-    ///
-    /// [`NodeConfig::policy`]: crate::NodeConfig::policy
-    #[default]
-    Open,
-}
-
 /// How to dial a peer with [`Node::connect_with`](crate::Node::connect_with).
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
@@ -52,15 +39,6 @@ pub struct ConnectOptions {
     ///
     /// `None` keeps moq's default of one.
     pub cost: Option<u64>,
-    /// What the dialed peer may do on this node.
-    ///
-    /// `None` takes it from [`NodeConfig::grant`](crate::NodeConfig::grant).
-    /// A new session is authorized for it before its handshake, so nothing
-    /// outside it ever reaches the route table or the peer. The grant is the
-    /// peer's, so it also holds for every other session with the peer. A
-    /// session that already exists is returned as it is: change its grant
-    /// with [`Session::set_grant`](crate::Session::set_grant).
-    pub grant: Option<Grant>,
     /// The congestion controller of this connection.
     ///
     /// `None` keeps the endpoint's, which is BBR3 under

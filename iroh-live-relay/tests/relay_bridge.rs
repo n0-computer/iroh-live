@@ -417,9 +417,9 @@ async fn iroh_publish_iroh_subscribe() {
 
     // Subscriber
     let sub_ep = bind_endpoint().await;
-    let subscriber = iroh_live::Node::new(sub_ep.clone(), LiveLayout::default().config(&[]));
+    let subscriber = iroh_live::Node::new(sub_ep.clone(), trusting());
     let sub = tokio::time::timeout(TIMEOUT, async {
-        let session = subscriber.connect_with(relay_id, trusted()).await?;
+        let session = subscriber.connect(relay_id).await?;
         let subscription = session.subscribe(path).await?;
         Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
     })
@@ -494,9 +494,9 @@ async fn noq_publish_iroh_subscribe() {
 
     // Subscriber: iroh, through `Node::subscribe`.
     let sub_ep = bind_endpoint().await;
-    let subscriber = iroh_live::Node::new(sub_ep.clone(), LiveLayout::default().config(&[]));
+    let subscriber = iroh_live::Node::new(sub_ep.clone(), trusting());
     let sub = tokio::time::timeout(TIMEOUT, async {
-        let session = subscriber.connect_with(relay_id, trusted()).await?;
+        let session = subscriber.connect(relay_id).await?;
         let subscription = session.subscribe("browser-stream").await?;
         Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
     })
@@ -675,15 +675,14 @@ async fn iroh_publish_noq_subscribe() {
     pub_ep.close().await;
 }
 
-/// Dials a relay as a direct session whose peer may publish anything here.
+/// Returns a node config that lets every peer publish anything, a relay it dials included.
 ///
-/// A live node's own grant keeps a peer to `live/<its id>/`, and a relay
+/// A live node's own policy keeps a peer to `live/<its id>/`, and a relay
 /// forwards everyone's broadcasts.
-fn trusted() -> iroh_live_node::ConnectOptions {
-    iroh_live_node::ConnectOptions {
-        grant: Some(iroh_live_node::Grant::everything()),
-        ..Default::default()
-    }
+fn trusting() -> iroh_live::NodeConfig {
+    iroh_live::NodeConfig::default().with_policy(iroh_live::node::policy::Open(
+        iroh_live_node::Grant::everything(),
+    ))
 }
 
 /// How long an unwatched pull lingers in these tests.

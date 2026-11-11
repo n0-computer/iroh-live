@@ -31,7 +31,7 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomsLayout};
-use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription};
+use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription, policy};
 use moq_relay::cluster::Cluster;
 use n0_error::e;
 use n0_watcher::Watcher;
@@ -202,9 +202,8 @@ impl PullState {
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         let config = NodeConfig {
             table: Some(cluster.origin.clone()),
-            grant: Some(Arc::new(|_| Grant::nothing())),
             layout: Some(Arc::new(pull_layout())),
-            ..Default::default()
+            ..NodeConfig::default().with_policy(policy::Open(Grant::nothing()))
         };
         Self {
             inner: Pulls {

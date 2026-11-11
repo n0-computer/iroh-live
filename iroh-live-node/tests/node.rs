@@ -2,7 +2,11 @@
 
 mod common;
 
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use common::{
     Peer, TIMEOUT, announced, ends, publish, publish_from, read_counter, reading, retracted,
@@ -11,7 +15,7 @@ use common::{
 use iroh::endpoint::PathId;
 use iroh_live_node::{
     Audience, Congestion, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach, Session,
-    policy::{Event, Queue, Rejection},
+    policy::{self, Event, PeerRequest, Queue, Rejection},
 };
 use moq_net::{Pattern, Patterns};
 use n0_future::task::AbortOnDropHandle;
@@ -786,35 +790,33 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     bob.shutdown().await;
 }
 
-/// A dial's grant holds from the session's start, and the session can widen up to the node's grant.
+/// A dial's policy grant holds from the session's start, and widens when the policy is asked again.
 #[tokio::test]
 #[traced_test]
-async fn a_dial_grant_holds_from_the_start_and_widens_with_set_grant() {
-    let alice = Peer::spawn().await;
+async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
     let bob = Peer::spawn().await;
     let wanted = publish(&bob.moq, bob.path("wanted"), Audience::Granted).expect("publish");
     let other = publish(&bob.moq, bob.path("other"), Audience::Granted).expect("publish");
-
-    // Both cursors start before the dial, so they see whatever the session
-    // lets into the table from its first moment.
-    let mut to_wanted = alice.moq.origin().announced();
-    let mut to_other = alice.moq.origin().announced();
     let narrow = Grant {
         subscribe: Patterns::new(),
         publish: Pattern::literal(wanted.path().as_str())
             .expect("pattern")
             .into(),
     };
-    let options = ConnectOptions {
-        grant: Some(narrow.clone()),
-        ..Default::default()
+    let current = Arc::new(Mutex::new(narrow.clone()));
+    let policy = {
+        let current = current.clone();
+        policy::from_fn(move |_: &PeerRequest| Ok(current.lock().expect("poisoned").clone().into()))
     };
-    let session = step(
-        "alice dials bob",
-        alice.moq.connect_with(bob.endpoint.addr(), options),
-    )
-    .await
-    .expect("connect");
+    let alice = Peer::with_config(NodeConfig::default().with_policy(policy)).await;
+
+    // Both cursors start before the dial, so they see whatever the session
+    // lets into the table from its first moment.
+    let mut to_wanted = alice.moq.origin().announced();
+    let mut to_other = alice.moq.origin().announced();
+    let session = step("alice dials bob", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("connect");
     assert_eq!(session.grant(), narrow);
     announced(&mut to_wanted, wanted.path().as_str()).await;
     stays_pending(
@@ -824,8 +826,9 @@ async fn a_dial_grant_holds_from_the_start_and_widens_with_set_grant() {
     )
     .await;
 
-    // Alice's node grants bob all of `live/<bob>/`, so the session widens to it.
-    session.set_grant(common::own_paths(bob.id()));
+    // Alice's policy now grants bob all of `live/<bob>/`, so the session widens to it.
+    *current.lock().expect("poisoned") = common::own_paths(bob.id());
+    alice.moq.reauthorize(bob.id());
     announced(&mut alice.moq.origin().announced(), other.path().as_str()).await;
 
     alice.shutdown().await;
@@ -1071,20 +1074,13 @@ async fn a_peer_reads_the_publishers_own_broadcast() {
     bob.shutdown().await;
 }
 
-/// A grant that lets every peer publish anywhere.
-fn anywhere(_peer: iroh::EndpointId) -> Grant {
-    Grant::everything()
-}
-
 /// With overlapping grants, a path only carol publishes is not resolved through bob's session.
 #[tokio::test]
 #[traced_test]
 async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
-    let alice = Peer::with_config(NodeConfig {
-        grant: Some(std::sync::Arc::new(anywhere)),
-        ..Default::default()
-    })
-    .await;
+    let alice =
+        Peer::with_config(NodeConfig::default().with_policy(policy::Open(Grant::everything())))
+            .await;
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
 
