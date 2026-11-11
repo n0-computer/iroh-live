@@ -38,6 +38,12 @@
 //!   peer may subscribe to and publish.
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //!
+//! Every link runs a connection monitor. [`Session::link_sample`],
+//! [`RelayLink::link_sample`] and [`Subscription::serving_link`] return its
+//! latest [`LinkSample`].
+//!
+//! # Trust and grants
+//!
 //! A publication is a broadcast in the route table, and every link serves the
 //! table's local view: this node's publications, never a route it learned from
 //! another link. What a link's peer sees is the grant moq enforces on the live
@@ -61,9 +67,21 @@
 //! peer's own endpoint id (see [`NodeConfig::owner`]). A claim therefore never
 //! overlaps another peer's paths, which hop pinning and the route table rely on.
 //!
-//! Every link runs a connection monitor. [`Session::link_sample`],
-//! [`RelayLink::link_sample`] and [`Subscription::serving_link`] return its
-//! latest [`LinkSample`].
+//! The grants are also what keeps one publisher from taking over another's
+//! readers. A route carries the instance its announcer claims, and moq moves a
+//! reader between routes that claim the same instance. A peer or relay that
+//! announces a path under another publisher's instance could therefore take
+//! over that publisher's readers. The table's contents prevent it:
+//!
+//! - A direct peer announces only paths its grant lets it publish. With grants
+//!   that name the peer, it cannot reach another peer's paths.
+//! - An instance is a random string. It only reaches the links whose grant
+//!   lets them see the publication.
+//! - A relay is trusted with the paths it forwards. Attach only relays that
+//!   keep each publisher to its own paths, as moq-relay's tokens do.
+//!
+//! Hops take no part in this, since moq moves readers by instance and not by
+//! the first hop a publisher claims.
 //!
 //! # Cancellation safety
 //!

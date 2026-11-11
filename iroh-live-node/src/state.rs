@@ -11,6 +11,9 @@
 //! grants out again and re-authorizes each link's session. What links announce
 //! goes straight into the table, so the state only maps a route's source back
 //! to its link (see [`State::link_for`]).
+//!
+//! The crate docs, under "Trust and grants", explain what the grants protect.
+//! The lock order is on `Shared::state`.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -233,6 +236,10 @@ impl State {
     }
 
     /// Re-authorizes every link for what it may see now.
+    ///
+    /// Costs links times publications under the node lock, on every change of
+    /// a publication or an audience. That is fine at today's sizes, tens of
+    /// each. A node with thousands of either needs an index by path.
     fn authorize_all(&self) {
         for id in self.links.keys() {
             self.authorize(*id);

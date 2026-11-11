@@ -126,6 +126,10 @@ pub(crate) struct Shared {
     pub(crate) owner: Option<OwnerFn>,
     /// The route table.
     pub(crate) table: origin::Producer,
+    /// The node's publications and links.
+    ///
+    /// Lock order: this lock first, then a session's `SessionInner::grant`,
+    /// then a subscription's `routes`. Never await while holding any of them.
     pub(crate) state: Mutex<State>,
     pub(crate) sessions: Watchable<Vec<Session>>,
     pub(crate) actor: mpsc::Sender<ActorMessage>,
@@ -348,7 +352,7 @@ impl Node {
     /// a path resolves to its publisher's broadcast and never to a third
     /// peer's. A relay is trusted with every path it forwards, so attach only
     /// relays that keep each publisher to its own paths, as moq-relay's tokens
-    /// do.
+    /// do. The [crate docs](crate#trust-and-grants) explain the trust model.
     ///
     /// # Errors
     ///

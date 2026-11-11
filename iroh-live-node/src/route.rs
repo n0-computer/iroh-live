@@ -1,27 +1,17 @@
 //! The route table, and the subscriptions that resolve paths in it.
 //!
-//! Every link announces straight into the node's route table: a session's
+//! Every link announces straight into the node's route table. A session's
 //! subscriber is the table tagged [`Link::Peer`], gated by the session's
-//! authorization, which lets the peer publish only what its grant allows, and a relay's is the table tagged [`Link::Upstream`].
-//! Every link serves the table's local view, which hides both, so no route
-//! learned on one link is offered on another. The peer's hop and the link's
-//! cost travel with each route. moq serves the best route, and moves a reader
-//! between routes of one instance, such as a direct one and a relay's, without
-//! ending its subscriptions. Which link a route came from is the route's
-//! [`Source`].
+//! authorization, which lets the peer publish only what its grant allows. A
+//! relay's subscriber is the table tagged [`Link::Upstream`]. Every link
+//! serves the table's local view, which hides both, so no route learned on one
+//! link is offered on another. The peer's hop and the link's cost travel with
+//! each route. moq serves the best route, and moves a reader between routes of
+//! one instance, such as a direct one and a relay's, without ending its
+//! subscriptions. Which link a route came from is the route's [`Source`].
 //!
-//! # Trust
-//!
-//! An instance is what a route's announcer claims, and moq splices readers
-//! between routes that claim the same one. So a peer or relay that announces a
-//! path under another's instance could take over its readers. What keeps that
-//! out is the table's contents: a direct peer announces only paths its grant
-//! lets it publish, so with grants that name the peer it cannot reach another
-//! peer's paths. An instance is a random string that only reaches the links
-//! whose grant lets them see the publication. A relay is trusted with the
-//! paths it forwards, so attach only relays that keep each publisher to its
-//! own paths, as moq-relay's tokens do. Hops take no part in this, since moq
-//! splices by instance and not by the first hop a publisher claims.
+//! Why a route cannot take over another publisher's readers is in the crate
+//! docs, under "Trust and grants".
 
 use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
