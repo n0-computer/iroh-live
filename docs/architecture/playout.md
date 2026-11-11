@@ -2,54 +2,51 @@
 
 Audio and video decode separately, on their own tasks, from their own tracks.
 Each `Player` owns a `PlayoutClock` (`moq-ext-player/src/player/clock.rs`)
-that keeps them aligned at playout time. It is a port of the moq/js player's
-`js/watch/src/sync.ts` at commit `53fe78d8`, with the same data model and the
-same arithmetic in `i64` milliseconds.
+that keeps them aligned at playout time. It wraps upstream's
+`moq_mux::timeline`, the clock the moq players share.
 
 ## The algorithm
 
-The clock keeps one number, the *reference*: the earliest `wall_now - frame_pts`
-it has seen. It only moves earlier. `restart()` clears it when the broadcast
-moves to a new route, since a publisher behind the new route may have restarted
-its timestamps.
+The timeline maps media time onto the wall clock through one anchor, and holds
+every result back by a delay, so playback trails the live edge by that delay.
+The delay is the player's `Latency::min`, 100 ms by default.
 
-A frame with timestamp `T` is due at wall time `reference + T + latency`, where
-`latency` is `audio + jitter`. `jitter` is the player's `Latency::min`, 100 ms
-by default. `audio` is how much sound is queued at the speaker.
-
-`received(pts)` updates the reference, and `wait_async(pts)` sleeps until the
-frame is due. It returns `false` if the clock closed. The wait is recomputed
-whenever the reference, the jitter or the audio depth changes. Until the first
-frame sets a reference, every frame is due at once.
+While audio plays, the speaker owns the anchor. Each write reports the media
+time it ends at and the sound queued ahead of the speaker after it. The anchor
+is pinned so that a picture with the same timestamp shows when that sound
+plays. Without audio, each video frame paces the anchor, and the delay alone
+sets when it shows. Until the first frame anchors the clock, every frame is due
+at once.
 
 ## Who calls what
 
-Only video calls the clock. The video task records each decoded frame with
-`received`, holds it until `wait_async` returns, and then puts it in the
-`VideoFrames` slot the renderer reads. The hold is a future the supervisor keeps
-across loop iterations, so a rendition switch requested while a picture is held
-is acted on at once.
+The video task records each decoded frame with `received(timestamp)`, holds it
+until `wait_async(timestamp)` returns, and then puts it in the `VideoFrames`
+slot the renderer reads. The hold is a future the supervisor keeps across loop
+iterations, so a rendition switch requested while a picture is held is acted
+on at once. The wait is recomputed whenever the anchor moves, and returns
+`false` once the clock closed. `restart()` starts the video timeline over when
+the broadcast moves to a new route, since a publisher behind the new route may
+have restarted its timestamps.
 
 Audio writes decoded frames straight to its output sink, and the sink's buffer
-absorbs jitter. On every frame it reports the sink's buffered duration through
-an `AudioLatency` guard, taken from `PlayoutClock::register_audio` when the
-track opens. Video is held back by that figure. Without it, a video frame would
-show while its audio still waits behind the sound already queued.
-
-The guard is the only way to set the audio term, and dropping it clears the
-term. An audio track that ends, fails or is dropped stops holding video back.
+absorbs jitter. After every write it reports the write's end and the sink's
+buffered duration through an `AudioLatency` guard, taken from
+`PlayoutClock::register_audio` when the track opens. Dropping the guard tells
+the clock that the speaker went quiet, and video takes the anchor back. A new
+audio track takes it again on its first write.
 
 Each player has its own clock. Two players of one broadcast, say a thumbnail
-and a full-screen view, do not hold back each other's frames. A player without
-audio has no audio term. Dropping the player closes its clock and wakes
-everything waiting on it.
+and a full-screen view, do not hold back each other's frames. Dropping the
+player closes its clock and wakes everything waiting on it.
 
 ## Latency
 
 `PlayerConfig::latency` is a `Latency { min, max }`.
 
-`min` is the jitter allowance above, and the largest delay the player adds on
-its own. `Player::set_latency` applies it at once. `irl watch --latency` offers
+`min` is the clock's delay above. `Player::set_latency` starts a new clock with
+the new delay, so the schedule jumps once, and the next video frame or audio
+write anchors it again. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, once with `Latency::IMMEDIATE` and once with the
@@ -94,7 +91,7 @@ until it next reopens.
 ## Timing metrics
 
 `Player::stats()` returns a `PlaybackStats` snapshot. `latency` is the clock's
-current total, the jitter allowance plus the queued audio. `audio.buffered` is
+delay. `audio.buffered` is
 the sink's fill level alone. `video.decode_time` is one transport read and
 decode together, smoothed. `video.fps` counts frames over a window instead of
 deriving a rate from the gap between two frames. See [developer

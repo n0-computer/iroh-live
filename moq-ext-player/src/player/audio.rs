@@ -45,10 +45,14 @@ impl AudioFrame {
     /// Returns how long the frame plays.
     #[must_use]
     pub fn duration(&self) -> Duration {
-        let channels = self.format.layout.channels().max(1) as usize;
-        let per_channel = self.samples.len() / channels;
-        Duration::from_secs_f64(per_channel as f64 / f64::from(self.format.sample_rate.max(1)))
+        play_length(self.format, self.samples.len())
     }
+}
+
+/// Returns how long `samples` interleaved samples of `format` play.
+fn play_length(format: AudioFormat, samples: usize) -> Duration {
+    let per_channel = samples / format.layout.channels().max(1) as usize;
+    Duration::from_secs_f64(per_channel as f64 / f64::from(format.sample_rate.max(1)))
 }
 
 /// The decoded audio of a player, in the order it decodes.
@@ -281,7 +285,7 @@ struct Job {
     decoder: moq_audio::decode::Consumer,
     sink: OutputSink,
     control: OutputControl,
-    /// Clears this track's contribution to the clock when dropped.
+    /// Hands the clock's anchor back to video when dropped.
     latency: AudioLatency,
     stats: PlaybackRecorder,
 }
@@ -314,11 +318,11 @@ impl Job {
                 continue;
             };
             let decoded = Instant::now();
-            // The playout clock holds video back by the audio buffered ahead
-            // of the speaker. It is the only latency either side can measure.
             let buffered = self.sink.buffered();
-            self.latency.set(buffered);
             self.sink.write(&frame.data)?;
+            // The speaker owns the playout clock: video shows each picture
+            // when the sound of its time plays.
+            self.latency.set(self.end_of(&frame), self.sink.buffered());
             self.share(&frame);
             self.stats.audio_timeline.push(FrameTiming {
                 kind: MediaKind::Audio,
@@ -338,6 +342,12 @@ impl Job {
         }
         debug!("audio track ended");
         Ok(())
+    }
+
+    /// Returns the media time at the end of `frame`'s samples.
+    fn end_of(&self, frame: &moq_audio::Frame) -> Duration {
+        let samples = frame.data.len() / std::mem::size_of::<f32>();
+        Duration::from(frame.timestamp) + play_length(self.format, samples)
     }
 
     /// Hands `frame` to the [`AudioFrames`] readers, if there are any.

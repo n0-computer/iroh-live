@@ -485,7 +485,7 @@ fn pace(
     controls: &Controls,
     stats: &PlaybackRecorder,
 ) -> Delivery {
-    let pts = frame.timestamp.into();
+    let timestamp = frame.timestamp;
     let size = frame.size();
     let rate = shown.tick(0);
     stats.video.update(|video| {
@@ -498,9 +498,9 @@ fn pace(
     });
     let paced = controls.latency.borrow().paced();
     let due = if paced {
-        clock.received(pts);
+        clock.received(timestamp);
         let clock = clock.clone();
-        async move { clock.wait_async(pts).await }.boxed()
+        async move { clock.wait_async(timestamp).await }.boxed()
     } else {
         std::future::ready(true).boxed()
     };

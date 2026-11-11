@@ -25,9 +25,9 @@ pub struct PlaybackStats {
     pub video: Option<VideoPlaybackStats>,
     /// The audio decoder, while audio plays.
     pub audio: Option<AudioPlaybackStats>,
-    /// How long after arrival a picture is shown.
+    /// How far behind the live edge playback runs.
     ///
-    /// This is the jitter allowance plus the audio queued at the speaker.
+    /// This is the latency's minimum, the playout clock's delay.
     pub latency: Duration,
     /// A reading of the link, if the broadcast has network signals.
     pub network: Option<NetworkSample>,

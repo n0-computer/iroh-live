@@ -1,206 +1,142 @@
-//! A player's playout clock, which keeps its audio and video aligned.
+//! A player's playout clock: a `moq_mux::timeline` shared by its tasks.
 //!
-//! Ported from `moq/js` at commit `53fe78d8`, `js/watch/src/sync.ts`. The
-//! arithmetic matches the JS source, in `i64` milliseconds, so the two compare
-//! without rounding. `moq-video` and `moq-audio` have no counterpart.
-//!
-//! The reference is the earliest `wall_now - frame_pts` seen. It only moves
-//! earlier, so it estimates the wall time at media time zero. A frame stamped
-//! `T` is due at `reference + T + latency`, where the latency is the jitter
-//! allowance plus the audio queued at the speaker.
-//!
-//! The video path calls [`PlayoutClock::received`] as each frame decodes and
-//! [`PlayoutClock::wait_async`] before handing it to the renderer. Only video
-//! moves the reference. The audio path reports its buffer depth through an
-//! [`AudioLatency`] guard, and video is held back by it. Without that, a video
-//! frame would render while its audio is still queued behind 50 ms of sound.
+//! The video path folds each decoded frame into the clock with
+//! [`PlayoutClock::received`] and waits for it with
+//! [`PlayoutClock::wait_async`]. While audio plays, the audio path owns the
+//! anchor through an [`AudioLatency`] guard: each write reports the media time
+//! it ends at and the sound queued ahead of it, so a picture shows when its
+//! sound plays. Without audio, video anchors the clock, and playback runs the
+//! clock's delay behind the live edge.
 
 use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
-/// How long a frame still has to wait before it is due.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Delay {
-    /// The frame is due now.
-    Now,
-    /// The frame is due after this long.
-    After(Duration),
-    /// The clock is closed. Stop the pipeline.
-    Closed,
-}
+use moq_mux::timeline::{Audio, Consumer, Producer};
+use moq_net::{Timestamp, time::Instant};
+use tokio::sync::Notify;
 
 /// The clock that keeps a player's audio and video in step.
 ///
 /// Clones share state. Each player has one, shared by its video and audio
 /// paths.
-#[derive(Debug, Clone)]
+#[derive(Clone, derive_more::Debug)]
+#[debug("PlayoutClock")]
 pub(crate) struct PlayoutClock {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
 struct Inner {
-    /// The construction time. `base.elapsed()` stands in for `performance.now()`.
-    base: Instant,
-
-    state: Mutex<State>,
-
-    /// Wakes [`PlayoutClock::wait_async`] when the clock changes or closes.
-    changed: tokio::sync::Notify,
-}
-
-/// The mutable state, with durations in signed `i64` milliseconds.
-#[derive(Debug)]
-struct State {
-    /// The earliest `now_ms - pts_ms` seen on the current timeline, if any.
-    reference: Option<i64>,
-
-    /// The jitter allowance in ms.
-    jitter_ms: i64,
-
-    /// The audio queued ahead of the speaker in ms, as last reported.
-    audio_ms: Option<i64>,
-
+    /// The clock the tasks update, and its delay.
+    ///
+    /// [`PlayoutClock::set_delay`] starts a new clock, so every task updates
+    /// it through here rather than through a clone of its own.
+    current: Mutex<Current>,
+    /// Reads whichever clock the producer last started.
+    consumer: Consumer,
+    /// Wakes [`PlayoutClock::wait_async`] when the schedule moves or the clock closes.
+    changed: Notify,
     /// Set by [`PlayoutClock::close`] to make every wait return at once.
-    closed: bool,
+    closed: AtomicBool,
 }
 
-impl State {
-    /// Returns the total latency, `audio + jitter`, in ms.
-    fn latency_ms(&self) -> i64 {
-        self.audio_ms.unwrap_or(0) + self.jitter_ms
-    }
+struct Current {
+    producer: Producer,
+    /// How far behind the live edge playback runs.
+    delay: Duration,
 }
 
 impl PlayoutClock {
-    /// Creates a playout clock with the jitter allowance `jitter`.
-    pub(crate) fn new(jitter: Duration) -> Self {
+    /// Creates a playout clock that runs `delay` behind the live edge.
+    pub(crate) fn new(delay: Duration) -> Self {
+        let producer = Producer::new(delay);
         Self {
             inner: Arc::new(Inner {
-                base: Instant::now(),
-                state: Mutex::new(State {
-                    reference: None,
-                    jitter_ms: jitter.as_millis() as i64,
-                    audio_ms: None,
-                    closed: false,
-                }),
-                changed: tokio::sync::Notify::new(),
+                consumer: producer.consume(),
+                current: Mutex::new(Current { producer, delay }),
+                changed: Notify::new(),
+                closed: AtomicBool::new(false),
             }),
         }
     }
 
-    /// Records the arrival of a frame stamped `timestamp`.
-    ///
-    /// Moves the reference earlier if the frame arrived ahead of every earlier
-    /// one. Only the video path calls this.
-    pub(crate) fn received(&self, timestamp: Duration) {
-        let now_ms = self.now_ms();
-        let timestamp_ms = timestamp.as_millis() as i64;
-        let reference = now_ms - timestamp_ms;
-
-        let mut state = self.inner.state.lock().expect("poisoned");
-        if state.reference.is_some_and(|current| reference >= current) {
-            return;
+    /// Records the arrival of a video frame stamped `timestamp`.
+    pub(crate) fn received(&self, timestamp: Timestamp) {
+        let moved = self.current().producer.video(timestamp, Instant::now());
+        if moved {
+            self.inner.changed.notify_waiters();
         }
-
-        state.reference = Some(reference);
-        self.inner.changed.notify_waiters();
     }
 
-    /// Starts the reference over, for a broadcast on a new route.
+    /// Starts the video timeline over, for a broadcast on a new route.
     ///
     /// A publisher behind the new route may have restarted its timestamps.
-    /// Against the old reference, every later frame would be overdue and
-    /// nothing would be paced.
+    /// While audio plays, its next write moves the anchor instead.
     pub(crate) fn restart(&self) {
-        let mut state = self.inner.state.lock().expect("poisoned");
-        state.reference = None;
+        self.current().producer.video_restarted();
         self.inner.changed.notify_waiters();
     }
 
     /// Waits until the frame stamped `timestamp` is due.
     ///
-    /// Recomputes the delay whenever the clock changes during the wait.
+    /// Recomputes the deadline whenever the schedule moves during the wait.
     /// Returns `true` when the frame should render, and `false` once the clock
     /// is closed.
     ///
     /// Cancellation safe: the wait keeps no state outside the future.
-    pub(crate) async fn wait_async(&self, timestamp: Duration) -> bool {
+    pub(crate) async fn wait_async(&self, timestamp: Timestamp) -> bool {
         loop {
-            // Register before reading the delay, so a `close` or a reference
-            // update between the two is not missed.
+            // Register before reading the deadline, so a `close` or a move
+            // between the two is not missed.
             let changed = self.inner.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
 
-            match self.delay(timestamp) {
-                Delay::Closed => return false,
-                Delay::Now => return true,
-                Delay::After(sleep) => {
-                    // A clock change or a close wakes the wait early, so a
-                    // shutdown does not wait out the playout latency.
-                    tokio::select! {
-                        _ = tokio::time::sleep(sleep) => return true,
-                        _ = changed => continue,
-                    }
-                }
+            if self.inner.closed.load(Ordering::Acquire) {
+                return false;
+            }
+            // No anchor yet: render now.
+            let Some(due) = self.inner.consumer.due(timestamp) else {
+                return true;
+            };
+            let now = Instant::now();
+            if due <= now {
+                return true;
+            }
+            // A move or a close wakes the wait early, so a shutdown does not
+            // wait out the playout delay.
+            tokio::select! {
+                () = tokio::time::sleep(due.duration_since(now)) => return true,
+                () = changed => {}
             }
         }
     }
 
-    /// Returns how long the frame stamped `timestamp` still has to wait.
-    ///
-    /// This is the arithmetic behind [`wait_async`](Self::wait_async).
-    fn delay(&self, timestamp: Duration) -> Delay {
-        let timestamp_ms = timestamp.as_millis() as i64;
-        let state = self.inner.state.lock().expect("poisoned");
-
-        if state.closed {
-            return Delay::Closed;
-        }
-        // No reference yet: render now.
-        let Some(reference) = state.reference else {
-            return Delay::Now;
-        };
-
-        let sleep_ms = (reference - (self.now_ms() - timestamp_ms)) + state.latency_ms();
-        if sleep_ms > 0 {
-            Delay::After(Duration::from_millis(sleep_ms as u64))
-        } else {
-            Delay::Now
-        }
-    }
-
-    /// Returns the current total latency: `audio + jitter`.
+    /// Returns how far behind the live edge playback runs.
     pub(crate) fn latency(&self) -> Duration {
-        let state = self.inner.state.lock().expect("poisoned");
-        Duration::from_millis(state.latency_ms().max(0) as u64)
+        self.current().delay
     }
 
-    /// Sets the jitter allowance, and wakes waits to recompute their delay.
-    pub(crate) fn set_jitter(&self, jitter: Duration) {
-        let mut state = self.inner.state.lock().expect("poisoned");
-        state.jitter_ms = jitter.as_millis() as i64;
+    /// Runs playback `delay` behind the live edge from now on.
+    ///
+    /// Starts a new clock, so the schedule moves once: the next video frame or
+    /// audio write anchors it again.
+    pub(crate) fn set_delay(&self, delay: Duration) {
+        {
+            let mut current = self.current();
+            current.producer = current.producer.clone().reset(delay);
+            current.delay = delay;
+        }
         self.inner.changed.notify_waiters();
     }
 
-    /// Sets how much audio is queued ahead of the speaker.
+    /// Registers an audio path, which owns the anchor while it plays.
     ///
-    /// Only an [`AudioLatency`] guard calls this, so the value cannot outlive
-    /// the audio path that reported it.
-    fn set_audio_buffered(&self, latency: Option<Duration>) {
-        let mut state = self.inner.state.lock().expect("poisoned");
-        state.audio_ms = latency.map(|buffered| buffered.as_millis() as i64);
-        self.inner.changed.notify_waiters();
-    }
-
-    /// Registers an audio path's contribution to the latency.
-    ///
-    /// The audio path reports its buffer depth through the returned guard.
-    /// Dropping the guard clears the contribution, so an audio track that
-    /// stops no longer holds video back.
+    /// Dropping the returned guard hands the anchor back to video.
     pub(crate) fn register_audio(&self) -> AudioLatency {
         AudioLatency {
             clock: self.clone(),
@@ -208,192 +144,49 @@ impl PlayoutClock {
     }
 
     /// Closes the clock, so current and later waits return at once.
-    ///
-    /// The JS source has no counterpart because it relies on effect cleanup.
     pub(crate) fn close(&self) {
-        let mut state = self.inner.state.lock().expect("poisoned");
-        state.closed = true;
+        self.inner.closed.store(true, Ordering::Release);
         self.inner.changed.notify_waiters();
     }
 
-    /// Returns the milliseconds since construction, like `performance.now()`.
-    fn now_ms(&self) -> i64 {
-        self.inner.base.elapsed().as_millis() as i64
+    fn current(&self) -> std::sync::MutexGuard<'_, Current> {
+        self.inner.current.lock().expect("poisoned")
     }
 }
 
 /// An audio path's registration with a playout clock.
 ///
-/// Created by [`PlayoutClock::register_audio`]. Dropping it clears the audio
-/// path's report, so a stopped track no longer holds video back.
+/// Created by [`PlayoutClock::register_audio`]. Dropping it tells the clock
+/// that the speaker went quiet, so video takes the anchor back.
 #[derive(Debug)]
 pub(crate) struct AudioLatency {
     clock: PlayoutClock,
 }
 
 impl AudioLatency {
-    /// Reports how much audio is queued ahead of the speaker now.
-    pub(crate) fn set(&self, buffered: Duration) {
-        self.clock.set_audio_buffered(Some(buffered));
+    /// Reports a write to the speaker that ends at media time `end`.
+    ///
+    /// `buffered` is the sound queued ahead of the speaker after the write,
+    /// so `end` sounds `buffered` from now.
+    pub(crate) fn set(&self, end: Duration, buffered: Duration) {
+        let moved = {
+            let current = self.clock.current();
+            let audio = Audio {
+                end,
+                buffered,
+                target: current.delay,
+            };
+            current.producer.audio(audio, Instant::now())
+        };
+        if moved {
+            self.clock.inner.changed.notify_waiters();
+        }
     }
 }
 
 impl Drop for AudioLatency {
     fn drop(&mut self) {
-        self.clock.set_audio_buffered(None);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::thread;
-
-    use super::*;
-
-    #[test]
-    fn the_reference_only_moves_earlier() {
-        let sync = PlayoutClock::new(Duration::from_millis(100));
-
-        // Wait a moment so base.elapsed() > 0.
-        thread::sleep(Duration::from_millis(5));
-
-        sync.received(Duration::from_millis(0));
-        let first = sync.inner.state.lock().expect("poisoned").reference;
-        assert!(
-            first.is_some_and(|reference| reference > 0),
-            "the reference for pts 0 is positive, got {first:?}"
-        );
-
-        // A later frame at a worse offset leaves the reference alone.
-        thread::sleep(Duration::from_millis(10));
-        let reference_before = sync.inner.state.lock().expect("poisoned").reference;
-        sync.received(Duration::from_millis(0));
-        let reference_after = sync.inner.state.lock().expect("poisoned").reference;
-        assert_eq!(
-            reference_before, reference_after,
-            "reference should not increase"
-        );
-    }
-
-    #[tokio::test]
-    async fn wait_returns_immediately_when_no_reference() {
-        let sync = PlayoutClock::new(Duration::from_millis(100));
-        assert!(sync.wait_async(Duration::from_millis(0)).await);
-    }
-
-    #[tokio::test]
-    async fn wait_returns_false_when_closed() {
-        let sync = PlayoutClock::new(Duration::from_millis(100));
-        sync.received(Duration::from_millis(0));
-        sync.close();
-        assert!(!sync.wait_async(Duration::from_millis(0)).await);
-    }
-
-    #[test]
-    fn the_latency_is_the_jitter_plus_the_buffered_audio() {
-        let sync = PlayoutClock::new(Duration::from_millis(50));
-        assert_eq!(sync.latency(), Duration::from_millis(50));
-
-        let audio = sync.register_audio();
-        audio.set(Duration::from_millis(60));
-        assert_eq!(sync.latency(), Duration::from_millis(110));
-
-        drop(audio);
-        assert_eq!(sync.latency(), Duration::from_millis(50));
-    }
-
-    /// A new route starts the reference over for timestamps back at zero.
-    #[test]
-    fn a_new_route_starts_the_timeline_over() {
-        let sync = PlayoutClock::new(Duration::from_millis(50));
-        sync.received(Duration::from_secs(2));
-        sync.restart();
-        sync.received(Duration::ZERO);
-        assert!(
-            matches!(sync.delay(Duration::ZERO), Delay::After(_)),
-            "the new timeline's first frame is held for the jitter allowance"
-        );
-    }
-
-    /// A dropped audio registration no longer holds video back.
-    #[test]
-    fn a_dropped_audio_registration_stops_holding_video_back() {
-        let sync = PlayoutClock::new(Duration::from_millis(50));
-        {
-            let audio = sync.register_audio();
-            audio.set(Duration::from_millis(400));
-            assert_eq!(sync.latency(), Duration::from_millis(450));
-            // Dropped at scope end, as on every exit of an audio task.
-        }
-        assert_eq!(sync.latency(), Duration::from_millis(50));
-    }
-
-    #[tokio::test]
-    async fn wait_holds_a_frame_for_the_latency() {
-        let sync = PlayoutClock::new(Duration::from_millis(50));
-        sync.received(Duration::from_millis(0));
-
-        // Right after `received`, the reference is about now, so the wait is
-        // about the latency.
-        let start = Instant::now();
-        assert!(sync.wait_async(Duration::from_millis(0)).await);
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed >= Duration::from_millis(20),
-            "expected about 50ms, got {elapsed:?}"
-        );
-        assert!(
-            elapsed < Duration::from_millis(500),
-            "expected about 50ms, got {elapsed:?}"
-        );
-    }
-
-    /// A reference update interrupts a wait for a frame that became due early.
-    ///
-    /// The 2 s jitter makes a missed wake obvious. The bound is 1 s so that a
-    /// loaded machine that schedules the waiter late does not fail the test.
-    #[tokio::test]
-    async fn wait_wakes_on_reference_update() {
-        let sync = PlayoutClock::new(Duration::from_millis(2000));
-        sync.received(Duration::from_millis(0));
-
-        let waiter = sync.clone();
-        let handle = tokio::spawn(async move {
-            let start = Instant::now();
-            waiter.wait_async(Duration::from_millis(0)).await;
-            start.elapsed()
-        });
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        // Push the reference back far enough that the frame is due now.
-        sync.received(Duration::from_millis(999_999));
-
-        let elapsed = handle.await.expect("the waiter does not panic");
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "expected an early wake, well under the 2s jitter, got {elapsed:?}"
-        );
-    }
-
-    /// Closing interrupts a wait, so shutdown skips the playout latency.
-    #[tokio::test]
-    async fn wait_wakes_on_close() {
-        let sync = PlayoutClock::new(Duration::from_millis(2000));
-        sync.received(Duration::from_millis(0));
-
-        let waiter = sync.clone();
-        let handle = tokio::spawn(async move { waiter.wait_async(Duration::from_millis(0)).await });
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        sync.close();
-
-        assert!(
-            !tokio::time::timeout(Duration::from_secs(1), handle)
-                .await
-                .expect("close should wake the waiter")
-                .expect("the waiter does not panic"),
-            "a closed clock reports that the frame should not render",
-        );
+        self.clock.current().producer.audio_stopped();
+        self.clock.inner.changed.notify_waiters();
     }
 }

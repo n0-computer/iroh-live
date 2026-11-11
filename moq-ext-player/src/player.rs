@@ -46,13 +46,13 @@ pub use self::{
 
 /// How far behind live to run.
 ///
-/// The playout clock holds each picture for `min` past its arrival, plus the
-/// audio queued at the speaker. Media later than `max` is skipped. `max` also
+/// The playout clock runs `min` behind the live edge. While audio plays,
+/// pictures show when their sound does. Media later than `max` is skipped. `max` also
 /// bounds what the transport keeps for the player (the moq subscription's
 /// `delay.max`). Setting `min == max` gives a fixed latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Latency {
-    /// The jitter allowance every picture is held for.
+    /// How far behind the live edge playback runs.
     pub min: Duration,
     /// The oldest media still worth playing.
     pub max: Duration,
@@ -382,17 +382,17 @@ impl Player {
 
     /// Changes how far behind live the player runs.
     ///
-    /// The jitter allowance changes at once. A new maximum rebuilds the video
-    /// decoder behind the picture, and the new decoder takes over once it has
-    /// caught up. Audio keeps its old maximum until it next opens, because a
-    /// rebuild would be audible.
+    /// A new minimum starts a new playout clock, so the schedule jumps once.
+    /// A new maximum rebuilds the video decoder behind the picture, and the
+    /// new decoder takes over once it has caught up. Audio keeps its old
+    /// maximum until it next opens, because a rebuild would be audible.
     ///
     /// # Errors
     ///
     /// Fails if `latency.min` is above `latency.max`.
     pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
         latency.validate()?;
-        self.clock.set_jitter(latency.min);
+        self.clock.set_delay(latency.min);
         self.controls.latency.send_replace(latency);
         Ok(())
     }
