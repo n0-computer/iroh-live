@@ -9,6 +9,7 @@
 | [CLI reference](cli.md) | The `irl` commands and their flags |
 | [Desktop rendering](guide/desktop.md) | Drawing decoded frames with wgpu and egui |
 | [Tickets](guide/tickets.md) | How a broadcast or a room is named and shared |
+| [Access control](guide/access.md) | Policies, layouts, tokens, the relay's auth flags, and the trust model |
 | [Rooms](guide/rooms.md) | Rooms with several participants, over gossip |
 | [MoQ, as it appears here](guide/moq.md) | Broadcasts, tracks, groups, and the catalog |
 | [Raspberry Pi](guide/raspberry-pi.md) | `rpicam-vid` capture, the V4L2 codecs, the Pi demos, and cross-compiling |

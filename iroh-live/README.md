@@ -73,7 +73,7 @@ let mut frames = player.video_frames();
 ## Main types
 
 - `Node` is the node. `Node::new(endpoint, config)` creates it, and
-  `LiveLayout::config(extra)` builds a `NodeConfig` for the layout.
+  `LiveLayout::config()` builds a `NodeConfig` for the layout.
   `mount(router_builder)` adds it to the application's `Router`, so peers can
   connect. Other protocols go on the same router. `Node::shutdown` ends the
   node but leaves the endpoint open: whoever binds the endpoint closes it,
@@ -109,11 +109,24 @@ let mut frames = player.video_frames();
 - `EndpointConfig` binds an endpoint with `MoqPreset`, a secret key and mDNS.
   `EndpointConfig::apply` does the same on your own endpoint builder.
 - `NodeConfig::default()` is subscribe-only: peers may read and publish
-  nothing. `LiveLayout::config` lets each peer publish under its own id.
-- `Error` wraps an `iroh_live_node::Error` as `Transport` and, with `media`, a
-  `moq_ext_player::Error` as `Media`. A failure inside moq-net arrives as
-  `Transport` holding the node's `Error::Moq`. The other variants come from
-  binding an endpoint and parsing a ticket.
+  nothing. `LiveLayout::config()` lets each peer publish under its own id, and
+  `NodeConfig::with_policy` takes any other policy from `iroh_live::node::policy`.
+- `Error` wraps an `iroh_live_node::Error` as `Node`, a `calls::Error` as
+  `Calls`, and with their features a `moq_ext_player::Error` as `Media` and an
+  `iroh_live_rooms::Error` as `Rooms`. A failure inside moq-net arrives as
+  `Node` holding the node's `Error::Moq`. The other variants come from binding
+  an endpoint.
+
+## Access control
+
+A node's policy decides which peers may connect, and what each may publish
+and read. The layout's policy admits every peer and lets it publish under its
+own id. Narrow it with a filter, such as a contact list, and call
+`Node::reauthorize(peer)` when the list changes. Tokens let a peer prove more
+rights: the `jwt` feature verifies moq-relay's JWTs, and the `rcan` feature
+verifies capability chains bound to the peer's key.
+[Access control](../docs/guide/access.md) covers the policies and the trust
+model.
 
 ## Features
 
@@ -124,6 +137,8 @@ is the layout, calls and endpoint setup only, which is how the relay uses it.
 devices and codecs, imply `media`, and pass through to the media crates.
 `sound-server` reaches audio devices through PipeWire or PulseAudio, through
 moq-audio's `pipewire` and `pulseaudio` features.
+
+`jwt` and `rcan` add the token verifiers to `iroh_live::node::policy`.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node by adding
@@ -141,8 +156,9 @@ let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
 `examples/publish.rs` publishes a camera and a microphone, with a simulcast
 ladder behind `--simulcast`. `examples/publish-pi.rs` publishes a Raspberry Pi
 camera and needs `rpicam`. `examples/moq_only.rs` serves a broadcast with
-`Node` alone, without a layout. `examples/subscribe_test.rs` is the helper the
-browser test suite runs.
+`Node` alone, without a layout. `examples/contacts_only.rs` admits only a
+node's contacts and drops one on `Node::reauthorize`.
+`examples/subscribe_test.rs` is the helper the browser test suite runs.
 
 [Using iroh-live](../docs/guide/usage.md) has complete programs for the common
 cases: calls, rooms, custom paths, relays and raw MoQ tracks.

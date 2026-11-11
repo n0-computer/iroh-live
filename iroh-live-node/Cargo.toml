@@ -53,3 +53,7 @@ n0-tracing-test = "0.3.0"
 noq-proto = { workspace = true }
 rcan = "0.4.1"
 tokio = { version = "1.53.1", features = ["full"] }
+
+[[example]]
+name = "delegated_publisher"
+required-features = ["rcan"]

@@ -1,7 +1,8 @@
 # iroh-live
 
 > **Early tech preview.** Expect frequent API changes. Windows has never been
-> run, on-device testing has been limited, and the relay accepts anyone.
+> run, on-device testing has been limited, and without auth flags the relay
+> lets anyone read every broadcast on it.
 >
 > iroh-live depends on the unreleased `main` branch of moq, pinned by git rev,
 > so it is not on crates.io. See [the moq dependency](#the-moq-dependency).
@@ -52,6 +53,17 @@ raw MoQ tracks. [Getting started](docs/guide/index.md) covers the setup, and
 [`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs) is a complete
 publisher.
 
+## Access
+
+Every peer is known by its endpoint id, which the transport authenticates. A
+node's policy decides which peers may connect, and what each may publish and
+read. The default lets every peer read and publish nothing, and the
+`live/<id>/` layout lets each peer publish under its own id only. Filters,
+application prompts and tokens (JWT, or rcan capability chains bound to the
+peer's key) build on that. The relay takes JWT keys with `--auth-key`.
+[Access control](docs/guide/access.md) covers the policies and the trust
+model.
+
 ## The moq dependency
 
 iroh-live depends on the unreleased `main` branch of
@@ -77,10 +89,10 @@ these APIs, crates.io versions will replace the git pins.
 | Crate | Description |
 |---|---|
 | [`iroh-live`](iroh-live) | `Node` and `LiveLayout`: publish and subscribe at `live/<endpoint id>/<name>`, `Calls`, `BroadcastTicket`, endpoint setup, and the media, transport and rooms crates re-exported |
-| [`iroh-live-node`](iroh-live-node) | The node: one route table fed by direct sessions and relay links, publications, and grants |
+| [`iroh-live-node`](iroh-live-node) | The node: one route table fed by direct sessions and relay links, publications, and the policy that admits peers |
 | [`moq-transport-iroh`](moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, moq-net's poll transport on iroh, `MoqPreset`, link statistics. No node concepts |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
-| [`moq-ext-access`](moq-ext-access) | Access control: grants, session requests, and who sees a publication. No iroh dependency |
+| [`moq-ext-access`](moq-ext-access) | Access control: grants, policies, token verifiers, layouts, and who sees a publication. No iroh dependency |
 | [`moq-ext-adaptive`](moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines |
 | [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording. No iroh dependency |
 | [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |

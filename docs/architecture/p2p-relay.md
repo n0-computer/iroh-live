@@ -28,9 +28,16 @@ one is reachable from the other. Browsers come in through moq-tokio's server,
 and iroh clients through `IrohSessions` (`src/iroh_sessions.rs`).
 
 `IrohSessions` accepts iroh sessions itself, so iroh has authenticated each
-client's endpoint id, and the relay lets a client publish only at paths that
-name it. The [relay README](../../iroh-live-relay/README.md) covers the rest of
-running it: flags, the certificate, the key and the web client.
+client's endpoint id. It decides each client with a policy, as a node does,
+after the client's MoQ SETUP. The default, `relay_policy()`, lets a client
+read the whole cluster and publish only at paths that name it. With
+`--auth-key`, a client that presents a valid JWT gets what the token grants
+instead. The relay decides a client once, and closes its session when the
+authorization expires, so the client redials with a fresh token. Browsers go
+through moq-relay's admissions, which the relay answers with
+`browser_grant` or the browser's JWT. [Access control](../guide/access.md#the-relays-auth-flags)
+lists the flags, and the [relay README](../../iroh-live-relay/README.md) covers
+the rest of running it: the certificate, the key and the web client.
 
 ## Pull on demand
 

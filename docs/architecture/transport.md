@@ -37,7 +37,8 @@ the broadcast ends, and `Subscription::closed` asks the table again.
 The node can still say which link serves a path (`Subscription::session`,
 `Subscription::serving_link`), from the hop of the route that serves it. `None` means
 no link: the path is the node's own publication, or no route is announced yet.
-A relay that declares a hop of its own is matched to the oldest relay link.
+A relay that declares a hop of its own is matched to the relay link only while
+exactly one relay link feeds the table, and to no link otherwise.
 `Session::subscribe` resolves a path over one session only, and follows only
 the instance that session announced. Rooms read each member this way. Both
 rest on hops, which a peer may declare, so they are only as strong as grants
@@ -46,8 +47,9 @@ that keep each peer to its own paths.
 A direct session's routes enter the table only within the grant. The node's
 policy decides it for each peer, and the default policy grants
 `Grant::subscribe_only()`: a peer may read anything and publish nothing.
-`LiveLayout::config` lets a peer publish under `live/<peer>/`, and adding
-`iroh_live::rooms::RoomsLayout` adds `rooms/*/<peer>/`. The table is shared by
+`LiveLayout::config()` lets a peer publish under `live/<peer>/`, and
+`iroh_live::layout::config((LiveLayout::default(), RoomsLayout))` adds
+`rooms/*/<peer>/`. The table is shared by
 everything on the node and answers a ticket without dialing. A peer whose grant
 let it announce another publisher's path could stand in for that publisher,
 so grants should name the peer. A relay is trusted with every path it forwards,
@@ -110,12 +112,23 @@ that dial each other at the same moment keep both sessions.
 ALPN in `alpns()`, and incoming connections arrive through its
 `ProtocolHandler`. A node that is never mounted refuses every incoming
 connection. After the peer's setup, the node asks its policy
-(`NodeConfig::policy`) whether to admit the session, and with which grant.
-Without a policy, every session is admitted with `Grant::subscribe_only()`. A
-`policy::Queue` hands each decision to the application: it reads the request
-(the path, the query, the token the peer presented) and admits it with a
-`Grant` or rejects it. Each decision may take up to
+(`NodeConfig::policy`) whether to admit the session, and with which
+authorization. It asks the same before it dials a peer, and a rejection then
+fails the dial with `Error::Rejected`. Without a policy, every session is
+admitted with `Grant::subscribe_only()`. Each decision may take up to
 `NodeConfig::decide_timeout`. `Node::sessions()` watches the open sessions.
+
+The node keeps one authorization per peer (`state.rs`), which every session
+with the peer shares. The effective grant of a session is that authorization's
+grant plus the peer's ticket claims. A deadline per peer (`reauth.rs`) fires at
+the authorization's `expires` time or its `revalidate` interval, and the actor
+then asks the policy again. So do a yield of the policy's `changes()` stream
+and `Node::reauthorize`. A new decision replaces the authorization and
+re-authorizes the peer's sessions, and a rejection closes them all. One
+decision per peer runs at a time, and at most 16 run at once. A trigger that
+arrives while a decision runs makes the actor ask once more afterwards, so no
+change is lost. [Access control](../guide/access.md) describes the policies
+from the application's side.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
 statistics every 200 ms. `Session::link_sample()` returns the latest `LinkSample`.
@@ -138,7 +151,9 @@ as `link sample`.
 `iroh://` links dial through the node's own endpoint, since moq-tokio has no
 iroh transport. The link redials with
 backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
-the `Granted` audience go to the relay. The relay's routes join the route table
+the `Granted` audience go to the relay. `RelayConfig::token` is a `TokenFn`
+that the link asks for a token: an `iroh://` link before every dial, and an
+`https://` link once, when it attaches. The relay's routes join the route table
 at a cost of 10 against a direct link's cost of one, so a direct route wins
 while it exists.
 

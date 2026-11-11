@@ -71,14 +71,38 @@ After changing the client, rebuild the bundle and then the relay.
 |------|---------|-------------|
 | `--bind` | `[::]:4443` | WebTransport bind address |
 | `--http-bind` | the address `--bind` bound | HTTP bind address. The page connects to its own origin, so a different port needs `?url=` |
+| `--auth-key <PATH>` | none | Verify the JWTs that browsers and iroh clients present with the keys in this file, a JWK or a JWK set |
+| `--auth-url <URL>` | none | Ask this auth server about every browser session, as moq-relay does |
+| `--auth-public <PATTERN>` | none | Let every browser session publish and subscribe at these patterns |
+| `--auth-public-publish <PATTERN>` | none | Let every browser session publish at these patterns |
+| `--auth-public-subscribe <PATTERN>` | none | Let every browser session subscribe at these patterns |
 
-TLS certificates are self-signed and generated at startup. There is no ACME
-and no token auth: anyone may connect and subscribe to anything. Publishing is
-scoped by identity. The relay accepts iroh sessions itself, through
-`moq_transport_iroh::accept`, so it knows each client's endpoint id and lets
-it publish only at paths that name it, `live/<its id>/...` and
-`rooms/<topic>/<its id>/...`. Browsers have no such identity and may publish
-only at names of one segment.
+TLS certificates are self-signed and generated at startup. There is no ACME.
+
+## Access
+
+Without auth flags, anyone may connect and subscribe to anything. Publishing
+is scoped by identity. The relay accepts iroh sessions itself, through
+`moq_transport_iroh::accept`, so it knows each client's endpoint id. Its
+default policy, `relay_policy()`, lets a client publish only at paths that
+name it, `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers have
+no such identity and may publish only at names of one segment.
+
+`--auth-key` makes the relay verify JWTs, signed with a key in the file, from
+both sides. A browser presents its token as `?jwt=` in the URL, and an iroh
+client through `RelayConfig::token`. A valid token grants what its claims
+say, an invalid one is refused, and a session without a token keeps the rules
+above. The relay closes an iroh client's session when its token expires, and
+the client's relay link redials with a fresh one.
+
+`--auth-url` and the `--auth-public` flags hand browser sessions to
+moq-relay's own auth instead, and the relay then pulls no tickets for
+browsers. They conflict with `--auth-key`. iroh clients keep the default
+policy. A binary that embeds the relay sets another one in
+`Config::iroh_policy`.
+
+[Access control](../docs/guide/access.md) describes policies and tokens in
+full.
 
 The relay stores its iroh secret key in `$IROH_LIVE_RELAY_DATA`, or else in the
 platform data directory, so its endpoint id survives restarts.

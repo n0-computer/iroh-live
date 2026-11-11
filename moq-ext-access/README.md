@@ -16,23 +16,28 @@ add token verifiers.
 - `visible_paths`: the paths a link may see, for the node to hand to moq as the
   subscribe half of the link's grant.
 - `policy`: who may hold a session, and with which grant. `Open`, `Closed`,
-  `from_fn`, `union` and `filter` compose policies. `Queue` hands each
-  decision to the application, and `Verify` decides with a token verifier.
+  `from_fn`, `union`, `filter` and `timeout` compose policies. `Queue` hands
+  each decision to the application, and `Verify` decides with a token
+  verifier.
 - `Layout`: a path convention, which says where each peer publishes and who
   owns a path.
 
 ```rust
-use moq_ext_access::Grant;
+use moq_ext_access::{Grant, policy::{self, Policy}};
 
-// A peer that may read anything and publish nothing.
-let grant = Grant::subscribe_only();
+// Every peer may read and publish nothing, except mallory, who may not connect.
+let policy = policy::Open(Grant::subscribe_only())
+    .filter(|request: &policy::PeerRequest<String>| request.peer() != "mallory");
 ```
 
-[`iroh-live-node`](../iroh-live-node) enforces these on every live session.
+[`iroh-live-node`](../iroh-live-node) asks a node's policy on every session and
+enforces the grants on every live session. [Access
+control](../docs/guide/access.md) covers the model.
 
 ## Features
 
 - `jwt`: `policy::JwtVerifier`, which verifies JWTs with moq-auth, the tokens
   moq-relay reads.
 - `rcan`: `policy::RcanVerifier`, which verifies rcan capability chains bound
-  to the peer's ed25519 key.
+  to the peer's ed25519 key. A chain is `rcan1:` and the base32 of its links,
+  and `policy::encode_chain` writes one.

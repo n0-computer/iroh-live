@@ -5,10 +5,14 @@ connection but no endpoint, so there is no hole punching and no way to accept
 a connection. `iroh-live-relay` speaks WebTransport to browsers and iroh to
 native peers, and moves broadcasts between them.
 
-**The relay has no authentication.** Run it on a machine you control, and do
-not expose it to the internet. The [relay README](../../iroh-live-relay/README.md)
-covers running it: its flags, the certificate, where it keeps its key, what
-each client may publish, and which browsers work.
+By default, anyone may connect to the relay and read every broadcast on it.
+Publishing is limited: an iroh client may publish only at paths that name its
+endpoint id, and a browser only at names of one segment. `--auth-key` makes
+the relay verify JWTs, and the `--auth-url` and `--auth-public` flags hand
+browser sessions to moq-relay's own auth. [Access control](access.md#the-relays-auth-flags)
+explains the flags. The [relay README](../../iroh-live-relay/README.md) covers
+the rest of running it: the certificate, where it keeps its key, and which
+browsers work.
 
 ## Watching a P2P stream in a browser
 
@@ -29,7 +33,9 @@ Use `http`, not `https`. The README says why.
 
 When the name is a `BroadcastTicket`, the relay subscribes to the ticket's
 broadcast over iroh and serves it to the browser under that name. A name that
-is not a ticket must already be on the relay, or the request fails.
+is not a ticket must already be on the relay, or the request fails. With
+`--auth-url` or an `--auth-public` flag, the relay pulls no tickets for
+browsers.
 
 ## Publishing through the relay
 
@@ -41,8 +47,10 @@ irl publish --relay <RELAY_ENDPOINT_ID>
 
 The publisher stays attached and redials if the session drops. The broadcast
 appears on the relay at `live/<publisher endpoint id>/<name>`, and
-`irl publish` prints that path. An iroh client may publish only at paths that
-contain its own endpoint id, so nobody can publish under another node's name.
+`irl publish` prints that path. Without a token, an iroh client may publish
+only at paths that contain its own endpoint id, so nobody can publish under
+another node's name. A relay started with `--auth-key` accepts a JWT from the
+client, which a Rust node sets with `RelayConfig::token`.
 
 The relay also serves a publish page, which publishes the browser's camera and
 microphone. A Rust node reads such a broadcast by attaching to the relay and

@@ -54,19 +54,38 @@ out of an audience loses the path at once, and what it read there ends with
 `Unauthorized`. Every link serves only the node's own publications, never a
 route the node learned from another peer or a relay.
 
-To decide in the application, for example after checking a token, set a
-`policy::Queue` as the node's policy. Each request waits in the queue until the
-application admits or rejects the `Pending` that `Queue::next` yields. The node
-gives up on a decision after `NodeConfig::decide_timeout`, 10 seconds by
-default, so raise it when a person answers.
+The policy decides each peer when a session opens, in either direction, and
+again when an authorization expires, when the policy reports a change, and on
+`Node::reauthorize`. A new decision applies to every session with the peer at
+once, and a rejection closes them. `policy::Open`, `Closed`, `from_fn`,
+`union`, `filter` and `timeout` compose policies:
+
+```rust
+use iroh_live_node::{Grant, NodeConfig, policy};
+
+// A node on a trusted network: every peer may publish and read anything.
+let config = NodeConfig::default().with_policy(policy::Open(Grant::everything()));
+```
+
+To decide in the application, set a `policy::Queue` as the node's policy. Each
+request waits in the queue until the application admits or rejects the
+`Pending` that `Queue::next` yields. The node gives up on a decision after
+`NodeConfig::decide_timeout`, 10 seconds by default, so raise it when a person
+answers. `policy::Verify` lets a token decide, with JWT and rcan verifiers
+behind features.
+
+[Access control](../docs/guide/access.md) covers the policies, tokens and the
+trust model.
 
 ## Relays
 
 `Node::attach_relay(RelayConfig::new(url))` stays attached to a moq relay at an
 `iroh://` or `https://` URL, and redials it with backoff. `RelayConfig::iroh(id)`
-builds the `iroh://` URL from an endpoint id. Public publications go to the
-relay, and the relay's routes join the route table at a higher cost than a
-direct route. A node that only publishes through the relay sets
+builds the `iroh://` URL from an endpoint id. `RelayConfig::token` is a
+`TokenFn` the link asks for a token to present. Publications with the
+`Granted` audience go to the relay, and the relay's routes join the route
+table at a higher cost than a direct route. A node that only publishes through
+the relay sets
 `RelayConfig::consume` to false.
 
 A relay is trusted with every path it forwards. On a relay where anyone may
@@ -84,6 +103,16 @@ what is not measured yet. `Subscription::serving_link()` returns the sample of
 whichever link serves the subscription. `LinkSample`, `MoqPreset`, `alpns()` and `ALPN` come from
 `moq-transport-iroh` and are re-exported here.
 
+## Examples
+
+`examples/delegated_publisher.rs` lets a device publish into another
+account's space on an rcan capability chain. Run it with
+`cargo run -p iroh-live-node --features rcan --example delegated_publisher`.
+
 ## Features
 
-None.
+| Feature | Effect |
+|---|---|
+| `jwt` | `policy::JwtVerifier`, which verifies moq-relay's JWTs |
+| `rcan` | `policy::RcanVerifier`, `MoqCapability` and `encode_chain`, for capability chains bound to the peer's key |
+| `test-util` | Helpers for tests that run nodes in one process. Not a public API |
