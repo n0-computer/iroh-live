@@ -239,6 +239,7 @@ pub async fn admit(
     pulls: Option<Arc<pull::PullState>>,
     keys: Option<KeySet>,
 ) {
+    let verifier = keys.map(JwtVerifier::new);
     let mut held = JoinSet::new();
     loop {
         let admission = tokio::select! {
@@ -252,7 +253,7 @@ pub async fn admit(
         let ticket = name
             .as_deref()
             .and_then(|name| name.parse::<BroadcastTicket>().ok());
-        let mut grant = match browser_session_grant(&admission, keys.as_ref()) {
+        let mut grant = match browser_session_grant(&admission, verifier.as_ref()) {
             Ok(grant) => grant,
             Err(err) => {
                 info!(path = %admission.request.path, error = %err, "refusing a browser session");
@@ -288,17 +289,17 @@ pub async fn admit(
     }
 }
 
-/// Returns the grant of a browser session: its token's with `keys`, else [`browser_grant`].
+/// Returns the grant of a browser session: its token's with `verifier`, else [`browser_grant`].
 fn browser_session_grant(
     admission: &moq_relay::auth::Admission,
-    keys: Option<&KeySet>,
+    verifier: Option<&JwtVerifier>,
 ) -> Result<moq_auth::Grant, moq_relay::auth::Error> {
     let request = &admission.request;
     let public = || {
         browser_grant(&request.path)
             .map_err(|err| moq_relay::auth::Error::Forbidden(err.to_string()))
     };
-    let Some(keys) = keys else {
+    let Some(verifier) = verifier else {
         return public();
     };
     let token = if admission.attached() {
@@ -312,25 +313,17 @@ fn browser_session_grant(
         let setup = request
             .token
             .as_ref()
-            .filter(|token| token.kind == moq_net::setup::Token::OUT_OF_BAND)
-            .and_then(|token| std::str::from_utf8(&token.value).ok());
-        let session = SessionRequest::new(&target);
-        let session = match setup {
-            Some(token) => session.with_token(token),
-            None => session,
-        };
-        session.token().map(str::to_owned)
+            .map(|token| (token.kind, token.value.as_slice()));
+        SessionRequest::from_setup(&target, setup)
+            .token()
+            .map(str::to_owned)
     };
     let Some(token) = token else {
         return public();
     };
-    let refused =
-        |err: moq_auth::Error| moq_relay::auth::Error::Forbidden(format!("invalid token: {err}"));
-    let claims = keys.verify(&token).map_err(refused)?;
-    let permissions = claims.authorize(&request.path).map_err(refused)?;
-    let mut grant = moq_auth::Grant::new(permissions.publish, permissions.subscribe);
-    grant.expires = claims.expires;
-    Ok(grant)
+    verifier
+        .verify_grant(&token, &request.path)
+        .map_err(|err| moq_relay::auth::Error::Forbidden(format!("invalid token: {err}")))
 }
 
 /// Loads the JWT keys from a file that holds a JWK set or a single JWK.

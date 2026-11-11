@@ -11,13 +11,13 @@ pub use moq_ext_access::Grant;
 pub use moq_ext_access::SessionRequest;
 use moq_transport_iroh::Congestion;
 use n0_error::e;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::{
     Error, LinkKind,
     handshake::{Hop, SessionParts, subscriber},
     node::Shared,
-    policy::{Authorization, DynPolicy, Event, PeerRequest, Rejection},
+    policy::{Authorization, Event, PeerRequest, Rejection},
     state::{Registered, State, served},
     transport::{self, HANDSHAKE_TIMEOUT},
 };
@@ -228,33 +228,13 @@ pub(crate) async fn authorize(
 
 /// Asks the node's policy about `request`, within [`NodeConfig::decide_timeout`].
 ///
-/// A policy that takes longer is a rejection with
-/// [`moq_net::Error::Timeout`]. So is an authorization whose transit is not
-/// the default, since the node does not forward yet.
+/// See [`decide_within`](moq_ext_access::policy::decide_within) for what it
+/// rejects on its own.
 ///
 /// [`NodeConfig::decide_timeout`]: crate::NodeConfig::decide_timeout
 pub(crate) async fn decide(
     shared: &Shared,
     request: &PeerRequest,
 ) -> Result<Authorization, Rejection> {
-    let decided = tokio::time::timeout(
-        shared.decide_timeout,
-        DynPolicy::decide(&*shared.policy, request),
-    )
-    .await;
-    let Ok(decision) = decided else {
-        return Err(
-            Rejection::new("the policy did not decide in time").with_code(moq_net::Error::Timeout)
-        );
-    };
-    let authorization = decision?;
-    if !authorization.transit.is_none() {
-        warn!(
-            peer = %request.peer().fmt_short(),
-            transit = ?authorization.transit,
-            "transit is not supported yet, rejecting the session",
-        );
-        return Err(Rejection::new("transit is not supported yet"));
-    }
-    Ok(authorization)
+    moq_ext_access::policy::decide_within(&*shared.policy, request, shared.decide_timeout).await
 }

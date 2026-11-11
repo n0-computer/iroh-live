@@ -18,7 +18,7 @@ use iroh::{
 use iroh_live::{layout::LiveLayout, rooms::RoomsLayout};
 use iroh_live_node::{
     DECIDE_TIMEOUT, SessionRequest,
-    policy::{Authorization, DynPolicy, Event, PeerRequest, Policy, Rejection},
+    policy::{Authorization, DynPolicy, Event, PeerRequest, Policy},
 };
 use moq_net::Pattern;
 use moq_relay::cluster::Cluster;
@@ -104,18 +104,21 @@ impl IrohSessions {
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
         let request = PeerRequest::new(peer, session, false, Event::Connect);
-        let authorization = match self.decide(&request).await {
-            Ok(authorization) => authorization,
-            Err(rejection) => {
-                info!(
-                    reason = rejection.reason(),
-                    code = %rejection.code(),
-                    "the policy rejected the iroh client",
-                );
-                handshake.close(rejection.code().clone());
-                return Err(AcceptError::from_err(rejection));
-            }
-        };
+        let authorization =
+            match moq_ext_access::policy::decide_within(&*self.policy, &request, DECIDE_TIMEOUT)
+                .await
+            {
+                Ok(authorization) => authorization,
+                Err(rejection) => {
+                    info!(
+                        reason = rejection.reason(),
+                        code = %rejection.code(),
+                        "the policy rejected the iroh client",
+                    );
+                    handshake.close(rejection.code().clone());
+                    return Err(AcceptError::from_err(rejection));
+                }
+            };
         let grant = &authorization.grant;
         let publish = self
             .cluster
@@ -172,26 +175,6 @@ impl IrohSessions {
             warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
         }
         Ok(())
-    }
-
-    /// Asks the policy about `request`, within [`DECIDE_TIMEOUT`].
-    ///
-    /// A policy that takes longer is a rejection with
-    /// [`moq_net::Error::Timeout`]. So is an authorization whose transit is
-    /// not the default, since the relay forwards the whole cluster anyway.
-    async fn decide(&self, request: &PeerRequest) -> Result<Authorization, Rejection> {
-        let decided =
-            tokio::time::timeout(DECIDE_TIMEOUT, DynPolicy::decide(&*self.policy, request)).await;
-        let Ok(decision) = decided else {
-            return Err(Rejection::new("the policy did not decide in time")
-                .with_code(moq_net::Error::Timeout));
-        };
-        let authorization = decision?;
-        if !authorization.transit.is_none() {
-            warn!(transit = ?authorization.transit, "transit is not supported, rejecting the session");
-            return Err(Rejection::new("transit is not supported"));
-        }
-        Ok(authorization)
     }
 }
 

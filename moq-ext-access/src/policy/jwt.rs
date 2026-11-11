@@ -48,15 +48,35 @@ impl JwtVerifier {
             keys: Arc::new(keys),
         }
     }
+
+    /// Verifies `token` and returns what it grants at `path`, as moq-relay reads it.
+    ///
+    /// The grant's patterns are relative to `path`, and it expires with the
+    /// token.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the moq-auth error if no key verifies the token, the token
+    /// expired, or its root does not overlap `path`.
+    pub fn verify_grant(
+        &self,
+        token: &str,
+        path: &str,
+    ) -> Result<moq_auth::Grant, moq_auth::Error> {
+        let claims = self.keys.verify(token)?;
+        let permissions = claims.authorize(path)?;
+        let mut grant = moq_auth::Grant::new(permissions.publish, permissions.subscribe);
+        grant.expires = claims.expires;
+        Ok(grant)
+    }
 }
 
 impl<P: PeerId> TokenVerifier<P> for JwtVerifier {
     fn verify(&self, token: &str, request: &PeerRequest<P>) -> Decision {
-        let claims = self.keys.verify(token).map_err(rejection)?;
         let path = request.path();
-        let permissions = claims.authorize(path).map_err(rejection)?;
-        // The permissions are relative to the requested path, and a grant
-        // names absolute paths.
+        let grant = self.verify_grant(token, path).map_err(rejection)?;
+        // The patterns are relative to the requested path, and a grant names
+        // absolute paths.
         let absolute = |patterns: moq_auth::Patterns| {
             patterns
                 .rooted(path)
@@ -64,10 +84,10 @@ impl<P: PeerId> TokenVerifier<P> for JwtVerifier {
         };
         Ok(Authorization {
             grant: Grant {
-                subscribe: absolute(permissions.subscribe)?,
-                publish: absolute(permissions.publish)?,
+                subscribe: absolute(grant.subscribe)?,
+                publish: absolute(grant.publish)?,
             },
-            expires: claims.expires.map(SystemTime::from),
+            expires: grant.expires.map(SystemTime::from),
             ..Default::default()
         })
     }

@@ -205,11 +205,22 @@ impl SessionRequest {
     /// Returns what a client asked for in its MoQ SETUP: a path, and maybe a token.
     #[must_use]
     pub fn from_handshake(handshake: &moq_net::server::Handshake) -> Self {
-        let request = Self::new(handshake.path());
         let token = handshake
             .token()
-            .filter(|token| token.kind == moq_net::setup::Token::OUT_OF_BAND)
-            .and_then(|token| std::str::from_utf8(&token.value).ok());
+            .map(|token| (token.kind, token.value.as_slice()));
+        Self::from_setup(handshake.path(), token)
+    }
+
+    /// Returns the request of a SETUP with `target` and a token of the given type and bytes.
+    ///
+    /// Only an out-of-band token, type [`moq_net::setup::Token::OUT_OF_BAND`],
+    /// that is valid UTF-8 counts.
+    #[must_use]
+    pub fn from_setup(target: &str, token: Option<(u64, &[u8])>) -> Self {
+        let request = Self::new(target);
+        let token = token
+            .filter(|(kind, _)| *kind == moq_net::setup::Token::OUT_OF_BAND)
+            .and_then(|(_, value)| std::str::from_utf8(value).ok());
         match token {
             Some(token) => request.with_token(token),
             None => request,

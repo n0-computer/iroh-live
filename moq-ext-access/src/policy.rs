@@ -515,15 +515,39 @@ impl<P: PeerId, T: Policy<P>> Policy<P> for Timeout<T> {
     async fn decide(&self, request: &PeerRequest<P>) -> Decision {
         n0_future::time::timeout(self.after, self.inner.decide(request))
             .await
-            .unwrap_or_else(|_| {
-                Err(Rejection::new("the policy did not decide in time")
-                    .with_code(moq_net::Error::Timeout))
-            })
+            .unwrap_or_else(|_| Err(too_slow()))
     }
 
     fn changes(&self) -> Option<BoxStream<()>> {
         self.inner.changes()
     }
+}
+
+/// Asks `policy` about `request` within `timeout`, as a node does before it admits a session.
+///
+/// A policy that takes longer is a rejection with
+/// [`moq_net::Error::Timeout`]. So is an authorization with a [`Transit`],
+/// since nothing forwards yet.
+///
+/// Needs a tokio runtime with time enabled. Dropping the future drops the
+/// policy's.
+pub async fn decide_within<P: PeerId>(
+    policy: &dyn DynPolicy<P>,
+    request: &PeerRequest<P>,
+    timeout: Duration,
+) -> Decision {
+    let authorization = n0_future::time::timeout(timeout, policy.decide(request))
+        .await
+        .unwrap_or_else(|_| Err(too_slow()))?;
+    if !authorization.transit.is_none() {
+        return Err(Rejection::new("transit is not supported yet"));
+    }
+    Ok(authorization)
+}
+
+/// Returns the rejection of a policy that did not decide in time.
+fn too_slow() -> Rejection {
+    Rejection::new("the policy did not decide in time").with_code(moq_net::Error::Timeout)
 }
 
 #[cfg(test)]
