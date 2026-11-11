@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
-    BroadcastTicket, Error, Node, PathClaim, Reach, ServingLink, Session,
+    BroadcastTicket, Error, LinkId, Node, PathClaim, Reach, ServingLink, Session,
     handshake::Hop,
     node::Shared,
     publish::check_path,
@@ -50,20 +50,6 @@ const REASK_WINDOW: Duration = Duration::from_secs(1);
 
 /// The pause before asking the table again after a quick end.
 const REASK_PAUSE: Duration = Duration::from_millis(100);
-
-/// Identifies one link of a node: a session or a relay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
-#[display("link-{_0}")]
-pub struct LinkId(pub(crate) u64);
-
-/// What kind of link serves a subscription.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LinkKind {
-    /// A session with a peer, dialed or accepted.
-    Direct,
-    /// A moq relay this node is attached to.
-    Relay,
-}
 
 /// A path resolved in a route table.
 ///

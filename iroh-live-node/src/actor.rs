@@ -253,6 +253,23 @@ impl Actor {
 
     /// Starts running an established session and makes it reachable.
     fn register(&mut self, parts: SessionParts) -> Session {
+        let (session, driver) = self.add_link(parts);
+        self.add_peer_session(&session);
+        let inner = &session.inner;
+        info!(
+            remote = %inner.remote.fmt_short(),
+            link = %inner.link,
+            dialed = inner.dialed,
+            "session started",
+        );
+        self.spawn_session(session.clone(), driver);
+        session
+    }
+
+    /// Adds an established session's link to the node's state.
+    ///
+    /// Returns the session and the driver that runs it.
+    fn add_link(&self, parts: SessionParts) -> (Session, moq_net::Driver) {
         let SessionParts {
             remote,
             connection,
@@ -274,8 +291,8 @@ impl Actor {
                 dialed,
                 grant: std::sync::Mutex::new(grant.clone()),
                 request,
-                connection: connection.clone(),
-                moq: moq.clone(),
+                connection,
+                moq,
                 hop,
                 link_state: link_state.clone(),
                 shared: Arc::downgrade(&self.shared),
@@ -293,11 +310,15 @@ impl Actor {
                 consume: true,
                 auth,
                 session: Some(session.clone()),
-                link_state: link_state.clone(),
+                link_state,
             },
         );
-        drop(state);
+        (session, driver)
+    }
 
+    /// Adds a session to its peer's, and answers the dials that wait for the peer.
+    fn add_peer_session(&mut self, session: &Session) {
+        let remote = session.inner.remote;
         // Two peers that dial each other at once end up with two sessions
         // each. Both stay: the two sides see the collision at different
         // instants, so either may already have handed out the other's second.
@@ -312,18 +333,29 @@ impl Actor {
                 reply.send(Ok(serving.clone())).ok();
             }
         }
+    }
 
-        info!(remote = %remote.fmt_short(), %link, dialed, "session started");
+    /// Spawns the task that runs `session` until it ends or the node shuts down.
+    fn spawn_session(&mut self, session: Session, driver: moq_net::Driver) {
+        let SessionInner {
+            link,
+            remote,
+            ref connection,
+            ref moq,
+            ref link_state,
+            ..
+        } = *session.inner;
+        let monitor = link::monitor_direct(
+            moq.clone(),
+            connection.clone(),
+            link_state.clone(),
+            link::SharedSampler::default(),
+        );
+        let moq = moq.clone();
         let cancel = self.shared.shutdown.child_token();
-        let task_session = session.clone();
         let handle = self.sessions.spawn(
             async move {
-                let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor_direct(
-                    moq.clone(),
-                    connection,
-                    link_state,
-                    link::SharedSampler::default(),
-                )));
+                let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
                 let run = moq_net::time::run(driver);
                 tokio::pin!(run);
                 let ended = tokio::select! {
@@ -338,13 +370,12 @@ impl Actor {
                         run.await
                     }
                 };
-                drop(task_session);
+                drop(session);
                 err
             }
             .instrument(info_span!("session", remote = %remote.fmt_short(), %link)),
         );
         self.session_ids.insert(handle.id(), (link, remote));
-        session
     }
 
     /// Cleans up after a session task ends, or panics.

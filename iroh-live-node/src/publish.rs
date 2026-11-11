@@ -6,7 +6,10 @@ use std::{
 };
 
 use iroh::EndpointId;
-use moq_net::{Path, Pattern, broadcast, origin::RouteOptions};
+use moq_net::{
+    Path, Pattern, broadcast,
+    origin::{self, RouteOptions},
+};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
@@ -220,21 +223,7 @@ where
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
-    let publication = shared
-        .table
-        .route(path.clone(), RouteOptions::hidden())
-        .map_err(|source| e!(Error::Moq { source }))?;
-    // Filled before the announcement, so no reader finds the broadcast
-    // without the tracks `fill` creates.
-    let filled = match fill(publication.broadcast()) {
-        Ok(filled) => filled,
-        Err(err) => {
-            publication.broadcast().close();
-            return Err(e!(Error::Fill {
-                source: AnyError::from_std_box(err.into())
-            }));
-        }
-    };
+    let (publication, filled) = filled_route(shared, &path, fill)?;
     // Ends the broadcast `fill` may have spawned work on, if it is not published.
     let refuse = |err: Error| {
         publication.broadcast().close();
@@ -245,13 +234,8 @@ where
     if state.closed {
         return refuse(e!(Error::ShutDown));
     }
-    if let Some(existing) = state.publication_at(&path) {
-        // An ended broadcast's closed task may not have run yet. Not a clash.
-        let entry = &state.publications[&existing];
-        if !entry.publication.broadcast().consume().is_closed() {
-            return refuse(e!(Error::Duplicate { path }));
-        }
-        state.remove_publication(existing);
+    if let Err(err) = free_path(&mut state, &path) {
+        return refuse(err);
     }
     // Announced under the lock, before any link may see the path, so no peer
     // learns of it before the table has it.
@@ -260,23 +244,7 @@ where
     }
     let broadcast = publication.broadcast().clone();
     let id = state.next_id();
-    let closed_task = {
-        let consumer = broadcast.consume();
-        let weak = weak.clone();
-        let path = path.clone();
-        tokio::spawn(async move {
-            consumer.closed().await;
-            let Some(shared) = weak.upgrade() else { return };
-            let removed = shared
-                .state
-                .lock()
-                .expect("poisoned")
-                .remove_publication(id);
-            if removed.is_some() {
-                info!(%path, "broadcast ended, unpublished");
-            }
-        })
-    };
+    let closed_task = unpublish_when_closed(broadcast.consume(), weak.clone(), id, path.clone());
     info!(%path, ?audience, "published");
     let withdrawn = CancellationToken::new();
     state.add_publication(
@@ -302,6 +270,69 @@ where
         }),
     };
     Ok((publication, filled))
+}
+
+/// Routes `path` in the node's table, hidden, and runs `fill` on its broadcast.
+///
+/// Filled before the announcement, so no reader finds the broadcast without
+/// the tracks `fill` creates. Closes the broadcast if `fill` fails.
+fn filled_route<T, E>(
+    shared: &Shared,
+    path: &Path,
+    fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
+) -> Result<(origin::Route, T), Error>
+where
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let publication = shared
+        .table
+        .route(path.clone(), RouteOptions::hidden())
+        .map_err(|source| e!(Error::Moq { source }))?;
+    match fill(publication.broadcast()) {
+        Ok(filled) => Ok((publication, filled)),
+        Err(err) => {
+            publication.broadcast().close();
+            Err(e!(Error::Fill {
+                source: AnyError::from_std_box(err.into())
+            }))
+        }
+    }
+}
+
+/// Frees `path` for a new publication, or fails if a live one holds it.
+fn free_path(state: &mut State, path: &Path) -> Result<(), Error> {
+    if let Some(existing) = state.publication_at(path) {
+        // An ended broadcast's closed task may not have run yet. Not a clash.
+        let entry = &state.publications[&existing];
+        if !entry.publication.broadcast().consume().is_closed() {
+            return Err(e!(Error::Duplicate { path: path.clone() }));
+        }
+        state.remove_publication(existing);
+    }
+    Ok(())
+}
+
+/// Spawns the task that removes publication `id` once its broadcast closes.
+fn unpublish_when_closed(
+    consumer: broadcast::Consumer,
+    shared: Weak<Shared>,
+    id: u64,
+    path: Path,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        consumer.closed().await;
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        let removed = shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .remove_publication(id);
+        if removed.is_some() {
+            info!(%path, "broadcast ended, unpublished");
+        }
+    })
 }
 
 /// Refuses a path that is empty or that no literal pattern names.

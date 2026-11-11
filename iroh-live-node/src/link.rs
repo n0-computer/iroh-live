@@ -1,4 +1,4 @@
-//! Link measurement: the node's shared sample cell and the relay monitor.
+//! Link identity and measurement: the node's shared sample cell and the relay monitor.
 //!
 //! The sampler itself lives in `moq-transport-iroh`.
 
@@ -10,7 +10,19 @@ use std::{
 use moq_transport_iroh::{LinkSample, LinkSampler, SAMPLE_INTERVAL};
 use tracing::trace;
 
-use crate::{LinkId, LinkKind};
+/// Identifies one link of a node: a session or a relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
+#[display("link-{_0}")]
+pub struct LinkId(pub(crate) u64);
+
+/// What kind of link serves a subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinkKind {
+    /// A session with a peer, dialed or accepted.
+    Direct,
+    /// A moq relay this node is attached to.
+    Relay,
+}
 
 /// The link serving a subscription, and its latest reading.
 #[derive(Debug, Clone, PartialEq)]

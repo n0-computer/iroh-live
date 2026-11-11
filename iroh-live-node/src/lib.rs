@@ -101,11 +101,11 @@ pub use self::{
     admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
     claim::{OwnerFn, PathClaim},
     error::Error,
-    link::ServingLink,
+    link::{LinkId, LinkKind, ServingLink},
     node::{Node, NodeConfig, Reach},
     publish::{Audience, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
-    route::{LinkId, LinkKind, Subscription},
+    route::Subscription,
     session::Session,
     ticket::BroadcastTicket,
 };
