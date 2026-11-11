@@ -60,7 +60,9 @@
 //!
 //! [`Rooms::join`] and [`Room::subscribe`] are cancellation safe: a dropped
 //! `join` leaves the topic, and a dropped `subscribe` leaves its dial running.
-//! [`Room::leave`] is not. It is idempotent: call it again to finish.
+//! [`Room::leave`] and [`Rooms::shutdown`] are not. Both are idempotent: call
+//! again to finish. Concurrent calls of [`Rooms::shutdown`] wait for the same
+//! shutdown.
 
 mod actor;
 mod room;
