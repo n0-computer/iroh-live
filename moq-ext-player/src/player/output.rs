@@ -21,9 +21,6 @@ use moq_ext_sources::AudioFormat;
 #[derive(Debug, Clone)]
 pub struct AudioTarget {
     inner: Inner,
-    /// Counts canceller requests, so a test can see them without a device.
-    #[cfg(all(test, feature = "aec"))]
-    cancellers: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The output behind an [`AudioTarget`].
@@ -39,8 +36,6 @@ impl From<playback::Engine> for AudioTarget {
     fn from(engine: playback::Engine) -> Self {
         Self {
             inner: Inner::Engine(engine),
-            #[cfg(all(test, feature = "aec"))]
-            cancellers: Default::default(),
         }
     }
 }
@@ -53,11 +48,7 @@ impl AudioTarget {
     /// jitter allowance alone. A microphone asked to cancel a null target's
     /// echo gets no canceller.
     pub fn null() -> Self {
-        Self {
-            inner: Inner::Null,
-            #[cfg(all(test, feature = "aec"))]
-            cancellers: Default::default(),
-        }
+        Self { inner: Inner::Null }
     }
 
     /// Returns the engine behind this target, `None` for a [null](Self::null) one.
@@ -92,21 +83,12 @@ impl AudioTarget {
             }
         }
     }
-
-    /// Returns how many echo cancellers were asked of this target.
-    #[cfg(all(test, feature = "aec"))]
-    pub(crate) fn cancellers_requested(&self) -> u64 {
-        self.cancellers.load(std::sync::atomic::Ordering::Relaxed)
-    }
 }
 
 #[cfg(feature = "aec")]
 impl moq_ext_sources::EchoReference for AudioTarget {
     /// Returns `None` for a null target, which plays nothing and has no echo.
     fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, Error> {
-        #[cfg(test)]
-        self.cancellers
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match &self.inner {
             Inner::Engine(engine) => engine
                 .canceller(moq_audio::aec::Config::default())
@@ -262,16 +244,29 @@ mod tests {
         ));
     }
 
+    /// An echo reference that counts canceller requests and plays nothing.
+    #[cfg(feature = "aec")]
+    #[derive(Debug, Default)]
+    struct CountingReference(std::sync::atomic::AtomicU64);
+
+    #[cfg(feature = "aec")]
+    impl moq_ext_sources::EchoReference for CountingReference {
+        fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, Error> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
+    }
+
     /// A microphone publication asks its echo reference output for a canceller.
     ///
-    /// A null output counts the request without any device behind it.
+    /// A counting double stands in for the output, so no device is needed.
     #[cfg(feature = "aec")]
     #[tokio::test]
     async fn a_microphone_publication_asks_for_its_canceller() {
         const TIMEOUT: Duration = Duration::from_secs(30);
-        let output = AudioTarget::null();
+        let output = Arc::new(CountingReference::default());
         let config = MicrophoneConfig {
-            echo_reference: Some(Arc::new(output.clone())),
+            echo_reference: Some(output.clone()),
             ..MicrophoneConfig::default()
         };
         let broadcast = LocalBroadcast::new();
@@ -282,7 +277,7 @@ mod tests {
             )
             .expect("a valid encoding");
         tokio::time::timeout(TIMEOUT, async {
-            while output.cancellers_requested() == 0 {
+            while output.0.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
