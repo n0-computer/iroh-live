@@ -45,12 +45,16 @@ use std::{
 use moq_net::Patterns;
 use n0_future::{MergeBounded, boxed::BoxStream, future};
 
+#[cfg(feature = "jwt")]
+pub use self::jwt::JwtVerifier;
 pub use self::{
     queue::{Pending, Queue},
     verify::{TokenVerifier, Verify},
 };
 use crate::{Grant, PeerId, SessionRequest};
 
+#[cfg(feature = "jwt")]
+mod jwt;
 mod queue;
 mod verify;
 
