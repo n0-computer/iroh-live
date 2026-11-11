@@ -67,7 +67,7 @@ use iroh_live::media::{PlayerConfig, remote_broadcast};
 
 let subscription = node.subscribe_ticket(&ticket).await?;
 let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-let mut frames = player.video();
+let mut frames = player.video_frames();
 ```
 
 ## Main types

@@ -399,7 +399,7 @@ impl DrmDisplay {
 
 /// Renders a remote broadcast to HDMI over DRM/KMS.
 pub(crate) async fn run_drm(player: Player) -> Result<()> {
-    show_on_hdmi(player.video()).await
+    show_on_hdmi(player.video_frames()).await
 }
 
 /// Renders a local frame stream to HDMI.
@@ -643,7 +643,7 @@ pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
         surface: None,
         context: None,
         window: None,
-        frames: player.video(),
+        frames: player.video_frames(),
         player,
         fullscreen,
         frame_count: 0,

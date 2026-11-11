@@ -149,7 +149,7 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
         ..PlayerConfig::default()
     };
     let player = remote.play(config).expect("failed to play");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
 
     let mut received = Vec::with_capacity(SAMPLES + 1);
     while received.len() <= SAMPLES {

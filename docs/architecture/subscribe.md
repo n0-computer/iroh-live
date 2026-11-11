@@ -90,7 +90,7 @@ or pin failed (`switch_error`), and the decoder backend running.
 
 ## Frame delivery
 
-Decoded frames land in a latest-wins slot. `Player::video()` returns a
+Decoded frames land in a latest-wins slot. `Player::video_frames()` returns a
 `VideoFrames` handle onto it. Every call returns another handle onto the same
 stream, which survives rendition switches and decoder changes. Each handle
 keeps its own cursor, so two readers both see the current picture. A reader

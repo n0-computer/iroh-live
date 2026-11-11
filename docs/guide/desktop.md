@@ -36,7 +36,7 @@ source's `frames()`:
 ```rust
 use moq_ext_egui::VideoView;
 
-let mut view = VideoView::new(ctx, "video", player.video(), render_state);
+let mut view = VideoView::new(ctx, "video", player.video_frames(), render_state);
 // in the update loop:
 ui.add(view.render());
 ```

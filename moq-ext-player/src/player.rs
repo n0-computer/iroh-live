@@ -331,13 +331,13 @@ impl Player {
         })
     }
 
-    /// Returns the decoded frames.
+    /// Returns the decoded video frames.
     ///
     /// Every call returns a handle onto the same stream, and each handle keeps
     /// its own cursor. The stream survives rendition switches and decoder
     /// changes. It ends when the broadcast closes or the player is dropped.
     #[must_use]
-    pub fn video(&self) -> VideoFrames {
+    pub fn video_frames(&self) -> VideoFrames {
         self.frames.clone()
     }
 
@@ -450,7 +450,7 @@ impl Player {
     /// ```no_run
     /// # async fn run(player: moq_ext_player::Player) {
     /// // The player was started with `PlayerConfig::record_arrivals` on.
-    /// let mut frames = player.video();
+    /// let mut frames = player.video_frames();
     /// while let Some(frame) = frames.next().await {
     ///     let timing = player.video_timing(frame.timestamp.into());
     ///     if let Some(arrived) = timing.and_then(|timing| timing.arrived) {

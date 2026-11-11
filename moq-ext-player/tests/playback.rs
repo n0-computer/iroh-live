@@ -123,7 +123,7 @@ async fn a_local_broadcast_plays_in_process() {
         })
         .expect("a valid config");
     on_screen(&player, "low").await;
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;
     let status = player.status().borrow().clone();
     assert_eq!(status.video, SlotState::Running);
@@ -164,7 +164,7 @@ async fn a_player_started_after_the_catalog_plays() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    tokio::time::timeout(TIMEOUT, player.video().next())
+    tokio::time::timeout(TIMEOUT, player.video_frames().next())
         .await
         .expect("a player of a described broadcast never chose a rendition")
         .expect("the video plays");
@@ -229,8 +229,8 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    let mut high_frames = high.video();
-    let mut low_frames = low.video();
+    let mut high_frames = high.video_frames();
+    let mut low_frames = low.video_frames();
     wait_for_size(&mut high_frames, moq_video::Size::new(640, 360)).await;
     wait_for_size(&mut low_frames, moq_video::Size::new(320, 180)).await;
     assert_eq!(high.status().borrow().rendition.as_deref(), Some("high"));
@@ -246,7 +246,7 @@ async fn a_pin_switches_without_ending_the_frames() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     wait_for_size(&mut frames, moq_video::Size::new(640, 360)).await;
 
     player.set_rendition(RenditionMode::pinned("low"));
@@ -475,7 +475,7 @@ async fn a_player_keeps_playing_when_its_route_goes() {
         .expect("a route serves the path");
     let remote = RemoteBroadcast::from_resolved(origin.consume(), path, first);
     let player = remote.play(PlayerConfig::default()).expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;
     let (states, recorder) = record_states(&player);
 
@@ -504,7 +504,7 @@ async fn video_comes_back_after_the_publisher_replaces_it() {
     let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;
     let (states, recorder) = record_states(&player);
     // A camera switch: the same rendition name, another source.
@@ -529,7 +529,7 @@ async fn turning_video_off_leaves_nothing_decoding() {
     let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     wait_for_size(&mut frames, moq_video::Size::new(640, 360)).await;
     player.set_rendition(RenditionMode::Off);
     until(player.status(), |status| {
@@ -845,7 +845,7 @@ async fn a_source_that_waits_for_demand_is_played() {
     let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    let frame = tokio::time::timeout(TIMEOUT, player.video().next())
+    let frame = tokio::time::timeout(TIMEOUT, player.video_frames().next())
         .await
         .expect("a source waiting for demand was never watched")
         .expect("the video ended");
@@ -873,7 +873,7 @@ async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
     let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     for _ in 0..3 {
         let frame = tokio::time::timeout(TIMEOUT, frames.next())
             .await
@@ -915,7 +915,7 @@ async fn a_presented_frame_knows_when_its_data_arrived() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     let mut arrived = 0;
     for _ in 0..10 {
         let frame = tokio::time::timeout(TIMEOUT, frames.next())
@@ -949,7 +949,7 @@ async fn the_frames_end_when_the_broadcast_closes() {
     let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     tokio::time::timeout(TIMEOUT, frames.next())
         .await
         .expect("a first frame")

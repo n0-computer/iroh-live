@@ -26,7 +26,7 @@ fn play(broadcast: &LocalBroadcast) -> (moq_ext_player::Player, VideoFrames) {
     let player = RemoteBroadcast::from_consumer(broadcast.consume())
         .play(PlayerConfig::default())
         .expect("a valid config");
-    let frames = player.video();
+    let frames = player.video_frames();
     (player, frames)
 }
 

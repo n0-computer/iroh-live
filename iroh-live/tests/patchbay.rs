@@ -255,7 +255,7 @@ impl Fixture {
                 ..PlayerConfig::default()
             })
             .expect("failed to play");
-        let frames = player.video();
+        let frames = player.video_frames();
         Viewer { player, frames }
     }
 

@@ -72,7 +72,7 @@ fn set_pattern(broadcast: &LocalBroadcast, size: Size) {
 
 /// Waits until the player has shown a frame.
 async fn first_frame(player: &Player) {
-    tokio::time::timeout(TIMEOUT, player.video().next())
+    tokio::time::timeout(TIMEOUT, player.video_frames().next())
         .await
         .expect("timed out waiting for the first frame")
         .expect("video ended");
@@ -104,7 +104,7 @@ async fn publish_subscribe_video() {
         let player = remote_broadcast(&subscription)
             .play(PlayerConfig::default())
             .expect("failed to play");
-        let mut frames = player.video();
+        let mut frames = player.video_frames();
 
         let mut previous = None;
         for index in 0..5 {
@@ -395,7 +395,7 @@ async fn changing_the_decoder_backend_rebuilds_it() {
     assert!(status.switch_error.is_none(), "{:?}", status.switch_error);
     assert_eq!(status.decoder.as_deref(), Some("openh264"));
 
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     tokio::time::timeout(TIMEOUT, frames.next())
         .await
         .expect("timed out waiting for a frame from the rebuilt decoder")

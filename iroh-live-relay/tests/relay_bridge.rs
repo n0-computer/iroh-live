@@ -416,7 +416,7 @@ async fn iroh_publish_iroh_subscribe() {
     let player = sub
         .play(iroh_live::media::PlayerConfig::default())
         .expect("play");
-    let frame = step("timeout", player.video().next())
+    let frame = step("timeout", player.video_frames().next())
         .await
         .expect("closed");
     let size = frame.size();

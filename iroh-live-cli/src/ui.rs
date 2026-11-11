@@ -380,7 +380,7 @@ impl RemoteView {
         decoder: Backend,
         render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
     ) -> Self {
-        let video = VideoView::new(ctx, name, player.video(), render_state);
+        let video = VideoView::new(ctx, name, player.video_frames(), render_state);
         Self {
             player,
             video,

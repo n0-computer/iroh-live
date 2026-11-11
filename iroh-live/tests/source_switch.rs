@@ -63,7 +63,7 @@ impl Peers {
         let player = remote_broadcast(&subscription)
             .play(PlayerConfig::default())
             .expect("failed to play");
-        let frames = player.video();
+        let frames = player.video_frames();
         (player, frames)
     }
 

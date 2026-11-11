@@ -12,7 +12,7 @@ newest frame and get an `egui::Image`:
 ```rust
 use moq_ext_egui::VideoView;
 
-let mut view = VideoView::new(&ctx, "remote", player.video(), Some(&render_state));
+let mut view = VideoView::new(&ctx, "remote", player.video_frames(), Some(&render_state));
 
 ui.add(view.render());
 ```

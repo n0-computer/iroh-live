@@ -15,7 +15,7 @@
 //! #     player: &moq_ext_player::Player,
 //! #     render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
 //! # ) {
-//! let mut view = VideoView::new(ctx, "video", player.video(), render_state);
+//! let mut view = VideoView::new(ctx, "video", player.video_frames(), render_state);
 //! // in the update loop:
 //! ui.add(view.render());
 //! # }

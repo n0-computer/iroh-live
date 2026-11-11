@@ -36,7 +36,7 @@ async fn main() -> n0_error::Result {
     let _link = node.attach_relay(RelayConfig::iroh(cli.relay))?;
     let subscription = node.subscribe(&cli.name, Reach::Relays).await?;
     let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
 
     info!("subscribed, waiting for video");
     for received in 1..=cli.frames {

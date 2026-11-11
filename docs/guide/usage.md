@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscription = node.subscribe_ticket(&ticket).await?;
     let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
 
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     for count in 1..=100 {
         let frame = tokio::time::timeout(Duration::from_secs(10), frames.next())
             .await?
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let call = tokio::time::timeout(Duration::from_secs(60), calls.call(peer)).await??;
     let player = remote_broadcast(call.subscription()).play(PlayerConfig::default())?;
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     while let Some(frame) = frames.next().await {
         println!("peer frame {}", frame.size());
     }
@@ -267,7 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let subscription = room.subscribe(peer, &name).await?;
     let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-    let mut frames = player.video();
+    let mut frames = player.video_frames();
     while let Some(frame) = frames.next().await {
         println!("{peer} {name}: {}", frame.size());
     }
@@ -345,7 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let path = format!("stage/{other}/main");
             let subscription = node.subscribe(&path, Reach::Direct(other)).await?;
             let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-            let mut frames = player.video();
+            let mut frames = player.video_frames();
             while let Some(frame) = frames.next().await {
                 println!("frame {}", frame.size());
             }

@@ -56,7 +56,7 @@ println!("share {}", layout.ticket(node.id(), "studio")?);
 
 let subscription = node.subscribe_ticket(&ticket).await?;
 let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-let mut frames = player.video();
+let mut frames = player.video_frames();
 while let Some(frame) = frames.next().await {
     // hand `frame` to a renderer
 #   drop(frame);

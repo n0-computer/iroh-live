@@ -13,7 +13,7 @@
 //! use moq_ext_player::{PlayerConfig, RemoteBroadcast};
 //!
 //! let player = RemoteBroadcast::from_consumer(consumer).play(PlayerConfig::default())?;
-//! let mut frames = player.video();
+//! let mut frames = player.video_frames();
 //! while let Some(frame) = frames.next().await {
 //!     // draw `frame`
 //! #   let _ = frame;

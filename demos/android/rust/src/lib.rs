@@ -338,7 +338,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     let player = play(&remote, &output)?;
 
     let mut session = SessionHandle::new();
-    session.frames = Some(player.video());
+    session.frames = Some(player.video_frames());
     session.player = Some(player);
     session.output = Some(output);
     session.live = Some(live);
@@ -394,7 +394,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(peer = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();
-    session.frames = Some(player.video());
+    session.frames = Some(player.video_frames());
     session.player = Some(player);
     session.output = Some(output);
     session.camera = Some(camera);
@@ -498,7 +498,7 @@ async fn accept_one(
         return Ok(());
     }
     // Replace the local preview with the peer's video.
-    held.frames = Some(player.video());
+    held.frames = Some(player.video_frames());
     held.player = Some(player);
     held.call = Some(call);
     Ok(())
@@ -650,7 +650,7 @@ fn start_h264_impl(size: Size) -> Result<jlong> {
     let player = open_loopback(&broadcast)?;
 
     let mut session = SessionHandle::new();
-    session.frames = Some(player.video());
+    session.frames = Some(player.video_frames());
     session.player = Some(player);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
