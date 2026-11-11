@@ -654,7 +654,7 @@ async fn dial_relay(
     ),
     Error,
 > {
-    let transport = transport::dial(&shared.endpoint, relay).await?;
+    let transport = transport::Transport::connect(&shared.endpoint, relay).await?;
     let connection = transport.connection().clone();
     let (moq, driver) = client_handshake(
         transport,

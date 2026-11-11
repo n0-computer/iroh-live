@@ -108,7 +108,8 @@ impl IrohSessions {
     /// Decides an iroh client's session and completes its handshake.
     async fn admit(&self, connection: Connection) -> Result<Admitted, AcceptError> {
         let peer = connection.remote_id();
-        let transport = moq_transport_iroh::accept(connection).map_err(AcceptError::from_err)?;
+        let transport =
+            moq_transport_iroh::Transport::new(connection).map_err(AcceptError::from_err)?;
         let handshake = tokio::time::timeout(
             moq_transport_iroh::HANDSHAKE_TIMEOUT,
             moq_net::Server::new().accept_request(moq_net::time::Instant::now(), transport),

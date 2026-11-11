@@ -76,7 +76,6 @@
 //! |---|---|---|
 //! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Node::subscribe_ticket`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
 //! | [`policy::Queue::next`] | yes | loses nothing |
-//! | [`moq_transport_iroh::dial`] | yes | drops the connection |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
 //! | [`Node::closed`] | yes | loses nothing |

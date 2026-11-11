@@ -1,4 +1,4 @@
-//! Dialing, accepting, and moq-net's poll transport over an iroh connection.
+//! moq-net's poll transport over an iroh connection.
 
 use std::{
     fmt,
@@ -25,75 +25,6 @@ use n0_error::{AnyError, e};
 use tracing::{debug, warn};
 
 use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
-
-/// Dials `peer` and returns the MoQ transport over the connection.
-///
-/// Offers only [`ALPN`], the newest MoQ version. iroh's
-/// [`Router`](iroh::protocol::Router) sorts the ALPNs it accepts, and TLS picks
-/// the first of the server's that the client offers, so offering older versions
-/// too would settle every dial on the oldest moq-lite. Hand the transport to
-/// [`moq_net::Client::connect`].
-///
-/// Dropping the future abandons the dial.
-///
-/// # Errors
-///
-/// Fails if the dial fails, or if the peer negotiates an ALPN this build does
-/// not speak.
-pub async fn dial(endpoint: &Endpoint, peer: impl Into<EndpointAddr>) -> Result<Transport, Error> {
-    let connection = endpoint.connect(peer, ALPN).await.map_err(connect_error)?;
-    Transport::new(connection)
-}
-
-/// Dials `peer` with iroh's connect `options`, as [`dial`] does.
-///
-/// The options can give this one connection its own QUIC transport config,
-/// such as another [`Congestion`](crate::Congestion) controller, while the
-/// endpoint keeps its own for every other connection:
-///
-/// ```no_run
-/// # async fn run(endpoint: iroh::Endpoint, peer: iroh::EndpointId) -> Result<(), moq_transport_iroh::Error> {
-/// use iroh::endpoint::ConnectOptions;
-/// use moq_transport_iroh::{Congestion, dial_with};
-///
-/// let options = ConnectOptions::new().with_transport_config(Congestion::Cubic.transport_config());
-/// let transport = dial_with(&endpoint, peer, options).await?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// Dropping the future abandons the dial.
-///
-/// # Errors
-///
-/// As [`dial`].
-pub async fn dial_with(
-    endpoint: &Endpoint,
-    peer: impl Into<EndpointAddr>,
-    options: endpoint::ConnectOptions,
-) -> Result<Transport, Error> {
-    let connection = endpoint
-        .connect_with_opts(peer, ALPN, options)
-        .await
-        .map_err(connect_error)?
-        .await
-        .map_err(connect_error)?;
-    Transport::new(connection)
-}
-
-/// Returns the MoQ transport over an incoming `connection`.
-///
-/// Hand it to [`moq_net::Server::accept_request`].
-///
-/// # Errors
-///
-/// Fails if the connection negotiated an ALPN this build does not speak, which
-/// happens when the handler is mounted under an ALPN outside [`alpns`].
-///
-/// [`alpns`]: crate::alpns
-pub fn accept(connection: Connection) -> Result<Transport, Error> {
-    Transport::new(connection)
-}
 
 /// moq-net's poll transport over one iroh connection.
 ///
@@ -130,8 +61,34 @@ pub struct Transport {
 type IrohBi = (endpoint::SendStream, endpoint::RecvStream);
 
 impl Transport {
-    /// Wraps `connection`, which must have negotiated a MoQ ALPN.
-    fn new(connection: Connection) -> Result<Self, Error> {
+    /// Wraps an incoming or outgoing `connection` that negotiated a MoQ ALPN.
+    ///
+    /// Hand the transport to [`moq_net::Server::accept_request`] for an
+    /// accepted connection, or to [`moq_net::Client::connect`] for a dialed
+    /// one. To dial with iroh's connect options, such as another
+    /// [`Congestion`](crate::Congestion) controller for this one connection
+    /// while the endpoint keeps its own for every other, connect through
+    /// iroh and wrap the result:
+    ///
+    /// ```no_run
+    /// # async fn run(endpoint: iroh::Endpoint, peer: iroh::EndpointId) -> Result<(), Box<dyn std::error::Error>> {
+    /// use iroh::endpoint::ConnectOptions;
+    /// use moq_transport_iroh::{ALPN, Congestion, Transport};
+    ///
+    /// let options = ConnectOptions::new().with_transport_config(Congestion::Cubic.transport_config());
+    /// let connection = endpoint.connect_with_opts(peer, ALPN, options).await?.await?;
+    /// let transport = Transport::new(connection)?;
+    /// # drop(transport);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::UnsupportedAlpn`] if the connection negotiated an
+    /// ALPN this build does not speak, which happens when a handler is mounted
+    /// under an ALPN outside [`alpns`](crate::alpns).
+    pub fn new(connection: Connection) -> Result<Self, Error> {
         let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
         let peer = connection.remote_id().fmt_short();
         if !moq_net::ALPNS.contains(&alpn.as_str()) {
@@ -150,6 +107,39 @@ impl Transport {
             closed: OpSlot::default(),
             wire: Wire::new(),
         })
+    }
+
+    /// Dials `peer` and returns the MoQ transport over the connection.
+    ///
+    /// Offers only [`ALPN`], the newest MoQ version. iroh's
+    /// [`Router`](iroh::protocol::Router) sorts the ALPNs it accepts, and TLS
+    /// picks the first of the server's that the client offers, so offering
+    /// older versions too would settle every dial on the oldest moq-lite. Hand
+    /// the transport to [`moq_net::Client::connect`].
+    ///
+    /// Dropping the future abandons the dial.
+    ///
+    /// ```no_run
+    /// # async fn run(endpoint: iroh::Endpoint, peer: iroh::EndpointId) -> Result<(), moq_transport_iroh::Error> {
+    /// use moq_transport_iroh::Transport;
+    ///
+    /// let transport = Transport::connect(&endpoint, peer).await?;
+    /// # drop(transport);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::Connect`] if the dial fails, or with
+    /// [`Error::UnsupportedAlpn`] if the peer negotiates an ALPN this build
+    /// does not speak.
+    pub async fn connect(
+        endpoint: &Endpoint,
+        peer: impl Into<EndpointAddr>,
+    ) -> Result<Self, Error> {
+        let connection = endpoint.connect(peer, ALPN).await.map_err(connect_error)?;
+        Self::new(connection)
     }
 
     /// Returns the iroh connection the transport runs over.
@@ -390,17 +380,17 @@ pub(crate) mod tests {
                 .expect("an incoming connection")
                 .await
                 .expect("handshake");
-            accept(connection).expect("a MoQ ALPN")
+            Transport::new(connection).expect("a MoQ ALPN")
         };
         let outgoing = async {
             match client_alpn {
-                Some(alpn) => accept(
+                Some(alpn) => Transport::new(
                     client
                         .connect(server.addr(), alpn)
                         .await
                         .map_err(connect_error)?,
                 ),
-                None => dial(&client, server.addr()).await,
+                None => Transport::connect(&client, server.addr()).await,
             }
         };
         let (dialed, accepted) =
@@ -480,7 +470,7 @@ pub(crate) mod tests {
         .await;
         let _client = dialed.expect("connect");
         assert!(matches!(
-            accept(accepted),
+            Transport::new(accepted),
             Err(Error::UnsupportedAlpn { alpn, .. }) if alpn == "other"
         ));
     }

@@ -83,7 +83,7 @@ TLS certificates are self-signed and generated at startup. There is no ACME.
 
 Without auth flags, anyone may connect and subscribe to anything. Publishing
 is scoped by identity. The relay accepts iroh sessions itself, through
-`moq_transport_iroh::accept`, so it knows each client's endpoint id. Its
+`moq_transport_iroh::Transport::new`, so it knows each client's endpoint id. Its
 default policy, `relay_policy()`, lets a client publish only at paths that
 name it, `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers have
 no such identity and may publish only at names of one segment.

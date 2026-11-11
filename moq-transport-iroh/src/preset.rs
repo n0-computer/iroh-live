@@ -41,8 +41,9 @@ impl presets::Preset for MoqPreset {
 /// [`MoqPreset`] binds an endpoint with [`Bbr3`](Self::Bbr3), which keeps
 /// moq-net's send-rate estimate on the link. The others are there to compare
 /// against. An endpoint uses one controller for every connection, and
-/// [`dial_with`](crate::dial_with) can give one dial another through
-/// [`transport_config`](Self::transport_config).
+/// one dial can take another through
+/// [`transport_config`](Self::transport_config), as
+/// [`Transport::new`](crate::Transport::new) shows.
 ///
 /// It parses from its name, ignoring case, and displays as it.
 ///

@@ -11,9 +11,11 @@ which is built on this crate.
 
 ## What is in it
 
-- `dial` and `accept`: check the negotiated ALPN and return a `Transport`.
 - `Transport`: moq-net's poll transport (`moq_net::transport::poll::Session`)
-  implemented on the iroh connection and its streams. Hand it to
+  implemented on the iroh connection and its streams. `Transport::connect`
+  dials a peer, and `Transport::new` wraps a connection that is already open,
+  accepted or dialed with iroh's connect options. Both check the negotiated
+  ALPN. Hand the transport to
   `moq_net::Client::connect` or `moq_net::Server::accept_request`. MoQ runs on
   raw QUIC, so the request path and any token travel in the MoQ SETUP.
 - `ALPN`, `alpns()`, `HANDSHAKE_TIMEOUT`: the protocol identifiers to mount a
@@ -25,10 +27,10 @@ which is built on this crate.
   peer's delivery estimate.
 
 ```rust
-use moq_transport_iroh::{MoqPreset, dial};
+use moq_transport_iroh::{MoqPreset, Transport};
 
 let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-let transport = dial(&endpoint, peer).await?;
+let transport = Transport::connect(&endpoint, peer).await?;
 let (session, driver) = moq_net::Client::new()
     .connect(moq_net::time::Instant::now(), transport)
     .await?;

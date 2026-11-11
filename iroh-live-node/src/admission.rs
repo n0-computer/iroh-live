@@ -64,7 +64,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         return Err(e!(Error::ShutDown));
     }
     let peer = connection.remote_id();
-    let transport = transport::accept(connection.clone())?;
+    let transport = transport::Transport::new(connection.clone())?;
     let opened = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
         moq_net::Server::new().accept_request(moq_net::time::Instant::now(), transport),

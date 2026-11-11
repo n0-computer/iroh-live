@@ -78,7 +78,7 @@ impl Server {
             .await
             .expect("timed out waiting for a connection")
             .expect("router gone");
-        let transport = moq_transport_iroh::accept(connection).expect("a MoQ ALPN");
+        let transport = moq_transport_iroh::Transport::new(connection).expect("a MoQ ALPN");
         let handshake = moq_net::Server::new()
             .accept_request(now(), transport)
             .await
@@ -120,7 +120,7 @@ async fn dial(
     subscriber: origin::Producer,
     publisher: Option<origin::Consumer>,
 ) -> Session {
-    let transport = moq_transport_iroh::dial(endpoint, peer)
+    let transport = moq_transport_iroh::Transport::connect(endpoint, peer)
         .await
         .expect("dial failed");
     let mut client = moq_net::Client::new().with_subscriber(subscriber);
@@ -408,7 +408,7 @@ async fn a_route_table_fails_over_between_links() {
     let (_relay_link, _relay_side) = step("relay handshake", async {
         tokio::join!(
             async {
-                let transport = moq_transport_iroh::dial(&node, relay_addr)
+                let transport = moq_transport_iroh::Transport::connect(&node, relay_addr)
                     .await
                     .expect("dial relay");
                 let (session, driver) = moq_net::Client::new()

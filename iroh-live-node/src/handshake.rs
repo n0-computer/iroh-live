@@ -7,7 +7,7 @@ use moq_net::{
     auth,
     origin::{self, Source},
 };
-use n0_error::e;
+use n0_error::{AnyError, e};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -100,6 +100,15 @@ pub(crate) struct SessionParts {
     pub(crate) auth: auth::Handle,
 }
 
+/// Returns the node error for a dial that iroh failed to connect.
+fn connect_error(err: impl std::error::Error + Send + Sync + 'static) -> Error {
+    e!(Error::Transport {
+        source: e!(transport::Error::Connect {
+            source: Arc::new(AnyError::from_std(err))
+        })
+    })
+}
+
 /// Dials `peer` and completes the MoQ handshake as the client.
 ///
 /// Asks the node's policy first, unless the peer already has an
@@ -123,7 +132,14 @@ pub(crate) async fn dial_session(
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
     }
-    let transport = transport::dial_with(&shared.endpoint, peer, options.quic()).await?;
+    let connection = shared
+        .endpoint
+        .connect_with_opts(peer, crate::ALPN, options.quic())
+        .await
+        .map_err(connect_error)?
+        .await
+        .map_err(connect_error)?;
+    let transport = transport::Transport::new(connection)?;
     let connection = transport.connection().clone();
     let auth = auth::Handle::new();
     authorize_direct(&shared, &auth, peer_id, grant);

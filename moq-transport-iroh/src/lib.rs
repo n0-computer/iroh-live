@@ -3,9 +3,10 @@
 //! Everything needed to turn an iroh connection into a [`moq_net::Session`],
 //! and nothing about nodes, routes or publications:
 //!
-//! - [`dial`] and [`accept`] check the negotiated ALPN and return a
-//!   [`Transport`], which implements moq-net's poll transport on the iroh
-//!   connection. Hand it to [`moq_net::Client::connect`] or
+//! - [`Transport`] implements moq-net's poll transport on an iroh connection.
+//!   [`Transport::connect`] dials a peer, and [`Transport::new`] wraps a
+//!   connection that is already open, accepted or dialed. Both check the
+//!   negotiated ALPN. Hand the transport to [`moq_net::Client::connect`] or
 //!   [`moq_net::Server::accept_request`].
 //! - [`MoqPreset`] binds an endpoint with a QUIC configuration tuned for MoQ.
 //! - [`LinkSampler`] and [`LinkSample`] read a connection's selected path:
@@ -16,11 +17,11 @@
 //!
 //! ```no_run
 //! use iroh::EndpointId;
-//! use moq_transport_iroh::MoqPreset;
+//! use moq_transport_iroh::{MoqPreset, Transport};
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-//! let transport = moq_transport_iroh::dial(&endpoint, peer).await?;
+//! let transport = Transport::connect(&endpoint, peer).await?;
 //! let (session, driver) = moq_net::Client::new()
 //!     .connect(moq_net::time::Instant::now(), transport)
 //!     .await?;
@@ -42,7 +43,7 @@ pub use self::{
     link::{LinkSample, LinkSampler, SAMPLE_INTERVAL, sample_link},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     stream::{RecvStream, SendStream},
-    transport::{Transport, accept, dial, dial_with},
+    transport::Transport,
 };
 
 /// How long a connection may take to open its MoQ session, dialed or accepted.
