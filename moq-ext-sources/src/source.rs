@@ -338,11 +338,16 @@ pub struct EncodedVideoSource {
 
 /// The byte stream and the guard of an [`EncodedVideoSource`].
 ///
-/// [`EncodedVideoSource::into_parts`] returns this pair.
-pub type EncodedParts = (
-    n0_future::boxed::BoxStream<bytes::Bytes>,
-    Option<Box<dyn std::any::Any + Send>>,
-);
+/// [`EncodedVideoSource::into_parts`] returns them.
+#[derive(derive_more::Debug)]
+pub struct EncodedParts {
+    /// The encoded bytes.
+    #[debug(skip)]
+    pub bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
+    /// Stops the producer of the bytes when dropped.
+    #[debug(skip)]
+    pub guard: Option<Box<dyn std::any::Any + Send>>,
+}
 
 impl EncodedVideoSource {
     /// Wraps an Annex-B H.264 byte stream.
@@ -363,7 +368,10 @@ impl EncodedVideoSource {
     /// Drop the guard to stop the producer of the bytes.
     #[must_use]
     pub fn into_parts(self) -> EncodedParts {
-        (self.bytes, self.guard)
+        EncodedParts {
+            bytes: self.bytes,
+            guard: self.guard,
+        }
     }
 
     /// Starts the Raspberry Pi camera's hardware H.264 through `rpicam-vid`.

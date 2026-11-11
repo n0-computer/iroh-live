@@ -26,7 +26,7 @@ use moq_ext_media_core::{
     ByPtr, Error, SlotState,
     stats::{RateMeter, Smoothed},
 };
-use moq_ext_sources::{EncodedVideoSource, VideoSource, frames::VideoFrames};
+use moq_ext_sources::{EncodedParts, EncodedVideoSource, VideoFrames, VideoSource};
 use moq_video::encode;
 use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -672,7 +672,10 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
         ..
     } = job;
     stats.clear_video();
-    let (mut bytes, _guard) = source.into_parts();
+    let EncodedParts {
+        mut bytes,
+        guard: _guard,
+    } = source.into_parts();
     let result = async {
         let track = producer
             .create_track(

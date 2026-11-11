@@ -4,7 +4,7 @@
 
 use n0_error::{AnyError, stack_error};
 
-/// Errors raised by the media crates.
+/// An error from the media crates.
 ///
 /// `moq-ext-sources`, `moq-ext-player` and `moq-ext-publisher` all return this
 /// one type, so an error passes from a source to a broadcast unchanged. A
