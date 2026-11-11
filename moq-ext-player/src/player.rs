@@ -440,7 +440,7 @@ impl Player {
 
     /// Returns the timing of the presented picture at `pts`, or `None` once it left the timeline.
     ///
-    /// `pts` is the `timestamp` of a frame from [`video`](Self::video). Its
+    /// `pts` is the `timestamp` of a frame from [`video_frames`](Self::video_frames). Its
     /// `arrived`, `decoded` and `presented` tell the time on the network from
     /// the time in the decoder and in the playout clock. Look a frame up soon
     /// after it is handed out.

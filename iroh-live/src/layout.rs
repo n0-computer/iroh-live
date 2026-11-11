@@ -116,7 +116,7 @@ impl LiveLayout {
     ///
     /// Narrow it with [`Policy::filter`], and call `Node::reauthorize` when
     /// the filter's state changes. To let peers publish room broadcasts too,
-    /// pass the pair of this layout and the rooms layout to [`policy`].
+    /// pass the pair of this layout and the rooms layout to [`policy()`].
     ///
     /// # Examples
     ///
@@ -258,7 +258,7 @@ pub fn policy(layout: impl Layout<EndpointId> + Clone) -> impl Policy<EndpointId
     policy::from_fn(move |request: &PeerRequest| Ok(grant(&layout, *request.peer()).into()))
 }
 
-/// Returns the [`NodeConfig`] of a node on `layout`, with its [`policy`].
+/// Returns the [`NodeConfig`] of a node on `layout`, with its [`policy()`].
 #[must_use]
 pub fn config(layout: impl Layout<EndpointId> + Clone) -> NodeConfig {
     NodeConfig::default().with_policy(policy(layout))
