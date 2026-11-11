@@ -29,10 +29,10 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
 
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let subscription = step(
         "subscribe",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -71,11 +71,11 @@ async fn a_dial_can_choose_its_congestion_controller() {
     };
     let chosen = step(
         "bob dials with NewReno",
-        bob.moq.connect_with(alice.endpoint.addr(), options),
+        bob.node.connect_with(alice.endpoint.addr(), options),
     )
     .await
     .expect("connected");
-    let default = step("carol dials", carol.moq.connect(alice.endpoint.addr()))
+    let default = step("carol dials", carol.node.connect(alice.endpoint.addr()))
         .await
         .expect("connected");
     assert!(runs::<noq_proto::congestion::NewReno>(&chosen));
@@ -92,18 +92,18 @@ async fn a_dial_can_choose_its_congestion_controller() {
 #[traced_test]
 async fn an_own_publication_resolves_locally() {
     let alice = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let subscription = step(
         "subscribe",
         alice
-            .moq
+            .node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
     read_counter(&subscription.broadcast()).await;
     assert!(subscription.serving_link().is_none(), "served over a link");
-    assert!(alice.moq.sessions().get().is_empty(), "dialed itself");
+    assert!(alice.node.sessions().get().is_empty(), "dialed itself");
     alice.shutdown().await;
 }
 
@@ -113,10 +113,10 @@ async fn an_own_publication_resolves_locally() {
 async fn a_subscription_follows_a_new_instance_on_its_own() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
-    let first = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let first = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let subscription = step(
         "subscribe",
-        bob.moq.subscribe(first.path(), Reach::Direct(alice.id())),
+        bob.node.subscribe(first.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
@@ -125,7 +125,7 @@ async fn a_subscription_follows_a_new_instance_on_its_own() {
     // The publisher replaces its broadcast with a new instance at the same path.
     first.broadcast().close();
     drop(first);
-    let _second = publish_from(&alice.moq, alice.path("cam"), Audience::Granted, 1000)
+    let _second = publish_from(&alice.node, alice.path("cam"), Audience::Granted, 1000)
         .expect("publish again");
 
     step("the subscription moves to the new instance", async {
@@ -169,18 +169,18 @@ async fn try_counter(broadcast: &moq_net::broadcast::Consumer) -> Option<u64> {
 #[traced_test]
 async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     let alice = Peer::spawn().await;
-    let first = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
-    let err = publish(&alice.moq, alice.path("cam"), Audience::Granted)
+    let first = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let err = publish(&alice.node, alice.path("cam"), Audience::Granted)
         .expect_err("a second publication at one path");
     assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
 
     // A broadcast that ended frees its path at once, before the node has
     // noticed on its own.
     first.broadcast().close();
-    let _second = publish(&alice.moq, alice.path("cam"), Audience::Granted)
+    let _second = publish(&alice.node, alice.path("cam"), Audience::Granted)
         .expect("publish over an ended broadcast");
 
-    let err = publish(&alice.moq, "", Audience::Granted).expect_err("an empty path");
+    let err = publish(&alice.node, "", Audience::Granted).expect_err("an empty path");
     assert!(matches!(err, Error::InvalidPath { .. }), "{err:#}");
     alice.shutdown().await;
 }
@@ -190,11 +190,11 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
 #[traced_test]
 async fn a_fill_runs_outside_the_nodes_lock() {
     let alice = Peer::spawn().await;
-    let moq = alice.moq.clone();
+    let moq = alice.node.clone();
 
     // A fill that calls back into the node does not deadlock.
     let (first, inner) = alice
-        .moq
+        .node
         .publish_with(alice.path("outer"), Audience::Granted, |_| {
             moq.publish(alice.path("inner"), Audience::Granted)
         })
@@ -204,7 +204,7 @@ async fn a_fill_runs_outside_the_nodes_lock() {
     // A failed fill closes its broadcast, and the path stays free.
     let mut filled = None;
     let err = alice
-        .moq
+        .node
         .publish_with(alice.path("failed"), Audience::Granted, |producer| {
             filled = Some(producer.consume());
             Err::<(), _>(std::io::Error::other("no catalog"))
@@ -212,12 +212,12 @@ async fn a_fill_runs_outside_the_nodes_lock() {
         .expect_err("the fill failed");
     assert!(matches!(err, Error::Fill { .. }), "{err:#}");
     assert!(filled.expect("the fill ran").is_closed());
-    publish(&alice.moq, alice.path("failed"), Audience::Granted).expect("the path is free");
+    publish(&alice.node, alice.path("failed"), Audience::Granted).expect("the path is free");
 
     // A fill for a taken path is closed when the clash is found.
     let mut filled = None;
     let err = alice
-        .moq
+        .node
         .publish_with(first.path().as_str(), Audience::Granted, |producer| {
             filled = Some(producer.consume());
             Ok::<_, std::convert::Infallible>(())
@@ -246,7 +246,7 @@ async fn a_peers_audience_follows_its_set() {
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let publication = publish(
-        &alice.moq,
+        &alice.node,
         alice.path("cam"),
         Audience::Peers(members.clone()),
     )
@@ -254,7 +254,7 @@ async fn a_peers_audience_follows_its_set() {
 
     let for_bob = step(
         "bob",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -262,7 +262,7 @@ async fn a_peers_audience_follows_its_set() {
     reading(&for_bob.broadcast()).await;
 
     // Carol has a session, but nothing is offered on it.
-    let session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+    let session = step("carol connects", carol.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
     stays_pending(
@@ -277,7 +277,7 @@ async fn a_peers_audience_follows_its_set() {
     let for_carol = step(
         "carol",
         carol
-            .moq
+            .node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -286,7 +286,7 @@ async fn a_peers_audience_follows_its_set() {
 
     // Taking her out again withdraws the path from her, and only from her.
     let path = publication.path().as_str();
-    let mut carol_updates = carol.moq.origin().announced();
+    let mut carol_updates = carol.node.origin().announced();
     announced(&mut carol_updates, path).await;
     members.set(BTreeSet::from([bob.id()])).ok();
     retracted(&mut carol_updates, path).await;
@@ -299,7 +299,7 @@ async fn a_peers_audience_follows_its_set() {
     read_counter(&for_bob.broadcast()).await;
 
     // An empty set offers to nobody.
-    let mut bob_updates = bob.moq.origin().announced();
+    let mut bob_updates = bob.node.origin().announced();
     announced(&mut bob_updates, path).await;
     members.set(BTreeSet::new()).ok();
     retracted(&mut bob_updates, path).await;
@@ -320,21 +320,21 @@ async fn offers_show_in_the_route_table() {
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let path = alice.path("cam");
     let _publication =
-        publish(&alice.moq, &path, Audience::Peers(members.clone())).expect("publish");
-    let _session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+        publish(&alice.node, &path, Audience::Peers(members.clone())).expect("publish");
+    let _session = step("bob connects", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    announced(&mut bob.moq.origin().announced(), &path).await;
-    let mut updates = bob.moq.origin().announced();
+    announced(&mut bob.node.origin().announced(), &path).await;
+    let mut updates = bob.node.origin().announced();
     announced(&mut updates, &path).await;
 
-    step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+    step("carol connects", carol.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
     stays_pending(
         "carol saw an offer to bob",
         QUIET,
-        announced(&mut carol.moq.origin().announced(), &path),
+        announced(&mut carol.node.origin().announced(), &path),
     )
     .await;
 
@@ -352,16 +352,16 @@ async fn offers_show_in_the_route_table() {
 async fn unpublishing_withdraws_the_path() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let subscription = step(
         "subscribe",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
     reading(&subscription.broadcast()).await;
-    let mut updates = bob.moq.origin().announced();
+    let mut updates = bob.node.origin().announced();
     announced(&mut updates, publication.path().as_str()).await;
     assert!(!publication.is_withdrawn());
 
@@ -382,10 +382,10 @@ async fn unpublishing_withdraws_the_path() {
 async fn closing_a_session_cuts_the_peer_off() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let subscription = step(
         "subscribe",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -414,8 +414,8 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
     let bob = Peer::spawn().await;
     let mallory = Peer::spawn().await;
 
-    let public = publish(&alice.moq, alice.path("public"), Audience::Granted).expect("publish");
-    let secret = publish(&alice.moq, alice.path("secret"), Audience::Granted).expect("publish");
+    let public = publish(&alice.node, alice.path("public"), Audience::Granted).expect("publish");
+    let secret = publish(&alice.node, alice.path("secret"), Audience::Granted).expect("publish");
 
     let alice_id = alice.id();
     let answering = queue.clone();
@@ -436,7 +436,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
 
     let session = step(
         "bob connects with the token",
-        bob.moq.connect_with(
+        bob.node.connect_with(
             alice.endpoint.addr(),
             ConnectOptions {
                 token: Some("letmein".into()),
@@ -448,7 +448,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
     .expect("admitted");
     let subscription = step(
         "bob subscribes",
-        bob.moq.subscribe(public.path(), Reach::Direct(alice.id())),
+        bob.node.subscribe(public.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("the offered publication");
@@ -467,7 +467,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
     // handshake completes first, so the refusal arrives as the session closing.
     match step(
         "mallory connects",
-        mallory.moq.connect(alice.endpoint.addr()),
+        mallory.node.connect(alice.endpoint.addr()),
     )
     .await
     {
@@ -483,7 +483,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
     }
     assert!(
         !alice
-            .moq
+            .node
             .sessions()
             .get()
             .iter()
@@ -493,7 +493,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
     let err = step(
         "mallory subscribes",
         mallory
-            .moq
+            .node
             .subscribe(public.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -526,21 +526,29 @@ async fn a_peer_cannot_route_another_publishers_path() {
     let bob = Peer::spawn().await;
     let mallory = Peer::spawn().await;
 
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
-    let _forged = publish_from(&mallory.moq, publication.path(), Audience::Granted, FORGED)
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let _forged = publish_from(&mallory.node, publication.path(), Audience::Granted, FORGED)
         .expect("publish at alice's path");
-    let own = publish_from(&mallory.moq, mallory.path("cam"), Audience::Granted, FORGED)
-        .expect("publish");
-    step("mallory connects", mallory.moq.connect(bob.endpoint.addr()))
-        .await
-        .expect("connect");
+    let own = publish_from(
+        &mallory.node,
+        mallory.path("cam"),
+        Audience::Granted,
+        FORGED,
+    )
+    .expect("publish");
+    step(
+        "mallory connects",
+        mallory.node.connect(bob.endpoint.addr()),
+    )
+    .await
+    .expect("connect");
     let _session = step("bob sees mallory", session_with(&bob, mallory.id())).await;
 
     // Her own path reaches bob's table, and the forged one does not even
     // reach her session: the grant refuses it.
-    let mut table = bob.moq.origin().announced();
+    let mut table = bob.node.origin().announced();
     announced(&mut table, own.path().as_str()).await;
-    let mut from_mallory = bob.moq.origin().announced();
+    let mut from_mallory = bob.node.origin().announced();
     let path = publication.path().as_str();
     tokio::join!(
         stays_pending(
@@ -557,7 +565,7 @@ async fn a_peer_cannot_route_another_publishers_path() {
 
     let subscription = step(
         "subscribe",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -585,12 +593,12 @@ async fn a_subscriber_started_first_gets_the_named_path() {
 
     let path = alice.path("cam");
     let subscribing = tokio::spawn({
-        let moq = bob.moq.clone();
+        let moq = bob.node.clone();
         let (path, publisher) = (path.clone(), alice.id());
         async move { moq.subscribe(path, Reach::Direct(publisher)).await }
     });
     // Publish only once Bob's subscribe has dialed Alice and waits for the path.
-    let mut sessions = bob.moq.sessions();
+    let mut sessions = bob.node.sessions();
     step("bob dials alice", async {
         while !sessions
             .get()
@@ -605,7 +613,7 @@ async fn a_subscriber_started_first_gets_the_named_path() {
         !subscribing.is_finished(),
         "the subscribe returned before the publish"
     );
-    let _publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let _publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
 
     let subscription = step("subscribe", subscribing)
         .await
@@ -620,7 +628,7 @@ async fn a_subscriber_started_first_gets_the_named_path() {
 
 /// Dials `to` from `dialer` and waits for the session to be refused.
 async fn refused(dialer: &Peer, to: &Peer, within: Duration) {
-    match step("connect", dialer.moq.connect(to.endpoint.addr())).await {
+    match step("connect", dialer.node.connect(to.endpoint.addr())).await {
         Err(_) => {}
         Ok(session) => {
             tokio::time::timeout(within, session.closed())
@@ -629,7 +637,7 @@ async fn refused(dialer: &Peer, to: &Peer, within: Duration) {
         }
     }
     assert!(
-        !to.moq
+        !to.node
             .sessions()
             .get()
             .iter()
@@ -667,14 +675,14 @@ async fn a_session_waiting_in_the_queue_does_not_hold_up_shutdown() {
     .await;
     let bob = Peer::spawn().await;
     let dialing = {
-        let bob = bob.moq.clone();
+        let bob = bob.node.clone();
         let addr = alice.endpoint.addr();
         tokio::spawn(async move { bob.connect(addr).await })
     };
     let pending = step("bob's session waits", queue.next())
         .await
         .expect("a request");
-    step("the shutdown ends", alice.moq.shutdown()).await;
+    step("the shutdown ends", alice.node.shutdown()).await;
     // Too late: the node refused the session at shutdown.
     pending.admit(Grant::everything());
     match step("bob's dial ends", dialing).await.expect("task") {
@@ -684,7 +692,7 @@ async fn a_session_waiting_in_the_queue_does_not_hold_up_shutdown() {
         }
     }
     assert!(
-        alice.moq.sessions().get().is_empty(),
+        alice.node.sessions().get().is_empty(),
         "admitted after the shutdown"
     );
     alice.shutdown().await;
@@ -709,7 +717,7 @@ async fn a_slow_decision_times_out() {
             held.push(pending);
         }
     }));
-    match step("bob connects", bob.moq.connect(alice.endpoint.addr())).await {
+    match step("bob connects", bob.node.connect(alice.endpoint.addr())).await {
         Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
         Ok(session) => {
             let reason = step("the session closes", session.closed()).await;
@@ -733,7 +741,7 @@ async fn the_router_shuts_the_node_down() {
     step("router shutdown", alice.router.shutdown())
         .await
         .expect("router");
-    let err = publish(&alice.moq, alice.path("cam"), Audience::Granted)
+    let err = publish(&alice.node, alice.path("cam"), Audience::Granted)
         .expect_err("publish after the router shut down");
     assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
     alice.shutdown().await;
@@ -746,8 +754,8 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     let queue = Queue::new(16);
     let alice = Peer::with_config(queued(&queue)).await;
     let bob = Peer::spawn().await;
-    let allowed = publish(&bob.moq, bob.path("allowed"), Audience::Granted).expect("publish");
-    let other = publish(&bob.moq, bob.path("other"), Audience::Granted).expect("publish");
+    let allowed = publish(&bob.node, bob.path("allowed"), Audience::Granted).expect("publish");
+    let other = publish(&bob.node, bob.path("other"), Audience::Granted).expect("publish");
 
     let within: Pattern = allowed.path().as_str().parse().expect("pattern");
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -755,21 +763,23 @@ async fn a_grant_bounds_what_a_peer_publishes() {
             pending.admit(Grant::publish_under(within.clone()));
         }
     }));
-    step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+    step("bob connects", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
     step("alice sees bob", session_with(&alice, bob.id())).await;
 
     let subscription = step(
         "within the grant",
-        alice.moq.subscribe(allowed.path(), Reach::Direct(bob.id())),
+        alice
+            .node
+            .subscribe(allowed.path(), Reach::Direct(bob.id())),
     )
     .await
     .expect("subscribe");
     read_counter(&subscription.broadcast()).await;
     let err = step(
         "outside the grant",
-        alice.moq.subscribe(other.path(), Reach::Direct(bob.id())),
+        alice.node.subscribe(other.path(), Reach::Direct(bob.id())),
     )
     .await
     .expect_err("resolved a path outside bob's grant");
@@ -782,7 +792,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     stays_pending(
         "bob's broadcast outside his grant reached alice's table",
         QUIET,
-        announced(&mut alice.moq.origin().announced(), other.path().as_str()),
+        announced(&mut alice.node.origin().announced(), other.path().as_str()),
     )
     .await;
 
@@ -795,8 +805,8 @@ async fn a_grant_bounds_what_a_peer_publishes() {
 #[traced_test]
 async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
     let bob = Peer::spawn().await;
-    let wanted = publish(&bob.moq, bob.path("wanted"), Audience::Granted).expect("publish");
-    let other = publish(&bob.moq, bob.path("other"), Audience::Granted).expect("publish");
+    let wanted = publish(&bob.node, bob.path("wanted"), Audience::Granted).expect("publish");
+    let other = publish(&bob.node, bob.path("other"), Audience::Granted).expect("publish");
     let narrow = Grant {
         subscribe: Patterns::new(),
         publish: Pattern::literal(wanted.path().as_str())
@@ -812,9 +822,9 @@ async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
 
     // Both cursors start before the dial, so they see whatever the session
     // lets into the table from its first moment.
-    let mut to_wanted = alice.moq.origin().announced();
-    let mut to_other = alice.moq.origin().announced();
-    let session = step("alice dials bob", alice.moq.connect(bob.endpoint.addr()))
+    let mut to_wanted = alice.node.origin().announced();
+    let mut to_other = alice.node.origin().announced();
+    let session = step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
     assert_eq!(session.grant(), narrow);
@@ -828,8 +838,8 @@ async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
 
     // Alice's policy now grants bob all of `live/<bob>/`, so the session widens to it.
     *current.lock().expect("poisoned") = common::own_paths(bob.id());
-    alice.moq.reauthorize(bob.id());
-    announced(&mut alice.moq.origin().announced(), other.path().as_str()).await;
+    alice.node.reauthorize(bob.id());
+    announced(&mut alice.node.origin().announced(), other.path().as_str()).await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -844,10 +854,10 @@ async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
 #[traced_test]
 async fn the_route_table_serves_every_publication() {
     let alice = Peer::spawn().await;
-    let origin = alice.moq.origin();
-    let public = publish(&alice.moq, alice.path("public"), Audience::Granted).expect("publish");
+    let origin = alice.node.origin();
+    let public = publish(&alice.node, alice.path("public"), Audience::Granted).expect("publish");
     let nobody = Audience::peers([]);
-    let secret = publish(&alice.moq, alice.path("secret"), nobody).expect("publish");
+    let secret = publish(&alice.node, alice.path("secret"), nobody).expect("publish");
 
     for publication in [&public, &secret] {
         let served = step(
@@ -902,23 +912,23 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let publication =
-        publish(&alice.moq, alice.path("cam"), Audience::Peers(members)).expect("publish");
-    let public = publish(&alice.moq, alice.path("public"), Audience::Granted).expect("publish");
+        publish(&alice.node, alice.path("cam"), Audience::Peers(members)).expect("publish");
+    let public = publish(&alice.node, alice.path("public"), Audience::Granted).expect("publish");
     let path = publication.path().as_str();
 
     // Alice dials both, so she is the client on each session.
-    let to_bob = step("alice dials bob", alice.moq.connect(bob.endpoint.addr()))
+    let to_bob = step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
     let to_carol = step(
         "alice dials carol",
-        alice.moq.connect(carol.endpoint.addr()),
+        alice.node.connect(carol.endpoint.addr()),
     )
     .await
     .expect("connect");
     assert!(to_bob.dialed() && to_carol.dialed());
 
-    announced(&mut bob.moq.origin().announced(), path).await;
+    announced(&mut bob.node.origin().announced(), path).await;
     let from_alice = step("bob sees alice", session_with(&bob, alice.id())).await;
     let subscription = step("bob subscribes", from_alice.subscribe(publication.path()))
         .await
@@ -926,7 +936,7 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     read_counter(&subscription.broadcast()).await;
 
     // Carol sees the public one, and never the one for bob.
-    let mut carol_table = carol.moq.origin().announced();
+    let mut carol_table = carol.node.origin().announced();
     announced(&mut carol_table, public.path().as_str()).await;
     let from_alice = step("carol sees alice", session_with(&carol, alice.id())).await;
     stays_pending(
@@ -935,7 +945,7 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
         from_alice.subscribe(publication.path()),
     )
     .await;
-    let refused = carol.moq.origin().request(publication.path(), None).await;
+    let refused = carol.node.origin().request(publication.path(), None).await;
     assert!(refused.is_err(), "carol's table routes bob's path");
 
     alice.shutdown().await;
@@ -956,7 +966,7 @@ async fn a_changed_audience_retracts_and_grants_live() {
 
     let members = Watchable::new(BTreeSet::from([bob.id()]));
     let publication = publish(
-        &alice.moq,
+        &alice.node,
         alice.path("cam"),
         Audience::Peers(members.clone()),
     )
@@ -965,16 +975,16 @@ async fn a_changed_audience_retracts_and_grants_live() {
 
     let for_bob = step(
         "bob subscribes",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
     .expect("bob is in the set");
     let mut bob_reading = reading(&for_bob.broadcast()).await;
-    let carol_session = step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+    let carol_session = step("carol connects", carol.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    let mut bob_table = bob.moq.origin().announced();
+    let mut bob_table = bob.node.origin().announced();
     announced(&mut bob_table, path).await;
 
     // Swap bob for carol.
@@ -999,7 +1009,7 @@ async fn a_changed_audience_retracts_and_grants_live() {
     publication.set_audience(Audience::Granted);
     let again = step(
         "bob subscribes once the audience is granted",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -1023,7 +1033,7 @@ async fn a_peer_reads_the_publishers_own_broadcast() {
     let bob = Peer::spawn().await;
 
     let publication = alice
-        .moq
+        .node
         .publish(alice.path("cam"), Audience::Granted)
         .expect("publish");
     let mut track = publication
@@ -1032,7 +1042,7 @@ async fn a_peer_reads_the_publishers_own_broadcast() {
         .expect("create track");
     let subscription = step(
         "bob subscribes",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -1084,11 +1094,11 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
 
-    let publication = publish(&carol.moq, "shared/cam", Audience::Granted).expect("publish");
-    step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+    let publication = publish(&carol.node, "shared/cam", Audience::Granted).expect("publish");
+    step("bob connects", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    step("carol connects", carol.moq.connect(alice.endpoint.addr()))
+    step("carol connects", carol.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
     let with_bob = step("alice sees bob", session_with(&alice, bob.id())).await;
@@ -1112,7 +1122,7 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
 
 /// Waits until `node` has a session with `remote`, and returns it.
 async fn session_with(node: &Peer, remote: iroh::EndpointId) -> iroh_live_node::Session {
-    let mut sessions = node.moq.sessions();
+    let mut sessions = node.node.sessions();
     loop {
         if let Some(session) = sessions
             .get()

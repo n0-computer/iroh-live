@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use common::{Peer, announced, ends, publish, reading, stays_pending, step};
+use common::{Peer, announced, ends, eventually, publish, reading, stays_pending, step};
 use iroh::EndpointId;
 use iroh_live_node::{
     Audience, Error, Grant, Layout, NodeConfig, Reach, Session,
@@ -35,23 +35,19 @@ async fn switchable(current: Arc<Mutex<Option<Grant>>>) -> Peer {
 
 /// Returns the grant `node`'s policy gave the peer of `session`, without its claims.
 fn policy_grant(node: &Peer, session: &Session) -> Grant {
-    node.moq
+    node.node
         .grant_for(session.peer())
         .map_or_else(Grant::nothing, |authorization| authorization.grant)
 }
 
 /// Waits until `node` holds `grant` as the policy grant of `peer`.
 async fn until_granted(node: &Peer, peer: EndpointId, grant: &Grant) {
-    step("the policy grant changes", async {
-        while node
-            .moq
+    eventually("the policy grant changes", || {
+        node.node
             .grant_for(peer)
             .map(|current| current.grant)
             .as_ref()
-            != Some(grant)
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+            == Some(grant)
     })
     .await;
 }
@@ -65,11 +61,11 @@ fn path_of(peer: &Peer, name: &str) -> Path {
 async fn a_default_viewer_reads_a_claimed_path() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
 
     let err = step(
         "refused",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -77,12 +73,12 @@ async fn a_default_viewer_reads_a_claimed_path() {
     assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
 
     let claim = bob
-        .moq
+        .node
         .claim_path(alice.id(), publication.path())
         .expect("claim");
     let subscription = step(
         "subscribe",
-        bob.moq
+        bob.node
             .subscribe(publication.path(), Reach::Direct(alice.id())),
     )
     .await
@@ -99,14 +95,14 @@ async fn a_default_viewer_reads_a_claimed_path() {
 async fn a_claim_widens_a_session_bob_accepted() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
-    let session = step("dial", alice.moq.connect(bob.endpoint.addr()))
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let session = step("dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("alice dials bob");
     assert!(session.dialed());
 
     let _claim = bob
-        .moq
+        .node
         .claim_path(alice.id(), publication.path())
         .expect("claim");
     // The live session applies the wider grant a moment after the claim, so a
@@ -115,7 +111,7 @@ async fn a_claim_widens_a_session_bob_accepted() {
     let subscription = loop {
         let subscription = step(
             "subscribe",
-            bob.moq
+            bob.node
                 .subscribe(publication.path(), Reach::Direct(alice.id())),
         )
         .await
@@ -160,7 +156,7 @@ async fn a_forged_path_is_refused() {
     ] {
         let path = Path::new(&forged).expect("path");
         let err = bob
-            .moq
+            .node
             .claim_path(alice.id(), &path)
             .expect_err("alice does not own it");
         assert!(matches!(err, Error::NotOwner { .. }), "{forged}: {err:#}");
@@ -175,14 +171,14 @@ async fn a_forged_path_is_refused() {
 async fn dropping_the_last_claim_narrows_the_grant_again() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let path = publication.path();
 
-    let first = bob.moq.claim_path(alice.id(), path).expect("claim");
-    let second = bob.moq.claim_path(alice.id(), path).expect("claim again");
+    let first = bob.node.claim_path(alice.id(), path).expect("claim");
+    let second = bob.node.claim_path(alice.id(), path).expect("claim again");
     let subscription = step(
         "subscribe",
-        bob.moq.subscribe(path, Reach::Direct(alice.id())),
+        bob.node.subscribe(path, Reach::Direct(alice.id())),
     )
     .await
     .expect("subscribe");
@@ -209,15 +205,15 @@ async fn a_narrower_policy_grant_leaves_claimed_paths_alone() {
     let alice = Peer::spawn().await;
     let policy_grant = Arc::new(Mutex::new(Some(Grant::subscribe_only())));
     let bob = switchable(policy_grant.clone()).await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let path = publication.path();
-    let session = step("dial", bob.moq.connect(alice.endpoint.addr()))
+    let session = step("dial", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
 
-    let _claim = bob.moq.claim_path(alice.id(), path).expect("claim");
+    let _claim = bob.node.claim_path(alice.id(), path).expect("claim");
     *policy_grant.lock().expect("poisoned") = Some(Grant::nothing());
-    bob.moq.reauthorize(alice.id());
+    bob.node.reauthorize(alice.id());
     until_granted(&bob, alice.id(), &Grant::nothing()).await;
     assert!(
         session.grant().allows_publish(path.as_str()),
@@ -266,8 +262,8 @@ async fn the_sessions_of_one_peer_share_its_grant() {
         let bob = switchable(bob_grant.clone()).await;
         let (at_alice, at_bob) = step("both dial at once", async {
             tokio::join!(
-                alice.moq.connect(bob.endpoint.addr()),
-                bob.moq.connect(alice.endpoint.addr()),
+                alice.node.connect(bob.endpoint.addr()),
+                bob.node.connect(alice.endpoint.addr()),
             )
         })
         .await;
@@ -277,7 +273,7 @@ async fn the_sessions_of_one_peer_share_its_grant() {
         let mut checked = false;
         for (node, peer, policy_grant) in [(&alice, &bob, &alice_grant), (&bob, &alice, &bob_grant)]
         {
-            let with_peer = two_sessions_with(&node.moq, peer.id()).await;
+            let with_peer = two_sessions_with(&node.node, peer.id()).await;
             let [first, second] = with_peer.as_slice() else {
                 continue;
             };
@@ -286,7 +282,7 @@ async fn the_sessions_of_one_peer_share_its_grant() {
 
             for grant in [Grant::nothing(), Grant::everything()] {
                 *policy_grant.lock().expect("poisoned") = Some(grant.clone());
-                node.moq.reauthorize(peer.id());
+                node.node.reauthorize(peer.id());
                 until_granted(node, peer.id(), &grant).await;
                 assert_eq!(first.grant(), grant, "on the first session");
                 assert_eq!(second.grant(), grant, "on the second session");
@@ -311,18 +307,18 @@ async fn a_peer_holds_a_bounded_number_of_claims() {
 
     let claims: Vec<_> = (0..64)
         .map(|n| {
-            bob.moq
+            bob.node
                 .claim_path(alice.id(), &path_of(&alice, &format!("cam{n}")))
                 .expect("within the limit")
         })
         .collect();
     let err = bob
-        .moq
+        .node
         .claim_path(alice.id(), &path_of(&alice, "one-too-many"))
         .expect_err("over the limit");
     assert!(matches!(err, Error::TooManyGrants { .. }), "{err:#}");
     drop(claims);
-    bob.moq
+    bob.node
         .claim_path(alice.id(), &path_of(&alice, "one-too-many"))
         .expect("room again");
 
@@ -336,15 +332,15 @@ async fn a_claim_stays_on_its_peers_links() {
     let alice = Peer::spawn().await;
     let carol = Peer::spawn().await;
     let bob = viewer().await;
-    let with_alice = step("dial", bob.moq.connect(alice.endpoint.addr()))
+    let with_alice = step("dial", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    let with_carol = step("dial", bob.moq.connect(carol.endpoint.addr()))
+    let with_carol = step("dial", bob.node.connect(carol.endpoint.addr()))
         .await
         .expect("connect");
 
     let path = path_of(&alice, "cam");
-    let _claim = bob.moq.claim_path(alice.id(), &path).expect("claim");
+    let _claim = bob.node.claim_path(alice.id(), &path).expect("claim");
     assert!(with_alice.grant().allows_publish(path.as_str()));
     assert_eq!(with_carol.grant(), policy_grant(&bob, &with_carol));
 
@@ -358,13 +354,13 @@ async fn a_claim_stays_on_its_peers_links() {
 async fn concurrent_claims_all_land() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let session = step("dial", bob.moq.connect(alice.endpoint.addr()))
+    let session = step("dial", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
 
     let tasks: Vec<_> = (0..8)
         .map(|n| {
-            let node = bob.moq.clone();
+            let node = bob.node.clone();
             let (peer, path) = (alice.id(), path_of(&alice, &format!("cam{n}")));
             tokio::spawn(async move { node.claim_path(peer, &path).expect("claim") })
         })
@@ -395,14 +391,14 @@ async fn claims_are_capped_by_bytes_and_repeats_are_free() {
         path_of(&alice, &name)
     };
     let held: Vec<_> = (0..5)
-        .map(|n| bob.moq.claim_path(alice.id(), &long(n)).expect("room"))
+        .map(|n| bob.node.claim_path(alice.id(), &long(n)).expect("room"))
         .collect();
     let err = bob
-        .moq
+        .node
         .claim_path(alice.id(), &long(5))
         .expect_err("over 16 KiB");
     assert!(matches!(err, Error::TooManyGrants { .. }), "{err:#}");
-    bob.moq
+    bob.node
         .claim_path(alice.id(), &long(0))
         .expect("a held path repeats freely");
     drop(held);
@@ -439,11 +435,11 @@ async fn a_layout_replaces_the_generic_owner_rule() {
     })
     .await;
 
-    bob.moq
+    bob.node
         .claim_path(alice.id(), &Path::new("fleet/cam").expect("path"))
         .expect("the layout names alice the owner");
     let err = bob
-        .moq
+        .node
         .claim_path(alice.id(), &path_of(&alice, "cam"))
         .expect_err("the generic rule no longer applies");
     assert!(matches!(err, Error::NotOwner { .. }), "{err:#}");
@@ -458,16 +454,16 @@ async fn a_forged_claim_reaches_nothing() {
     let alice = Peer::spawn().await;
     let mallory = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
-    let mut announces = bob.moq.origin().announced();
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let mut announces = bob.node.origin().announced();
 
-    bob.moq
+    bob.node
         .claim_path(mallory.id(), publication.path())
         .expect_err("alice's path is not mallory's");
-    let session = step("dial", mallory.moq.connect(bob.endpoint.addr()))
+    let session = step("dial", mallory.node.connect(bob.endpoint.addr()))
         .await
         .expect("mallory dials bob");
-    let forged = publish(&mallory.moq, alice.path("cam"), Audience::Granted);
+    let forged = publish(&mallory.node, alice.path("cam"), Audience::Granted);
     drop(forged);
     stays_pending(
         "nothing reaches bob's table",
@@ -487,11 +483,11 @@ async fn a_forged_claim_reaches_nothing() {
 async fn a_default_viewer_subscribes_to_a_ticket() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
     let ticket = publication.ticket();
     assert_eq!(ticket.peer(), alice.id());
 
-    let subscription = step("subscribe", bob.moq.subscribe_ticket(&ticket))
+    let subscription = step("subscribe", bob.node.subscribe_ticket(&ticket))
         .await
         .expect("a ticket subscribe needs no grant");
     reading(&subscription.broadcast()).await;
@@ -505,10 +501,13 @@ async fn a_default_viewer_subscribes_to_a_ticket() {
 async fn a_ticket_subscription_releases_its_claim_on_drop() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
-    let subscription = step("subscribe", bob.moq.subscribe_ticket(&publication.ticket()))
-        .await
-        .expect("subscribe");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let subscription = step(
+        "subscribe",
+        bob.node.subscribe_ticket(&publication.ticket()),
+    )
+    .await
+    .expect("subscribe");
     let session = subscription.session().expect("a session");
     let clone = subscription.clone();
     assert_ne!(session.grant(), policy_grant(&bob, &session));
@@ -531,14 +530,14 @@ async fn a_ticket_subscription_releases_its_claim_on_drop() {
 async fn a_cancelled_ticket_subscribe_releases_its_claim() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let session = step("dial", bob.moq.connect(alice.endpoint.addr()))
+    let session = step("dial", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
     let ticket = iroh_live_node::BroadcastTicket::at(alice.id(), path_of(&alice, "never"));
 
     let waited = tokio::time::timeout(
         Duration::from_millis(500),
-        bob.moq.subscribe_ticket(&ticket),
+        bob.node.subscribe_ticket(&ticket),
     )
     .await;
     assert!(waited.is_err(), "nothing is published at the path");
@@ -553,11 +552,14 @@ async fn a_cancelled_ticket_subscribe_releases_its_claim() {
 async fn a_covered_ticket_claims_nothing() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
 
-    let subscription = step("subscribe", bob.moq.subscribe_ticket(&publication.ticket()))
-        .await
-        .expect("subscribe");
+    let subscription = step(
+        "subscribe",
+        bob.node.subscribe_ticket(&publication.ticket()),
+    )
+    .await
+    .expect("subscribe");
     let session = subscription.session().expect("a session");
     assert_eq!(session.grant(), policy_grant(&bob, &session));
 
@@ -569,11 +571,11 @@ async fn a_covered_ticket_claims_nothing() {
 #[traced_test]
 async fn an_own_ticket_resolves_locally() {
     let alice = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
 
     let subscription = step(
         "subscribe",
-        alice.moq.subscribe_ticket(&publication.ticket()),
+        alice.node.subscribe_ticket(&publication.ticket()),
     )
     .await
     .expect("subscribe");
@@ -591,7 +593,7 @@ async fn a_forged_ticket_fails_not_owner() {
     let bob = viewer().await;
     let forged = iroh_live_node::BroadcastTicket::at(mallory.id(), path_of(&alice, "cam"));
 
-    let err = step("subscribe", bob.moq.subscribe_ticket(&forged))
+    let err = step("subscribe", bob.node.subscribe_ticket(&forged))
         .await
         .expect_err("mallory does not own the path");
     assert!(matches!(err, Error::NotOwner { .. }), "{err:#}");
@@ -653,10 +655,10 @@ async fn a_policy_rejection_refuses_an_accept_and_fails_a_dial() {
     let mallory = Peer::spawn().await;
     let bob = rejecting(mallory.id()).await;
 
-    refused(step("mallory dials", mallory.moq.connect(bob.endpoint.addr())).await).await;
-    assert!(!has_session_with(&bob.moq, mallory.id()));
+    refused(step("mallory dials", mallory.node.connect(bob.endpoint.addr())).await).await;
+    assert!(!has_session_with(&bob.node, mallory.id()));
 
-    let err = step("bob dials", bob.moq.connect(mallory.endpoint.addr()))
+    let err = step("bob dials", bob.node.connect(mallory.endpoint.addr()))
         .await
         .expect_err("bob's own policy rejects mallory");
     let Error::Rejected { source, .. } = &err else {
@@ -664,16 +666,16 @@ async fn a_policy_rejection_refuses_an_accept_and_fails_a_dial() {
     };
     assert_eq!(source.reason(), "banned");
     assert!(
-        !has_session_with(&mallory.moq, bob.id()),
+        !has_session_with(&mallory.node, bob.id()),
         "the dial never reached mallory"
     );
 
     // Others still get in.
     let carol = Peer::spawn().await;
-    step("carol dials", carol.moq.connect(bob.endpoint.addr()))
+    step("carol dials", carol.node.connect(bob.endpoint.addr()))
         .await
         .expect("carol is admitted");
-    session_with(&bob.moq, carol.id()).await;
+    session_with(&bob.node, carol.id()).await;
 
     mallory.shutdown().await;
     bob.shutdown().await;
@@ -697,13 +699,13 @@ async fn a_policy_grant_holds_in_both_directions() {
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
     let bob_cam = publish(
-        &bob.moq,
+        &bob.node,
         format!("fleet/{}/cam", bob.id()),
         Audience::Granted,
     )
     .expect("publish");
     let carol_cam = publish(
-        &carol.moq,
+        &carol.node,
         format!("fleet/{}/cam", carol.id()),
         Audience::Granted,
     )
@@ -712,7 +714,9 @@ async fn a_policy_grant_holds_in_both_directions() {
     // Alice dials bob: her policy decides the dialed session.
     let from_bob = step(
         "alice dials bob",
-        alice.moq.subscribe(bob_cam.path(), Reach::Direct(bob.id())),
+        alice
+            .node
+            .subscribe(bob_cam.path(), Reach::Direct(bob.id())),
     )
     .await
     .expect("the policy lets bob publish under fleet");
@@ -724,17 +728,17 @@ async fn a_policy_grant_holds_in_both_directions() {
     // Carol dials alice: the same policy decides the accepted session.
     step(
         "carol dials alice",
-        carol.moq.connect(alice.endpoint.addr()),
+        carol.node.connect(alice.endpoint.addr()),
     )
     .await
     .expect("carol connects");
-    let accepted = session_with(&alice.moq, carol.id()).await;
+    let accepted = session_with(&alice.node, carol.id()).await;
     assert!(!accepted.dialed());
     assert_eq!(accepted.grant(), fleet(&carol.id()));
     let from_carol = step(
         "alice subscribes over the accepted session",
         alice
-            .moq
+            .node
             .subscribe(carol_cam.path(), Reach::Direct(carol.id())),
     )
     .await
@@ -765,10 +769,10 @@ async fn a_policy_that_asks_for_transit_closes_the_session() {
     .await;
     let bob = Peer::spawn().await;
 
-    refused(step("bob dials", bob.moq.connect(alice.endpoint.addr())).await).await;
-    assert!(!has_session_with(&alice.moq, bob.id()));
+    refused(step("bob dials", bob.node.connect(alice.endpoint.addr())).await).await;
+    assert!(!has_session_with(&alice.node, bob.id()));
 
-    let err = step("alice dials", alice.moq.connect(bob.endpoint.addr()))
+    let err = step("alice dials", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect_err("transit is refused");
     let Error::Rejected { source, .. } = &err else {

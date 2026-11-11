@@ -48,6 +48,8 @@ percent-encoding = "2"
 url = "2"
 
 [dev-dependencies]
+# The shared test endpoint, node and wait helpers.
+iroh-live-node = { workspace = true, features = ["test-util"] }
 iroh = { workspace = true }
 # The tests publish and play real media through the relay.
 iroh-live = { workspace = true, features = ["media", "rooms"] }

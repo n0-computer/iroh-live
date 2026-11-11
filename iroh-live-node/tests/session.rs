@@ -14,10 +14,10 @@ async fn connecting_twice_to_a_peer_reuses_the_session() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
 
-    let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
+    let first = step("dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("failed to dial");
-    let second = step("second dial", alice.moq.connect(bob.endpoint.addr()))
+    let second = step("second dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("the second dial failed");
 
@@ -38,11 +38,11 @@ async fn a_connect_after_a_close_dials_anew() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
 
-    let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
+    let first = step("dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("failed to dial");
     first.close(moq_net::Error::Cancel);
-    let second = step("dial again", alice.moq.connect(bob.endpoint.addr()))
+    let second = step("dial again", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("the second dial failed");
     assert_ne!(first, second, "connect handed out the session being closed");
@@ -62,7 +62,7 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
     let addr = bob.endpoint.addr();
     let (first, second) = step(
         "concurrent dials",
-        n0_future::future::zip(alice.moq.connect(addr.clone()), alice.moq.connect(addr)),
+        n0_future::future::zip(alice.node.connect(addr.clone()), alice.node.connect(addr)),
     )
     .await;
     let first = first.expect("failed to dial");
@@ -84,8 +84,8 @@ async fn an_accepted_session_appears_in_sessions() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
 
-    let mut sessions = bob.moq.sessions();
-    let dialed = step("dial", alice.moq.connect(bob.endpoint.addr()))
+    let mut sessions = bob.node.sessions();
+    let dialed = step("dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("failed to dial");
 
@@ -124,22 +124,22 @@ async fn shutdown_closes_sessions_and_refuses_new_ones() {
     let bob = Peer::spawn().await;
     let bob_addr = bob.endpoint.addr();
 
-    let session = step("dial", alice.moq.connect(bob_addr.clone()))
+    let session = step("dial", alice.node.connect(bob_addr.clone()))
         .await
         .expect("failed to dial");
 
-    alice.moq.shutdown().await;
+    alice.node.shutdown().await;
 
     tokio::time::timeout(TIMEOUT, session.closed())
         .await
         .expect("the session did not close when the transport shut down");
 
-    let err = step("connecting after shutdown", alice.moq.connect(bob_addr))
+    let err = step("connecting after shutdown", alice.node.connect(bob_addr))
         .await
         .expect_err("connecting after shutdown should fail");
     assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
     assert!(
-        alice.moq.sessions().get().is_empty(),
+        alice.node.sessions().get().is_empty(),
         "no session survives shutdown"
     );
 
@@ -154,8 +154,8 @@ async fn the_peer_sees_the_close_code() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
 
-    let mut sessions = bob.moq.sessions();
-    let dialed = step("dial", alice.moq.connect(bob.endpoint.addr()))
+    let mut sessions = bob.node.sessions();
+    let dialed = step("dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("failed to dial");
     let accepted = step("the accepted session", async {
@@ -200,13 +200,13 @@ async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
         let alice = Peer::spawn().await;
         let bob = Peer::spawn().await;
         let _alice_cam =
-            publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
-        let _bob_cam = publish(&bob.moq, bob.path("cam"), Audience::Granted).expect("publish");
+            publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+        let _bob_cam = publish(&bob.node, bob.path("cam"), Audience::Granted).expect("publish");
 
         let (at_alice, at_bob) = step("both dial at once", async {
             tokio::join!(
-                alice.moq.connect(bob.endpoint.addr()),
-                bob.moq.connect(alice.endpoint.addr()),
+                alice.node.connect(bob.endpoint.addr()),
+                bob.node.connect(alice.endpoint.addr()),
             )
         })
         .await;
@@ -216,12 +216,12 @@ async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
         assert_eq!(at_bob.peer(), alice.id());
 
         for (node, peer, session) in [(&alice, &bob, &at_alice), (&bob, &alice, &at_bob)] {
-            let again = step("connect again", node.moq.connect(peer.endpoint.addr()))
+            let again = step("connect again", node.node.connect(peer.endpoint.addr()))
                 .await
                 .expect("the second connect failed");
             assert_eq!(&again, session, "connect handed out another session");
             let with_peer: Vec<_> = node
-                .moq
+                .node
                 .sessions()
                 .get()
                 .into_iter()
@@ -245,7 +245,7 @@ async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
 
         let from_alice = step(
             "bob subscribes to alice",
-            bob.moq
+            bob.node
                 .subscribe(alice.path("cam"), Reach::Direct(alice.id())),
         )
         .await
@@ -254,7 +254,7 @@ async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
         let from_bob = step(
             "alice subscribes to bob",
             alice
-                .moq
+                .node
                 .subscribe(bob.path("cam"), Reach::Direct(bob.id())),
         )
         .await

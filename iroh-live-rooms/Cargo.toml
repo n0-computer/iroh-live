@@ -35,6 +35,8 @@ tracing = "0.1.44"
 test-util = []
 
 [dev-dependencies]
+derive_more = { version = "2.1.1", features = ["deref"] }
+iroh-live-node = { workspace = true, features = ["test-util"] }
 # Turns on `test-util` for this crate's own tests.
 iroh-live-rooms = { path = ".", features = ["test-util"] }
 n0-tracing-test = "0.3.0"

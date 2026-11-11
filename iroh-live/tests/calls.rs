@@ -2,47 +2,34 @@
 //!
 //! The sides are bare broadcast producers, so no codec or device is involved.
 
-use std::{
-    collections::BTreeSet,
-    sync::OnceLock,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, time::Duration};
 
-use iroh::{
-    Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
-};
+use iroh::EndpointId;
 use iroh_live::{
-    Audience, Node, NodeConfig, Reach,
+    Audience, NodeConfig, Reach,
     calls::{Call, CallEvent, Calls, Error, HungUp},
     layout::LiveLayout,
     node::policy::Policy,
 };
+use iroh_live_node::test_util::{TestNode, eventually, step};
 use moq_net::broadcast;
 use n0_future::StreamExt;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher as _};
 
-const TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
-async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("bind");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
-
-/// A node on the default layout, mounted, with its call service.
+/// A [`TestNode`] on the default layout, with its call service.
 struct Peer {
-    node: Node,
-    router: Router,
+    test: TestNode,
     calls: Calls,
     _side: broadcast::Producer,
+}
+
+impl std::ops::Deref for Peer {
+    type Target = TestNode;
+
+    fn deref(&self) -> &TestNode {
+        &self.test
+    }
 }
 
 impl Peer {
@@ -53,55 +40,19 @@ impl Peer {
 
     /// Starts a mounted node with `config` and its call service.
     async fn start_with(config: NodeConfig) -> Self {
-        let (node, router) = Self::raw_with(config).await;
-        let (calls, side) = Calls::new(&node, &LiveLayout::default()).expect("calls");
+        let test = TestNode::spawn(config).await;
+        let (calls, side) = Calls::new(&test.node, &LiveLayout::default()).expect("calls");
         Self {
-            node,
-            router,
+            test,
             calls,
             _side: side,
         }
     }
-
-    /// A node on the default layout and its router, with no call service.
-    async fn raw() -> (Node, Router) {
-        Self::raw_with(LiveLayout::default().config(&[])).await
-    }
-
-    /// A node with `config` and its router, with no call service.
-    async fn raw_with(config: NodeConfig) -> (Node, Router) {
-        let endpoint = endpoint().await;
-        let node = Node::new(endpoint.clone(), config);
-        let router = node.mount(Router::builder(endpoint)).spawn();
-        (node, router)
-    }
-
-    /// Returns the endpoint id of the node.
-    fn id(&self) -> EndpointId {
-        self.node.id()
-    }
-
-    /// Shuts down the node and its router.
-    async fn shutdown(self) {
-        self.node.shutdown().await;
-        self.router.shutdown().await.expect("router");
-    }
 }
 
-/// Polls `condition` until it holds, or fails after [`TIMEOUT`].
-async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + TIMEOUT;
-    while !condition() {
-        assert!(Instant::now() < deadline, "timed out: {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-/// Awaits `future`, or fails after [`TIMEOUT`].
-async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, future)
-        .await
-        .unwrap_or_else(|_| panic!("timed out: {what}"))
+/// Starts a mounted node on the default layout, with no call service.
+async fn raw() -> TestNode {
+    TestNode::spawn(LiveLayout::default().config(&[])).await
 }
 
 /// Places a call from `a` to `b`, which answers once it rings.
@@ -304,7 +255,8 @@ async fn a_cancelled_call_withdraws_the_ring() {
 async fn calls_interoperate_with_a_raw_path_caller() {
     let layout = LiveLayout::default();
     let b = Peer::start().await;
-    let (raw, router) = Peer::raw().await;
+    let test = raw().await;
+    let raw = &test.node;
     let ringing = n0_watcher::Watchable::new(BTreeSet::from([b.id()]));
     // Ringing holds a session with the peer, so the raw caller dials first.
     step("dial", raw.connect(b.node.endpoint().addr()))
@@ -329,8 +281,7 @@ async fn calls_interoperate_with_a_raw_path_caller() {
         .expect("raw subscribe");
 
     drop(side);
-    raw.shutdown().await;
-    router.shutdown().await.expect("router");
+    test.shutdown().await;
     b.shutdown().await;
 }
 
@@ -339,7 +290,8 @@ async fn calls_interoperate_with_a_raw_path_caller() {
 async fn calls_interoperate_with_a_raw_path_callee() {
     let layout = LiveLayout::default();
     let a = Peer::start().await;
-    let (raw, router) = Peer::raw().await;
+    let test = raw().await;
+    let raw = &test.node;
 
     let calls = a.calls.clone();
     let peer = raw.id();
@@ -373,8 +325,7 @@ async fn calls_interoperate_with_a_raw_path_callee() {
     let call = step("call", placed).await.expect("task").expect("call");
     assert_eq!(call.peer(), raw.id());
 
-    raw.shutdown().await;
-    router.shutdown().await.expect("router");
+    test.shutdown().await;
     a.shutdown().await;
 }
 
@@ -397,7 +348,8 @@ async fn a_lagging_event_reader_is_told_it_lagged() {
     const RINGS: usize = 70;
     let layout = LiveLayout::default();
     let b = Peer::start().await;
-    let (raw, router) = Peer::raw().await;
+    let test = raw().await;
+    let raw = &test.node;
     step("dial", raw.connect(b.node.endpoint().addr()))
         .await
         .expect("dial b");
@@ -425,8 +377,7 @@ async fn a_lagging_event_reader_is_told_it_lagged() {
     let next = step("the event after the lag", events.next()).await;
     assert_eq!(next, Some(CallEvent::Ringing(raw.id())));
 
-    raw.shutdown().await;
-    router.shutdown().await.expect("router");
+    test.shutdown().await;
     b.shutdown().await;
 }
 

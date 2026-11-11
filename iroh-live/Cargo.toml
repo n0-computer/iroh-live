@@ -38,6 +38,10 @@ tokio-util = "0.7.19"
 tracing = "0.1.44"
 
 [dev-dependencies]
+# The shared test endpoint, node and wait helpers.
+iroh-live-node = { workspace = true, features = ["test-util"] }
+# The source-switch helpers that the in-process switch tests use too.
+moq-ext-player = { workspace = true, features = ["test-util"] }
 # The examples.
 clap = { version = "4.6", features = ["derive"] }
 n0-tracing-test = "0.3.0"

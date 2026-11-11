@@ -2,12 +2,12 @@
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
 use iroh_live_node::{
-    Grant, Layout, Node, NodeConfig,
+    Grant, Layout, NodeConfig,
     policy::{self, PeerRequest},
+    test_util::TestNode,
 };
 use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms, RoomsLayout};
 use n0_watcher::Watcher;
@@ -15,52 +15,30 @@ use n0_watcher::Watcher;
 /// Generous, because the suite shares a machine with whatever else is running.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Binds an endpoint against a shared in-memory address lookup.
-pub(crate) async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("failed to bind endpoint");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
-
-/// A peer with a node, rooms, and a router that accepts both.
-#[derive(Debug)]
+/// A [`TestNode`] with rooms, whose router accepts both.
+#[derive(Debug, derive_more::Deref)]
 pub(crate) struct Peer {
-    pub(crate) endpoint: Endpoint,
-    pub(crate) node: Node,
+    #[deref]
+    test: TestNode,
     pub(crate) rooms: Rooms,
-    router: Router,
 }
 
 impl Peer {
     /// Spawns a peer whose peers may publish only under their room scope.
     pub(crate) async fn spawn() -> Self {
-        let endpoint = endpoint().await;
         let config = NodeConfig::default().with_policy(policy::from_fn(|request: &PeerRequest| {
             let scope = RoomsLayout.scope(request.peer());
             Ok(Grant::publish_under(scope).into())
         }));
-        let node = Node::new(endpoint.clone(), config);
-        let rooms = Rooms::new(&node);
-        let router = rooms
-            .mount(node.mount(Router::builder(endpoint.clone())))
-            .spawn();
+        let mut rooms = None;
+        let test = TestNode::spawn_with(config, |node, router| {
+            rooms.insert(Rooms::new(node)).mount(router)
+        })
+        .await;
         Self {
-            endpoint,
-            node,
-            rooms,
-            router,
+            test,
+            rooms: rooms.expect("mounted"),
         }
-    }
-
-    /// Returns the endpoint id of the peer.
-    pub(crate) fn id(&self) -> iroh::EndpointId {
-        self.endpoint.id()
     }
 
     /// Joins the room `ticket` names under `name`.
@@ -69,13 +47,6 @@ impl Peer {
             .await
             .expect("timed out joining")
             .expect("failed to join the room")
-    }
-
-    /// Shuts down the node and the router, then closes the endpoint.
-    pub(crate) async fn shutdown(self) {
-        self.node.shutdown().await;
-        self.router.shutdown().await.expect("router task panicked");
-        self.endpoint.close().await;
     }
 }
 

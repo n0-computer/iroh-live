@@ -6,11 +6,11 @@
 #![cfg(feature = "media")]
 
 use std::{
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh::protocol::Router;
 use iroh_live::{
     Node,
     calls::{Calls, HungUp},
@@ -22,25 +22,13 @@ use iroh_live::{
         video::{FrameRate, Size, decode},
     },
 };
+use iroh_live_node::test_util::endpoint;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher as _;
 use tracing::{Instrument, info_span};
 
 /// Generous, because tests run in parallel and openh264 encodes in software.
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
-async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("failed to bind endpoint");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
 
 /// Mounts `node` on a new router, so peers can connect to it.
 ///

@@ -1,10 +1,13 @@
 //! Pull ownership: the relay pulls a ticket only for the peer that owns its path.
 
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
-use iroh::{SecretKey, address_lookup::MemoryLookup, protocol::Router};
+use iroh::SecretKey;
 use iroh_live::{BroadcastTicket, layout::LiveLayout};
-use iroh_live_node::{Audience, Node};
+use iroh_live_node::{
+    Audience,
+    test_util::{TestNode, endpoint},
+};
 use iroh_live_relay::pull::{self, PullState};
 use moq_net::Path;
 use moq_relay::cluster::Cluster;
@@ -13,24 +16,6 @@ use serial_test::serial;
 
 /// How long any one wait may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Returns the address lookup every test endpoint registers with.
-fn lookup() -> &'static MemoryLookup {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    LOOKUP.get_or_init(MemoryLookup::new)
-}
-
-/// Binds an endpoint with a fresh identity that the other test endpoints can dial.
-async fn endpoint() -> iroh::Endpoint {
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .address_lookup(lookup().clone())
-        .secret_key(SecretKey::generate())
-        .bind()
-        .await
-        .expect("bind");
-    lookup().add_endpoint_info(endpoint.addr());
-    endpoint
-}
 
 /// A cluster with a running driver, and nothing else.
 fn cluster() -> (Cluster, AbortOnDropHandle<()>) {
@@ -42,45 +27,19 @@ fn cluster() -> (Cluster, AbortOnDropHandle<()>) {
     (cluster, AbortOnDropHandle::new(task))
 }
 
-/// A publisher node that serves `live/<its id>/<name>`.
-struct Publisher {
-    endpoint: iroh::Endpoint,
-    node: Node,
-    router: Router,
-}
-
-impl Publisher {
-    /// Starts the node and publishes `name`.
-    async fn start(name: &str) -> Self {
-        let endpoint = endpoint().await;
-        let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
-        let router = node.mount(Router::builder(endpoint.clone())).spawn();
-        let publisher = Self {
-            endpoint,
-            node,
-            router,
-        };
-        publisher.publish(name);
-        publisher
-    }
-
-    /// Publishes `name` to every granted session and returns its ticket.
-    fn publish(&self, name: &str) -> BroadcastTicket {
-        let path = LiveLayout::default()
-            .path(self.node.id(), name)
-            .expect("a path");
-        let publication = self.node.publish(path, Audience::Granted).expect("publish");
-        // The broadcast has to stay open for as long as the test runs.
-        std::mem::forget(publication.broadcast().clone());
-        publication.ticket()
-    }
-
-    /// Shuts down the node, its router and its endpoint.
-    async fn shutdown(self) {
-        self.node.shutdown().await;
-        self.router.shutdown().await.expect("router");
-        self.endpoint.close().await;
-    }
+/// Starts a node that serves `live/<its id>/<name>`.
+async fn publisher(name: &str) -> TestNode {
+    let publisher = TestNode::spawn(LiveLayout::default().config(&[])).await;
+    let path = LiveLayout::default()
+        .path(publisher.id(), name)
+        .expect("a path");
+    let publication = publisher
+        .node
+        .publish(path, Audience::Granted)
+        .expect("publish");
+    // The broadcast has to stay open for as long as the test runs.
+    std::mem::forget(publication.broadcast().clone());
+    publisher
 }
 
 /// Returns whether `cluster` routes `name` within half a second.
@@ -103,7 +62,7 @@ async fn routed(cluster: &Cluster, name: &str) -> bool {
 #[serial]
 async fn a_pull_of_another_peers_path_is_refused() {
     let (cluster, _driver) = cluster();
-    let victim = Publisher::start("cam").await;
+    let victim = publisher("cam").await;
     let mallory = SecretKey::generate().public();
     let victim_path = LiveLayout::default()
         .path(victim.node.id(), "cam")
@@ -127,7 +86,7 @@ async fn a_pull_of_another_peers_path_is_refused() {
 #[serial]
 async fn a_path_in_a_custom_scheme_is_refused() {
     let (cluster, _driver) = cluster();
-    let publisher = Publisher::start("cam").await;
+    let publisher = publisher("cam").await;
     let custom = Path::new("fleet/robot/cam").expect("a path");
     let ticket = BroadcastTicket::at(publisher.node.id(), custom);
 
@@ -145,7 +104,7 @@ async fn a_path_in_a_custom_scheme_is_refused() {
 #[serial]
 async fn a_ticket_with_reserved_characters_mounts_once() {
     let (cluster, _driver) = cluster();
-    let publisher = Publisher::start("100%").await;
+    let publisher = publisher("100%").await;
     let path = LiveLayout::default()
         .path(publisher.node.id(), "100%")
         .expect("a path");

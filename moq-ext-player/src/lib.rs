@@ -57,6 +57,8 @@ mod player;
 mod record;
 mod remote;
 mod stats;
+#[cfg(feature = "test-util")]
+pub mod test_util;
 
 pub use hang::catalog::Catalog;
 pub use moq_ext_media_core::{Error, SlotState, SourceClosed};

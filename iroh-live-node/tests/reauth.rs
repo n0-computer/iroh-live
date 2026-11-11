@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use common::{Peer, ends, publish, reading, step};
+use common::{Peer, ends, eventually, publish, reading, step};
 use iroh::EndpointId;
 use iroh_live_node::{
     Audience, Error, Grant, Node, NodeConfig, Reach,
@@ -23,16 +23,6 @@ use n0_watcher::{Watchable, Watcher};
 
 /// How long an authorization in these tests lasts before the node asks again.
 const SHORT: Duration = Duration::from_millis(400);
-
-/// Waits until `condition` holds, polling, within the test timeout.
-async fn until(what: &str, condition: impl Fn() -> bool) {
-    step(what, async {
-        while !condition() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-}
 
 /// Reports whether `node` lists an open session with `peer`.
 fn has_session_with(node: &Node, peer: EndpointId) -> bool {
@@ -62,11 +52,11 @@ async fn an_expiring_authorization_narrows_the_live_session() {
     )))
     .await;
     let bob = Peer::spawn().await;
-    let cam = publish(&bob.moq, bob.path("cam"), Audience::Granted).expect("publish");
+    let cam = publish(&bob.node, bob.path("cam"), Audience::Granted).expect("publish");
 
     let subscription = step(
         "alice subscribes",
-        alice.moq.subscribe(cam.path(), Reach::Direct(bob.id())),
+        alice.node.subscribe(cam.path(), Reach::Direct(bob.id())),
     )
     .await
     .expect("the first grant lets bob publish");
@@ -75,8 +65,8 @@ async fn an_expiring_authorization_narrows_the_live_session() {
     assert_eq!(session.grant(), Grant::everything());
 
     ends("the lapsed grant ends the read", &mut track).await;
-    until("the grant narrows", || {
-        alice.moq.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
+    eventually("the grant narrows", || {
+        alice.node.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
     })
     .await;
     assert_eq!(
@@ -92,13 +82,13 @@ async fn an_expiring_authorization_narrows_the_live_session() {
         "an expiry decides with Reauthorize"
     );
     assert!(
-        has_session_with(&alice.moq, bob.id()),
+        has_session_with(&alice.node, bob.id()),
         "narrowed, not closed"
     );
     // The narrower grant holds for a new read too.
     let err = step(
         "subscribe again",
-        alice.moq.subscribe(cam.path(), Reach::Direct(bob.id())),
+        alice.node.subscribe(cam.path(), Reach::Direct(bob.id())),
     )
     .await
     .expect_err("bob may no longer publish");
@@ -126,7 +116,7 @@ async fn a_rejection_at_revalidation_closes_the_sessions_with_its_code() {
     .await;
     let bob = Peer::spawn().await;
 
-    let session = step("bob dials", bob.moq.connect(alice.endpoint.addr()))
+    let session = step("bob dials", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("admitted at first");
     let err = step("the session closes", session.closed()).await;
@@ -140,8 +130,8 @@ async fn a_rejection_at_revalidation_closes_the_sessions_with_its_code() {
         ),
         "bob sees the rejection's code: {err:#}"
     );
-    until("alice forgets bob", || {
-        !has_session_with(&alice.moq, bob.id()) && alice.moq.grant_for(bob.id()).is_none()
+    eventually("alice forgets bob", || {
+        !has_session_with(&alice.node, bob.id()) && alice.node.grant_for(bob.id()).is_none()
     })
     .await;
 
@@ -198,23 +188,23 @@ async fn a_policy_change_decides_every_peer_again() {
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
     for peer in [&bob, &carol] {
-        step("dial alice", peer.moq.connect(alice.endpoint.addr()))
+        step("dial alice", peer.node.connect(alice.endpoint.addr()))
             .await
             .expect("admitted");
-        until("alice registers the peer", || {
-            alice.moq.grant_for(peer.id()).is_some()
+        eventually("alice registers the peer", || {
+            alice.node.grant_for(peer.id()).is_some()
         })
         .await;
     }
 
     policy.switch(Grant::subscribe_only());
     let narrowed = Some(Authorization::from(Grant::subscribe_only()));
-    until("both peers narrow", || {
-        alice.moq.grant_for(bob.id()) == narrowed && alice.moq.grant_for(carol.id()) == narrowed
+    eventually("both peers narrow", || {
+        alice.node.grant_for(bob.id()) == narrowed && alice.node.grant_for(carol.id()) == narrowed
     })
     .await;
-    assert!(has_session_with(&alice.moq, bob.id()));
-    assert!(has_session_with(&alice.moq, carol.id()));
+    assert!(has_session_with(&alice.node, bob.id()));
+    assert!(has_session_with(&alice.node, carol.id()));
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -251,24 +241,24 @@ async fn reauthorize_decides_one_peer_again() {
     let mut sessions = Vec::new();
     for peer in [&bob, &carol] {
         sessions.push(
-            step("dial alice", peer.moq.connect(alice.endpoint.addr()))
+            step("dial alice", peer.node.connect(alice.endpoint.addr()))
                 .await
                 .expect("a contact is admitted"),
         );
-        until("alice registers the peer", || {
-            alice.moq.grant_for(peer.id()).is_some()
+        eventually("alice registers the peer", || {
+            alice.node.grant_for(peer.id()).is_some()
         })
         .await;
     }
 
     // A peer without a session is not decided at all.
-    alice.moq.reauthorize(alice.id());
+    alice.node.reauthorize(alice.id());
 
     contacts.lock().expect("poisoned").remove(&carol.id());
-    alice.moq.reauthorize(carol.id());
+    alice.node.reauthorize(carol.id());
     step("carol's session closes", sessions[1].closed()).await;
-    until("alice forgets carol", || {
-        alice.moq.grant_for(carol.id()).is_none()
+    eventually("alice forgets carol", || {
+        alice.node.grant_for(carol.id()).is_none()
     })
     .await;
     assert_eq!(
@@ -277,7 +267,7 @@ async fn reauthorize_decides_one_peer_again() {
         "bob is not asked again"
     );
     assert_eq!(
-        alice.moq.grant_for(bob.id()),
+        alice.node.grant_for(bob.id()),
         Some(Grant::everything().into())
     );
     assert!(
@@ -288,13 +278,13 @@ async fn reauthorize_decides_one_peer_again() {
     // The rejected peer gets nothing from its old authorization when it comes back.
     let again = step(
         "carol dials again",
-        carol.moq.connect(alice.endpoint.addr()),
+        carol.node.connect(alice.endpoint.addr()),
     )
     .await;
     if let Ok(session) = again {
         step("the new session closes", session.closed()).await;
     }
-    assert!(alice.moq.grant_for(carol.id()).is_none());
+    assert!(alice.node.grant_for(carol.id()).is_none());
     assert_eq!(decisions.lock().expect("poisoned")[&carol.id()], 3);
 
     alice.shutdown().await;
@@ -325,25 +315,25 @@ async fn a_queue_answers_revalidations_and_asks_the_application_to_reauthorize()
         }
     }));
 
-    step("bob dials", bob.moq.connect(alice.endpoint.addr()))
+    step("bob dials", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("admitted");
-    until("alice registers bob", || {
-        alice.moq.grant_for(bob.id()).is_some()
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob.id()).is_some()
     })
     .await;
     // Several revalidation intervals pass without the application.
     tokio::time::sleep(SHORT).await;
     assert_eq!(*answered.lock().expect("poisoned"), [Event::Connect]);
     assert_eq!(
-        alice.moq.grant_for(bob.id()).map(|current| current.grant),
+        alice.node.grant_for(bob.id()).map(|current| current.grant),
         Some(Grant::everything()),
         "the queue keeps the authorization"
     );
 
-    alice.moq.reauthorize(bob.id());
-    until("the application narrows bob", || {
-        alice.moq.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
+    alice.node.reauthorize(bob.id());
+    eventually("the application narrows bob", || {
+        alice.node.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
     })
     .await;
     assert_eq!(

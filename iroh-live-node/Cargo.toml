@@ -36,11 +36,16 @@ url = "2.5.8"
 jwt = ["moq-ext-access/jwt"]
 # Re-exports the rcan verifier and its capability as `policy::RcanVerifier`.
 rcan = ["moq-ext-access/rcan"]
+# Helpers for tests that run nodes in one process, in `test_util`.
+test-util = []
 
 [dev-dependencies]
+derive_more = { version = "2.1.1", features = ["deref"] }
 data-encoding = "2.11.1"
 # Issues the keys and capability chains of the delegated-publisher tests.
 ed25519-dalek = "3"
+# Turns on `test-util` for this crate's own tests.
+iroh-live-node = { path = ".", features = ["test-util"] }
 # The rcan verifier, for the delegated-publisher tests.
 moq-ext-access = { workspace = true, features = ["rcan"] }
 n0-tracing-test = "0.3.0"

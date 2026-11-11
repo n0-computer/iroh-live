@@ -1,25 +1,13 @@
 //! A latest-value JSON track between two nodes, over a real QUIC connection.
 
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
-use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
+use iroh::protocol::Router;
 use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, net::track};
+use iroh_live_node::test_util::endpoint;
 use n0_tracing_test::traced_test;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Binds an endpoint that resolves the other test endpoints through a shared in-memory lookup.
-async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("failed to bind endpoint");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
 
 /// A reader that subscribes after the writes gets the newest value, then each later one.
 #[tokio::test]

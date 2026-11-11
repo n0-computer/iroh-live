@@ -4465,6 +4465,7 @@ dependencies = [
  "derive_more",
  "ed25519-dalek",
  "iroh",
+ "iroh-live-node",
  "moq-ext-access",
  "moq-net",
  "moq-tokio",

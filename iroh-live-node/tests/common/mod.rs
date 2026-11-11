@@ -1,25 +1,25 @@
 //! Shared harness for the node tests.
 
-#![allow(dead_code, reason = "each test file uses a subset of the harness")]
+#![allow(
+    dead_code,
+    unused_imports,
+    reason = "each test file uses a subset of the harness"
+)]
 #![allow(
     clippy::mod_module_files,
     reason = "a `tests/common.rs` would become a test binary of its own"
 )]
 
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
-use iroh::{
-    Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
-};
+use iroh::EndpointId;
+pub(crate) use iroh_live_node::test_util::{TIMEOUT, TestNode, endpoint, eventually, step};
 use iroh_live_node::{
     Audience, Grant, Node, NodeConfig, Publication,
     policy::{self, PeerRequest, Policy},
 };
 use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
-
-/// Generous, because the suite shares a machine with whatever else is running.
-pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long a test track keeps its groups, on both ends.
 pub(crate) const MAX_AGE: Duration = Duration::from_secs(5);
@@ -29,25 +29,9 @@ pub(crate) fn subscription() -> track::Subscription {
     track::Subscription::default().with_delay(track::Delay::default().with_max(MAX_AGE))
 }
 
-/// Binds an endpoint against a shared in-memory address lookup.
-pub(crate) async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("failed to bind endpoint");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
-
-/// A node that accepts MoQ, with the router that makes it do so.
-pub(crate) struct Peer {
-    pub(crate) endpoint: Endpoint,
-    pub(crate) moq: Node,
-    pub(crate) router: Router,
-}
+/// A [`TestNode`] whose peers may publish only under `live/<their id>/` by default.
+#[derive(Debug, derive_more::Deref)]
+pub(crate) struct Peer(TestNode);
 
 impl Peer {
     /// Spawns a node whose peers may publish only under `live/<their id>/`.
@@ -71,24 +55,7 @@ impl Peer {
 
     /// Spawns a node with exactly `config`, the default policy included.
     pub(crate) async fn bare(config: NodeConfig) -> Self {
-        let endpoint = endpoint().await;
-        let moq = Node::new(endpoint.clone(), config);
-        let router = moq.mount(Router::builder(endpoint.clone())).spawn();
-        Self {
-            endpoint,
-            moq,
-            router,
-        }
-    }
-
-    pub(crate) fn id(&self) -> iroh::EndpointId {
-        self.endpoint.id()
-    }
-
-    pub(crate) async fn shutdown(self) {
-        self.moq.shutdown().await;
-        self.router.shutdown().await.expect("router task panicked");
-        self.endpoint.close().await;
+        Self(TestNode::spawn(config).await)
     }
 }
 
@@ -240,13 +207,6 @@ pub(crate) async fn stays_pending<T: std::fmt::Debug>(
     if let Ok(done) = tokio::time::timeout(window, future).await {
         panic!("{what}: {done:?}");
     }
-}
-
-/// Awaits `future`, failing with `what` after [`TIMEOUT`].
-pub(crate) async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, future)
-        .await
-        .unwrap_or_else(|_| panic!("timed out: {what}"))
 }
 
 /// Waits until `updates` announces `path`.

@@ -13,10 +13,10 @@ use n0_tracing_test::traced_test;
 #[traced_test]
 async fn closed_resolves_on_shutdown() {
     let peer = Peer::spawn().await;
-    let closed = tokio::spawn(peer.moq.closed());
+    let closed = tokio::spawn(peer.node.closed());
     assert!(!closed.is_finished());
 
-    peer.moq.shutdown().await;
+    peer.node.shutdown().await;
     tokio::time::timeout(TIMEOUT, closed)
         .await
         .expect("closed resolves")
@@ -44,21 +44,21 @@ async fn closed_resolves_when_the_last_handle_drops() {
 async fn grant_for_reports_the_policy_authorization_of_a_live_peer() {
     let alice =
         Peer::bare(NodeConfig::default().with_policy(policy::Open(Grant::everything()))).await;
-    assert_eq!(alice.moq.id(), alice.id());
+    assert_eq!(alice.node.id(), alice.id());
     let bob = Peer::bare(NodeConfig::default()).await;
-    assert_eq!(alice.moq.grant_for(bob.id()), None, "no session yet");
+    assert_eq!(alice.node.grant_for(bob.id()), None, "no session yet");
 
-    let session = step("alice dials bob", alice.moq.connect(bob.endpoint.addr()))
+    let session = step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
     assert_eq!(
-        alice.moq.grant_for(bob.id()),
+        alice.node.grant_for(bob.id()),
         Some(Authorization::from(Grant::everything()))
     );
     // Bob's default policy lets alice subscribe and publish nothing.
     let at_bob = step("bob registers alice", async {
         loop {
-            if let Some(authorization) = bob.moq.grant_for(alice.id()) {
+            if let Some(authorization) = bob.node.grant_for(alice.id()) {
                 return authorization;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -69,7 +69,7 @@ async fn grant_for_reports_the_policy_authorization_of_a_live_peer() {
 
     session.close(moq_net::Error::Cancel);
     step("the authorization goes with the session", async {
-        while alice.moq.grant_for(bob.id()).is_some() {
+        while alice.node.grant_for(bob.id()).is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
