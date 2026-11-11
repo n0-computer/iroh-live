@@ -110,13 +110,14 @@ that dial each other at the same moment keep both sessions.
 `Node::mount` adds the node to the application's `RouterBuilder` under every
 ALPN in `alpns()`, and incoming connections arrive through its
 `ProtocolHandler`. A node that is never mounted refuses every incoming
-connection. Under `Admission::Open` (the default) every session is admitted
-with the grant `NodeConfig::grant` gives the peer, or `Grant::subscribe_only()` if
-none is set. Under `Admission::Manual` the handshake waits after the peer's
-setup, and the session shows up in `Node::accept()`. The application reads the
-`SessionRequest` (its path, its query, the token the peer presented) and
-admits it with a `Grant` or rejects it. `Node::sessions()` watches the open
-sessions.
+connection. After the peer's setup, the node asks its policy
+(`NodeConfig::policy`) whether to admit the session, and with which grant.
+Without a policy, every session is admitted with the grant `NodeConfig::grant`
+gives the peer, or `Grant::subscribe_only()` if none is set. A
+`policy::Queue` hands each decision to the application: it reads the request
+(the path, the query, the token the peer presented) and admits it with a
+`Grant` or rejects it. Each decision may take up to
+`NodeConfig::decide_timeout`. `Node::sessions()` watches the open sessions.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
 statistics every 200 ms. `Session::link_sample()` returns the latest `LinkSample`.

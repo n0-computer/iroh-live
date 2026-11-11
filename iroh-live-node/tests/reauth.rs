@@ -56,7 +56,7 @@ async fn an_expiring_authorization_narrows_the_live_session() {
                     expires: Some(SystemTime::now() + SHORT),
                     ..Default::default()
                 }),
-                Event::Revalidate => Ok(Grant::subscribe_only().into()),
+                Event::Revalidate | Event::Reauthorize => Ok(Grant::subscribe_only().into()),
             }
         },
     )))
@@ -88,7 +88,8 @@ async fn an_expiring_authorization_narrows_the_live_session() {
         events
             .lock()
             .expect("poisoned")
-            .contains(&Event::Revalidate)
+            .contains(&Event::Reauthorize),
+        "an expiry decides with Reauthorize"
     );
     assert!(
         has_session_with(&alice.moq, bob.id()),
@@ -117,7 +118,9 @@ async fn a_rejection_at_revalidation_closes_the_sessions_with_its_code() {
                 revalidate: Some(SHORT),
                 ..Default::default()
             }),
-            Event::Revalidate => Err(Rejection::new("revoked").with_code(moq_net::Error::App(42))),
+            Event::Revalidate | Event::Reauthorize => {
+                Err(Rejection::new("revoked").with_code(moq_net::Error::App(42)))
+            }
         },
     )))
     .await;
@@ -297,4 +300,57 @@ async fn reauthorize_decides_one_peer_again() {
     alice.shutdown().await;
     bob.shutdown().await;
     carol.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_queue_answers_revalidations_and_asks_the_application_to_reauthorize() {
+    let queue = policy::Queue::new(16);
+    let alice = Peer::bare(NodeConfig::default().with_policy(queue.clone())).await;
+    let bob = Peer::spawn().await;
+    let answered = Arc::new(Mutex::new(Vec::new()));
+    let seen = answered.clone();
+    let _answering = n0_future::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        while let Some(pending) = queue.next().await {
+            let event = pending.request().event();
+            seen.lock().expect("poisoned").push(event);
+            match event {
+                Event::Connect => pending.admit(Authorization {
+                    grant: Grant::everything(),
+                    revalidate: Some(Duration::from_millis(100)),
+                    ..Default::default()
+                }),
+                _ => pending.admit(Grant::subscribe_only()),
+            }
+        }
+    }));
+
+    step("bob dials", bob.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    until("alice registers bob", || {
+        alice.moq.grant_for(bob.id()).is_some()
+    })
+    .await;
+    // Several revalidation intervals pass without the application.
+    tokio::time::sleep(SHORT).await;
+    assert_eq!(*answered.lock().expect("poisoned"), [Event::Connect]);
+    assert_eq!(
+        alice.moq.grant_for(bob.id()).map(|current| current.grant),
+        Some(Grant::everything()),
+        "the queue keeps the authorization"
+    );
+
+    alice.moq.reauthorize(bob.id());
+    until("the application narrows bob", || {
+        alice.moq.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
+    })
+    .await;
+    assert_eq!(
+        *answered.lock().expect("poisoned"),
+        [Event::Connect, Event::Reauthorize]
+    );
+
+    alice.shutdown().await;
+    bob.shutdown().await;
 }

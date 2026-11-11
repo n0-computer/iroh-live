@@ -7,6 +7,11 @@
 //! dials a peer. All sessions with one peer share the authorization the
 //! policy gave the first of them.
 //!
+//! To decide in the application, as a person who answers a call does, use a
+//! [`Queue`] and answer each [`Pending`] it yields. Raise
+//! [`NodeConfig::decide_timeout`](crate::NodeConfig::decide_timeout) then,
+//! since the node rejects a session whose decision takes longer.
+//!
 //! # Examples
 //!
 //! Admit only known peers, and let each publish under its own id:
@@ -42,3 +47,9 @@ pub use moq_ext_access::policy::{
 
 /// A peer's request for a session with this node, as a policy sees it.
 pub type PeerRequest = moq_ext_access::policy::PeerRequest<EndpointId>;
+
+/// A policy that hands each decision about a peer to the application.
+pub type Queue = moq_ext_access::policy::Queue<EndpointId>;
+
+/// A request about a peer, waiting in a [`Queue`] for the application's answer.
+pub type Pending = moq_ext_access::policy::Pending<EndpointId>;

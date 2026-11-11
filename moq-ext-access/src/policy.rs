@@ -12,6 +12,7 @@
 //! - [`from_fn`] decides with a synchronous closure.
 //! - [`Policy::union`] admits what either of two policies admits.
 //! - [`Policy::filter`] rejects the peers a predicate refuses.
+//! - [`Queue`] hands each decision to the application.
 //!
 //! A node stores its policy as an `Arc<dyn DynPolicy<P>>`, which implements
 //! [`Policy`] too.
@@ -42,7 +43,10 @@ use std::{
 use moq_net::Patterns;
 use n0_future::{MergeBounded, boxed::BoxStream, future};
 
+pub use self::queue::{Pending, Queue};
 use crate::{Grant, PeerId, SessionRequest};
+
+mod queue;
 
 /// A peer's request for a session, as a policy sees it.
 #[derive(Debug, Clone)]
@@ -51,6 +55,7 @@ pub struct PeerRequest<P: PeerId> {
     request: SessionRequest,
     dialed: bool,
     event: Event,
+    current: Option<Authorization>,
 }
 
 impl<P: PeerId> PeerRequest<P> {
@@ -65,7 +70,17 @@ impl<P: PeerId> PeerRequest<P> {
             request,
             dialed,
             event,
+            current: None,
         }
+    }
+
+    /// Returns this request with the authorization the peer holds now.
+    ///
+    /// A node sets it when it decides again about a live session.
+    #[must_use]
+    pub fn with_current(mut self, authorization: Authorization) -> Self {
+        self.current = Some(authorization);
+        self
     }
 
     /// Returns the peer, as the transport authenticated it.
@@ -81,6 +96,13 @@ impl<P: PeerId> PeerRequest<P> {
     /// Returns why the node asks.
     pub fn event(&self) -> Event {
         self.event
+    }
+
+    /// Returns the authorization the peer holds, when the node decides again.
+    ///
+    /// `None` when a session opens.
+    pub fn current(&self) -> Option<&Authorization> {
+        self.current.as_ref()
     }
 
     /// Returns the path the session requested, without its query.
@@ -101,16 +123,23 @@ impl<P: PeerId> PeerRequest<P> {
     }
 }
 
-/// Why a node asks its policy, as in moq-auth.
+/// Why a node asks its policy.
+///
+/// `Connect` and `Revalidate` are moq-auth's events of the same names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// A session opens.
     Connect,
-    /// A live session is checked again.
+    /// A live session's authorization is due for its periodic check.
     ///
-    /// Its authorization expired or is due for revalidation, or the policy
-    /// reported a change.
+    /// The interval is [`Authorization::revalidate`]. Nothing is known to
+    /// have changed.
     Revalidate,
+    /// A live session is decided again, because something may have changed.
+    ///
+    /// Its authorization expired, the policy's change stream yielded, or the
+    /// application asked the node to decide again.
+    Reauthorize,
 }
 
 /// A policy's answer: the session's rights, or a rejection that closes it.

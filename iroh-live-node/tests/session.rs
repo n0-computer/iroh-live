@@ -147,21 +147,6 @@ async fn shutdown_closes_sessions_and_refuses_new_ones() {
     bob.shutdown().await;
 }
 
-/// `accept` returns `None` at shutdown, even while a clone of the node is held.
-#[tokio::test]
-#[traced_test]
-async fn accept_ends_at_shutdown() {
-    let alice = Peer::spawn().await;
-    let moq = alice.moq.clone();
-    let waiting = tokio::spawn(async move { moq.accept().await.is_none() });
-    alice.moq.shutdown().await;
-    assert!(
-        step("accept", waiting).await.expect("task"),
-        "accept should end at shutdown"
-    );
-    alice.shutdown().await;
-}
-
 /// The peer of a closed session sees the code it was closed with.
 #[tokio::test]
 #[traced_test]

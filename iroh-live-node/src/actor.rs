@@ -21,7 +21,7 @@ use crate::{
     handshake::{Hop, SessionParts, dial_session},
     link::{self, LinkState},
     node::Shared,
-    policy::{Authorization, DynPolicy, Event, PeerRequest, Rejection},
+    policy::{Authorization, DynPolicy, PeerRequest, Rejection},
     reauth::{Finished, Reauth},
     session::SessionInner,
     state::LinkEntry,
@@ -296,8 +296,18 @@ impl Actor {
     /// Starts the re-decides that wait, as far as the concurrency limit allows.
     fn start_decisions(&mut self) {
         while let Some(start) = self.reauth.start() {
-            let request =
-                PeerRequest::new(start.peer, start.request, start.dialed, Event::Revalidate);
+            let mut request =
+                PeerRequest::new(start.peer, start.request, start.dialed, start.event);
+            let current = self
+                .shared
+                .state
+                .lock()
+                .expect("poisoned")
+                .peer_authorization(&start.peer)
+                .cloned();
+            if let Some(current) = current {
+                request = request.with_current(current);
+            }
             let shared = self.shared.clone();
             let (peer, generation) = (start.peer, start.generation);
             let handle = self.decisions.spawn(

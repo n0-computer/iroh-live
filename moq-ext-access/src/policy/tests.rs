@@ -264,3 +264,111 @@ fn an_empty_stream_ends_a_union() {
     ]));
     assert_eq!(block_on(union.collect::<Vec<_>>()), Vec::<()>::new());
 }
+
+/// Decides `request` with `queue` while `answer` handles the queued request.
+fn decide_queued(
+    queue: &Queue<Peer>,
+    request: &PeerRequest<Peer>,
+    answer: impl FnOnce(Pending<Peer>),
+) -> Decision {
+    let answering = async {
+        let pending = queue.next().await.expect("a queued request");
+        answer(pending);
+    };
+    block_on(future::zip(Policy::decide(queue, request), answering)).0
+}
+
+#[test]
+fn a_queue_admits_what_the_application_admits() {
+    let queue = Queue::new(4);
+    let decision = decide_queued(&queue, &request("bob"), |pending| {
+        assert_eq!(pending.request().peer(), "bob");
+        pending.admit(under("bob"));
+    });
+    assert_eq!(decision.expect("admitted").grant, under("bob"));
+}
+
+#[test]
+fn a_queue_rejects_what_the_application_rejects() {
+    let queue = Queue::new(4);
+    let decision = decide_queued(&queue, &request("bob"), |pending| {
+        pending.reject(Rejection::new("no").with_code(moq_net::Error::App(7)));
+    });
+    let rejection = decision.expect_err("rejected");
+    assert_eq!(rejection.reason(), "no");
+    assert!(matches!(rejection.code(), moq_net::Error::App(7)));
+}
+
+#[test]
+fn a_dropped_pending_rejects() {
+    let queue = Queue::new(4);
+    let decision = decide_queued(&queue, &request("bob"), drop);
+    assert_eq!(decision.expect_err("rejected").reason(), "not answered");
+}
+
+#[test]
+fn a_full_queue_rejects_at_once() {
+    let queue = Queue::new(1);
+    // The first request waits in the queue, unanswered.
+    let bob = request("bob");
+    let mut waiting = Box::pin(Policy::decide(&queue, &bob));
+    assert!(block_on(future::poll_once(&mut waiting)).is_none());
+    let rejection = decide(&queue, &request("carol")).expect_err("rejected");
+    assert!(matches!(rejection.code(), moq_net::Error::Timeout));
+    // The first one is still answered.
+    block_on(queue.next())
+        .expect("bob's request")
+        .admit(Grant::everything());
+    assert!(block_on(waiting).is_ok());
+}
+
+#[test]
+fn a_closed_queue_rejects_and_ends() {
+    let queue = Queue::<Peer>::new(4);
+    queue.close();
+    let rejection = decide(&queue, &request("bob")).expect_err("rejected");
+    assert!(matches!(rejection.code(), moq_net::Error::Timeout));
+    assert!(block_on(queue.next()).is_none());
+}
+
+#[test]
+fn a_queue_keeps_the_authorization_at_a_revalidation() {
+    let queue = Queue::new(4);
+    let current = Authorization {
+        revalidate: Some(Duration::from_secs(5)),
+        ..under("bob").into()
+    };
+    let revalidate = PeerRequest::new(
+        "bob".to_owned(),
+        SessionRequest::default(),
+        false,
+        Event::Revalidate,
+    )
+    .with_current(current.clone());
+    assert_eq!(decide(&queue, &revalidate).expect("kept"), current);
+    assert!(
+        block_on(future::poll_once(queue.next())).is_none(),
+        "the application saw a revalidation"
+    );
+}
+
+#[test]
+fn a_queue_asks_the_application_to_reauthorize() {
+    let queue = Queue::new(4);
+    let reauthorize = PeerRequest::new(
+        "bob".to_owned(),
+        SessionRequest::default(),
+        false,
+        Event::Reauthorize,
+    )
+    .with_current(under("bob").into());
+    let decision = decide_queued(&queue, &reauthorize, |pending| {
+        assert_eq!(pending.request().event(), Event::Reauthorize);
+        assert_eq!(
+            pending.request().current().map(|current| &current.grant),
+            Some(&under("bob"))
+        );
+        pending.admit(Grant::subscribe_only());
+    });
+    assert_eq!(decision.expect("admitted").grant, Grant::subscribe_only());
+}

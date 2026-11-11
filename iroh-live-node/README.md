@@ -54,8 +54,11 @@ out of an audience loses the path at once, and what it read there ends with
 `Unauthorized`. Every link serves only the node's own publications, never a
 route the node learned from another peer or a relay.
 
-With `Admission::Manual`, incoming sessions wait in `Node::accept` until the
-application admits or rejects them, for example after checking a token.
+To decide in the application, for example after checking a token, set a
+`policy::Queue` as the node's policy. Each request waits in the queue until the
+application admits or rejects the `Pending` that `Queue::next` yields. The node
+gives up on a decision after `NodeConfig::decide_timeout`, 10 seconds by
+default, so raise it when a person answers.
 
 ## Relays
 

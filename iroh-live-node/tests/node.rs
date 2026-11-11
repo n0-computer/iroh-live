@@ -10,8 +10,8 @@ use common::{
 };
 use iroh::endpoint::PathId;
 use iroh_live_node::{
-    Admission, Audience, Congestion, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach,
-    Session,
+    Audience, Congestion, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach, Session,
+    policy::{Event, Queue, Rejection},
 };
 use moq_net::{Pattern, Patterns};
 use n0_future::task::AbortOnDropHandle;
@@ -396,15 +396,17 @@ async fn closing_a_session_cuts_the_peer_off() {
     bob.shutdown().await;
 }
 
-/// Manual admission checks a token, and the grant bounds what the peer sees.
+/// Returns a node configuration whose policy is `queue`.
+fn queued(queue: &Queue) -> NodeConfig {
+    NodeConfig::default().with_policy(queue.clone())
+}
+
+/// An application that answers a queue checks a token, and the grant bounds what the peer sees.
 #[tokio::test]
 #[traced_test]
-async fn manual_admission_checks_a_token_and_bounds_offers() {
-    let alice = Peer::with_config(NodeConfig {
-        admission: Admission::Manual,
-        ..Default::default()
-    })
-    .await;
+async fn a_queue_checks_a_token_and_bounds_offers() {
+    let queue = Queue::new(16);
+    let alice = Peer::with_config(queued(&queue)).await;
     let bob = Peer::spawn().await;
     let mallory = Peer::spawn().await;
 
@@ -412,20 +414,19 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     let secret = publish(&alice.moq, alice.path("secret"), Audience::Everyone).expect("publish");
 
     let alice_id = alice.id();
-    let moq = alice.moq.clone();
+    let answering = queue.clone();
     let accept_loop = AbortOnDropHandle::new(tokio::spawn(async move {
-        let mut sessions = Vec::new();
-        while let Some(incoming) = moq.accept().await {
-            if incoming.request().token() != Some("letmein") {
-                incoming.reject(moq_net::Error::Unauthorized);
+        while let Some(pending) = answering.next().await {
+            assert_eq!(pending.request().event(), Event::Connect);
+            if pending.request().token() != Some("letmein") {
+                pending.reject(Rejection::new("no token"));
                 continue;
             }
             let pattern: Pattern = format!("live/{alice_id}/public").parse().expect("pattern");
-            let grant = Grant {
+            pending.admit(Grant {
                 subscribe: Patterns::from(pattern),
                 publish: Patterns::new(),
-            };
-            sessions.push(incoming.admit(grant).await.expect("admit"));
+            });
         }
     }));
 
@@ -642,16 +643,12 @@ async fn refused(dialer: &Peer, to: &Peer, within: Duration) {
 #[tokio::test]
 #[traced_test]
 async fn an_undecided_session_is_refused() {
-    let alice = Peer::with_config(NodeConfig {
-        admission: Admission::Manual,
-        ..Default::default()
-    })
-    .await;
+    let queue = Queue::new(16);
+    let alice = Peer::with_config(queued(&queue)).await;
     let bob = Peer::spawn().await;
-    let moq = alice.moq.clone();
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
-        while let Some(incoming) = moq.accept().await {
-            drop(incoming);
+        while let Some(pending) = queue.next().await {
+            drop(pending);
         }
     }));
     refused(&bob, &alice, TIMEOUT).await;
@@ -659,26 +656,74 @@ async fn an_undecided_session_is_refused() {
     bob.shutdown().await;
 }
 
-/// An `accept` parked in an unpolled future does not hold up the shutdown.
+/// A session that waits in an unanswered queue does not hold up the shutdown.
 #[tokio::test]
 #[traced_test]
-async fn a_parked_accept_does_not_hold_up_shutdown() {
+async fn a_session_waiting_in_the_queue_does_not_hold_up_shutdown() {
+    let queue = Queue::new(16);
     let alice = Peer::with_config(NodeConfig {
-        admission: Admission::Manual,
-        ..Default::default()
+        decide_timeout: Duration::from_secs(600),
+        ..queued(&queue)
     })
     .await;
-    let mut accepting = Box::pin(alice.moq.accept());
-    assert!(
-        n0_future::future::poll_once(&mut accepting).await.is_none(),
-        "nothing to accept yet"
-    );
+    let bob = Peer::spawn().await;
+    let dialing = {
+        let bob = bob.moq.clone();
+        let addr = alice.endpoint.addr();
+        tokio::spawn(async move { bob.connect(addr).await })
+    };
+    let pending = step("bob's session waits", queue.next())
+        .await
+        .expect("a request");
     step("the shutdown ends", alice.moq.shutdown()).await;
+    // Too late: the node refused the session at shutdown.
+    pending.admit(Grant::everything());
+    match step("bob's dial ends", dialing).await.expect("task") {
+        Err(_) => {}
+        Ok(session) => {
+            step("the refused session closes", session.closed()).await;
+        }
+    }
     assert!(
-        step("the parked accept returns", accepting).await.is_none(),
-        "accept handed out a session after the shutdown"
+        alice.moq.sessions().get().is_empty(),
+        "admitted after the shutdown"
     );
     alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A decision slower than the node's decide timeout refuses the session.
+#[tokio::test]
+#[traced_test]
+async fn a_slow_decision_times_out() {
+    let queue = Queue::new(16);
+    let alice = Peer::with_config(NodeConfig {
+        decide_timeout: Duration::from_millis(200),
+        ..queued(&queue)
+    })
+    .await;
+    let bob = Peer::spawn().await;
+    // Held and never answered, so only the timeout decides.
+    let _held = AbortOnDropHandle::new(tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Some(pending) = queue.next().await {
+            held.push(pending);
+        }
+    }));
+    match step("bob connects", bob.moq.connect(alice.endpoint.addr())).await {
+        Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
+        Ok(session) => {
+            let reason = step("the session closes", session.closed()).await;
+            assert!(
+                matches!(&reason, Error::SessionClosed { source, .. }
+                    if matches!(source, moq_net::Error::Session(moq_net::SessionError::Timeout)
+                        | moq_net::Error::Timeout)),
+                "not closed for the timeout: {reason:#}"
+            );
+        }
+    }
+    alice.shutdown().await;
+    bob.shutdown().await;
 }
 
 /// Shutting the router down shuts the node down.
@@ -699,22 +744,16 @@ async fn the_router_shuts_the_node_down() {
 #[tokio::test]
 #[traced_test]
 async fn a_grant_bounds_what_a_peer_publishes() {
-    let alice = Peer::with_config(NodeConfig {
-        admission: Admission::Manual,
-        ..Default::default()
-    })
-    .await;
+    let queue = Queue::new(16);
+    let alice = Peer::with_config(queued(&queue)).await;
     let bob = Peer::spawn().await;
     let allowed = publish(&bob.moq, bob.path("allowed"), Audience::Everyone).expect("publish");
     let other = publish(&bob.moq, bob.path("other"), Audience::Everyone).expect("publish");
 
-    let moq = alice.moq.clone();
     let within: Pattern = allowed.path().as_str().parse().expect("pattern");
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
-        let mut sessions = Vec::new();
-        while let Some(incoming) = moq.accept().await {
-            let grant = Grant::publish_under(within.clone());
-            sessions.push(incoming.admit(grant).await.expect("admit"));
+        while let Some(pending) = queue.next().await {
+            pending.admit(Grant::publish_under(within.clone()));
         }
     }));
     step("bob connects", bob.moq.connect(alice.endpoint.addr()))

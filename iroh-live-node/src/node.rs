@@ -7,6 +7,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use iroh::{
@@ -23,10 +24,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, Incoming, LinkId,
-    OwnerFn, Publication, RelayConfig, RelayLink, Session, Subscription,
+    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, LinkId, OwnerFn,
+    Publication, RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
-    admission::{self, INCOMING_QUEUE},
+    admission,
     handshake::{Hop, SessionParts},
     policy::{self, Authorization, DynPolicy, PeerRequest, Policy},
     publish, reauth, relay, route,
@@ -47,35 +48,48 @@ pub enum Reach {
     Both(EndpointId),
 }
 
+/// How long the node waits for its policy by default.
+pub const DECIDE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The configuration of a [`Node`].
-#[derive(Clone, Default, derive_more::Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct NodeConfig {
     /// Decides who may hold a session with the node, and with which rights.
     ///
-    /// The node asks it when it accepts a session under [`Admission::Open`],
-    /// after the peer's MoQ SETUP, and before it dials a peer without
-    /// [`ConnectOptions::grant`]. A rejection closes an accepted session
-    /// with the rejection's code, and fails a dial with [`Error::Rejected`].
-    /// Every session with one peer shares the authorization the first of
-    /// them got. Set it with [`with_policy`](Self::with_policy).
+    /// The node asks it when it accepts a session, after the peer's MoQ
+    /// SETUP, and before it dials a peer without [`ConnectOptions::grant`].
+    /// A rejection closes an accepted session with the rejection's code, and
+    /// fails a dial with [`Error::Rejected`]. Every session with one peer
+    /// shares the authorization the first of them got. Set it with
+    /// [`with_policy`](Self::with_policy).
     ///
-    /// The node asks again, with [`Event::Revalidate`](policy::Event::Revalidate),
-    /// when an authorization expires or is due for revalidation, for every
-    /// peer when the policy's [`changes`](Policy::changes) stream yields, and
-    /// when [`Node::reauthorize`] asks. A new authorization replaces the old
-    /// one on every live session with the peer, and a rejection closes them.
+    /// The node asks again about a live peer:
+    ///
+    /// - with [`Event::Revalidate`](policy::Event::Revalidate) when its
+    ///   authorization is due for revalidation;
+    /// - with [`Event::Reauthorize`](policy::Event::Reauthorize) when its
+    ///   authorization expires, when the policy's [`changes`](Policy::changes)
+    ///   stream yields, and when [`Node::reauthorize`] asks.
+    ///
+    /// A new authorization replaces the old one on every live session with
+    /// the peer, and a rejection closes them.
     ///
     /// `None` builds a policy from [`grant`](Self::grant): every peer is
     /// admitted with the grant it returns, or with
     /// [`Grant::subscribe_only`] without one.
     pub policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
+    /// How long the node waits for each decision of its policy.
+    ///
+    /// A decision that takes longer is a rejection with
+    /// [`moq_net::Error::Timeout`]. The default is [`DECIDE_TIMEOUT`]. Raise it
+    /// when a person answers, as with a [`policy::Queue`].
+    pub decide_timeout: Duration,
     /// How incoming sessions are admitted.
     pub admission: Admission,
     /// Returns the grant of a session with a peer, from its endpoint id.
     ///
-    /// Used when [`policy`](Self::policy) is `None`, for sessions admitted
-    /// under [`Admission::Open`] and for dials without
-    /// [`ConnectOptions::grant`].
+    /// Used when [`policy`](Self::policy) is `None`, for accepted sessions
+    /// and for dials without [`ConnectOptions::grant`].
     ///
     /// `None` is the secure default: [`Grant::subscribe_only`], so any peer may
     /// subscribe to anything but no peer may publish. Return
@@ -103,6 +117,19 @@ pub struct NodeConfig {
     /// their publisher some other way, such as a relay's pull paths.
     #[debug("{}", owner.is_some())]
     pub owner: Option<OwnerFn>,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            policy: None,
+            decide_timeout: DECIDE_TIMEOUT,
+            admission: Admission::default(),
+            grant: None,
+            table: None,
+            owner: None,
+        }
+    }
 }
 
 impl NodeConfig {
@@ -153,9 +180,10 @@ pub struct Node {
 pub(crate) struct Shared {
     pub(crate) endpoint: Endpoint,
     pub(crate) id: EndpointId,
-    pub(crate) admission: Admission,
     /// Decides sessions, built from the configured grant if none was given.
     pub(crate) policy: Arc<dyn DynPolicy<EndpointId>>,
+    /// How long a decision of [`policy`](Self::policy) may take.
+    pub(crate) decide_timeout: Duration,
     /// The re-decides the application asked for, until the actor takes them.
     pub(crate) reauth_requests: Mutex<reauth::Requests>,
     /// Wakes the actor for new [`reauth_requests`](Self::reauth_requests).
@@ -170,8 +198,6 @@ pub(crate) struct Shared {
     pub(crate) state: Mutex<State>,
     pub(crate) sessions: Watchable<Vec<Session>>,
     pub(crate) actor: mpsc::Sender<ActorMessage>,
-    pub(crate) incoming_tx: mpsc::Sender<Incoming>,
-    pub(crate) incoming_rx: tokio::sync::Mutex<mpsc::Receiver<Incoming>>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) done: Watchable<bool>,
     /// Set by [`Node::mount`], or by the first session the node accepts.
@@ -224,12 +250,11 @@ impl Node {
             .policy
             .unwrap_or_else(|| legacy_policy(config.grant.clone()));
         let (actor_tx, actor_rx) = mpsc::channel(16);
-        let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         let shared = Arc::new(Shared {
             endpoint,
             id,
-            admission: config.admission,
             policy,
+            decide_timeout: config.decide_timeout,
             reauth_requests: Mutex::new(reauth::Requests::default()),
             reauth_notify: Notify::new(),
             owner: config.owner,
@@ -237,14 +262,12 @@ impl Node {
             state: Mutex::new(State::default()),
             sessions: Watchable::new(Vec::new()),
             actor: actor_tx,
-            incoming_tx,
-            incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             shutdown: CancellationToken::new(),
             done: Watchable::new(false),
             mounted: AtomicBool::new(false),
             warned_unreachable: AtomicBool::new(false),
         });
-        info!(id = %id.fmt_short(), hop = %shared.table.hop(), admission = ?config.admission, "moq node started");
+        info!(id = %id.fmt_short(), hop = %shared.table.hop(), "moq node started");
         let shutdown = shared.shutdown.clone();
         let actor = Actor::new(shared.clone());
         let actor_task = tokio::spawn(
@@ -535,14 +558,6 @@ impl Node {
         self.shared.sessions.watch()
     }
 
-    /// Waits for the next session that needs admission.
-    ///
-    /// Yields only under [`Admission::Manual`]. Returns `None` once the node
-    /// shuts down. Cancellation safe: dropping the future loses nothing.
-    pub async fn accept(&self) -> Option<Incoming> {
-        admission::next(&self.shared).await
-    }
-
     /// Attaches to the moq relay at `config.url`, redialing it with backoff.
     ///
     /// `iroh://` URLs are dialed through this node's endpoint.
@@ -560,8 +575,8 @@ impl Node {
     ///
     /// Closes every session, detaches relays and withdraws publications.
     /// Afterwards [`connect`](Self::connect), [`publish`](Self::publish) and
-    /// [`attach_relay`](Self::attach_relay) fail, and
-    /// [`accept`](Self::accept) returns `None`. Gives sessions a short grace
+    /// [`attach_relay`](Self::attach_relay) fail, and incoming sessions are
+    /// refused, also those that wait for the policy. Gives sessions a short grace
     /// to tell their peers, so the endpoint can be closed once this returns.
     /// Idempotent. Not cancellation safe: call it again to finish.
     pub async fn shutdown(&self) {

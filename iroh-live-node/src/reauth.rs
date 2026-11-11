@@ -13,7 +13,10 @@ use std::{
 
 use iroh::EndpointId;
 
-use crate::{SessionRequest, policy::Authorization};
+use crate::{
+    SessionRequest,
+    policy::{Authorization, Event},
+};
 
 /// How many re-decides run at once, across all peers.
 pub(crate) const MAX_CONCURRENT: usize = 16;
@@ -53,6 +56,10 @@ pub(crate) struct Reauth {
 struct Entry {
     /// When the peer's authorization lapses or is due for revalidation.
     deadline: Option<Instant>,
+    /// When the peer's authorization lapses.
+    expires: Option<Instant>,
+    /// Whether a trigger since the last start was more than a revalidation.
+    reauthorize: bool,
     /// Counts the changes that make an earlier decision stale.
     generation: u64,
     /// The generation of the decision in flight, if one runs.
@@ -72,6 +79,9 @@ struct Entry {
 pub(crate) struct Start {
     pub(crate) peer: EndpointId,
     pub(crate) generation: u64,
+    /// [`Event::Revalidate`] when only the revalidation interval is due,
+    /// [`Event::Reauthorize`] otherwise.
+    pub(crate) event: Event,
     pub(crate) request: SessionRequest,
     pub(crate) dialed: bool,
 }
@@ -97,15 +107,20 @@ pub(crate) fn deadline_of(
     now: Instant,
     wall: SystemTime,
 ) -> Option<Instant> {
-    let expires = authorization
-        .expires
-        .map(|expires| now + expires.duration_since(wall).unwrap_or_default());
+    let expires = expiry_of(authorization, now, wall);
     let revalidate = authorization.revalidate.map(|every| now + every);
     let deadline = match (expires, revalidate) {
         (Some(a), Some(b)) => a.min(b),
         (a, b) => a.or(b)?,
     };
     Some(deadline.max(now + MIN_INTERVAL))
+}
+
+/// Returns when `authorization` expires, on the monotonic clock.
+fn expiry_of(authorization: &Authorization, now: Instant, wall: SystemTime) -> Option<Instant> {
+    authorization
+        .expires
+        .map(|expires| now + expires.duration_since(wall).unwrap_or_default())
 }
 
 impl Reauth {
@@ -127,6 +142,8 @@ impl Reauth {
         let deadline = deadline_of(authorization, now, wall);
         let entry = self.peers.entry(peer).or_insert_with(|| Entry {
             deadline: None,
+            expires: None,
+            reauthorize: false,
             generation,
             running: None,
             queued: false,
@@ -136,6 +153,7 @@ impl Reauth {
         });
         entry.generation = generation;
         entry.deadline = deadline;
+        entry.expires = expiry_of(authorization, now, wall);
         entry.request = request;
         entry.dialed = dialed;
     }
@@ -150,6 +168,7 @@ impl Reauth {
     ) {
         if let Some(entry) = self.peers.get_mut(peer) {
             entry.deadline = deadline_of(authorization, now, wall);
+            entry.expires = expiry_of(authorization, now, wall);
         }
     }
 
@@ -168,17 +187,25 @@ impl Reauth {
         self.peers.contains_key(peer)
     }
 
-    /// Asks for a new decision about `peer`.
+    /// Asks for a new decision about `peer`, with [`Event::Reauthorize`].
     ///
     /// A decision in flight becomes stale and runs again once it finishes.
     /// Returns `false` for a peer without a live session.
     pub(crate) fn request(&mut self, peer: &EndpointId) -> bool {
+        self.trigger(peer, true)
+    }
+
+    /// Asks for a new decision about `peer`.
+    ///
+    /// `reauthorize` is false for a revalidation that is due, and nothing more.
+    fn trigger(&mut self, peer: &EndpointId, reauthorize: bool) -> bool {
         self.generation += 1;
         let generation = self.generation;
         let Some(entry) = self.peers.get_mut(peer) else {
             return false;
         };
         entry.generation = generation;
+        entry.reauthorize |= reauthorize;
         if entry.running.is_some() {
             entry.wanted = true;
         } else if !entry.queued {
@@ -203,19 +230,22 @@ impl Reauth {
 
     /// Asks for a new decision about every peer whose deadline is at or before `now`.
     ///
-    /// Clears those deadlines: the decision sets the next one.
+    /// Clears those deadlines: the decision sets the next one. A peer whose
+    /// authorization expired is decided with [`Event::Reauthorize`], one that
+    /// is only due for revalidation with [`Event::Revalidate`].
     pub(crate) fn expire(&mut self, now: Instant) {
-        let due: Vec<EndpointId> = self
+        let due: Vec<(EndpointId, bool)> = self
             .peers
             .iter_mut()
             .filter(|(_, entry)| entry.deadline.is_some_and(|deadline| deadline <= now))
             .map(|(peer, entry)| {
                 entry.deadline = None;
-                *peer
+                let expired = entry.expires.is_some_and(|expires| expires <= now);
+                (*peer, expired)
             })
             .collect();
-        for peer in due {
-            self.request(&peer);
+        for (peer, expired) in due {
+            self.trigger(&peer, expired);
         }
     }
 
@@ -229,10 +259,16 @@ impl Reauth {
             entry.queued = false;
             entry.wanted = false;
             entry.running = Some(entry.generation);
+            let event = if std::mem::take(&mut entry.reauthorize) {
+                Event::Reauthorize
+            } else {
+                Event::Revalidate
+            };
             self.running += 1;
             return Some(Start {
                 peer,
                 generation: entry.generation,
+                event,
                 request: entry.request.clone(),
                 dialed: entry.dialed,
             });
@@ -352,6 +388,57 @@ mod tests {
         assert_eq!(start.peer, early);
         assert!(reauth.start().is_none(), "the late peer is not due yet");
         assert_eq!(reauth.next_deadline(), Some(now + Duration::from_secs(9)));
+    }
+
+    #[test]
+    fn only_a_due_revalidation_is_decided_as_one() {
+        let now = Instant::now();
+        let secs = Duration::from_secs;
+        let (revalidating, expiring_peer, asked) = (peer(), peer(), peer());
+        let mut reauth = Reauth::default();
+        admit(
+            &mut reauth,
+            revalidating,
+            &expiring(secs(60), Some(secs(2))),
+            now,
+        );
+        admit(
+            &mut reauth,
+            expiring_peer,
+            &expiring(secs(2), Some(secs(9))),
+            now,
+        );
+        admit(&mut reauth, asked, &Grant::everything().into(), now);
+
+        reauth.expire(now + secs(3));
+        reauth.request(&asked);
+        let mut events = HashMap::new();
+        while let Some(start) = reauth.start() {
+            events.insert(start.peer, start.event);
+        }
+        assert_eq!(events[&revalidating], Event::Revalidate);
+        assert_eq!(events[&expiring_peer], Event::Reauthorize);
+        assert_eq!(events[&asked], Event::Reauthorize);
+    }
+
+    #[test]
+    fn a_request_while_a_revalidation_runs_reauthorizes_next() {
+        let now = Instant::now();
+        let bob = peer();
+        let mut reauth = Reauth::default();
+        admit(
+            &mut reauth,
+            bob,
+            &expiring(Duration::from_secs(60), Some(Duration::from_secs(1))),
+            now,
+        );
+        reauth.expire(now + Duration::from_secs(2));
+        let first = reauth.start().expect("a revalidation");
+        assert_eq!(first.event, Event::Revalidate);
+        reauth.request(&bob);
+        assert_eq!(reauth.finish(&bob, first.generation), Finished::Stale);
+        let second = reauth.start().expect("the peer runs again");
+        assert_eq!(second.event, Event::Reauthorize);
     }
 
     #[test]

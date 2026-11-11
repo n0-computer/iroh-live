@@ -535,5 +535,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Node::sessions`, `Node::accept` with `Admission::Manual`, and `Session::link_sample`
-cover the rest of the node. See [the transport page](../architecture/transport.md).
+`Node::sessions`, a `policy::Queue` for admission in the application, and
+`Session::link_sample` cover the rest of the node. See [the transport page](../architecture/transport.md).

@@ -93,8 +93,7 @@
 //! | Future | Safe | When dropped |
 //! |---|---|---|
 //! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Node::subscribe_ticket`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
-//! | [`Node::accept`] | yes | loses nothing |
-//! | [`Incoming::admit`] | yes | rejects the session before the handshake completes, admits it after |
+//! | [`policy::Queue::next`] | yes | loses nothing |
 //! | [`moq_transport_iroh::dial`] | yes | drops the connection |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
@@ -123,11 +122,11 @@ use moq_transport_iroh as transport;
 pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
 
 pub use self::{
-    admission::{Admission, ConnectOptions, Grant, GrantFn, Incoming, SessionRequest},
+    admission::{Admission, ConnectOptions, Grant, GrantFn, SessionRequest},
     claim::{OwnerFn, PathClaim},
     error::Error,
     link::{LinkId, LinkKind, ServingLink},
-    node::{Node, NodeConfig, Reach},
+    node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     publish::{Audience, Publication},
     relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::Subscription,
