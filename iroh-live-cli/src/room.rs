@@ -649,7 +649,7 @@ mod window {
         match opened.await {
             Ok(Ok((sub, player))) => Some(Opened { sub, player }),
             Ok(Err(err)) => {
-                warn!(peer = %short(remote), %name, error = %format!("{err:#}"), "peer broadcast failed to open");
+                warn!(peer = %short(remote), %name, error = format_args!("{err:#}"), "peer broadcast failed to open");
                 None
             }
             Err(_) => {

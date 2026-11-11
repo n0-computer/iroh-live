@@ -522,7 +522,7 @@ async fn tokio_uplink(
                 break;
             }
             Err(err) => {
-                warn!(%err, "relay link ended");
+                warn!(error = %err, "relay link ended");
                 break;
             }
         }
@@ -600,7 +600,7 @@ async fn iroh_uplink(
                     _ = stop.cancelled() => true,
                     _ = shared.shutdown.cancelled() => true,
                     err = moq.closed() => {
-                        warn!(%err, "relay session dropped, redialing");
+                        warn!(error = %err, "relay session dropped, redialing");
                         false
                     }
                 };
@@ -617,7 +617,7 @@ async fn iroh_uplink(
                     pause = REDIAL_MIN;
                 }
             }
-            Err(err) => warn!(%err, "relay dial failed, redialing"),
+            Err(err) => warn!(error = %err, "relay dial failed, redialing"),
         }
         status.set(RelayStatus::Reconnecting).ok();
         // Equal jitter, half the pause plus a random half, so relays that

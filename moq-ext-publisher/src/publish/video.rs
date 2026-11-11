@@ -141,7 +141,7 @@ pub(super) async fn run_raw(
     let mut last_failure = None;
     let mut fail = |rendition: &str, err: Error| {
         let err = Arc::new(err);
-        warn!(%rendition, error = %format!("{err:#}"), "rendition cannot encode");
+        warn!(%rendition, error = format_args!("{err:#}"), "rendition cannot encode");
         reporter.rendition(rendition, RenditionState::Failed(err.clone().into()));
         last_failure = Some(err);
     };
@@ -246,7 +246,7 @@ pub(super) async fn run_raw(
                 // published, and the slot must say so.
                 if failed == spawned {
                     let failure = last_failure.clone().expect("counted above");
-                    warn!(error = %format!("{failure:#}"), "no rendition can encode");
+                    warn!(error = format_args!("{failure:#}"), "no rendition can encode");
                     reporter.slot(SlotState::Failed(failure.into()));
                     return;
                 }
@@ -263,7 +263,7 @@ pub(super) async fn run_raw(
     }
     match source.failure() {
         Some(failure) => {
-            warn!(error = %format!("{failure:#}"), "video source failed");
+            warn!(error = format_args!("{failure:#}"), "video source failed");
             reporter.slot(SlotState::Failed(failure.into()));
         }
         None => {
@@ -401,7 +401,7 @@ impl Encoder {
             }
             Err(err) => err,
         };
-        warn!(error = %format!("{err:#}"), "rendition encoder failed");
+        warn!(error = format_args!("{err:#}"), "rendition encoder failed");
         // Aborting the track shows a subscriber the cause instead of a bare
         // reset.
         let cause = moq_net::Error::Transport(format!("{err:#}"));
@@ -695,7 +695,7 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
             reporter.slot(SlotState::Ended);
         }
         Err(err) => {
-            warn!(error = %format!("{err:#}"), "pre-encoded video failed");
+            warn!(error = format_args!("{err:#}"), "pre-encoded video failed");
             reporter.slot(SlotState::Failed(ByPtr::new(err)));
         }
     }

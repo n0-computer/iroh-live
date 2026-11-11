@@ -210,7 +210,10 @@ impl CallApp {
                     }
                     Err(err) if attempt >= RESTORE_ATTEMPTS => break Err(err),
                     Err(err) => {
-                        debug!(error = %format!("{err:#}"), attempt, "the camera is not free yet");
+                        debug!(
+                            error = format_args!("{err:#}"),
+                            attempt, "the camera is not free yet"
+                        );
                         tokio::time::sleep(RESTORE_DELAY).await;
                     }
                 }

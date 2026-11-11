@@ -114,7 +114,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
             }
             Err(e) => {
                 warn!(
-                    error = format!("{e:#}"),
+                    error = format_args!("{e:#}"),
                     "could not display QR on e-paper - is the HAT attached and SPI enabled? \
                      (the stream is publishing normally, use the ticket above to connect)"
                 );
@@ -134,7 +134,10 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
                 match tokio::task::spawn_blocking(move || epaper::display_qr(&ticket)).await {
                     Ok(Ok(())) => debug!("periodic e-paper refresh complete"),
                     Ok(Err(e)) => {
-                        warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
+                        warn!(
+                            error = format_args!("{e:#}"),
+                            "periodic e-paper refresh failed"
+                        )
                     }
                     Err(e) => warn!(error = %e, "periodic e-paper refresh panicked"),
                 }
@@ -151,7 +154,10 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     if has_epaper {
         match tokio::task::spawn_blocking(epaper::clear_display).await {
             Ok(Ok(())) => info!("e-paper cleared for storage"),
-            Ok(Err(e)) => warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
+            Ok(Err(e)) => warn!(
+                error = format_args!("{e:#}"),
+                "could not clear e-paper on exit"
+            ),
             Err(e) => warn!(error = %e, "clearing the e-paper panicked"),
         }
     }

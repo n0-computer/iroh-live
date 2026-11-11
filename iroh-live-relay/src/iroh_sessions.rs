@@ -153,7 +153,7 @@ impl IrohSessions {
         tokio::pin!(expiry);
         let close = tokio::select! {
             err = &mut run => {
-                debug!(%err, "iroh session ended");
+                debug!(error = %err, "iroh session ended");
                 return Ok(());
             }
             () = self.shutdown.cancelled() => moq_net::Error::Cancel,

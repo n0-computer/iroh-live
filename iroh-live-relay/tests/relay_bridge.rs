@@ -226,7 +226,7 @@ impl iroh::protocol::ProtocolHandler for OpenSessions {
             .await
             .map_err(AcceptError::from_err)?;
         let err = moq_net::time::run(driver).await;
-        debug!(%err, "iroh session ended");
+        debug!(error = %err, "iroh session ended");
         Ok(())
     }
 }

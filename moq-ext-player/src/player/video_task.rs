@@ -374,7 +374,7 @@ fn report(
                     None
                 }
                 Abandoned::OpenFailed(err) => {
-                    warn!(error = %format!("{err:#}"), %rendition, "replacement decoder failed to open");
+                    warn!(error = format_args!("{err:#}"), %rendition, "replacement decoder failed to open");
                     Some(Arc::new(err))
                 }
                 Abandoned::Ended => {
@@ -382,7 +382,7 @@ fn report(
                         .replacement
                         .take()
                         .unwrap_or_else(|| Arc::new(n0_error::e!(Error::Closed)));
-                    warn!(error = %format!("{failure:#}"), %rendition, "replacement decoder gave up before it took over");
+                    warn!(error = format_args!("{failure:#}"), %rendition, "replacement decoder gave up before it took over");
                     Some(failure)
                 }
                 Abandoned::TimedOut => {
@@ -425,7 +425,7 @@ fn report(
                 // switch, so the selector backs off and tries another
                 // rendition.
                 Some((target, Some(err))) => {
-                    warn!(error = %format!("{err:#}"), rendition = %target.rendition, "video failed");
+                    warn!(error = format_args!("{err:#}"), rendition = %target.rendition, "video failed");
                     send_if_changed(out.status, |status| {
                         status.clear_video(SlotState::Failed(err.clone().into()));
                         status.switch_error = Some(err.clone().into());

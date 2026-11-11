@@ -372,7 +372,9 @@ pub(crate) async fn subscribe(moq: &Node, path: Path, reach: Reach) -> Result<Su
                 return Err(e!(Error::NotAnnounced { path }));
             }
         }
-        Err(err) if relays => info!(%path, %err, "publisher unreachable, waiting for a relay"),
+        Err(err) if relays => {
+            info!(%path, error = %err, "publisher unreachable, waiting for a relay")
+        }
         Err(err) => return Err(err),
     }
     let resolved = routed.await;

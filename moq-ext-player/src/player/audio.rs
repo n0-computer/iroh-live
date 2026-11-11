@@ -170,7 +170,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         None
                     }
                     Err(err) => {
-                        warn!(error = %format!("{err:#}"), rendition = %name, "audio failed to open");
+                        warn!(error = format_args!("{err:#}"), rendition = %name, "audio failed to open");
                         send_if_changed(&status, |status| {
                             status.audio = SlotState::Failed(ByPtr::new(err))
                         });
@@ -209,7 +209,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     match result {
                         Ok(Ok(())) => send_if_changed(&status, |status| status.audio = SlotState::Ended),
                         Ok(Err(err)) => {
-                            warn!(error = %format!("{err:#}"), "audio stopped");
+                            warn!(error = format_args!("{err:#}"), "audio stopped");
                             send_if_changed(&status, |status| status.audio = SlotState::Failed(ByPtr::new(err)));
                         }
                         Err(err) => warn!(error = %err, "the audio task panicked"),

@@ -140,7 +140,7 @@ impl Actor {
                         Ok((id, result)) => self.dialed(id, result),
                         Err(err) => {
                             let id = err.id();
-                            error!(%err, "dial task failed");
+                            error!(error = %err, "dial task failed");
                             let failure = e!(Error::Transport {
                                 source: e!(moq_transport_iroh::Error::Connect {
                                     source: Arc::new(AnyError::from_display(&err))
@@ -270,7 +270,7 @@ impl Actor {
                 self.register(parts);
             }
             Err(err) => {
-                info!(peer = %peer.fmt_short(), %err, "dial failed");
+                info!(peer = %peer.fmt_short(), error = %err, "dial failed");
                 for reply in self.pending.remove(&peer).into_iter().flatten() {
                     reply.send(Err(err.clone())).ok();
                 }
@@ -368,7 +368,7 @@ impl Actor {
                 let Some(asked) = self.decision_ids.remove(&err.id()) else {
                     return;
                 };
-                error!(peer = %asked.0.fmt_short(), %err, "re-decide task failed, rejecting the peer");
+                error!(peer = %asked.0.fmt_short(), error = %err, "re-decide task failed, rejecting the peer");
                 (asked, Err(Rejection::new("the policy failed")))
             }
         };
@@ -606,8 +606,10 @@ impl Actor {
             Ok(moq_net::Error::Closed | moq_net::Error::Cancel) => {
                 info!(peer = %peer.fmt_short(), %link, "session closed");
             }
-            Ok(err) => info!(peer = %peer.fmt_short(), %link, %err, "session ended"),
-            Err(err) => error!(peer = %peer.fmt_short(), %link, %err, "session task failed"),
+            Ok(err) => info!(peer = %peer.fmt_short(), %link, error = %err, "session ended"),
+            Err(err) => {
+                error!(peer = %peer.fmt_short(), %link, error = %err, "session task failed")
+            }
         }
         let mut last = false;
         if let Some(sessions) = self.peers.get_mut(&peer) {

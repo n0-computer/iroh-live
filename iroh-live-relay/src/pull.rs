@@ -71,7 +71,7 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
             Some(cluster)
         }
         Err(err) => {
-            warn!(%requested, %err, "cannot mount the ticket's broadcast");
+            warn!(%requested, error = %err, "cannot mount the ticket's broadcast");
             None
         }
     }
@@ -266,7 +266,7 @@ impl PullState {
                     }
                     Err(err) => {
                         // Retire it, so the next pull dials again.
-                        warn!(local_name = %name, %err, "pull dial failed");
+                        warn!(local_name = %name, error = %err, "pull dial failed");
                         inner.retire(&name, &pull);
                         pull.dial.send_replace(Dial::Failed(Arc::new(err)));
                     }
@@ -300,7 +300,7 @@ impl PullState {
             if let Err(err) = finished
                 && err.is_panic()
             {
-                warn!(%err, "a pull task panicked");
+                warn!(error = %err, "a pull task panicked");
             }
         }
         tasks.spawn(task);
@@ -425,7 +425,7 @@ impl Pulls {
             match self.resolve(ticket).await {
                 Ok(next) => return Some(next),
                 Err(err) => {
-                    warn!(%local_name, attempt, %err, "could not resolve the pull again");
+                    warn!(%local_name, attempt, error = %err, "could not resolve the pull again");
                     backoff = (backoff * 2).min(RESOLVE_BACKOFF_MAX);
                 }
             }

@@ -293,7 +293,7 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) 
         Err(err) => Err(err.into()),
     };
     if let Err(err) = published {
-        warn!(error = format!("{err:#}"), "publishing without audio");
+        warn!(error = format_args!("{err:#}"), "publishing without audio");
     }
 }
 
@@ -320,7 +320,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
     match runtime().block_on(connect_impl(ticket)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!(error = format!("{err:#}"), "connect failed");
+            error!(error = format_args!("{err:#}"), "connect failed");
             0
         }
     }
@@ -369,7 +369,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_dial(
     match runtime().block_on(dial_impl(ticket, size)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!(error = format!("{err:#}"), "dial failed");
+            error!(error = format_args!("{err:#}"), "dial failed");
             0
         }
     }
@@ -425,7 +425,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
     match runtime().block_on(answer_impl(size)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!(error = format!("{err:#}"), "answer failed");
+            error!(error = format_args!("{err:#}"), "answer failed");
             0
         }
     }
@@ -464,7 +464,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
         if let Err(err) = accept_one(calls, output, waiting).await {
-            error!(error = format!("{err:#}"), "answering failed");
+            error!(error = format_args!("{err:#}"), "answering failed");
         }
     });
     shared.lock().expect("poisoned").waiting = Some(AbortOnDropHandle::new(task));
@@ -542,7 +542,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
     match runtime().block_on(publish_impl(name, size)) {
         Ok(handle) => handle,
         Err(err) => {
-            error!(error = format!("{err:#}"), "publish failed");
+            error!(error = format_args!("{err:#}"), "publish failed");
             0
         }
     }
@@ -604,7 +604,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
     match start_direct_impl(size) {
         Ok(handle) => handle,
         Err(err) => {
-            error!(error = format!("{err:#}"), "startDirect failed");
+            error!(error = format_args!("{err:#}"), "startDirect failed");
             0
         }
     }
@@ -639,7 +639,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startH264(
     match start_h264_impl(size) {
         Ok(handle) => handle,
         Err(err) => {
-            error!(error = format!("{err:#}"), "startH264 failed");
+            error!(error = format_args!("{err:#}"), "startH264 failed");
             0
         }
     }
@@ -785,7 +785,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
     let planes = match nv12_to_i420(&y, y_stride as usize, &uv, uv_stride as usize, size) {
         Ok(planes) => planes,
         Err(err) => {
-            warn!(%size, error = format!("{err:#}"), "rejected NV12 camera frame");
+            warn!(%size, error = format_args!("{err:#}"), "rejected NV12 camera frame");
             return;
         }
     };
@@ -873,7 +873,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
     // renderer takes its own reference.
     match unsafe { AndroidRenderer::new(native_window.ptr().as_ptr().cast()) } {
         Ok(renderer) => *guard.renderer.lock().expect("poisoned") = Some(renderer),
-        Err(err) => error!(error = format!("{err:#}"), "initSurface failed"),
+        Err(err) => error!(error = format_args!("{err:#}"), "initSurface failed"),
     }
 }
 

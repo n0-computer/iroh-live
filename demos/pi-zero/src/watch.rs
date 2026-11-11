@@ -176,7 +176,7 @@ impl DrmDisplay {
         let vt = match VtGuard::activate() {
             Ok(vt) => Some(vt),
             Err(e) => {
-                warn!(%e, "VT switch failed - may need root or a linux console");
+                warn!(error = %e, "VT switch failed - may need root or a linux console");
                 None
             }
         };

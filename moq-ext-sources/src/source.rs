@@ -154,7 +154,7 @@ impl VideoSource {
             match Self::capture_device(pipewire).await {
                 Ok(source) => return Ok(source),
                 Err(err) => info!(
-                    error = %format!("{err:#}"),
+                    error = format_args!("{err:#}"),
                     "PipeWire's default camera did not open, trying V4L2"
                 ),
             }
@@ -254,7 +254,7 @@ impl VideoSource {
                 match run(sender) {
                     Ok(()) => debug!(source = %thread_name, "video source ended"),
                     Err(err) => {
-                        warn!(source = %thread_name, error = %format!("{err:#}"), "video source failed");
+                        warn!(source = %thread_name, error = format_args!("{err:#}"), "video source failed");
                         slot.fail(Arc::new(err));
                     }
                 }

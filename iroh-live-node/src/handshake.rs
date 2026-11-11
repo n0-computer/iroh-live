@@ -188,7 +188,9 @@ pub(crate) async fn client_handshake(
         );
         match url::Url::parse(&format!("moqt://iroh{target}")) {
             Ok(url) => client = client.with_url(url),
-            Err(err) => warn!(%err, %target, "setup target is no valid URL, requesting the root"),
+            Err(err) => {
+                warn!(error = %err, %target, "setup target is no valid URL, requesting the root")
+            }
         }
     }
     // moq-lite-06 starts without a round trip, but a version that exchanges

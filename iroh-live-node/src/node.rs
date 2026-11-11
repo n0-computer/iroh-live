@@ -208,7 +208,7 @@ impl Node {
                 let task = tokio::spawn(
                     async move {
                         let err = moq_net::time::run(driver).await;
-                        debug!(%err, "route table finished");
+                        debug!(error = %err, "route table finished");
                     }
                     .instrument(info_span!("route_table")),
                 );

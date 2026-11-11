@@ -113,9 +113,9 @@ impl Actor {
                 update = updates.next() => match update {
                     None => ended = true,
                     Some(Err(err)) if self.closing() => {
-                        debug!(%err, "gossip map update failed while the rooms shut down");
+                        debug!(error = %err, "gossip map update failed while the rooms shut down");
                     }
-                    Some(Err(err)) => warn!(%err, "gossip map update failed"),
+                    Some(Err(err)) => warn!(error = %err, "gossip map update failed"),
                     Some(Ok(item)) => {
                         resubscribes = 0;
                         self.handle_item(item);
@@ -218,7 +218,7 @@ impl Actor {
         self.publish_state();
         match tokio::time::timeout(LEAVE_STEP_TIMEOUT, self.kv.shutdown()).await {
             Ok(Ok(())) => {}
-            Ok(Err(err)) => debug!(%err, "gossip map already stopped"),
+            Ok(Err(err)) => debug!(error = %err, "gossip map already stopped"),
             Err(_) => warn!("the gossip map did not stop in time"),
         }
         self.inner.done.set(true).ok();
@@ -362,9 +362,9 @@ async fn put(writer: &WriteScope, announcement: &Announcement, rooms_closing: &A
     let bytes = postcard::to_stdvec(announcement).expect("an announcement serializes");
     if let Err(err) = writer.put(PEER_STATE_KEY, bytes).await {
         if rooms_closing.load(Ordering::Relaxed) {
-            debug!(%err, "could not write the announcement while the rooms shut down");
+            debug!(error = %err, "could not write the announcement while the rooms shut down");
         } else {
-            warn!(%err, "failed to write the announcement");
+            warn!(error = %err, "failed to write the announcement");
         }
     }
 }

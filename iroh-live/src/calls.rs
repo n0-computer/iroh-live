@@ -324,7 +324,7 @@ impl Calls {
         let inner = Arc::downgrade(&self.inner);
         let dial = tokio::spawn(async move {
             if let Err(err) = node.connect(peer).await {
-                warn!(peer = %peer.fmt_short(), %err, "could not dial the peer to ring it");
+                warn!(peer = %peer.fmt_short(), error = %err, "could not dial the peer to ring it");
             }
             if let Some(inner) = inner.upgrade() {
                 inner.lock().dialing.remove(&peer);

@@ -138,7 +138,7 @@ impl Rooms {
         self.shut_down
             .get_or_init(|| async {
                 if let Err(err) = self.gossip.shutdown().await {
-                    warn!(%err, "failed to shut down the rooms' gossip");
+                    warn!(error = %err, "failed to shut down the rooms' gossip");
                 }
                 debug!("rooms shut down");
             })

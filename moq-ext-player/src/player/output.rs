@@ -59,7 +59,10 @@ impl AudioTarget {
         match playback::Engine::open(playback::Config::default()).await {
             Ok(engine) => engine.into(),
             Err(err) => {
-                tracing::warn!(error = %format!("{err:#}"), "no audio output, playing audio nowhere");
+                tracing::warn!(
+                    error = format_args!("{err:#}"),
+                    "no audio output, playing audio nowhere"
+                );
                 Self::null()
             }
         }

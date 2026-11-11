@@ -88,7 +88,10 @@ async fn shutdown(node: &Node, router: Option<&Router>) {
     if let Some(router) = router {
         match router.shutdown().await {
             Ok(()) => return,
-            Err(err) => warn!(error = %format!("{err:#}"), "the router failed to shut down"),
+            Err(err) => warn!(
+                error = format_args!("{err:#}"),
+                "the router failed to shut down"
+            ),
         }
     }
     node.endpoint().close().await;

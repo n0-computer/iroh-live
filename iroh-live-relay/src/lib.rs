@@ -207,7 +207,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         );
     let result = relay.with_web(routes).run().await;
     if let Err(err) = iroh_router.shutdown().await {
-        warn!(%err, "the iroh router did not shut down cleanly");
+        warn!(error = %err, "the iroh router did not shut down cleanly");
     }
     result
 }
@@ -239,7 +239,7 @@ pub async fn admit(
         let mut grant = match browser_session_grant(&admission, keys.as_ref()) {
             Ok(grant) => grant,
             Err(err) => {
-                info!(path = %admission.request.path, %err, "refusing a browser session");
+                info!(path = %admission.request.path, error = %err, "refusing a browser session");
                 admission.refuse(err);
                 continue;
             }

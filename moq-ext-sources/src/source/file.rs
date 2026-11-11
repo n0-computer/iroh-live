@@ -52,7 +52,7 @@ pub(crate) fn spawn(
         .name("audio-file".into())
         .spawn(move || {
             if let Err(err) = decode_loop(&path, looping, &fanout, &stop) {
-                warn!(path = %path.display(), error = %format!("{err:#}"), "audio file decode stopped");
+                warn!(path = %path.display(), error = format_args!("{err:#}"), "audio file decode stopped");
             }
         })?;
     Ok(format)
