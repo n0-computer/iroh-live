@@ -1,14 +1,9 @@
 //! Relay links: staying attached to a moq relay.
 //!
-//! A relay link serves the route table's local view, authorized for the
-//! node's [`Granted`](crate::Audience::Granted) publications. It feeds what the relay
-//! announces into the route table, tagged [`Link::Upstream`]: the local view
-//! hides such routes, so a route from a relay is never offered to another link.
-//!
-//! `https://`, `moqt://` and `moql://` relays are moq-tokio client
-//! connections, which redial with backoff. moq-tokio has no iroh transport, so
-//! `iroh://` relays are dialed through the node's own endpoint by
-//! [`iroh_uplink`], which redials the same way.
+//! A relay link feeds what the relay announces into the route table, tagged
+//! [`Link::Upstream`], so a route from a relay is never offered to another
+//! link. moq-tokio has no iroh transport, so `iroh://` relays are dialed
+//! through the node's own endpoint by [`iroh_uplink`].
 
 use std::{
     fmt,
@@ -49,15 +44,14 @@ pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
     ///
     /// The path is the one the session requests, such as a ticket the relay
-    /// pulls. Over iroh it rides the MoQ SETUP.
+    /// pulls.
     pub url: Url,
     /// Returns the token to present, sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
     ///
-    /// An `iroh://` link asks it on every dial, so a link whose token expired
-    /// presents a fresh one when it redials. An `https://`, `moqt://` or
-    /// `moql://` link asks it once, when it attaches, since moq-tokio's
+    /// An `iroh://` link asks it on every dial, so a redial presents a fresh
+    /// token. Other links ask it once, when they attach, since moq-tokio's
     /// connection redials on its own: detach and attach again for a new
-    /// token there. Use [`TokenFn::fixed`] for a token that never changes.
+    /// token there.
     pub token: Option<TokenFn>,
     /// Whether the relay's routes enter the node's route table.
     ///
@@ -66,9 +60,7 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
-    /// Creates a config for the relay at `url`.
-    ///
-    /// It offers every granted publication and consumes what the relay routes.
+    /// Creates a config for the relay at `url`, consuming what the relay routes.
     #[must_use]
     pub fn new(url: Url) -> Self {
         Self {
@@ -98,8 +90,6 @@ impl RelayConfig {
 }
 
 /// Returns the token a relay link presents, each time the link asks.
-///
-/// See [`RelayConfig::token`].
 ///
 /// # Examples
 ///
@@ -211,9 +201,7 @@ impl RelayLink {
     /// Detaches from the relay.
     ///
     /// Closes the session, stops redialing and withdraws the relay's routes.
-    /// Returns once the session has closed. Idempotent.
-    ///
-    /// Cancellation safe: the link's task finishes the close.
+    /// Idempotent. Cancellation safe: the link's task finishes the close.
     pub async fn detach(&self) {
         info!(url = %self.inner.url, "detaching relay");
         match &self.inner.uplink {
@@ -264,9 +252,7 @@ impl Tasks {
 
     /// Aborts every relay link's task, reporting each detached.
     ///
-    /// An aborted task never reaches its own report, so this makes it. Use it
-    /// where waiting is not possible. [`shutdown_relays`](Self::shutdown_relays)
-    /// lets sessions close.
+    /// An aborted task never reaches its own report, so this makes it.
     pub(crate) fn detach_relays(&self) {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
         for (_, relay) in relays {
@@ -277,8 +263,7 @@ impl Tasks {
 
     /// Waits for every relay link's task to close its session.
     ///
-    /// The tasks close at once, and each gets up to the shutdown grace. The
-    /// node's shutdown token must be cancelled already.
+    /// The node's shutdown token must be cancelled already.
     pub(crate) async fn shutdown_relays(&self) {
         let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
         join_all(relays.into_values().map(RelayTask::finish)).await;
@@ -286,10 +271,8 @@ impl Tasks {
 }
 
 impl RelayTask {
-    /// Ends the task and reports the link detached.
-    ///
-    /// Waits up to the shutdown grace for the task to end by itself, and then
-    /// aborts it.
+    /// Waits up to the shutdown grace for the task to end, then aborts it and
+    /// reports the link detached.
     async fn finish(mut self) {
         if tokio::time::timeout(crate::actor::SHUTDOWN_GRACE, &mut self.task)
             .await
@@ -308,12 +291,8 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         return Err(e!(Error::ShutDown));
     }
     let iroh_relay = iroh_relay(&config.url)?;
-    // Routes the relay announces come from this hop. A relay over iroh is
-    // known by its endpoint id. moq-tokio's redials keep the one hop assigned
-    // here, and a relay that declares a hop of its own is matched by kind.
+    // A relay that declares a hop of its own is matched by kind instead.
     let hop = Hop::of(&iroh_relay.unwrap_or_else(|| iroh::SecretKey::generate().public()));
-    // Routes from a relay are tagged upstream, so the local view every link
-    // serves never offers them to another link.
     let subscriber = config
         .consume
         .then(|| shared.table.clone().with_link(Link::Upstream));
@@ -373,9 +352,6 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
 }
 
 /// Returns the endpoint id an `iroh://` relay URL names, or `None` for another scheme.
-///
-/// Fails on a scheme no uplink speaks, and on an `iroh://` URL whose host is
-/// no endpoint id.
 fn iroh_relay(url: &Url) -> Result<Option<EndpointId>, Error> {
     match url.scheme() {
         "iroh" => url
@@ -398,9 +374,8 @@ fn iroh_relay(url: &Url) -> Result<Option<EndpointId>, Error> {
 
 /// Builds the uplink to a relay, and the authorization its sessions share.
 ///
-/// A relay over iroh gets a stop token, since its dial loop starts with the
-/// task. Any other relay gets a moq-tokio connection, which starts dialing at
-/// once and keeps its own authorization across redials.
+/// A moq-tokio connection starts dialing at once and keeps its own
+/// authorization across redials.
 fn uplink(
     shared: &Arc<Shared>,
     config: &RelayConfig,
@@ -431,8 +406,7 @@ fn uplink(
 
 /// Registers a relay link in the node's state, and returns its id.
 ///
-/// Authorizes the link before its first session is up, which takes at least
-/// a round trip. Fails, and stops the uplink, if the node closed meanwhile.
+/// Fails, and stops the uplink, if the node closed meanwhile.
 fn register(shared: &Shared, uplink: &Uplink, entry: LinkEntry) -> Result<LinkId, Error> {
     let mut state = shared.state.lock().expect("poisoned");
     if state.closed {
@@ -551,10 +525,7 @@ async fn tokio_uplink(
     shared.state.lock().expect("poisoned").remove_link(link);
 }
 
-/// Runs an `iroh://` relay link until it is stopped.
-///
-/// Dials the relay over the node's endpoint, and redials with backoff whenever
-/// the session ends.
+/// Runs an `iroh://` relay link until it is stopped, redialing with backoff.
 #[allow(clippy::too_many_arguments, reason = "one call site, all owned")]
 async fn iroh_uplink(
     shared: Arc<Shared>,

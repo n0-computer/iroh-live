@@ -2,16 +2,10 @@
 //!
 //! Every link announces straight into the node's route table. A session's
 //! subscriber is the table tagged [`Link::Peer`], gated by the session's
-//! authorization, which lets the peer publish only what its grant allows. A
-//! relay's subscriber is the table tagged [`Link::Upstream`]. Every link
-//! serves the table's local view, which hides both, so no route learned on one
-//! link is offered on another. The peer's hop and the link's cost travel with
-//! each route. moq serves the best route, and moves a reader between routes of
-//! one instance, such as a direct one and a relay's, without ending its
-//! subscriptions. Which link a route came from is the route's [`Source`].
-//!
-//! Why a route cannot take over another publisher's readers is in the crate
-//! docs, under "Trust and grants".
+//! authorization. A relay's subscriber is the table tagged [`Link::Upstream`].
+//! Every link serves the table's local view, which hides both, so no route
+//! learned on one link is offered on another. Which link a route came from is
+//! the route's [`Source`].
 
 use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -44,10 +38,9 @@ const REASK_PAUSE: Duration = Duration::from_millis(100);
 /// A path resolved in a route table.
 ///
 /// moq moves the broadcast between routes of one instance, such as a direct
-/// link and a relay, without ending it. A task the subscription owns follows
-/// the path: when another instance takes it over, or the broadcast ends while
-/// a route still serves the path, [`broadcast`](Self::broadcast) switches to what
-/// serves it now. Cheap to clone.
+/// link and a relay, without ending it. When another instance takes the path
+/// over, [`broadcast`](Self::broadcast) switches to what serves it now. Cheap
+/// to clone.
 ///
 /// # Examples
 ///
@@ -129,8 +122,7 @@ impl Subscription {
     /// Creates a subscription that reads `broadcast`, resolved at `path` in `origin`.
     ///
     /// `pin` is the link, and the instance it announced, that the subscription
-    /// is limited to. `None` follows the whole table. Spawns the task that
-    /// follows the path, so it must run inside a tokio runtime.
+    /// is limited to. Must run inside a tokio runtime.
     pub(crate) fn new(
         path: Path,
         origin: origin::Consumer,
@@ -181,15 +173,12 @@ impl Subscription {
 
     /// Returns the broadcast that serves the path now.
     ///
-    /// The subscription's own task re-resolves the path, so a later call may
-    /// return a newer broadcast than an earlier one.
+    /// A later call may return a newer broadcast than an earlier one.
     pub fn broadcast(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
     }
 
     /// Returns the session serving the broadcast now, if a direct session does.
-    ///
-    /// `None` while no route is known, and when a relay serves it.
     pub fn session(&self) -> Option<Session> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
@@ -199,11 +188,10 @@ impl Subscription {
 
     /// Returns the link serving the broadcast now, and its latest reading.
     ///
-    /// Follows the best route as it moves between links. `None` before the
-    /// table announces one, for a publication of this node, and once the
-    /// serving link is gone. Also `None` when a relay serves the route and
-    /// several relays feed the table, since a relay's route does not say
-    /// which relay it came from.
+    /// `None` before the table announces a route, for a publication of this
+    /// node, and once the serving link is gone. Also `None` when a relay
+    /// serves the route and several relays feed the table, since a relay's
+    /// route does not say which relay it came from.
     pub fn serving_link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
@@ -229,11 +217,8 @@ impl Subscription {
 
     /// Waits until nothing serves the path.
     ///
-    /// The subscription follows the path on its own, so awaiting this has no
-    /// effect on what [`broadcast`](Self::broadcast) returns. A pinned subscription
-    /// ends when another instance takes its path over.
-    ///
-    /// Cancellation safe: dropping the future loses nothing.
+    /// A pinned subscription ends when another instance takes its path over.
+    /// Cancellation safe.
     pub async fn closed(&self) {
         self.inner.ended.cancelled().await;
     }
@@ -242,11 +227,9 @@ impl Subscription {
 /// Follows `path` in `origin` and keeps `current` on what serves it, until nothing does.
 ///
 /// moq moves between routes of one instance by itself. This switches when
-/// another instance takes the path over, even while the old broadcast is still
-/// served to its readers. It also asks the table again when the broadcast
-/// ends, which happens when the instance's last route went while another
-/// remains. With `instance` set, it follows only that instance. Cancels `ended`
-/// when it returns.
+/// another instance takes the path over, and asks the table again when the
+/// broadcast ends while another route remains. With `instance` set, it
+/// follows only that instance.
 async fn follow(
     path: Path,
     origin: origin::Consumer,

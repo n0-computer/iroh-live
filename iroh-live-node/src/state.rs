@@ -3,17 +3,11 @@
 //! Everything here changes under one lock and never awaits, so `publish` and
 //! `unpublish` are synchronous.
 //!
-//! Every publication is a broadcast created in the node's route table, and
-//! every link serves the table's local view (see [`served`]). What a link's
-//! peer may see is its grant, which moq enforces on the live session: the
-//! exact paths of the publications whose audience admits the link. Whenever a
-//! publication, an audience or the set of links changes, the state works the
-//! grants out again and re-authorizes each link's session. What links announce
-//! goes straight into the table, so the state only maps a route's source back
-//! to its link (see [`State::link_for`]).
-//!
-//! The crate docs, under "Trust and grants", explain what the grants protect.
-//! The lock order is on `Shared::state`.
+//! Whenever a publication, an audience or the set of links changes, the state
+//! works the grants out again and re-authorizes each link's session. What
+//! links announce goes straight into the table, so the state only maps a
+//! route's source back to its link (see [`State::link_for`]). The lock order
+//! is on `Shared::state`.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -43,10 +37,6 @@ pub(crate) struct State {
     /// Paths that tickets widened a peer's grant to, with how many claims hold each.
     tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
     /// The policy's authorization of each peer with a live direct session.
-    ///
-    /// Every direct session with the peer shares it. Set when a session is
-    /// registered or a re-decide admits the peer again, and removed when the
-    /// peer's last session ends or a re-decide rejects it.
     peers: HashMap<EndpointId, PeerEntry>,
 }
 
@@ -160,8 +150,6 @@ impl State {
     }
 
     /// Removes a link.
-    ///
-    /// Its session takes its routes out of the route table as it ends.
     pub(crate) fn remove_link(&mut self, id: LinkId) {
         self.links.remove(&id);
     }
@@ -174,9 +162,7 @@ impl State {
 
     /// Removes a publication, and re-authorizes every link without it.
     ///
-    /// Narrowing a link's grant retracts the path from its peer and resets
-    /// what the peer reads there. The path leaves the route table when the
-    /// returned entry drops.
+    /// The path leaves the route table when the returned entry drops.
     pub(crate) fn remove_publication(&mut self, id: u64) -> Option<PubEntry> {
         let entry = self.publications.remove(&id)?;
         self.authorize_all();
@@ -198,17 +184,14 @@ impl State {
 
     /// Sets the authorization of `peer`, and re-authorizes every link with it.
     ///
-    /// Called as a session with the peer is registered, so the authorization
-    /// holds for every session with the peer, older ones included.
+    /// The authorization holds for every session with the peer, older ones
+    /// included.
     pub(crate) fn admit_peer(&mut self, peer: EndpointId, authorization: Authorization) {
         self.peers.insert(peer, PeerEntry::new(authorization));
         self.authorize_peer(&peer);
     }
 
     /// Forgets the authorization of `peer`, and narrows its links to nothing.
-    ///
-    /// Called once the peer's last session has ended, or when a re-decide
-    /// rejects the peer and its sessions are closing.
     pub(crate) fn remove_peer(&mut self, peer: &EndpointId) {
         if self.peers.remove(peer).is_some() {
             self.authorize_peer(peer);
@@ -227,8 +210,6 @@ impl State {
     }
 
     /// Returns what `peer` may do on its direct sessions: its base grant and its ticket paths.
-    ///
-    /// `None` if the peer has no live session.
     pub(crate) fn peer_effective_grant(&self, peer: &EndpointId) -> Option<Grant> {
         let base = self.peer_grant(peer)?;
         Some(self.effective_grant(Some(peer), base))
@@ -359,11 +340,9 @@ impl State {
     /// Returns the moq grant of a link, from the publications it may see.
     ///
     /// Its subscribe half lists the exact paths of the publications whose
-    /// audience admits the link, within `base`, so it grows with them. See
-    /// [`moq_ext_access::visible_paths`] for the limits that puts on the
-    /// number of publications. Its publish half is what the peer may announce
-    /// into the route table: `base`'s for a session, and anything for a relay,
-    /// which is trusted with what it forwards.
+    /// audience admits the link, within `base`. Its publish half is `base`'s
+    /// for a session, and anything for a relay, which is trusted with what it
+    /// forwards.
     pub(crate) fn grant_for(
         &self,
         kind: LinkKind,
@@ -397,12 +376,9 @@ impl State {
     /// Returns the link whose peer announced a route from `source`.
     ///
     /// A route is attributed to the hop its session's peer declares, or else
-    /// to the hop this node assigned the session. The two agree for peers on
-    /// this crate. A hop no link has is taken to be one a relay declares of
-    /// its own, as moq-relay does. It maps to the relay link only while
-    /// exactly one relay feeds the route table, since nothing tells several
-    /// apart. `None` for a route published on this node, and for an unknown
-    /// hop while no relay, or more than one, feeds the table.
+    /// to the hop this node assigned the session. `None` for a route
+    /// published on this node, and for an unknown hop while no relay, or more
+    /// than one, feeds the table.
     pub(crate) fn link_for(&self, source: Source) -> Option<LinkId> {
         let Source::Peer(_) = source else {
             return None;
@@ -443,10 +419,8 @@ impl State {
 
 /// Returns what every link of the node serves its peer: the table's local view.
 ///
-/// It holds this node's publications and hides every route the node learned
-/// from a peer or a relay, so the node never carries traffic between two of
-/// its links. A link's grant then narrows it to the publications whose
-/// audience admits the link.
+/// It hides every route the node learned from a peer or a relay, so the node
+/// never carries traffic between two of its links.
 pub(crate) fn served(table: &origin::Producer) -> origin::Consumer {
     table.consume().local()
 }

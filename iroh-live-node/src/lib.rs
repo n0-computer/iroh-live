@@ -2,11 +2,9 @@
 //!
 //! A [`Node`] publishes broadcasts at paths and subscribes to paths. It
 //! keeps one route table fed by every link it has: direct sessions with peers,
-//! and moq relays it is attached to. A path resolves to its cheapest route.
-//! When that route dies, moq moves to another route of the same instance
-//! without ending the subscription, and [`Subscription::closed`] asks the table
-//! again for any other once the instance is gone. The application picks the
-//! paths.
+//! and moq relays it is attached to. A path resolves to its cheapest route,
+//! and moq moves a subscription to another route of the same instance when
+//! that route dies.
 //!
 //! ```no_run
 //! use iroh::EndpointId;
@@ -43,47 +41,34 @@
 //!
 //! # Trust and grants
 //!
-//! A publication is a broadcast in the route table, and every link serves the
-//! table's local view: this node's publications, never a route it learned from
-//! another link. What a link's peer sees is the grant moq enforces on the live
-//! session: the exact paths of the publications whose audience admits the
-//! peer, within the peer's [`Grant`], which every session with the peer
-//! shares. The node re-authorizes every session when a publication or an
-//! audience changes, so a peer taken out of an audience loses the path at
-//! once, and what it read there ends with [`moq_net::Error::Unauthorized`].
-//! This holds on both sides of a session, dialed or accepted, and on every
-//! protocol version.
+//! Every link serves only this node's own publications, never a route it
+//! learned from another link. A peer sees the exact paths of the publications
+//! whose audience admits it, within its [`Grant`]. The node re-authorizes every
+//! session when a publication or an audience changes, so a peer taken out of
+//! an audience loses the path at once, and what it read there ends with
+//! [`moq_net::Error::Unauthorized`].
 //!
 //! A [`policy`] decides who may hold a session and with which grant, on
 //! accept and on dial (see [`NodeConfig::policy`]). The node asks it again
 //! when an authorization expires, when the policy reports a change, and on
-//! [`Node::reauthorize`], and applies the answer to the peer's live sessions.
-//! Without a policy, a peer may subscribe to anything and publish nothing. [`Grant::publish_under`] lets a peer publish only at
-//! paths that name it, so it cannot stand in for another peer.
+//! [`Node::reauthorize`]. [`Grant::publish_under`] lets a peer publish only
+//! at paths that name it, so it cannot stand in for another peer.
 //!
-//! A [`BroadcastTicket`] names a peer and the path it publishes at.
-//! [`Node::subscribe_ticket`] claims that path for that peer with
-//! [`Node::claim_path`], which widens the peer's grant to exactly that path for
-//! as long as the subscription lives, so a viewer needs no grant of its own.
-//! The peer has to own the path: by default, exactly one segment of it is the
-//! peer's own endpoint id (see [`NodeConfig::layout`]). A claim therefore never
-//! overlaps another peer's paths, which hop pinning and the route table rely on.
+//! [`Node::subscribe_ticket`] claims a [`BroadcastTicket`]'s path for its peer
+//! with [`Node::claim_path`], which widens the peer's grant to exactly that
+//! path while the subscription lives. The peer has to own the path (see
+//! [`NodeConfig::layout`]), so a claim never overlaps another peer's paths.
 //!
-//! The grants are also what keeps one publisher from taking over another's
-//! readers. A route carries the instance its announcer claims, and moq moves a
-//! reader between routes that claim the same instance. A peer or relay that
-//! announces a path under another publisher's instance could therefore take
-//! over that publisher's readers. The table's contents prevent it:
+//! The grants also keep one publisher from taking over another's readers. moq
+//! moves a reader between routes that claim the same instance, so a peer or
+//! relay that announces another publisher's instance could take over its
+//! readers. The table's contents prevent it:
 //!
-//! - A direct peer announces only paths its grant lets it publish. With grants
-//!   that name the peer, it cannot reach another peer's paths.
-//! - An instance is a random string. It only reaches the links whose grant
+//! - A direct peer announces only paths its grant lets it publish.
+//! - An instance is a random string that only reaches the links whose grant
 //!   lets them see the publication.
 //! - A relay is trusted with the paths it forwards. Attach only relays that
 //!   keep each publisher to its own paths, as moq-relay's tokens do.
-//!
-//! Hops take no part in this, since moq moves readers by instance and not by
-//! the first hop a publisher claims.
 //!
 //! # Cancellation safety
 //!

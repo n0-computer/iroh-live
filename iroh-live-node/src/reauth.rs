@@ -1,10 +1,7 @@
 //! When the node asks its policy again about a peer: deadlines, triggers and generations.
 //!
-//! The actor owns one [`Reauth`] and drives it with the current time. It
-//! starts the decisions [`Reauth::start`] hands out, at most
-//! [`MAX_CONCURRENT`] at once and one per peer, and applies a result only if
-//! [`Reauth::finish`] says it is still current. Nothing here awaits or reads a
-//! clock, so the logic is tested without a runtime.
+//! The actor owns one [`Reauth`] and drives it with the current time. Nothing
+//! here awaits or reads a clock, so the logic is tested without a runtime.
 
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -28,14 +25,11 @@ pub(crate) const MAX_CONCURRENT: usize = 16;
 pub(crate) const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The re-decides the application asked for, until the actor takes them.
-///
-/// [`Node::reauthorize`](crate::Node::reauthorize) and
-/// [`Node::reauthorize_all`](crate::Node::reauthorize_all) fill it.
 #[derive(Debug, Default)]
 pub(crate) struct Requests {
     /// Whether every peer is to be decided again.
     pub(crate) all: bool,
-    /// The peers to decide again. Only peers with a live session go in.
+    /// The peers to decide again.
     pub(crate) peers: BTreeSet<EndpointId>,
 }
 
@@ -79,8 +73,6 @@ struct Entry {
 pub(crate) struct Start {
     pub(crate) peer: EndpointId,
     pub(crate) generation: u64,
-    /// [`Event::Revalidate`] when only the revalidation interval is due,
-    /// [`Event::Reauthorize`] otherwise.
     pub(crate) event: Event,
     pub(crate) request: SessionRequest,
     pub(crate) dialed: bool,
@@ -126,8 +118,7 @@ fn expiry_of(authorization: &Authorization, now: Instant, wall: SystemTime) -> O
 impl Reauth {
     /// Records the authorization a newly registered session gave `peer`.
     ///
-    /// Sets the peer's deadline from it. A decision in flight for the peer
-    /// becomes stale, since this authorization is newer.
+    /// A decision in flight for the peer becomes stale.
     pub(crate) fn admitted(
         &mut self,
         peer: EndpointId,
@@ -173,8 +164,6 @@ impl Reauth {
     }
 
     /// Forgets `peer`, whose last session ended or whose policy rejected it.
-    ///
-    /// A decision in flight for it then finishes as [`Finished::Gone`].
     pub(crate) fn remove(&mut self, peer: &EndpointId) {
         if self.peers.remove(peer).is_some() {
             self.queue.retain(|queued| queued != peer);
@@ -189,7 +178,6 @@ impl Reauth {
 
     /// Asks for a new decision about `peer`, with [`Event::Reauthorize`].
     ///
-    /// A decision in flight becomes stale and runs again once it finishes.
     /// Returns `false` for a peer without a live session.
     pub(crate) fn request(&mut self, peer: &EndpointId) -> bool {
         self.trigger(peer, true)
@@ -198,8 +186,7 @@ impl Reauth {
     /// Asks for a new decision about `peer`.
     ///
     /// `reauthorize` is false for a revalidation that is due, and nothing more.
-    /// Such a revalidation leaves a decision in flight alone: that decision is
-    /// at least as fresh, and sets the next deadline when it lands. Making it
+    /// Such a revalidation leaves a decision in flight alone, since making it
     /// stale would drop an answer the application may still be giving.
     fn trigger(&mut self, peer: &EndpointId, reauthorize: bool) -> bool {
         let Some(entry) = self.peers.get_mut(peer) else {
@@ -235,9 +222,9 @@ impl Reauth {
 
     /// Asks for a new decision about every peer whose deadline is at or before `now`.
     ///
-    /// Clears those deadlines: the decision sets the next one. A peer whose
-    /// authorization expired is decided with [`Event::Reauthorize`], one that
-    /// is only due for revalidation with [`Event::Revalidate`].
+    /// A peer whose authorization expired is decided with
+    /// [`Event::Reauthorize`], one only due for revalidation with
+    /// [`Event::Revalidate`].
     pub(crate) fn expire(&mut self, now: Instant) {
         let due: Vec<(EndpointId, bool)> = self
             .peers

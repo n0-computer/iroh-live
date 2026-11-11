@@ -79,8 +79,7 @@ impl Session {
     ///
     /// That is the peer's base grant, widened by the paths that live ticket
     /// subscriptions claimed for the peer (see [`Node::claim_path`](crate::Node::claim_path)).
-    /// Every session with the peer has the same grant. Once the peer's last
-    /// session has ended, the grant is [`Grant::nothing`].
+    /// Once the peer's last session has ended, the grant is [`Grant::nothing`].
     pub fn grant(&self) -> Grant {
         self.inner
             .shared
@@ -94,7 +93,7 @@ impl Session {
 
     /// Returns what the peer asked for when it opened the session.
     ///
-    /// For a session this node dialed, the path it requested, without a token.
+    /// For a dialed session, the path this node requested, without a token.
     pub fn request(&self) -> &SessionRequest {
         &self.inner.request
     }
@@ -103,20 +102,14 @@ impl Session {
     ///
     /// Waits for the peer to announce the path, then pins the subscription to
     /// the stream the peer announced: moq may move it to another route of
-    /// that stream, but never to another stream at the path. A relay or a
-    /// third peer that serves the same path under another instance is never
-    /// resolved.
+    /// that stream, but never to another stream at the path.
     ///
     /// The session is told from other links by the hop its routes carry: the
     /// one derived from the peer's id, or, for a peer that declares a hop of
-    /// its own on the wire (as moq-relay does), one no other link carries.
-    /// moq lets a declaration win over the hop this node assigns, and this
-    /// node cannot read the declaration on a session it dialed. So the
-    /// guarantee is only as strong as the grants: a peer whose grant lets it
-    /// publish the path could declare this peer's hop, or a fresh one, and be
-    /// resolved here. It holds when grants do not overlap, as the default
-    /// grants ensure by letting each peer publish only under its own id. Two
-    /// sessions with one peer share the hop.
+    /// its own (as moq-relay does), one no other link carries. This node
+    /// cannot read the declaration on a session it dialed, so the guarantee
+    /// is only as strong as the grants: a peer whose grant lets it publish
+    /// the path could declare this peer's hop and be resolved here.
     ///
     /// # Errors
     ///
@@ -137,9 +130,7 @@ impl Session {
             return Err(e!(Error::ShutDown));
         };
         let view = route::direct_view(&shared.table);
-        // This peer's routes carry its derived hop, unless the peer declares
-        // one of its own, as moq-relay does. A hop no other link carries is
-        // taken to be such a declaration.
+        // A hop no other link carries is taken to be the peer's own declaration.
         let own = self.inner.hop;
         let link = self.inner.link;
         let ours = |hop: Hop| {
@@ -185,11 +176,9 @@ impl Session {
 
     /// Closes the session, and every subscription over it, in both directions.
     ///
-    /// The peer receives `code` as the session's close code.
-    /// [`moq_net::Error::Cancel`] is a clean close, and [`moq_net::Error::App`]
-    /// carries an application code. The peer's [`closed`](Self::closed) then
-    /// reports the code as a [`moq_net::Error::Session`] source, for example
-    /// `Session(SessionError::App(7))` for `App(7)`.
+    /// The peer receives `code` as the session's close code, and its
+    /// [`closed`](Self::closed) reports it as a [`moq_net::Error::Session`]
+    /// source, for example `Session(SessionError::App(7))` for `App(7)`.
     pub fn close(&self, code: moq_net::Error) {
         info!(remote = %self.inner.remote.fmt_short(), %code, "closing session");
         self.inner.closing.store(true, Ordering::Release);

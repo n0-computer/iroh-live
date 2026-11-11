@@ -60,19 +60,10 @@ pub struct NodeConfig {
     /// SETUP, and before it dials a peer. A rejection closes an accepted
     /// session with the rejection's code, and fails a dial with
     /// [`Error::Rejected`]. Every session with one peer shares the
-    /// authorization the first of them got. Set it with
-    /// [`with_policy`](Self::with_policy).
+    /// authorization the first of them got.
     ///
-    /// The node asks again about a live peer:
-    ///
-    /// - with [`Event::Revalidate`](policy::Event::Revalidate) when its
-    ///   authorization is due for revalidation;
-    /// - with [`Event::Reauthorize`](policy::Event::Reauthorize) when its
-    ///   authorization expires, when the policy's [`changes`](Policy::changes)
-    ///   stream yields, and when [`Node::reauthorize`] asks.
-    ///
-    /// A new authorization replaces the old one on every live session with
-    /// the peer, and a rejection closes them.
+    /// The node asks again about a live peer, with an
+    /// [`Event`](policy::Event) that says why.
     ///
     /// `None` is [`policy::Open`] with [`Grant::subscribe_only`]: every peer
     /// may subscribe to anything and publish nothing.
@@ -85,19 +76,16 @@ pub struct NodeConfig {
     pub decide_timeout: Duration,
     /// A route table to use instead of a new one, such as a relay's cluster origin.
     ///
-    /// The caller runs its driver. The node creates its publications in it,
-    /// writes what peers announce into it, and serves its local view, which
-    /// hides routes from handles tagged [`Link::Peer`](origin::Link::Peer) or
-    /// [`Link::Upstream`](origin::Link::Upstream). Grants keep each peer to
-    /// this node's own publications, whatever else the table holds. `None`
-    /// creates a table under the hop derived from the endpoint id.
+    /// The caller runs its driver. The node serves the table's local view,
+    /// which hides routes from handles tagged [`Link::Peer`](origin::Link::Peer)
+    /// or [`Link::Upstream`](origin::Link::Upstream). `None` creates a table
+    /// under the hop derived from the endpoint id.
     #[debug("{}", table.is_some())]
     pub table: Option<origin::Producer>,
     /// The path layout that names the peer owning a path, for [`Node::claim_path`].
     ///
     /// `None` uses the generic rule: a path is a peer's when exactly one of
-    /// its segments is the peer's endpoint id. Set it to accept only the
-    /// paths of one convention, such as a relay's pull paths.
+    /// its segments is the peer's endpoint id.
     #[debug("{}", layout.is_some())]
     pub layout: Option<Arc<dyn Layout<EndpointId>>>,
 }
@@ -115,8 +103,6 @@ impl Default for NodeConfig {
 
 impl NodeConfig {
     /// Returns this configuration with `policy` deciding who may hold a session.
-    ///
-    /// See [`NodeConfig::policy`].
     #[must_use]
     pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.policy = Some(Arc::new(policy));
@@ -126,9 +112,8 @@ impl NodeConfig {
 
 /// A MoQ node on an iroh endpoint.
 ///
-/// Holds the route table, the node's publications and its sessions. Cheap to
-/// clone, and [`shutdown`](Self::shutdown) ends it for every clone. Mount it
-/// on a [`Router`](iroh::protocol::Router) with [`mount`](Self::mount).
+/// Cheap to clone, and [`shutdown`](Self::shutdown) ends it for every clone.
+/// Mount it on a [`Router`](iroh::protocol::Router) with [`mount`](Self::mount).
 ///
 /// # Examples
 ///
@@ -161,17 +146,13 @@ pub struct Node {
 pub(crate) struct Shared {
     pub(crate) endpoint: Endpoint,
     pub(crate) id: EndpointId,
-    /// Decides sessions, built from the configured grant if none was given.
     pub(crate) policy: Arc<dyn DynPolicy<EndpointId>>,
-    /// How long a decision of [`policy`](Self::policy) may take.
     pub(crate) decide_timeout: Duration,
     /// The re-decides the application asked for, until the actor takes them.
     pub(crate) reauth_requests: Mutex<reauth::Requests>,
     /// Wakes the actor for new [`reauth_requests`](Self::reauth_requests).
     pub(crate) reauth_notify: Notify,
-    /// The layout that names path owners, from [`NodeConfig::layout`].
     pub(crate) layout: Option<Arc<dyn Layout<EndpointId>>>,
-    /// The route table.
     pub(crate) table: origin::Producer,
     /// The node's publications and links.
     ///
@@ -189,9 +170,6 @@ pub(crate) struct Shared {
 }
 
 /// The node's tasks, kept apart from [`Shared`] so the tasks can hold it.
-///
-/// Dropping the last [`Node`] drops these, which ends the tasks and releases
-/// the shared state.
 pub(crate) struct Tasks {
     /// Cancelled on drop, so [`Node::closed`] resolves when the last handle goes.
     shutdown: CancellationToken,
@@ -270,9 +248,8 @@ impl Node {
 
     /// Mounts the node on `router` under every ALPN in [`alpns`](crate::alpns).
     ///
-    /// Without a router, or an accept loop of its own that hands connections
-    /// to the node, the endpoint refuses every incoming connection. The node
-    /// then serves only the sessions it dials and its attached relays.
+    /// Without a router, or an accept loop that hands connections to the
+    /// node, the endpoint refuses every incoming connection.
     pub fn mount(&self, mut router: RouterBuilder) -> RouterBuilder {
         debug_assert_eq!(
             router.endpoint().id(),
@@ -293,9 +270,8 @@ impl Node {
 
     /// Returns the authorization the policy gave `peer`, while it holds a session.
     ///
-    /// Every session with the peer shares it. `None` while the peer has no
-    /// live session: the policy decides when one opens. Ticket claims widen
-    /// the grant on top of it, which [`Session::grant`] includes.
+    /// Every session with the peer shares it. Ticket claims widen the grant
+    /// on top of it, which [`Session::grant`] includes.
     pub fn grant_for(&self, peer: EndpointId) -> Option<Authorization> {
         self.shared
             .state
@@ -311,8 +287,7 @@ impl Node {
     /// [`changes`](Policy::changes) stream does not cover it, such as a
     /// [`filter`](Policy::filter) predicate. The decision runs in the
     /// background: a new authorization replaces the old one on every session
-    /// with the peer, and a rejection closes them with its code. Does nothing
-    /// for a peer without a live session.
+    /// with the peer, and a rejection closes them with its code.
     pub fn reauthorize(&self, peer: EndpointId) {
         if self.grant_for(peer).is_none() {
             return;
@@ -327,8 +302,6 @@ impl Node {
     }
 
     /// Asks the policy again about every peer with a live session.
-    ///
-    /// As [`reauthorize`](Self::reauthorize), for every peer.
     pub fn reauthorize_all(&self) {
         self.shared.reauth_requests.lock().expect("poisoned").all = true;
         self.shared.reauth_notify.notify_one();
@@ -337,8 +310,7 @@ impl Node {
     /// Returns a future that resolves when the node shuts down.
     ///
     /// Resolves once [`shutdown`](Self::shutdown) starts, or once the last
-    /// handle drops. Owns what it needs, so a service can hold it in a task.
-    /// Cancellation safe.
+    /// handle drops. Cancellation safe.
     pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static {
         self.shared.shutdown.clone().cancelled_owned()
     }
@@ -350,13 +322,8 @@ impl Node {
 
     /// Creates a broadcast at `path` in the route table, for `audience`.
     ///
-    /// Fill it through [`Publication::broadcast`]. Peers read that broadcast
-    /// itself, never a copy: every session serves the route table, and its
-    /// grant lets the peer see exactly the publications whose audience admits
-    /// it. Changing the audience re-authorizes every live session at once.
-    ///
-    /// A grant lists each visible publication's path, so moq's limits on a
-    /// grant bound how many publications one peer can see, as
+    /// Fill it through [`Publication::broadcast`]. moq's limits on a grant
+    /// bound how many publications one peer can see, as
     /// [`moq_ext_access::visible_paths`] describes.
     ///
     /// # Errors
@@ -379,12 +346,11 @@ impl Node {
 
     /// Publishes as [`publish`](Self::publish) does, filling the broadcast before it is announced.
     ///
-    /// `fill` runs once, with the broadcast before anyone can see it, and its
-    /// result comes back with the publication. Create the tracks a reader
-    /// needs first there, such as a catalog, so no reader finds the broadcast
-    /// without them. It runs before the node takes its lock, so it may call
-    /// back into the node. If the path turns out to be taken, the broadcast
-    /// is closed and what `fill` returned is dropped.
+    /// `fill` runs once, before anyone can see the broadcast, and its result
+    /// comes back with the publication. Create the tracks a reader needs
+    /// first there, such as a catalog. It runs before the node takes its
+    /// lock, so it may call back into the node. If the path turns out to be
+    /// taken, the broadcast is closed and what `fill` returned is dropped.
     ///
     /// # Errors
     ///
@@ -428,13 +394,7 @@ impl Node {
     /// If no route exists yet, reaches out as `reach` says. Cancellation safe:
     /// a dial this call started continues for other callers.
     ///
-    /// The table holds what direct peers announce within their grants, routes
-    /// from attached relays, and every publication of this node, whatever
-    /// its audience. With grants that keep each peer to paths that name it,
-    /// a path resolves to its publisher's broadcast and never to a third
-    /// peer's. A relay is trusted with every path it forwards, so attach only
-    /// relays that keep each publisher to its own paths, as moq-relay's tokens
-    /// do. The [crate docs](crate#trust-and-grants) explain the trust model.
+    /// The [crate docs](crate#trust-and-grants) explain the trust model.
     ///
     /// # Errors
     ///
@@ -464,8 +424,7 @@ impl Node {
     /// The node first claims the path for the ticket's peer with
     /// [`claim_path`](Self::claim_path), and the subscription holds the claim
     /// for as long as it lives. Then this is [`subscribe`](Self::subscribe)
-    /// with [`Reach::Both`]. A viewer therefore needs no grant of its own
-    /// to watch a ticket. When the last subscription of a path drops, the
+    /// with [`Reach::Both`]. When the last subscription of a path drops, the
     /// grant narrows again, and moq ends what local readers read there.
     ///
     /// # Errors
@@ -477,11 +436,8 @@ impl Node {
 
     /// Returns the route table.
     ///
-    /// It holds what [`subscribe`](Self::subscribe) resolves in: what direct
-    /// peers announce within their grants, routes from attached relays, and
-    /// every publication of this node, whatever its audience. Its
-    /// [`announced`](origin::Consumer::announced) stream lists those paths as
-    /// they come and go.
+    /// It holds what [`subscribe`](Self::subscribe) resolves in, and its
+    /// [`announced`](origin::Consumer::announced) stream lists the paths.
     pub fn origin(&self) -> origin::Consumer {
         self.shared.table.consume()
     }
@@ -541,8 +497,6 @@ impl Node {
 
     /// Attaches to the moq relay at `config.url`, redialing it with backoff.
     ///
-    /// `iroh://` URLs are dialed through this node's endpoint.
-    ///
     /// # Errors
     ///
     /// Fails with [`Error::Relay`] if the client cannot be set up, for example
@@ -555,11 +509,9 @@ impl Node {
     /// Shuts the node down for every clone.
     ///
     /// Closes every session, detaches relays and withdraws publications.
-    /// Afterwards [`connect`](Self::connect), [`publish`](Self::publish) and
-    /// [`attach_relay`](Self::attach_relay) fail, and incoming sessions are
-    /// refused, also those that wait for the policy. Gives sessions a short grace
-    /// to tell their peers, so the endpoint can be closed once this returns.
-    /// Idempotent. Not cancellation safe: call it again to finish.
+    /// Gives sessions a short grace to tell their peers, so the endpoint can
+    /// be closed once this returns. Idempotent. Not cancellation safe: call it
+    /// again to finish.
     pub async fn shutdown(&self) {
         // Set first, so a racing publish or attach fails instead of being
         // added and then cleared.

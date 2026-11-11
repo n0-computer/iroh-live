@@ -4,15 +4,10 @@
 //! - [`SessionRequest`]: what a peer asked for when it opened a session.
 //! - [`Audience`]: who may see a publication, generic over the peer id.
 //! - [`AudienceKind`]: an [`Audience`] as a registry keeps it, the current set.
-//! - [`visible_paths`]: the paths a link may see, given its [`LinkRole`]. A
-//!   node hands them to moq as the subscribe half of the link's grant, and moq
-//!   enforces it on the live session.
+//! - [`visible_paths`]: the paths a link may see, given its [`LinkRole`].
 //! - [`policy`]: who may hold a session, and with which [`Grant`].
 //! - [`Layout`]: a path convention, which says where each peer publishes and
 //!   who owns a path.
-//!
-//! The peer id is any type that implements [`PeerId`], such as an iroh
-//! endpoint id.
 //!
 //! A conversion to and from `moq_auth::Grant` is left out on purpose:
 //! moq-auth carries the JWT and crypto stack, which this crate stays free of.
@@ -48,7 +43,7 @@ impl<T: Clone + Eq + Ord + Hash + Debug + Display + Send + Sync + 'static> PeerI
 ///
 /// The shape of a moq-auth grant, so a token means the same thing to a node
 /// and to a moq relay. Patterns are moq's: `*` matches one segment, `**` a
-/// subtree, anything else itself. The default grant allows nothing.
+/// subtree, anything else itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grant {
     /// The paths the peer may subscribe to.
@@ -137,9 +132,8 @@ impl Grant {
 
 /// The wire convention for the token a dialing peer presents.
 ///
-/// [`SessionRequest::token`] reads what these functions write. The SETUP of
-/// moq-lite-06 and older has no token field, so a token also rides the
-/// `jwt` query of the setup path.
+/// The SETUP of moq-lite-06 and older has no token field, so a token also
+/// rides the `jwt` query of the setup path.
 pub mod token {
     use moq_net::setup::Token;
 
@@ -155,9 +149,8 @@ pub mod token {
     /// Returns the setup target for `path`, with `token` in its `jwt` query.
     ///
     /// `path` is a URL path, without its query. Escapes it already holds stay
-    /// as they are, so a path taken from a parsed URL passes through
-    /// unchanged. Characters a URL path cannot hold, such as a space or `?`,
-    /// are percent-encoded.
+    /// as they are. Characters a URL path cannot hold, such as a space or
+    /// `?`, are percent-encoded.
     #[must_use]
     pub fn setup_url(path: &str, token: Option<&str>) -> String {
         let mut url = url::Url::parse("moqt://setup/").expect("a valid URL");
@@ -196,9 +189,6 @@ impl SessionRequest {
     }
 
     /// Returns what a client asked for in its MoQ SETUP: a path, and maybe a token.
-    ///
-    /// The SETUP of moq-lite-06 and older has no token field. On those versions
-    /// [`token`](Self::token) reads the query of the path instead.
     #[must_use]
     pub fn from_handshake(handshake: &moq_net::server::Handshake) -> Self {
         let request = Self::new(handshake.path());
@@ -237,10 +227,8 @@ impl SessionRequest {
     /// Returns the token the peer presented.
     ///
     /// That is the token set with [`with_token`](Self::with_token), or else the
-    /// `jwt` query parameter, or else the `token` one. A peer on a MoQ version
-    /// whose SETUP cannot carry a token sends it in the query. Writers use
-    /// `jwt`, which moq-relay reads, and `token` suits a token that is not a
-    /// JWT.
+    /// `jwt` query parameter, or else the `token` one. Writers use `jwt`, which
+    /// moq-relay reads.
     #[must_use]
     pub fn token(&self) -> Option<&str> {
         self.token
@@ -253,9 +241,7 @@ impl SessionRequest {
 /// Who may see a publication.
 #[derive(Debug, Clone)]
 pub enum Audience<P: PeerId> {
-    /// Every session whose grant covers the path.
-    ///
-    /// That includes each relay that takes public publications.
+    /// Every session whose grant covers the path, relays included.
     Granted,
     /// These peers, as the set changes.
     ///
@@ -266,9 +252,6 @@ pub enum Audience<P: PeerId> {
 
 impl<P: PeerId> Audience<P> {
     /// Returns an audience of `peers`, as a set nobody else holds.
-    ///
-    /// To change the set later, keep a clone of the watchable and build
-    /// [`Audience::Peers`] from it, or replace the whole audience.
     ///
     /// ```
     /// use moq_ext_access::Audience;
@@ -321,9 +304,7 @@ pub enum LinkRole {
 /// A path convention: where each peer publishes, and which peer owns a path.
 ///
 /// The two halves agree: [`owner`](Self::owner) of a path that
-/// [`scope`](Self::scope) gives a peer names that peer, for every path the
-/// convention spells. A policy grants a peer its scope to publish under, and
-/// a node checks a ticket claim against the owner.
+/// [`scope`](Self::scope) gives a peer names that peer.
 ///
 /// A pair `(A, B)` is the union of two layouts.
 pub trait Layout<P: PeerId>: Debug + Send + Sync + 'static {
@@ -364,15 +345,12 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 /// `Peers` audience when its `remote` is in the set.
 ///
 /// Each path is a literal pattern, so nothing beside the listed publications
-/// matches: not a path below one, and not a route the node learned from
-/// another link. A path no pattern can spell is left out.
+/// matches. A path no pattern can spell is left out.
 ///
-/// The result grows with the number of visible publications, and moq bounds
-/// it. moq refuses an AUTH_OK larger than 64 KiB, which a session that
-/// reports its grant to the peer sends, and caps a union of patterns at
-/// [`Pattern::MAX_INTERSECTIONS`] (1024) members. A link that may see more
-/// publications than that, or whose paths add up to more bytes, cannot be
-/// granted them one by one.
+/// moq bounds the result. It refuses an AUTH_OK larger than 64 KiB, and caps
+/// a union of patterns at [`Pattern::MAX_INTERSECTIONS`] (1024) members. A
+/// link that may see more publications than that, or whose paths add up to
+/// more bytes, cannot be granted them one by one.
 #[must_use]
 pub fn visible_paths<'a, P: PeerId>(
     publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,

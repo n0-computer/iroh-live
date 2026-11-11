@@ -1,23 +1,15 @@
 //! Admission and authorization of sessions, decided by a [`Policy`].
 //!
-//! A node asks its policy whether a peer may hold a session, and with which
-//! rights. It asks when a session opens, in either direction, and again when
-//! an [`Authorization`] expires or the policy reports a change. The answer is
-//! a [`Decision`]: an [`Authorization`] to keep the session, or a
-//! [`Rejection`] that closes it.
+//! A node asks its policy when a session opens, in either direction, and
+//! again later (see [`Event`]). The answer is a [`Decision`]. The building
+//! blocks compose:
 //!
-//! The building blocks compose:
-//!
-//! - [`Open`] admits everyone with one grant, and [`Closed`] rejects everyone.
+//! - [`Open`] and [`Closed`] admit or reject everyone.
 //! - [`from_fn`] decides with a synchronous closure.
-//! - [`Policy::union`] admits what either of two policies admits.
-//! - [`Policy::filter`] rejects the peers a predicate refuses.
+//! - [`Policy::union`] and [`Policy::filter`] combine policies.
 //! - [`Queue`] hands each decision to the application.
 //! - [`Verify`] decides with a [`TokenVerifier`] when the peer presents a
 //!   token, and with a fallback policy when it does not.
-//!
-//! A node stores its policy as an `Arc<dyn DynPolicy<P>>`, which implements
-//! [`Policy`] too.
 //!
 //! # Examples
 //!
@@ -75,8 +67,8 @@ pub struct PeerRequest<P: PeerId> {
 impl<P: PeerId> PeerRequest<P> {
     /// Creates a request of `peer` for a session, as a node asks its policy.
     ///
-    /// `peer` is the identity the transport authenticated. `dialed` is true
-    /// for a session this node dials, whose `request` is the one it sends.
+    /// `dialed` is true for a session this node dials, whose `request` is the
+    /// one it sends.
     #[must_use]
     pub fn new(peer: P, request: SessionRequest, dialed: bool, event: Event) -> Self {
         Self {
@@ -89,8 +81,6 @@ impl<P: PeerId> PeerRequest<P> {
     }
 
     /// Returns this request with the authorization the peer holds now.
-    ///
-    /// A node sets it when it decides again about a live session.
     #[must_use]
     pub fn with_current(mut self, authorization: Authorization) -> Self {
         self.current = Some(authorization);
@@ -113,8 +103,6 @@ impl<P: PeerId> PeerRequest<P> {
     }
 
     /// Returns the authorization the peer holds, when the node decides again.
-    ///
-    /// `None` when a session opens.
     pub fn current(&self) -> Option<&Authorization> {
         self.current.as_ref()
     }
@@ -129,9 +117,7 @@ impl<P: PeerId> PeerRequest<P> {
         self.request.query(key)
     }
 
-    /// Returns the token the peer presented, if any.
-    ///
-    /// See [`SessionRequest::token`].
+    /// Returns the token the peer presented, as [`SessionRequest::token`] does.
     pub fn token(&self) -> Option<&str> {
         self.request.token()
     }
@@ -144,15 +130,12 @@ impl<P: PeerId> PeerRequest<P> {
 pub enum Event {
     /// A session opens.
     Connect,
-    /// A live session's authorization is due for its periodic check.
-    ///
-    /// The interval is [`Authorization::revalidate`]. Nothing is known to
-    /// have changed.
+    /// A live session's authorization is due for its [`Authorization::revalidate`] check.
     Revalidate,
     /// A live session is decided again, because something may have changed.
     ///
     /// Its authorization expired, the policy's change stream yielded, or the
-    /// application asked the node to decide again.
+    /// application asked.
     Reauthorize,
 }
 
@@ -175,10 +158,8 @@ pub struct Authorization {
 impl Authorization {
     /// Returns an authorization that allows what either this one or `other` allows.
     ///
-    /// The grants and the transit patterns are unions, and the peer forwards
-    /// if either says so. The earliest expiry and the shortest revalidation
-    /// interval win, so the node decides again as soon as either half could
-    /// change.
+    /// The earliest expiry and the shortest revalidation interval win, so the
+    /// node decides again as soon as either half could change.
     #[must_use]
     pub fn union(&self, other: &Self) -> Self {
         Self {
@@ -242,8 +223,7 @@ impl Transit {
 
 /// Why a policy rejected a session.
 ///
-/// The node closes the session with [`code`](Self::code), which the peer
-/// sees, and logs [`reason`](Self::reason), which stays local.
+/// The peer sees [`code`](Self::code), and [`reason`](Self::reason) stays local.
 #[derive(Debug, Clone)]
 pub struct Rejection {
     code: moq_net::Error,
@@ -288,8 +268,7 @@ impl std::error::Error for Rejection {}
 
 /// Decides whether a peer may hold a session, and with which rights.
 ///
-/// Implement it with `async fn decide`. A node erases the type as an
-/// `Arc<dyn DynPolicy<P>>`, which implements this trait too.
+/// Implement it with `async fn decide`.
 pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// Decides whether the peer may hold a session, and with which rights.
     fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send;
@@ -297,8 +276,7 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// Returns a stream that yields when earlier decisions may be stale.
     ///
     /// A node calls it once and keeps the stream. On each item it decides
-    /// again for every peer with a live session. `None`, the default, never
-    /// yields.
+    /// again for every peer with a live session.
     fn changes(&self) -> Option<BoxStream<()>> {
         None
     }
@@ -306,8 +284,7 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// Returns a policy that admits what this one or `other` admits.
     ///
     /// When both admit, the authorizations are joined with
-    /// [`Authorization::union`]. When both reject, this policy's rejection
-    /// wins.
+    /// [`Authorization::union`].
     ///
     /// [`Open`] and [`Closed`] are policies for every peer type, so a union
     /// of two of them names the peer type:
@@ -321,8 +298,8 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
 
     /// Returns a policy that rejects the peers `admit` refuses, and asks this one otherwise.
     ///
-    /// The predicate is not watched: when the state it reads changes, the
-    /// node has to be told to decide again.
+    /// The predicate is not watched: when the state it reads changes, tell
+    /// the node to decide again.
     fn filter<F>(self, admit: F) -> Filter<Self, F>
     where
         Self: Sized,
@@ -334,8 +311,8 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
 
 /// A [`Policy`] with its type erased, as a node stores it.
 ///
-/// Every [`Policy`] implements it, and `Arc<dyn DynPolicy<P>>` implements
-/// [`Policy`]. Implement [`Policy`], not this trait.
+/// `Arc<dyn DynPolicy<P>>` implements [`Policy`]. Implement [`Policy`], not
+/// this trait.
 pub trait DynPolicy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// Decides as [`Policy::decide`] does, with a boxed future.
     fn decide<'a>(
@@ -370,9 +347,8 @@ impl<P: PeerId> Policy<P> for Arc<dyn DynPolicy<P>> {
     }
 }
 
-/// A policy that admits everyone with one grant.
-///
-/// `Open(Grant::subscribe_only())` is a node's default.
+/// A policy that admits everyone with one grant, such as a node's default
+/// `Open(Grant::subscribe_only())`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Open(pub Grant);
 
