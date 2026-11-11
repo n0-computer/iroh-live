@@ -417,3 +417,121 @@ async fn a_contacts_only_callee_refuses_strangers_and_drops_removed_contacts() {
         peer.shutdown().await;
     }
 }
+
+/// Waits for the next `HungUp` event on `events`, skipping the others.
+async fn next_hang_up(events: &mut iroh_live::calls::CallEvents) -> (EndpointId, HangUpReason) {
+    step("a hang-up event", async {
+        loop {
+            if let CallEvent::HungUp(peer, reason) = events.next().await.expect("an event") {
+                return (peer, reason);
+            }
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_hang_up_reaches_the_other_side_as_an_event() {
+    let (a, b) = (Peer::start().await, Peer::start().await);
+    let mut events = b.calls.events();
+    let (call_a, call_b) = connect(&a, &b).await;
+
+    call_a.hang_up();
+    assert_eq!(
+        next_hang_up(&mut events).await,
+        (a.id(), HangUpReason::Withdrawn)
+    );
+    assert_eq!(
+        step("b's call ends", call_b.ended()).await,
+        HangUpReason::Withdrawn
+    );
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_call_waiting_for_an_answer_blocks_a_second_call() {
+    let (a, b) = (Peer::start().await, Peer::start().await);
+    let placed = {
+        let calls = a.calls.clone();
+        let peer = b.id();
+        tokio::spawn(async move { calls.call(peer).await })
+    };
+    rings(&b.calls, a.id(), true).await;
+
+    let err = a.calls.call(b.id()).await.expect_err("a call is under way");
+    assert!(matches!(err, Error::AlreadyInCall { .. }), "{err:#}");
+    let err = a
+        .calls
+        .answer(b.id())
+        .await
+        .expect_err("a call is under way");
+    assert!(matches!(err, Error::AlreadyInCall { .. }), "{err:#}");
+
+    placed.abort();
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_hung_up_peer_cannot_be_answered() {
+    let (a, b) = (Peer::start().await, Peer::start().await);
+    let (_call_a, call_b) = connect(&a, &b).await;
+
+    // a's offer still stands, but b hung up on it.
+    call_b.hang_up();
+    let err = b.calls.answer(a.id()).await.expect_err("not ringing");
+    assert!(matches!(err, Error::NotRinging { .. }), "{err:#}");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+/// A call after a lost session dials anew, rather than ringing on the closing session.
+#[tokio::test]
+#[traced_test]
+async fn a_call_after_a_lost_session_dials_again() {
+    let (a, b) = (Peer::start().await, Peer::start().await);
+    let (call_a, call_b) = connect(&a, &b).await;
+
+    for session in a.node.sessions().get() {
+        session.close(moq_net::Error::Cancel);
+    }
+    assert_eq!(step("lost", call_a.ended()).await, HangUpReason::Lost);
+    drop(call_a);
+    drop(call_b);
+    eventually("b loses its session with a", || {
+        b.node
+            .sessions()
+            .get()
+            .iter()
+            .all(|session| session.peer() != a.id())
+    })
+    .await;
+
+    let (again_a, again_b) = connect(&a, &b).await;
+    assert_eq!(again_a.peer(), b.id());
+    assert_eq!(again_b.peer(), a.id());
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn the_call_service_closes_with_its_node() {
+    let a = Peer::start().await;
+    let closed = {
+        let calls = a.calls.clone();
+        tokio::spawn(async move { calls.closed().await })
+    };
+    assert!(!closed.is_finished());
+
+    a.node.shutdown().await;
+    step("closed resolves", closed).await.expect("task");
+    a.shutdown().await;
+}

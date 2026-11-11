@@ -365,4 +365,87 @@ mod tests {
             assert!(layout.ticket(peer, name).is_err(), "{name}");
         }
     }
+
+    /// Returns the grant `policy` gives `peer` at its connect.
+    fn decided(policy: &impl Policy<EndpointId>, peer: EndpointId) -> Grant {
+        let request = PeerRequest::new(peer, SessionRequest::default(), policy::Event::Connect);
+        n0_future::future::block_on(Policy::decide(policy, &request))
+            .expect("admitted")
+            .grant
+    }
+
+    #[test]
+    fn the_layout_methods_match_the_free_functions() {
+        let layout = LiveLayout::new("fleet");
+        let peer = id();
+        assert_eq!(layout.grant(peer), grant(&layout, peer));
+        assert_eq!(decided(&layout.policy(), peer), layout.grant(peer));
+        let config = layout.config();
+        let policy = config.policy.expect("a policy");
+        assert_eq!(decided(&policy, peer), layout.grant(peer));
+    }
+
+    #[test]
+    fn the_policy_gives_each_peer_its_own_scope() {
+        let layout = LiveLayout::default();
+        let policy = layout.policy();
+        let (a, b) = (id(), id());
+        let for_a = decided(&policy, a);
+        let for_b = decided(&policy, b);
+        let cam_of = |peer| layout.path(peer, "cam").expect("path");
+        assert!(for_a.allows_publish(cam_of(a).as_str()));
+        assert!(!for_a.allows_publish(cam_of(b).as_str()));
+        assert!(for_b.allows_publish(cam_of(b).as_str()));
+        assert!(!for_b.allows_publish(cam_of(a).as_str()));
+    }
+
+    #[test]
+    fn a_pair_of_layouts_grants_and_configures_both_scopes() {
+        let both = (LiveLayout::new("a"), LiveLayout::new("b"));
+        let (peer, other) = (id(), id());
+        let granted = grant(&both, peer);
+        assert!(granted.allows_publish(&format!("a/{peer}/cam")));
+        assert!(granted.allows_publish(&format!("b/{peer}/cam")));
+        assert!(!granted.allows_publish(&format!("a/{other}/cam")));
+        assert!(!granted.allows_publish(&format!("c/{peer}/cam")));
+        assert!(granted.allows_subscribe("anything"));
+        let policy = config(both).policy.expect("a policy");
+        assert_eq!(decided(&policy, peer), granted);
+    }
+
+    #[cfg(feature = "rooms")]
+    #[test]
+    fn the_live_and_rooms_layouts_compose() {
+        let both = (LiveLayout::default(), crate::rooms::RoomsLayout);
+        let (peer, other) = (id(), id());
+        let granted = grant(&both, peer);
+        assert!(granted.allows_publish(&format!("live/{peer}/cam")));
+        assert!(granted.allows_publish(&format!("rooms/topic/{peer}/cam")));
+        assert!(!granted.allows_publish(&format!("rooms/topic/{other}/cam")));
+        assert!(!granted.allows_publish(&format!("live/{other}/cam")));
+        assert_eq!(decided(&policy(both), peer), granted);
+    }
+
+    #[test]
+    fn a_ticket_round_trips_a_name_with_reserved_characters() {
+        let layout = LiveLayout::default();
+        let peer = id();
+        for name in [
+            "my cam",
+            "a?b=c#d",
+            "x%20y",
+            "caf\u{e9}/\u{1f600}",
+            "a+b&c",
+            "~",
+        ] {
+            let ticket = layout.ticket(peer, name).expect(name);
+            let text = ticket.to_string();
+            assert!(text.is_ascii(), "{text}");
+            let parsed: BroadcastTicket = text.parse().expect(&text);
+            assert_eq!(parsed, ticket, "{name}");
+            assert_eq!(parsed.peer(), peer);
+            assert_eq!(layout.parse(parsed.path()), Some((peer, name)), "{name}");
+            assert_eq!(layout.owner(parsed.path().as_str()), Some(peer), "{name}");
+        }
+    }
 }
