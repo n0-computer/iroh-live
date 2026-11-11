@@ -5,17 +5,20 @@
 //! frames and draw the video. Two offline pipelines run the media stack with no
 //! network, to smoke-test MediaCodec on a device.
 //!
-//! A global tokio runtime drives all async work. Each session lives behind a
-//! `jlong` handle that Kotlin passes back in.
+//! A global tokio runtime drives all async work. Each session lives in a
+//! registry under a `jlong` id that Kotlin passes back in.
 
 mod egl;
-mod handle;
 mod logcat;
 mod renderer;
 
 use std::{
+    collections::HashMap,
     ffi::c_void,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, LazyLock, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -123,7 +126,7 @@ fn play_call(call: &Call, output: &AudioTarget) -> Result<Player> {
     play(&remote_broadcast(call.subscription()), output)
 }
 
-/// The state behind the `jlong` handle Kotlin holds.
+/// The state behind the `jlong` id Kotlin holds.
 ///
 /// It is shared behind a mutex because the render, camera and UI threads call
 /// in concurrently.
@@ -223,24 +226,34 @@ impl SessionHandle {
     }
 }
 
-/// Returns a new reference to the handle's state.
+/// Sessions by the id Kotlin holds as a `jlong`.
 ///
-/// # Safety
-///
-/// `h` must be a live handle from [`SessionHandle::into_shared`].
-unsafe fn borrow_handle(h: jlong) -> SharedHandle {
-    // SAFETY: the caller guarantees `h` is a live handle.
-    unsafe { handle::from_i64(h) }
+/// A raw pointer in the `jlong` would leave a call that races `disconnect`
+/// with freed memory. An id is never reused, so a late call finds nothing.
+static SESSIONS: LazyLock<Mutex<HashMap<u64, SharedHandle>>> = LazyLock::new(Default::default);
+
+/// The id of the next session. Kotlin reads zero as no session.
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+/// Registers `session`, and returns the id Kotlin holds for it.
+fn register(session: SharedHandle) -> jlong {
+    let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+    SESSIONS.lock().expect("poisoned").insert(id, session);
+    jlong::try_from(id).expect("fewer than 2^63 sessions")
 }
 
-/// Takes back ownership of the handle's state.
+/// Returns the session with id `handle`, or `None` once it is disconnected.
+fn lookup(handle: jlong) -> Option<SharedHandle> {
+    let id = u64::try_from(handle).ok()?;
+    SESSIONS.lock().expect("poisoned").get(&id).cloned()
+}
+
+/// Takes the session with id `handle` out of the registry.
 ///
-/// # Safety
-///
-/// `h` must be a live handle, and must not be used after this call.
-unsafe fn take_handle(h: jlong) -> SharedHandle {
-    // SAFETY: the caller guarantees `h` is live and not used again.
-    unsafe { handle::take_i64(h) }
+/// Calls already running keep their reference until they return.
+fn unregister(handle: jlong) -> Option<SharedHandle> {
+    let id = u64::try_from(handle).ok()?;
+    SESSIONS.lock().expect("poisoned").remove(&id)
 }
 
 /// Reads a JNI string, returning `None` on failure.
@@ -355,7 +368,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     session.output = Some(output);
     session.live = Some(live);
     session.router = Some(router);
-    Ok(handle::to_i64(session.into_shared()))
+    Ok(register(session.into_shared()))
 }
 
 // JNI: dial (two-way call)
@@ -414,7 +427,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.call = Some(call);
     session.live = Some(live);
     session.router = Some(router);
-    Ok(handle::to_i64(session.into_shared()))
+    Ok(register(session.into_shared()))
 }
 
 /// Opens this node's side of a call and waits for a peer to call.
@@ -474,7 +487,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     });
     shared.lock().expect("poisoned").waiting = Some(AbortOnDropHandle::new(task));
 
-    Ok(handle::to_i64(shared))
+    Ok(register(shared))
 }
 
 /// Answers the first peer that calls and installs a player for it on `session`.
@@ -520,11 +533,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
     _class: JClass<'_>,
     handle: jlong,
 ) -> jboolean {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return 0;
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
+    };
     let connected = session.lock().expect("poisoned").call.is_some();
     jboolean::from(connected)
 }
@@ -575,7 +586,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     session.broadcast = Some(broadcast);
     session.live = Some(live);
     session.router = Some(router);
-    Ok(handle::to_i64(session.into_shared()))
+    Ok(register(session.into_shared()))
 }
 
 /// Returns the ticket a published broadcast is reachable by, or an empty string.
@@ -585,14 +596,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getTicket<'a>(
     _class: JClass<'a>,
     handle: jlong,
 ) -> JString<'a> {
-    if handle == 0 {
-        return empty_string(&mut env);
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else {
+    let Some(session) = lookup(handle) else {
         return empty_string(&mut env);
     };
+    let guard = session.lock().expect("poisoned");
     let ticket = guard.ticket.clone().unwrap_or_default();
     new_string(&mut env, &ticket)
 }
@@ -632,7 +639,7 @@ fn start_direct_impl(size: Size) -> Result<jlong> {
     session.frames = Some(preview);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    Ok(handle::to_i64(session.into_shared()))
+    Ok(register(session.into_shared()))
 }
 
 /// Starts a local loop from the camera through MediaCodec and back.
@@ -668,7 +675,7 @@ fn start_h264_impl(size: Size) -> Result<jlong> {
     session.player = Some(player);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    Ok(handle::to_i64(session.into_shared()))
+    Ok(register(session.into_shared()))
 }
 
 /// Plays a local broadcast in-process.
@@ -697,7 +704,7 @@ struct CameraTarget {
 
 /// Reads the camera target out of the handle.
 fn camera_target(session: &SharedHandle) -> Option<CameraTarget> {
-    let guard = session.lock().ok()?;
+    let guard = session.lock().expect("poisoned");
     Some(CameraTarget {
         sink: guard.camera.clone()?,
         timestamp: guard.timestamp(),
@@ -707,9 +714,7 @@ fn camera_target(session: &SharedHandle) -> Option<CameraTarget> {
 
 /// Counts a frame that reached the publish pipeline.
 fn count_camera_frame(session: &SharedHandle) {
-    if let Ok(mut guard) = session.lock() {
-        guard.cam_frames_pushed += 1;
-    }
+    session.lock().expect("poisoned").cam_frames_pushed += 1;
 }
 
 /// Pushes one tightly packed RGBA camera frame.
@@ -722,16 +727,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
     width: jint,
     height: jint,
 ) {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return;
-    }
+    };
     let Ok(rgba) = env.convert_byte_array(data) else {
         error!("failed to read camera frame byte array");
         return;
     };
 
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
     let Some(target) = camera_target(&session) else {
         return;
     };
@@ -769,9 +772,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
     y_stride: jint,
     uv_stride: jint,
 ) {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return;
-    }
+    };
     let (Ok(y), Ok(uv)) = (
         env.convert_byte_array(y_data),
         env.convert_byte_array(uv_data),
@@ -780,8 +783,6 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
         return;
     };
 
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
     let Some(target) = camera_target(&session) else {
         return;
     };
@@ -872,9 +873,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
     handle: jlong,
     surface: JObject<'_>,
 ) {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return;
-    }
+    };
     // SAFETY: JNI just passed a valid JNIEnv and a live `android.view.Surface`.
     let native_window = unsafe {
         moq_video::ndk::native_window::NativeWindow::from_surface(env.get_raw(), surface.as_raw())
@@ -884,13 +885,11 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
         return;
     };
 
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else { return };
+    let guard = session.lock().expect("poisoned");
     // SAFETY: the window comes from a live surface and outlives this call. The
     // renderer takes its own reference.
     match unsafe { AndroidRenderer::new(native_window.ptr().as_ptr().cast()) } {
-        Ok(renderer) => *guard.renderer.lock().expect("renderer lock") = Some(renderer),
+        Ok(renderer) => *guard.renderer.lock().expect("poisoned") = Some(renderer),
         Err(err) => error!(error = format!("{err:#}"), "initSurface failed"),
     }
 }
@@ -902,15 +901,11 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_teardownSurface(
     _class: JClass<'_>,
     handle: jlong,
 ) {
-    if handle == 0 {
-        return;
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else { return };
-    let Ok(mut renderer) = guard.renderer.lock() else {
+    let Some(session) = lookup(handle) else {
         return;
     };
+    let guard = session.lock().expect("poisoned");
+    let mut renderer = guard.renderer.lock().expect("poisoned");
     if let Some(renderer) = renderer.as_ref() {
         renderer.teardown();
     }
@@ -929,18 +924,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     surface_height: jint,
     rotation_degrees: jint,
 ) -> bool {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return false;
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
+    };
 
     // Hold the session lock only to take the frame. Drawing can be slow, and a
     // camera push that waits on the lock drops a frame.
     let (frame, renderer) = {
-        let Ok(mut guard) = session.lock() else {
-            return false;
-        };
+        let mut guard = session.lock().expect("poisoned");
         let Some(frame) = guard.frames.as_mut().and_then(VideoFrames::try_next) else {
             return false;
         };
@@ -953,9 +944,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
         (frame, Arc::clone(&guard.renderer))
     };
 
-    let Ok(renderer) = renderer.lock() else {
-        return false;
-    };
+    let renderer = renderer.lock().expect("poisoned");
     let Some(renderer) = renderer.as_ref() else {
         return false;
     };
@@ -1056,12 +1045,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
     _class: JClass<'_>,
     handle: jlong,
 ) -> jlong {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return 0;
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else { return 0 };
+    };
+    let guard = session.lock().expect("poisoned");
 
     // Prefer the decoded size. The catalog only has the encoded size.
     if let Some(size) = guard.frame_dims {
@@ -1087,14 +1074,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
     _class: JClass<'a>,
     handle: jlong,
 ) -> JString<'a> {
-    if handle == 0 {
-        return empty_string(&mut env);
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else {
+    let Some(session) = lookup(handle) else {
         return empty_string(&mut env);
     };
+    let guard = session.lock().expect("poisoned");
     let names = guard
         .catalog()
         .map(|catalog| {
@@ -1120,15 +1103,13 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     handle: jlong,
     rendition_name: JString<'_>,
 ) {
-    if handle == 0 {
+    let Some(session) = lookup(handle) else {
         return;
-    }
+    };
     let Some(name) = read_jstring(&mut env, &rendition_name) else {
         return;
     };
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else { return };
+    let guard = session.lock().expect("poisoned");
     let Some(player) = guard.player.as_ref() else {
         warn!(%name, "not playing a broadcast, nothing to switch");
         return;
@@ -1144,14 +1125,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getStatusLine<'a>(
     _class: JClass<'a>,
     handle: jlong,
 ) -> JString<'a> {
-    if handle == 0 {
-        return empty_string(&mut env);
-    }
-    // SAFETY: Kotlin passes a non-zero handle only until it calls `disconnect`.
-    let session = unsafe { borrow_handle(handle) };
-    let Ok(guard) = session.lock() else {
+    let Some(session) = lookup(handle) else {
         return empty_string(&mut env);
     };
+    let guard = session.lock().expect("poisoned");
     let line = status_line(&guard);
     new_string(&mut env, &line)
 }
@@ -1191,29 +1168,22 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     _class: JClass<'_>,
     handle: jlong,
 ) {
-    if handle == 0 {
+    let Some(session) = unregister(handle) else {
         return;
-    }
-    // SAFETY: `disconnect` is the last call Kotlin makes with this handle.
-    let session = unsafe { take_handle(handle) };
+    };
     // Release the lock before `block_on`. Holding it would stall every other
     // JNI call on this handle until the endpoint closes.
-    let (waiting, player, call, broadcast, live, router) = match session.lock() {
-        Ok(mut guard) => (
-            {
-                guard.closing = true;
-                guard.waiting.take()
-            },
+    let (waiting, player, call, broadcast, live, router) = {
+        let mut guard = session.lock().expect("poisoned");
+        guard.closing = true;
+        (
+            guard.waiting.take(),
             guard.player.take(),
             guard.call.take(),
             guard.broadcast.take(),
             guard.live.take(),
             guard.router.take(),
-        ),
-        Err(_) => {
-            warn!("session handle was poisoned, skipping shutdown");
-            return;
-        }
+        )
     };
     runtime().block_on(async move {
         // Stop waiting for a caller first, so none is accepted during shutdown.
