@@ -795,4 +795,51 @@ mod tests {
         let failure = source.failure().expect("the failure is kept");
         assert!(matches!(*failure, Error::Device { .. }));
     }
+
+    /// Reads one frame of the PCM `source` generates, and checks that it stops once dropped.
+    #[cfg(feature = "pattern")]
+    async fn generates_pcm(source: AudioSource, layout: audio::Layout) {
+        let AudioKind::Pcm { format, fanout } = source.kind() else {
+            panic!("a generated source is PCM");
+        };
+        let (format, fanout) = (*format, fanout.clone());
+        assert_eq!(format.sample_rate, 48_000);
+        assert_eq!(format.layout, layout);
+        let mut frames = fanout.upgrade().expect("the generator runs").subscribe();
+        let frame = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+            .await
+            .expect("the generator sends")
+            .expect("the generator runs");
+        let sample_bytes = layout.channels() as usize * 4;
+        assert!(!frame.data.is_empty());
+        assert_eq!(frame.data.len() % sample_bytes, 0, "whole samples");
+
+        drop(source);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+            while fanout.upgrade().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            stopped.is_ok(),
+            "the generator kept running without its source"
+        );
+    }
+
+    #[cfg(feature = "pattern")]
+    #[tokio::test]
+    async fn a_tone_generates_pcm_in_its_layout_and_stops_with_its_source() {
+        let source = AudioSource::tone(440.0, audio::Layout::Stereo).expect("the thread starts");
+        assert_eq!(source.label(), "tone");
+        generates_pcm(source, audio::Layout::Stereo).await;
+    }
+
+    #[cfg(feature = "pattern")]
+    #[tokio::test]
+    async fn the_audio_test_pattern_generates_pcm_and_stops_with_its_source() {
+        let source = AudioSource::test_pattern(audio::Layout::Mono).expect("the thread starts");
+        assert_eq!(source.label(), "test-pattern");
+        generates_pcm(source, audio::Layout::Mono).await;
+    }
 }
