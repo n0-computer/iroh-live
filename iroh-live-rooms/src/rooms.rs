@@ -183,7 +183,11 @@ impl Rooms {
         let writer = kv.write(self.node.endpoint().secret_key().clone());
 
         let (leave, inbox) = mpsc::channel(1);
+        // Without `test-util` nothing keeps the sender, so the actor's
+        // restart branch never fires.
         let (restart_map, restarts) = mpsc::channel(1);
+        #[cfg(not(feature = "test-util"))]
+        drop(restart_map);
         let inner = Arc::new(Inner {
             me,
             ticket: ticket.clone(),
@@ -195,6 +199,7 @@ impl Rooms {
             local_changed: Watchable::new(0),
             display_name: Watchable::new(display_name),
             done: Watchable::new(false),
+            #[cfg(feature = "test-util")]
             restart_map,
         });
         let actor = Actor {

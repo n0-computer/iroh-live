@@ -70,6 +70,7 @@ pub(crate) struct Inner {
     /// Asks the actor to resubscribe to its gossip map, and hears back once it did.
     ///
     /// Only the `test-util` feature's hook sends on it.
+    #[cfg(feature = "test-util")]
     #[debug(skip)]
     pub(crate) restart_map: mpsc::Sender<oneshot::Sender<()>>,
 }
