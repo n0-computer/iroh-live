@@ -263,7 +263,7 @@ async fn calls_interoperate_with_a_raw_path_caller() {
         .await
         .expect("dial b");
     let side = layout
-        .publish_with(&raw, "call", Audience::Peers(ringing), |producer| {
+        .publish_with(raw, "call", Audience::Peers(ringing), |producer| {
             Ok::<_, std::convert::Infallible>(producer.clone())
         })
         .expect("publish the raw side");
@@ -311,7 +311,7 @@ async fn calls_interoperate_with_a_raw_path_callee() {
     })
     .await;
     let (_publication, _side) = layout
-        .publish_with(&raw, "call", Audience::peers([a.id()]), |producer| {
+        .publish_with(raw, "call", Audience::peers([a.id()]), |producer| {
             Ok::<_, std::convert::Infallible>(producer.clone())
         })
         .expect("publish the raw side");
@@ -355,12 +355,9 @@ async fn a_lagging_event_reader_is_told_it_lagged() {
         .expect("dial b");
     let audience = n0_watcher::Watchable::new(BTreeSet::new());
     let _side = layout
-        .publish_with(
-            &raw,
-            "call",
-            Audience::Peers(audience.clone()),
-            |producer| Ok::<_, std::convert::Infallible>(producer.clone()),
-        )
+        .publish_with(raw, "call", Audience::Peers(audience.clone()), |producer| {
+            Ok::<_, std::convert::Infallible>(producer.clone())
+        })
         .expect("publish the raw side");
 
     // Subscribed now, and never read until the rings are over.

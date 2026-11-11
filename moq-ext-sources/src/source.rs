@@ -67,9 +67,7 @@ enum Driver {
     Thread,
     /// A task on a thread of its own, for capture objects that cannot move.
     #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
-    Local {
-        _task: crate::local_task::LocalTask,
-    },
+    Local { _task: crate::local_task::LocalTask },
     /// Nothing: the application pushes.
     Pushed,
 }
