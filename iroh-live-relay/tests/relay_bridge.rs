@@ -1987,3 +1987,30 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
 
     holder.shutdown().await;
 }
+
+/// With a key, a browser without a token keeps the public rule: names of one segment only.
+#[tokio::test]
+async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_keyed(signing_keys()).await;
+
+    let browser = moq_tokio::origin::spawn();
+    let _screen = browser
+        .route("screen", origin::RouteOptions::default())
+        .expect("broadcast");
+    let _studio = browser
+        .route("studio/cam", origin::RouteOptions::default())
+        .expect("broadcast");
+    let _session = established(
+        noq_client()
+            .with_publisher(browser.consume())
+            .connect(relay.url()),
+    )
+    .await;
+    routed(&relay.cluster.origin.consume(), "screen").await;
+    assert!(
+        !routed_soon(&relay.cluster.origin, "studio/cam").await,
+        "a session without a token published two segments"
+    );
+    drop(browser);
+}

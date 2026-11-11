@@ -462,4 +462,56 @@ mod tests {
             .is_err()
         );
     }
+
+    /// Returns a path in the temp dir that nothing else uses.
+    fn scratch() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "iroh-live-relay-keys-{}",
+            SecretKey::generate().public()
+        ))
+    }
+
+    fn generated() -> moq_auth::Key {
+        moq_auth::Key::generate(moq_auth::Algorithm::HS256, None).expect("a key")
+    }
+
+    #[test]
+    fn a_missing_key_file_is_a_keys_error() {
+        let path = scratch();
+        let Err(err) = load_keys(&path) else {
+            panic!("a missing file loaded");
+        };
+        assert!(
+            matches!(&err, Error::Keys { path: named, .. } if *named == path),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_file_that_holds_no_key_is_a_keys_error() {
+        let path = scratch();
+        std::fs::write(&path, b"nowhere near a key").expect("writes the scratch file");
+        let result = load_keys(&path);
+        std::fs::remove_file(&path).expect("removes the scratch file");
+        let Err(err) = result else {
+            panic!("a file without a key loaded");
+        };
+        assert!(matches!(err, Error::Keys { .. }), "{err:#}");
+    }
+
+    #[test]
+    fn a_single_key_and_a_key_set_both_load() {
+        let path = scratch();
+        let key = generated();
+        key.to_file(&path).expect("writes the key");
+        let single = load_keys(&path);
+        let set = KeySet {
+            keys: vec![Arc::new(generated()), Arc::new(generated())],
+        };
+        set.to_file(&path).expect("writes the set");
+        let both = load_keys(&path);
+        std::fs::remove_file(&path).expect("removes the scratch file");
+        assert_eq!(single.expect("one key").keys.len(), 1);
+        assert_eq!(both.expect("a set").keys.len(), 2);
+    }
 }
