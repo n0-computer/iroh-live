@@ -463,6 +463,42 @@ mod tests {
         assert!(matches!(closed, Err(Error::Closed { .. })), "{closed:?}");
     }
 
+    /// A broadcast that describes itself ends the wait with its catalog.
+    #[tokio::test]
+    async fn a_catalog_wait_returns_the_first_catalog() {
+        let broadcast = moq_ext_publisher::LocalBroadcast::new();
+        let remote = RemoteBroadcast::from_consumer(broadcast.consume());
+        broadcast
+            .set_video(
+                moq_ext_sources::VideoSource::test_pattern(
+                    moq_video::Size::new(320, 180),
+                    moq_video::FrameRate::new(30, 1).expect("a valid rate"),
+                )
+                .expect("the pattern thread starts"),
+                moq_ext_publisher::VideoEncoding {
+                    prefer_hardware: false,
+                    ..moq_ext_publisher::VideoEncoding::single(
+                        moq_ext_publisher::VideoRendition::new("video"),
+                    )
+                },
+            )
+            .expect("a valid encoding");
+        let catalog = remote
+            .catalog_within(Duration::from_secs(10))
+            .await
+            .expect("a catalog");
+        assert!(
+            catalog.video.renditions.contains_key("video"),
+            "{catalog:?}"
+        );
+        // A later wait returns at once with what the remote holds.
+        let again = remote
+            .catalog_within(Duration::from_millis(1))
+            .await
+            .expect("the catalog is held");
+        assert!(again.video.renditions.contains_key("video"));
+    }
+
     /// A catalog track created after the broadcast is read is still found.
     #[tokio::test]
     async fn a_catalog_created_late_is_read() {

@@ -964,6 +964,50 @@ async fn the_frames_end_when_the_broadcast_closes() {
     assert_eq!(status.rendition, None);
 }
 
+/// A player's frames end when the player is dropped, while the broadcast goes on.
+#[tokio::test]
+async fn the_frames_end_when_the_player_is_dropped() {
+    let (broadcast, _source) = ladder();
+    let player = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video_frames();
+    tokio::time::timeout(TIMEOUT, frames.next())
+        .await
+        .expect("a first frame")
+        .expect("the video plays");
+    drop(player);
+    tokio::time::timeout(TIMEOUT, async { while frames.next().await.is_some() {} })
+        .await
+        .expect("the frames went on after the player was dropped");
+    drop(broadcast);
+}
+
+/// An audio frames handle of a player that plays no audio ends with the player.
+#[tokio::test]
+async fn the_audio_frames_of_a_player_without_audio_end_with_it() {
+    let (broadcast, _source) = ladder();
+    let player = local(&broadcast)
+        .play(PlayerConfig {
+            audio: None,
+            ..PlayerConfig::default()
+        })
+        .expect("valid");
+    let mut audio = player.audio_frames();
+    drop(player);
+    let leftover = tokio::time::timeout(TIMEOUT, async {
+        let mut leftover = 0usize;
+        while audio.next().await.is_some() {
+            leftover += 1;
+        }
+        leftover
+    })
+    .await
+    .expect("the audio frames outlived the player");
+    assert_eq!(leftover, 0, "a player without audio decoded some");
+    drop(broadcast);
+}
+
 /// A recording remuxes the broadcast into a container without decoding it.
 #[tokio::test]
 async fn a_recording_writes_a_container() {

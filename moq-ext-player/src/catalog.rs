@@ -198,4 +198,34 @@ mod tests {
         let err = video_rendition(&catalog, "4k").expect_err("no such rendition");
         assert!(err.to_string().contains("hd"), "{err}");
     }
+
+    #[test]
+    fn a_rendition_without_a_bitrate_sorts_last() {
+        let mut catalog = Catalog::default();
+        let renditions = &mut catalog.video.renditions;
+        let mut unknown = rendition(1920, 1080, 0);
+        unknown.bitrate = None;
+        renditions.insert("unknown".into(), unknown);
+        renditions.insert("low".into(), rendition(640, 360, 500_000));
+        assert_eq!(names(&catalog), ["low", "unknown"]);
+        assert_eq!(rungs(&catalog)[1].bitrate, None);
+    }
+
+    #[test]
+    fn a_disabled_rendition_is_a_stalled_rung() {
+        let mut catalog = Catalog::default();
+        let renditions = &mut catalog.video.renditions;
+        let mut off = rendition(1920, 1080, 4_000_000);
+        off.enabled = false;
+        renditions.insert("off".into(), off);
+        renditions.insert("on".into(), rendition(640, 360, 500_000));
+        let ladder = rungs(&catalog);
+        assert_eq!(names(&catalog), ["off", "on"]);
+        assert!(ladder[0].stalled);
+        assert!(!ladder[1].stalled);
+        assert_eq!(
+            moq_ext_adaptive::best(&ladder, &Constraints::default()).as_deref(),
+            Some("on")
+        );
+    }
 }
