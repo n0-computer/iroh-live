@@ -388,3 +388,55 @@ async fn calls_interoperate_with_a_raw_path_callee() {
     router.shutdown().await.expect("router");
     a.shutdown().await;
 }
+
+/// Waits until `calls` lists `peer` as ringing if `ringing`, or no longer does if not.
+async fn rings(calls: &Calls, peer: EndpointId, ringing: bool) {
+    let mut watch = calls.ringing();
+    step("the ring turns", async {
+        while watch.get().contains(&peer) != ringing {
+            watch.updated().await.expect("calls closed");
+        }
+    })
+    .await;
+}
+
+/// A reader that falls behind the bounded event queue gets `Lagged`, then the newer events.
+#[tokio::test]
+#[traced_test]
+async fn a_lagging_event_reader_is_told_it_lagged() {
+    // More rings than the event queue holds, which is 64.
+    const RINGS: usize = 70;
+    let layout = LiveLayout::default();
+    let b = Peer::start().await;
+    let (raw, router) = Peer::raw().await;
+    step("dial", raw.connect(b.node.endpoint().addr()))
+        .await
+        .expect("dial b");
+    let audience = n0_watcher::Watchable::new(BTreeSet::new());
+    let _side = layout
+        .publish_with(
+            &raw,
+            "call",
+            Audience::Peers(audience.clone()),
+            |producer| Ok::<_, std::convert::Infallible>(producer.clone()),
+        )
+        .expect("publish the raw side");
+
+    // Subscribed now, and never read until the rings are over.
+    let mut events = b.calls.events();
+    for _ in 0..RINGS {
+        audience.set(BTreeSet::from([b.id()])).ok();
+        rings(&b.calls, raw.id(), true).await;
+        audience.set(BTreeSet::new()).ok();
+        rings(&b.calls, raw.id(), false).await;
+    }
+
+    let first = step("the first event", events.next()).await;
+    assert_eq!(first, Some(CallEvent::Lagged));
+    let next = step("the event after the lag", events.next()).await;
+    assert_eq!(next, Some(CallEvent::Ringing(raw.id())));
+
+    raw.shutdown().await;
+    router.shutdown().await.expect("router");
+    b.shutdown().await;
+}

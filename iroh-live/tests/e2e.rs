@@ -173,7 +173,7 @@ fn call_side(node: &Node) -> (Calls, LocalBroadcast) {
 /// The session stays open, so a second call over it rings again.
 #[tokio::test]
 #[traced_test]
-async fn a_call_rings_answers_and_hangs_up() {
+async fn a_call_with_media_rings_answers_and_hangs_up() {
     let alice = node().await;
     let _alice_router = serve(&alice);
     let bob = node().await;
