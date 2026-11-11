@@ -253,16 +253,22 @@ impl State {
         self.authorize_peer(peer);
     }
 
-    /// Returns `base` widened by the ticket paths of `remote`.
+    /// Returns `base` widened by the ticket paths of `remote` it does not cover yet.
+    ///
+    /// A claimed path that `base` already lets the peer publish adds nothing,
+    /// but stays recorded, so it takes effect if the base narrows.
     pub(crate) fn effective_grant(&self, remote: Option<&EndpointId>, base: &Grant) -> Grant {
         let Some(paths) = remote.and_then(|remote| self.tickets.get(remote)) else {
             return base.clone();
         };
-        paths.keys().fold(base.clone(), |grant, path| {
-            grant
-                .with_publish_path(path.as_str())
-                .expect("a claimed path passed check_path, so a literal pattern names it")
-        })
+        paths
+            .keys()
+            .filter(|path| !base.allows_publish(path.as_str()))
+            .fold(base.clone(), |grant, path| {
+                grant
+                    .with_publish_path(path.as_str())
+                    .expect("a claimed path passed check_path, so a literal pattern names it")
+            })
     }
 
     /// Re-authorizes every link with `peer`.

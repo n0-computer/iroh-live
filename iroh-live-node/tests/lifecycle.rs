@@ -2,10 +2,11 @@
 
 mod common;
 
-use std::sync::Arc;
-
-use common::{Peer, TIMEOUT};
-use iroh_live_node::{Grant, NodeConfig};
+use common::{Peer, TIMEOUT, step};
+use iroh_live_node::{
+    Grant, NodeConfig,
+    policy::{self, Authorization},
+};
 use n0_tracing_test::traced_test;
 
 #[tokio::test]
@@ -40,19 +41,40 @@ async fn closed_resolves_when_the_last_handle_drops() {
 
 #[tokio::test]
 #[traced_test]
-async fn id_and_grant_for_follow_the_config() {
-    let default = Peer::bare(NodeConfig::default()).await;
-    assert_eq!(default.moq.id(), default.id());
-    let other = default.id();
-    assert_eq!(default.moq.grant_for(other), Grant::subscribe_only());
+async fn grant_for_reports_the_policy_authorization_of_a_live_peer() {
+    let alice =
+        Peer::bare(NodeConfig::default().with_policy(policy::Open(Grant::everything()))).await;
+    assert_eq!(alice.moq.id(), alice.id());
+    let bob = Peer::bare(NodeConfig::default()).await;
+    assert_eq!(alice.moq.grant_for(bob.id()), None, "no session yet");
 
-    let open = Peer::bare(NodeConfig {
-        grant: Some(Arc::new(|_| Grant::everything())),
-        ..Default::default()
+    let session = step("alice dials bob", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("connect");
+    assert_eq!(
+        alice.moq.grant_for(bob.id()),
+        Some(Authorization::from(Grant::everything()))
+    );
+    // Bob's default policy lets alice subscribe and publish nothing.
+    let at_bob = step("bob registers alice", async {
+        loop {
+            if let Some(authorization) = bob.moq.grant_for(alice.id()) {
+                return authorization;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     })
     .await;
-    assert_eq!(open.moq.grant_for(other), Grant::everything());
+    assert_eq!(at_bob, Authorization::from(Grant::subscribe_only()));
 
-    default.shutdown().await;
-    open.shutdown().await;
+    session.close(moq_net::Error::Cancel);
+    step("the authorization goes with the session", async {
+        while alice.moq.grant_for(bob.id()).is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
 }

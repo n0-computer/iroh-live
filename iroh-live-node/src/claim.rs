@@ -86,11 +86,13 @@ impl Node {
     /// A live session applies the wider grant a moment after this returns, so
     /// a read of the path that starts at once may still be refused.
     ///
-    /// A path that [`NodeConfig::grant`](crate::NodeConfig::grant) already lets
-    /// the peer publish, and any path of this node's own id, needs no
-    /// widening, so the claim is a no-op.
+    /// A path that the peer's live authorization (see
+    /// [`grant_for`](Self::grant_for)) already lets it publish, and any path
+    /// of this node's own id, needs no widening, so the claim is a no-op. A
+    /// claim made before the peer has a session is recorded, and widens
+    /// nothing while the peer's grant covers the path.
     ///
-    /// The peer has to own the path: [`NodeConfig::owner`](crate::NodeConfig::owner)
+    /// Otherwise the peer has to own the path: [`NodeConfig::owner`](crate::NodeConfig::owner)
     /// decides if it is set. Otherwise exactly one segment of the path is the
     /// peer's endpoint id, and no other segment parses as one. That keeps a
     /// claimed path from overlapping any other peer's paths, which hop pinning
@@ -106,7 +108,13 @@ impl Node {
             return Err(e!(Error::ShutDown));
         }
         check_path(path)?;
-        if peer == self.shared.id || self.grant_for(peer).allows_publish(path.as_str()) {
+        // Only the authorization the peer already holds counts here: the
+        // policy is async, and a claim must not wait for it.
+        let granted = || {
+            self.grant_for(peer)
+                .is_some_and(|authorization| authorization.grant.allows_publish(path.as_str()))
+        };
+        if peer == self.shared.id || granted() {
             return Ok(PathClaim {
                 peer,
                 path: path.clone(),

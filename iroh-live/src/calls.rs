@@ -271,27 +271,23 @@ impl Calls {
     /// [`closed`](Self::closed) resolves. A bare producer has to be closed by
     /// the application.
     ///
+    /// Both sides of a call read each other's side over a direct session, so
+    /// each node's policy has to let the other publish under the layout:
+    /// `<root>/<peer id>/call`. A node built with
+    /// [`LiveLayout::config`](crate::LiveLayout::config) does. On a node whose
+    /// policy does not, [`call`](Self::call) and [`answer`](Self::answer) fail
+    /// with [`NotGranted`](iroh_live_node::Error::NotGranted).
+    ///
     /// # Errors
     ///
-    /// Fails with [`Error::Node`] holding
-    /// [`NotGranted`](iroh_live_node::Error::NotGranted) if the node's grant
-    /// does not let this node publish its call path (the check assumes the
-    /// grant treats all ids alike), and with [`Error::Node`] if the side is
-    /// already published or `B` cannot be built.
+    /// Fails with [`Error::Node`] if the side is already published or `B`
+    /// cannot be built.
     pub fn new<B>(node: &Node, layout: &LiveLayout) -> Result<(Self, B), Error>
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
         let local_id = node.id();
         let path = layout.path(local_id, CALL)?;
-        let grant = node.grant_for(local_id);
-        if !grant.allows_publish(path.as_str()) {
-            return Err(Error::from(e!(iroh_live_node::Error::NotGranted {
-                path,
-                peer: local_id,
-                publish_patterns: grant.publish,
-            })));
-        }
         let audience = Watchable::new(BTreeSet::new());
         let (publication, side) =
             node.publish_with(path, Audience::Peers(audience.clone()), |producer| {

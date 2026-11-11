@@ -12,7 +12,7 @@ use iroh::{
     Endpoint, EndpointId, address_lookup::MemoryLookup, endpoint::presets, protocol::Router,
 };
 use iroh_live::{
-    Audience, Node, NodeConfig, Reach,
+    Audience, Node, Reach,
     calls::{Call, CallEvent, Calls, Error, HungUp},
     layout::LiveLayout,
 };
@@ -182,28 +182,6 @@ async fn answer_requires_a_ring() {
 
     a.shutdown().await;
     b.shutdown().await;
-}
-
-#[tokio::test]
-#[traced_test]
-async fn calls_need_the_grant() {
-    let endpoint = endpoint().await;
-    let node = Node::new(endpoint.clone(), NodeConfig::default());
-
-    let result = Calls::new::<broadcast::Producer>(&node, &LiveLayout::default());
-    let err = result
-        .err()
-        .expect("a subscribe-only node cannot publish its side");
-    assert!(
-        matches!(
-            err,
-            Error::Node(iroh_live_node::Error::NotGranted { .. }, ..)
-        ),
-        "{err:#}"
-    );
-
-    node.shutdown().await;
-    endpoint.close().await;
 }
 
 #[tokio::test]

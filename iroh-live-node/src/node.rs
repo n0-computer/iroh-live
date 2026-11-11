@@ -28,7 +28,7 @@ use crate::{
     actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
     handshake::{Hop, SessionParts},
-    policy::{self, DynPolicy, PeerRequest, Policy},
+    policy::{self, Authorization, DynPolicy, PeerRequest, Policy},
     publish, relay, route,
     state::State,
 };
@@ -148,7 +148,6 @@ pub(crate) struct Shared {
     pub(crate) endpoint: Endpoint,
     pub(crate) id: EndpointId,
     pub(crate) admission: Admission,
-    grant: Option<GrantFn>,
     /// Decides sessions, built from the configured grant if none was given.
     pub(crate) policy: Arc<dyn DynPolicy<EndpointId>>,
     pub(crate) owner: Option<OwnerFn>,
@@ -220,7 +219,6 @@ impl Node {
             endpoint,
             id,
             admission: config.admission,
-            grant: config.grant,
             policy,
             owner: config.owner,
             table,
@@ -276,12 +274,18 @@ impl Node {
         self.shared.id
     }
 
-    /// Returns the grant [`NodeConfig::grant`] gives `peer` for new sessions.
+    /// Returns the authorization the policy gave `peer`, while it holds a session.
     ///
-    /// A session that already exists keeps its own grant: see
-    /// [`Session::grant`].
-    pub fn grant_for(&self, peer: EndpointId) -> Grant {
-        self.shared.grant_for(peer)
+    /// Every session with the peer shares it. `None` while the peer has no
+    /// live session: the policy decides when one opens. Ticket claims widen
+    /// the grant on top of it, which [`Session::grant`] includes.
+    pub fn grant_for(&self, peer: EndpointId) -> Option<Authorization> {
+        self.shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .peer_authorization(&peer)
+            .cloned()
     }
 
     /// Returns a future that resolves when the node shuts down.
@@ -411,11 +415,10 @@ impl Node {
 
     /// Resolves the broadcast `ticket` names, whatever grants this node has.
     ///
-    /// If [`NodeConfig::grant`] already lets the ticket's peer publish the
-    /// path, this is [`subscribe`](Self::subscribe) with [`Reach::Both`].
-    /// Otherwise the node first claims the path for that peer with
+    /// The node first claims the path for the ticket's peer with
     /// [`claim_path`](Self::claim_path), and the subscription holds the claim
-    /// for as long as it lives. A viewer therefore needs no grant of its own
+    /// for as long as it lives. Then this is [`subscribe`](Self::subscribe)
+    /// with [`Reach::Both`]. A viewer therefore needs no grant of its own
     /// to watch a ticket. When the last subscription of a path drops, the
     /// grant narrows again, and moq ends what local readers read there.
     ///
@@ -566,13 +569,6 @@ fn legacy_policy(grant: Option<GrantFn>) -> Arc<dyn DynPolicy<EndpointId>> {
 }
 
 impl Shared {
-    /// Returns the grant [`NodeConfig::grant`] gives `peer`.
-    pub(crate) fn grant_for(&self, peer: EndpointId) -> Grant {
-        self.grant
-            .as_ref()
-            .map_or_else(Grant::subscribe_only, |grant| grant(peer))
-    }
-
     /// Hands an established session to the actor, which runs it.
     pub(crate) async fn register(&self, parts: SessionParts) -> Result<Session, Error> {
         let (reply, reply_rx) = oneshot::channel();
