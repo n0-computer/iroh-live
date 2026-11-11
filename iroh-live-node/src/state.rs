@@ -293,9 +293,10 @@ impl State {
     /// A route is attributed to the hop its session's peer declares, or else
     /// to the hop this node assigned the session. The two agree for peers on
     /// this crate. A hop no link has is taken to be one a relay declares of
-    /// its own, as moq-relay does, and maps to the oldest relay link. `None`
-    /// for a route published on this node, and for an unknown hop while no
-    /// relay is attached.
+    /// its own, as moq-relay does. It maps to the relay link only while
+    /// exactly one relay feeds the route table, since nothing tells several
+    /// apart. `None` for a route published on this node, and for an unknown
+    /// hop while no relay, or more than one, feeds the table.
     pub(crate) fn link_for(&self, source: Source) -> Option<LinkId> {
         let Source::Peer(_) = source else {
             return None;
@@ -305,12 +306,17 @@ impl State {
         }
         // moq-relay declares a hop of its own, not the one derived from its
         // endpoint id, and iroh-live-node peers always carry the derived one.
-        // So an unknown hop is a relay's: the oldest relay link, if any.
-        self.links
+        // So an unknown hop is a relay's, but not one we can name if several
+        // relays feed the table.
+        let mut relays = self
+            .links
             .iter()
-            .filter(|(_, link)| link.kind == LinkKind::Relay)
-            .map(|(id, _)| *id)
-            .min()
+            .filter(|(_, link)| link.kind == LinkKind::Relay && link.consume)
+            .map(|(id, _)| *id);
+        match (relays.next(), relays.next()) {
+            (Some(id), None) => Some(id),
+            _ => None,
+        }
     }
 
     /// Returns the link whose peer carries `hop`, if any.
@@ -337,4 +343,76 @@ impl State {
 /// audience admits the link.
 pub(crate) fn served(table: &origin::Producer) -> origin::Consumer {
     table.consume().local()
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    use super::*;
+
+    /// Returns a link entry of `kind` with a peer of its own, which feeds the table.
+    fn link(kind: LinkKind) -> LinkEntry {
+        let remote = SecretKey::generate().public();
+        LinkEntry {
+            kind,
+            remote: Some(remote),
+            hop: Hop::of(&remote),
+            grant: Grant::everything(),
+            public: true,
+            consume: true,
+            auth: auth::Handle::new(),
+            session: None,
+            link_state: LinkState::default(),
+        }
+    }
+
+    /// Returns a route source with a hop no link carries.
+    fn unknown_hop() -> Source {
+        Source::Peer(Hop::of(&SecretKey::generate().public()).id().get())
+    }
+
+    #[test]
+    fn link_for_maps_an_unknown_hop_to_the_only_relay() {
+        let mut state = State::default();
+        assert_eq!(state.link_for(unknown_hop()), None);
+
+        state.add_link(LinkId(1), link(LinkKind::Direct));
+        assert_eq!(state.link_for(unknown_hop()), None);
+
+        state.add_link(LinkId(2), link(LinkKind::Relay));
+        assert_eq!(state.link_for(unknown_hop()), Some(LinkId(2)));
+
+        state.add_link(LinkId(3), link(LinkKind::Relay));
+        assert_eq!(state.link_for(unknown_hop()), None);
+    }
+
+    #[test]
+    fn link_for_ignores_a_relay_that_feeds_nothing() {
+        let mut state = State::default();
+        state.add_link(LinkId(1), link(LinkKind::Relay));
+        state.add_link(
+            LinkId(2),
+            LinkEntry {
+                consume: false,
+                ..link(LinkKind::Relay)
+            },
+        );
+        assert_eq!(state.link_for(unknown_hop()), Some(LinkId(1)));
+    }
+
+    #[test]
+    fn link_for_finds_a_known_hop_and_skips_local_routes() {
+        let mut state = State::default();
+        let direct = link(LinkKind::Direct);
+        let hop = direct.hop;
+        state.add_link(LinkId(1), direct);
+        state.add_link(LinkId(2), link(LinkKind::Relay));
+        state.add_link(LinkId(3), link(LinkKind::Relay));
+        assert_eq!(
+            state.link_for(Source::Peer(hop.id().get())),
+            Some(LinkId(1))
+        );
+        assert_eq!(state.link_for(Source::Local), None);
+    }
 }

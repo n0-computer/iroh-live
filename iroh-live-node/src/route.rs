@@ -209,7 +209,9 @@ impl Subscription {
     ///
     /// Follows the best route as it moves between links. `None` before the
     /// table announces one, for a publication of this node, and once the
-    /// serving link is gone.
+    /// serving link is gone. Also `None` when a relay serves the route and
+    /// several relays feed the table, since a relay's route does not say
+    /// which relay it came from.
     pub fn link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
