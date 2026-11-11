@@ -7586,6 +7586,7 @@ dependencies = [
  "libc",
  "linux-embedded-hal",
  "n0-error",
+ "n0-future",
  "qrcode",
  "raw-window-handle",
  "tokio",

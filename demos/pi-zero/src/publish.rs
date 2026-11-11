@@ -13,6 +13,7 @@ use iroh_live::{
     node::RelayConfig,
 };
 use n0_error::StdResultExt;
+use n0_future::task::AbortOnDropHandle;
 use tracing::{debug, info, warn};
 
 use crate::epaper;
@@ -97,9 +98,14 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 
-    // The e-paper is optional: a failure only logs a warning.
+    // The e-paper is optional: a failure only logs a warning. Its SPI and
+    // BUSY waits block for seconds, so they run off the async workers.
     let has_epaper = if opts.epaper {
-        match epaper::display_qr(&ticket_str) {
+        let ticket = ticket_str.clone();
+        match tokio::task::spawn_blocking(move || epaper::display_qr(&ticket))
+            .await
+            .std_context("the e-paper task panicked")?
+        {
             Ok(()) => {
                 info!("QR code displayed on e-paper");
                 true
@@ -117,34 +123,34 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         false
     };
 
-    let refresh_ticket = ticket_str.clone();
-    let refresh_handle = if has_epaper {
-        Some(tokio::spawn(async move {
+    let refresh = has_epaper.then(|| {
+        let ticket = ticket_str.clone();
+        AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(EPAPER_REFRESH_INTERVAL).await;
-                match epaper::display_qr(&refresh_ticket) {
-                    Ok(()) => debug!("periodic e-paper refresh complete"),
-                    Err(e) => {
+                let ticket = ticket.clone();
+                match tokio::task::spawn_blocking(move || epaper::display_qr(&ticket)).await {
+                    Ok(Ok(())) => debug!("periodic e-paper refresh complete"),
+                    Ok(Err(e)) => {
                         warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
                     }
+                    Err(e) => warn!(error = %e, "periodic e-paper refresh panicked"),
                 }
             }
         }))
-    } else {
-        None
-    };
+    });
 
     tokio::signal::ctrl_c().await?;
 
-    if let Some(handle) = refresh_handle {
-        handle.abort();
-    }
+    // A refresh that already runs on the blocking pool finishes on its own.
+    drop(refresh);
 
     // The datasheet asks to clear the display before storage.
     if has_epaper {
-        match epaper::clear_display() {
-            Ok(()) => info!("e-paper cleared for storage"),
-            Err(e) => warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
+        match tokio::task::spawn_blocking(epaper::clear_display).await {
+            Ok(Ok(())) => info!("e-paper cleared for storage"),
+            Ok(Err(e)) => warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
+            Err(e) => warn!(error = %e, "clearing the e-paper panicked"),
         }
     }
 

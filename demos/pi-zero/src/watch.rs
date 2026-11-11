@@ -434,7 +434,21 @@ async fn show_on_hdmi(mut frames: VideoFrames) -> Result<()> {
         .spawn(move || render_loop(frame_rx))
         .context("spawn render thread")?;
 
-    while let Some(frame) = frames.next().await {
+    // Ctrl-C ends the loop instead of the process, so the render thread
+    // drops its display and the console goes back to text mode.
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    loop {
+        let frame = tokio::select! {
+            frame = frames.next() => frame,
+            _ = &mut ctrl_c => {
+                info!("interrupted, restoring the console");
+                None
+            }
+        };
+        let Some(frame) = frame else {
+            break;
+        };
         if frame_tx.send(frame).await.is_err() {
             break; // render thread exited
         }

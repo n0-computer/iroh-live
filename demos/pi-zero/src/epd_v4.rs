@@ -5,7 +5,10 @@
 //! crate supports only V2 and V3, so this follows Waveshare's Python driver
 //! `epd2in13_V4.py`.
 
-use std::{thread, time::Duration};
+use std::{
+    fmt, thread,
+    time::{Duration, Instant},
+};
 
 use embedded_hal::{
     digital::{InputPin, OutputPin},
@@ -19,6 +22,39 @@ pub(crate) const HEIGHT: u32 = 250;
 
 /// Frame buffer size in bytes: 16 bytes per row, 250 rows.
 pub(crate) const BUF_LEN: usize = (WIDTH as usize).div_ceil(8) * HEIGHT as usize;
+
+/// How long the controller may hold BUSY before the driver gives up.
+///
+/// A full refresh takes about 2 seconds.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// An error from the e-paper driver.
+#[derive(Debug)]
+pub(crate) enum EpdError<E> {
+    /// An SPI transfer failed.
+    Spi(E),
+    /// The controller held the BUSY pin longer than [`BUSY_TIMEOUT`].
+    Busy,
+}
+
+impl<E> From<E> for EpdError<E> {
+    fn from(err: E) -> Self {
+        Self::Spi(err)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for EpdError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spi(err) => write!(f, "SPI transfer failed: {err}"),
+            Self::Busy => write!(
+                f,
+                "the controller stayed busy for more than {} s",
+                BUSY_TIMEOUT.as_secs()
+            ),
+        }
+    }
+}
 
 /// A Waveshare 2.13" e-Paper V4 display.
 pub(crate) struct Epd2in13V4<SPI, DC, RST, BUSY> {
@@ -36,7 +72,12 @@ where
     BUSY: InputPin,
 {
     /// Creates a new driver and performs the full-update initialisation sequence.
-    pub(crate) fn new(spi: &mut SPI, dc: DC, rst: RST, busy: BUSY) -> Result<Self, SPI::Error> {
+    pub(crate) fn new(
+        spi: &mut SPI,
+        dc: DC,
+        rst: RST,
+        busy: BUSY,
+    ) -> Result<Self, EpdError<SPI::Error>> {
         let mut epd = Self {
             dc,
             rst,
@@ -72,11 +113,19 @@ where
     }
 
     /// Blocks until the controller releases the BUSY pin.
-    fn wait_busy(&mut self) {
+    ///
+    /// Fails after [`BUSY_TIMEOUT`], so a stuck or missing panel does not
+    /// block its thread for good.
+    fn wait_busy(&mut self) -> Result<(), EpdError<SPI::Error>> {
+        let deadline = Instant::now() + BUSY_TIMEOUT;
         // The BUSY pin is high while the controller works.
         while let Ok(true) = self.busy.is_high() {
+            if Instant::now() >= deadline {
+                return Err(EpdError::Busy);
+            }
             thread::sleep(Duration::from_millis(10));
         }
+        Ok(())
     }
 
     /// Pulses the RST pin to reset the controller.
@@ -90,12 +139,12 @@ where
     }
 
     /// Runs the full-update init sequence from `epd2in13_V4.py`.
-    fn init_full(&mut self, spi: &mut SPI) -> Result<(), SPI::Error> {
+    fn init_full(&mut self, spi: &mut SPI) -> Result<(), EpdError<SPI::Error>> {
         self.hw_reset();
-        self.wait_busy();
+        self.wait_busy()?;
 
         self.send_command(spi, 0x12)?; // SW_RESET
-        self.wait_busy();
+        self.wait_busy()?;
 
         self.send_command_data(spi, 0x01, &[0xF9, 0x00, 0x00])?; // Driver output control
         self.send_command_data(spi, 0x11, &[0x03])?; // Data entry mode
@@ -107,7 +156,7 @@ where
         self.send_command_data(spi, 0x21, &[0x00, 0x80])?; // Display update control
         self.send_command_data(spi, 0x18, &[0x80])?; // Temperature sensor
 
-        self.wait_busy();
+        self.wait_busy()?;
         Ok(())
     }
 
@@ -142,10 +191,10 @@ where
     }
 
     /// Refreshes the panel from the display RAM.
-    fn turn_on_display(&mut self, spi: &mut SPI) -> Result<(), SPI::Error> {
+    fn turn_on_display(&mut self, spi: &mut SPI) -> Result<(), EpdError<SPI::Error>> {
         self.send_command_data(spi, 0x22, &[0xF7])?; // V4 uses 0xF7, V3 uses 0xC7
         self.send_command(spi, 0x20)?; // Master activation
-        self.wait_busy();
+        self.wait_busy()?;
         Ok(())
     }
 
@@ -153,7 +202,11 @@ where
     ///
     /// `buffer` holds [`BUF_LEN`] bytes, one bit per pixel: 1 is white, 0 is
     /// black. A full refresh takes about 2 seconds and flickers.
-    pub(crate) fn display(&mut self, spi: &mut SPI, buffer: &[u8]) -> Result<(), SPI::Error> {
+    pub(crate) fn display(
+        &mut self,
+        spi: &mut SPI,
+        buffer: &[u8],
+    ) -> Result<(), EpdError<SPI::Error>> {
         self.send_command(spi, 0x24)?; // WRITE_RAM
         self.send_data(spi, buffer)?;
         self.turn_on_display(spi)?;
@@ -161,7 +214,7 @@ where
     }
 
     /// Clears the display to the given color (0xFF = white, 0x00 = black).
-    pub(crate) fn clear(&mut self, spi: &mut SPI, color: u8) -> Result<(), SPI::Error> {
+    pub(crate) fn clear(&mut self, spi: &mut SPI, color: u8) -> Result<(), EpdError<SPI::Error>> {
         let buf = [color; BUF_LEN];
         self.display(spi, &buf)?;
         Ok(())
@@ -170,7 +223,7 @@ where
     /// Enters deep sleep. The image stays on screen at zero power.
     ///
     /// Create a new [`Epd2in13V4`] before the next display operation.
-    pub(crate) fn sleep(&mut self, spi: &mut SPI) -> Result<(), SPI::Error> {
+    pub(crate) fn sleep(&mut self, spi: &mut SPI) -> Result<(), EpdError<SPI::Error>> {
         self.send_command_data(spi, 0x10, &[0x01])?; // Deep sleep mode
         thread::sleep(Duration::from_millis(100));
         Ok(())
