@@ -67,6 +67,11 @@ pub(crate) struct Inner {
     pub(crate) display_name: Watchable<Option<String>>,
     /// Set once the actor has stopped.
     pub(crate) done: Watchable<bool>,
+    /// Asks the actor to resubscribe to its gossip map, and hears back once it did.
+    ///
+    /// Only the `test-util` feature's hook sends on it.
+    #[debug(skip)]
+    pub(crate) restart_map: mpsc::Sender<oneshot::Sender<()>>,
 }
 
 /// One of this member's publications.
@@ -77,6 +82,20 @@ pub(crate) struct Local {
 }
 
 impl Room {
+    /// Ends the room's gossip map subscription, as smol-kv does with one that falls behind.
+    ///
+    /// Returns once the room has resubscribed. It then resyncs its members
+    /// from the replay. Only for tests of that path, which no test can reach
+    /// otherwise.
+    #[cfg(feature = "test-util")]
+    #[doc(hidden)]
+    pub async fn restart_map_subscription(&self) {
+        let (reply, resubscribed) = oneshot::channel();
+        if self.inner.restart_map.send(reply).await.is_ok() {
+            resubscribed.await.ok();
+        }
+    }
+
     /// Returns a ticket for this room with this member as its bootstrap peer.
     #[must_use]
     pub fn ticket(&self) -> RoomTicket {

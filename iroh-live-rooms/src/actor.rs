@@ -83,7 +83,13 @@ impl Drop for Actor {
 
 impl Actor {
     /// Runs until the room is left, the rooms shut down, or the gossip map ends.
-    pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<oneshot::Sender<()>>) {
+    ///
+    /// `restarts` asks the actor to resubscribe to the gossip map, for tests.
+    pub(crate) async fn run(
+        mut self,
+        mut inbox: mpsc::Receiver<oneshot::Sender<()>>,
+        mut restarts: mpsc::Receiver<oneshot::Sender<()>>,
+    ) {
         let mut updates = Self::subscribe_map(self.kv.clone());
 
         // One writer, so announcements go out in the order they were decided.
@@ -102,6 +108,7 @@ impl Actor {
 
         let leave = loop {
             let mut ended = false;
+            let mut restarted = None;
             tokio::select! {
                 update = updates.next() => match update {
                     None => ended = true,
@@ -127,6 +134,10 @@ impl Actor {
                     desired.set(self.announcement(false)).ok();
                 }
                 reply = inbox.recv() => break reply,
+                Some(reply) = restarts.recv() => {
+                    ended = true;
+                    restarted = Some(reply);
+                }
             }
             if ended {
                 // The gossip stopped under the map, which is how the rooms
@@ -146,6 +157,9 @@ impl Actor {
                 );
                 updates = Self::subscribe_map(self.kv.clone());
                 self.resync = Some(BTreeSet::new());
+                if let Some(reply) = restarted {
+                    reply.send(()).ok();
+                }
             }
         };
         // Stopped first, so a refresh cannot write over the announcement that

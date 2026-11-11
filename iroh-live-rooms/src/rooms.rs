@@ -183,6 +183,7 @@ impl Rooms {
         let writer = kv.write(self.node.endpoint().secret_key().clone());
 
         let (leave, inbox) = mpsc::channel(1);
+        let (restart_map, restarts) = mpsc::channel(1);
         let inner = Arc::new(Inner {
             me,
             ticket: ticket.clone(),
@@ -194,6 +195,7 @@ impl Rooms {
             local_changed: Watchable::new(0),
             display_name: Watchable::new(display_name),
             done: Watchable::new(false),
+            restart_map,
         });
         let actor = Actor {
             inner: inner.clone(),
@@ -204,7 +206,7 @@ impl Rooms {
             rooms_closing: self.closing.clone(),
         };
         let span = info_span!("room", topic = %topic.fmt_short(), me = %me.fmt_short());
-        let task = tokio::spawn(actor.run(inbox).instrument(span));
+        let task = tokio::spawn(actor.run(inbox, restarts).instrument(span));
         info!(topic = %topic.fmt_short(), "joined room");
         Ok(Room {
             inner,

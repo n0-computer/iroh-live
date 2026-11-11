@@ -4,7 +4,13 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
 use iroh::EndpointId;
@@ -13,6 +19,7 @@ use iroh_live_rooms::{Error, Room, RoomState, RoomTicket};
 use moq_net::{Timestamp, announce, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
+use n0_watcher::Watcher as _;
 
 /// The name of the data track.
 const DATA_TRACK: &str = "data";
@@ -29,11 +36,16 @@ fn publish_counter(
 
 /// Returns a predicate that holds once a room state lists `member` with a `cam` broadcast.
 fn lists_cam(member: EndpointId) -> impl Fn(&RoomState) -> bool + Copy {
+    lists(member, "cam")
+}
+
+/// Returns a predicate that holds once a room state lists `member` with the broadcast `name`.
+fn lists(member: EndpointId, name: &'static str) -> impl Fn(&RoomState) -> bool + Copy {
     move |state| {
         state
             .members
             .get(&member)
-            .is_some_and(|peer| peer.broadcasts.contains("cam"))
+            .is_some_and(|peer| peer.broadcasts.contains(name))
     }
 }
 
@@ -419,4 +431,77 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     mallory.shutdown().await;
     peer_b.shutdown().await;
     peer_c.shutdown().await;
+}
+
+/// A member whose gossip map subscription restarts keeps its members and their broadcasts.
+///
+/// smol-kv ends a subscription that falls behind. The room resubscribes, and
+/// the replay must neither drop a member it lists nor stop later changes.
+#[tokio::test]
+#[traced_test]
+async fn a_room_resyncs_after_its_map_subscription_restarts() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let _cam = publish_counter(&room_b, "cam").expect("publish");
+    let b = peer_b.id();
+    wait_for_state(&room_a, "a sees b's cam", lists_cam(b)).await;
+
+    // Notes whether a's member list ever loses b from here on.
+    let lost_b = Arc::new(AtomicBool::new(false));
+    let _watch = AbortOnDropHandle::new(tokio::spawn({
+        let mut state = room_a.state();
+        let lost_b = lost_b.clone();
+        async move {
+            loop {
+                if !state.get().members.contains_key(&b) {
+                    lost_b.store(true, Ordering::Relaxed);
+                }
+                if state.updated().await.is_err() {
+                    return;
+                }
+            }
+        }
+    }));
+    tokio::time::timeout(TIMEOUT, room_a.restart_map_subscription())
+        .await
+        .expect("the subscription never restarted");
+    // A change after the restart arrives through the new subscription, maybe
+    // in its replay. One made after that arrives after the replay, so the
+    // resync has run by then.
+    let _mic = publish_counter(&room_b, "mic").expect("publish");
+    wait_for_state(&room_a, "a sees b's mic", lists(b, "mic")).await;
+    let _screen = publish_counter(&room_b, "screen").expect("publish");
+    let state = wait_for_state(&room_a, "a sees b's screen", lists(b, "screen")).await;
+    assert!(
+        lists_cam(b)(&state),
+        "the resync dropped b's cam: {state:?}"
+    );
+    assert_eq!(state.members[&b].display_name.as_deref(), Some("bob"));
+    assert!(
+        !lost_b.load(Ordering::Relaxed),
+        "the resync dropped b for a while"
+    );
+
+    // The room's broadcasts still resolve and play.
+    let subscription = tokio::time::timeout(TIMEOUT, room_a.subscribe(b, "cam"))
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+    let mut track = subscription
+        .broadcast()
+        .track(DATA_TRACK)
+        .expect("data track")
+        .subscribe(None)
+        .await
+        .expect("subscribe to the track")
+        .ordered();
+    tokio::time::timeout(TIMEOUT, track.next_group())
+        .await
+        .expect("timed out on a frame")
+        .expect("track failed")
+        .expect("track ended");
+
+    room_b.leave().await;
+    room_a.leave().await;
+    peer_b.shutdown().await;
+    peer_a.shutdown().await;
 }

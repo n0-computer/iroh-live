@@ -4552,6 +4552,7 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "iroh-live-node",
+ "iroh-live-rooms",
  "iroh-smol-kv",
  "iroh-tickets",
  "moq-net",

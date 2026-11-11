@@ -29,6 +29,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1.44"
 
+[features]
+# A hidden hook that ends a room's gossip map subscription, for the tests of
+# the resubscribe path. Not for applications.
+test-util = []
+
 [dev-dependencies]
+# Turns on `test-util` for this crate's own tests.
+iroh-live-rooms = { path = ".", features = ["test-util"] }
 n0-tracing-test = "0.3.0"
 tokio = { version = "1.53.1", features = ["full"] }
