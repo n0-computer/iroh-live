@@ -237,6 +237,22 @@ impl Inner {
 /// The call service of a node.
 ///
 /// Cheap to clone. See the [module](self) for the protocol.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run(node: iroh_live::Node, peer: iroh::EndpointId)
+/// # -> Result<(), Box<dyn std::error::Error>> {
+/// use iroh_live::{calls::Calls, layout::LiveLayout};
+/// use moq_net::broadcast;
+///
+/// let (calls, side): (Calls, broadcast::Producer) = Calls::new(&node, &LiveLayout::default())?;
+/// let call = calls.call(peer).await?;
+/// // Fill `side` with tracks and read the peer's side from the call.
+/// # drop((call, side));
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, derive_more::Debug)]
 #[debug("Calls({})", inner.node.id().fmt_short())]
 pub struct Calls {

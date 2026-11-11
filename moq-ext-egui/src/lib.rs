@@ -235,8 +235,12 @@ impl VideoView {
     /// Creates a view of `frames` that draws through `render_state`.
     ///
     /// `name` names the placeholder texture. A view without frames shows the
-    /// placeholder until [`set_frames`](Self::set_frames) gives it some. Must be
-    /// called inside a Tokio runtime, which runs the task that wakes the window.
+    /// placeholder until [`set_frames`](Self::set_frames) gives it some. A Tokio
+    /// runtime runs the task that wakes the window.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime with `frames` given.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
@@ -255,8 +259,11 @@ impl VideoView {
 
     /// Replaces the stream this view draws, or removes it with `None`.
     ///
-    /// The last frame stays on screen until the new stream delivers one. Like
-    /// [`new`](Self::new), this must be called inside a Tokio runtime.
+    /// The last frame stays on screen until the new stream delivers one.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime with `frames` given.
     pub fn set_frames(&mut self, frames: impl Into<Option<VideoFrames>>) {
         let frames = frames.into();
         self._wake = wake_on_frame(&self.ctx, frames.as_ref());

@@ -99,6 +99,27 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 ///
 /// Cheap to clone. Each pull runs in a task that the clones own together, so
 /// dropping the last clone ends every pull.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run(
+/// #     endpoint: iroh::Endpoint,
+/// #     cluster: moq_relay::cluster::Cluster,
+/// #     requested: &str,
+/// # ) -> Result<(), iroh_live_relay::Error> {
+/// use iroh_live::BroadcastTicket;
+/// use iroh_live_relay::pull::{PullState, mounted};
+///
+/// let pulls = PullState::new(endpoint, cluster.clone());
+/// if let Ok(ticket) = requested.parse::<BroadcastTicket>() {
+///     // Hold the guard while the session that asked runs.
+///     let _guard = pulls.pull(requested, &ticket).await?;
+///     let _view = mounted(&cluster, requested);
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, derive_more::Debug)]
 pub struct PullState {
     inner: Pulls,

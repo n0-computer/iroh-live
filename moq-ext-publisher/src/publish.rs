@@ -463,6 +463,10 @@ impl LocalBroadcast {
     /// Fails on invalid configuration: an empty ladder, duplicate rendition
     /// names, a rate above the source's, or a codec no compiled-in encoder
     /// supports. Returns [`Error::Closed`] after [`close`](Self::close).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn set_video(&self, source: VideoSource, encoding: VideoEncoding) -> Result<(), Error> {
         self.check_open()?;
         encoding.validate(source.format().rate)?;
@@ -487,6 +491,10 @@ impl LocalBroadcast {
     /// # Errors
     ///
     /// Returns [`Error::Closed`] after [`close`](Self::close).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn set_encoded_video(&self, source: EncodedVideoSource) -> Result<(), Error> {
         self.check_open()?;
         info!(parent: &self.shared.span, "pre-encoded video set");
@@ -508,6 +516,10 @@ impl LocalBroadcast {
     ///
     /// Fails for an invalid encoding, or with [`Error::Closed`] after
     /// [`close`](Self::close).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn set_audio(&self, source: AudioSource, encoding: AudioEncoding) -> Result<(), Error> {
         self.check_open()?;
         encoding.validate()?;

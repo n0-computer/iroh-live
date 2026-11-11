@@ -14,8 +14,11 @@
 //! broadcast at `rooms/<topic>/<member>/<name>` with the membership as its
 //! audience, and a member that leaves loses the paths.
 //! [`Room::subscribe`] reads each member over the session with that member, so
-//! no other peer can stand in for it. Membership itself is open to anyone with
-//! the ticket.
+//! no other peer can stand in for it.
+//!
+//! A room ticket is a bearer secret. Anyone who holds it can join the room,
+//! read every member's broadcasts and publish into the room. Share it only
+//! with the people you want in the room, over a channel you trust.
 //!
 //! The node's [`NodeConfig::grant`](iroh_live_node::NodeConfig::grant) has to
 //! let each peer publish under [`publish_scope`], or [`Room::subscribe`] fails.

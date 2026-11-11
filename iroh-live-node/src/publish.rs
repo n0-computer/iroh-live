@@ -39,6 +39,25 @@ pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 /// Cheap to clone. The publication stays until [`unpublish`](Self::unpublish),
 /// until its broadcast closes, or until the node shuts down. Dropping the
 /// handles leaves it in place.
+///
+/// # Examples
+///
+/// ```no_run
+/// # fn run(node: iroh_live_node::Node, peer: iroh::EndpointId)
+/// # -> Result<(), Box<dyn std::error::Error>> {
+/// use std::collections::BTreeSet;
+///
+/// use iroh_live_node::Audience;
+///
+/// let publication = node.publish("live/studio", Audience::Everyone)?;
+/// let _track = publication.broadcast().create_track("video", None)?;
+/// // Narrow it to one peer, who then holds the only route to it.
+/// let peers = n0_watcher::Watchable::new(BTreeSet::from([peer]));
+/// publication.set_audience(Audience::Peers(peers));
+/// println!("{}", publication.ticket());
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Publication {
     inner: Arc<PublicationInner>,

@@ -127,6 +127,24 @@ pub enum RelayStatus {
 ///
 /// Cheap to clone. The link stays until [`detach`](Self::detach) or the node's
 /// shutdown. Dropping the handles leaves it in place.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run(node: iroh_live_node::Node, relay: iroh::EndpointId)
+/// # -> Result<(), iroh_live_node::Error> {
+/// use iroh_live_node::{RelayConfig, RelayStatus};
+/// use n0_watcher::Watcher;
+///
+/// let link = node.attach_relay(RelayConfig::iroh(relay))?;
+/// let mut status = link.status();
+/// while status.get() != RelayStatus::Connected {
+///     status.updated().await.ok();
+/// }
+/// link.detach().await;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct RelayLink {
     inner: Arc<RelayInner>,

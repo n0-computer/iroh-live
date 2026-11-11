@@ -124,8 +124,9 @@ struct Delivery {
     arrivals: Arrivals,
     /// When the frame came out of its decoder, for the timeline.
     decoded: Instant,
-    /// Resolves when the picture is due: `true` to show it, `false` once the
-    /// clock has closed.
+    /// Resolves when the picture is due.
+    ///
+    /// Yields `true` to show it, and `false` once the clock has closed.
     due: BoxFuture<bool>,
 }
 

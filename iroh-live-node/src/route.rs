@@ -48,6 +48,22 @@ const REASK_PAUSE: Duration = Duration::from_millis(100);
 /// the path: when another instance takes it over, or the broadcast ends while
 /// a route still serves the path, [`broadcast`](Self::broadcast) switches to what
 /// serves it now. Cheap to clone.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run(node: iroh_live_node::Node, peer: iroh::EndpointId)
+/// # -> Result<(), iroh_live_node::Error> {
+/// use iroh_live_node::Reach;
+///
+/// let subscription = node.subscribe("live/camera", Reach::Both(peer)).await?;
+/// let broadcast = subscription.broadcast();
+/// # drop(broadcast);
+/// // Resolves once no route serves the path any more.
+/// subscription.closed().await;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, derive_more::Debug)]
 #[debug("Subscription({}, pinned {})", inner.path, inner.pin.is_some())]
 pub struct Subscription {

@@ -34,8 +34,10 @@ impl Hop {
         Self(NonZeroU64::new(value.max(1)).expect("at least one"))
     }
 
-    /// Returns the hop a route entered through, or `None` for a route this node
-    /// published or one announced with no hop.
+    /// Returns the hop a route entered through.
+    ///
+    /// Returns `None` for a route this node published, or one announced with
+    /// no hop.
     pub(crate) fn of_route(source: Source) -> Option<Self> {
         match source {
             Source::Peer(id) => NonZeroU64::new(id).map(Self),

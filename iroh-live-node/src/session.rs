@@ -19,6 +19,22 @@ use crate::{
 ///
 /// Cheap to clone. Dropping the handles does not close it: it ends when either
 /// side closes it, the connection fails, or the node shuts down.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run(node: iroh_live_node::Node, peer: iroh::EndpointId)
+/// # -> Result<(), iroh_live_node::Error> {
+/// let session = node.connect(peer).await?;
+/// // Resolves through this session only, never through a relay.
+/// let subscription = session.subscribe("live/camera").await?;
+/// # drop(subscription);
+/// session.close(moq_net::Error::Cancel);
+/// let reason = session.closed().await;
+/// # drop(reason);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, derive_more::Debug)]
 #[debug("Session({}, {}, dialed {})", inner.remote.fmt_short(), inner.link, inner.dialed)]
 pub struct Session {

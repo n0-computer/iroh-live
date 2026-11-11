@@ -54,6 +54,22 @@ pub enum Error {
 ///
 /// Owns the gossip instance all rooms on the endpoint share. Cheap to clone,
 /// and [`shutdown`](Self::shutdown) ends it for every clone.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run(node: iroh_live_node::Node, ticket: iroh_live_rooms::RoomTicket)
+/// # -> Result<(), iroh_live_rooms::Error> {
+/// use iroh_live_rooms::Rooms;
+///
+/// let rooms = Rooms::new(&node);
+/// // Mount the service with `rooms.mount(router_builder)` to accept members.
+/// let room = rooms.join(&ticket, Some("ada".into())).await?;
+/// # drop(room);
+/// rooms.shutdown().await;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Rooms {
     node: Node,

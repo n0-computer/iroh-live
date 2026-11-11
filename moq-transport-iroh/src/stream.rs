@@ -21,8 +21,10 @@ use crate::{
 /// The sending half of a stream.
 pub struct SendStream {
     stream: endpoint::SendStream,
-    /// Whether [`finish`](poll::SendStream::finish) or
-    /// [`reset`](poll::SendStream::reset) ended the stream.
+    /// Whether the stream has ended.
+    ///
+    /// Set by [`finish`](poll::SendStream::finish) and
+    /// [`reset`](poll::SendStream::reset).
     ended: bool,
     /// The peer's acknowledgement of the FIN, or its STOP_SENDING.
     ///

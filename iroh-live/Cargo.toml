@@ -15,8 +15,8 @@ iroh = { workspace = true }
 # mDNS address lookup, for networks without internet access.
 iroh-mdns-peer-lookup = "0.1.2"
 iroh-live-node = { workspace = true }
-# Re-exported as `iroh_live::rooms` behind the `rooms` feature; `Live` itself
-# knows nothing about rooms.
+# Re-exported as `iroh_live::rooms` behind the `rooms` feature. The rest of
+# the crate knows nothing about rooms.
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 # Re-exported as `iroh_live::json`: typed JSON tracks, the latest-value
