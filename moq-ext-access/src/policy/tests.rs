@@ -372,3 +372,81 @@ fn a_queue_asks_the_application_to_reauthorize() {
     });
     assert_eq!(decision.expect("admitted").grant, Grant::subscribe_only());
 }
+
+/// Admits the token `good` with a grant under the peer's name, and rejects any other.
+#[derive(Debug)]
+struct Stub;
+
+impl TokenVerifier<Peer> for Stub {
+    fn verify(&self, token: &str, request: &PeerRequest<Peer>) -> Decision {
+        match token {
+            "good" => Ok(under(request.peer()).into()),
+            _ => Err(Rejection::new("bad token").with_code(moq_net::Error::App(3))),
+        }
+    }
+}
+
+/// Returns a connect request of `peer` for `target`, such as `/?jwt=good`.
+fn request_for(peer: &str, target: &str) -> PeerRequest<Peer> {
+    PeerRequest::new(
+        peer.to_owned(),
+        SessionRequest::new(target),
+        false,
+        Event::Connect,
+    )
+}
+
+#[test]
+fn a_good_token_admits_with_its_grant() {
+    let policy = Verify::new(Stub);
+    let decision = decide(&policy, &request_for("bob", "/?jwt=good"));
+    assert_eq!(decision.expect("admitted").grant, under("bob"));
+}
+
+#[test]
+fn a_bad_token_never_falls_through() {
+    let policy = Verify::new(Stub).fallback(Open(Grant::everything()));
+    let rejection = decide(&policy, &request_for("bob", "/?jwt=forged")).expect_err("rejected");
+    assert_eq!(rejection.reason(), "bad token");
+    assert!(matches!(rejection.code(), moq_net::Error::App(3)));
+}
+
+#[test]
+fn no_token_asks_the_fallback() {
+    let policy = Verify::new(Stub).fallback(Open(Grant::subscribe_only()));
+    let decision = decide(&policy, &request_for("bob", "/"));
+    assert_eq!(decision.expect("admitted").grant, Grant::subscribe_only());
+}
+
+#[test]
+fn the_default_fallback_requires_a_token() {
+    let policy = Verify::new(Stub);
+    let rejection = decide(&policy, &request_for("bob", "/")).expect_err("rejected");
+    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
+}
+
+#[test]
+fn a_token_query_is_read_too() {
+    assert_eq!(SessionRequest::new("/a?token=t1").token(), Some("t1"));
+    // `jwt` wins over `token`, and a setup token over both.
+    assert_eq!(
+        SessionRequest::new("/a?token=t1&jwt=j1").token(),
+        Some("j1")
+    );
+    assert_eq!(
+        SessionRequest::new("/a?token=t1").with_token("s1").token(),
+        Some("s1")
+    );
+    let policy = Verify::new(Stub);
+    assert!(decide(&policy, &request_for("bob", "/?token=good")).is_ok());
+}
+
+#[test]
+fn verify_takes_its_changes_from_the_fallback() {
+    let (changing, sender) = Changing::new();
+    let policy = Verify::new(Stub).fallback(changing);
+    let mut changes = Policy::<Peer>::changes(&policy).expect("a change stream");
+    sender.try_send(()).expect("room");
+    assert_eq!(block_on(changes.next()), Some(()));
+    assert!(Policy::<Peer>::changes(&Verify::new(Stub)).is_none());
+}

@@ -13,6 +13,8 @@
 //! - [`Policy::union`] admits what either of two policies admits.
 //! - [`Policy::filter`] rejects the peers a predicate refuses.
 //! - [`Queue`] hands each decision to the application.
+//! - [`Verify`] decides with a [`TokenVerifier`] when the peer presents a
+//!   token, and with a fallback policy when it does not.
 //!
 //! A node stores its policy as an `Arc<dyn DynPolicy<P>>`, which implements
 //! [`Policy`] too.
@@ -43,10 +45,14 @@ use std::{
 use moq_net::Patterns;
 use n0_future::{MergeBounded, boxed::BoxStream, future};
 
-pub use self::queue::{Pending, Queue};
+pub use self::{
+    queue::{Pending, Queue},
+    verify::{TokenVerifier, Verify},
+};
 use crate::{Grant, PeerId, SessionRequest};
 
 mod queue;
+mod verify;
 
 /// A peer's request for a session, as a policy sees it.
 #[derive(Debug, Clone)]

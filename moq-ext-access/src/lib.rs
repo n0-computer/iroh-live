@@ -217,11 +217,16 @@ impl SessionRequest {
     /// Returns the token the peer presented.
     ///
     /// That is the token set with [`with_token`](Self::with_token), or else the
-    /// `jwt` query parameter. A peer on a MoQ version whose SETUP cannot carry
-    /// a token sends it in the query.
+    /// `jwt` query parameter, or else the `token` one. A peer on a MoQ version
+    /// whose SETUP cannot carry a token sends it in the query. Writers use
+    /// `jwt`, which moq-relay reads, and `token` suits a token that is not a
+    /// JWT.
     #[must_use]
     pub fn token(&self) -> Option<&str> {
-        self.token.as_deref().or_else(|| self.query("jwt"))
+        self.token
+            .as_deref()
+            .or_else(|| self.query("jwt"))
+            .or_else(|| self.query("token"))
     }
 }
 
