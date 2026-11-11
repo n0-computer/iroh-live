@@ -60,7 +60,8 @@ pub struct NodeConfig {
     /// SETUP, and before it dials a peer. A rejection closes an accepted
     /// session with the rejection's code, and fails a dial with
     /// [`Error::Rejected`]. Every session with one peer shares one
-    /// authorization, which a later session reuses.
+    /// authorization: a later session reuses the peer's, and one that
+    /// brings a token no other session brought makes the node ask again.
     ///
     /// The node asks again about a live peer, with an
     /// [`Event`](policy::Event) that says why. When an authorization
@@ -477,7 +478,8 @@ impl Node {
     /// Dials `peer` with a token, a path, a cost, or a congestion controller.
     ///
     /// An existing session with the peer, or a dial in flight to it, is
-    /// returned as it is, and the options go unused.
+    /// returned as it is, and the options go unused. A token then reaches
+    /// the peer only if you close that session first.
     ///
     /// # Errors
     ///

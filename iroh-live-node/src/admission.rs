@@ -146,6 +146,8 @@ pub(crate) struct Admitted {
     pub(crate) authorization: Authorization,
     /// The epoch at which the decision behind `authorization` started.
     pub(crate) decided: u64,
+    /// Whether the policy decided for this session, rather than it reusing the peer's.
+    pub(crate) fresh: bool,
     /// Counts the session as pending on its peer until it registers.
     pub(crate) pending: Pending,
 }
@@ -210,6 +212,7 @@ pub(crate) async fn authorize(
         return Ok(Admitted {
             authorization,
             decided: snapshot.epoch,
+            fresh: false,
             pending,
         });
     }
@@ -218,6 +221,7 @@ pub(crate) async fn authorize(
     Ok(Admitted {
         authorization,
         decided: snapshot.epoch,
+        fresh: true,
         pending,
     })
 }

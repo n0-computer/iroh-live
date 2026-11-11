@@ -2,13 +2,20 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use common::{Peer, eventually, publish, read_counter, step};
 use ed25519_dalek::SigningKey;
+use iroh::EndpointId;
 use iroh_live_node::{
-    Audience, ConnectOptions, Error, Grant, NodeConfig, Reach,
-    policy::{Authorization, Open},
+    Audience, ConnectOptions, Error, Grant, Node, NodeConfig, Reach,
+    policy::{Authorization, Decision, Open, PeerRequest, Policy},
 };
 use moq_ext_access::policy::{MoqCapability, RcanVerifier, Verify, encode_chain};
 use n0_tracing_test::traced_test;
@@ -167,6 +174,104 @@ async fn an_expired_delegation_narrows_the_device_to_the_fallback() {
         "narrowed, not closed"
     );
 
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A device whose token arrives on a later session gets its delegated scope, and keeps it.
+///
+/// Alice dials the device first, so the stored authorization is the
+/// token-less fallback. A later session without a token does not hide the
+/// chain from a re-decide.
+/// A policy that counts the decisions of the one it wraps.
+#[derive(Debug)]
+struct Counted<T> {
+    inner: T,
+    decisions: Arc<AtomicUsize>,
+}
+
+impl<T: Policy<EndpointId>> Policy<EndpointId> for Counted<T> {
+    async fn decide(&self, request: &PeerRequest) -> Decision {
+        let decision = self.inner.decide(request).await;
+        self.decisions.fetch_add(1, Ordering::SeqCst);
+        decision
+    }
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_token_on_a_later_session_widens_the_device_and_survives_a_reauthorize() {
+    let decisions = Arc::new(AtomicUsize::new(0));
+    let verifier = RcanVerifier::new(alice_account().verifying_key(), "spaces/alice");
+    let alice = Peer::bare(NodeConfig::default().with_policy(Counted {
+        inner: Verify::new(verifier).fallback(Open(Grant::subscribe_only())),
+        decisions: decisions.clone(),
+    }))
+    .await;
+    let bob = Peer::spawn().await;
+    step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
+        .await
+        .expect("a dial carries no token, so the fallback admits");
+    assert_eq!(
+        admitted(&alice, &bob).await,
+        Authorization::from(Grant::subscribe_only())
+    );
+
+    // Bob's device opens a session of its own with the chain.
+    let tokened = Node::new(bob.endpoint.clone(), NodeConfig::default());
+    let options = ConnectOptions {
+        token: Some(chain_to(&bob, Duration::from_secs(3600))),
+        ..Default::default()
+    };
+    step(
+        "bob presents the chain",
+        tokened.connect_with(alice.endpoint.addr(), options),
+    )
+    .await
+    .expect("admitted");
+    eventually("the chain widens bob", || {
+        alice
+            .node
+            .grant_for(bob.id())
+            .is_some_and(|current| current.grant.allows_publish("spaces/alice/bob/cam"))
+    })
+    .await;
+
+    // A newer session without a token, then a re-decide.
+    let plain = Node::new(bob.endpoint.clone(), NodeConfig::default());
+    step(
+        "bob dials without a token",
+        plain.connect(alice.endpoint.addr()),
+    )
+    .await
+    .expect("admitted");
+    eventually("alice lists three sessions with bob", || {
+        alice
+            .node
+            .sessions()
+            .get()
+            .iter()
+            .filter(|session| session.peer() == bob.id())
+            .count()
+            == 3
+    })
+    .await;
+    let before = decisions.load(Ordering::SeqCst);
+    alice.node.reauthorize(bob.id());
+    eventually("alice decides again", || {
+        decisions.load(Ordering::SeqCst) > before
+    })
+    .await;
+    assert!(
+        alice
+            .node
+            .grant_for(bob.id())
+            .is_some_and(|current| current.grant.allows_publish("spaces/alice/bob/cam")),
+        "the re-decide verified the chain again"
+    );
+
+    tokened.shutdown().await;
+    plain.shutdown().await;
     alice.shutdown().await;
     bob.shutdown().await;
 }

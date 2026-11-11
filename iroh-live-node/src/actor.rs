@@ -336,11 +336,18 @@ impl Actor {
 
     /// Returns the request a re-decide of `peer` replays, and whether this node dialed it.
     ///
-    /// That is the newest session's.
+    /// That is the newest session's that carries a token, else the newest
+    /// session's. A peer's sessions share one authorization, so the token
+    /// that grants the most recent rights is the one to verify again. A dial
+    /// carries no token, so a dialed session never hides an accepted
+    /// session's token.
     fn replayed_request(&self, peer: &EndpointId) -> (SessionRequest, bool) {
-        self.peers
-            .get(peer)
-            .and_then(|sessions| sessions.last())
+        let sessions = self.peers.get(peer).map(Vec::as_slice).unwrap_or_default();
+        sessions
+            .iter()
+            .rev()
+            .find(|session| session.inner.request.token().is_some())
+            .or_else(|| sessions.last())
             .map(|session| (session.inner.request.clone(), session.inner.dialed))
             .unwrap_or_default()
     }
@@ -456,6 +463,17 @@ impl Actor {
         } = parts;
         let link_state = LinkState::default();
         let hop = Hop::of(&remote);
+        // A token no other session with the peer brought may grant more than
+        // the authorization this session reuses, so the policy sees it.
+        let new_token = !admitted.fresh
+            && request.token().is_some_and(|token| {
+                !self
+                    .peers
+                    .get(&remote)
+                    .into_iter()
+                    .flatten()
+                    .any(|session| session.inner.request.token() == Some(token))
+            });
         let authorization = admitted.authorization.clone();
         let mut state = self.shared.state.lock().expect("poisoned");
         let link = LinkId(state.next_id());
@@ -505,6 +523,10 @@ impl Actor {
                 debug!(remote = %remote.fmt_short(), "the session's authorization went stale before it registered, deciding again");
                 self.reauth.request(&remote);
             }
+        }
+        if new_token && registered != Registered::Stale {
+            debug!(remote = %remote.fmt_short(), "the session brought a new token, deciding again");
+            self.reauth.request(&remote);
         }
         (session, driver)
     }
