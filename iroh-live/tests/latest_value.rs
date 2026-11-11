@@ -1,13 +1,9 @@
 //! A latest-value JSON track between two nodes, over a real QUIC connection.
 
-use std::time::Duration;
-
 use iroh::protocol::Router;
 use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, net::track};
-use iroh_live_node::test_util::endpoint;
+use iroh_live_node::test_util::{endpoint, step};
 use n0_tracing_test::traced_test;
-
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A reader that subscribes after the writes gets the newest value, then each later one.
 #[tokio::test]
@@ -31,12 +27,11 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
     }
 
     let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
-    let subscription = tokio::time::timeout(
-        TIMEOUT,
+    let subscription = step(
+        "subscribed in time",
         subscriber.subscribe(&path, Reach::Direct(publisher.id())),
     )
     .await
-    .expect("subscribed in time")
     .expect("subscribe");
     let track = subscription
         .broadcast()
@@ -44,9 +39,8 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
         .expect("the track");
     let mut reader = snapshot::Consumer::<u64>::new(track, Default::default());
     let mut read = async || {
-        tokio::time::timeout(TIMEOUT, reader.latest())
+        step("a value in time", reader.latest())
             .await
-            .expect("a value in time")
             .expect("a readable track")
             .expect("the track is open")
             .value

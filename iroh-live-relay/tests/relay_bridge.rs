@@ -14,7 +14,7 @@ use iroh_live::{
 };
 use iroh_live_node::{
     Audience, Error, LinkKind, Reach, RelayConfig, RelayStatus,
-    test_util::{endpoint, lookup},
+    test_util::{TIMEOUT, endpoint, lookup, step},
 };
 use moq_auth::{Algorithm, Claims, Key, KeySet};
 use moq_ext_access::policy::{JwtVerifier, Verify};
@@ -23,9 +23,6 @@ use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
 use tracing::{debug, info};
-
-/// How long any one wait may take.
-const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A relay: noq server, iroh endpoint and cluster.
 ///
@@ -245,9 +242,8 @@ fn noq_client() -> moq_tokio::Client {
 
 /// Waits for a dialed connection to complete its MoQ handshake.
 async fn established(connection: moq_tokio::Connection) -> moq_tokio::Connection {
-    tokio::time::timeout(TIMEOUT, connection.established())
+    step("connect timeout", connection.established())
         .await
-        .expect("connect timeout")
         .expect("connect")
 }
 
@@ -282,10 +278,12 @@ async fn next_announced(
         .unwrap_or_else(|_| panic!("announce timeout: {expect}"))
         .expect("closed");
     let path = announce_of(&update).prefix.as_str().to_owned();
-    let broadcast = tokio::time::timeout(TIMEOUT, routed_broadcast(&consumer, path.as_str()))
-        .await
-        .expect("resolve timeout")
-        .expect("resolve");
+    let broadcast = step(
+        "resolve timeout",
+        routed_broadcast(&consumer, path.as_str()),
+    )
+    .await
+    .expect("resolve");
     (path, broadcast)
 }
 
@@ -327,18 +325,15 @@ async fn first_frame(
     track: &str,
 ) -> moq_net::frame::Frame {
     let track = broadcast.track(track).expect("track");
-    let mut subscriber = tokio::time::timeout(TIMEOUT, track.subscribe(None))
+    let mut subscriber = step("subscribe timeout", track.subscribe(None))
         .await
-        .expect("subscribe timeout")
         .expect("subscribe");
-    let mut group = tokio::time::timeout(TIMEOUT, subscriber.recv_group())
+    let mut group = step("group timeout", subscriber.recv_group())
         .await
-        .expect("group timeout")
         .expect("group err")
         .expect("group closed");
-    tokio::time::timeout(TIMEOUT, group.read_frame())
+    step("frame timeout", group.read_frame())
         .await
-        .expect("frame timeout")
         .expect("frame err")
         .expect("frame closed")
 }
@@ -399,9 +394,8 @@ async fn iroh_publish_iroh_subscribe() {
     let _router = serve(&publisher);
     let broadcast = publish_video(&publisher, "relay-test");
 
-    let _pub_session = tokio::time::timeout(TIMEOUT, publisher.connect(relay_id))
+    let _pub_session = step("timeout", publisher.connect(relay_id))
         .await
-        .expect("timeout")
         .expect("connect");
     // Through the relay's session, at the path that names the publisher: the
     // same path the publisher offers on a direct session.
@@ -411,21 +405,19 @@ async fn iroh_publish_iroh_subscribe() {
     // Subscriber
     let sub_ep = endpoint().await;
     let subscriber = iroh_live::Node::new(sub_ep.clone(), trusting());
-    let sub = tokio::time::timeout(TIMEOUT, async {
+    let sub = step("timeout", async {
         let session = subscriber.connect(relay_id).await?;
         let subscription = session.subscribe(path).await?;
         Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
     })
     .await
-    .expect("timeout")
     .expect("subscribe");
 
     let player = sub
         .play(iroh_live::media::PlayerConfig::default())
         .expect("play");
-    let frame = tokio::time::timeout(TIMEOUT, player.video().next())
+    let frame = step("timeout", player.video().next())
         .await
-        .expect("timeout")
         .expect("closed");
     let size = frame.size();
     assert!(size.width > 0 && size.height > 0);
@@ -488,21 +480,19 @@ async fn noq_publish_iroh_subscribe() {
     // Subscriber: iroh, through `Node::subscribe`.
     let sub_ep = endpoint().await;
     let subscriber = iroh_live::Node::new(sub_ep.clone(), trusting());
-    let sub = tokio::time::timeout(TIMEOUT, async {
+    let sub = step("subscribe timeout", async {
         let session = subscriber.connect(relay_id).await?;
         let subscription = session.subscribe("browser-stream").await?;
         Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
     })
     .await
-    .expect("subscribe timeout")
     .expect("subscribe");
 
     // Subscribing proves the route. The catalog arriving and parsing proves
     // the bridge carried the broadcast itself.
     let mut catalog = sub.catalog();
-    let parsed = tokio::time::timeout(TIMEOUT, catalog.wait_for(Option::is_some))
+    let parsed = step("no catalog arrived", catalog.wait_for(Option::is_some))
         .await
-        .expect("no catalog arrived")
         .expect("the broadcast ended")
         .clone()
         .expect("a catalog");
@@ -527,9 +517,8 @@ async fn pull_remote_broadcast_via_ticket() {
     let local_name = ticket.to_string();
     let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
+    let guard = step("pull timeout", pull_state.pull(&local_name, &ticket))
         .await
-        .expect("pull timeout")
         .expect("pull");
 
     // Subscriber: noq, standing in for a browser, which dials the ticket as
@@ -636,9 +625,8 @@ async fn iroh_publish_noq_subscribe() {
     let _router = serve(&publisher);
     let broadcast = publish_video(&publisher, "cli-stream");
 
-    let _pub_session = tokio::time::timeout(TIMEOUT, publisher.connect(relay_id))
+    let _pub_session = step("timeout", publisher.connect(relay_id))
         .await
-        .expect("timeout")
         .expect("connect");
 
     // Subscriber (noq). `announced_at` waits for the relay to route the path.
@@ -766,9 +754,8 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
     let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
 
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&bare, &ticket))
+    let guard = step("pull timeout", pull_state.pull(&bare, &ticket))
         .await
-        .expect("pull timeout")
         .expect("pull");
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &bare), &bare, true).await,
@@ -794,9 +781,8 @@ async fn pull_retires_an_unwatched_session() {
     let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
         .with_linger(PULL_LINGER);
 
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
+    let guard = step("pull timeout", pull_state.pull(&local_name, &ticket))
         .await
-        .expect("pull timeout")
         .expect("pull");
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await,
@@ -818,9 +804,8 @@ async fn pull_retires_an_unwatched_session() {
     .await;
 
     // The same ticket dials a new session.
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
+    let guard = step("re-pull timeout", pull_state.pull(&local_name, &ticket))
         .await
-        .expect("re-pull timeout")
         .expect("re-pull");
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await,
@@ -843,9 +828,8 @@ async fn a_pull_survives_the_publisher_republishing() {
 
     let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
+    let guard = step("pull timeout", pull_state.pull(&local_name, &ticket))
         .await
-        .expect("pull timeout")
         .expect("pull");
     assert!(wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await);
 
@@ -924,18 +908,19 @@ async fn a_relay_link_publishes_and_consumes() {
     )
     .await;
 
-    let subscription =
-        tokio::time::timeout(TIMEOUT, node.subscribe("browser-stream", Reach::Relays))
-            .await
-            .expect("subscribe timeout")
-            .expect("subscribe through the relay");
+    let subscription = step(
+        "subscribe timeout",
+        node.subscribe("browser-stream", Reach::Relays),
+    )
+    .await
+    .expect("subscribe through the relay");
     let frame = first_frame(&subscription.broadcast(), "data").await;
     assert_eq!(&frame.payload[..], b"from-the-browser");
     let serving = subscription.serving_link().expect("a serving link");
     assert_eq!(serving.kind, LinkKind::Relay);
     // Detaching withdraws what the relay taught the route table.
     let mut updates = node.origin().announced();
-    let route = tokio::time::timeout(TIMEOUT, async {
+    let route = step("the relay's route never reached the table", async {
         loop {
             let update = updates.next().await.expect("origin closed");
             let announce = announce_of(&update);
@@ -944,8 +929,7 @@ async fn a_relay_link_publishes_and_consumes() {
             }
         }
     })
-    .await
-    .expect("the relay's route never reached the table");
+    .await;
     assert!(route.cost().value() >= 10, "{route:?}");
     link.detach().await;
     assert_eq!(link.status().get(), RelayStatus::Detached);
@@ -973,13 +957,12 @@ async fn attached(node: &iroh_live::Node, relay: &TestRelay) -> iroh_live_node::
 async fn connected(node: &iroh_live::Node, config: RelayConfig) -> iroh_live_node::RelayLink {
     let link = node.attach_relay(config).expect("attach");
     let mut status = link.status();
-    tokio::time::timeout(TIMEOUT, async {
+    step("the relay link never connected", async {
         while status.get() != RelayStatus::Connected {
             status.updated().await.expect("link gone");
         }
     })
-    .await
-    .expect("the relay link never connected");
+    .await;
     link
 }
 
@@ -1060,18 +1043,19 @@ async fn a_relay_served_subscription_carries_link_samples() {
     let ticket = LiveLayout::default()
         .ticket(publisher.id(), "studio")
         .expect("a valid broadcast name");
-    let subscription =
-        tokio::time::timeout(TIMEOUT, viewer.subscribe(ticket.path(), Reach::Relays))
-            .await
-            .expect("subscribe timeout")
-            .expect("subscribe through the relay");
+    let subscription = step(
+        "subscribe timeout",
+        viewer.subscribe(ticket.path(), Reach::Relays),
+    )
+    .await
+    .expect("subscribe through the relay");
 
     // A link serves a path once a reader asks it for a track.
     first_frame(&subscription.broadcast(), "catalog.json").await;
 
     // The transport: the relay link serves the path, and its monitor has
     // measured the link.
-    let serving = tokio::time::timeout(TIMEOUT, async {
+    let serving = step("the relay link never reported a round trip", async {
         loop {
             if let Some(serving) = subscription.serving_link()
                 && serving.sample.network.rtt.is_some()
@@ -1081,8 +1065,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .expect("the relay link never reported a round trip");
+    .await;
     assert_eq!(serving.kind, LinkKind::Relay);
     assert_eq!(serving.id, link.id());
     assert!(serving.sample.network.min_rtt.is_some(), "{serving:?}");
@@ -1091,7 +1074,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
     let player = iroh_live::media::remote_broadcast(&subscription)
         .play(PlayerConfig::default())
         .expect("play");
-    let network = tokio::time::timeout(TIMEOUT, async {
+    let network = step("the player never saw the relay link's round trip", async {
         loop {
             if let Some(network) = player.stats().network
                 && network.rtt.is_some()
@@ -1101,8 +1084,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("the player never saw the relay link's round trip");
+    .await;
     assert!(network.min_rtt.is_some(), "{network:?}");
 
     drop(player);
@@ -1166,23 +1148,22 @@ async fn shutdown_detaches_relay_links() {
 
     link.detach().await;
     // The detached link feeds nothing, so a relay subscribe fails.
-    let err = tokio::time::timeout(TIMEOUT, node.subscribe("anything", Reach::Relays))
-        .await
-        .expect("a relay subscribe with no consuming relay waited")
-        .expect_err("resolved without a relay");
+    let err = step(
+        "a relay subscribe with no consuming relay waited",
+        node.subscribe("anything", Reach::Relays),
+    )
+    .await
+    .expect_err("resolved without a relay");
     assert!(matches!(err, Error::NoRoute { .. }), "{err:#}");
 
     let mut status = consume_only.status();
-    tokio::time::timeout(TIMEOUT, node.shutdown())
-        .await
-        .expect("shutdown hung");
-    tokio::time::timeout(TIMEOUT, async {
+    step("shutdown hung", node.shutdown()).await;
+    step("a relay link outlived its node's shutdown", async {
         while status.get() != RelayStatus::Detached {
             status.updated().await.expect("link gone");
         }
     })
-    .await
-    .expect("a relay link outlived its node's shutdown");
+    .await;
 }
 
 /// A subscription ends with its direct session, and asking again finds the relay.
@@ -1201,12 +1182,11 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let _alice_link = attached(&alice, &relay).await;
 
     let (_bob_endpoint, bob) = relay_node().await;
-    let subscription = tokio::time::timeout(
-        TIMEOUT,
+    let subscription = step(
+        "subscribe timeout",
         bob.subscribe(publication.path(), Reach::Direct(alice.endpoint().id())),
     )
     .await
-    .expect("subscribe timeout")
     .expect("subscribe");
     let mut reader = subscribed(&subscription.broadcast()).await;
     let _bob_link = attached(&bob, &relay).await;
@@ -1216,16 +1196,17 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
         .session()
         .expect("served directly")
         .close(moq_net::Error::Cancel);
-    tokio::time::timeout(TIMEOUT, async {
+    step("the subscription outlived its direct session", async {
         while let Ok(Some(_)) = reader.recv_group().await {}
     })
-    .await
-    .expect("the subscription outlived its direct session");
+    .await;
 
-    let again = tokio::time::timeout(TIMEOUT, bob.subscribe(publication.path(), Reach::Relays))
-        .await
-        .expect("subscribe timeout")
-        .expect("subscribe through the relay");
+    let again = step(
+        "subscribe timeout",
+        bob.subscribe(publication.path(), Reach::Relays),
+    )
+    .await
+    .expect("subscribe through the relay");
     subscribed(&again.broadcast()).await;
     assert_eq!(
         again.serving_link().map(|link| link.kind),
@@ -1239,19 +1220,17 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
 
 /// Subscribes to the counter track of `broadcast` and reads one group.
 async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track::Subscriber {
-    let mut reader = tokio::time::timeout(
-        TIMEOUT,
+    let mut reader = step(
+        "track subscribe timeout",
         broadcast.track("data").expect("track").subscribe(
             moq_net::track::Subscription::default()
                 .with_delay(moq_net::track::Delay::default().with_max(Duration::from_secs(5))),
         ),
     )
     .await
-    .expect("track subscribe timeout")
     .expect("track subscribe");
-    tokio::time::timeout(TIMEOUT, reader.recv_group())
+    step("no group", reader.recv_group())
         .await
-        .expect("no group")
         .expect("track failed")
         .expect("track ended");
     reader
@@ -1316,12 +1295,11 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     .await;
 
     let (_bob_endpoint, bob) = relay_node().await;
-    let subscription = tokio::time::timeout(
-        TIMEOUT,
+    let subscription = step(
+        "subscribe timeout",
         bob.subscribe(publication.path(), Reach::Direct(alice.endpoint().id())),
     )
     .await
-    .expect("subscribe timeout")
     .expect("subscribe");
     let mut reader = subscribed(&subscription.broadcast()).await;
     let _bob_link = attached(&bob, &relay).await;
@@ -1427,12 +1405,11 @@ async fn the_shipped_relay_refuses_forged_paths() {
         .write_frame(None, b"from-the-browser".as_ref())
         .expect("write");
     group.finish().expect("finish");
-    let subscription = tokio::time::timeout(
-        TIMEOUT,
+    let subscription = step(
+        "subscribe timeout",
         viewer.subscribe("browser-stream", iroh_live_node::Reach::Relays),
     )
     .await
-    .expect("subscribe timeout")
     .expect("subscribe through the relay");
     let frame = first_frame(&subscription.broadcast(), "data").await;
     assert_eq!(&frame.payload[..], b"from-the-browser");
@@ -1518,13 +1495,11 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
     let pull_id = pull_ep.id();
     let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let first_guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&first_name, &first))
+    let first_guard = step("pull timeout", pull_state.pull(&first_name, &first))
         .await
-        .expect("pull timeout")
         .expect("pull");
-    let second_guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&second_name, &second))
+    let second_guard = step("pull timeout", pull_state.pull(&second_name, &second))
         .await
-        .expect("pull timeout")
         .expect("pull");
     for name in [&first_name, &second_name] {
         assert!(
@@ -1587,10 +1562,12 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     let mut announced = cluster.announced();
     let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&wanted.to_string(), &wanted))
-        .await
-        .expect("pull timeout")
-        .expect("pull");
+    let guard = step(
+        "pull timeout",
+        pull_state.pull(&wanted.to_string(), &wanted),
+    )
+    .await
+    .expect("pull");
 
     let mut seen = Vec::new();
     let mut settle = None;
@@ -1693,10 +1670,12 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         .expect("join");
     let cam: moq_net::broadcast::Producer = room_b.publish("cam").expect("publish");
     let _writer = counter(&cam, "data");
-    let subscription = tokio::time::timeout(TIMEOUT, room_a.subscribe(bob_endpoint.id(), "cam"))
-        .await
-        .expect("subscribe timeout")
-        .expect("subscribe");
+    let subscription = step(
+        "subscribe timeout",
+        room_a.subscribe(bob_endpoint.id(), "cam"),
+    )
+    .await
+    .expect("subscribe");
     let frame = first_frame(&subscription.broadcast(), "data").await;
     assert_ne!(
         &frame.payload[..],
@@ -1738,9 +1717,8 @@ async fn a_relay_link_over_quic_carries_a_broadcast() {
 
     let (_viewer_endpoint, viewer) = relay_node().await;
     let link = connected(&viewer, RelayConfig::new(relay.http_url())).await;
-    let subscription = tokio::time::timeout(TIMEOUT, viewer.subscribe(path, Reach::Relays))
+    let subscription = step("subscribe timeout", viewer.subscribe(path, Reach::Relays))
         .await
-        .expect("subscribe timeout")
         .expect("subscribe through the relay");
     first_frame(&subscription.broadcast(), "catalog.json").await;
     let serving = subscription.serving_link().expect("a serving link");

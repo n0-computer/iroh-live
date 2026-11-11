@@ -2,18 +2,15 @@
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
-use std::time::Duration;
-
 use iroh_live_node::{
     Grant, Layout, NodeConfig,
     policy::{self, PeerRequest},
-    test_util::TestNode,
+    test_util::{TestNode, step},
 };
 use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms, RoomsLayout};
 use n0_watcher::Watcher;
 
-/// Generous, because the suite shares a machine with whatever else is running.
-pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) use iroh_live_node::test_util::TIMEOUT;
 
 /// A [`TestNode`] with rooms, whose router accepts both.
 #[derive(Debug, derive_more::Deref)]
@@ -43,10 +40,12 @@ impl Peer {
 
     /// Joins the room `ticket` names under `name`.
     pub(crate) async fn join(&self, ticket: &RoomTicket, name: &str) -> Room {
-        tokio::time::timeout(TIMEOUT, self.rooms.join(ticket, Some(name.to_owned())))
-            .await
-            .expect("timed out joining")
-            .expect("failed to join the room")
+        step(
+            "timed out joining",
+            self.rooms.join(ticket, Some(name.to_owned())),
+        )
+        .await
+        .expect("failed to join the room")
     }
 }
 

@@ -6,16 +6,13 @@ use iroh::SecretKey;
 use iroh_live::{BroadcastTicket, layout::LiveLayout};
 use iroh_live_node::{
     Audience,
-    test_util::{TestNode, endpoint},
+    test_util::{TestNode, endpoint, step},
 };
 use iroh_live_relay::pull::{self, PullState};
 use moq_net::Path;
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use serial_test::serial;
-
-/// How long any one wait may take.
-const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A cluster with a running driver, and nothing else.
 fn cluster() -> (Cluster, AbortOnDropHandle<()>) {
@@ -71,9 +68,8 @@ async fn a_pull_of_another_peers_path_is_refused() {
     let requested = forged.to_string();
 
     let state = PullState::new(endpoint().await, cluster.clone());
-    let err = tokio::time::timeout(TIMEOUT, state.pull(&requested, &forged))
+    let err = step("no timeout", state.pull(&requested, &forged))
         .await
-        .expect("no timeout")
         .expect_err("mallory does not own the path");
     assert!(format!("{err:#}").contains("does not own"), "{err:#}");
     assert!(!routed(&cluster, victim_path.as_str()).await);
@@ -91,9 +87,7 @@ async fn a_path_in_a_custom_scheme_is_refused() {
     let ticket = BroadcastTicket::at(publisher.node.id(), custom);
 
     let state = PullState::new(endpoint().await, cluster);
-    let result = tokio::time::timeout(TIMEOUT, state.pull(&ticket.to_string(), &ticket))
-        .await
-        .expect("no timeout");
+    let result = step("no timeout", state.pull(&ticket.to_string(), &ticket)).await;
     assert!(result.is_err(), "the relay cannot verify the owner");
 
     publisher.shutdown().await;
@@ -113,9 +107,8 @@ async fn a_ticket_with_reserved_characters_mounts_once() {
     assert!(raw.ends_with("/100%25"), "{raw}");
 
     let state = PullState::new(endpoint().await, cluster.clone());
-    let guard = tokio::time::timeout(TIMEOUT, state.pull(&raw, &ticket))
+    let guard = step("no timeout", state.pull(&raw, &ticket))
         .await
-        .expect("no timeout")
         .expect("pull");
     // A session that dialed the ticket's URL reads it under the raw string.
     let serving = pull::mounted(&cluster, &raw).expect("a ticket the cluster mounts");
