@@ -142,7 +142,7 @@ pub(super) fn luma(surface: &Surface) -> Result<Luma, video::Error> {
 /// The radius should be about one module. A hand-held code fills a fifth to a
 /// half of a 720p frame at 33 modules, so a module is 4 to 10 px. This gives
 /// 2.4 px at 720p. Measured: it raises the readable blur from a third of a
-/// module to over half, on both decoders.
+/// module to over half.
 pub(super) const SHARPEN_RADIUS_FRACTION: f64 = 1.0 / 300.0;
 
 /// How much of the recovered detail the sharpening pass adds back.
@@ -154,14 +154,11 @@ pub(super) const SHARPEN_AMOUNT: f64 = 1.5;
 /// Reads the QR code in `image`, if it can.
 ///
 /// A laptop webcam must get close to the Pi Zero's small e-paper panel, which
-/// puts the code out of focus. The image is sharpened once, then `rxing` tries
-/// first because it reads through about twice the blur `rqrr` does. `rqrr`
-/// runs if `rxing` finds nothing, since the two fail on different images.
-/// `blur_ceiling_report` measures both.
+/// puts the code out of focus, so the image is sharpened once before `rxing`
+/// reads it. `blur_ceiling_report` measures how much blur that reads through.
 pub(super) fn decode(image: &Luma) -> Option<String> {
     let radius = f64::from(image.width.min(image.height)) * SHARPEN_RADIUS_FRACTION;
-    let sharpened = sharpen(image, radius, SHARPEN_AMOUNT);
-    decode_rxing(&sharpened).or_else(|| decode_rqrr(&sharpened))
+    decode_rxing(&sharpen(image, radius, SHARPEN_AMOUNT))
 }
 
 /// Decodes with `rxing`, the zxing port.
@@ -181,22 +178,6 @@ pub(super) fn decode_rxing(image: &Luma) -> Option<String> {
     )
     .ok()
     .map(|result| result.getText().to_string())
-}
-
-/// Decodes with `rqrr`, a pure-Rust port of quirc.
-pub(super) fn decode_rqrr(image: &Luma) -> Option<String> {
-    let width = image.width as usize;
-    let mut prepared =
-        rqrr::PreparedImage::prepare_from_greyscale(width, image.height as usize, |x, y| {
-            image.data[y * width + x]
-        });
-    // A partly hidden code can detect as a grid and still fail to decode, so
-    // take the first grid that decodes.
-    prepared
-        .detect_grids()
-        .into_iter()
-        .find_map(|grid| grid.decode().ok())
-        .map(|(_meta, text)| text)
 }
 
 /// Applies an unsharp mask with a Gaussian of `sigma` pixels.
@@ -402,11 +383,7 @@ mod tests {
     #[test]
     #[ignore = "a measurement, not a check; run by hand to see the ceiling"]
     fn blur_ceiling_report() {
-        let candidates: [(&str, Decoder); 3] = [
-            ("rqrr raw", decode_rqrr),
-            ("rxing raw", decode_rxing),
-            ("shipped", decode),
-        ];
+        let candidates: [(&str, Decoder); 2] = [("rxing raw", decode_rxing), ("shipped", decode)];
         println!("blur ceiling in modules, per decoder and module size:");
         print!("{:>14}", "px/module");
         for module_pixels in [3, 4, 5, 6, 8, 10] {

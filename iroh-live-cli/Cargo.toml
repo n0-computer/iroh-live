@@ -33,16 +33,10 @@ qr2term = "0.3"
 # scan tests decode. Only the encoder itself is wanted: the default features
 # render to `image` and to SVG, and what we draw into is an egui texture.
 qrcode = { version = "0.14", default-features = false }
-# QR decoding for `irl watch --scan`. rqrr is a pure-Rust port of quirc that
-# reads through a grayscale callback, so a captured frame's Y plane goes
-# straight in with no pixel format conversion and no `image` dependency. The
-# alternative, bardecoder, decodes an `image::DynamicImage` and would pull that
-# crate in for a buffer we already hold as bytes.
-rqrr = { version = "0.11", default-features = false }
-# The zxing port, which reads through about twice the defocus rqrr does and
-# fails on different pictures, so the scanner tries it first and falls back.
-# QR only: the default feature set pulls in image formats, serde and a URI
-# parser for pixels we already hold in a buffer.
+# QR decoding for `irl watch --scan`: the zxing port, which reads a grayscale
+# buffer and through about twice the defocus quirc's port (rqrr) does. QR only:
+# the default feature set pulls in image formats, serde and a URI parser for
+# pixels we already hold in a buffer.
 rxing = { version = "0.9.2", default-features = false, features = ["qrcode", "decoders", "encoding_rs"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["full"] }

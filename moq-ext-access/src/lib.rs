@@ -342,9 +342,9 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 /// Returns the exact paths of `publications` a link may see, as patterns.
 ///
 /// A publication is visible when the link's `grant` covers its path and its
-/// audience admits the link. A relay sees `Granted` publications only when
-/// `public`, and never a `Peers` one, which a relay would forward to anyone. A
-/// direct link is in a `Peers` audience when its `remote` is in the set.
+/// audience admits the link. A relay sees `Granted` publications, and never a
+/// `Peers` one, which a relay would forward to anyone. A direct link is in a
+/// `Peers` audience when its `remote` is in the set.
 ///
 /// Each path is a literal pattern, so nothing beside the listed publications
 /// matches: not a path below one, and not a route the node learned from

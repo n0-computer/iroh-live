@@ -637,17 +637,17 @@ mod tests {
         QrPixels { side, gray }
     }
 
-    /// Decodes the first QR code in `pixels` with `rqrr`.
+    /// Decodes the QR code in `pixels` with `rxing`.
     fn decode(pixels: &QrPixels) -> Option<String> {
-        let side = pixels.side;
-        let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(side, side, |x, y| {
-            pixels.gray[y * side + x]
-        });
-        prepared
-            .detect_grids()
-            .into_iter()
-            .find_map(|grid| grid.decode().ok())
-            .map(|(_meta, text)| text)
+        let side = u32::try_from(pixels.side).expect("a test code fits in u32");
+        rxing::helpers::detect_in_luma(
+            pixels.gray.clone(),
+            side,
+            side,
+            Some(rxing::BarcodeFormat::QR_CODE),
+        )
+        .ok()
+        .map(|result| result.getText().to_string())
     }
 
     /// A rendered ticket decodes back to the same ticket.
