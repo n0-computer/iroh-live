@@ -56,7 +56,7 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_live_node::{Audience, Node, Publication, Reach, Session, Subscription};
-use moq_net::{Path, announce::Event, broadcast};
+use moq_net::{announce::Event, broadcast};
 use n0_error::{e, stack_error};
 use n0_future::{Stream, StreamExt, stream, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
@@ -120,12 +120,6 @@ impl Stream for CallEvents {
 /// An error from [`Calls`].
 #[stack_error(derive, add_meta, from_sources)]
 pub enum Error {
-    /// A grant does not let a peer publish its call side.
-    ///
-    /// Either the node's grant refuses this node, or the session's grant
-    /// refuses the peer.
-    #[error("the grant does not let {peer} publish {path}")]
-    NotGranted { path: Path, peer: EndpointId },
     /// The peer is not calling this node.
     #[error("{peer} is not ringing")]
     NotRinging { peer: EndpointId },
@@ -263,21 +257,24 @@ impl Calls {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::NotGranted`] if the node's grant does not let this
-    /// node publish its call path (the check assumes the grant treats all
-    /// ids alike), and with [`Error::Node`] if the side is already published
-    /// or `B` cannot be built.
+    /// Fails with [`Error::Node`] holding
+    /// [`NotGranted`](iroh_live_node::Error::NotGranted) if the node's grant
+    /// does not let this node publish its call path (the check assumes the
+    /// grant treats all ids alike), and with [`Error::Node`] if the side is
+    /// already published or `B` cannot be built.
     pub fn new<B>(node: &Node, layout: &LiveLayout) -> Result<(Self, B), Error>
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
         let local_id = node.id();
         let path = layout.path(local_id, CALL)?;
-        if !node.grant_for(local_id).allows_publish(path.as_str()) {
-            return Err(e!(Error::NotGranted {
+        let grant = node.grant_for(local_id);
+        if !grant.allows_publish(path.as_str()) {
+            return Err(Error::from(e!(iroh_live_node::Error::NotGranted {
                 path,
-                peer: local_id
-            }));
+                peer: local_id,
+                publish_patterns: grant.publish,
+            })));
         }
         let audience = Watchable::new(BTreeSet::new());
         let (publication, side) =
@@ -344,9 +341,9 @@ impl Calls {
     /// # Errors
     ///
     /// Fails with [`Error::AlreadyInCall`] if a call with `peer` exists,
-    /// [`Error::NotGranted`] if the session's grant does not let the peer
-    /// publish its side, [`Error::NotAnswered`] if the session ends first,
-    /// and [`Error::Node`] otherwise.
+    /// [`Error::NotAnswered`] if the session ends first, and [`Error::Node`]
+    /// otherwise, holding [`NotGranted`](iroh_live_node::Error::NotGranted)
+    /// if the session's grant does not let the peer publish its side.
     pub async fn call(&self, peer: EndpointId) -> Result<Call, Error> {
         let pending = self.begin(peer, false)?;
         self.ring(peer);
@@ -431,9 +428,6 @@ impl Calls {
             .subscribe(path, Reach::Direct(peer))
             .await
             .map_err(|err| match err {
-                iroh_live_node::Error::NotGranted { path, peer, .. } => {
-                    e!(Error::NotGranted { path, peer })
-                }
                 iroh_live_node::Error::NotAnnounced { .. } => e!(Error::NotAnswered { peer }),
                 err => Error::from(err),
             })?;

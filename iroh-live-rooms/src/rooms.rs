@@ -39,9 +39,9 @@ pub enum Error {
     /// The room's gossip topic could not be joined.
     #[error(transparent)]
     Gossip(iroh_gossip::api::ApiError),
-    /// The transport failed a publication, a subscription or a dial.
+    /// The node failed a publication, a subscription or a dial.
     #[error(transparent)]
-    Transport(iroh_live_node::Error),
+    Node(iroh_live_node::Error),
     /// A broadcast name that is empty or holds a slash.
     #[error("invalid broadcast name {name:?}")]
     InvalidName { name: String },

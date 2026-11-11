@@ -194,7 +194,13 @@ async fn calls_need_the_grant() {
     let err = result
         .err()
         .expect("a subscribe-only node cannot publish its side");
-    assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
+    assert!(
+        matches!(
+            err,
+            Error::Node(iroh_live_node::Error::NotGranted { .. }, ..)
+        ),
+        "{err:#}"
+    );
 
     node.shutdown().await;
     endpoint.close().await;
