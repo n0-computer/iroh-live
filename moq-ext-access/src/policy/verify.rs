@@ -33,6 +33,9 @@ pub trait TokenVerifier<P: PeerId>: fmt::Debug + Send + Sync + 'static {
 /// fallback's rights, or closes under [`Closed`]. A new session with an
 /// expired token is rejected.
 ///
+/// A node that dials a peer decides with no token, so the fallback decides
+/// every dial, and under [`Closed`] the node can dial nobody.
+///
 /// The token is the one [`SessionRequest::token`](crate::SessionRequest::token)
 /// returns.
 ///

@@ -15,7 +15,10 @@
 //! To admit the peers that present a token, wrap a [`TokenVerifier`] in a
 //! [`Verify`]. The `jwt` feature adds `JwtVerifier`, for moq-relay's JWTs,
 //! and the `rcan` feature adds `RcanVerifier`, for capability chains bound to
-//! the peer's key.
+//! the peer's key. A dial carries no token, so it gets the verifier's
+//! fallback: with the default [`Closed`], every dial of the node fails with
+//! [`Error::Rejected`](crate::Error::Rejected). Give a node that dials a
+//! fallback, or check `request.dialed()` in it.
 //!
 //! # Examples
 //!

@@ -1778,6 +1778,31 @@ fn attach_with_token(
     .expect("attach")
 }
 
+/// A token in an `iroh://` URL's query is presented, as it is on an https link.
+#[tokio::test]
+async fn an_iroh_url_presents_the_token_in_its_query() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay = TestRelay::start_keyed(keys.clone()).await;
+
+    let (_endpoint, holder) = relay_node().await;
+    let granted = holder
+        .publish("tokens/cam", Audience::Granted)
+        .expect("publish");
+    let _granted = counter(granted.broadcast(), "data");
+    let url = format!(
+        "iroh://{}/?jwt={}",
+        relay.iroh_id,
+        token_for(&keys, "tokens")
+    )
+    .parse()
+    .expect("a url");
+    let _link = holder.attach_relay(RelayConfig::new(url)).expect("attach");
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+
+    holder.shutdown().await;
+}
+
 /// With a key, an iroh client's valid token decides what it publishes, and one without a token keeps the relay's rule.
 #[tokio::test]
 async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {

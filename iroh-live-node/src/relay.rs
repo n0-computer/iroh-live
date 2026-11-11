@@ -24,7 +24,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkId, LinkKind, Node,
+    ConnectOptions, Error, Grant, LinkId, LinkKind, Node, SessionRequest,
     handshake::{Hop, client_handshake},
     link::{self, LinkState},
     node::{Shared, Tasks},
@@ -44,7 +44,9 @@ pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
     ///
     /// The path is the one the session requests, such as a ticket the relay
-    /// pulls.
+    /// pulls. A `jwt` or `token` in the query is presented when
+    /// [`token`](Self::token) gives none. An `iroh://` link sends nothing
+    /// else of the query.
     pub url: Url,
     /// Returns the token to present, sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
     ///
@@ -56,6 +58,10 @@ pub struct RelayConfig {
     /// Whether the relay's routes enter the node's route table.
     ///
     /// A node that only publishes through the relay should turn this off.
+    /// Either way the relay is offered every publication whose audience is
+    /// [`Granted`](crate::Audience::Granted), since a relay link's grant
+    /// covers every path: publish to [`Peers`](crate::Audience::Peers) to
+    /// keep a publication off it.
     pub consume: bool,
 }
 
@@ -540,6 +546,20 @@ async fn iroh_uplink(
 ) {
     let publish = served(&shared.table);
     let path = config.url.path().trim_start_matches('/');
+    // An https link dials the whole URL. Over iroh only the path and a token
+    // reach the relay, so a token in the query stands in for a missing one.
+    let url_token = config.url.query().and_then(|query| {
+        SessionRequest::new(&format!("?{query}"))
+            .token()
+            .map(str::to_owned)
+    });
+    if config
+        .url
+        .query_pairs()
+        .any(|(key, _)| key != "jwt" && key != "token")
+    {
+        warn!("an iroh:// relay URL sends only its path and token, not the rest of its query");
+    }
     let mut options = ConnectOptions {
         token: None,
         path: (!path.is_empty()).then(|| path.to_owned()),
@@ -550,7 +570,11 @@ async fn iroh_uplink(
     let sampler = link::SharedSampler::default();
     loop {
         // Asked on every dial, so a redial presents a fresh token.
-        options.token = config.token.as_ref().and_then(TokenFn::token);
+        options.token = config
+            .token
+            .as_ref()
+            .and_then(TokenFn::token)
+            .or_else(|| url_token.clone());
         let dialed = tokio::select! {
             _ = stop.cancelled() => break,
             _ = shared.shutdown.cancelled() => break,
