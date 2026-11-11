@@ -198,13 +198,18 @@ impl Reauth {
     /// Asks for a new decision about `peer`.
     ///
     /// `reauthorize` is false for a revalidation that is due, and nothing more.
+    /// Such a revalidation leaves a decision in flight alone: that decision is
+    /// at least as fresh, and sets the next deadline when it lands. Making it
+    /// stale would drop an answer the application may still be giving.
     fn trigger(&mut self, peer: &EndpointId, reauthorize: bool) -> bool {
-        self.generation += 1;
-        let generation = self.generation;
         let Some(entry) = self.peers.get_mut(peer) else {
             return false;
         };
-        entry.generation = generation;
+        if entry.running.is_some() && !reauthorize {
+            return true;
+        }
+        self.generation += 1;
+        entry.generation = self.generation;
         entry.reauthorize |= reauthorize;
         if entry.running.is_some() {
             entry.wanted = true;
@@ -439,6 +444,22 @@ mod tests {
         assert_eq!(reauth.finish(&bob, first.generation), Finished::Stale);
         let second = reauth.start().expect("the peer runs again");
         assert_eq!(second.event, Event::Reauthorize);
+    }
+
+    #[test]
+    fn a_due_revalidation_leaves_a_running_reauthorize_alone() {
+        let now = Instant::now();
+        let bob = peer();
+        let mut reauth = Reauth::default();
+        let every_second = expiring(Duration::from_secs(60), Some(Duration::from_secs(1)));
+        admit(&mut reauth, bob, &every_second, now);
+        assert!(reauth.request(&bob));
+        let asked = reauth.start().expect("a reauthorization");
+        assert_eq!(asked.event, Event::Reauthorize);
+        // The revalidation interval passes while the application answers.
+        reauth.expire(now + Duration::from_secs(2));
+        assert_eq!(reauth.finish(&bob, asked.generation), Finished::Apply);
+        assert!(reauth.start().is_none());
     }
 
     #[test]
