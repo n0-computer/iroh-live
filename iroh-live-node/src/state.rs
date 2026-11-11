@@ -538,7 +538,7 @@ impl State {
             (None, Some(entry)) => entry.grant().unwrap_or_else(Grant::nothing),
             (None, None) => Grant::nothing(),
         };
-        let mut grant = self.grant_for(link.kind, link.peer.as_ref(), &base);
+        let mut grant = self.link_view(link.kind, link.peer.as_ref(), &base);
         grant.expires = peer.and_then(|entry| entry.expires);
         grant
     }
@@ -549,7 +549,7 @@ impl State {
     /// audience admits the link, within `base`. Its publish half is `base`'s
     /// for a session, and anything for a relay, which is trusted with what it
     /// forwards.
-    pub(crate) fn grant_for(
+    pub(crate) fn link_view(
         &self,
         kind: LinkKind,
         peer: Option<&EndpointId>,

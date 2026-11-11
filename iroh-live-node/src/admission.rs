@@ -14,8 +14,8 @@ use n0_error::e;
 use tracing::{debug, info};
 
 use crate::{
-    Error, LinkKind,
-    handshake::{Hop, SessionParts, subscriber},
+    Error,
+    handshake::{Hop, SessionParts, authorize_direct, subscriber},
     node::Shared,
     policy::{Authorization, Event, PeerRequest, Rejection},
     state::{Registered, State, served},
@@ -106,14 +106,8 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         return Err(e!(Error::ShutDown));
     }
     info!(peer = %peer.fmt_short(), grant = ?admitted.authorization.grant, "admitting session");
-    // Authorized before the handshake completes, so the session's first
-    // announcements already keep to what the peer may see.
     let auth = handshake.auth();
-    auth.authorize(&shared.state.lock().expect("poisoned").grant_for(
-        LinkKind::Direct,
-        Some(&peer),
-        &admitted.authorization.grant,
-    ));
+    authorize_direct(shared, &auth, peer, &admitted.authorization.grant);
     let handshake = handshake
         .with_publisher(served(&shared.table))
         .with_peer_hop(Hop::of(&peer).id())

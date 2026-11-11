@@ -55,20 +55,23 @@ impl Hop {
     }
 }
 
-/// Returns an auth handle authorized for what a direct session with `peer` may see now.
+/// Authorizes `auth` for what a direct session with `peer` may see now.
 ///
-/// Authorized before the session starts, so its first announcements already
-/// keep to the grant. The node re-authorizes it as its publications change.
-pub(crate) fn authorized(shared: &Shared, peer: EndpointId, grant: &Grant) -> auth::Handle {
-    let auth = auth::Handle::new();
-    let scope =
+/// Called before the session starts, so its first announcements already keep
+/// to the grant. The node re-authorizes it as its publications change.
+pub(crate) fn authorize_direct(
+    shared: &Shared,
+    auth: &auth::Handle,
+    peer: EndpointId,
+    grant: &Grant,
+) {
+    let view =
         shared
             .state
             .lock()
             .expect("poisoned")
-            .grant_for(LinkKind::Direct, Some(&peer), grant);
-    auth.authorize(&scope);
-    auth
+            .link_view(LinkKind::Direct, Some(&peer), grant);
+    auth.authorize(&view);
 }
 
 /// Returns where a session writes what its peer announces.
@@ -122,7 +125,8 @@ pub(crate) async fn dial_session(
     }
     let transport = transport::dial_with(&shared.endpoint, peer, options.quic()).await?;
     let connection = transport.connection().clone();
-    let auth = authorized(&shared, peer_id, grant);
+    let auth = auth::Handle::new();
+    authorize_direct(&shared, &auth, peer_id, grant);
     let (moq, driver) = client_handshake(
         transport,
         &options,
