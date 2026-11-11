@@ -288,4 +288,33 @@ mod tests {
         let pinned = RenditionMode::Pinned("360p".into());
         assert!(!step_down(&pinned, &rungs, Some("360p"), Some("1080p")));
     }
+
+    #[test]
+    fn the_default_mode_is_auto() {
+        assert_eq!(RenditionMode::default(), RenditionMode::Auto);
+        assert_eq!(
+            pick(&RenditionMode::default(), &[]).rendition.as_deref(),
+            Some("1080p")
+        );
+        assert_eq!(
+            RenditionMode::pinned("360p"),
+            RenditionMode::Pinned("360p".into())
+        );
+    }
+
+    #[test]
+    fn best_takes_the_first_allowed_rung_or_the_smallest() {
+        let ladder = ladder();
+        let none = Constraints::default();
+        assert_eq!(best(&ladder, &none).as_deref(), Some("1080p"));
+        let without_top = Constraints {
+            excluded: ["1080p".to_string()].into(),
+        };
+        assert_eq!(best(&ladder, &without_top).as_deref(), Some("360p"));
+        let without_any = Constraints {
+            excluded: ["1080p".to_string(), "360p".to_string()].into(),
+        };
+        assert_eq!(best(&ladder, &without_any).as_deref(), Some("360p"));
+        assert_eq!(best(&[], &none), None);
+    }
 }
