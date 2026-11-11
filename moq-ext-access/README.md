@@ -4,8 +4,9 @@ Access control for moq nodes, independent of the transport. No iroh
 dependency.
 
 Use it to say who may do what on a node, or to share those rules with code that
-does not link a transport. It carries the shapes a token means on a moq relay,
-without moq-auth's JWT and crypto stack.
+does not link a transport. It carries the shapes a token means on a moq relay.
+The default build has no JWT or crypto stack. The `jwt` and `rcan` features
+add token verifiers.
 
 - `Grant`: what a session may subscribe to and publish, as moq patterns
   (`*` one segment, `**` a subtree).
@@ -14,6 +15,11 @@ without moq-auth's JWT and crypto stack.
   such as an iroh endpoint id.
 - `visible_paths`: the paths a link may see, for the node to hand to moq as the
   subscribe half of the link's grant.
+- `policy`: who may hold a session, and with which grant. `Open`, `Closed`,
+  `from_fn`, `union` and `filter` compose policies. `Queue` hands each
+  decision to the application, and `Verify` decides with a token verifier.
+- `Layout`: a path convention, which says where each peer publishes and who
+  owns a path.
 
 ```rust
 use moq_ext_access::Grant;
@@ -26,4 +32,7 @@ let grant = Grant::subscribe_only();
 
 ## Features
 
-None.
+- `jwt`: `policy::JwtVerifier`, which verifies JWTs with moq-auth, the tokens
+  moq-relay reads.
+- `rcan`: `policy::RcanVerifier`, which verifies rcan capability chains bound
+  to the peer's ed25519 key.

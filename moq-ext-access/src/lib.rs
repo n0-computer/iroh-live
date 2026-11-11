@@ -9,8 +9,11 @@
 //! - [`Layout`]: a path convention, which says where each peer publishes and
 //!   who owns a path.
 //!
-//! A conversion to and from `moq_auth::Grant` is left out on purpose:
-//! moq-auth carries the JWT and crypto stack, which this crate stays free of.
+//! The default build carries no JWT or crypto stack. The `jwt` feature adds
+//! `policy::JwtVerifier` on moq-auth, and the `rcan` feature adds
+//! `policy::RcanVerifier` on ed25519 capability chains. A conversion between
+//! [`Grant`] and `moq_auth::Grant` is left out on purpose: expiry lives on
+//! [`policy::Authorization`], not on the grant.
 
 use std::{
     collections::BTreeSet,

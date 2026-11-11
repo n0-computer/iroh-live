@@ -216,7 +216,10 @@ pub(crate) async fn authorize(
             pending,
         });
     }
-    let request = PeerRequest::new(peer, request.clone(), dialed, Event::Connect);
+    let mut request = PeerRequest::new(peer, request.clone(), Event::Connect);
+    if dialed {
+        request = request.with_dialed();
+    }
     let authorization = decide(shared, &request).await?;
     Ok(Admitted {
         authorization,

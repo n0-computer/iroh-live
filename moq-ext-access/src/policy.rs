@@ -65,19 +65,25 @@ pub struct PeerRequest<P: PeerId> {
 }
 
 impl<P: PeerId> PeerRequest<P> {
-    /// Creates a request of `peer` for a session, as a node asks its policy.
-    ///
-    /// `dialed` is true for a session this node dials, whose `request` is the
-    /// one it sends.
+    /// Creates a request of `peer` for a session it opened, as a node asks its policy.
     #[must_use]
-    pub fn new(peer: P, request: SessionRequest, dialed: bool, event: Event) -> Self {
+    pub fn new(peer: P, request: SessionRequest, event: Event) -> Self {
         Self {
             peer,
             request,
-            dialed,
+            dialed: false,
             event,
             current: None,
         }
+    }
+
+    /// Returns this request for a session this node dials.
+    ///
+    /// The request is then the one the node sends.
+    #[must_use]
+    pub fn with_dialed(mut self) -> Self {
+        self.dialed = true;
+        self
     }
 
     /// Returns this request with the authorization the peer holds now.
@@ -212,7 +218,7 @@ pub struct Transit {
 impl Transit {
     /// Reports whether the transit forwards nothing, as the default does.
     #[must_use]
-    pub fn is_none(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.forward_to.is_empty() && self.forward_from.is_empty() && !self.peer_forwards
     }
 
@@ -270,7 +276,7 @@ impl Rejection {
 
 impl fmt::Display for Rejection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "rejected: {} ({})", self.reason, self.code)
+        write!(f, "{} ({})", self.reason, self.code)
     }
 }
 
@@ -281,6 +287,9 @@ impl std::error::Error for Rejection {}
 /// Implement it with `async fn decide`.
 pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// Decides whether the peer may hold a session, and with which rights.
+    ///
+    /// A node drops the future on its decide timeout and when it shuts down,
+    /// so an implementation must tolerate cancellation at any await.
     fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send;
 
     /// Returns a stream that yields when earlier decisions may be stale.
@@ -539,7 +548,7 @@ pub async fn decide_within<P: PeerId>(
     let authorization = n0_future::time::timeout(timeout, policy.decide(request))
         .await
         .unwrap_or_else(|_| Err(too_slow()))?;
-    if !authorization.transit.is_none() {
+    if !authorization.transit.is_empty() {
         return Err(Rejection::new("transit is not supported yet"));
     }
     Ok(authorization)

@@ -61,7 +61,7 @@ pub trait TokenVerifier<P: PeerId>: fmt::Debug + Send + Sync + 'static {
 ///     }
 /// }
 ///
-/// let policy = Verify::new(Password).fallback(policy::Open(Grant::subscribe_only()));
+/// let policy = Verify::new(Password).with_fallback(policy::Open(Grant::subscribe_only()));
 /// # drop(policy);
 /// ```
 #[derive(Debug, Clone)]
@@ -84,7 +84,7 @@ impl<V> Verify<V> {
 impl<V, F> Verify<V, F> {
     /// Returns this policy with `fallback` deciding the requests without a token.
     #[must_use]
-    pub fn fallback<G>(self, fallback: G) -> Verify<V, G> {
+    pub fn with_fallback<G>(self, fallback: G) -> Verify<V, G> {
         Verify {
             verifier: self.verifier,
             fallback,

@@ -131,12 +131,7 @@ mod tests {
     }
 
     fn request(path: &str) -> PeerRequest<String> {
-        PeerRequest::new(
-            "bob".to_owned(),
-            SessionRequest::new(path),
-            false,
-            Event::Connect,
-        )
+        PeerRequest::new("bob".to_owned(), SessionRequest::new(path), Event::Connect)
     }
 
     fn verify(verifier: &JwtVerifier, token: &str, path: &str) -> Decision {

@@ -340,12 +340,7 @@ mod tests {
     fn two_layouts_compose() {
         let (a, b) = (LiveLayout::new("a"), LiveLayout::new("b"));
         let peer = id();
-        let request = PeerRequest::new(
-            peer,
-            SessionRequest::default(),
-            false,
-            policy::Event::Connect,
-        );
+        let request = PeerRequest::new(peer, SessionRequest::default(), policy::Event::Connect);
         let grant = n0_future::future::block_on(Policy::decide(&policy((a, b)), &request))
             .expect("admitted")
             .grant;

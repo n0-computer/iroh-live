@@ -317,7 +317,10 @@ impl Actor {
                 let current = state.peer_authorization(&start.peer).cloned();
                 (state.next_epoch(), current)
             };
-            let mut request = PeerRequest::new(start.peer, request, dialed, start.event);
+            let mut request = PeerRequest::new(start.peer, request, start.event);
+            if dialed {
+                request = request.with_dialed();
+            }
             if let Some(current) = current {
                 request = request.with_current(current);
             }

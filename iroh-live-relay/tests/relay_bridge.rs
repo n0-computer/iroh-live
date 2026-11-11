@@ -141,7 +141,8 @@ impl TestRelay {
             let mut sessions = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls);
             if let Some(keys) = keys {
                 sessions = sessions.with_policy(
-                    Verify::new(JwtVerifier::new(keys)).fallback(iroh_live_relay::relay_policy()),
+                    Verify::new(JwtVerifier::new(keys))
+                        .with_fallback(iroh_live_relay::relay_policy()),
                 );
             }
             let router = sessions.router(iroh);

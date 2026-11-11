@@ -9,12 +9,7 @@ type Peer = String;
 
 /// Returns a connect request of `peer` for the root, with no token.
 fn request(peer: &str) -> PeerRequest<Peer> {
-    PeerRequest::new(
-        peer.to_owned(),
-        SessionRequest::default(),
-        false,
-        Event::Connect,
-    )
+    PeerRequest::new(peer.to_owned(), SessionRequest::default(), Event::Connect)
 }
 
 /// Returns a grant that lets a peer publish under `prefix/**`.
@@ -52,7 +47,7 @@ impl Policy<Peer> for Changing {
 #[test]
 fn a_request_reads_through_to_the_session_request() {
     let session = SessionRequest::new("/studio?jwt=abc&x=1");
-    let request = PeerRequest::new("bob".to_owned(), session, true, Event::Revalidate);
+    let request = PeerRequest::new("bob".to_owned(), session, Event::Revalidate).with_dialed();
     assert_eq!(request.peer(), "bob");
     assert!(request.dialed());
     assert_eq!(request.event(), Event::Revalidate);
@@ -96,7 +91,6 @@ fn from_fn_sees_the_request() {
     let with_token = PeerRequest::new(
         "bob".to_owned(),
         SessionRequest::new("/?jwt=t"),
-        false,
         Event::Connect,
     );
     assert!(decide(&policy, &with_token).is_ok());
@@ -229,20 +223,20 @@ fn an_erased_policy_forwards_decide_and_changes() {
 
 #[test]
 fn transit_is_none_only_by_default() {
-    assert!(Transit::default().is_none());
+    assert!(Transit::default().is_empty());
     assert!(
         !Transit {
             peer_forwards: true,
             ..Default::default()
         }
-        .is_none()
+        .is_empty()
     );
     assert!(
         !Transit {
             forward_from: Pattern::all().into(),
             ..Default::default()
         }
-        .is_none()
+        .is_empty()
     );
 }
 
@@ -251,7 +245,7 @@ fn the_default_grant_allows_nothing() {
     assert_eq!(Grant::default(), Grant::nothing());
     let authorization = Authorization::default();
     assert!(!authorization.grant.allows_subscribe("a"));
-    assert!(authorization.transit.is_none());
+    assert!(authorization.transit.is_empty());
     assert_eq!(authorization.expires, None);
 }
 
@@ -341,7 +335,6 @@ fn a_queue_keeps_the_authorization_at_a_revalidation() {
     let revalidate = PeerRequest::new(
         "bob".to_owned(),
         SessionRequest::default(),
-        false,
         Event::Revalidate,
     )
     .with_current(current.clone());
@@ -358,7 +351,6 @@ fn a_queue_asks_the_application_to_reauthorize() {
     let reauthorize = PeerRequest::new(
         "bob".to_owned(),
         SessionRequest::default(),
-        false,
         Event::Reauthorize,
     )
     .with_current(under("bob").into());
@@ -388,12 +380,7 @@ impl TokenVerifier<Peer> for Stub {
 
 /// Returns a connect request of `peer` for `target`, such as `/?jwt=good`.
 fn request_for(peer: &str, target: &str) -> PeerRequest<Peer> {
-    PeerRequest::new(
-        peer.to_owned(),
-        SessionRequest::new(target),
-        false,
-        Event::Connect,
-    )
+    PeerRequest::new(peer.to_owned(), SessionRequest::new(target), Event::Connect)
 }
 
 #[test]
@@ -405,7 +392,7 @@ fn a_good_token_admits_with_its_grant() {
 
 #[test]
 fn a_bad_token_never_falls_through() {
-    let policy = Verify::new(Stub).fallback(Open(Grant::everything()));
+    let policy = Verify::new(Stub).with_fallback(Open(Grant::everything()));
     let rejection = decide(&policy, &request_for("bob", "/?jwt=forged")).expect_err("rejected");
     assert_eq!(rejection.reason(), "bad token");
     assert!(matches!(rejection.code(), moq_net::Error::App(3)));
@@ -413,7 +400,7 @@ fn a_bad_token_never_falls_through() {
 
 #[test]
 fn no_token_asks_the_fallback() {
-    let policy = Verify::new(Stub).fallback(Open(Grant::subscribe_only()));
+    let policy = Verify::new(Stub).with_fallback(Open(Grant::subscribe_only()));
     let decision = decide(&policy, &request_for("bob", "/"));
     assert_eq!(decision.expect("admitted").grant, Grant::subscribe_only());
 }
@@ -444,7 +431,7 @@ fn a_token_query_is_read_too() {
 #[test]
 fn verify_takes_its_changes_from_the_fallback() {
     let (changing, sender) = Changing::new();
-    let policy = Verify::new(Stub).fallback(changing);
+    let policy = Verify::new(Stub).with_fallback(changing);
     let mut changes = Policy::<Peer>::changes(&policy).expect("a change stream");
     sender.try_send(()).expect("room");
     assert_eq!(block_on(changes.next()), Some(()));
@@ -463,13 +450,13 @@ impl TokenVerifier<Peer> for Lapsed {
 
 #[test]
 fn an_expired_token_falls_through_only_when_deciding_again() {
-    let policy = Verify::new(Lapsed).fallback(Open(Grant::subscribe_only()));
+    let policy = Verify::new(Lapsed).with_fallback(Open(Grant::subscribe_only()));
     let session = SessionRequest::new("/?jwt=old");
-    let connect = PeerRequest::new("bob".to_owned(), session.clone(), false, Event::Connect);
+    let connect = PeerRequest::new("bob".to_owned(), session.clone(), Event::Connect);
     let rejection = decide(&policy, &connect).expect_err("a new session is rejected");
     assert!(matches!(rejection.code(), moq_net::Error::Expired));
     for event in [Event::Revalidate, Event::Reauthorize] {
-        let again = PeerRequest::new("bob".to_owned(), session.clone(), false, event);
+        let again = PeerRequest::new("bob".to_owned(), session.clone(), event);
         assert_eq!(
             decide(&policy, &again).expect("narrowed").grant,
             Grant::subscribe_only()
@@ -481,17 +468,16 @@ fn an_expired_token_falls_through_only_when_deciding_again() {
     let forged = PeerRequest::new(
         "bob".to_owned(),
         SessionRequest::new("/?jwt=forged"),
-        false,
         Event::Reauthorize,
     );
-    let policy = Verify::new(Stub).fallback(Open(Grant::everything()));
+    let policy = Verify::new(Stub).with_fallback(Open(Grant::everything()));
     decide(&policy, &forged).expect_err("rejected");
 }
 
 #[test]
 fn debug_output_never_shows_a_token() {
     let session = SessionRequest::new("/space?jwt=secret-query&mode=x").with_token("secret-setup");
-    let request = PeerRequest::new("bob".to_owned(), session.clone(), false, Event::Connect);
+    let request = PeerRequest::new("bob".to_owned(), session.clone(), Event::Connect);
     let queue = Queue::new(1);
     let mut deciding = std::pin::pin!(Policy::decide(&queue, &request));
     assert!(

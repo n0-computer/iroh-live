@@ -178,7 +178,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         }
     };
     let iroh_policy = config.iroh_policy.unwrap_or_else(|| match keys {
-        Some(keys) => Arc::new(Verify::new(JwtVerifier::new(keys)).fallback(relay_policy())),
+        Some(keys) => Arc::new(Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())),
         None => Arc::new(relay_policy()),
     });
     // Not moq-relay's iroh listener: `IrohSessions` accepts iroh clients,

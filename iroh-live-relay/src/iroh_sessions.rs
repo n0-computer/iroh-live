@@ -103,7 +103,7 @@ impl IrohSessions {
         // Logged without the query: a token rides it as `?jwt=`.
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
-        let request = PeerRequest::new(peer, session, false, Event::Connect);
+        let request = PeerRequest::new(peer, session, Event::Connect);
         let authorization =
             match moq_ext_access::policy::decide_within(&*self.policy, &request, DECIDE_TIMEOUT)
                 .await
@@ -261,7 +261,7 @@ mod tests {
     fn a_client_publishes_only_under_its_own_id() {
         let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
-        let request = PeerRequest::new(id, SessionRequest::default(), false, Event::Connect);
+        let request = PeerRequest::new(id, SessionRequest::default(), Event::Connect);
         let scope = n0_future::future::block_on(Policy::decide(&relay_policy(), &request))
             .expect("admitted")
             .grant

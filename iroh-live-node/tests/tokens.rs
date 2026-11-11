@@ -37,7 +37,8 @@ fn bob_account() -> SigningKey {
 /// Peers without a token may subscribe.
 fn alice_config() -> NodeConfig {
     let verifier = RcanVerifier::new(alice_account().verifying_key(), "spaces/alice");
-    NodeConfig::default().with_policy(Verify::new(verifier).fallback(Open(Grant::subscribe_only())))
+    NodeConfig::default()
+        .with_policy(Verify::new(verifier).with_fallback(Open(Grant::subscribe_only())))
 }
 
 /// Returns a chain from alice's account through bob's to `device`, valid for `valid`.
@@ -204,7 +205,7 @@ async fn a_token_on_a_later_session_widens_the_device_and_survives_a_reauthorize
     let decisions = Arc::new(AtomicUsize::new(0));
     let verifier = RcanVerifier::new(alice_account().verifying_key(), "spaces/alice");
     let alice = Peer::bare(NodeConfig::default().with_policy(Counted {
-        inner: Verify::new(verifier).fallback(Open(Grant::subscribe_only())),
+        inner: Verify::new(verifier).with_fallback(Open(Grant::subscribe_only())),
         decisions: decisions.clone(),
     }))
     .await;

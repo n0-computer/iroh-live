@@ -43,12 +43,7 @@ fn hours(hours: u64) -> Expires {
 }
 
 fn verify(verifier: &RcanVerifier, peer: &SigningKey, token: &str) -> Decision {
-    let request = PeerRequest::new(
-        device(peer),
-        SessionRequest::default(),
-        false,
-        Event::Connect,
-    );
+    let request = PeerRequest::new(device(peer), SessionRequest::default(), Event::Connect);
     verifier.verify(token, &request)
 }
 
