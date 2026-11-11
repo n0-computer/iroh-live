@@ -17,7 +17,7 @@
 //! let moq = Node::new(endpoint, NodeConfig::default());
 //!
 //! // Publish a broadcast this process writes, created in the route table.
-//! let publication = moq.publish("demo/studio", Audience::Everyone)?;
+//! let publication = moq.publish("demo/studio", Audience::Granted)?;
 //! let _track = publication.broadcast().create_track("video", None)?;
 //!
 //! // Resolve a peer's broadcast, dialing the peer if no route exists yet.

@@ -80,8 +80,8 @@ let mut frames = player.video();
   directly or through `Router::shutdown`, which also shuts down the node and
   every service mounted on the router.
 - `LiveLayout` is the `<root>/<peer>/<name>` convention. `publish::<T>(&node,
-  name)` creates a broadcast in the node's route table, published to everyone,
-  attached relays included, and returns it as a `LocalBroadcast` or a raw
+  name)` creates a broadcast in the node's route table, published to every
+  granted session, attached relays included, and returns it as a `LocalBroadcast` or a raw
   `broadcast::Producer`. `publish_with(&node, name, audience, fill)` takes
   another audience, such as `Audience::peers([peer])`, fills the broadcast
   before it is announced, and returns the `Publication` with the result.

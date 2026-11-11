@@ -27,9 +27,9 @@ let moq = Node::new(endpoint.clone(), NodeConfig::default());
 // Accept sessions on every MoQ version this build speaks.
 let router = moq.mount(iroh::protocol::Router::builder(endpoint)).spawn();
 
-// Publish a broadcast this process writes, to everyone. It is created in the
-// route table, and peers read it without a copy.
-let publication = moq.publish("demo/my-stream", Audience::Everyone)?;
+// Publish a broadcast this process writes, to every granted session. It is
+// created in the route table, and peers read it without a copy.
+let publication = moq.publish("demo/my-stream", Audience::Granted)?;
 let track = publication.broadcast().create_track("video", None)?;
 
 // Resolve a peer's broadcast, dialing the peer if no route exists yet.
@@ -39,7 +39,7 @@ let consumer = subscription.broadcast();
 
 ## Who sees what
 
-A publication's `Audience` says who sees it: `Everyone`, or a watched set of
+A publication's `Audience` says who sees it: `Granted`, or a watched set of
 `Peers`. A session's `Grant` says what the peer may subscribe to and publish,
 in moq-auth's pattern form. `Audience` and `Grant` come from
 [`moq-ext-access`](../moq-ext-access). `NodeConfig::grant` gives each peer its

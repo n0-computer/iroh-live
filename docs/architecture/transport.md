@@ -82,7 +82,7 @@ every protocol version, as client and as server. The node authorizes each
 session before its handshake, so its first announcements already keep to it.
 The grant's subscribe half lists the exact paths of the publications whose
 audience admits the peer, within the session's `Grant`. The audience is
-`Everyone` or a watched set of `Peers`. A relay link sees `Everyone`
+`Granted` or a watched set of `Peers`. A relay link sees `Granted`
 publications when its `RelayOffer` is public, and never a `Peers` one, which a
 relay would forward to anyone. `Grant`, `SessionRequest`, `Audience` and the
 rule that turns publications into a link's visible paths (`visible_paths`) live
@@ -140,7 +140,7 @@ as `link sample`.
 `iroh://` links dial through the node's own endpoint, since moq-tokio has no
 iroh transport. The link redials with
 backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
-the `Everyone` audience go to the relay by default (`RelayOffer::Public`). The
+the `Granted` audience go to the relay by default (`RelayOffer::Public`). The
 relay's routes join the route table at a cost of 10 (`DEFAULT_RELAY_COST`)
 against a direct link's cost of one, so a direct route wins while it exists.
 

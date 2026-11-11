@@ -62,7 +62,7 @@ async fn an_expiring_authorization_narrows_the_live_session() {
     )))
     .await;
     let bob = Peer::spawn().await;
-    let cam = publish(&bob.moq, bob.path("cam"), Audience::Everyone).expect("publish");
+    let cam = publish(&bob.moq, bob.path("cam"), Audience::Granted).expect("publish");
 
     let subscription = step(
         "alice subscribes",

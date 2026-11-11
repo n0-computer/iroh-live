@@ -171,12 +171,13 @@ impl LiveLayout {
         NodeConfig::default().with_policy(self.policy(extra))
     }
 
-    /// Publishes a broadcast at `<root>/<this node's id>/<name>` to everyone, and returns it.
+    /// Publishes a broadcast at `<root>/<this node's id>/<name>` to granted sessions, and returns it.
     ///
     /// The broadcast is created in the node's route table, and peers read it
     /// with nothing copied in between. `B` is what fills it, built from the
     /// table's `broadcast::Producer`: a `LocalBroadcast`, or the producer
-    /// itself. Everyone includes attached relays.
+    /// itself. The audience is [`Audience::Granted`], which includes attached
+    /// relays that take public publications.
     ///
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes
@@ -207,7 +208,7 @@ impl LiveLayout {
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
         let (_publication, broadcast) =
-            self.publish_with(node, name, Audience::Everyone, |producer| {
+            self.publish_with(node, name, Audience::Granted, |producer| {
                 B::try_from(producer.clone())
             })?;
         Ok(broadcast)

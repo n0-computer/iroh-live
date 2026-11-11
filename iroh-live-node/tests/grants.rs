@@ -32,7 +32,7 @@ fn path_of(peer: &Peer, name: &str) -> Path {
 async fn a_default_viewer_reads_a_claimed_path() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
 
     let err = step(
         "refused",
@@ -66,7 +66,7 @@ async fn a_default_viewer_reads_a_claimed_path() {
 async fn a_claim_widens_a_session_bob_accepted() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let session = step("dial", alice.moq.connect(bob.endpoint.addr()))
         .await
         .expect("alice dials bob");
@@ -142,7 +142,7 @@ async fn a_forged_path_is_refused() {
 async fn dropping_the_last_claim_narrows_the_grant_again() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let path = publication.path();
 
     let first = bob.moq.claim_path(alice.id(), path).expect("claim");
@@ -175,7 +175,7 @@ async fn dropping_the_last_claim_narrows_the_grant_again() {
 async fn set_grant_leaves_claimed_paths_alone() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let path = publication.path();
     let session = step("dial", bob.moq.connect(alice.endpoint.addr()))
         .await
@@ -420,7 +420,7 @@ async fn a_forged_claim_reaches_nothing() {
     let alice = Peer::spawn().await;
     let mallory = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let mut announces = bob.moq.origin().announced();
 
     bob.moq
@@ -429,7 +429,7 @@ async fn a_forged_claim_reaches_nothing() {
     let session = step("dial", mallory.moq.connect(bob.endpoint.addr()))
         .await
         .expect("mallory dials bob");
-    let forged = publish(&mallory.moq, alice.path("cam"), Audience::Everyone);
+    let forged = publish(&mallory.moq, alice.path("cam"), Audience::Granted);
     drop(forged);
     stays_pending(
         "nothing reaches bob's table",
@@ -449,7 +449,7 @@ async fn a_forged_claim_reaches_nothing() {
 async fn a_default_viewer_subscribes_to_a_ticket() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let ticket = publication.ticket();
     assert_eq!(ticket.peer(), alice.id());
 
@@ -467,7 +467,7 @@ async fn a_default_viewer_subscribes_to_a_ticket() {
 async fn a_ticket_subscription_releases_its_claim_on_drop() {
     let alice = Peer::spawn().await;
     let bob = viewer().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
     let subscription = step("subscribe", bob.moq.subscribe_ticket(&publication.ticket()))
         .await
         .expect("subscribe");
@@ -511,7 +511,7 @@ async fn a_cancelled_ticket_subscribe_releases_its_claim() {
 async fn a_covered_ticket_claims_nothing() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
 
     let subscription = step("subscribe", bob.moq.subscribe_ticket(&publication.ticket()))
         .await
@@ -527,7 +527,7 @@ async fn a_covered_ticket_claims_nothing() {
 #[traced_test]
 async fn an_own_ticket_resolves_locally() {
     let alice = Peer::spawn().await;
-    let publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let publication = publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
 
     let subscription = step(
         "subscribe",
@@ -657,13 +657,13 @@ async fn a_policy_grant_holds_in_both_directions() {
     let bob_cam = publish(
         &bob.moq,
         format!("fleet/{}/cam", bob.id()),
-        Audience::Everyone,
+        Audience::Granted,
     )
     .expect("publish");
     let carol_cam = publish(
         &carol.moq,
         format!("fleet/{}/cam", carol.id()),
-        Audience::Everyone,
+        Audience::Granted,
     )
     .expect("publish");
 

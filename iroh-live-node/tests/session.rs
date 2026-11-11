@@ -200,8 +200,8 @@ async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
         let alice = Peer::spawn().await;
         let bob = Peer::spawn().await;
         let _alice_cam =
-            publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
-        let _bob_cam = publish(&bob.moq, bob.path("cam"), Audience::Everyone).expect("publish");
+            publish(&alice.moq, alice.path("cam"), Audience::Granted).expect("publish");
+        let _bob_cam = publish(&bob.moq, bob.path("cam"), Audience::Granted).expect("publish");
 
         let (at_alice, at_bob) = step("both dial at once", async {
             tokio::join!(

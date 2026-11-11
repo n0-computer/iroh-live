@@ -69,8 +69,8 @@ and closes the endpoint. A node that is neither mounted nor attached to a relay
 logs a warning when it publishes, since no peer can dial in.
 
 `layout.publish::<LocalBroadcast>(&node, name)` creates a broadcast at
-`live/<our id>/<name>` in the route table, published to everyone, and returns it
-as an `moq_ext_publisher::LocalBroadcast` (or any type built from a
+`live/<our id>/<name>` in the route table, published to every granted session,
+and returns it as an `moq_ext_publisher::LocalBroadcast` (or any type built from a
 `broadcast::Producer`). Peers read it without a copy. `layout.ticket(node.id(),
 name)` returns the `BroadcastTicket` to share. `Node::subscribe_ticket(&ticket)`
 resolves the ticket's path over whichever link serves it and returns the

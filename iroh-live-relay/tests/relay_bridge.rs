@@ -1167,7 +1167,7 @@ async fn a_relay_gets_public_publications_only() {
     // sees a `Peers` publication, even one that names it.
     let members = Watchable::new(BTreeSet::from([relay.iroh_id]));
     let public = node
-        .publish(live_path(node.id(), "public"), Audience::Everyone)
+        .publish(live_path(node.id(), "public"), Audience::Granted)
         .expect("publish");
     let _public = counter(public.broadcast(), "data");
     let peers = node
@@ -1249,7 +1249,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let (_alice_endpoint, alice) = relay_node().await;
     let _alice_router = serve(&alice);
     let publication = alice
-        .publish(live_path(alice.id(), "cam"), Audience::Everyone)
+        .publish(live_path(alice.id(), "cam"), Audience::Granted)
         .expect("publish");
     let _writer = counter(publication.broadcast(), "data");
     let _alice_link = attached(&alice, &relay, RelayOffer::Public).await;
@@ -1330,7 +1330,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let (alice_endpoint, alice) = relay_node().await;
     let _alice_router = serve(&alice);
     let publication = alice
-        .publish(live_path(alice.id(), "cam"), Audience::Everyone)
+        .publish(live_path(alice.id(), "cam"), Audience::Granted)
         .expect("publish");
     let _writer = counter(publication.broadcast(), "data");
 
@@ -1426,18 +1426,18 @@ async fn the_shipped_relay_refuses_forged_paths() {
             LiveLayout::default()
                 .path(mallory.id(), "cam")
                 .expect("a path"),
-            Audience::Everyone,
+            Audience::Granted,
         )
         .expect("publish");
     let _own = counter(own.broadcast(), "data");
     let forged_path = format!("live/{alice}/cam");
     let room_path = format!("rooms/topic/{alice}/cam");
     let forged = mallory
-        .publish(forged_path.as_str(), Audience::Everyone)
+        .publish(forged_path.as_str(), Audience::Granted)
         .expect("publish at alice's path");
     let _forged = counter(forged.broadcast(), "data");
     let room_forged = mallory
-        .publish(room_path.as_str(), Audience::Everyone)
+        .publish(room_path.as_str(), Audience::Granted)
         .expect("publish at alice's room path");
     let _room_forged = counter(room_forged.broadcast(), "data");
     let _link = attached(&mallory, &relay, RelayOffer::Public).await;
@@ -1793,7 +1793,7 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
 
     let (_endpoint, holder) = relay_node().await;
     let granted = holder
-        .publish("tokens/cam", Audience::Everyone)
+        .publish("tokens/cam", Audience::Granted)
         .expect("publish");
     let _granted = counter(granted.broadcast(), "data");
     let own = holder
@@ -1801,7 +1801,7 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
             LiveLayout::default()
                 .path(holder.id(), "cam")
                 .expect("a path"),
-            Audience::Everyone,
+            Audience::Granted,
         )
         .expect("publish");
     let _own = counter(own.broadcast(), "data");
@@ -1819,12 +1819,12 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
             LiveLayout::default()
                 .path(plain.id(), "cam")
                 .expect("a path"),
-            Audience::Everyone,
+            Audience::Granted,
         )
         .expect("publish");
     let _plain_own = counter(plain_own.broadcast(), "data");
     let plain_tokens = plain
-        .publish("tokens/screen", Audience::Everyone)
+        .publish("tokens/screen", Audience::Granted)
         .expect("publish");
     let _plain_tokens = counter(plain_tokens.broadcast(), "data");
     let _plain_link = attach_with_token(&plain, &relay, None);
@@ -1846,7 +1846,7 @@ async fn an_iroh_client_with_a_bad_token_is_refused() {
             LiveLayout::default()
                 .path(forger.id(), "cam")
                 .expect("a path"),
-            Audience::Everyone,
+            Audience::Granted,
         )
         .expect("publish");
     let _own = counter(own.broadcast(), "data");
@@ -1923,7 +1923,7 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
 
     let (_endpoint, holder) = relay_node().await;
     let cam = holder
-        .publish("tokens/cam", Audience::Everyone)
+        .publish("tokens/cam", Audience::Granted)
         .expect("publish");
     let _cam = counter(cam.broadcast(), "data");
     let mut updates = relay.cluster.origin.consume().announced();
@@ -1966,7 +1966,7 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
 
     let (_endpoint, holder) = relay_node().await;
     let cam = holder
-        .publish("tokens/cam", Audience::Everyone)
+        .publish("tokens/cam", Audience::Granted)
         .expect("publish");
     let _cam = counter(cam.broadcast(), "data");
     let mut updates = relay.cluster.origin.consume().announced();

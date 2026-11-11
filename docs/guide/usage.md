@@ -283,7 +283,7 @@ paths. A real application also resubscribes when a broadcast ends: see
 
 `LiveLayout::publish` and `Node::subscribe_ticket` use the `live/<id>/<name>`
 layout and a ticket, and `LiveLayout::publish_with` is `publish` for an
-audience other than everyone. `Node::publish` and `Node::subscribe` take any
+audience other than `Granted`. `Node::publish` and `Node::subscribe` take any
 path, and `Audience::peers` limits who sees the broadcast: moq enforces it on
 each live session, so a peer taken out of the set loses the path at once. To
 change the set later, publish with `Audience::Peers(set)` and keep a clone of
@@ -363,7 +363,7 @@ other. A third node that dials the publisher cannot resolve the path.
 
 A relay carries broadcasts to peers that cannot connect directly, and to
 browsers. `attach_relay` stays attached and redials with backoff. Every
-publication with the `Everyone` audience, which `LiveLayout::publish` uses, is
+publication with the `Granted` audience, which `LiveLayout::publish` uses, is
 then visible to the relay as well, and a `Peers` one never is. A publisher that
 does not need the relay's other routes sets `consume: false`.
 
@@ -445,7 +445,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let me = node.id();
             println!("read with: {me}");
             let path = layout.path(me, "control")?;
-            let publication = node.publish(path, Audience::Everyone)?;
+            let publication = node.publish(path, Audience::Granted)?;
             let mut control = publication.broadcast().create_track(
                 "control",
                 track::Info::default().with_timescale(Timescale::MILLI),

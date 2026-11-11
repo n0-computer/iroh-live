@@ -169,10 +169,9 @@ pub use iroh_live_rooms as rooms;
 ///
 /// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
 /// let path = LiveLayout::default().path(node.id(), "control")?;
-/// let (_publication, track) =
-///     node.publish_with(path.clone(), Audience::Everyone, |producer| {
-///         producer.create_track("latency", track::Info::default())
-///     })?;
+/// let (_publication, track) = node.publish_with(path.clone(), Audience::Granted, |producer| {
+///     producer.create_track("latency", track::Info::default())
+/// })?;
 /// let mut latency = snapshot::Producer::<u64>::new(track, snapshot::Config::default());
 /// latency.update(&150)?;
 ///

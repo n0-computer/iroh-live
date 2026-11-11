@@ -130,7 +130,7 @@ The paths, the grant and the endpoint are defaults, and each can be replaced:
 - `NodeConfig` sets the admission and the grant. `LiveLayout::config(extra)`
   builds one for the layout, and `NodeConfig::default()` is subscribe-only.
 - `LiveLayout::publish_with(&node, name, audience, fill)` publishes under the
-  layout to an audience other than everyone, such as `Audience::peers([peer])`.
+  layout to an audience other than `Granted`, such as `Audience::peers([peer])`.
 - `Node::publish(path, audience)` and `Node::subscribe(path, reach)` work on any
   path, next to the ticket calls. `media::remote_broadcast(&subscription)`
   reads the media of the result.

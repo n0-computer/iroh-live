@@ -198,7 +198,7 @@ async fn room_broadcasts_are_private() {
     // In a's own scope, outside the room.
     let public = peer_a
         .node
-        .publish(format!("rooms/elsewhere/{a}/public"), Audience::Everyone)
+        .publish(format!("rooms/elsewhere/{a}/public"), Audience::Granted)
         .expect("publish");
     let _public_writer = counting_into(public.broadcast(), 0);
     wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
@@ -388,7 +388,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
     let forgery = mallory
         .node
-        .publish(path.as_str(), Audience::Everyone)
+        .publish(path.as_str(), Audience::Granted)
         .expect("publish at b's path");
     let _forger = counting_into(forgery.broadcast(), FORGED);
     tokio::time::timeout(TIMEOUT, mallory.node.connect(peer_c.endpoint.addr()))

@@ -98,8 +98,8 @@ async fn until(what: &str, condition: impl Fn() -> bool) {
 async fn a_delegated_device_publishes_into_the_space() {
     let alice = Peer::bare(alice_config()).await;
     let bob = Peer::spawn().await;
-    let cam = publish(&bob.moq, "spaces/alice/bob/cam", Audience::Everyone).expect("publish");
-    let elsewhere = publish(&bob.moq, "spaces/carol/cam", Audience::Everyone).expect("publish");
+    let cam = publish(&bob.moq, "spaces/alice/bob/cam", Audience::Granted).expect("publish");
+    let elsewhere = publish(&bob.moq, "spaces/carol/cam", Audience::Granted).expect("publish");
 
     connect_with_token(&bob, &alice, chain_to(&bob, Duration::from_secs(3600)))
         .await

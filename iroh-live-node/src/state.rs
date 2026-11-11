@@ -134,7 +134,7 @@ pub(crate) struct LinkEntry {
     ///
     /// `None` for a direct link, which takes its peer's base grant.
     pub(crate) grant: Option<Grant>,
-    /// For a relay, whether `Everyone` publications go to it.
+    /// For a relay, whether `Granted` publications go to it.
     pub(crate) public: bool,
     /// Whether the link feeds the route table.
     pub(crate) consume: bool,
@@ -671,7 +671,7 @@ mod tests {
         state.set_audience(10, AudienceKind::Peers(BTreeSet::new()));
         assert!(!grant_of(&state, LinkId(1)).subscribe.matches(path));
 
-        state.set_audience(10, AudienceKind::Everyone);
+        state.set_audience(10, AudienceKind::Granted);
         assert!(grant_of(&state, LinkId(1)).subscribe.matches(path));
         assert!(grant_of(&state, LinkId(2)).subscribe.matches(path));
     }
@@ -702,7 +702,7 @@ mod tests {
         );
         state.add_publication(
             11,
-            table.publication("live/me/public", AudienceKind::Everyone),
+            table.publication("live/me/public", AudienceKind::Granted),
         );
         let grant = grant_of(&state, LinkId(1));
         assert!(!grant.subscribe.matches("live/me/private"));
@@ -725,8 +725,8 @@ mod tests {
         let mut state = State::default();
         add(&mut state, LinkId(1), link(LinkKind::Direct));
         add(&mut state, LinkId(2), link(LinkKind::Relay));
-        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
-        state.add_publication(11, table.publication("live/me/mic", AudienceKind::Everyone));
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
+        state.add_publication(11, table.publication("live/me/mic", AudienceKind::Granted));
         assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
 
         let removed = state.remove_publication(10).expect("the publication");
@@ -747,7 +747,7 @@ mod tests {
         let peer = direct.remote.expect("a peer");
         state.admit_peer(peer, Grant::nothing().into());
         add(&mut state, LinkId(1), direct);
-        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
 
         state.set_peer_grant(&peer, Grant::subscribe_only());
@@ -768,7 +768,7 @@ mod tests {
         state.admit_peer(peer, Grant::nothing().into());
         add(&mut state, LinkId(1), first);
         add(&mut state, LinkId(2), second);
-        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
         for id in [LinkId(1), LinkId(2)] {
             assert!(grant_of(&state, id).subscribe.is_empty(), "{id:?}");
         }

@@ -64,15 +64,12 @@ impl Publisher {
         publisher
     }
 
-    /// Publishes `name` to everyone and returns its ticket.
+    /// Publishes `name` to every granted session and returns its ticket.
     fn publish(&self, name: &str) -> BroadcastTicket {
         let path = LiveLayout::default()
             .path(self.node.id(), name)
             .expect("a path");
-        let publication = self
-            .node
-            .publish(path, Audience::Everyone)
-            .expect("publish");
+        let publication = self.node.publish(path, Audience::Granted).expect("publish");
         // The broadcast has to stay open for as long as the test runs.
         std::mem::forget(publication.broadcast().clone());
         publication.ticket()

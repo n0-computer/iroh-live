@@ -236,8 +236,10 @@ impl SessionRequest {
 /// Who may see a publication.
 #[derive(Debug, Clone)]
 pub enum Audience<P: PeerId> {
-    /// Every admitted session, and every relay that takes public publications.
-    Everyone,
+    /// Every session whose grant covers the path.
+    ///
+    /// That includes each relay that takes public publications.
+    Granted,
     /// These peers, as the set changes.
     ///
     /// Never offered to relays. The publication holds the set: change it
@@ -268,15 +270,15 @@ impl<P: PeerId> Audience<P> {
 )]
 impl<P: PeerId> Default for Audience<P> {
     fn default() -> Self {
-        Self::Everyone
+        Self::Granted
     }
 }
 
 /// An [`Audience`] as a registry keeps it: the current set, not its watcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudienceKind<P: PeerId> {
-    /// See [`Audience::Everyone`].
-    Everyone,
+    /// See [`Audience::Granted`].
+    Granted,
     /// See [`Audience::Peers`], as of now.
     Peers(BTreeSet<P>),
 }
@@ -284,7 +286,7 @@ pub enum AudienceKind<P: PeerId> {
 impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
     fn from(audience: &Audience<P>) -> Self {
         match audience {
-            Audience::Everyone => Self::Everyone,
+            Audience::Granted => Self::Granted,
             Audience::Peers(peers) => Self::Peers(peers.get()),
         }
     }
@@ -297,7 +299,7 @@ pub enum LinkRole {
     Direct,
     /// A moq relay.
     Relay {
-        /// Whether [`Audience::Everyone`] publications go to the relay.
+        /// Whether [`Audience::Granted`] publications go to the relay.
         public: bool,
     },
 }
@@ -343,7 +345,7 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 /// Returns the exact paths of `publications` a link may see, as patterns.
 ///
 /// A publication is visible when the link's `grant` covers its path and its
-/// audience admits the link. A relay sees `Everyone` publications only when
+/// audience admits the link. A relay sees `Granted` publications only when
 /// `public`, and never a `Peers` one, which a relay would forward to anyone. A
 /// direct link is in a `Peers` audience when its `remote` is in the set.
 ///
@@ -383,8 +385,8 @@ fn visible<P: PeerId>(
         return false;
     }
     match (audience, role) {
-        (AudienceKind::Everyone, LinkRole::Direct) => true,
-        (AudienceKind::Everyone, LinkRole::Relay { public }) => public,
+        (AudienceKind::Granted, LinkRole::Direct) => true,
+        (AudienceKind::Granted, LinkRole::Relay { public }) => public,
         (AudienceKind::Peers(peers), LinkRole::Direct) => {
             remote.is_some_and(|remote| peers.contains(remote))
         }
@@ -517,25 +519,25 @@ mod tests {
     #[test]
     fn visibility_follows_grant_audience_and_link() {
         let grant = Grant::everything();
-        let everyone = AudienceKind::<String>::Everyone;
+        let granted = AudienceKind::<String>::Granted;
         let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
         let direct = LinkRole::Direct;
         let a = "a".to_string();
         let b = "b".to_string();
-        assert!(visible("p", &everyone, &grant, direct, Some(&b)));
+        assert!(visible("p", &granted, &grant, direct, Some(&b)));
         assert!(visible("p", &peers, &grant, direct, Some(&a)));
         assert!(!visible("p", &peers, &grant, direct, Some(&b)));
         assert!(!visible("p", &peers, &grant, direct, None));
         assert!(!visible(
             "p",
-            &everyone,
+            &granted,
             &grant,
             LinkRole::Relay { public: false },
             None
         ));
         assert!(visible(
             "p",
-            &everyone,
+            &granted,
             &grant,
             LinkRole::Relay { public: true },
             None
@@ -551,14 +553,14 @@ mod tests {
             subscribe: Patterns::new(),
             publish: Patterns::new(),
         };
-        assert!(!visible("p", &everyone, &none, direct, Some(&a)));
+        assert!(!visible("p", &granted, &none, direct, Some(&a)));
     }
 
     #[test]
     fn visible_paths_list_exactly_what_a_link_sees() {
-        let everyone = AudienceKind::<String>::Everyone;
+        let granted = AudienceKind::<String>::Granted;
         let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
-        let publications = [("live/x/public", &everyone), ("live/x/secret", &peers)];
+        let publications = [("live/x/public", &granted), ("live/x/secret", &peers)];
         let grant = Grant::everything();
         let (a, b) = ("a".to_string(), "b".to_string());
 

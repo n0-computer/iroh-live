@@ -3,7 +3,7 @@
 //! The node takes any path and any grant. An application with its own layout
 //! uses `Node` directly and gets the same sessions, route table and relays,
 //! without `iroh_live::layout::LiveLayout`. This one serves a broadcast at a
-//! path of its own, `demo/hello`, to everyone.
+//! path of its own, `demo/hello`, to every session its grant covers.
 //!
 //! Run it with `cargo run -p iroh-live --example moq_only`.
 
@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // An empty broadcast in the route table. A real one writes tracks into
     // `publication.broadcast()`.
-    let _publication = node.publish("demo/hello", Audience::Everyone)?;
+    let _publication = node.publish("demo/hello", Audience::Granted)?;
     println!("serving demo/hello as {}", endpoint.id());
 
     tokio::signal::ctrl_c().await?;

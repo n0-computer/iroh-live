@@ -162,7 +162,7 @@ impl NodeConfig {
 /// let moq = Node::new(endpoint.clone(), NodeConfig::default());
 /// let _router = moq.mount(Router::builder(endpoint)).spawn();
 ///
-/// let publication = moq.publish("demo/camera", Audience::Everyone)?;
+/// let publication = moq.publish("demo/camera", Audience::Granted)?;
 /// // write tracks into the broadcast in the route table:
 /// let _track = publication.broadcast().create_track("video", None)?;
 /// # Ok(())

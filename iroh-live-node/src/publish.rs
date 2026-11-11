@@ -49,7 +49,7 @@ pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 ///
 /// use iroh_live_node::Audience;
 ///
-/// let publication = node.publish("live/studio", Audience::Everyone)?;
+/// let publication = node.publish("live/studio", Audience::Granted)?;
 /// let _track = publication.broadcast().create_track("video", None)?;
 /// // Narrow it to one peer, who then holds the only route to it.
 /// let peers = n0_watcher::Watchable::new(BTreeSet::from([peer]));

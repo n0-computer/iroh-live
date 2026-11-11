@@ -33,7 +33,7 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
         .path(publisher.id(), "control")
         .expect("a path");
     let (_publication, track) = publisher
-        .publish_with(path.clone(), Audience::Everyone, |producer| {
+        .publish_with(path.clone(), Audience::Granted, |producer| {
             producer.create_track("latency", track::Info::default())
         })
         .expect("publish");

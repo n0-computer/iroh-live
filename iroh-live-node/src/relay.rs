@@ -1,7 +1,7 @@
 //! Relay links: staying attached to a moq relay.
 //!
 //! A relay link serves the route table's local view, authorized for the
-//! node's [`Everyone`](crate::Audience::Everyone) publications when its
+//! node's [`Granted`](crate::Audience::Granted) publications when its
 //! [`RelayOffer`] is public and for nothing otherwise. It feeds what the relay
 //! announces into the route table, tagged [`Link::Upstream`]: the local view
 //! hides such routes, so a route from a relay is never offered to another link.
@@ -155,7 +155,7 @@ impl fmt::Debug for TokenFn {
 /// What a node publishes into a relay.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RelayOffer {
-    /// Every publication whose audience is [`Everyone`](crate::Audience::Everyone).
+    /// Every publication whose audience is [`Granted`](crate::Audience::Granted).
     #[default]
     Public,
     /// Nothing: the relay is for consuming only.
