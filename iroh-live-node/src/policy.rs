@@ -12,6 +12,11 @@
 //! [`NodeConfig::decide_timeout`](crate::NodeConfig::decide_timeout) then,
 //! since the node rejects a session whose decision takes longer.
 //!
+//! To admit the peers that present a token, wrap a [`TokenVerifier`] in a
+//! [`Verify`]. The `jwt` feature adds `JwtVerifier`, for moq-relay's JWTs,
+//! and the `rcan` feature adds `RcanVerifier`, for capability chains bound to
+//! the peer's key.
+//!
 //! # Examples
 //!
 //! Admit only known peers, and let each publish under its own id:
@@ -40,10 +45,14 @@
 //! ```
 
 use iroh::EndpointId;
+#[cfg(feature = "jwt")]
+pub use moq_ext_access::policy::JwtVerifier;
 pub use moq_ext_access::policy::{
     Authorization, Closed, Decision, DynPolicy, Event, Filter, FromFn, Open, Policy, Rejection,
-    Transit, Union, from_fn,
+    TokenVerifier, Transit, Union, Verify, from_fn,
 };
+#[cfg(feature = "rcan")]
+pub use moq_ext_access::policy::{MoqCapability, RcanVerifier, encode_chain};
 
 /// A peer's request for a session with this node, as a policy sees it.
 pub type PeerRequest = moq_ext_access::policy::PeerRequest<EndpointId>;

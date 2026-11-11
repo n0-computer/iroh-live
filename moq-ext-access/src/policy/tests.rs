@@ -314,7 +314,7 @@ fn a_full_queue_rejects_at_once() {
     let mut waiting = Box::pin(Policy::decide(&queue, &bob));
     assert!(block_on(future::poll_once(&mut waiting)).is_none());
     let rejection = decide(&queue, &request("carol")).expect_err("rejected");
-    assert!(matches!(rejection.code(), moq_net::Error::Timeout));
+    assert!(matches!(rejection.code(), moq_net::Error::TooManyRequests));
     // The first one is still answered.
     block_on(queue.next())
         .expect("bob's request")
@@ -327,7 +327,7 @@ fn a_closed_queue_rejects_and_ends() {
     let queue = Queue::<Peer>::new(4);
     queue.close();
     let rejection = decide(&queue, &request("bob")).expect_err("rejected");
-    assert!(matches!(rejection.code(), moq_net::Error::Timeout));
+    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
     assert!(block_on(queue.next()).is_none());
 }
 

@@ -13,7 +13,7 @@ use crate::PeerId;
 /// the policy while the application holds a clone to answer from.
 ///
 /// A request that finds the queue full is rejected at once with
-/// [`moq_net::Error::Timeout`], so a slow application does not pile up
+/// [`moq_net::Error::TooManyRequests`], so a slow application does not pile up
 /// sessions whose peers wait. A node also gives up on a decision after its
 /// decide timeout, such as `NodeConfig::decide_timeout` in iroh-live-node,
 /// which is 10 seconds there by default. Raise it when a person answers.
@@ -101,11 +101,16 @@ impl<P: PeerId> Policy<P> for Queue<P> {
             reply,
         };
         if let Err(err) = self.sender.try_send(pending) {
-            let reason = match err {
-                async_channel::TrySendError::Full(_) => "the admission queue is full",
-                async_channel::TrySendError::Closed(_) => "the admission queue is closed",
-            };
-            return Err(Rejection::new(reason).with_code(moq_net::Error::Timeout));
+            return Err(match err {
+                async_channel::TrySendError::Full(_) => {
+                    Rejection::new("the admission queue is full")
+                        .with_code(moq_net::Error::TooManyRequests)
+                }
+                // A closed queue admits nobody any more.
+                async_channel::TrySendError::Closed(_) => {
+                    Rejection::new("the admission queue is closed")
+                }
+            });
         }
         // A dropped `Pending` drops its sender, which ends the receive.
         answer

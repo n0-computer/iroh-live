@@ -65,6 +65,9 @@ full = ["media", "capture", "render", "sound-server", "record"]
 media = ["dep:moq-ext-player", "dep:moq-ext-publisher", "dep:moq-ext-sources", "dep:moq-audio", "dep:moq-video"]
 # Recording a broadcast to a file.
 record = ["media", "moq-ext-player/record"]
+# Token verifiers in `iroh_live::node::policy`: JWTs and rcan chains.
+jwt = ["iroh-live-node/jwt"]
+rcan = ["iroh-live-node/rcan"]
 # Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.

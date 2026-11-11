@@ -31,6 +31,12 @@ tokio-util = "0.7.19"
 tracing = "0.1.44"
 url = "2.5.8"
 
+[features]
+# Re-exports the JWT verifier as `policy::JwtVerifier`.
+jwt = ["moq-ext-access/jwt"]
+# Re-exports the rcan verifier and its capability as `policy::RcanVerifier`.
+rcan = ["moq-ext-access/rcan"]
+
 [dev-dependencies]
 data-encoding = "2.11.1"
 # Issues the keys and capability chains of the delegated-publisher tests.
