@@ -15,7 +15,7 @@ use iroh::{
 };
 use moq_net::{
     Pattern, Patterns, announce, auth, broadcast,
-    origin::{self, Link, RouteInfo, RouteOptions},
+    origin::{self, Link, RouteEvent, RouteInfo, RouteOptions},
 };
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
@@ -170,6 +170,32 @@ async fn announced_route(origin: &origin::Producer, path: &str) -> RouteInfo {
     })
     .await
     .unwrap_or_else(|_| panic!("{path} was never announced"))
+}
+
+/// Waits until the best route `origin` announces at `path` is one that `wanted` accepts.
+async fn best_route(
+    origin: &origin::Producer,
+    path: &str,
+    wanted: impl Fn(&RouteInfo) -> bool,
+) -> RouteInfo {
+    let mut routes = origin.consume().routes();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            match routes.next().await.expect("origin closed") {
+                RouteEvent::Start(announce)
+                | RouteEvent::Update(announce)
+                | RouteEvent::Restart(announce)
+                | RouteEvent::Takeover { announce, .. }
+                    if announce.prefix.as_str() == path && wanted(&announce.route) =>
+                {
+                    return announce.route;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the wanted route to {path} never became the best"))
 }
 
 /// Resolves `path` through `origin`.
@@ -398,6 +424,13 @@ async fn a_route_table_fails_over_between_links() {
         )
     })
     .await;
+    // The relay's route is in the table before the direct one comes.
+    let relayed_route = announced_route(&table, "live/p/cam").await;
+    assert!(
+        relayed_route.cost().value() >= RELAY_COST,
+        "{:?}",
+        relayed_route.cost()
+    );
     let (direct_link, direct_server) = step("direct handshake", async {
         tokio::join!(
             dial(
@@ -411,10 +444,12 @@ async fn a_route_table_fails_over_between_links() {
     })
     .await;
 
-    // Both routes are in the table once they have had a moment to arrive, and
-    // it announces the best: the direct one, which is cheaper.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let best = announced_route(&table, "live/p/cam").await;
+    // Both routes are in the table, and it announces the best: the direct
+    // one, which is cheaper. The relay's route was there first.
+    let best = best_route(&table, "live/p/cam", |route| {
+        route.cost().value() < RELAY_COST
+    })
+    .await;
     assert_eq!(best.hops().next(), Some(PUBLISHER_HOP));
     assert!(best.cost().value() < RELAY_COST, "{:?}", best.cost());
 

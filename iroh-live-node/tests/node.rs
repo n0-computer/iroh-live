@@ -589,7 +589,22 @@ async fn a_subscriber_started_first_gets_the_named_path() {
         let (path, publisher) = (path.clone(), alice.id());
         async move { moq.subscribe(path, Reach::Direct(publisher)).await }
     });
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Publish only once Bob's subscribe has dialed Alice and waits for the path.
+    let mut sessions = bob.moq.sessions();
+    step("bob dials alice", async {
+        while !sessions
+            .get()
+            .iter()
+            .any(|session| session.peer() == alice.id())
+        {
+            sessions.updated().await.expect("node gone");
+        }
+    })
+    .await;
+    assert!(
+        !subscribing.is_finished(),
+        "the subscribe returned before the publish"
+    );
     let _publication = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
 
     let subscription = step("subscribe", subscribing)

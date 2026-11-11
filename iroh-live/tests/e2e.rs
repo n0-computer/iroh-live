@@ -202,6 +202,8 @@ async fn a_call_rings_answers_and_hangs_up() {
             .play(PlayerConfig::default())
             .expect("failed to play");
         first_frame(&player).await;
+        // Kept past the hang-up, to see Bob's side leave Alice's route table.
+        let bob_side = at_alice.subscription().clone();
 
         // Alice hangs up: Bob's read ends and the ring stops.
         at_alice.hang_up();
@@ -210,9 +212,13 @@ async fn a_call_rings_answers_and_hangs_up() {
             .expect("bob did not notice the hang-up");
         assert_eq!(hung_up, HungUp::Withdrawn);
         drop((at_bob, player));
-        // The next round rings anew only once this withdrawal has arrived.
+        // The next round rings anew only once both withdrawals have arrived:
+        // Alice's at Bob, and Bob's, from his end of the call, at Alice.
         rings(&bob_calls, &alice, false).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::timeout(TIMEOUT, bob_side.closed())
+            .await
+            .expect("bob's side stayed in alice's route table");
+        drop(bob_side);
     }
     assert_eq!(alice.sessions().get().len(), 1, "the session was replaced");
 
