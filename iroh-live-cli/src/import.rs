@@ -235,7 +235,7 @@ async fn read_header(
                 if source.transcode {
                     ""
                 } else {
-                    "; if this is a plain MP4, re-run with --transcode"
+                    ". If this is a plain MP4, run again with --transcode"
                 }
             ));
         }

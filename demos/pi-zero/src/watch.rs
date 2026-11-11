@@ -120,7 +120,7 @@ impl VtGuard {
 
 impl Drop for VtGuard {
     fn drop(&mut self) {
-        // SAFETY: as in `activate`; the console is still open.
+        // SAFETY: as in `activate`. The console is still open.
         unsafe { libc::ioctl(self.0.as_raw_fd(), KDSETMODE, KD_TEXT) };
     }
 }
@@ -544,7 +544,7 @@ pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
                 NonZeroU32::new(size.height.max(1)).expect("max(1) is non-zero"),
             );
             let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(raw, w, h);
-            // SAFETY: as above; the window outlives the surface.
+            // SAFETY: as above. The window outlives the surface.
             let surface = unsafe {
                 gl_display
                     .create_window_surface(&gl_config, &surface_attrs)

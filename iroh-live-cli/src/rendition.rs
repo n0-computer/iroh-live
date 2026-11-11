@@ -131,7 +131,7 @@ impl Ladder {
             CaptureFramerate::Requested { fps, origin } => info!(
                 fps,
                 origin = origin.label(),
-                "capture frame rate requested; the device runs at the nearest rate it supports",
+                "capture frame rate requested. The device runs at the nearest rate it supports",
             ),
             CaptureFramerate::Device => info!(
                 origin = "device",

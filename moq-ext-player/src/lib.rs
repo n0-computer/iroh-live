@@ -47,7 +47,7 @@
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
 //! | [`VideoFrames::next`], [`AudioFrames::next`], [`RemoteBroadcast::closed`] | yes | loses nothing |
-//! | `Recording::wait`, `Recording::stop` (feature `record`) | yes, while the recording is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
+//! | `Recording::wait`, `Recording::stop` (feature `record`) | yes, while the recording is kept | the recording runs on its own task. Dropping the `Recording` stops it without flushing |
 
 mod catalog;
 mod error;

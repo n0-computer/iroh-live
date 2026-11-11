@@ -381,7 +381,7 @@ mod tests {
     /// Run in release:
     /// `cargo test --release -p iroh-live-cli blur_ceiling_report -- --ignored --nocapture`.
     #[test]
-    #[ignore = "a measurement, not a check; run by hand to see the ceiling"]
+    #[ignore = "a measurement, not a check. Run it by hand to see the ceiling"]
     fn blur_ceiling_report() {
         let candidates: [(&str, Decoder); 2] = [("rxing raw", decode_rxing), ("shipped", decode)];
         println!("blur ceiling in modules, per decoder and module size:");

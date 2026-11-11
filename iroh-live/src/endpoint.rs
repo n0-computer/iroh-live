@@ -107,8 +107,8 @@ impl EndpointConfig {
             Err(err) => {
                 warn!(
                     error = %err,
-                    "could not start mDNS address lookup; peers on this network will \
-                     only be found through pkarr and DNS, which need internet"
+                    "could not start the mDNS address lookup. Peers on this network are \
+                     found only through pkarr and DNS, which need internet access."
                 );
                 builder
             }

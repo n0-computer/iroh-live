@@ -357,7 +357,7 @@ fn still_skipped(skip: Option<&Skip>, ticket: &BroadcastTicket) -> Option<Durati
 fn no_frames(device: &str, rpicam: bool) -> String {
     if rpicam {
         format!(
-            "{device} opened but sent no pictures within {}s; check the ribbon cable",
+            "{device} opened but sent no pictures within {}s. Check the ribbon cable",
             FIRST_FRAME_GRACE.as_secs()
         )
     } else {

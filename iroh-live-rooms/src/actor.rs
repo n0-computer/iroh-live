@@ -204,7 +204,7 @@ impl Actor {
             .await;
             if told.is_err() {
                 warn!(
-                    "could not tell the others in time; they drop this member when its lease ends"
+                    "could not tell the others in time. They drop this member when its lease ends"
                 );
             }
         }

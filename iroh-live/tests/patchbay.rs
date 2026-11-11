@@ -910,7 +910,7 @@ async fn a_switch_does_not_blank_the_picture() {
 /// queue never empties. The fix is to rank groups by age within their track.
 #[tokio::test]
 #[traced_test]
-#[ignore = "the replacement track's first group is starved behind the incumbent's higher-numbered ones; passes about five runs in six"]
+#[ignore = "the replacement track's first group is starved behind the incumbent's higher-numbered ones. It passes about five runs in six"]
 async fn a_switch_lands_while_the_link_stays_capped() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
     let mut viewer = fixture.play(2, "high").await;

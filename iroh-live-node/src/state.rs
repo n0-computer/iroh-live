@@ -32,7 +32,7 @@ pub(crate) struct State {
     next_id: u64,
     pub(crate) publications: BTreeMap<u64, PubEntry>,
     pub(crate) links: BTreeMap<LinkId, LinkEntry>,
-    /// Set once the node shuts down; nothing is added after that.
+    /// Set once the node shuts down. Nothing is added after that.
     pub(crate) closed: bool,
     /// Paths that tickets widened a peer's grant to, with how many claims hold each.
     tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
