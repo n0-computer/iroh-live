@@ -33,8 +33,8 @@ pub(crate) struct State {
     pub(crate) links: BTreeMap<LinkId, LinkEntry>,
     /// Set once the node shuts down. Nothing is added after that.
     pub(crate) closed: bool,
-    /// Paths that tickets widened a peer's grant to, with how many claims hold each.
-    tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
+    /// The paths claims widened each peer's grant to, with how many claims hold each.
+    claims: HashMap<EndpointId, BTreeMap<Path, usize>>,
     /// The policy's authorization of each peer with a live or pending direct session.
     peers: HashMap<EndpointId, PeerEntry>,
     /// Orders the starts of decisions and the triggers that make them stale.
@@ -127,18 +127,18 @@ pub(crate) enum Registered {
     Stale,
 }
 
-/// How many paths a ticket may widen one peer's grant to.
-const MAX_TICKET_PATHS: usize = 64;
+/// How many claimed paths may widen one peer's grant.
+const MAX_CLAIMED_PATHS: usize = 64;
 
-/// How many bytes of paths a ticket may widen one peer's grant to.
-const MAX_TICKET_BYTES: usize = 16 * 1024;
+/// How many bytes of claimed paths may widen one peer's grant.
+const MAX_CLAIMED_BYTES: usize = 16 * 1024;
 
 /// Why a ticket path could not be claimed.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ClaimRefused {
     /// The node has shut down.
     Closed,
-    /// The peer holds too many ticket paths.
+    /// The peer holds too many claimed paths.
     TooMany,
 }
 
@@ -415,7 +415,7 @@ impl State {
         self.peers.get(peer)?.grant()
     }
 
-    /// Returns what `peer` may do on its direct sessions: its base grant and its ticket paths.
+    /// Returns what `peer` may do on its direct sessions: its base grant and its claimed paths.
     pub(crate) fn peer_effective_grant(&self, peer: &EndpointId) -> Option<Grant> {
         let base = self.peer_grant(peer)?;
         Some(self.effective_grant(Some(peer), &base))
@@ -431,13 +431,13 @@ impl State {
         if self.closed {
             return Err(ClaimRefused::Closed);
         }
-        let paths = self.tickets.entry(peer).or_default();
+        let paths = self.claims.entry(peer).or_default();
         if let Some(count) = paths.get_mut(path) {
             *count += 1;
             return Ok(());
         }
         let bytes: usize = paths.keys().map(|path| path.as_str().len()).sum();
-        if paths.len() >= MAX_TICKET_PATHS || bytes + path.as_str().len() > MAX_TICKET_BYTES {
+        if paths.len() >= MAX_CLAIMED_PATHS || bytes + path.as_str().len() > MAX_CLAIMED_BYTES {
             return Err(ClaimRefused::TooMany);
         }
         paths.insert(path.clone(), 1);
@@ -447,7 +447,7 @@ impl State {
 
     /// Drops one claim on `path` for `peer`, and narrows the peer's links if it was the last.
     pub(crate) fn release_path(&mut self, peer: &EndpointId, path: &Path) {
-        let Some(paths) = self.tickets.get_mut(peer) else {
+        let Some(paths) = self.claims.get_mut(peer) else {
             return;
         };
         let Some(count) = paths.get_mut(path) else {
@@ -459,17 +459,17 @@ impl State {
         }
         paths.remove(path);
         if paths.is_empty() {
-            self.tickets.remove(peer);
+            self.claims.remove(peer);
         }
         self.authorize_peer(peer);
     }
 
-    /// Returns `base` widened by the ticket paths of `peer` it does not cover yet.
+    /// Returns `base` widened by the claimed paths of `peer` it does not cover yet.
     ///
     /// A claimed path that `base` already lets the peer publish adds nothing,
     /// but stays recorded, so it takes effect if the base narrows.
     pub(crate) fn effective_grant(&self, peer: Option<&EndpointId>, base: &Grant) -> Grant {
-        let Some(paths) = peer.and_then(|peer| self.tickets.get(peer)) else {
+        let Some(paths) = peer.and_then(|peer| self.claims.get(peer)) else {
             return base.clone();
         };
         paths

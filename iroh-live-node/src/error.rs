@@ -83,12 +83,12 @@ pub enum Error {
         peer: EndpointId,
         publish_patterns: moq_net::Patterns,
     },
-    /// The peer does not own the path, so a ticket cannot grant it.
+    /// The peer does not own the path, so it cannot be claimed for the peer.
     #[error("{} does not own {path}", peer.fmt_short())]
     NotOwner { path: Path, peer: EndpointId },
-    /// The peer already holds as many ticket grants as the node allows.
-    #[error("too many ticket grants for {}", peer.fmt_short())]
-    TooManyGrants { peer: EndpointId },
+    /// The peer already holds as many claimed paths as the node allows.
+    #[error("too many claimed paths for {}", peer.fmt_short())]
+    TooManyClaims { peer: EndpointId },
     /// The path was not announced before its only link went away.
     #[error("{path} was not announced before the session ended")]
     NotAnnounced { path: Path },

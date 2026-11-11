@@ -316,7 +316,7 @@ async fn a_peer_holds_a_bounded_number_of_claims() {
         .node
         .claim_path(alice.id(), &path_of(&alice, "one-too-many"))
         .expect_err("over the limit");
-    assert!(matches!(err, Error::TooManyGrants { .. }), "{err:#}");
+    assert!(matches!(err, Error::TooManyClaims { .. }), "{err:#}");
     drop(claims);
     bob.node
         .claim_path(alice.id(), &path_of(&alice, "one-too-many"))
@@ -397,7 +397,7 @@ async fn claims_are_capped_by_bytes_and_repeats_are_free() {
         .node
         .claim_path(alice.id(), &long(5))
         .expect_err("over 16 KiB");
-    assert!(matches!(err, Error::TooManyGrants { .. }), "{err:#}");
+    assert!(matches!(err, Error::TooManyClaims { .. }), "{err:#}");
     bob.node
         .claim_path(alice.id(), &long(0))
         .expect("a held path repeats freely");

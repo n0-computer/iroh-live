@@ -101,7 +101,7 @@ impl Node {
     /// # Errors
     ///
     /// Fails with [`Error::NotOwner`] if the peer neither owns the path nor
-    /// may publish there, [`Error::TooManyGrants`] if the peer already holds
+    /// may publish there, [`Error::TooManyClaims`] if the peer already holds
     /// 64 claimed paths or 16 KiB of them, and [`Error::ShutDown`] once the
     /// node has shut down.
     pub fn claim_path(&self, peer: EndpointId, path: &Path) -> Result<PathClaim, Error> {
@@ -144,7 +144,7 @@ impl Node {
             .claim_path(peer, path)
             .map_err(|refused| match refused {
                 ClaimRefused::Closed => e!(Error::ShutDown),
-                ClaimRefused::TooMany => e!(Error::TooManyGrants { peer }),
+                ClaimRefused::TooMany => e!(Error::TooManyClaims { peer }),
             })?;
         debug!(peer = %peer.fmt_short(), %path, "ticket path claimed");
         Ok(PathClaim {
