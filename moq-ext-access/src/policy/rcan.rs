@@ -206,15 +206,22 @@ where
                 leaf.root, self.root
             )));
         }
-        let now = SystemTime::now();
-        if chain.iter().any(|link| !link.expires().is_valid_at(now)) {
-            return Err(Rejection::new("a link of the capability chain expired")
-                .with_code(moq_net::Error::Expired));
-        }
         let proofs: Vec<&Rcan<MoqCapability>> = chain.iter().collect();
-        Authorizer::new(self.principal)
-            .check_invocation_from(invoker, leaf.clone(), &proofs)
-            .map_err(|err| Rejection::new(format!("invalid capability chain: {err:#}")))?;
+        if let Err(err) =
+            Authorizer::new(self.principal).check_invocation_from(invoker, leaf.clone(), &proofs)
+        {
+            // rcan fails an expired link like any other. Only a chain that
+            // runs from the principal to the invoker counts as expired, so a
+            // forged or foreign chain never picks its own rejection code.
+            let now = SystemTime::now();
+            if chain.iter().any(|link| !link.expires().is_valid_at(now))
+                && runs_between(&chain, &self.principal, &invoker)
+            {
+                return Err(Rejection::new("a link of the capability chain expired")
+                    .with_code(moq_net::Error::Expired));
+            }
+            return Err(Rejection::new(format!("invalid capability chain: {err:#}")));
+        }
         let grant = leaf
             .grant()
             .map_err(|err| Rejection::new(format!("invalid capability: {err}")))?;
@@ -222,9 +229,10 @@ where
             .iter()
             .filter_map(|link| match link.expires() {
                 Expires::Never => None,
-                // Valid through the whole second it names.
+                // Valid through the whole second it names. A time beyond the
+                // clock's range is never, and the other links still bound it.
                 Expires::At(secs) => {
-                    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs.saturating_add(1)))
+                    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs.saturating_add(1)))
                 }
             })
             .min();
@@ -234,6 +242,22 @@ where
             ..Default::default()
         })
     }
+}
+
+/// Reports whether `chain` delegates `principal`'s capability link by link to `invoker`.
+fn runs_between(
+    chain: &[Rcan<MoqCapability>],
+    principal: &VerifyingKey,
+    invoker: &VerifyingKey,
+) -> bool {
+    let mut issuer = principal;
+    for link in chain {
+        if link.issuer() != issuer || link.capability_issuer() != principal {
+            return false;
+        }
+        issuer = link.audience();
+    }
+    issuer == invoker
 }
 
 /// Encodes a capability chain as a token, first link first.

@@ -217,3 +217,41 @@ fn a_token_survives_a_case_change() {
     let upper = format!("rcan1:{}", token["rcan1:".len()..].to_ascii_uppercase());
     verify(&alice_verifier(), &bob, &upper).expect("admitted");
 }
+
+#[test]
+fn a_far_future_link_expires_with_its_parent() {
+    let (alice, bob, phone) = (key(1), key(2), key(3));
+    let issued =
+        Rcan::issuing_builder(&alice, bob.verifying_key(), publish_under("bob")).sign(hours(1));
+    let delegated = Rcan::delegating_builder(
+        &bob,
+        phone.verifying_key(),
+        alice.verifying_key(),
+        publish_under("bob/phone"),
+    )
+    .sign(Expires::At(u64::MAX - 1));
+    let authorization = verify(
+        &alice_verifier(),
+        &phone,
+        &encode_chain(&[issued, delegated]),
+    )
+    .expect("admitted");
+    let expires = authorization.expires.expect("the parent's expiry");
+    assert!(
+        expires <= SystemTime::now() + Duration::from_secs(3601),
+        "{expires:?}"
+    );
+}
+
+#[test]
+fn an_expired_chain_from_someone_else_is_unauthorized_not_expired() {
+    let (mallory, bob) = (key(9), key(2));
+    let link = Rcan::issuing_builder(&mallory, bob.verifying_key(), publish_under("bob"))
+        .sign(Expires::At(1));
+    let rejection = verify(&alice_verifier(), &bob, &encode_chain(&[link])).expect_err("rejected");
+    assert!(
+        matches!(rejection.code(), moq_net::Error::Unauthorized),
+        "{:?}",
+        rejection.code()
+    );
+}
