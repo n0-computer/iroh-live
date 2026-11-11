@@ -9,7 +9,7 @@ use n0_error::stack_error;
 /// An error from pulling a broadcast or loading the relay's identity.
 ///
 /// It is cheap to clone, so every session that waits on one pull gets the
-/// same failure.
+/// same failure. The node's errors sit in a [`Box`], since they are large.
 #[stack_error(derive, add_meta)]
 #[derive(Clone)]
 pub enum Error {
@@ -21,21 +21,21 @@ pub enum Error {
     Claim {
         path: Path,
         #[error(source, std_err)]
-        source: iroh_live_node::Error,
+        source: Box<iroh_live_node::Error>,
     },
     /// The relay could not reach the ticket's publisher.
     #[error("failed to reach the publisher {}", peer.fmt_short())]
     Connect {
         peer: EndpointId,
         #[error(source, std_err)]
-        source: iroh_live_node::Error,
+        source: Box<iroh_live_node::Error>,
     },
     /// The publisher's session did not resolve the ticket's path.
     #[error("failed to subscribe to {path}")]
     Subscribe {
         path: Path,
         #[error(source, std_err)]
-        source: iroh_live_node::Error,
+        source: Box<iroh_live_node::Error>,
     },
     /// The publisher did not announce the path in time.
     #[error("the publisher did not announce {path} within {timeout:?}")]

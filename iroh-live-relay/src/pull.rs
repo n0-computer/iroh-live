@@ -373,13 +373,13 @@ impl Pulls {
             let session = self.node.connect(ticket.peer()).await.map_err(|source| {
                 e!(Error::Connect {
                     peer: ticket.peer(),
-                    source
+                    source: Box::new(source)
                 })
             })?;
             session.subscribe(ticket.path()).await.map_err(|source| {
                 e!(Error::Subscribe {
                     path: ticket.path().clone(),
-                    source
+                    source: Box::new(source)
                 })
             })
         })
@@ -535,7 +535,7 @@ impl PublisherClaim {
             .map_err(|source| {
                 e!(Error::Claim {
                     path: ticket.path().clone(),
-                    source
+                    source: Box::new(source)
                 })
             })?;
         *state
