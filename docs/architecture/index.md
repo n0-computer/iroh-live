@@ -10,7 +10,7 @@ This repository holds the layer that joins them.
 |---|---|
 | `moq-transport-iroh` | MoQ sessions over iroh connections: dial, accept, ALPN negotiation, moq-net's poll transport on iroh, link statistics. No node concepts |
 | `iroh-live-node` | The node over that transport: the route table, publications and audiences, sessions and relay links |
-| `moq-ext-access` | Access control: grants, session requests and audiences. No transport dependency |
+| `moq-ext-access` | Access control: grants, session requests, audiences, layouts, and the policies that admit and authorize peers, with JWT and rcan verifiers behind features. No transport dependency |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `LiveLayout` and `Calls`, the facade that joins media and transport, endpoint setup, and the re-exports |
 | `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording |
@@ -58,13 +58,13 @@ let router = node.mount(Router::builder(endpoint)).spawn();
 
 The node takes any path. `LiveLayout` is the one convention iroh-live ships:
 broadcasts at `<root>/<peer>/<name>`, where the root is `live` by default, and
-each peer may publish only under its own id. `LiveLayout::config` builds the
-`NodeConfig` with that grant. The node owns neither the endpoint nor a router.
+each peer may publish only under its own id. `LiveLayout::config()` builds
+the `NodeConfig` with that layout's policy. The node owns neither the endpoint nor a router.
 `Node::mount` adds the transport to the application's `RouterBuilder` under
 every ALPN this build speaks, and the application adds its own protocols to the
-same router. `Rooms::mount` adds the rooms' gossip, and the layout's config
-takes `iroh_live::rooms::RoomsLayout` so members can publish their room
-broadcasts. `Router::shutdown` shuts down the node and every mounted service,
+same router. `Rooms::mount` adds the rooms' gossip, and
+`iroh_live::layout::config((LiveLayout::default(), RoomsLayout))` builds a
+config that also lets members publish their room broadcasts. `Router::shutdown` shuts down the node and every mounted service,
 and closes the endpoint. A node that is neither mounted nor attached to a relay
 logs a warning when it publishes, since no peer can dial in.
 
@@ -82,11 +82,12 @@ waiting for the catalog, for a subscription from a ticket, a room or
 carries the serving link's measurements, so `remote.play(config)` starts a
 player that adapts with nothing further to wire.
 
-The facade's error is `iroh_live::Error`: `Transport` wraps an
-`iroh_live_node::Error`, `Media` a `moq_ext_player::Error`, `SecretKey` and
-`Bind` come from `EndpointConfig`, and `InvalidTicket` from parsing a ticket.
-Audiences, admission, relays and routes belong to
-[`iroh-live-node`](transport.md).
+The facade's error is `iroh_live::Error`: `Node` wraps an
+`iroh_live_node::Error`, `Media` a `moq_ext_player::Error`, `Rooms` an
+`iroh_live_rooms::Error` and `Calls` an `iroh_live::calls::Error`. `SecretKey`
+and `Bind` come from `EndpointConfig`. Audiences, admission, relays and routes
+belong to [`iroh-live-node`](transport.md), and [Access
+control](../guide/access.md) describes the policies.
 
 `irl call` and the Android demo share a one-to-one call convention, in
 `iroh_live::calls`. `Calls::new(&node, &layout)` publishes this side as one
@@ -95,7 +96,10 @@ adding it to the `Audience::Peers` set. Each side subscribes to the other's. A
 node learns it is called when a peer's `call` path appears in its route table,
 which `Calls::events` reports as `CallEvent::Ringing`. A hang-up takes the peer
 out of the set, which retracts the path and ends the other side's read. The
-session stays open, and the broadcast keeps running for the next call.
+session stays open, and the broadcast keeps running for the next call. Each
+node's policy must let the other publish its `call` path, which the layout's
+policy does. A filter on it, such as a contact list, keeps strangers from
+ringing.
 
 ## Conventions
 

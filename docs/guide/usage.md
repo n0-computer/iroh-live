@@ -17,7 +17,7 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["ful
 | You want | Use | Crate |
 |---|---|---|
 | Publish, watch, call, rooms | `Node`, `LiveLayout`, `Calls`, `LocalBroadcast`, `RemoteBroadcast` | `iroh-live` |
-| Your own paths, audiences or grants | `Node` | `iroh-live-node` |
+| Your own paths, audiences or access rules | `Node`, `NodeConfig::with_policy`, `Layout` | `iroh-live-node` |
 | Several participants | `Rooms`, `Room` | `iroh-live-rooms` |
 | Encode sources, decode and play | `LocalBroadcast`, `Player` | `moq-ext-publisher`, `moq-ext-player` |
 | Browsers, or peers behind a relay | `Node::attach_relay`, the relay binary | `iroh-live-relay` |
@@ -211,8 +211,6 @@ test pattern, and plays the first broadcast another member announces. Pass a
 ticket to join instead of creating.
 
 ```rust
-use std::sync::Arc;
-
 use iroh::{Watcher, protocol::Router};
 use iroh_live::{
     EndpointConfig, Node,
@@ -276,8 +274,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Room broadcasts are private to the members, and a member that leaves loses its
-paths. A real application also resubscribes when a broadcast ends: see
-[Rooms](rooms.md).
+paths. Anyone with the room ticket can join, so treat it as a secret. A real
+application also resubscribes when a broadcast ends: see [Rooms](rooms.md).
 
 ## Publish at your own path
 
@@ -291,33 +289,44 @@ the `n0_watcher::Watchable` set. Nothing here is a ticket: the subscriber needs
 the publisher's id and the path.
 
 The subscriber's node also has to let the publisher announce that path. The
-layout's grant allows only `live/<id>/`, so this program adds a scope that
-names the peer, `stage/<id>/**`. Run it with no argument to publish and print
-the id, and with that id to watch.
+layout's grant allows only `live/<id>/`, so this program adds a second layout,
+`stage/<id>/`, and gives the node the union of both. Run `publish <viewer id>`
+on one machine and `watch <publisher id>` on the other. Each prints its own id
+on start.
 
 ```rust
 use iroh::{EndpointId, protocol::Router};
-use std::sync::Arc;
-
 use iroh_live::{
     Audience, EndpointConfig, Node, Reach,
-    layout::LiveLayout,
+    layout::{self, Layout, LiveLayout},
     media::{
         LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
         video,
     },
-    net::Pattern,
+    net::{Pattern, Patterns},
 };
 
-/// What a peer may publish on this node: `stage/<its id>/**`.
-fn stage_scope(peer: EndpointId) -> Pattern {
-    format!("stage/{peer}/**").parse().expect("a valid pattern")
+/// Puts a peer's broadcasts at `stage/<peer>/<name>`.
+#[derive(Debug, Clone)]
+struct Stage;
+
+impl Layout<EndpointId> for Stage {
+    fn scope(&self, peer: &EndpointId) -> Patterns {
+        let pattern: Pattern = format!("stage/{peer}/**").parse().expect("a valid pattern");
+        Patterns::from(pattern)
+    }
+
+    fn owner(&self, path: &str) -> Option<EndpointId> {
+        let (peer, name) = path.strip_prefix("stage/")?.split_once('/')?;
+        let id: EndpointId = peer.parse().ok()?;
+        (id.to_string() == peer && !name.is_empty()).then_some(id)
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointConfig::default().bind().await?;
-    let config = LiveLayout::default().config(&[Arc::new(stage_scope)]);
+    let config = layout::config((LiveLayout::default(), Stage));
     let node = Node::new(endpoint.clone(), config);
     let router = node.mount(Router::builder(endpoint)).spawn();
     let me = node.id();
@@ -356,8 +365,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Run `publish <viewer id>` on one machine and `watch <publisher id>` on the
-other. A third node that dials the publisher cannot resolve the path.
+A third node that dials the publisher cannot resolve the path, since the
+audience leaves it out. [Access control](access.md) covers layouts and
+policies in full.
 
 ## Attach a relay
 
@@ -519,7 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(link) = subscription.serving_link() {
         println!(
             "served by a {:?} link, rtt {:?}",
-            link.kind, link.sample.rtt
+            link.kind, link.sample.network.rtt
         );
     }
 
@@ -530,5 +540,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Node::sessions`, a `policy::Queue` for admission in the application, and
-`Session::link_sample` cover the rest of the node. See [the transport page](../architecture/transport.md).
+`Node::sessions` and `Session::link_sample` cover the rest of the node. See
+[the transport page](../architecture/transport.md). A `policy::Queue` lets the
+application admit each peer itself, and [Access control](access.md) shows it
+with the other policies.

@@ -66,10 +66,12 @@ does not read as a queue that never drains.
 
 ## Ranking
 
-hang's `video.ranked()` orders the renditions: enabled ones first, then by the
-publisher's `preference`, then largest first by pixel count, and between two of
-the same size by the higher advertised bitrate. The selector walks that list
-from the top, and the first rendition that passes every check wins.
+The player orders the renditions as a ladder, most expensive first: by
+advertised bitrate, then by pixel count. A rendition without a bitrate sorts
+below those with one. The publisher's `preference` only breaks a tie, since a
+preferred rendition can cost more than a less preferred one, and adaptation
+steps down the ladder to save bandwidth. The selector walks the ladder from
+the top, and the first rendition that passes every check wins.
 
 The caller's constraints rule renditions out before any network reading
 counts: a `stalled` flag the publisher set in the catalog, and any rendition

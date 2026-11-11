@@ -12,25 +12,23 @@ node's route table and returns it as any type built from a moq-net
 ## Joining
 
 `Rooms` owns the gossip instance, and the router mounts it. The node's policy
-must let members publish under their `iroh_live::rooms::RoomsLayout` scope.
-Pass that layout to the `LiveLayout` config, and mount the gossip with
-`Rooms::mount` next to the transport. Only an application that passes the layout
-grants it. Enabling the `rooms` feature alone grants nothing:
+must let members publish under their `iroh_live::rooms::RoomsLayout` scope,
+`rooms/<topic>/<member>/`. Give the node the union of the live layout and the
+rooms layout with `iroh_live::layout::config`, and mount the gossip with
+`Rooms::mount` next to the transport. Only an application that passes the
+rooms layout grants it. Enabling the `rooms` feature alone grants nothing:
 
 ```rust
-use std::sync::Arc;
-
 use iroh::protocol::Router;
 use iroh_live::{
     Node,
-    layout::LiveLayout,
-    rooms::{RoomTicket, Rooms},
+    layout::{self, LiveLayout},
+    rooms::{RoomTicket, Rooms, RoomsLayout},
 };
 
-let layout = LiveLayout::default();
 let node = Node::new(
     endpoint.clone(),
-    iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout)),
+    layout::config((LiveLayout::default(), RoomsLayout)),
 );
 let rooms = Rooms::new(&node);
 let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
@@ -45,7 +43,8 @@ members cannot reach its gossip. `Router::shutdown` shuts down the node and the
 rooms. To shut the rooms down yourself, call `Rooms::shutdown`.
 
 Share `room.ticket()` with the people who join. It lists this member as the
-bootstrap endpoint.
+bootstrap endpoint. The ticket is a bearer secret: anyone who has it can join
+and read the room's broadcasts.
 
 ## Membership
 
@@ -65,12 +64,12 @@ show "joined" and "left", compare two states.
 ## Publishing and subscribing
 
 ```rust
+use iroh_live::media::{LocalBroadcast, PlayerConfig, remote_broadcast};
+
 let broadcast: LocalBroadcast = room.publish("cam")?;
 broadcast.set_video(source, encoding)?;
 let subscription = room.subscribe(peer, "cam").await?;
-let player = live
-    .remote_broadcast(&subscription)
-    .play(PlayerConfig::default())?;
+let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
 ```
 
 `publish` puts the broadcast at `rooms/<topic>/<this member>/<name>`, and only
@@ -83,7 +82,7 @@ contain a slash.
 with that member, so no other peer can stand in for it. It waits until the
 member announces the name, so bound the wait with a timeout. Leaving the room
 does not close subscriptions. Errors are `iroh_live_rooms::Error`, and its
-`Transport` variant holds an `iroh_live_node::Error`.
+`Node` variant holds an `iroh_live_node::Error`.
 
 A grid cannot follow the room state alone. A member can end a broadcast and
 publish it again before its announcement changes. A member can also drop this
@@ -93,7 +92,10 @@ every tile whose `RemoteBroadcast::is_closed()` is true, on a timer, and
 subscribes again if the member still lists the name.
 `iroh-live-cli/src/room.rs` does this.
 
-Anyone who knows the topic id can join the room and announce itself.
+Rooms have no admission of their own. Anyone who knows the topic id can join
+the room, announce itself, and read the members' room broadcasts, since every
+member admits every other member to its room paths. Closed rooms, with a
+membership the members check, are not built yet.
 
 ## Chat and other data
 

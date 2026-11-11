@@ -33,8 +33,8 @@ cargo build --workspace --all-features   # every feature, VA-API and NVIDIA incl
 `iroh-live` itself has no default features. Ask for `full` to get the media
 stack with capture, rendering, the sound server and recording, or pick from
 `media`, `capture`, `render`, `playback`, `rooms` and the rest. Without
-`media`, `iroh-live` is the node, its tickets and its grant, which is what a
-relay needs.
+`media`, `iroh-live` is the node, its tickets, the layout and its policy,
+which is what a relay needs.
 
 ## First stream
 
@@ -125,10 +125,13 @@ opens on its own thread once `set_audio` runs. A failure then shows in
 arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`
 when it does.
 
-The paths, the grant and the endpoint are defaults, and each can be replaced:
+The paths, the access rules and the endpoint are defaults, and each can be
+replaced:
 
-- `NodeConfig` sets the admission and the grant. `LiveLayout::config(extra)`
-  builds one for the layout, and `NodeConfig::default()` is subscribe-only.
+- `NodeConfig::with_policy` sets who may connect and what each peer may
+  publish and read. `LiveLayout::config()` builds the config for the layout,
+  and `NodeConfig::default()` lets every peer read and publish nothing.
+  [Access control](access.md) covers the policies.
 - `LiveLayout::publish_with(&node, name, audience, fill)` publishes under the
   layout to an audience other than `Granted`, such as `Audience::peers([peer])`.
 - `Node::publish(path, audience)` and `Node::subscribe(path, reach)` work on any
@@ -153,6 +156,7 @@ ladder behind `--simulcast`.
 - [The CLI](../cli.md) for every `irl` command.
 - [Desktop rendering](desktop.md) for drawing frames in your own application.
 - [Tickets](tickets.md) for how a broadcast is named and shared.
+- [Access control](access.md) for who may connect, publish and read.
 - [Architecture](../architecture/index.md) for how the crates fit together.
 - [Raspberry Pi](raspberry-pi.md), [Android](android.md), and [the browser
   relay](browser-relay.md) for other platforms.

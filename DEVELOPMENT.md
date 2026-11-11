@@ -36,6 +36,16 @@ run is where feature-gated mistakes show up. The browser suite needs
 A test that has to see a rendition switch within its timeout shortens the
 timers in `PlayerConfig::adaptation`, as the patchbay suite does.
 
+`iroh-live-node` and `moq-ext-player` have a `test-util` feature with the
+helpers their dependents' tests share: in-process endpoints that find each
+other, `step` and `eventually` waits, and the source-switch helpers. Each
+crate's tests turn it on through a dev-dependency on the crate itself. It is
+hidden from the docs and is not a public API.
+
+Some examples need a feature: `cargo run -p iroh-live-node --features rcan
+--example delegated_publisher` runs the rcan example, and `cargo make
+check-all` builds every example with all features.
+
 Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 `cargo make cross-build-aarch64 -- <cargo args>`. See
 [cross/README.md](cross/README.md).
@@ -82,9 +92,9 @@ and prose:
 - `tracing` with structured fields. Use `throttled-tracing` for anything that
   logs per frame.
 - Doc comments follow RFC 1574: third-person sentences that start with a verb,
-  no headings in item docs besides `# Errors`, `# Panics` and `# Examples`,
-  and types linked as ``[`Type`]``.
-- Prose uses full sentences, no em dashes, and no emoji.
+  no headings in item docs besides `# Errors`, `# Panics`, `# Examples` and
+  `# Safety`, and types linked as ``[`Type`]``.
+- Prose uses full sentences, no em dashes, no semicolons, and no emoji.
 
 ## Known gaps
 

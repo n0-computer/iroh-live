@@ -22,8 +22,7 @@ let parsed: BroadcastTicket = ticket.to_string().parse()?;
 ```
 
 A published broadcast gives its own ticket with `Publication::ticket()`.
-`BroadcastTicket::at(peer, path)` builds one for any path. The old `name()`
-and `new(id, name)` are gone.
+`BroadcastTicket::at(peer, path)` builds one for any path.
 
 The string form is:
 
@@ -39,17 +38,18 @@ which keeps the usual `live/<peer>/<name>` ticket short. Any other byte outside
 is `ilv1:<52 characters>/live/~/studio`, about 72 characters. Serde uses the
 same string.
 
-Tickets in the old `iroh-live:<base64url>/<name>` form do not parse. Issue them
-again, and replace any printed QR code.
-
 `Node::subscribe_ticket` reads a ticket on any node, including a default
 subscribe-only one. It claims exactly the ticket's path for the ticket's peer
 through `Node::claim_path`, for as long as the subscription lives. A node
 accepts at most 64 claimed paths and 16 KiB of paths per peer. It also checks
 that the ticket's publisher owns the path: exactly one segment is the peer's
 64-character hex id, and no other segment parses as an endpoint id. A
-`NodeConfig::layout` replaces that rule with the layout's `owner`. A path that fails it returns
-`NotOwner`.
+`NodeConfig::layout` replaces that rule with the layout's `owner`. A path that
+fails it returns `NotOwner`. [Access control](access.md#ticket-claims) says
+how claims fit with the node's policy.
+
+A broadcast ticket is not a secret. It names a publisher and a path, and the
+publisher's policy and the publication's audience decide who may read it.
 
 The ticket holds no addresses. iroh finds them from the endpoint id through
 pkarr and DNS, and `EndpointConfig` adds mDNS for local networks without
@@ -79,4 +79,6 @@ let parsed: RoomTicket = ticket.to_string().parse()?;
 ```
 
 `Room::ticket()` returns the room's ticket with this member as its bootstrap
-endpoint. Share that one with people who join. See [Rooms](rooms.md).
+endpoint. Share that one with people who join. A room ticket is a bearer
+secret: anyone who has it can join the room and read its broadcasts. See
+[Rooms](rooms.md).

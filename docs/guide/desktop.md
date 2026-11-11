@@ -30,7 +30,7 @@ All of this needs the `render` feature. `iroh-live` turns it on with `full`, and
 
 `moq-ext-egui` draws frames in egui.
 
-`VideoView` draws a `VideoFrames` stream, such as a player's `video()` or a
+`VideoView` draws a `VideoFrames` stream, such as a player's `video_frames()` or a
 source's `frames()`:
 
 ```rust

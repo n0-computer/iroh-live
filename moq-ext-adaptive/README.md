@@ -9,11 +9,11 @@ Use it when you build a player that switches between renditions. It is what
 
 - `Bound` and `choose`: pick the best rung of a ranked ladder (`Rung`) that the
   link (`NetworkSample`) carries, within the caller's `Constraints`, with
-  hysteresis tuned by `Adaptation`. `Mode` is automatic, pinned or off.
+  hysteresis tuned by `Adaptation`. `RenditionMode` is automatic, pinned or
+  off. `step_down` tells whether a switch moves down the ladder.
 - `Backoffs`: renditions whose decoders failed, and when to try them again.
 - `Switcher`: hands the picture from one decoder to the next without a blank
   frame.
-- `rank`: orders a ladder from catalog data.
 
 ```rust
 use moq_ext_adaptive::{Adaptation, Bound};
