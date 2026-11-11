@@ -560,7 +560,7 @@ impl TicketQr {
 
 /// A QR code as grayscale pixels, one per module, `side` by `side`, rows packed.
 #[derive(Debug)]
-struct QrPixels {
+pub(crate) struct QrPixels {
     side: usize,
     gray: Vec<u8>,
 }
@@ -569,7 +569,7 @@ impl QrPixels {
     /// Renders `text` as a QR code with the standard quiet zone around it.
     ///
     /// Fails if `text` does not fit in the largest QR version.
-    fn render(text: &str) -> Result<Self, qrcode::types::QrError> {
+    pub(crate) fn render(text: &str) -> Result<Self, qrcode::types::QrError> {
         let code = qrcode::QrCode::new(text)?;
         let modules = code.width();
         let side = modules + 2 * QR_QUIET;
@@ -584,6 +584,38 @@ impl QrPixels {
             }
         }
         Ok(Self { side, gray })
+    }
+
+    /// Returns the side of the code in modules, quiet zone included.
+    #[cfg(test)]
+    pub(crate) fn side(&self) -> usize {
+        self.side
+    }
+
+    /// Scales the code by `module_pixels` and centers it on a white `width` by `height` canvas.
+    ///
+    /// Returns the canvas as grayscale rows, packed, for tests that decode it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the scaled code does not fit the canvas.
+    #[cfg(test)]
+    pub(crate) fn place(&self, module_pixels: usize, width: usize, height: usize) -> Vec<u8> {
+        let side = self.side * module_pixels;
+        assert!(
+            side <= width && side <= height,
+            "{module_pixels} px per module does not fit {width}x{height}"
+        );
+        let (left, top) = ((width - side) / 2, (height - side) / 2);
+        let mut canvas = vec![u8::MAX; width * height];
+        for (index, value) in self.gray.iter().enumerate() {
+            let y0 = top + index / self.side * module_pixels;
+            let x0 = left + index % self.side * module_pixels;
+            for y in y0..y0 + module_pixels {
+                canvas[y * width + x0..y * width + x0 + module_pixels].fill(*value);
+            }
+        }
+        canvas
     }
 }
 
@@ -601,14 +633,7 @@ mod tests {
     /// Scales `pixels` up by [`MODULE_PIXELS`], as the texture does on screen.
     fn upscale(pixels: &QrPixels) -> QrPixels {
         let side = pixels.side * MODULE_PIXELS;
-        let mut gray = vec![u8::MAX; side * side];
-        for (index, value) in pixels.gray.iter().enumerate() {
-            let top = index / pixels.side * MODULE_PIXELS;
-            let left = index % pixels.side * MODULE_PIXELS;
-            for y in top..top + MODULE_PIXELS {
-                gray[y * side + left..y * side + left + MODULE_PIXELS].fill(*value);
-            }
-        }
+        let gray = pixels.place(MODULE_PIXELS, side, side);
         QrPixels { side, gray }
     }
 
