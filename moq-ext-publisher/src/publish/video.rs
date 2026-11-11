@@ -37,7 +37,7 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
-use crate::stats::RenditionWriter;
+use crate::stats::{PublishRecorder, RenditionWriter};
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
@@ -126,7 +126,7 @@ pub(super) async fn run_raw(
     // until watched, such as a phone camera, produces no frame before a track
     // exists. A frame that is already there refines the size, and a later
     // frame of another size is scaled to the advertised one.
-    let mut frames = source.frames();
+    let frames = source.frames();
     let format = source.format();
     let (size, color) = match frames.current() {
         Some(frame) => (frame.size(), frame.surface.color()),
@@ -145,17 +145,7 @@ pub(super) async fn run_raw(
         reporter.rendition(rendition, RenditionState::Failed(err.clone().into()));
         last_failure = Some(err);
     };
-    // Every rendition is probed before any is advertised, so the whole ladder
-    // reaches the catalog at once. A viewer that read the catalog between two
-    // probes would miss the renditions still being probed.
-    let mut probed = Vec::with_capacity(encoding.renditions.len());
-    for rendition in &encoding.renditions {
-        let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
-        match probe(&mut config).await {
-            Ok(published) => probed.push((rendition, config, published)),
-            Err(err) => fail(&rendition.name, err),
-        }
-    }
+    let probed = probe_ladder(&encoding, size, rate, color, &mut fail).await;
     // A track the predecessor left goes on with the new source, and its
     // catalog entry follows the parameter sets of the next keyframe. The
     // tracks of renditions this ladder does not publish finish first, so no
@@ -171,24 +161,13 @@ pub(super) async fn run_raw(
                 info!(rendition = %rendition.name, "taking over the rendition's track");
                 (producer, last)
             }
-            None => {
-                let reserved = catalog.reserve();
-                let track_info = reserved.track_info(hang::catalog::PRIORITY.video);
-                let publisher = producer
-                    .create_track(rendition.name.as_str(), Some(track_info))
-                    .map_err(Error::broadcast)
-                    .and_then(|track| {
-                        encode::Producer::with_track(track, reserved, published)
-                            .map_err(Error::catalog)
-                    });
-                match publisher {
-                    Ok(producer) => (producer, None),
-                    Err(err) => {
-                        fail(&rendition.name, err);
-                        continue;
-                    }
+            None => match open_track(&producer, &catalog, &rendition.name, published) {
+                Ok(producer) => (producer, None),
+                Err(err) => {
+                    fail(&rendition.name, err);
+                    continue;
                 }
-            }
+            },
         };
         info!(rendition = %rendition.name, size = %config.size(), %rate, "publishing video rendition");
         let encoder = Encoder {
@@ -220,6 +199,72 @@ pub(super) async fn run_raw(
         return;
     }
     reporter.slot(SlotState::Running);
+    supervise(
+        encoders,
+        frames,
+        &source,
+        &stats,
+        &reporter,
+        &stop,
+        last_failure,
+    )
+    .await;
+}
+
+/// Probes every rendition of `encoding`, and hands the ones that cannot encode to `fail`.
+///
+/// Every rendition is probed before any is advertised, so the whole ladder
+/// reaches the catalog at once. A viewer that read the catalog between two
+/// probes would miss the renditions still being probed.
+async fn probe_ladder<'a>(
+    encoding: &'a VideoEncoding,
+    size: moq_video::Size,
+    rate: moq_video::FrameRate,
+    color: Option<moq_video::Color>,
+    fail: &mut impl FnMut(&str, Error),
+) -> Vec<(
+    &'a VideoRendition,
+    encode::Config,
+    hang::catalog::VideoConfig,
+)> {
+    let mut probed = Vec::with_capacity(encoding.renditions.len());
+    for rendition in &encoding.renditions {
+        let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
+        match probe(&mut config).await {
+            Ok(published) => probed.push((rendition, config, published)),
+            Err(err) => fail(&rendition.name, err),
+        }
+    }
+    probed
+}
+
+/// Creates the track `name` and its catalog entry, described by `published`.
+fn open_track(
+    producer: &moq_net::broadcast::Producer,
+    catalog: &moq_mux::catalog::Producer,
+    name: &str,
+    published: hang::catalog::VideoConfig,
+) -> Result<encode::Producer, Error> {
+    let reserved = catalog.reserve();
+    let track_info = reserved.track_info(hang::catalog::PRIORITY.video);
+    let track = producer
+        .create_track(name, Some(track_info))
+        .map_err(Error::broadcast)?;
+    encode::Producer::with_track(track, reserved, published).map_err(Error::catalog)
+}
+
+/// Reads the source for its frame rate while the encoders run, and reports how the slot ends.
+///
+/// Returns once the source ends, `stop` fires, or every encoder failed.
+async fn supervise(
+    mut encoders: JoinSet<Option<Arc<Error>>>,
+    mut frames: VideoFrames,
+    source: &VideoSource,
+    stats: &PublishRecorder,
+    reporter: &Reporter,
+    stop: &CancellationToken,
+    mut last_failure: Option<Arc<Error>>,
+) {
     let spawned = encoders.len();
     let mut failed = 0;
 
