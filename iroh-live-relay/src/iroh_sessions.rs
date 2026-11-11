@@ -75,6 +75,10 @@ impl IrohSessions {
     }
 
     /// Spawns a router on `endpoint` with this handler.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn router(self, endpoint: Endpoint) -> Router {
         let mut router = Router::builder(endpoint);

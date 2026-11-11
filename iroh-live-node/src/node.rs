@@ -198,7 +198,9 @@ impl Drop for Tasks {
 impl Node {
     /// Creates a node on `endpoint`.
     ///
-    /// Must be called within a tokio runtime.
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn new(endpoint: Endpoint, config: NodeConfig) -> Self {
         let id = endpoint.id();
@@ -353,6 +355,10 @@ impl Node {
     /// [`Error::Moq`] if `path` does not parse, [`Error::InvalidPath`] for an
     /// empty path or one with a `*` segment, and [`Error::ShutDown`] once the
     /// node has shut down.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn publish(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
@@ -378,6 +384,10 @@ impl Node {
     /// As [`publish`](Self::publish), and [`Error::Fill`] if `fill` fails,
     /// which closes the broadcast. `fill` may fail with any error that boxes
     /// into a `std::error::Error`, an `anyhow::Error` included.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn publish_with<T, E>(
         &self,
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
@@ -526,6 +536,10 @@ impl Node {
     /// Fails with [`Error::Relay`] if the client cannot be set up, for example
     /// for an unsupported URL scheme, and [`Error::ShutDown`] once the node
     /// has shut down.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn attach_relay(&self, config: RelayConfig) -> Result<RelayLink, Error> {
         relay::attach(self, config)
     }

@@ -270,6 +270,10 @@ impl Calls {
     ///
     /// Fails with [`Error::Node`] if the side is already published or `B`
     /// cannot be built.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn new<B>(node: &Node, layout: &LiveLayout) -> Result<(Self, B), Error>
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
@@ -302,6 +306,10 @@ impl Calls {
     ///
     /// Non-blocking and idempotent. The peer sees the side appear in its route
     /// table.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn ring(&self, peer: EndpointId) {
         // The audience changes under the state lock, as in `withdraw`, so a
         // ring and a hang-up at once cannot lose either update.

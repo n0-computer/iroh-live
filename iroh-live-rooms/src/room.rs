@@ -118,6 +118,10 @@ impl Room {
     /// Fails with [`Error::InvalidName`] for an empty name or one holding a
     /// slash, [`Error::Node`] if the name is already published or `B`
     /// cannot be built, and [`Error::Left`] once the room was left.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn publish<B>(&self, name: &str) -> Result<B, Error>
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,

@@ -127,6 +127,10 @@ impl Publication {
     /// Takes effect on every live session at once: a peer that may no longer
     /// see it loses the path, and what it reads there ends with
     /// [`moq_net::Error::Unauthorized`]. Does nothing once withdrawn.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     pub fn set_audience(&self, audience: Audience) {
         let Some(shared) = self.inner.shared.upgrade() else {
             return;

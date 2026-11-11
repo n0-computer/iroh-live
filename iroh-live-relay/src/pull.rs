@@ -181,6 +181,10 @@ impl Drop for PullGuard {
 
 impl PullState {
     /// Creates pull state that dials over `endpoint` into `cluster`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         let config = NodeConfig {

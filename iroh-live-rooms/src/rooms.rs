@@ -89,6 +89,10 @@ pub struct Rooms {
 
 impl Rooms {
     /// Creates the room service on `node`'s endpoint, with its own gossip.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn new(node: &Node) -> Self {
         let gossip = Gossip::builder().spawn(node.endpoint().clone());
