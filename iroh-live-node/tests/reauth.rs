@@ -860,3 +860,41 @@ async fn a_union_admits_on_its_fast_half_when_the_queue_times_out() {
     alice.shutdown().await;
     bob.shutdown().await;
 }
+
+/// A revalidation interval beyond the clock's range means never, and the node keeps running.
+#[tokio::test]
+#[traced_test]
+async fn a_revalidation_interval_beyond_the_clock_is_never() {
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
+        |_request: &PeerRequest| {
+            Ok(Authorization {
+                grant: Grant::everything(),
+                revalidate: Some(Duration::MAX),
+                ..Default::default()
+            })
+        },
+    )))
+    .await;
+    let bob = Peer::spawn().await;
+    step("bob dials", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob.id()).is_some()
+    })
+    .await;
+
+    // The node still answers: a second peer connects.
+    let carol = Peer::spawn().await;
+    step("carol dials", carol.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    eventually("alice registers carol", || {
+        alice.node.grant_for(carol.id()).is_some()
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
