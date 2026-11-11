@@ -1,6 +1,6 @@
 //! Admission: who gets a session, and what it may do once it has one.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use iroh::{EndpointId, endpoint::Connection};
 /// What a session may subscribe to from this node, and publish into it.
@@ -18,7 +18,7 @@ use crate::{
     handshake::{Hop, SessionParts, subscriber},
     node::Shared,
     policy::{Authorization, DynPolicy, Event, PeerRequest, Rejection},
-    state::served,
+    state::{Registered, State, served},
     transport::{self, HANDSHAKE_TIMEOUT},
 };
 
@@ -88,8 +88,8 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
             return Err(e!(Error::ShutDown));
         }
     };
-    let authorization = match decided {
-        Ok(authorization) => authorization,
+    let admitted = match decided {
+        Ok(admitted) => admitted,
         Err(rejection) => {
             info!(
                 remote = %remote.fmt_short(),
@@ -105,14 +105,14 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         handshake.close(moq_net::Error::Cancel);
         return Err(e!(Error::ShutDown));
     }
-    info!(remote = %remote.fmt_short(), grant = ?authorization.grant, "admitting session");
+    info!(remote = %remote.fmt_short(), grant = ?admitted.authorization.grant, "admitting session");
     // Authorized before the handshake completes, so the session's first
     // announcements already keep to what the peer may see.
     let auth = handshake.auth();
     auth.authorize(&shared.state.lock().expect("poisoned").grant_for(
         LinkKind::Direct,
         Some(&remote),
-        &authorization.grant,
+        &admitted.authorization.grant,
     ));
     let handshake = handshake
         .with_publisher(served(&shared.table))
@@ -130,7 +130,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         remote,
         connection,
         dialed: false,
-        authorization,
+        admitted,
         request,
         moq,
         driver,
@@ -140,29 +140,86 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     Ok(())
 }
 
+/// A session's authorization from before its handshake, until the session registers.
+pub(crate) struct Admitted {
+    /// The authorization the session starts with.
+    pub(crate) authorization: Authorization,
+    /// The epoch at which the decision behind `authorization` started.
+    pub(crate) decided: u64,
+    /// Counts the session as pending on its peer until it registers.
+    pub(crate) pending: Pending,
+}
+
+/// Counts a session as pending on its peer, so triggers reach a peer whose first session has not registered.
+///
+/// Dropping it, when the session fails before it registers, stops the count.
+pub(crate) struct Pending {
+    shared: Weak<Shared>,
+    peer: EndpointId,
+    armed: bool,
+}
+
+impl Pending {
+    /// Registers the session under the state lock, and stops counting it as pending.
+    pub(crate) fn register(
+        mut self,
+        state: &mut State,
+        authorization: Authorization,
+        decided: u64,
+    ) -> Registered {
+        self.armed = false;
+        state.register(self.peer, authorization, decided)
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(shared) = self.shared.upgrade() else {
+            return;
+        };
+        // Never panic in a drop, even after a panic poisoned the lock.
+        if let Ok(mut state) = shared.state.lock() {
+            state.abandon(&self.peer);
+        }
+    }
+}
+
 /// Returns the authorization a session with `remote` starts with.
 ///
-/// A peer that already holds a live session keeps that session's
-/// authorization, so a second session is not decided again. Otherwise the
-/// policy decides, with `dialed` set when this node dialed.
+/// A peer that already holds an authorization keeps it, so a second
+/// session is not decided again. Otherwise the policy decides, with `dialed`
+/// set when this node dialed. Either way the result is a snapshot: the
+/// session reconciles it with the peer's authorization when it registers.
 pub(crate) async fn authorize(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     remote: EndpointId,
     request: &SessionRequest,
     dialed: bool,
-) -> Result<Authorization, Rejection> {
-    let stored = shared
-        .state
-        .lock()
-        .expect("poisoned")
-        .peer_authorization(&remote)
-        .cloned();
-    if let Some(authorization) = stored {
+) -> Result<Admitted, Rejection> {
+    let snapshot = shared.state.lock().expect("poisoned").begin(remote);
+    let pending = Pending {
+        shared: Arc::downgrade(shared),
+        peer: remote,
+        armed: true,
+    };
+    if let Some(authorization) = snapshot.stored {
         debug!(remote = %remote.fmt_short(), "the peer already holds an authorization");
-        return Ok(authorization);
+        return Ok(Admitted {
+            authorization,
+            decided: snapshot.epoch,
+            pending,
+        });
     }
     let request = PeerRequest::new(remote, request.clone(), dialed, Event::Connect);
-    decide(shared, &request).await
+    let authorization = decide(shared, &request).await?;
+    Ok(Admitted {
+        authorization,
+        decided: snapshot.epoch,
+        pending,
+    })
 }
 
 /// Asks the node's policy about `request`, within [`NodeConfig::decide_timeout`].

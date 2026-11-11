@@ -7,19 +7,23 @@ mod common;
 
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
-use common::{Peer, ends, eventually, publish, reading, step};
-use iroh::EndpointId;
+use common::{Peer, endpoint, ends, eventually, publish, reading, step};
+use iroh::{Endpoint, EndpointId};
 use iroh_live_node::{
-    Audience, Error, Grant, Node, NodeConfig, Reach,
+    Audience, ConnectOptions, Error, Grant, Node, NodeConfig, Reach, Session,
     policy::{self, Authorization, Decision, Event, PeerRequest, Policy, Rejection},
 };
 use n0_future::{StreamExt, boxed::BoxStream};
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher};
+use tokio::sync::Notify;
 
 /// How long an authorization in these tests lasts before the node asks again.
 const SHORT: Duration = Duration::from_millis(400);
@@ -340,6 +344,327 @@ async fn a_queue_answers_revalidations_and_asks_the_application_to_reauthorize()
         *answered.lock().expect("poisoned"),
         [Event::Connect, Event::Reauthorize]
     );
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Returns a dial-only node on `endpoint`, so several act as one peer with several sessions.
+fn dialer(endpoint: &Endpoint) -> Node {
+    Node::new(endpoint.clone(), NodeConfig::default())
+}
+
+/// Shuts the dial-only `nodes` down and closes the endpoint they share.
+async fn close(nodes: &[&Node], endpoint: &Endpoint) {
+    for node in nodes {
+        node.shutdown().await;
+    }
+    endpoint.close().await;
+}
+
+/// Returns the sessions `node` lists with `peer`.
+fn sessions_with(node: &Node, peer: EndpointId) -> Vec<Session> {
+    node.sessions()
+        .get()
+        .into_iter()
+        .filter(|session| session.peer() == peer)
+        .collect()
+}
+
+/// A session that registers while a queued reauthorization waits does not keep the old rights.
+#[tokio::test]
+#[traced_test]
+async fn a_session_opened_during_a_queued_reauthorize_is_rejected_with_the_rest() {
+    let queue = policy::Queue::new(16);
+    let alice = Peer::bare(NodeConfig::default().with_policy(queue.clone())).await;
+    let bob_endpoint = endpoint().await;
+    let bob = bob_endpoint.id();
+    let first = dialer(&bob_endpoint);
+
+    let dial = tokio::spawn({
+        let first = first.clone();
+        let addr = alice.endpoint.addr();
+        async move { first.connect(addr).await }
+    });
+    let pending = step("bob asks to connect", queue.next())
+        .await
+        .expect("a request");
+    pending.admit(Grant::everything());
+    let first_session = step("bob's first dial", dial)
+        .await
+        .expect("no panic")
+        .expect("admitted");
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob).is_some()
+    })
+    .await;
+
+    alice.node.reauthorize(bob);
+    let held = step("the application is asked", queue.next())
+        .await
+        .expect("a request");
+    assert_eq!(held.request().event(), Event::Reauthorize);
+
+    // Bob opens a second session while the application decides.
+    let second = dialer(&bob_endpoint);
+    let second_session = step("bob's second dial", second.connect(alice.endpoint.addr()))
+        .await
+        .expect("the stored authorization admits it");
+    eventually("alice registers both sessions", || {
+        sessions_with(&alice.node, bob).len() == 2
+    })
+    .await;
+
+    held.reject(Rejection::new("removed"));
+    step("the first session closes", first_session.closed()).await;
+    step("the second session closes", second_session.closed()).await;
+    eventually("alice forgets bob", || {
+        !has_session_with(&alice.node, bob) && alice.node.grant_for(bob).is_none()
+    })
+    .await;
+
+    close(&[&first, &second], &bob_endpoint).await;
+    alice.shutdown().await;
+}
+
+/// A policy whose `Connect` decision for the path `slow` waits for the test.
+///
+/// It decides that one as the policy stood when it started, as a snapshot
+/// taken before a rejection would.
+#[derive(Debug, Clone, Default)]
+struct Gated {
+    rejecting: Arc<AtomicBool>,
+    started: Arc<Notify>,
+    gate: Arc<Notify>,
+}
+
+impl Policy<EndpointId> for Gated {
+    async fn decide(&self, request: &PeerRequest) -> Decision {
+        let admitted = !self.rejecting.load(Ordering::SeqCst);
+        if request.event() == Event::Connect && request.path().trim_start_matches('/') == "slow" {
+            self.started.notify_one();
+            self.gate.notified().await;
+        }
+        match admitted {
+            true => Ok(Grant::everything().into()),
+            false => Err(Rejection::new("rejected")),
+        }
+    }
+}
+
+/// A session decided before a rejection registers after it with nothing, and closes.
+#[tokio::test]
+#[traced_test]
+async fn a_session_decided_before_a_rejection_does_not_undo_it() {
+    let policy = Gated::default();
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy.clone())).await;
+    let bob_endpoint = endpoint().await;
+    let bob = bob_endpoint.id();
+
+    // The slow session's decision starts while bob holds nothing.
+    let slow = dialer(&bob_endpoint);
+    let slow_dial = tokio::spawn({
+        let slow = slow.clone();
+        let addr = alice.endpoint.addr();
+        async move {
+            let options = ConnectOptions {
+                path: Some("slow".into()),
+                ..Default::default()
+            };
+            slow.connect_with(addr, options).await
+        }
+    });
+    step("the slow decision starts", policy.started.notified()).await;
+
+    let fast = dialer(&bob_endpoint);
+    let fast_session = step("bob's fast dial", fast.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob).is_some()
+    })
+    .await;
+
+    policy.rejecting.store(true, Ordering::SeqCst);
+    alice.node.reauthorize(bob);
+    step("the fast session closes", fast_session.closed()).await;
+    eventually("alice forgets bob's rights", || {
+        alice.node.grant_for(bob).is_none()
+    })
+    .await;
+
+    // The slow decision admits, as the policy stood before the rejection.
+    policy.gate.notify_one();
+    let slow_session = step("bob's slow dial", slow_dial)
+        .await
+        .expect("no panic")
+        .expect("bob's side of the handshake completes");
+    eventually("alice registers the slow session or refuses it", || {
+        alice
+            .node
+            .grant_for(bob)
+            .is_none_or(|current| current.grant != Grant::everything())
+    })
+    .await;
+    step("the slow session closes", slow_session.closed()).await;
+    eventually("alice holds nothing for bob", || {
+        !has_session_with(&alice.node, bob) && alice.node.grant_for(bob).is_none()
+    })
+    .await;
+
+    close(&[&slow, &fast], &bob_endpoint).await;
+    alice.shutdown().await;
+}
+
+/// A peer that opens sessions faster than its revalidation interval is still revalidated.
+#[tokio::test]
+#[traced_test]
+async fn a_peer_that_keeps_reconnecting_is_still_revalidated() {
+    let revalidations = Arc::new(AtomicUsize::new(0));
+    let counted = revalidations.clone();
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
+        move |request: &PeerRequest| {
+            if request.event() == Event::Revalidate {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(Authorization {
+                grant: Grant::everything(),
+                revalidate: Some(Duration::from_millis(300)),
+                ..Default::default()
+            })
+        },
+    )))
+    .await;
+    let bob_endpoint = endpoint().await;
+    let mut nodes = vec![dialer(&bob_endpoint)];
+    step("bob dials", nodes[0].connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+
+    let churn = tokio::time::Instant::now() + Duration::from_millis(1200);
+    while tokio::time::Instant::now() < churn && revalidations.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let node = dialer(&bob_endpoint);
+        step("bob dials again", node.connect(alice.endpoint.addr()))
+            .await
+            .expect("admitted");
+        nodes.push(node);
+    }
+    assert!(
+        revalidations.load(Ordering::SeqCst) > 0,
+        "new sessions every 200 ms held off a 300 ms revalidation"
+    );
+
+    close(&nodes.iter().collect::<Vec<_>>(), &bob_endpoint).await;
+    alice.shutdown().await;
+}
+
+/// A peer removed while this node dials it never holds the grant it had before.
+#[tokio::test]
+#[traced_test]
+async fn a_peer_removed_during_a_dial_never_gets_its_old_grant() {
+    let contacts = Arc::new(Mutex::new(BTreeSet::new()));
+    let started = Arc::new(Notify::new());
+    let gate = Arc::new(Notify::new());
+    let policy = Contacts {
+        contacts: contacts.clone(),
+        started: started.clone(),
+        gate: gate.clone(),
+    };
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy)).await;
+    let bob = Peer::spawn().await;
+    contacts.lock().expect("poisoned").insert(bob.id());
+
+    let dial = tokio::spawn({
+        let node = alice.node.clone();
+        let addr = bob.endpoint.addr();
+        async move { node.connect(addr).await }
+    });
+    step("alice's policy decides the dial", started.notified()).await;
+    contacts.lock().expect("poisoned").remove(&bob.id());
+    alice.node.reauthorize(bob.id());
+    gate.notify_one();
+
+    let session = step("the dial completes", dial)
+        .await
+        .expect("no panic")
+        .expect("the dial itself succeeds");
+    assert_eq!(
+        session.grant(),
+        Grant::nothing(),
+        "the decision from before the removal never applies"
+    );
+    step("the re-decide closes the session", session.closed()).await;
+    eventually("alice holds nothing for bob", || {
+        alice.node.grant_for(bob.id()).is_none()
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A contacts policy whose dialed `Connect` decision checks first and then waits for the test.
+#[derive(Debug, Clone)]
+struct Contacts {
+    contacts: Arc<Mutex<BTreeSet<EndpointId>>>,
+    started: Arc<Notify>,
+    gate: Arc<Notify>,
+}
+
+impl Policy<EndpointId> for Contacts {
+    async fn decide(&self, request: &PeerRequest) -> Decision {
+        let contact = self
+            .contacts
+            .lock()
+            .expect("poisoned")
+            .contains(request.peer());
+        if request.event() == Event::Connect && request.dialed() {
+            self.started.notify_one();
+            self.gate.notified().await;
+        }
+        match contact {
+            true => Ok(Grant::everything().into()),
+            false => Err(Rejection::new("not a contact")),
+        }
+    }
+}
+
+/// A policy that changes all the time and decides slowly still applies a rejection.
+#[derive(Debug, Clone, Default)]
+struct Chatty {
+    rejecting: Arc<AtomicBool>,
+}
+
+impl Policy<EndpointId> for Chatty {
+    async fn decide(&self, request: &PeerRequest) -> Decision {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if request.event() != Event::Connect && self.rejecting.load(Ordering::SeqCst) {
+            return Err(Rejection::new("revoked"));
+        }
+        Ok(Grant::everything().into())
+    }
+
+    fn changes(&self) -> Option<BoxStream<()>> {
+        Some(Box::pin(n0_future::stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Some(((), ()))
+        })))
+    }
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_rejection_lands_while_the_policy_keeps_changing() {
+    let policy = Chatty::default();
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy.clone())).await;
+    let bob = Peer::spawn().await;
+    let session = step("bob dials", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+
+    policy.rejecting.store(true, Ordering::SeqCst);
+    step("the session closes", session.closed()).await;
 
     alice.shutdown().await;
     bob.shutdown().await;

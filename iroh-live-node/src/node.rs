@@ -59,8 +59,8 @@ pub struct NodeConfig {
     /// The node asks it when it accepts a session, after the peer's MoQ
     /// SETUP, and before it dials a peer. A rejection closes an accepted
     /// session with the rejection's code, and fails a dial with
-    /// [`Error::Rejected`]. Every session with one peer shares the
-    /// authorization the first of them got.
+    /// [`Error::Rejected`]. Every session with one peer shares one
+    /// authorization, which a later session reuses.
     ///
     /// The node asks again about a live peer, with an
     /// [`Event`](policy::Event) that says why.
@@ -283,13 +283,17 @@ impl Node {
 
     /// Asks the policy again about `peer`, for every live session with it.
     ///
-    /// Call it when state the policy reads changes and its
+    /// A session with the peer that is still being decided or handshaken
+    /// is decided again too, so it never registers with rights from before
+    /// the call. Call it when state the policy reads changes and its
     /// [`changes`](Policy::changes) stream does not cover it, such as a
     /// [`filter`](Policy::filter) predicate. The decision runs in the
     /// background: a new authorization replaces the old one on every session
     /// with the peer, and a rejection closes them with its code.
     pub fn reauthorize(&self, peer: EndpointId) {
-        if self.grant_for(peer).is_none() {
+        // Marked at once, so a session that is still being decided or
+        // handshaken is decided again too.
+        if !self.shared.state.lock().expect("poisoned").mark(&peer) {
             return;
         }
         self.shared
@@ -303,6 +307,7 @@ impl Node {
 
     /// Asks the policy again about every peer with a live session.
     pub fn reauthorize_all(&self) {
+        self.shared.state.lock().expect("poisoned").mark_all();
         self.shared.reauth_requests.lock().expect("poisoned").all = true;
         self.shared.reauth_notify.notify_one();
     }

@@ -36,35 +36,86 @@ pub(crate) struct State {
     pub(crate) closed: bool,
     /// Paths that tickets widened a peer's grant to, with how many claims hold each.
     tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
-    /// The policy's authorization of each peer with a live direct session.
+    /// The policy's authorization of each peer with a live or pending direct session.
     peers: HashMap<EndpointId, PeerEntry>,
+    /// Orders the starts of decisions and the triggers that make them stale.
+    ///
+    /// Bumped by every decision that starts and every trigger, so comparing
+    /// two epochs tells which came first.
+    epoch: u64,
+    /// The epoch of the last trigger that covered every peer.
+    marked_all: u64,
 }
 
 /// A peer's authorization, as the node applies it to the peer's sessions.
-#[derive(Debug)]
+///
+/// The entry lives while the peer has a registered session or one whose
+/// authorization is being decided or handshaken, so a trigger reaches a
+/// peer whose first session has not registered yet.
+#[derive(Debug, Default)]
 struct PeerEntry {
-    authorization: Authorization,
+    /// The authorization every session with the peer shares.
+    ///
+    /// `None` before the first session registers and after a rejection, so
+    /// the peer's links may do nothing.
+    authorization: Option<Authorization>,
     /// The authorization's expiry on moq's clock, worked out once when it is stored.
     ///
     /// moq skips a grant equal to the last one, so the expiry must not move
     /// on every re-authorization.
     expires: Option<moq_net::time::Instant>,
+    /// The epoch at which the decision behind `authorization` started.
+    decided: u64,
+    /// The epoch of the last trigger or rejection for the peer.
+    marked: u64,
+    /// How many sessions are between their authorization and their registration.
+    pending: usize,
+    /// Whether the peer has a registered session.
+    live: bool,
 }
 
 impl PeerEntry {
-    /// Returns the entry for `authorization`, converting its expiry to moq's clock.
-    fn new(authorization: Authorization) -> Self {
-        let expires = authorization.expires.and_then(|expires| {
+    /// Stores `authorization`, decided at epoch `decided`.
+    fn set(&mut self, authorization: Authorization, decided: u64) {
+        self.expires = authorization.expires.and_then(|expires| {
             let left = expires
                 .duration_since(SystemTime::now())
                 .unwrap_or_default();
             moq_net::time::Instant::now().checked_add(left)
         });
-        Self {
-            authorization,
-            expires,
-        }
+        self.authorization = Some(authorization);
+        self.decided = decided;
     }
+
+    /// Returns the grant the peer's links take now, if the peer is authorized.
+    fn grant(&self) -> Option<Grant> {
+        Some(self.authorization.as_ref()?.grant.clone())
+    }
+}
+
+/// The authorization a session starts from, read before its decision or handshake.
+#[derive(Debug, Clone)]
+pub(crate) struct Snapshot {
+    /// The peer's stored authorization, if it holds one.
+    pub(crate) stored: Option<Authorization>,
+    /// The epoch the stored authorization was decided at, or the epoch now.
+    ///
+    /// Without a stored authorization, a decision for the session starts at
+    /// this epoch.
+    pub(crate) epoch: u64,
+}
+
+/// How [`State::register`] reconciled a session's authorization with the peer's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Registered {
+    /// The session's authorization is the newest and now holds for the peer.
+    Applied,
+    /// The peer holds a newer authorization, which the session takes.
+    Kept,
+    /// A trigger or a rejection came after the session's authorization was
+    /// decided. The peer keeps an older authorization, or holds nothing,
+    /// until the node decides again.
+    Stale,
 }
 
 /// How many paths a ticket may widen one peer's grant to.
@@ -182,37 +233,168 @@ impl State {
         self.authorize_all();
     }
 
-    /// Sets the authorization of `peer`, and re-authorizes every link with it.
-    ///
-    /// The authorization holds for every session with the peer, older ones
-    /// included.
-    pub(crate) fn admit_peer(&mut self, peer: EndpointId, authorization: Authorization) {
-        self.peers.insert(peer, PeerEntry::new(authorization));
-        self.authorize_peer(&peer);
+    /// Returns the next epoch.
+    pub(crate) fn next_epoch(&mut self) -> u64 {
+        self.epoch += 1;
+        self.epoch
     }
 
-    /// Forgets the authorization of `peer`, and narrows its links to nothing.
-    pub(crate) fn remove_peer(&mut self, peer: &EndpointId) {
-        if self.peers.remove(peer).is_some() {
+    /// Records that a session with `peer` starts its authorization, and returns what it starts from.
+    ///
+    /// The session counts as pending on the peer until [`register`] or
+    /// [`abandon`].
+    ///
+    /// [`register`]: Self::register
+    /// [`abandon`]: Self::abandon
+    pub(crate) fn begin(&mut self, peer: EndpointId) -> Snapshot {
+        let epoch = self.next_epoch();
+        let entry = self.peers.entry(peer).or_default();
+        entry.pending += 1;
+        match &entry.authorization {
+            Some(stored) => Snapshot {
+                stored: Some(stored.clone()),
+                epoch: entry.decided,
+            },
+            None => Snapshot {
+                stored: None,
+                epoch,
+            },
+        }
+    }
+
+    /// Records that a pending session with `peer` failed before it registered.
+    pub(crate) fn abandon(&mut self, peer: &EndpointId) {
+        if let Some(entry) = self.peers.get_mut(peer) {
+            entry.pending = entry.pending.saturating_sub(1);
+            self.prune(peer);
+        }
+    }
+
+    /// Registers a pending session with `peer`, whose authorization was decided at `decided`.
+    ///
+    /// A pre-registration authorization never replaces a newer one, and
+    /// never undoes a trigger or a rejection that came after its decision
+    /// started: then the peer holds nothing until the node decides again.
+    pub(crate) fn register(
+        &mut self,
+        peer: EndpointId,
+        authorization: Authorization,
+        decided: u64,
+    ) -> Registered {
+        let marked_all = self.marked_all;
+        let entry = self.peers.entry(peer).or_default();
+        entry.pending = entry.pending.saturating_sub(1);
+        entry.live = true;
+        let registered = if entry.authorization.is_some() && entry.decided >= decided {
+            Registered::Kept
+        } else if entry.marked.max(marked_all) > decided {
+            // An older authorization stays until the next decision replaces it.
+            Registered::Stale
+        } else {
+            entry.set(authorization, decided);
+            Registered::Applied
+        };
+        self.authorize_peer(&peer);
+        registered
+    }
+
+    /// Applies a decision about `peer` that started at `started`, unless a newer one applied.
+    ///
+    /// `None` is a rejection: the peer holds nothing from now on, and a
+    /// pending session decided before it does not undo it. Returns whether
+    /// the decision applied.
+    pub(crate) fn decided(
+        &mut self,
+        peer: &EndpointId,
+        started: u64,
+        authorization: Option<Authorization>,
+    ) -> bool {
+        let Some(entry) = self.peers.get_mut(peer) else {
+            return false;
+        };
+        if started <= entry.decided {
+            return false;
+        }
+        match authorization {
+            Some(authorization) => entry.set(authorization, started),
+            None => {
+                entry.authorization = None;
+                entry.expires = None;
+                entry.decided = started;
+                entry.marked = entry.marked.max(started);
+            }
+        }
+        self.authorize_peer(peer);
+        true
+    }
+
+    /// Records a trigger for `peer`, which makes every earlier decision stale.
+    ///
+    /// Returns whether the peer has a live or pending session.
+    pub(crate) fn mark(&mut self, peer: &EndpointId) -> bool {
+        let epoch = self.next_epoch();
+        match self.peers.get_mut(peer) {
+            Some(entry) => {
+                entry.marked = epoch;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Records a trigger for every peer.
+    pub(crate) fn mark_all(&mut self) {
+        self.marked_all = self.next_epoch();
+    }
+
+    /// Records that the last registered session with `peer` ended.
+    ///
+    /// The peer's authorization goes with it, and its links narrow to nothing.
+    pub(crate) fn peer_left(&mut self, peer: &EndpointId) {
+        if let Some(entry) = self.peers.get_mut(peer) {
+            entry.live = false;
+            entry.authorization = None;
+            entry.expires = None;
+            self.prune(peer);
             self.authorize_peer(peer);
         }
     }
 
-    /// Returns the authorization of `peer`, if it has a live session.
-    pub(crate) fn peer_authorization(&self, peer: &EndpointId) -> Option<&Authorization> {
-        self.peers.get(peer).map(|entry| &entry.authorization)
+    /// Forgets `peer` once it has neither a registered nor a pending session.
+    fn prune(&mut self, peer: &EndpointId) {
+        if self
+            .peers
+            .get(peer)
+            .is_some_and(|entry| !entry.live && entry.pending == 0)
+        {
+            self.peers.remove(peer);
+        }
     }
 
-    /// Returns the base grant of `peer`, if it has a live session.
-    pub(crate) fn peer_grant(&self, peer: &EndpointId) -> Option<&Grant> {
-        self.peer_authorization(peer)
-            .map(|authorization| &authorization.grant)
+    /// Sets the authorization of `peer` as if a session had registered with it.
+    #[cfg(test)]
+    pub(crate) fn admit_peer(&mut self, peer: EndpointId, authorization: Authorization) {
+        let epoch = self.next_epoch();
+        let entry = self.peers.entry(peer).or_default();
+        entry.live = true;
+        entry.set(authorization, epoch);
+        self.authorize_peer(&peer);
+    }
+
+    /// Returns the authorization of `peer`, if it holds one.
+    pub(crate) fn peer_authorization(&self, peer: &EndpointId) -> Option<&Authorization> {
+        self.peers.get(peer)?.authorization.as_ref()
+    }
+
+    /// Returns the base grant of `peer`, if it holds an authorization.
+    pub(crate) fn peer_grant(&self, peer: &EndpointId) -> Option<Grant> {
+        self.peers.get(peer)?.grant()
     }
 
     /// Returns what `peer` may do on its direct sessions: its base grant and its ticket paths.
     pub(crate) fn peer_effective_grant(&self, peer: &EndpointId) -> Option<Grant> {
         let base = self.peer_grant(peer)?;
-        Some(self.effective_grant(Some(peer), base))
+        Some(self.effective_grant(Some(peer), &base))
     }
 
     /// Forgets every peer, as the node shuts down.
@@ -318,21 +500,21 @@ impl State {
 
     /// Returns the moq grant of `link`, from its own grant or its peer's authorization.
     ///
-    /// A direct link whose peer has no authorization may do nothing: before
-    /// registration, which rules that out, and while a rejected peer's
-    /// sessions close. The grant carries the authorization's expiry.
+    /// A direct link whose peer has no authorization may do nothing: after a
+    /// rejection, while the peer's sessions close, and until a stale
+    /// registration is decided again.
+    /// The grant carries the authorization's expiry.
     fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
-        let nothing = Grant::nothing();
         let peer = match (&link.grant, &link.remote) {
             (None, Some(peer)) => self.peers.get(peer),
             _ => None,
         };
         let base = match (&link.grant, peer) {
-            (Some(grant), _) => grant,
-            (None, Some(entry)) => &entry.authorization.grant,
-            (None, None) => &nothing,
+            (Some(grant), _) => grant.clone(),
+            (None, Some(entry)) => entry.grant().unwrap_or_else(Grant::nothing),
+            (None, None) => Grant::nothing(),
         };
-        let mut grant = self.grant_for(link.kind, link.remote.as_ref(), base);
+        let mut grant = self.grant_for(link.kind, link.remote.as_ref(), &base);
         grant.expires = peer.and_then(|entry| entry.expires);
         grant
     }
@@ -733,8 +915,109 @@ mod tests {
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
 
         // Once the peer is gone, its links see nothing.
-        state.remove_peer(&peer);
+        state.peer_left(&peer);
         assert_eq!(state.peer_grant(&peer), None);
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
+    }
+
+    /// Returns a peer and a state where its first session registered with `grant`.
+    fn registered(grant: Grant) -> (State, EndpointId) {
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        let snapshot = state.begin(peer);
+        assert!(snapshot.stored.is_none());
+        assert_eq!(
+            state.register(peer, grant.into(), snapshot.epoch),
+            Registered::Applied
+        );
+        (state, peer)
+    }
+
+    #[test]
+    fn a_session_snapshot_never_replaces_a_newer_decision() {
+        let (mut state, peer) = registered(Grant::everything());
+        // A second session starts from the stored authorization.
+        let snapshot = state.begin(peer);
+        assert_eq!(
+            snapshot.stored.as_ref().map(|stored| &stored.grant),
+            Some(&Grant::everything())
+        );
+        // A re-decide narrows the peer before that session registers.
+        let started = state.next_epoch();
+        assert!(state.decided(&peer, started, Some(Grant::subscribe_only().into())));
+        let stored = snapshot.stored.expect("a stored authorization");
+        assert_eq!(
+            state.register(peer, stored, snapshot.epoch),
+            Registered::Kept
+        );
+        assert_eq!(state.peer_grant(&peer), Some(Grant::subscribe_only()));
+    }
+
+    #[test]
+    fn a_pending_session_does_not_undo_a_rejection() {
+        let (mut state, peer) = registered(Grant::everything());
+        let snapshot = state.begin(peer);
+        let started = state.next_epoch();
+        assert!(state.decided(&peer, started, None), "the rejection applies");
+        assert_eq!(state.peer_grant(&peer), None);
+        let stored = snapshot.stored.expect("a stored authorization");
+        assert_eq!(
+            state.register(peer, stored, snapshot.epoch),
+            Registered::Stale
+        );
+        assert_eq!(state.peer_grant(&peer), None, "nothing until decided again");
+    }
+
+    #[test]
+    fn a_trigger_during_a_first_decision_makes_it_stale() {
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        let snapshot = state.begin(peer);
+        // The application reauthorizes the peer while its dial is decided.
+        assert!(state.mark(&peer), "a pending peer is reachable");
+        assert_eq!(
+            state.register(peer, Grant::everything().into(), snapshot.epoch),
+            Registered::Stale
+        );
+        assert_eq!(state.peer_grant(&peer), None);
+
+        // So does a trigger for every peer.
+        let other = SecretKey::generate().public();
+        let snapshot = state.begin(other);
+        state.mark_all();
+        assert_eq!(
+            state.register(other, Grant::everything().into(), snapshot.epoch),
+            Registered::Stale
+        );
+    }
+
+    #[test]
+    fn a_decision_applies_however_many_triggers_came_after_it_started() {
+        let (mut state, peer) = registered(Grant::everything());
+        for round in 0..5 {
+            let started = state.next_epoch();
+            assert!(state.mark(&peer));
+            state.mark_all();
+            assert!(
+                state.decided(&peer, started, Some(Grant::subscribe_only().into())),
+                "round {round}"
+            );
+        }
+        // An older decision that finishes late does not.
+        let older = state.next_epoch();
+        let newer = state.next_epoch();
+        assert!(state.decided(&peer, newer, Some(Grant::nothing().into())));
+        assert!(!state.decided(&peer, older, Some(Grant::everything().into())));
+        assert_eq!(state.peer_grant(&peer), Some(Grant::nothing()));
+    }
+
+    #[test]
+    fn a_peer_is_forgotten_once_no_session_is_live_or_pending() {
+        let (mut state, peer) = registered(Grant::everything());
+        state.begin(peer);
+        state.peer_left(&peer);
+        assert!(state.mark(&peer), "the pending session keeps the peer");
+        state.abandon(&peer);
+        assert!(!state.mark(&peer));
     }
 }

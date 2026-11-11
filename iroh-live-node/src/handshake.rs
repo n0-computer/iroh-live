@@ -11,8 +11,11 @@ use n0_error::e;
 use tracing::{debug, info, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkKind, SessionRequest, admission::authorize, node::Shared,
-    policy::Authorization, state::served, transport,
+    ConnectOptions, Error, Grant, LinkKind, SessionRequest,
+    admission::{Admitted, authorize},
+    node::Shared,
+    state::served,
+    transport,
 };
 
 /// The moq hop id the routes of one link carry.
@@ -82,8 +85,11 @@ pub(crate) struct SessionParts {
     pub(crate) remote: EndpointId,
     pub(crate) connection: Connection,
     pub(crate) dialed: bool,
-    /// What the policy decided for the peer, which every session with it shares.
-    pub(crate) authorization: Authorization,
+    /// What the policy decided for the peer before the handshake.
+    ///
+    /// Every session with the peer shares one authorization, so registration
+    /// reconciles this one with the peer's.
+    pub(crate) admitted: Admitted,
     pub(crate) request: SessionRequest,
     pub(crate) moq: moq_net::Session,
     pub(crate) driver: moq_net::Driver,
@@ -104,13 +110,13 @@ pub(crate) async fn dial_session(
 ) -> Result<SessionParts, Error> {
     let remote_id = remote.id;
     let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
-    let authorization = authorize(&shared, remote_id, &request, true)
+    let admitted = authorize(&shared, remote_id, &request, true)
         .await
         .map_err(|source| {
             info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
             e!(Error::Rejected { source })
         })?;
-    let grant = &authorization.grant;
+    let grant = &admitted.authorization.grant;
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
     }
@@ -134,7 +140,7 @@ pub(crate) async fn dial_session(
         remote: remote_id,
         connection,
         dialed: true,
-        authorization,
+        admitted,
         request,
         moq,
         driver,
