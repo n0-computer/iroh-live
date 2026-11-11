@@ -29,7 +29,7 @@ async fn main() -> n0_error::Result {
     .bind()
     .await?;
     // Only dials, so it needs no router.
-    let node = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config());
 
     info!(relay = %cli.relay, name = %cli.name, frames = cli.frames, "subscribing");
     // The link redials, and the subscribe waits until the relay routes the name.

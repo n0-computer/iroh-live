@@ -52,7 +52,7 @@ application binds an endpoint, usually with `EndpointConfig::default().bind()`:
 
 ```rust
 let layout = LiveLayout::default();
-let node = Node::new(endpoint.clone(), layout.config(&[]));
+let node = Node::new(endpoint.clone(), layout.config());
 let router = node.mount(Router::builder(endpoint)).spawn();
 ```
 

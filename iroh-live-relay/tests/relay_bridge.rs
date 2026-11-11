@@ -390,7 +390,7 @@ async fn iroh_publish_iroh_subscribe() {
 
     // Publisher
     let pub_ep = endpoint().await;
-    let publisher = iroh_live::Node::new(pub_ep.clone(), LiveLayout::default().config(&[]));
+    let publisher = iroh_live::Node::new(pub_ep.clone(), LiveLayout::default().config());
     let _router = serve(&publisher);
     let broadcast = publish_video(&publisher, "relay-test");
 
@@ -621,7 +621,7 @@ async fn iroh_publish_noq_subscribe() {
 
     // Publisher (iroh via iroh-live)
     let pub_ep = endpoint().await;
-    let publisher = iroh_live::Node::new(pub_ep.clone(), LiveLayout::default().config(&[]));
+    let publisher = iroh_live::Node::new(pub_ep.clone(), LiveLayout::default().config());
     let _router = serve(&publisher);
     let broadcast = publish_video(&publisher, "cli-stream");
 
@@ -685,7 +685,7 @@ async fn start_publisher(
 ) {
     let endpoint = endpoint().await;
 
-    let node = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+    let node = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config());
     let router = serve(&node);
     let broadcast = publish_video(&node, name);
     let ticket = LiveLayout::default()
@@ -944,7 +944,7 @@ async fn a_relay_link_publishes_and_consumes() {
 /// It only dials. Mount it with [`serve`] to accept sessions.
 async fn relay_node() -> (iroh::Endpoint, iroh_live::Node) {
     let endpoint = endpoint().await;
-    let node = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+    let node = iroh_live::Node::new(endpoint.clone(), LiveLayout::default().config());
     (endpoint, node)
 }
 
@@ -1608,7 +1608,7 @@ async fn room_node() -> (
     let endpoint = endpoint().await;
     let node = iroh_live_node::Node::new(
         endpoint.clone(),
-        LiveLayout::default().config(&[Arc::new(iroh_live_rooms::RoomsLayout)]),
+        iroh_live::layout::config((LiveLayout::default(), iroh_live_rooms::RoomsLayout)),
     );
     let rooms = iroh_live_rooms::Rooms::new(&node);
     let router = rooms

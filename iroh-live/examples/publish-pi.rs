@@ -46,7 +46,7 @@ async fn main() -> n0_error::Result {
 
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let layout = LiveLayout::default();
-    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let node = Node::new(endpoint.clone(), layout.config());
     let router = node.mount(Router::builder(endpoint)).spawn();
     // Published while `broadcast` lives, or until the node shuts down.
     let broadcast: LocalBroadcast = layout.publish(&node, BROADCAST)?;

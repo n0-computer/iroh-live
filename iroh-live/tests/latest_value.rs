@@ -9,7 +9,7 @@ use n0_tracing_test::traced_test;
 #[tokio::test]
 #[traced_test]
 async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
-    let publisher = Node::new(endpoint().await, LiveLayout::default().config(&[]));
+    let publisher = Node::new(endpoint().await, LiveLayout::default().config());
     let _router = publisher
         .mount(Router::builder(publisher.endpoint().clone()))
         .spawn();
@@ -26,7 +26,7 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
         writer.update(&latency).expect("write");
     }
 
-    let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
+    let subscriber = Node::new(endpoint().await, LiveLayout::default().config());
     let subscription = step(
         "subscribed in time",
         subscriber.subscribe(&path, Reach::Direct(publisher.id())),

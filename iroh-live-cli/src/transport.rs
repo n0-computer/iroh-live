@@ -48,7 +48,7 @@ pub async fn setup_live(serve: bool) -> Result<Transport> {
 pub async fn setup_live_with(options: EndpointConfig, serve: bool) -> Result<Transport> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointConfig { mdns, ..options }.bind().await?;
-    let live = Node::new(endpoint.clone(), LiveLayout::default().config(&[]));
+    let live = Node::new(endpoint.clone(), LiveLayout::default().config());
     let router = serve.then(|| live.mount(Router::builder(endpoint)).spawn());
     Ok(Arc::new(BoundNode::new(live, router)))
 }

@@ -39,7 +39,7 @@ fn serve(node: &Node) -> Router {
 
 /// Creates a node on the default layout.
 async fn node() -> Node {
-    Node::new(endpoint().await, LiveLayout::default().config(&[]))
+    Node::new(endpoint().await, LiveLayout::default().config())
 }
 
 /// Publishes a new media broadcast as `name` on `node`.

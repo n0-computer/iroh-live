@@ -50,7 +50,7 @@ use iroh_live::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = LiveLayout::default();
     let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let node = Node::new(endpoint.clone(), layout.config());
     // Accepts the viewers. Dropping the router stops accepting.
     let router = node.mount(Router::builder(endpoint)).spawn();
 
@@ -163,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let layout = LiveLayout::default();
     let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let node = Node::new(endpoint.clone(), layout.config());
     // The peer dials in to read our side.
     let router = node.mount(Router::builder(endpoint)).spawn();
     println!("our id: {}", node.id());
@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(
         endpoint.clone(),
-        layout.config(&[Arc::new(iroh_live::rooms::RoomsLayout)]),
+        iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout)),
     );
     let rooms = Rooms::new(&node);
     // Members dial in over gossip and moq.
@@ -383,7 +383,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let layout = LiveLayout::default();
     let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let node = Node::new(endpoint.clone(), layout.config());
     // Direct viewers still dial in. A relay-only publisher can skip the router
     // and close the endpoint itself.
     let router = node.mount(Router::builder(endpoint)).spawn();
@@ -437,7 +437,7 @@ use iroh_live::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = LiveLayout::default();
     let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let node = Node::new(endpoint.clone(), layout.config());
     let router = node.mount(Router::builder(endpoint)).spawn();
 
     match std::env::args().nth(1) {

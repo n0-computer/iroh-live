@@ -6,8 +6,6 @@
 //!
 //! Rooms paths (`rooms/...`) belong to `iroh-live-rooms`.
 
-use std::sync::Arc;
-
 use iroh::EndpointId;
 pub use iroh_live_node::Layout;
 use iroh_live_node::{
@@ -108,24 +106,17 @@ impl LiveLayout {
         (id.to_string() == peer && !name.is_empty()).then_some((id, name))
     }
 
-    /// Returns the grant a node gives `peer`.
-    ///
-    /// The peer may subscribe to anything, and publish only under its
-    /// [`scope`](Layout::scope) in this layout and in the `extra` layouts.
+    /// Returns the grant a node gives `peer`, as [`grant`] does for this layout.
     #[must_use]
-    pub fn grant(&self, peer: EndpointId, extra: &[Arc<dyn Layout<EndpointId>>]) -> Grant {
-        let mut publish = self.scope(&peer);
-        for layout in extra {
-            publish.extend(layout.scope(&peer).iter().cloned());
-        }
-        Grant::publish_under(publish)
+    pub fn grant(&self, peer: EndpointId) -> Grant {
+        grant(self, peer)
     }
 
     /// Returns a policy that admits every peer with its [`grant`](Self::grant).
     ///
-    /// Pass `&[]` for no extra layouts, or the rooms layout to let peers
-    /// publish room broadcasts too. Narrow it with [`Policy::filter`], and call
-    /// `Node::reauthorize` when the filter's state changes.
+    /// Narrow it with [`Policy::filter`], and call `Node::reauthorize` when
+    /// the filter's state changes. To let peers publish room broadcasts too,
+    /// pass the pair of this layout and the rooms layout to [`policy`].
     ///
     /// # Examples
     ///
@@ -140,27 +131,20 @@ impl LiveLayout {
     /// let contacts = Watchable::new(BTreeSet::<iroh::EndpointId>::new());
     /// let known = contacts.clone();
     /// let policy = LiveLayout::default()
-    ///     .policy(&[])
+    ///     .policy()
     ///     .filter(move |request| known.get().contains(request.peer()));
     /// let config = NodeConfig::default().with_policy(policy);
     /// # drop((config, contacts));
     /// ```
     #[must_use]
-    pub fn policy(
-        &self,
-        extra: &[Arc<dyn Layout<EndpointId>>],
-    ) -> impl Policy<EndpointId> + Clone + use<> {
-        let layout = self.clone();
-        let extra: Arc<[Arc<dyn Layout<EndpointId>>]> = extra.into();
-        policy::from_fn(move |request: &PeerRequest| {
-            Ok(layout.grant(*request.peer(), &extra).into())
-        })
+    pub fn policy(&self) -> impl Policy<EndpointId> + Clone + use<> {
+        policy(self.clone())
     }
 
     /// Returns the [`NodeConfig`] of a node on this layout, with its [`policy`](Self::policy).
     #[must_use]
-    pub fn config(&self, extra: &[Arc<dyn Layout<EndpointId>>]) -> NodeConfig {
-        NodeConfig::default().with_policy(self.policy(extra))
+    pub fn config(&self) -> NodeConfig {
+        config(self.clone())
     }
 
     /// Publishes a broadcast at `<root>/<this node's id>/<name>` to granted sessions, and returns it.
@@ -255,6 +239,31 @@ impl Layout<EndpointId> for LiveLayout {
     }
 }
 
+/// Returns the grant a node gives `peer` under `layout`.
+///
+/// The peer may subscribe to anything, and publish only under its
+/// [`scope`](Layout::scope) in `layout`.
+#[must_use]
+pub fn grant(layout: &impl Layout<EndpointId>, peer: EndpointId) -> Grant {
+    Grant::publish_under(layout.scope(&peer))
+}
+
+/// Returns a policy that admits every peer with its [`grant`] under `layout`.
+///
+/// A pair of layouts is their union. For example,
+/// `policy((LiveLayout::default(), RoomsLayout))` lets every peer publish its
+/// own broadcasts and its room broadcasts.
+#[must_use]
+pub fn policy(layout: impl Layout<EndpointId> + Clone) -> impl Policy<EndpointId> + Clone {
+    policy::from_fn(move |request: &PeerRequest| Ok(grant(&layout, *request.peer()).into()))
+}
+
+/// Returns the [`NodeConfig`] of a node on `layout`, with its [`policy`].
+#[must_use]
+pub fn config(layout: impl Layout<EndpointId> + Clone) -> NodeConfig {
+    NodeConfig::default().with_policy(policy(layout))
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -305,7 +314,7 @@ mod tests {
     fn the_scope_matches_only_the_peers_own_paths() {
         let layout = LiveLayout::default();
         let (a, b) = (id(), id());
-        let grant = layout.grant(a, &[]);
+        let grant = layout.grant(a);
         assert!(grant.allows_publish(layout.path(a, "cam").expect("path").as_str()));
         assert!(!grant.allows_publish(layout.path(b, "cam").expect("path").as_str()));
         assert!(grant.allows_subscribe("anything/at/all"));
@@ -331,14 +340,13 @@ mod tests {
     fn two_layouts_compose() {
         let (a, b) = (LiveLayout::new("a"), LiveLayout::new("b"));
         let peer = id();
-        let b_layout: Arc<dyn Layout<EndpointId>> = Arc::new(b);
         let request = PeerRequest::new(
             peer,
             SessionRequest::default(),
             false,
             policy::Event::Connect,
         );
-        let grant = n0_future::future::block_on(Policy::decide(&a.policy(&[b_layout]), &request))
+        let grant = n0_future::future::block_on(Policy::decide(&policy((a, b)), &request))
             .expect("admitted")
             .grant;
         assert!(grant.allows_publish(&format!("a/{peer}/cam")));

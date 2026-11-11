@@ -41,7 +41,7 @@ async fn main() -> n0_error::Result {
     // Set `IROH_SECRET` to keep the same ticket across restarts.
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let layout = LiveLayout::default();
-    let node = Node::new(endpoint.clone(), layout.config(&[]));
+    let node = Node::new(endpoint.clone(), layout.config());
     // Accepts the viewers. Dropping the router stops accepting.
     let router = node.mount(Router::builder(endpoint)).spawn();
     info!(id = %node.id(), "endpoint ready");

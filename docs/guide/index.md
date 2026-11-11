@@ -69,7 +69,7 @@ use iroh_live::{
 
 let layout = LiveLayout::default();
 let endpoint = EndpointConfig::default().bind().await?;
-let node = Node::new(endpoint.clone(), layout.config(&[]));
+let node = Node::new(endpoint.clone(), layout.config());
 // Keep the router: dropping it stops accepting viewers.
 let router = node.mount(Router::builder(endpoint)).spawn();
 // Created in the node's route table, published while `broadcast` lives.

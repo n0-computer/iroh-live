@@ -59,11 +59,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // The ticket carries only the endpoint id. A viewer on the same network
     // finds the Pi over mDNS, a viewer elsewhere over pkarr and DNS.
     // The router in it accepts the viewers that dial the Pi directly.
-    let bound = BoundNode::bind(
-        EndpointConfig::from_env()?,
-        LiveLayout::default().config(&[]),
-    )
-    .await?;
+    let bound =
+        BoundNode::bind(EndpointConfig::from_env()?, LiveLayout::default().config()).await?;
     let node = bound.node();
 
     // Published while `broadcast` lives.

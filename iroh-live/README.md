@@ -46,7 +46,7 @@ use iroh_live::{
 
 let layout = LiveLayout::default();
 let endpoint = EndpointConfig::default().bind().await?;
-let node = Node::new(endpoint.clone(), layout.config(&[]));
+let node = Node::new(endpoint.clone(), layout.config());
 // Accepts the viewers. Keep it: dropping it stops accepting.
 let router = node.mount(Router::builder(endpoint)).spawn();
 // Created in the node's route table: peers read it without a copy.
@@ -128,7 +128,7 @@ moq-audio's `pipewire` and `pulseaudio` features.
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node by adding
 `iroh_live::rooms::RoomsLayout` to the layout's config, with
-`layout.config(&[Arc::new(iroh_live::rooms::RoomsLayout)])`, and mount the
+`iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout))`, and mount the
 gossip with `Rooms::mount`:
 
 ```rust

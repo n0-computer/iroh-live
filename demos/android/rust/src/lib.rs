@@ -113,11 +113,7 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// Returns the node with the router that accepts its peers. The demo stores
 /// no key, so without `IROH_SECRET` every screen gets a new endpoint id.
 async fn bind_live() -> Result<BoundNode> {
-    Ok(BoundNode::bind(
-        EndpointConfig::from_env()?,
-        LiveLayout::default().config(&[]),
-    )
-    .await?)
+    Ok(BoundNode::bind(EndpointConfig::from_env()?, LiveLayout::default().config()).await?)
 }
 
 /// Plays the side of the peer that `call` reached.

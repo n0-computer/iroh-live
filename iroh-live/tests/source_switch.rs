@@ -34,14 +34,14 @@ struct Peers {
 impl Peers {
     /// Publishes an empty broadcast as `name` and returns both nodes.
     async fn new(name: &str) -> Self {
-        let publisher = Node::new(endpoint().await, LiveLayout::default().config(&[]));
+        let publisher = Node::new(endpoint().await, LiveLayout::default().config());
         let router = publisher
             .mount(Router::builder(publisher.endpoint().clone()))
             .spawn();
         let broadcast = LiveLayout::default()
             .publish(&publisher, name)
             .expect("failed to publish");
-        let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
+        let subscriber = Node::new(endpoint().await, LiveLayout::default().config());
         Self {
             publisher,
             subscriber,

@@ -122,7 +122,7 @@ mod app {
         // network without internet.
         let bound = iroh_live::BoundNode::bind(
             iroh_live::EndpointConfig::from_env()?,
-            LiveLayout::default().config(&[]),
+            LiveLayout::default().config(),
         )
         .await?;
         let result = watch_with(bound.node(), opts).await;

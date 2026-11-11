@@ -20,7 +20,7 @@ let _cam: moq_net::broadcast::Producer = room.publish("cam")?;
 ```
 
 The node's policy has to let each peer publish under its `RoomsLayout` scope.
-`LiveLayout::config(&[Arc::new(iroh_live::rooms::RoomsLayout)])` does that.
+`iroh_live::layout::config((LiveLayout::default(), RoomsLayout))` does that.
 `Rooms::shutdown`, or the router's shutdown through the handler, stops the
 gossip and every room joined on it. See the crate docs and `tests/room.rs` for
 the rest.

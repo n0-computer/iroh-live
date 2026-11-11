@@ -250,7 +250,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 /// to let a token widen what a client may publish.
 #[must_use]
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
-    LiveLayout::default().policy(&[Arc::new(RoomsLayout)])
+    iroh_live::layout::policy((LiveLayout::default(), RoomsLayout))
 }
 
 #[cfg(test)]

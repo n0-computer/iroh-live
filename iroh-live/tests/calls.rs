@@ -35,7 +35,7 @@ impl std::ops::Deref for Peer {
 impl Peer {
     /// Starts a mounted node with its call service.
     async fn start() -> Self {
-        Self::start_with(LiveLayout::default().config(&[])).await
+        Self::start_with(LiveLayout::default().config()).await
     }
 
     /// Starts a mounted node with `config` and its call service.
@@ -52,7 +52,7 @@ impl Peer {
 
 /// Starts a mounted node on the default layout, with no call service.
 async fn raw() -> TestNode {
-    TestNode::spawn(LiveLayout::default().config(&[])).await
+    TestNode::spawn(LiveLayout::default().config()).await
 }
 
 /// Places a call from `a` to `b`, which answers once it rings.
@@ -386,7 +386,7 @@ async fn a_contacts_only_callee_refuses_strangers_and_drops_removed_contacts() {
     let contacts = Watchable::new(BTreeSet::from([alice.id()]));
     let known = contacts.clone();
     let policy = LiveLayout::default()
-        .policy(&[])
+        .policy()
         .filter(move |request| known.get().contains(request.peer()));
     let bob = Peer::start_with(NodeConfig::default().with_policy(policy)).await;
 

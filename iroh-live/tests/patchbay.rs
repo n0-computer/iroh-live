@@ -132,10 +132,7 @@ impl Fixture {
             .expect("the subscriber bind task failed")
             .expect("failed to bind the subscriber endpoint");
 
-        let publisher = Node::new(
-            publisher_endpoint.clone(),
-            LiveLayout::default().config(&[]),
-        );
+        let publisher = Node::new(publisher_endpoint.clone(), LiveLayout::default().config());
         let _router = publisher.mount(Router::builder(publisher_endpoint)).spawn();
         let broadcast: LocalBroadcast = LiveLayout::default()
             .publish(&publisher, "patchbay")
@@ -146,7 +143,7 @@ impl Fixture {
 
         // No address lookup. The lab gives each device a fixed address.
         let publisher_addr = publisher.endpoint().addr();
-        let subscriber = Node::new(subscriber_endpoint, LiveLayout::default().config(&[]));
+        let subscriber = Node::new(subscriber_endpoint, LiveLayout::default().config());
         subscriber
             .connect(publisher_addr)
             .await

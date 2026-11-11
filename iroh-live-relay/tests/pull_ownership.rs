@@ -26,7 +26,7 @@ fn cluster() -> (Cluster, AbortOnDropHandle<()>) {
 
 /// Starts a node that serves `live/<its id>/<name>`.
 async fn publisher(name: &str) -> TestNode {
-    let publisher = TestNode::spawn(LiveLayout::default().config(&[])).await;
+    let publisher = TestNode::spawn(LiveLayout::default().config()).await;
     let path = LiveLayout::default()
         .path(publisher.id(), name)
         .expect("a path");

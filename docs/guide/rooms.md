@@ -30,7 +30,7 @@ use iroh_live::{
 let layout = LiveLayout::default();
 let node = Node::new(
     endpoint.clone(),
-    layout.config(&[Arc::new(iroh_live::rooms::RoomsLayout)]),
+    iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout)),
 );
 let rooms = Rooms::new(&node);
 let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();

@@ -301,7 +301,7 @@ impl Inner {
 ///
 /// A member publishes under `rooms/*/<member>/**`. A node that runs rooms
 /// lets every peer publish there, as
-/// `LiveLayout::policy(&[Arc::new(RoomsLayout)])` in iroh-live does.
+/// `iroh_live::layout::policy((LiveLayout::default(), RoomsLayout))` does.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoomsLayout;
 

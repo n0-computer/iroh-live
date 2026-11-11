@@ -38,7 +38,7 @@ use iroh_live::{
 # async fn run(ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
 let layout = LiveLayout::default();
 let endpoint = EndpointConfig::from_env()?.bind().await?;
-let node = Node::new(endpoint.clone(), layout.config(&[]));
+let node = Node::new(endpoint.clone(), layout.config());
 // Accepts the peers that read the broadcast. Keep the router alive.
 let router = node.mount(Router::builder(endpoint)).spawn();
 

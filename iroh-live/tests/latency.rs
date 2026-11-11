@@ -119,7 +119,7 @@ fn offset(received: &[(u64, Instant)], handed: &HashMap<u64, Instant>) -> i128 {
 async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
-    let publisher = Node::new(endpoint().await, LiveLayout::default().config(&[]));
+    let publisher = Node::new(endpoint().await, LiveLayout::default().config());
     let _router = publisher
         .mount(Router::builder(publisher.endpoint().clone()))
         .spawn();
@@ -136,7 +136,7 @@ async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
         .ticket(publisher.id(), "latency")
         .expect("a valid broadcast name");
 
-    let subscriber = Node::new(endpoint().await, LiveLayout::default().config(&[]));
+    let subscriber = Node::new(endpoint().await, LiveLayout::default().config());
     let subscribed_at = Instant::now();
     let subscription = subscriber
         .subscribe_ticket(&ticket)
