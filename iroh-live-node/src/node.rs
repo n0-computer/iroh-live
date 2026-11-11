@@ -498,7 +498,7 @@ impl Node {
         self.shared
             .actor
             .send(ActorMessage::Connect {
-                remote: peer.into(),
+                peer: peer.into(),
                 options,
                 reply,
             })

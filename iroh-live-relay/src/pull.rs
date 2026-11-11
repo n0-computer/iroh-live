@@ -315,7 +315,7 @@ impl Pulls {
         local_name: &str,
     ) -> Result<(Subscription, PublisherClaim), Error> {
         info!(
-            remote = %ticket.peer().fmt_short(),
+            peer = %ticket.peer().fmt_short(),
             path = %ticket.path(),
             "pulling remote broadcast"
         );
@@ -326,7 +326,7 @@ impl Pulls {
         let subscription = self.resolve(ticket).await?;
         info!(
             %local_name,
-            remote = %ticket.peer().fmt_short(),
+            peer = %ticket.peer().fmt_short(),
             path = %subscription.path(),
             "remote broadcast available in the cluster"
         );
@@ -537,7 +537,7 @@ impl Drop for PublisherClaim {
         for session in self.node.sessions().get() {
             if session.peer() == self.publisher {
                 info!(
-                    remote = %self.publisher.fmt_short(),
+                    peer = %self.publisher.fmt_short(),
                     "last pull of the publisher retired, closing its session"
                 );
                 session.close(moq_net::Error::Cancel);

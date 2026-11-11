@@ -395,7 +395,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
         .await
         .std_context("the peer did not answer")??;
     let player = play_call(&call, &output)?;
-    info!(remote = %ticket.peer().fmt_short(), "call connected");
+    info!(peer = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();
     session.frames = Some(player.video());
@@ -489,10 +489,10 @@ async fn accept_one(
             None => return Ok(()),
         }
     };
-    info!(remote = %peer.fmt_short(), "answering");
+    info!(peer = %peer.fmt_short(), "answering");
     let call = calls.answer(peer).await?;
     let player = play_call(&call, &output)?;
-    info!(remote = %peer.fmt_short(), "call answered");
+    info!(peer = %peer.fmt_short(), "call answered");
 
     let Some(session) = session.upgrade() else {
         return Ok(());

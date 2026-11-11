@@ -39,7 +39,7 @@ pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 /// What the node asks of its actor.
 pub(crate) enum ActorMessage {
     Connect {
-        remote: EndpointAddr,
+        peer: EndpointAddr,
         options: ConnectOptions,
         reply: oneshot::Sender<Result<Session, Error>>,
     },
@@ -204,10 +204,10 @@ impl Actor {
     fn handle(&mut self, message: ActorMessage) {
         match message {
             ActorMessage::Connect {
-                remote,
+                peer,
                 options,
                 reply,
-            } => self.connect(remote, options, reply),
+            } => self.connect(peer, options, reply),
             ActorMessage::Register { parts, reply } => {
                 let session = self.register(*parts);
                 reply.send(Ok(session)).ok();
@@ -220,11 +220,11 @@ impl Actor {
     /// Callers that ask while a dial is in flight wait on that dial.
     fn connect(
         &mut self,
-        remote: EndpointAddr,
+        peer: EndpointAddr,
         options: ConnectOptions,
         reply: oneshot::Sender<Result<Session, Error>>,
     ) {
-        let id = remote.id;
+        let id = peer.id;
         if self.shared.shutdown.is_cancelled() {
             reply.send(Err(e!(Error::ShutDown))).ok();
             return;
@@ -238,10 +238,10 @@ impl Actor {
         if waiting.len() > 1 {
             return;
         }
-        info!(remote = %id.fmt_short(), "dialing");
+        info!(peer = %id.fmt_short(), "dialing");
         let handle = self.dials.spawn(
-            dial_session(self.shared.clone(), remote, options)
-                .instrument(info_span!("dial", remote = %id.fmt_short())),
+            dial_session(self.shared.clone(), peer, options)
+                .instrument(info_span!("dial", peer = %id.fmt_short())),
         );
         self.dial_ids.insert(handle.id(), id);
     }
@@ -261,17 +261,17 @@ impl Actor {
 
     /// Registers the session a dial produced, or fails the callers waiting on it.
     fn dialed(&mut self, id: tokio::task::Id, result: Result<SessionParts, Error>) {
-        let Some(remote) = self.dial_ids.remove(&id) else {
+        let Some(peer) = self.dial_ids.remove(&id) else {
             return;
         };
         match result {
             Ok(parts) => {
-                info!(remote = %remote.fmt_short(), "connected");
+                info!(peer = %peer.fmt_short(), "connected");
                 self.register(parts);
             }
             Err(err) => {
-                info!(remote = %remote.fmt_short(), %err, "dial failed");
-                for reply in self.pending.remove(&remote).into_iter().flatten() {
+                info!(peer = %peer.fmt_short(), %err, "dial failed");
+                for reply in self.pending.remove(&peer).into_iter().flatten() {
                     reply.send(Err(err.clone())).ok();
                 }
             }
@@ -290,7 +290,7 @@ impl Actor {
         }
         for peer in requests.peers {
             if self.reauth.request(&peer) {
-                debug!(remote = %peer.fmt_short(), "deciding the peer again, as asked");
+                debug!(peer = %peer.fmt_short(), "deciding the peer again, as asked");
             }
         }
     }
@@ -303,7 +303,7 @@ impl Actor {
         }
         let mut state = self.shared.state.lock().expect("poisoned");
         for peer in expired {
-            info!(remote = %peer.fmt_short(), "the peer's authorization expired, narrowing it until the policy decides again");
+            info!(peer = %peer.fmt_short(), "the peer's authorization expired, narrowing it until the policy decides again");
             state.lapse(&peer);
         }
     }
@@ -328,7 +328,7 @@ impl Actor {
                     let decision = decide(&shared, &request).await;
                     (asked, decision)
                 }
-                .instrument(info_span!("redecide", remote = %start.peer.fmt_short(), started)),
+                .instrument(info_span!("redecide", peer = %start.peer.fmt_short(), started)),
             );
             self.decision_ids.insert(handle.id(), asked);
         }
@@ -368,12 +368,12 @@ impl Actor {
                 let Some(asked) = self.decision_ids.remove(&err.id()) else {
                     return;
                 };
-                error!(remote = %asked.0.fmt_short(), %err, "re-decide task failed, rejecting the peer");
+                error!(peer = %asked.0.fmt_short(), %err, "re-decide task failed, rejecting the peer");
                 (asked, Err(Rejection::new("the policy failed")))
             }
         };
         if !self.reauth.finish(&peer) {
-            debug!(remote = %peer.fmt_short(), "the peer left before its decision");
+            debug!(peer = %peer.fmt_short(), "the peer left before its decision");
             return;
         }
         if let Err(rejection) = &decision
@@ -383,7 +383,7 @@ impl Actor {
                 .reauth
                 .retry(&peer, event, tokio::time::Instant::now().into_std());
             warn!(
-                remote = %peer.fmt_short(),
+                peer = %peer.fmt_short(),
                 reason = rejection.reason(),
                 ?wait,
                 "the policy did not decide, keeping the peer's authorization and asking again later",
@@ -396,13 +396,13 @@ impl Actor {
             decision.as_ref().ok().cloned(),
         );
         if !applied {
-            debug!(remote = %peer.fmt_short(), started, "dropping a decision a newer one replaced");
+            debug!(peer = %peer.fmt_short(), started, "dropping a decision a newer one replaced");
             return;
         }
         match decision {
             Ok(authorization) => {
                 debug!(
-                    remote = %peer.fmt_short(),
+                    peer = %peer.fmt_short(),
                     grant = ?authorization.grant,
                     expires = ?authorization.expires,
                     "the policy decided again",
@@ -416,7 +416,7 @@ impl Actor {
             }
             Err(rejection) => {
                 info!(
-                    remote = %peer.fmt_short(),
+                    peer = %peer.fmt_short(),
                     reason = rejection.reason(),
                     code = %rejection.code(),
                     "the policy rejected the peer, closing its sessions",
@@ -438,7 +438,7 @@ impl Actor {
         self.add_peer_session(&session);
         let inner = &session.inner;
         info!(
-            remote = %inner.remote.fmt_short(),
+            peer = %inner.peer.fmt_short(),
             link = %inner.link,
             dialed = inner.dialed,
             "session started",
@@ -452,7 +452,7 @@ impl Actor {
     /// Returns the session and the driver that runs it.
     fn add_link(&mut self, parts: SessionParts) -> (Session, moq_net::Driver) {
         let SessionParts {
-            remote,
+            peer,
             connection,
             dialed,
             admitted,
@@ -462,14 +462,14 @@ impl Actor {
             auth,
         } = parts;
         let link_state = LinkState::default();
-        let hop = Hop::of(&remote);
+        let hop = Hop::of(&peer);
         // A token no other session with the peer brought may grant more than
         // the authorization this session reuses, so the policy sees it.
         let new_token = !admitted.fresh
             && request.token().is_some_and(|token| {
                 !self
                     .peers
-                    .get(&remote)
+                    .get(&peer)
                     .into_iter()
                     .flatten()
                     .any(|session| session.inner.request.token() == Some(token))
@@ -480,7 +480,7 @@ impl Actor {
         let session = Session {
             inner: Arc::new(SessionInner {
                 link,
-                remote,
+                peer,
                 dialed,
                 request,
                 connection,
@@ -500,7 +500,7 @@ impl Actor {
             link,
             LinkEntry {
                 kind: LinkKind::Direct,
-                remote: Some(remote),
+                peer: Some(peer),
                 hop,
                 grant: None,
                 consume: true,
@@ -510,41 +510,41 @@ impl Actor {
             },
         );
         drop(state);
-        self.reauth.register(remote);
+        self.reauth.register(peer);
         match registered {
             Registered::Applied => self.reauth.decided(
-                &remote,
+                &peer,
                 &admitted.authorization,
                 tokio::time::Instant::now().into_std(),
                 SystemTime::now(),
             ),
             Registered::Kept => {}
             Registered::Stale => {
-                debug!(remote = %remote.fmt_short(), "the session's authorization went stale before it registered, deciding again");
-                self.reauth.request(&remote);
+                debug!(peer = %peer.fmt_short(), "the session's authorization went stale before it registered, deciding again");
+                self.reauth.request(&peer);
             }
         }
         if new_token && registered != Registered::Stale {
-            debug!(remote = %remote.fmt_short(), "the session brought a new token, deciding again");
-            self.reauth.request(&remote);
+            debug!(peer = %peer.fmt_short(), "the session brought a new token, deciding again");
+            self.reauth.request(&peer);
         }
         (session, driver)
     }
 
     /// Adds a session to its peer's, and answers the dials that wait for the peer.
     fn add_peer_session(&mut self, session: &Session) {
-        let remote = session.inner.remote;
+        let peer = session.inner.peer;
         // Two peers that dial each other at once end up with two sessions
         // each. Both stay: the two sides see the collision at different
         // instants, so either may already have handed out the other's second.
-        let sessions = self.peers.entry(remote).or_default();
+        let sessions = self.peers.entry(peer).or_default();
         if !sessions.is_empty() {
-            debug!(remote = %remote.fmt_short(), "simultaneous connect, serving the first session");
+            debug!(peer = %peer.fmt_short(), "simultaneous connect, serving the first session");
         }
         sessions.push(session.clone());
         self.publish_sessions();
-        if let Some(serving) = self.live_session(&remote) {
-            for reply in self.pending.remove(&remote).into_iter().flatten() {
+        if let Some(serving) = self.live_session(&peer) {
+            for reply in self.pending.remove(&peer).into_iter().flatten() {
                 reply.send(Ok(serving.clone())).ok();
             }
         }
@@ -554,7 +554,7 @@ impl Actor {
     fn spawn_session(&mut self, session: Session, driver: moq_net::Driver) {
         let SessionInner {
             link,
-            remote,
+            peer,
             ref connection,
             ref moq,
             ref link_state,
@@ -588,9 +588,9 @@ impl Actor {
                 drop(session);
                 err
             }
-            .instrument(info_span!("session", remote = %remote.fmt_short(), %link)),
+            .instrument(info_span!("session", peer = %peer.fmt_short(), %link)),
         );
-        self.session_ids.insert(handle.id(), (link, remote));
+        self.session_ids.insert(handle.id(), (link, peer));
     }
 
     /// Cleans up after a session task ends, or panics.
@@ -599,29 +599,29 @@ impl Actor {
         id: tokio::task::Id,
         result: Result<moq_net::Error, tokio::task::JoinError>,
     ) {
-        let Some((link, remote)) = self.session_ids.remove(&id) else {
+        let Some((link, peer)) = self.session_ids.remove(&id) else {
             return;
         };
         match result {
             Ok(moq_net::Error::Closed | moq_net::Error::Cancel) => {
-                info!(remote = %remote.fmt_short(), %link, "session closed");
+                info!(peer = %peer.fmt_short(), %link, "session closed");
             }
-            Ok(err) => info!(remote = %remote.fmt_short(), %link, %err, "session ended"),
-            Err(err) => error!(remote = %remote.fmt_short(), %link, %err, "session task failed"),
+            Ok(err) => info!(peer = %peer.fmt_short(), %link, %err, "session ended"),
+            Err(err) => error!(peer = %peer.fmt_short(), %link, %err, "session task failed"),
         }
         let mut last = false;
-        if let Some(sessions) = self.peers.get_mut(&remote) {
+        if let Some(sessions) = self.peers.get_mut(&peer) {
             sessions.retain(|session| session.inner.link != link);
             if sessions.is_empty() {
-                self.peers.remove(&remote);
+                self.peers.remove(&peer);
                 last = true;
             }
         }
         let mut state = self.shared.state.lock().expect("poisoned");
         state.remove_link(link);
         if last {
-            state.peer_left(&remote);
-            self.reauth.remove(&remote);
+            state.peer_left(&peer);
+            self.reauth.remove(&peer);
         }
         drop(state);
         self.publish_sessions();

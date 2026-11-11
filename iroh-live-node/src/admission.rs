@@ -63,7 +63,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
-    let remote = connection.remote_id();
+    let peer = connection.remote_id();
     let transport = transport::accept(connection.clone())?;
     let opened = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
@@ -73,16 +73,16 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     let handshake = match opened {
         Ok(opened) => opened.map_err(|source| e!(Error::Moq { source }))?,
         Err(_) => {
-            debug!(remote = %remote.fmt_short(), "no session setup in time");
+            debug!(peer = %peer.fmt_short(), "no session setup in time");
             return Err(e!(Error::Moq {
                 source: moq_net::Error::Timeout
             }));
         }
     };
     let request = SessionRequest::from_handshake(&handshake);
-    debug!(remote = %remote.fmt_short(), path = request.path(), "session requested");
+    debug!(peer = %peer.fmt_short(), path = request.path(), "session requested");
     let decided = tokio::select! {
-        decided = authorize(shared, remote, &request, false) => decided,
+        decided = authorize(shared, peer, &request, false) => decided,
         _ = shared.shutdown.cancelled() => {
             handshake.close(moq_net::Error::Cancel);
             return Err(e!(Error::ShutDown));
@@ -92,7 +92,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         Ok(admitted) => admitted,
         Err(rejection) => {
             info!(
-                remote = %remote.fmt_short(),
+                peer = %peer.fmt_short(),
                 reason = rejection.reason(),
                 code = %rejection.code(),
                 "the policy rejected the session",
@@ -105,18 +105,18 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         handshake.close(moq_net::Error::Cancel);
         return Err(e!(Error::ShutDown));
     }
-    info!(remote = %remote.fmt_short(), grant = ?admitted.authorization.grant, "admitting session");
+    info!(peer = %peer.fmt_short(), grant = ?admitted.authorization.grant, "admitting session");
     // Authorized before the handshake completes, so the session's first
     // announcements already keep to what the peer may see.
     let auth = handshake.auth();
     auth.authorize(&shared.state.lock().expect("poisoned").grant_for(
         LinkKind::Direct,
-        Some(&remote),
+        Some(&peer),
         &admitted.authorization.grant,
     ));
     let handshake = handshake
         .with_publisher(served(&shared.table))
-        .with_peer_hop(Hop::of(&remote).id())
+        .with_peer_hop(Hop::of(&peer).id())
         .with_subscriber(subscriber(shared));
     let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
         .await
@@ -127,7 +127,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         })?
         .map_err(|source| e!(Error::Moq { source }))?;
     let parts = SessionParts {
-        remote,
+        peer,
         connection,
         dialed: false,
         admitted,
@@ -189,7 +189,7 @@ impl Drop for Pending {
     }
 }
 
-/// Returns the authorization a session with `remote` starts with.
+/// Returns the authorization a session with `peer` starts with.
 ///
 /// A peer that already holds an authorization keeps it, so a second
 /// session is not decided again. Otherwise the policy decides, with `dialed`
@@ -197,18 +197,18 @@ impl Drop for Pending {
 /// session reconciles it with the peer's authorization when it registers.
 pub(crate) async fn authorize(
     shared: &Arc<Shared>,
-    remote: EndpointId,
+    peer: EndpointId,
     request: &SessionRequest,
     dialed: bool,
 ) -> Result<Admitted, Rejection> {
-    let snapshot = shared.state.lock().expect("poisoned").begin(remote);
+    let snapshot = shared.state.lock().expect("poisoned").begin(peer);
     let pending = Pending {
         shared: Arc::downgrade(shared),
-        peer: remote,
+        peer,
         armed: true,
     };
     if let Some(authorization) = snapshot.stored {
-        debug!(remote = %remote.fmt_short(), "the peer already holds an authorization");
+        debug!(peer = %peer.fmt_short(), "the peer already holds an authorization");
         return Ok(Admitted {
             authorization,
             decided: snapshot.epoch,
@@ -216,7 +216,7 @@ pub(crate) async fn authorize(
             pending,
         });
     }
-    let request = PeerRequest::new(remote, request.clone(), dialed, Event::Connect);
+    let request = PeerRequest::new(peer, request.clone(), dialed, Event::Connect);
     let authorization = decide(shared, &request).await?;
     Ok(Admitted {
         authorization,

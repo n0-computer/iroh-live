@@ -433,7 +433,7 @@ mod window {
         previous: Option<Previous>,
     ) -> Connecting {
         info!(
-            remote = %ticket.peer().fmt_short(),
+            peer = %ticket.peer().fmt_short(),
             broadcast = %ticket.path(),
             "dialing"
         );

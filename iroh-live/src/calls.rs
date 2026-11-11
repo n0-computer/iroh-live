@@ -181,7 +181,7 @@ impl Inner {
             return;
         }
         for peer in now.difference(&before) {
-            debug!(remote = %peer.fmt_short(), "ringing");
+            debug!(peer = %peer.fmt_short(), "ringing");
             self.events.send(CallEvent::Ringing(*peer)).ok();
         }
         self.ringing.set(now).ok();
@@ -324,7 +324,7 @@ impl Calls {
         let inner = Arc::downgrade(&self.inner);
         let dial = tokio::spawn(async move {
             if let Err(err) = node.connect(peer).await {
-                warn!(remote = %peer.fmt_short(), %err, "could not dial the peer to ring it");
+                warn!(peer = %peer.fmt_short(), %err, "could not dial the peer to ring it");
             }
             if let Some(inner) = inner.upgrade() {
                 inner.lock().dialing.remove(&peer);
@@ -435,7 +435,7 @@ impl Calls {
         state.active.insert(peer);
         self.inner.recompute(&state);
         pending.connected = true;
-        info!(remote = %peer.fmt_short(), "call connected");
+        info!(peer = %peer.fmt_short(), "call connected");
         Ok(Call {
             inner: self.inner.clone(),
             peer,
@@ -462,7 +462,7 @@ impl Drop for Pending {
         let mut state = self.inner.lock();
         self.inner.withdraw(self.peer, &mut state);
         self.inner.recompute(&state);
-        debug!(remote = %self.peer.fmt_short(), "call attempt dropped");
+        debug!(peer = %self.peer.fmt_short(), "call attempt dropped");
     }
 }
 
@@ -531,7 +531,7 @@ impl Drop for Call {
             state.ended.insert(self.peer);
         }
         self.inner.recompute(&state);
-        info!(remote = %self.peer.fmt_short(), "call ended");
+        info!(peer = %self.peer.fmt_short(), "call ended");
     }
 }
 

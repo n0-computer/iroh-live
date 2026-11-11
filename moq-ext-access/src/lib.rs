@@ -356,7 +356,7 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 /// A publication is visible when the link's `grant` covers its path and its
 /// audience admits the link. A relay sees `Granted` publications, and never a
 /// `Peers` one, which a relay would forward to anyone. A direct link is in a
-/// `Peers` audience when its `remote` is in the set.
+/// `Peers` audience when its `peer` is in the set.
 ///
 /// Each path is a literal pattern, so nothing beside the listed publications
 /// matches. A path no pattern can spell is left out.
@@ -370,11 +370,11 @@ pub fn visible_paths<'a, P: PeerId>(
     publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,
     grant: &Grant,
     role: LinkRole,
-    remote: Option<&P>,
+    peer: Option<&P>,
 ) -> Patterns {
     publications
         .into_iter()
-        .filter(|(path, audience)| visible(path, audience, grant, role, remote))
+        .filter(|(path, audience)| visible(path, audience, grant, role, peer))
         .filter_map(|(path, _)| Pattern::literal(path).ok())
         .collect()
 }
@@ -385,7 +385,7 @@ fn visible<P: PeerId>(
     audience: &AudienceKind<P>,
     grant: &Grant,
     role: LinkRole,
-    remote: Option<&P>,
+    peer: Option<&P>,
 ) -> bool {
     if !grant.allows_subscribe(path) {
         return false;
@@ -393,7 +393,7 @@ fn visible<P: PeerId>(
     match (audience, role) {
         (AudienceKind::Granted, _) => true,
         (AudienceKind::Peers(peers), LinkRole::Direct) => {
-            remote.is_some_and(|remote| peers.contains(remote))
+            peer.is_some_and(|peer| peers.contains(peer))
         }
         _ => false,
     }

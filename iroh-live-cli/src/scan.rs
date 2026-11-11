@@ -272,7 +272,7 @@ async fn scan(
 /// Reports a ticket the scan read.
 fn found(state: &watch::Sender<ScanState>, ctx: &egui::Context, ticket: BroadcastTicket) {
     info!(
-        remote = %ticket.peer().fmt_short(),
+        peer = %ticket.peer().fmt_short(),
         broadcast = %ticket.path(),
         "ticket scanned"
     );

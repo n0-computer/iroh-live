@@ -36,14 +36,14 @@ use crate::{
 /// # }
 /// ```
 #[derive(Clone, derive_more::Debug)]
-#[debug("Session({}, {}, dialed {})", inner.remote.fmt_short(), inner.link, inner.dialed)]
+#[debug("Session({}, {}, dialed {})", inner.peer.fmt_short(), inner.link, inner.dialed)]
 pub struct Session {
     pub(crate) inner: Arc<SessionInner>,
 }
 
 pub(crate) struct SessionInner {
     pub(crate) link: LinkId,
-    pub(crate) remote: EndpointId,
+    pub(crate) peer: EndpointId,
     pub(crate) dialed: bool,
     pub(crate) request: SessionRequest,
     pub(crate) connection: Connection,
@@ -67,7 +67,7 @@ impl Eq for Session {}
 impl Session {
     /// Returns the peer's endpoint id.
     pub fn peer(&self) -> EndpointId {
-        self.inner.remote
+        self.inner.peer
     }
 
     /// Reports whether this node dialed the session.
@@ -86,7 +86,7 @@ impl Session {
             .upgrade()
             .and_then(|shared| {
                 let state = shared.state.lock().expect("poisoned");
-                state.peer_effective_grant(&self.inner.remote)
+                state.peer_effective_grant(&self.inner.peer)
             })
             .unwrap_or_else(Grant::nothing)
     }
@@ -124,7 +124,7 @@ impl Session {
         let path = crate::error::to_path(path)?;
         let grant = self.grant();
         if !grant.allows_publish(path.as_str()) {
-            return Err(Error::not_granted(path, self.inner.remote, &grant));
+            return Err(Error::not_granted(path, self.inner.peer, &grant));
         }
         let Some(shared) = self.inner.shared.upgrade() else {
             return Err(e!(Error::ShutDown));
@@ -180,7 +180,7 @@ impl Session {
     /// [`closed`](Self::closed) reports it as a [`moq_net::Error::Session`]
     /// source, for example `Session(SessionError::App(7))` for `App(7)`.
     pub fn close(&self, code: moq_net::Error) {
-        info!(remote = %self.inner.remote.fmt_short(), %code, "closing session");
+        info!(peer = %self.inner.peer.fmt_short(), %code, "closing session");
         self.inner.closing.store(true, Ordering::Release);
         self.inner.moq.abort(code);
     }

@@ -139,12 +139,12 @@ impl Transport {
     /// Wraps `connection`, which must have negotiated a MoQ ALPN.
     fn new(connection: Connection) -> Result<Self, Error> {
         let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
-        let remote = connection.remote_id().fmt_short();
+        let peer = connection.remote_id().fmt_short();
         if !moq_net::ALPNS.contains(&alpn.as_str()) {
-            debug!(%alpn, %remote, "unsupported ALPN");
+            debug!(%alpn, %peer, "unsupported ALPN");
             return Err(e!(Error::UnsupportedAlpn { alpn }));
         }
-        debug!(%alpn, %remote, side = ?connection.side(), "MoQ transport opened");
+        debug!(%alpn, %peer, side = ?connection.side(), "MoQ transport opened");
         Ok(Self {
             conn: connection,
             accept_uni: OpSlot::default(),
@@ -258,7 +258,7 @@ impl poll::Session for Transport {
 
     fn close(&self, code: u32, reason: &str) {
         debug!(
-            remote = %self.conn.remote_id().fmt_short(),
+            peer = %self.conn.remote_id().fmt_short(),
             code,
             reason,
             "closing the connection"

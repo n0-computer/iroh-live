@@ -132,7 +132,7 @@ pub async fn subscribe(live: &Node, ticket: &BroadcastTicket) -> Result<Subscrib
         Ok(result) => result?,
         Err(_) => {
             warn!(
-                remote = %ticket.peer().fmt_short(),
+                peer = %ticket.peer().fmt_short(),
                 broadcast = %ticket.path(),
                 seconds = QUIET_SUBSCRIBE.as_secs(),
                 "still waiting for the broadcast"
@@ -147,7 +147,7 @@ pub async fn subscribe(live: &Node, ticket: &BroadcastTicket) -> Result<Subscrib
         }
     };
     info!(
-        remote = %ticket.peer().fmt_short(),
+        peer = %ticket.peer().fmt_short(),
         broadcast = %ticket.path(),
         path = %sub.subscription().path(),
         "subscribed"

@@ -352,7 +352,7 @@ mod window {
                 if shown || !self.opening_keys.insert(key) {
                     continue;
                 }
-                info!(remote = %short(remote), %name, "subscribing to a member");
+                info!(peer = %short(remote), %name, "subscribing to a member");
                 self.opening.spawn(open(
                     self.room.clone(),
                     remote,
@@ -480,7 +480,7 @@ mod window {
                 }
                 let peer = self.peers.remove(index);
                 info!(
-                    remote = %short(peer.remote),
+                    peer = %short(peer.remote),
                     name = %peer.name,
                     reason,
                     "dropping a peer tile"
@@ -649,11 +649,11 @@ mod window {
         match opened.await {
             Ok(Ok((sub, player))) => Some(Opened { sub, player }),
             Ok(Err(err)) => {
-                warn!(remote = %short(remote), %name, error = %format!("{err:#}"), "peer broadcast failed to open");
+                warn!(peer = %short(remote), %name, error = %format!("{err:#}"), "peer broadcast failed to open");
                 None
             }
             Err(_) => {
-                warn!(remote = %short(remote), %name, "peer broadcast produced no catalog");
+                warn!(peer = %short(remote), %name, "peer broadcast produced no catalog");
                 None
             }
         }

@@ -309,7 +309,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         &uplink,
         LinkEntry {
             kind: LinkKind::Relay,
-            remote: iroh_relay,
+            peer: iroh_relay,
             hop,
             grant: Some(Grant::everything()),
             consume: config.consume,

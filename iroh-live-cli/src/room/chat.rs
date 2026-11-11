@@ -103,7 +103,7 @@ pub(super) async fn read(
     let mut delivered = VecDeque::new();
     loop {
         if let Err(err) = read_once(&room, from, &mut delivered, &tx, &ctx).await {
-            debug!(remote = %from.fmt_short(), error = %err, "chat read ended");
+            debug!(peer = %from.fmt_short(), error = %err, "chat read ended");
         }
         if tx.is_closed() {
             return;

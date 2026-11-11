@@ -55,18 +55,18 @@ impl Hop {
     }
 }
 
-/// Returns an auth handle authorized for what a direct session with `remote` may see now.
+/// Returns an auth handle authorized for what a direct session with `peer` may see now.
 ///
 /// Authorized before the session starts, so its first announcements already
 /// keep to the grant. The node re-authorizes it as its publications change.
-pub(crate) fn authorized(shared: &Shared, remote: EndpointId, grant: &Grant) -> auth::Handle {
+pub(crate) fn authorized(shared: &Shared, peer: EndpointId, grant: &Grant) -> auth::Handle {
     let auth = auth::Handle::new();
     let scope =
         shared
             .state
             .lock()
             .expect("poisoned")
-            .grant_for(LinkKind::Direct, Some(&remote), grant);
+            .grant_for(LinkKind::Direct, Some(&peer), grant);
     auth.authorize(&scope);
     auth
 }
@@ -82,7 +82,7 @@ pub(crate) fn subscriber(shared: &Shared) -> origin::Producer {
 
 /// Everything a session needs to run, produced by a dial or an admission.
 pub(crate) struct SessionParts {
-    pub(crate) remote: EndpointId,
+    pub(crate) peer: EndpointId,
     pub(crate) connection: Connection,
     pub(crate) dialed: bool,
     /// What the policy decided for the peer before the handshake.
@@ -97,7 +97,7 @@ pub(crate) struct SessionParts {
     pub(crate) auth: auth::Handle,
 }
 
-/// Dials `remote` and completes the MoQ handshake as the client.
+/// Dials `peer` and completes the MoQ handshake as the client.
 ///
 /// Asks the node's policy first, unless the peer already has an
 /// authorization. The session's
@@ -105,12 +105,12 @@ pub(crate) struct SessionParts {
 /// only what its grant and the audiences let it see, as an accepted one does.
 pub(crate) async fn dial_session(
     shared: Arc<Shared>,
-    remote: EndpointAddr,
+    peer: EndpointAddr,
     options: ConnectOptions,
 ) -> Result<SessionParts, Error> {
-    let remote_id = remote.id;
+    let peer_id = peer.id;
     let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
-    let admitted = authorize(&shared, remote_id, &request, true)
+    let admitted = authorize(&shared, peer_id, &request, true)
         .await
         .map_err(|source| {
             info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
@@ -120,13 +120,13 @@ pub(crate) async fn dial_session(
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
     }
-    let transport = transport::dial_with(&shared.endpoint, remote, options.quic()).await?;
+    let transport = transport::dial_with(&shared.endpoint, peer, options.quic()).await?;
     let connection = transport.conn().clone();
-    let auth = authorized(&shared, remote_id, grant);
+    let auth = authorized(&shared, peer_id, grant);
     let (moq, driver) = client_handshake(
         transport,
         &options,
-        remote_id,
+        peer_id,
         &served(&shared.table),
         Some(subscriber(&shared)),
         auth.clone(),
@@ -137,7 +137,7 @@ pub(crate) async fn dial_session(
         source => e!(Error::Moq { source }),
     })?;
     Ok(SessionParts {
-        remote: remote_id,
+        peer: peer_id,
         connection,
         dialed: true,
         admitted,
@@ -157,14 +157,14 @@ pub(crate) async fn dial_session(
 pub(crate) async fn client_handshake(
     transport: transport::Transport,
     options: &ConnectOptions,
-    remote: EndpointId,
+    peer: EndpointId,
     publish: &origin::Consumer,
     subscriber: Option<origin::Producer>,
     auth: auth::Handle,
 ) -> Result<(moq_net::Session, moq_net::Driver), moq_net::Error> {
     let mut client = moq_net::Client::new()
         .with_publisher(publish.clone())
-        .with_peer_hop(Hop::of(&remote).id())
+        .with_peer_hop(Hop::of(&peer).id())
         .with_auth(auth);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);

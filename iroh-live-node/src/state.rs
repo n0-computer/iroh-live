@@ -177,7 +177,7 @@ impl Drop for PubEntry {
 #[derive(derive_more::Debug)]
 pub(crate) struct LinkEntry {
     pub(crate) kind: LinkKind,
-    pub(crate) remote: Option<EndpointId>,
+    pub(crate) peer: Option<EndpointId>,
     /// The identity the link's routes are attributed to in the route table.
     pub(crate) hop: Hop,
     /// What a relay may do at most, before audiences.
@@ -464,12 +464,12 @@ impl State {
         self.authorize_peer(peer);
     }
 
-    /// Returns `base` widened by the ticket paths of `remote` it does not cover yet.
+    /// Returns `base` widened by the ticket paths of `peer` it does not cover yet.
     ///
     /// A claimed path that `base` already lets the peer publish adds nothing,
     /// but stays recorded, so it takes effect if the base narrows.
-    pub(crate) fn effective_grant(&self, remote: Option<&EndpointId>, base: &Grant) -> Grant {
-        let Some(paths) = remote.and_then(|remote| self.tickets.get(remote)) else {
+    pub(crate) fn effective_grant(&self, peer: Option<&EndpointId>, base: &Grant) -> Grant {
+        let Some(paths) = peer.and_then(|peer| self.tickets.get(peer)) else {
             return base.clone();
         };
         paths
@@ -485,7 +485,7 @@ impl State {
     /// Re-authorizes every link with `peer`.
     fn authorize_peer(&self, peer: &EndpointId) {
         for (id, link) in &self.links {
-            if link.remote.as_ref() == Some(peer) {
+            if link.peer.as_ref() == Some(peer) {
                 self.authorize(*id);
             }
         }
@@ -529,7 +529,7 @@ impl State {
     /// registration is decided again. So may one whose authorization lapsed.
     /// The grant carries the authorization's expiry.
     fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
-        let peer = match (&link.grant, &link.remote) {
+        let peer = match (&link.grant, &link.peer) {
             (None, Some(peer)) => self.peers.get(peer),
             _ => None,
         };
@@ -538,7 +538,7 @@ impl State {
             (None, Some(entry)) => entry.grant().unwrap_or_else(Grant::nothing),
             (None, None) => Grant::nothing(),
         };
-        let mut grant = self.grant_for(link.kind, link.remote.as_ref(), &base);
+        let mut grant = self.grant_for(link.kind, link.peer.as_ref(), &base);
         grant.expires = peer.and_then(|entry| entry.expires);
         grant
     }
@@ -552,21 +552,21 @@ impl State {
     pub(crate) fn grant_for(
         &self,
         kind: LinkKind,
-        remote: Option<&EndpointId>,
+        peer: Option<&EndpointId>,
         base: &Grant,
     ) -> auth::Grant {
         let role = match kind {
             LinkKind::Direct => LinkRole::Direct,
             LinkKind::Relay => LinkRole::Relay,
         };
-        let base = &self.effective_grant(remote, base);
+        let base = &self.effective_grant(peer, base);
         let subscribe = moq_ext_access::visible_paths(
             self.publications
                 .values()
                 .map(|publication| (publication.path.as_str(), &publication.audience)),
             base,
             role,
-            remote,
+            peer,
         );
         let publish = match kind {
             LinkKind::Direct => base.publish.clone(),
@@ -687,7 +687,7 @@ mod tests {
     /// Adds `link` as link `id`, admitting a direct link's peer with every right first.
     fn add(state: &mut State, id: LinkId, link: LinkEntry) {
         if link.kind == LinkKind::Direct {
-            let peer = link.remote.expect("a direct link has a peer");
+            let peer = link.peer.expect("a direct link has a peer");
             if state.peer_grant(&peer).is_none() {
                 state.admit_peer(peer, Grant::everything().into());
             }
@@ -703,11 +703,11 @@ mod tests {
 
     /// Returns a link entry of `kind` with a peer of its own, which feeds the table.
     fn link(kind: LinkKind) -> LinkEntry {
-        let remote = SecretKey::generate().public();
+        let peer = SecretKey::generate().public();
         LinkEntry {
             kind,
-            remote: Some(remote),
-            hop: Hop::of(&remote),
+            peer: Some(peer),
+            hop: Hop::of(&peer),
             grant: (kind == LinkKind::Relay).then(Grant::everything),
             consume: true,
             auth: auth::Handle::new(),
@@ -770,7 +770,7 @@ mod tests {
     async fn a_ticket_claim_widens_the_policy_grant_to_its_path() {
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
-        let peer = direct.remote.expect("a peer");
+        let peer = direct.peer.expect("a peer");
         state.admit_peer(peer, own_paths(peer).into());
         add(&mut state, LinkId(1), direct);
         let own = format!("live/{peer}/cam");
@@ -823,7 +823,7 @@ mod tests {
         let mut state = State::default();
         let alice = link(LinkKind::Direct);
         let bob = link(LinkKind::Direct);
-        let alice_id = alice.remote.expect("a peer");
+        let alice_id = alice.peer.expect("a peer");
         add(&mut state, LinkId(1), alice);
         add(&mut state, LinkId(2), bob);
 
@@ -848,7 +848,7 @@ mod tests {
         let table = Table::new();
         let mut state = State::default();
         let relay = link(LinkKind::Relay);
-        let relay_id = relay.remote.expect("a peer");
+        let relay_id = relay.peer.expect("a peer");
         add(&mut state, LinkId(1), relay);
 
         // Even a `Peers` audience that names the relay stays off it.
@@ -897,7 +897,7 @@ mod tests {
         let table = Table::new();
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
-        let peer = direct.remote.expect("a peer");
+        let peer = direct.peer.expect("a peer");
         state.admit_peer(peer, Grant::nothing().into());
         add(&mut state, LinkId(1), direct);
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
@@ -912,9 +912,9 @@ mod tests {
         let table = Table::new();
         let mut state = State::default();
         let first = link(LinkKind::Direct);
-        let peer = first.remote.expect("a peer");
+        let peer = first.peer.expect("a peer");
         let second = LinkEntry {
-            remote: Some(peer),
+            peer: Some(peer),
             hop: first.hop,
             ..link(LinkKind::Direct)
         };

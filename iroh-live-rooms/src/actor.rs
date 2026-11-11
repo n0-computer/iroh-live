@@ -250,7 +250,7 @@ impl Actor {
                     && self.peers.remove(&remote).is_some()
                 {
                     info!(
-                        remote = %remote.fmt_short(),
+                        peer = %remote.fmt_short(),
                         horizon = ?STATE_HORIZON,
                         "member stopped announcing, treating it as gone",
                     );
@@ -282,7 +282,7 @@ impl Actor {
         }
         let Ok(announcement) = postcard::from_bytes::<Announcement>(&value.value) else {
             warn!(
-                remote = %remote.fmt_short(),
+                peer = %remote.fmt_short(),
                 len = value.value.len(),
                 "member announcement does not decode",
             );
@@ -290,7 +290,7 @@ impl Actor {
         };
         if announcement.left {
             if self.peers.remove(&remote).is_some() {
-                info!(remote = %remote.fmt_short(), "member left the room");
+                info!(peer = %remote.fmt_short(), "member left the room");
                 self.publish_state();
             }
             return;
@@ -303,16 +303,16 @@ impl Actor {
         let peer = announcement.peer;
         match self.peers.get(&remote) {
             Some(known) if *known == peer => {
-                trace!(remote = %remote.fmt_short(), "announcement renewed");
+                trace!(peer = %remote.fmt_short(), "announcement renewed");
                 return;
             }
             Some(_) => debug!(
-                remote = %remote.fmt_short(),
+                peer = %remote.fmt_short(),
                 broadcasts = ?peer.broadcasts,
                 "member announcement changed",
             ),
             None => info!(
-                remote = %remote.fmt_short(),
+                peer = %remote.fmt_short(),
                 display_name = ?peer.display_name,
                 "member joined the room",
             ),

@@ -86,7 +86,7 @@ impl IrohSessions {
 
     /// Runs one session until it closes or the relay shuts down.
     async fn serve(&self, connection: Connection) -> Result<(), AcceptError> {
-        let remote = connection.remote_id();
+        let peer = connection.remote_id();
         let transport = moq_transport_iroh::accept(connection).map_err(AcceptError::from_err)?;
         let handshake = tokio::time::timeout(
             moq_transport_iroh::HANDSHAKE_TIMEOUT,
@@ -99,7 +99,7 @@ impl IrohSessions {
         // Logged without the query: a token rides it as `?jwt=`.
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
-        let request = PeerRequest::new(remote, session, false, Event::Connect);
+        let request = PeerRequest::new(peer, session, false, Event::Connect);
         let authorization = match self.decide(&request).await {
             Ok(authorization) => authorization,
             Err(rejection) => {
@@ -206,7 +206,7 @@ async fn expiry(authorization: &Authorization) {
 
 impl ProtocolHandler for IrohSessions {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let span = info_span!("iroh_client", remote = %connection.remote_id().fmt_short());
+        let span = info_span!("iroh_client", peer = %connection.remote_id().fmt_short());
         self.serve(connection).instrument(span).await
     }
 

@@ -276,7 +276,7 @@ impl CallApp {
         connected: Connected,
     ) {
         let Connected { call, sub, player } = connected;
-        info!(remote = %peer.fmt_short(), "call connected");
+        info!(peer = %peer.fmt_short(), "call connected");
         let remote = RemoteView::new(
             ctx,
             "call-remote",
@@ -323,7 +323,7 @@ impl CallApp {
         let Some(peer) = ringing.into_iter().find(|peer| !self.ended.contains(peer)) else {
             return;
         };
-        info!(remote = %peer.fmt_short(), "answering");
+        info!(peer = %peer.fmt_short(), "answering");
         self.start(ctx, Direction::Incoming(peer));
     }
 
@@ -333,7 +333,7 @@ impl CallApp {
     /// while the dial runs.
     pub(super) fn dial(&mut self, ctx: &egui::Context, ticket: BroadcastTicket) {
         let peer = ticket.peer();
-        info!(remote = %peer.fmt_short(), "dialing");
+        info!(peer = %peer.fmt_short(), "dialing");
         self.leave_scan();
         self.discard_pending();
         self.screen = Screen::Calling(Calling {
