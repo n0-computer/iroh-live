@@ -5900,6 +5900,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "iroh",
+ "moq-ext-adaptive",
  "moq-net",
  "n0-error",
  "noq-proto",

@@ -21,7 +21,7 @@ which is built on this crate.
 - `MoqPreset`: iroh's N0 preset with BBR3, so the send-rate estimate moq-net
   gives subscribers tracks the link.
 - `LinkSampler`, `LinkSample`, `sample_link`: sample a connection's selected path
-  every 200 ms into round trip, minimum round trip, loss, goodput and the
+  every 200 ms into round trip, minimum round trip, loss, throughput and the
   peer's delivery estimate.
 
 ```rust

@@ -7,12 +7,13 @@ use std::{
 };
 
 use iroh::endpoint::{Connection, PathId};
+use moq_ext_adaptive::NetworkSample;
 use moq_net::session::Stats;
 
 /// How often [`sample_link`] reads the session.
 pub const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 
-/// The span loss and goodput are measured across.
+/// The span loss and throughput are measured across.
 ///
 /// A subscriber sends little but acknowledgements, a few per tick, so over a
 /// shorter span one lost acknowledgement reads as a large loss rate.
@@ -33,24 +34,18 @@ const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
 ///
 /// Measured by this endpoint, so the loss rate is of the packets it sends: on
 /// a subscriber, mostly acknowledgements. `None` means not measured yet.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LinkSample {
-    /// The smoothed round trip time.
-    pub rtt: Option<Duration>,
-    /// The smallest smoothed round trip time on this path in the last 15 s.
-    pub min_rtt: Option<Duration>,
-    /// The share of packets sent in the last two seconds that were lost.
+    /// The readings adaptation uses.
     ///
-    /// The rate is in `0.0..=1.0`.
-    pub loss_rate: Option<f64>,
+    /// The loss rate spans the last two seconds and the minimum round trip
+    /// the last 15 s. The path generation changes when the link moves to
+    /// another path or relay session.
+    pub network: NetworkSample,
     /// The rate UDP bytes arrived at over the last two seconds, in bits/s.
     ///
     /// The count includes packet overhead and duplicates.
-    pub goodput_bps: Option<u64>,
-    /// The peer's estimate of the path to this endpoint, in bits per second.
-    pub delivery_bps: Option<u64>,
-    /// Bumped whenever the link moves to another path or relay session.
-    pub path_generation: u64,
+    pub throughput_bps: Option<u64>,
     /// Whether a direct session's path goes through an iroh relay server.
     pub relayed: bool,
 }
@@ -207,23 +202,25 @@ impl LinkSampler {
             .rev()
             .find(|reading| now.duration_since(reading.at) >= WINDOW);
         LinkSample {
-            rtt: latest.rtt,
-            min_rtt: self.readings.iter().filter_map(|reading| reading.rtt).min(),
-            loss_rate: base.map(|base| {
-                // The sent count includes the packets later declared lost.
-                let lost = latest.lost_packets.saturating_sub(base.lost_packets);
-                let sent = latest.sent_packets.saturating_sub(base.sent_packets);
-                match sent {
-                    sent if sent < MIN_PACKETS => 0.0,
-                    sent => (lost as f64 / sent as f64).min(1.0),
-                }
-            }),
-            goodput_bps: base.map(|base| {
+            network: NetworkSample {
+                rtt: latest.rtt,
+                min_rtt: self.readings.iter().filter_map(|reading| reading.rtt).min(),
+                loss: base.map(|base| {
+                    // The sent count includes the packets later declared lost.
+                    let lost = latest.lost_packets.saturating_sub(base.lost_packets);
+                    let sent = latest.sent_packets.saturating_sub(base.sent_packets);
+                    match sent {
+                        sent if sent < MIN_PACKETS => 0.0,
+                        sent => (lost as f64 / sent as f64).min(1.0),
+                    }
+                }),
+                delivery: recv.map(moq_net::bandwidth::Rate::as_bps),
+                path_generation: self.path_generation,
+            },
+            throughput_bps: base.map(|base| {
                 let bytes = latest.received_bytes.saturating_sub(base.received_bytes);
                 (bytes as f64 * 8.0 / now.duration_since(base.at).as_secs_f64()) as u64
             }),
-            delivery_bps: recv.map(moq_net::bandwidth::Rate::as_bps),
-            path_generation: self.path_generation,
             relayed: false,
         }
     }
@@ -272,12 +269,12 @@ mod tests {
         let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         let early = run(&mut sampler, t0, 5, (20, 2, 20_000));
-        assert_eq!(early.loss_rate, None);
-        assert_eq!(early.goodput_bps, None);
+        assert_eq!(early.network.loss, None);
+        assert_eq!(early.throughput_bps, None);
         let full = run(&mut sampler, t0, 12, (20, 2, 20_000));
-        let loss = full.loss_rate.expect("a loss rate");
+        let loss = full.network.loss.expect("a loss rate");
         assert!((loss - 2.0 / 20.0).abs() < 0.01, "{full:?}");
-        let bps = full.goodput_bps.expect("a goodput");
+        let bps = full.throughput_bps.expect("a throughput");
         assert!((700_000..=900_000).contains(&bps), "{bps}");
     }
 
@@ -285,7 +282,7 @@ mod tests {
     fn a_lost_packet_among_a_handful_is_not_loss() {
         let mut sampler = LinkSampler::default();
         let full = run(&mut sampler, Instant::now(), 12, (1, 0, 0));
-        assert_eq!(full.loss_rate, Some(0.0), "{full:?}");
+        assert_eq!(full.network.loss, Some(0.0), "{full:?}");
     }
 
     /// A new path starts over: generation, baseline and rate windows.
@@ -296,9 +293,9 @@ mod tests {
         run(&mut sampler, t0, 12, (10, 5, 0));
         let later = t0 + 13 * SAMPLE_INTERVAL;
         let backup = sampler.sample(BACKUP, &stats(40, 300, 400, 0), None, later);
-        assert_eq!(backup.path_generation, 1);
-        assert_eq!(backup.min_rtt, Some(Duration::from_millis(40)));
-        assert_eq!(backup.loss_rate, None);
+        assert_eq!(backup.network.path_generation, 1);
+        assert_eq!(backup.network.min_rtt, Some(Duration::from_millis(40)));
+        assert_eq!(backup.network.loss, None);
     }
 
     /// A redial is a new path even when the QUIC path id repeats.
@@ -310,7 +307,7 @@ mod tests {
         assert_eq!(sampler.generation(), 0);
         sampler.new_session();
         let first = sampler.sample(DIRECT, &stats(20, 0, 0, 0), None, t0 + SAMPLE_INTERVAL * 4);
-        assert_eq!(first.path_generation, 1);
+        assert_eq!(first.network.path_generation, 1);
         // A session that never sampled adds nothing.
         sampler.new_session();
         sampler.new_session();
@@ -323,8 +320,8 @@ mod tests {
         let t0 = Instant::now();
         sampler.sample(DIRECT, &stats(2, 0, 0, 0), None, t0);
         let within = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW);
-        assert_eq!(within.min_rtt, Some(Duration::from_millis(2)));
+        assert_eq!(within.network.min_rtt, Some(Duration::from_millis(2)));
         let past = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW * 2);
-        assert_eq!(past.min_rtt, Some(Duration::from_millis(60)));
+        assert_eq!(past.network.min_rtt, Some(Duration::from_millis(60)));
     }
 }

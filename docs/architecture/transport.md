@@ -119,14 +119,17 @@ admits it with a `Grant` or rejects it. `Node::sessions()` watches the open
 sessions.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
-statistics every 200 ms. `Session::link_sample()` returns the latest `LinkSample`:
-round trip, minimum round trip over 15 s, loss rate and goodput over 2 s, the
-peer's delivery estimate, a path generation and whether the path is relayed.
-Every figure is an `Option` and reads `None` until measured. A switch to
-another QUIC path bumps `path_generation` and starts the history over.
+statistics every 200 ms. `Session::link_sample()` returns the latest `LinkSample`.
+Its `network` field is the adaptive crate's `NetworkSample`: round trip, minimum
+round trip over 15 s, loss rate over 2 s, the peer's delivery estimate and a
+path generation. Next to it, the sample holds the throughput over 2 s and
+whether the path is relayed. Every figure is an `Option` and reads `None` until
+measured. A switch to another QUIC path bumps `path_generation` and starts the
+history over.
 `Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
-`sample`) of whichever link serves the subscription. `iroh-live/src/network.rs` turns that
-into the media crate's `NetworkSample`. The monitor logs every sample at TRACE
+`sample`) of whichever link serves the subscription. `iroh-live/src/network.rs` copies
+the sample's `network` part and makes its path generation count changes of the
+serving link too. The monitor logs every sample at TRACE
 as `link sample`.
 
 ## Relay links

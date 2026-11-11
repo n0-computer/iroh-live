@@ -159,7 +159,7 @@ emergency that switches without a hold.
 
 The link monitor logs every sample at TRACE as `link sample`, with the path
 generation, whether the path is relayed, the round trip and its minimum, the
-loss rate, goodput and the publisher's estimate. The selector logs the target
+loss rate, throughput and the publisher's estimate. The selector logs the target
 it asks for at TRACE when it changes, and a rendition it backs off from after a
 decoder failure at INFO. The bound logs a change of path and a step down at
 DEBUG. Together they tell a loop that holds because the link is fine from one

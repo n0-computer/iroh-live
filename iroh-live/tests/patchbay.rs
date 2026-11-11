@@ -320,7 +320,7 @@ impl Link {
 ///
 /// That means a queue, not a longer path.
 fn queued(sample: &LinkSample) -> bool {
-    matches!((sample.rtt, sample.min_rtt), (Some(rtt), Some(min)) if rtt > min * 10)
+    matches!((sample.network.rtt, sample.network.min_rtt), (Some(rtt), Some(min)) if rtt > min * 10)
 }
 
 /// Returns a measured duration in milliseconds, zero while unmeasured.
@@ -501,7 +501,7 @@ fn ladder() -> Vec<VideoRendition> {
 
 /// The longest a change on the link may take to reach the signals.
 ///
-/// The goodput window is two seconds and follows a cap within a few seconds,
+/// The throughput window is two seconds and follows a cap within a few seconds,
 /// so this leaves room for a loaded machine. A slower signal is a failure.
 const SIGNAL_LAG: Duration = Duration::from_secs(15);
 
@@ -656,7 +656,7 @@ async fn adaptation_follows_a_real_link() {
         .expect("timed out waiting for the first frame")
         .expect("the video ended before its first frame");
 
-    // `LinkSample::loss_rate` counts the packets this endpoint sends, mostly
+    // `NetworkSample::loss` counts the packets this endpoint sends, mostly
     // acknowledgements, so the loss has to reach the subscriber's side too.
     // 12% on each of two legs loses about 23% end to end, past the emergency
     // threshold, and still carries the replacement's keyframe.
@@ -684,7 +684,7 @@ async fn adaptation_follows_a_real_link() {
 
 /// A rate limit with no loss steps the ladder down, and lifting it steps back up.
 ///
-/// No packets are dropped. The cap shows as goodput pinned to it and a round
+/// No packets are dropped. The cap shows as throughput pinned to it and a round
 /// trip inflated by the queue. The test checks both in the signals before it
 /// waits for the downgrade.
 #[tokio::test]
@@ -714,7 +714,7 @@ async fn adaptation_follows_a_rate_limit() {
         loop {
             if signals
                 .read()
-                .goodput_bps
+                .throughput_bps
                 .is_some_and(|bps| bps >= clear_enough)
             {
                 return;
@@ -735,7 +735,7 @@ async fn adaptation_follows_a_rate_limit() {
         .impair(LinkCondition::new().rate_kbit(cap_kbit))
         .await;
 
-    // Waits until the cap has shown in goodput and round trip for three
+    // Waits until the cap has shown in throughput and round trip for three
     // downgrade holds, backed by more than `QUEUEING_SAMPLES` distinct round
     // trip readings. The adaptation itself acts on the delivery estimate.
     let held = Adaptation::default().downgrade_hold * 3;
@@ -749,12 +749,12 @@ async fn adaptation_follows_a_rate_limit() {
         let mut last_sample = None;
         loop {
             let signals = signals.read();
-            worst_loss = worst_loss.max(signals.loss_rate.unwrap_or(0.0));
-            let pinned = signals.goodput_bps.is_some_and(|bps| bps < 250_000);
+            worst_loss = worst_loss.max(signals.network.loss.unwrap_or(0.0));
+            let pinned = signals.throughput_bps.is_some_and(|bps| bps < 250_000);
             if pinned && queued(&signals) {
                 let start = *since.get_or_insert_with(Instant::now);
-                if last_sample != Some(signals.rtt) {
-                    last_sample = Some(signals.rtt);
+                if last_sample != Some(signals.network.rtt) {
+                    last_sample = Some(signals.network.rtt);
                     readings += 1;
                 }
                 if Instant::now().duration_since(start) >= held && readings > QUEUEING_SAMPLES {
@@ -779,9 +779,9 @@ async fn adaptation_follows_a_rate_limit() {
     });
     info!(
         after_ms = impaired.elapsed().as_millis() as u64,
-        goodput_kbps = saw_the_cap.goodput_bps.unwrap_or(0) / 1000,
-        rtt_ms = millis(saw_the_cap.rtt),
-        min_rtt_ms = millis(saw_the_cap.min_rtt),
+        throughput_kbps = saw_the_cap.throughput_bps.unwrap_or(0) / 1000,
+        rtt_ms = millis(saw_the_cap.network.rtt),
+        min_rtt_ms = millis(saw_the_cap.network.min_rtt),
         rtt_readings = readings,
         worst_loss,
         "the rate limit reached the signals",
@@ -929,7 +929,7 @@ async fn a_switch_lands_while_the_link_stays_capped() {
     tokio::time::timeout(SIGNAL_LAG, async {
         loop {
             let signals = signals.read();
-            if signals.goodput_bps.is_some_and(|bps| bps < 250_000) && queued(&signals) {
+            if signals.throughput_bps.is_some_and(|bps| bps < 250_000) && queued(&signals) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1054,14 +1054,14 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
         .expect("timed out waiting for the first frame")
         .expect("the video ended before its first frame");
     // Frames over a clear link first, to set the round trip minimum and the
-    // goodput baseline.
+    // throughput baseline.
     let _settle = drain(&mut viewer.frames, Duration::from_secs(3)).await;
 
     let before = signals.read();
     info!(
-        rtt_ms = millis(before.rtt),
-        min_rtt_ms = millis(before.min_rtt),
-        goodput_kbps = ?before.goodput_bps.map(|bps| bps / 1000),
+        rtt_ms = millis(before.network.rtt),
+        min_rtt_ms = millis(before.network.min_rtt),
+        throughput_kbps = ?before.throughput_bps.map(|bps| bps / 1000),
         "clear link",
     );
 
@@ -1090,9 +1090,9 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     let after = signals.read();
     info!(
-        rtt_ms = millis(after.rtt),
-        min_rtt_ms = millis(after.min_rtt),
-        goodput_kbps = ?after.goodput_bps.map(|bps| bps / 1000),
+        rtt_ms = millis(after.network.rtt),
+        min_rtt_ms = millis(after.network.min_rtt),
+        throughput_kbps = ?after.throughput_bps.map(|bps| bps / 1000),
         switches,
         frames,
         "risen baseline watched",
@@ -1112,12 +1112,13 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
     // queue. Measured: 1 to 3ms on the clear link, 37 to 40ms once impaired.
     assert!(
         after
+            .network
             .min_rtt
             .is_some_and(|min| min >= Duration::from_millis(25)),
         "the round trip minimum went from {}ms to {}ms across {watched:?} of an impairment that \
          added 60ms of round trip, so it never re-baselined onto the longer path",
-        millis(before.min_rtt),
-        millis(after.min_rtt),
+        millis(before.network.min_rtt),
+        millis(after.network.min_rtt),
     );
 
     fixture.shutdown().await;

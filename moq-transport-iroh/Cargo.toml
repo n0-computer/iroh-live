@@ -14,6 +14,8 @@ workspace = true
 [dependencies]
 bytes = "1"
 iroh = { workspace = true }
+# `NetworkSample`, the reading a link sample carries for adaptation.
+moq-ext-adaptive = { workspace = true }
 moq-net = { workspace = true }
 n0-error = "1"
 # The congestion controllers: BBR3, which every endpoint binds with, and the

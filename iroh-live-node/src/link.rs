@@ -30,26 +30,25 @@ pub(crate) struct LinkState(Arc<Mutex<LinkSample>>);
 impl LinkState {
     /// Returns the latest reading.
     pub(crate) fn get(&self) -> LinkSample {
-        self.0.lock().expect("poisoned").clone()
+        *self.0.lock().expect("poisoned")
     }
 
     /// Empties the reading, as between sessions, keeping `path_generation`.
     pub(crate) fn clear(&self, path_generation: u64) {
-        self.set(LinkSample {
-            path_generation,
-            ..LinkSample::default()
-        });
+        let mut sample = LinkSample::default();
+        sample.network.path_generation = path_generation;
+        self.set(sample);
     }
 
     pub(crate) fn set(&self, sample: LinkSample) {
         trace!(
-            path_generation = sample.path_generation,
+            path_generation = sample.network.path_generation,
             relayed = sample.relayed,
-            rtt_ms = ?sample.rtt.map(|rtt| rtt.as_millis()),
-            min_rtt_ms = ?sample.min_rtt.map(|rtt| rtt.as_millis()),
-            loss_rate = ?sample.loss_rate,
-            goodput_kbps = ?sample.goodput_bps.map(|bps| bps / 1000),
-            delivery_kbps = ?sample.delivery_bps.map(|bps| bps / 1000),
+            rtt_ms = ?sample.network.rtt.map(|rtt| rtt.as_millis()),
+            min_rtt_ms = ?sample.network.min_rtt.map(|rtt| rtt.as_millis()),
+            loss = ?sample.network.loss,
+            throughput_kbps = ?sample.throughput_bps.map(|bps| bps / 1000),
+            delivery_kbps = ?sample.network.delivery.map(|bps| bps / 1000),
             "link sample",
         );
         *self.0.lock().expect("poisoned") = sample;
@@ -85,10 +84,11 @@ pub(crate) async fn monitor_relay(monitor: moq_tokio::connection::Monitor, state
                 sampler.sample_session(session, &stats, Instant::now())
             }
             // Between sessions nothing is measured.
-            None => LinkSample {
-                path_generation: sampler.generation(),
-                ..LinkSample::default()
-            },
+            None => {
+                let mut sample = LinkSample::default();
+                sample.network.path_generation = sampler.generation();
+                sample
+            }
         };
         state.set(sample);
     }

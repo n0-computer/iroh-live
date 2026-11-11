@@ -1088,7 +1088,7 @@ async fn a_relay_served_subscription_carries_link_samples() {
     let serving = tokio::time::timeout(TIMEOUT, async {
         loop {
             if let Some(serving) = subscription.serving_link()
-                && serving.sample.rtt.is_some()
+                && serving.sample.network.rtt.is_some()
             {
                 return serving;
             }
@@ -1099,8 +1099,12 @@ async fn a_relay_served_subscription_carries_link_samples() {
     .expect("the relay link never reported a round trip");
     assert_eq!(serving.kind, LinkKind::Relay);
     assert_eq!(serving.id, link.id());
-    assert!(serving.sample.min_rtt.is_some(), "{serving:?}");
-    assert!(link.link_sample().rtt.is_some(), "{:?}", link.link_sample());
+    assert!(serving.sample.network.min_rtt.is_some(), "{serving:?}");
+    assert!(
+        link.link_sample().network.rtt.is_some(),
+        "{:?}",
+        link.link_sample()
+    );
 
     // The facade: the player's network signals carry the same readings.
     let player = iroh_live::media::remote_broadcast(&subscription)
