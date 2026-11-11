@@ -34,9 +34,12 @@ use iroh_live::{BroadcastTicket, layout::LiveLayout};
 use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription};
 use moq_net::Path;
 use moq_relay::cluster::Cluster;
+use n0_error::e;
 use n0_watcher::Watcher;
 use tokio::{sync::watch, task::JoinSet};
 use tracing::{debug, info, warn};
+
+use crate::Error;
 
 /// Default for [`PullState::with_linger`].
 ///
@@ -131,8 +134,8 @@ enum Dial {
     Pending,
     /// The session is up and the publisher announced the broadcast.
     Connected,
-    /// The dial failed. A string, since every waiter gets a copy.
-    Failed(String),
+    /// The dial failed. Every waiter gets a copy of the error.
+    Failed(Arc<Error>),
 }
 
 /// One pulled ticket.
@@ -221,13 +224,15 @@ impl PullState {
     ///
     /// # Errors
     ///
-    /// Fails if the publisher cannot be reached, or does not announce the
-    /// broadcast within 15 seconds.
+    /// Fails with [`Error::Claim`] if the ticket's peer does not own its
+    /// path, [`Error::Connect`] or [`Error::Subscribe`] if the publisher
+    /// cannot be reached or refuses the path, and [`Error::Timeout`] if it does
+    /// not announce the broadcast within 15 seconds.
     pub async fn pull(
         &self,
         requested: &str,
         ticket: &BroadcastTicket,
-    ) -> anyhow::Result<PullGuard> {
+    ) -> Result<PullGuard, Error> {
         // Keyed by the name the client asked for, as its mount is. Two
         // spellings of one ticket share the publisher's session, but are
         // claimed apart.
@@ -267,7 +272,7 @@ impl PullState {
                         // Retire it, so the next pull dials again.
                         warn!(local_name = %name, %err, "pull dial failed");
                         inner.retire(&name, &pull);
-                        pull.dial.send_replace(Dial::Failed(format!("{err:#}")));
+                        pull.dial.send_replace(Dial::Failed(Arc::new(err)));
                     }
                 }
             });
@@ -282,11 +287,11 @@ impl PullState {
             .await
             .map_or_else(
                 // The dialing task holds a sender until it reports.
-                |_| Dial::Failed("the pull was dropped before it connected".to_owned()),
+                |_| Dial::Failed(Arc::new(e!(Error::Dropped))),
                 |dial| dial.clone(),
             );
         if let Dial::Failed(err) = outcome {
-            anyhow::bail!("failed to pull {local_name}: {err}");
+            return Err(Error::clone(&err));
         }
 
         Ok(guard)
@@ -314,7 +319,7 @@ impl Pulls {
         &self,
         ticket: &BroadcastTicket,
         local_name: &str,
-    ) -> anyhow::Result<(Subscription, PublisherClaim)> {
+    ) -> Result<(Subscription, PublisherClaim), Error> {
         info!(
             remote = %ticket.peer().fmt_short(),
             path = %ticket.path(),
@@ -340,22 +345,30 @@ impl Pulls {
     /// the path, so a session dialed now is authorized for it before its
     /// handshake. The path resolves through that session, so no other peer
     /// can stand in for the publisher.
-    async fn resolve(&self, ticket: &BroadcastTicket) -> anyhow::Result<Subscription> {
+    async fn resolve(&self, ticket: &BroadcastTicket) -> Result<Subscription, Error> {
         // A publisher that never announces the path to us would keep the
         // subscription waiting forever.
         tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
-            let session = self
-                .node
-                .connect(ticket.peer())
-                .await
-                .map_err(|err| anyhow::anyhow!("failed to reach the remote: {err:#}"))?;
-            session
-                .subscribe(ticket.path())
-                .await
-                .map_err(|err| anyhow::anyhow!("failed to subscribe to the remote: {err:#}"))
+            let session = self.node.connect(ticket.peer()).await.map_err(|source| {
+                e!(Error::Connect {
+                    peer: ticket.peer(),
+                    source
+                })
+            })?;
+            session.subscribe(ticket.path()).await.map_err(|source| {
+                e!(Error::Subscribe {
+                    path: ticket.path().clone(),
+                    source
+                })
+            })
         })
         .await
-        .map_err(|_| anyhow::anyhow!("timed out subscribing to the remote"))?
+        .map_err(|_| {
+            e!(Error::Timeout {
+                path: ticket.path().clone(),
+                timeout: SUBSCRIBE_TIMEOUT
+            })
+        })?
     }
 
     /// Holds the session with the publisher until nothing wants the pull.
@@ -493,9 +506,17 @@ struct PublisherClaim {
 
 impl PublisherClaim {
     /// Claims the ticket's path for its peer, if the peer owns it.
-    fn new(state: &Pulls, ticket: &BroadcastTicket) -> anyhow::Result<Self> {
+    fn new(state: &Pulls, ticket: &BroadcastTicket) -> Result<Self, Error> {
         let publisher = ticket.peer();
-        let path = state.node.claim_path(publisher, ticket.path())?;
+        let path = state
+            .node
+            .claim_path(publisher, ticket.path())
+            .map_err(|source| {
+                e!(Error::Claim {
+                    path: ticket.path().clone(),
+                    source
+                })
+            })?;
         *state
             .publishers
             .lock()

@@ -4530,6 +4530,7 @@ dependencies = [
  "moq-relay",
  "moq-tokio",
  "moq-transport-iroh",
+ "n0-error",
  "n0-future",
  "n0-watcher",
  "percent-encoding",

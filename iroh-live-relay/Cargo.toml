@@ -25,6 +25,7 @@ moq-transport-iroh = { workspace = true }
 # The `live/` layout: tickets, and the grant that keeps a peer to its own
 # paths. `rooms` for the room layout's part of that grant. No `media`.
 iroh-live = { workspace = true, features = ["rooms"] }
+n0-error = "1"
 n0-future = "0.3.2"
 # Watching the pull node's sessions, to close one whose last pull retired.
 n0-watcher = "1"

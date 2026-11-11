@@ -47,13 +47,18 @@ use iroh::SecretKey;
 use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
 use moq_auth::lease;
 use moq_relay::auth::Admissions;
+use n0_error::e;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, info, warn};
 
+mod error;
 mod iroh_sessions;
 pub mod pull;
 
-pub use self::iroh_sessions::{IrohSessions, browser_grant};
+pub use self::{
+    error::Error,
+    iroh_sessions::{IrohSessions, browser_grant},
+};
 
 /// The bundled web viewer, embedded at build time.
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
@@ -218,7 +223,7 @@ pub(crate) fn pull_for(
         match pull_state.pull(&name, &ticket).await {
             Ok(guard) => Some(guard),
             Err(err) => {
-                warn!(%err, "pull failed for the ticket in the url");
+                warn!(%name, "pull failed for the ticket in the url: {err:#}");
                 None
             }
         }
@@ -229,22 +234,22 @@ pub(crate) fn pull_for(
 ///
 /// Every ticket through this relay names its endpoint id, so a file that does
 /// not hold a key is an error, and never a reason to make a new identity.
-fn secret_key() -> anyhow::Result<SecretKey> {
+fn secret_key() -> Result<SecretKey, Error> {
     let dir = match std::env::var_os("IROH_LIVE_RELAY_DATA") {
         Some(dir) => PathBuf::from(dir),
         None => dirs::data_dir()
-            .context("no platform data directory")?
+            .ok_or_else(|| e!(Error::NoDataDir))?
             .join("iroh-live-relay"),
     };
-    std::fs::create_dir_all(&dir)?;
     let path = dir.join("iroh_secret_key");
-    iroh_live::secret_key_file(&path).with_context(|| {
-        format!(
-            "cannot load the relay's identity. Deleting {} starts over, with a new \
-             endpoint id that invalidates every ticket naming the old one",
-            path.display()
-        )
-    })
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| iroh_live::secret_key_file(&path))
+        .map_err(|source| {
+            e!(Error::Identity {
+                path,
+                source: Arc::new(source)
+            })
+        })
 }
 
 /// Serves a file of the embedded web viewer, or a 404.
