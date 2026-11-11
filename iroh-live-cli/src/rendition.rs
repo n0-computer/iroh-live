@@ -22,7 +22,7 @@ use crate::{args::CaptureArgs, source_spec::VideoSourceSpec};
 ///
 /// A backend picks its nearest rate, so this gives at most 30 without a mode
 /// list. It matches the screen capture backends' own default.
-pub const DEFAULT_FRAMERATE: u32 = 30;
+pub(crate) const DEFAULT_FRAMERATE: u32 = 30;
 
 /// The highest frame rate `--fps` or an `@<fps>` suffix may name.
 ///
@@ -34,7 +34,7 @@ const SINGLE_RENDITION: &str = "video";
 
 /// The capture frame rate a publish runs at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureFramerate {
+pub(crate) enum CaptureFramerate {
     /// The rate the backend is asked for.
     ///
     /// A device may substitute its nearest rate.
@@ -50,7 +50,7 @@ pub enum CaptureFramerate {
 
 impl CaptureFramerate {
     /// Returns the rate for a capture config, or `None` for the backend's own.
-    pub fn request(self) -> Option<u32> {
+    pub(crate) fn request(self) -> Option<u32> {
         match self {
             Self::Requested { fps, .. } => Some(fps),
             Self::Device => None,
@@ -61,14 +61,14 @@ impl CaptureFramerate {
     ///
     /// The test pattern and `rpicam-vid` have no device mode to defer to, so
     /// [`DEFAULT_FRAMERATE`] stands in.
-    pub fn generated(self) -> u32 {
+    pub(crate) fn generated(self) -> u32 {
         self.request().unwrap_or(DEFAULT_FRAMERATE)
     }
 }
 
 /// What settled a requested capture frame rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FramerateOrigin {
+pub(crate) enum FramerateOrigin {
     /// `--fps` named it.
     Flag,
     /// The highest `@<fps>` in `--renditions` named it.
@@ -113,11 +113,11 @@ struct Rung {
 
 /// The simulcast ladder and its capture frame rate.
 #[derive(Debug)]
-pub struct Ladder {
+pub(crate) struct Ladder {
     /// The rungs, ready for `set_video`.
-    pub encoding: VideoEncoding,
+    pub(crate) encoding: VideoEncoding,
     /// The rate the capture backend is asked for.
-    pub framerate: CaptureFramerate,
+    pub(crate) framerate: CaptureFramerate,
     /// The rungs whose `@<fps>` differs from the capture rate.
     unmet: Vec<UnmetRate>,
 }
@@ -126,7 +126,7 @@ impl Ladder {
     /// Logs the capture frame rate and the rungs that asked for another.
     ///
     /// Call it only once a video source opened.
-    pub fn report(&self) {
+    pub(crate) fn report(&self) {
         match self.framerate {
             CaptureFramerate::Requested { fps, origin } => info!(
                 fps,
@@ -156,7 +156,7 @@ impl Ladder {
 /// Builds the ladder and capture frame rate for `spec` from `args`.
 ///
 /// Fails if a rung does not parse or a frame rate is out of range.
-pub fn ladder(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Ladder> {
+pub(crate) fn ladder(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Ladder> {
     let rungs = rungs(args)?;
     let framerate = capture_framerate(spec, args, &rungs)?;
     Ok(Ladder {

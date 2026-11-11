@@ -59,7 +59,7 @@ impl From<&WatchArgs> for Options {
 }
 
 /// Runs the `watch` command.
-pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     let start = start(&args)?;
 
     let mut options = Options::from(&args);

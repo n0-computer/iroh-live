@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// Runs the `call` command.
-pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
     let local = rt.block_on(setup(&args))?;
 
     // eframe takes over the main thread. The guard lets code on it spawn onto

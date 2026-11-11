@@ -104,7 +104,7 @@ impl Camera {
 /// # Errors
 ///
 /// Returns a message listing the accepted forms.
-pub fn camera_spec(spec: &str) -> Result<VideoSourceSpec, String> {
+pub(crate) fn camera_spec(spec: &str) -> Result<VideoSourceSpec, String> {
     match spec.parse::<VideoSourceSpec>()? {
         VideoSourceSpec::Camera(id) => Ok(VideoSourceSpec::Camera(id)),
         #[cfg(all(target_os = "linux", feature = "rpicam"))]

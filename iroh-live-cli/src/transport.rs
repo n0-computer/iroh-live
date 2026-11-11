@@ -19,7 +19,7 @@ use crate::args::TransportArgs;
 /// Covers a dial that never completes and a catalog that never arrives. A
 /// window cannot be interrupted like a terminal, so `irl call` and `irl room`
 /// stop waiting.
-pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long a subscription waits before saying nothing arrived yet.
 ///
@@ -30,13 +30,13 @@ const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 /// A live node, and the router that accepts its sessions if it serves.
 ///
 /// Shared by the windows of a command, and shut down by whichever ends it.
-pub type SharedNode = Arc<BoundNode>;
+pub(crate) type SharedNode = Arc<BoundNode>;
 
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
 /// With `serve` set, a router accepts incoming subscribers. Without it, only
 /// outbound connections work.
-pub async fn bind_node(serve: bool) -> Result<SharedNode> {
+pub(crate) async fn bind_node(serve: bool) -> Result<SharedNode> {
     bind_node_with(EndpointConfig::from_env()?, serve).await
 }
 
@@ -45,7 +45,7 @@ pub async fn bind_node(serve: bool) -> Result<SharedNode> {
 /// A ticket carries no addresses, so the endpoint uses mDNS on top of the
 /// preset's pkarr and DNS lookup. A node that does not serve only looks up
 /// others and does not announce itself.
-pub async fn bind_node_with(config: EndpointConfig, serve: bool) -> Result<SharedNode> {
+pub(crate) async fn bind_node_with(config: EndpointConfig, serve: bool) -> Result<SharedNode> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointConfig { mdns, ..config }.bind().await?;
     let node = Node::new(endpoint.clone(), LiveLayout::default().config());
@@ -57,7 +57,7 @@ pub async fn bind_node_with(config: EndpointConfig, serve: bool) -> Result<Share
 ///
 /// A [`BoundNode`] dropped without [`BoundNode::shutdown`] shuts down in the
 /// background, which a command that exits right after does not wait for.
-pub async fn with_node<T>(
+pub(crate) async fn with_node<T>(
     transport: SharedNode,
     setup: impl AsyncFnOnce(&SharedNode) -> Result<T>,
 ) -> Result<(SharedNode, T)> {
@@ -72,7 +72,7 @@ pub async fn with_node<T>(
 
 /// A subscription and the media broadcast read through it.
 #[derive(Debug, Clone)]
-pub struct Subscribed {
+pub(crate) struct Subscribed {
     subscription: Subscription,
     broadcast: RemoteBroadcast,
 }
@@ -81,7 +81,7 @@ impl Subscribed {
     /// Starts reading `subscription`'s broadcast.
     ///
     /// [`crate::playback::catalog`] waits for the catalog.
-    pub fn open(subscription: Subscription) -> Self {
+    pub(crate) fn open(subscription: Subscription) -> Self {
         let broadcast = remote_broadcast(&subscription);
         Self {
             subscription,
@@ -90,17 +90,17 @@ impl Subscribed {
     }
 
     /// Returns the media broadcast.
-    pub fn broadcast(&self) -> &RemoteBroadcast {
+    pub(crate) fn broadcast(&self) -> &RemoteBroadcast {
         &self.broadcast
     }
 
     /// Returns the resolved path.
-    pub fn subscription(&self) -> &Subscription {
+    pub(crate) fn subscription(&self) -> &Subscription {
         &self.subscription
     }
 
     /// Returns the session serving the broadcast, if a direct one does.
-    pub fn session(&self) -> Option<Session> {
+    pub(crate) fn session(&self) -> Option<Session> {
         self.subscription.session()
     }
 
@@ -110,7 +110,7 @@ impl Subscribed {
     /// only a command that reads nothing else from the peer calls this. A room
     /// tile or a call must not: other tiles, the chat or the next call use the
     /// same session.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         if let Some(session) = self.session() {
             session.close(moq_net::Error::Cancel);
         }
@@ -121,7 +121,7 @@ impl Subscribed {
 ///
 /// Prints a notice if the broadcast takes long to appear. Returns once a route
 /// is found, before the catalog arrives.
-pub async fn subscribe(node: &Node, ticket: &BroadcastTicket) -> Result<Subscribed> {
+pub(crate) async fn subscribe(node: &Node, ticket: &BroadcastTicket) -> Result<Subscribed> {
     println!("connecting to {ticket} ...");
     let mut subscribing = std::pin::pin!(async {
         let subscription = node.subscribe_ticket(ticket).await?;
@@ -159,7 +159,7 @@ pub async fn subscribe(node: &Node, ticket: &BroadcastTicket) -> Result<Subscrib
 ///
 /// Prints the ticket unless `--no-serve` is set, and attaches the relay if one
 /// was named.
-pub fn advertise(node: &Node, args: &TransportArgs) -> Result<String> {
+pub(crate) fn advertise(node: &Node, args: &TransportArgs) -> Result<String> {
     let ticket = LiveLayout::default()
         .ticket(node.id(), &args.name)?
         .to_string();
@@ -202,7 +202,7 @@ fn attach_relay(node: &Node, relay: EndpointId, name: &str) -> Result<RelayLink>
 /// Prints a QR code of `ticket`, unless `no_qr` suppresses it.
 ///
 /// A failure is only logged.
-pub fn print_qr(ticket: &str, no_qr: bool) {
+pub(crate) fn print_qr(ticket: &str, no_qr: bool) {
     if !no_qr && let Err(err) = qr2term::print_qr(ticket) {
         warn!(error = %err, "could not print the QR code");
     }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer};
 
 /// A backend choice: a strategy, or one backend by name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::Display)]
-pub enum Backend {
+pub(crate) enum Backend {
     /// Tries the hardware backends in turn, then software.
     #[default]
     #[display("auto")]
@@ -29,22 +29,22 @@ pub enum Backend {
 
 impl Backend {
     /// Returns every decoder choice.
-    pub fn decoders() -> impl Iterator<Item = Self> {
+    pub(crate) fn decoders() -> impl Iterator<Item = Self> {
         Self::choices(decode::NAMES)
     }
 
     /// Returns the clap parser for `--encoder`.
-    pub fn encoder_parser() -> impl TypedValueParser<Value = Self> {
+    pub(crate) fn encoder_parser() -> impl TypedValueParser<Value = Self> {
         Self::parser(encode::NAMES)
     }
 
     /// Returns the clap parser for `--decoder`.
-    pub fn decoder_parser() -> impl TypedValueParser<Value = Self> {
+    pub(crate) fn decoder_parser() -> impl TypedValueParser<Value = Self> {
         Self::parser(decode::NAMES)
     }
 
     /// Deserializes an encoder choice from an `irl run` session file.
-    pub fn deserialize_encoder<'de, D: Deserializer<'de>>(
+    pub(crate) fn deserialize_encoder<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;

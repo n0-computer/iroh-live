@@ -20,7 +20,7 @@ use crate::args::{ImportFormat, PublishArgs};
 
 /// A `file:` video source and the flags that say how to read it.
 #[derive(Debug, Clone)]
-pub struct FileSource {
+pub(crate) struct FileSource {
     path: PathBuf,
     format: ImportFormat,
     transcode: bool,
@@ -32,7 +32,7 @@ impl FileSource {
     ///
     /// Fails if `path` is not a file, or if `looping` is set without
     /// `--transcode`. Only ffmpeg can repeat the input.
-    pub fn new(path: PathBuf, looping: bool, args: &PublishArgs) -> Result<Self> {
+    pub(crate) fn new(path: PathBuf, looping: bool, args: &PublishArgs) -> Result<Self> {
         if !path.is_file() {
             return Err(anyerr!(
                 "no readable file at {}; --video takes a path, as in \
@@ -113,7 +113,7 @@ impl Importer {
 ///
 /// Dropping it stops the ffmpeg child of a `--transcode` import.
 #[derive(derive_more::Debug)]
-pub struct FileImport {
+pub(crate) struct FileImport {
     #[debug(skip)]
     importer: Importer,
     #[debug(skip)]
@@ -129,7 +129,7 @@ impl FileImport {
     /// Reads far enough to publish the catalog before returning, so an early
     /// subscriber finds the tracks. Fails if the file cannot be opened, ffmpeg
     /// is needed and missing, or the header does not match `--format`.
-    pub async fn open(
+    pub(crate) async fn open(
         mut broadcast: moq_net::broadcast::Producer,
         source: FileSource,
     ) -> Result<Self> {
@@ -183,7 +183,7 @@ impl FileImport {
     /// Reads the rest of the file, publishing as it goes.
     ///
     /// On a read or demux error, aborts the tracks with it and returns it.
-    pub async fn run(self) -> Result<()> {
+    pub(crate) async fn run(self) -> Result<()> {
         // `_ffmpeg` lives until the end of this function, so the child runs
         // for as long as the import reads from it.
         let Self {

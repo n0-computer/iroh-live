@@ -24,13 +24,13 @@ const HEARTBEAT: Duration = Duration::from_millis(100);
 /// The size of the buttons on screens without a picture.
 ///
 /// Larger than the egui default, for small touchscreens.
-pub const BUTTON: egui::Vec2 = egui::vec2(200.0, 40.0);
+pub(crate) const BUTTON: egui::Vec2 = egui::vec2(200.0, 40.0);
 
 /// Opens a media window titled `title` and runs it until it closes.
 ///
 /// `build` makes the app from eframe's creation context. Ctrl+C in the
 /// terminal closes the window.
-pub fn run_window<A: eframe::App + 'static>(
+pub(crate) fn run_window<A: eframe::App + 'static>(
     title: &str,
     fullscreen: bool,
     build: impl FnOnce(&eframe::CreationContext<'_>) -> A + 'static,
@@ -50,7 +50,7 @@ pub fn run_window<A: eframe::App + 'static>(
 ///
 /// Dropping it aborts the task.
 #[derive(Debug)]
-pub struct Pending<T> {
+pub(crate) struct Pending<T> {
     rx: oneshot::Receiver<T>,
     task: AbortOnDropHandle<()>,
 }
@@ -59,7 +59,7 @@ impl<T: Send + 'static> Pending<T> {
     /// Runs `future` in a task and repaints `ctx` when it finishes.
     ///
     /// A result that arrives after the window gave up on it goes to `late`.
-    pub fn spawn(
+    pub(crate) fn spawn(
         ctx: &egui::Context,
         future: impl Future<Output = T> + Send + 'static,
         late: impl FnOnce(T) + Send + 'static,
@@ -82,7 +82,7 @@ impl<T: Send + 'static> Pending<T> {
     ///
     /// Returns `Ready(None)` for a task that stopped without a result, which
     /// only happens while the runtime shuts down.
-    pub fn poll(&mut self) -> Poll<Option<T>> {
+    pub(crate) fn poll(&mut self) -> Poll<Option<T>> {
         match self.rx.try_recv() {
             Ok(result) => Poll::Ready(Some(result)),
             Err(oneshot::error::TryRecvError::Empty) => Poll::Pending,
@@ -91,7 +91,7 @@ impl<T: Send + 'static> Pending<T> {
     }
 
     /// Stops the task and returns a result it delivered before it stopped.
-    pub fn cancel(&mut self) -> Option<T> {
+    pub(crate) fn cancel(&mut self) -> Option<T> {
         self.rx.close();
         self.task.abort();
         self.rx.try_recv().ok()
@@ -107,7 +107,7 @@ const CURSOR_IDLE: Duration = Duration::from_secs(2);
 /// Draws the top bar with `text` and a fullscreen toggle.
 ///
 /// Clicking the bar copies `text` to the clipboard.
-pub fn top_bar(ui: &mut egui::Ui, ctx: &egui::Context, text: &str) {
+pub(crate) fn top_bar(ui: &mut egui::Ui, ctx: &egui::Context, text: &str) {
     let content = ctx.content_rect();
     let bar = egui::Rect::from_min_size(content.min, egui::vec2(content.width(), TOP_BAR_HEIGHT));
 
@@ -158,7 +158,7 @@ fn fullscreen_button(ui: &mut egui::Ui, ctx: &egui::Context, bar: egui::Rect) {
 }
 
 /// Draws `contents` in a translucent panel pinned under the top bar.
-pub fn control_panel(ctx: &egui::Context, id: &str, contents: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn control_panel(ctx: &egui::Context, id: &str, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Area::new(egui::Id::new(id))
         .anchor(egui::Align2::LEFT_TOP, [8.0, TOP_BAR_HEIGHT + 4.0])
         .order(egui::Order::Foreground)
@@ -183,7 +183,12 @@ const DIALOG_SPACING: f32 = 8.0;
 ///
 /// The caller sets the width because an [`egui::Area`] is bounded by the
 /// window. Centred content would otherwise stretch the panel across the screen.
-pub fn dialog(ctx: &egui::Context, id: &str, width: f32, contents: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn dialog(
+    ctx: &egui::Context,
+    id: &str,
+    width: f32,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
     egui::Area::new(egui::Id::new(id))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .order(egui::Order::Foreground)
@@ -202,7 +207,7 @@ pub fn dialog(ctx: &egui::Context, id: &str, width: f32, contents: impl FnOnce(&
 
 /// Hides the overlay and the pointer once the pointer has been still for a while.
 #[derive(Debug)]
-pub struct CursorIdle {
+pub(crate) struct CursorIdle {
     visible: bool,
     since: Instant,
 }
@@ -221,7 +226,7 @@ impl CursorIdle {
     /// Returns whether to draw the overlay this frame.
     ///
     /// `pinned` keeps it visible, for example while a stats panel is expanded.
-    pub fn update(&mut self, ctx: &egui::Context, pinned: bool) -> bool {
+    pub(crate) fn update(&mut self, ctx: &egui::Context, pinned: bool) -> bool {
         if pinned || ctx.input(|input| input.pointer.delta().length_sq() > 0.0) {
             self.visible = true;
             self.since = Instant::now();
@@ -239,7 +244,7 @@ impl CursorIdle {
 /// Leaves full screen when Escape is pressed.
 ///
 /// Escape does not close the window, because it is easy to hit by accident.
-pub fn escape_leaves_fullscreen(ctx: &egui::Context) {
+pub(crate) fn escape_leaves_fullscreen(ctx: &egui::Context) {
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
@@ -263,7 +268,7 @@ fn spawn_ctrl_c_handler(ctx: &egui::Context) {
 /// because repaints requested inside a pass are never delivered. Windows with
 /// off-screen work, such as a call waiting to be answered, need this.
 #[must_use = "the heartbeat stops when the handle is dropped"]
-pub fn spawn_heartbeat(ctx: &egui::Context) -> AbortOnDropHandle<()> {
+pub(crate) fn spawn_heartbeat(ctx: &egui::Context) -> AbortOnDropHandle<()> {
     let ctx = ctx.clone();
     AbortOnDropHandle::new(spawn(async move {
         let mut interval = tokio::time::interval(HEARTBEAT);
@@ -276,7 +281,7 @@ pub fn spawn_heartbeat(ctx: &egui::Context) -> AbortOnDropHandle<()> {
 }
 
 /// Shuts the endpoint down from eframe's `on_exit`, outside any async context.
-pub fn shutdown_node_blocking(node: &SharedNode) {
+pub(crate) fn shutdown_node_blocking(node: &SharedNode) {
     let node = node.clone();
     tokio::runtime::Handle::current().block_on(async move {
         node.shutdown().await;
@@ -284,7 +289,7 @@ pub fn shutdown_node_blocking(node: &SharedNode) {
 }
 
 /// Closes `broadcast`, then shuts the endpoint down, from outside async context.
-pub fn shutdown_publish_blocking(node: &SharedNode, broadcast: &LocalBroadcast) {
+pub(crate) fn shutdown_publish_blocking(node: &SharedNode, broadcast: &LocalBroadcast) {
     let node = node.clone();
     let broadcast = broadcast.clone();
     tokio::runtime::Handle::current().block_on(async move {
@@ -312,7 +317,7 @@ fn native_options(fullscreen: bool) -> eframe::NativeOptions {
 /// Used for the remote of a call and for each tile of a room. Dropping it
 /// stops the decoders.
 #[derive(Debug)]
-pub struct RemoteView {
+pub(crate) struct RemoteView {
     player: Player,
     video: VideoView,
     overlay: DebugOverlay,
@@ -373,7 +378,7 @@ impl RemoteView {
     /// Creates a view onto `player`, drawing through `render_state`.
     ///
     /// `name` salts the texture and widget ids, so each tile needs its own.
-    pub fn new(
+    pub(crate) fn new(
         ctx: &egui::Context,
         name: &str,
         player: Player,
@@ -397,7 +402,7 @@ impl RemoteView {
     }
 
     /// Adds link lines for `subscription` to the overlay.
-    pub fn with_link(mut self, subscription: iroh_live::Subscription) -> Self {
+    pub(crate) fn with_link(mut self, subscription: iroh_live::Subscription) -> Self {
         self.link = Some(Link {
             subscription,
             refreshed: None,
@@ -406,12 +411,12 @@ impl RemoteView {
     }
 
     /// Returns whether the stats overlay is expanded.
-    pub fn overlay_expanded(&self) -> bool {
+    pub(crate) fn overlay_expanded(&self) -> bool {
         self.overlay.any_expanded()
     }
 
     /// Sets the rendition mode.
-    pub fn set_rendition(&mut self, mode: RenditionMode) {
+    pub(crate) fn set_rendition(&mut self, mode: RenditionMode) {
         info!(?mode, "rendition mode");
         self.player.set_rendition(mode);
     }
@@ -419,7 +424,7 @@ impl RemoteView {
     /// Switches the video decoder to `choice`.
     ///
     /// The old decoder keeps the picture up until the new one catches up.
-    pub fn set_decoder(&mut self, choice: Backend) {
+    pub(crate) fn set_decoder(&mut self, choice: Backend) {
         self.decoder = choice;
         info!(decoder = %choice, "decoder selected");
         self.player.set_decoder(choice.into());
@@ -428,12 +433,12 @@ impl RemoteView {
     /// Draws the picture at `size`, or a placeholder when there is no video.
     ///
     /// Pass the rect of the response to [`draw_overlay`](Self::draw_overlay).
-    pub fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
+    pub(crate) fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
         ui.add_sized(size, self.video.render())
     }
 
     /// Draws the stats overlay over `rect`.
-    pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    pub(crate) fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         if let Some(lines) = self
             .link
             .as_mut()
@@ -447,7 +452,7 @@ impl RemoteView {
     /// Draws the rendition and decoder pickers and the volume slider.
     ///
     /// `id` salts the widget ids, so each tile needs its own.
-    pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
+    pub(crate) fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
         let status = self.player.status().borrow().clone();
         let catalog = self.player.broadcast().catalog().borrow().clone();
         let Some(catalog) = catalog.filter(|catalog| !catalog.video.renditions.is_empty()) else {
@@ -532,7 +537,7 @@ const QR_QUIET: usize = 4;
 /// so edges stay hard at any size. It is black on white regardless of theme,
 /// because QR codes only read dark on light.
 #[derive(derive_more::Debug)]
-pub struct TicketQr {
+pub(crate) struct TicketQr {
     #[debug(skip)]
     texture: egui::TextureHandle,
 }
@@ -542,7 +547,7 @@ impl TicketQr {
     ///
     /// `id` names the texture, so each code in a window needs its own. Returns
     /// `None` and logs a warning if the ticket does not fit in a QR code.
-    pub fn new(ctx: &egui::Context, id: &str, ticket: &str) -> Option<Self> {
+    pub(crate) fn new(ctx: &egui::Context, id: &str, ticket: &str) -> Option<Self> {
         let pixels = QrPixels::render(ticket)
             .inspect_err(|err| warn!(error = %err, "could not render the ticket QR code"))
             .ok()?;
@@ -553,7 +558,7 @@ impl TicketQr {
     }
 
     /// Returns the image of the code, to draw at any square size.
-    pub fn image(&self) -> egui::Image<'_> {
+    pub(crate) fn image(&self) -> egui::Image<'_> {
         egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }

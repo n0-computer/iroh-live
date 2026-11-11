@@ -1,11 +1,5 @@
 //! `irl`: publish and watch live media over iroh.
 
-#![allow(
-    unreachable_pub,
-    unnameable_types,
-    reason = "binary crate, internal modules use pub for convenience"
-)]
-
 use clap::{Parser, Subcommand};
 
 mod args;

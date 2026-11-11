@@ -47,11 +47,11 @@ const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
 
 /// The sources [`configure`] opened, for a preview or a QR scanner.
 #[derive(Debug, Default)]
-pub struct Opened {
+pub(crate) struct Opened {
     /// The raw video source. `None` for no video or pre-encoded video.
-    pub video: Option<VideoSource>,
+    pub(crate) video: Option<VideoSource>,
     /// The audio source.
-    pub audio: Option<AudioSource>,
+    pub(crate) audio: Option<AudioSource>,
 }
 
 /// An opened video source.
@@ -69,7 +69,7 @@ enum Video {
 /// `output` is the speaker whose echo the microphone cancels. Fails for a
 /// `file:` video source, a ladder that does not parse, or a source that does
 /// not open.
-pub async fn configure(
+pub(crate) async fn configure(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
     output: Option<&AudioTarget>,
@@ -88,7 +88,7 @@ pub async fn configure(
 /// Opens the video `args` asks for and sets it, leaving the audio alone.
 ///
 /// Returns the raw source, if any, for a preview.
-pub async fn configure_video(
+pub(crate) async fn configure_video(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
 ) -> Result<Option<VideoSource>> {
@@ -103,7 +103,7 @@ pub async fn configure_video(
 /// Opening is async and setting is sync, so a caller can decide at the last
 /// moment whether to set it.
 #[derive(Debug)]
-pub struct OpenedVideo {
+pub(crate) struct OpenedVideo {
     source: Video,
     ladder: rendition::Ladder,
 }
@@ -111,7 +111,7 @@ pub struct OpenedVideo {
 /// Opens the video `args` asks for without setting it.
 ///
 /// Returns `None` for `--video none`.
-pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
+pub(crate) async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
     let spec = args.video_source();
     let ladder = rendition::ladder(&spec, args)?;
     Ok(video_source(&spec, args, ladder.framerate)
@@ -121,7 +121,7 @@ pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
 
 impl OpenedVideo {
     /// Sets the source on `broadcast` and returns it if raw, for a preview.
-    pub fn apply(self, broadcast: &LocalBroadcast) -> Result<Option<VideoSource>> {
+    pub(crate) fn apply(self, broadcast: &LocalBroadcast) -> Result<Option<VideoSource>> {
         let Self { source, ladder } = self;
         ladder.report();
         match source {
@@ -318,7 +318,10 @@ fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
 /// Returns the config for microphone `id`, cancelling the echo of `output`.
 ///
 /// Without the `aec` feature, it warns and publishes the microphone as is.
-pub fn microphone_config(id: Option<String>, output: Option<&AudioTarget>) -> MicrophoneConfig {
+pub(crate) fn microphone_config(
+    id: Option<String>,
+    output: Option<&AudioTarget>,
+) -> MicrophoneConfig {
     let mut config = MicrophoneConfig::default();
     if let Some(id) = id {
         config = config.with_device(id);

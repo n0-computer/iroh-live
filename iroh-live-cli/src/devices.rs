@@ -6,7 +6,7 @@
 use iroh_live::media::{audio, video};
 
 /// Runs the `devices` command.
-pub fn run(rt: &tokio::runtime::Runtime) -> n0_error::Result {
+pub(crate) fn run(rt: &tokio::runtime::Runtime) -> n0_error::Result {
     rt.block_on(list());
     Ok(())
 }
@@ -130,7 +130,7 @@ async fn list() {
 }
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-pub mod rpicam {
+pub(crate) mod rpicam {
     //! Raspberry Pi camera listing for `irl devices`.
     //!
     //! libcamera is reachable only through `rpicam-vid`, so this reports whether
@@ -187,7 +187,7 @@ pub mod rpicam {
     /// Returns whether `rpicam-vid` is on `PATH`.
     ///
     /// Checks for the binary only, because `--list-cameras` takes seconds.
-    pub fn installed() -> bool {
+    pub(crate) fn installed() -> bool {
         std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|dir| dir.join(RPICAM_VID).is_file())
         })

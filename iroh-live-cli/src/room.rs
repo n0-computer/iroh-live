@@ -30,7 +30,7 @@ mod chat;
 const BROADCAST_NAME: &str = "cam";
 
 /// Runs the `room` command.
-pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
     let joined = rt.block_on(setup(&args))?;
 
     // eframe takes over the main thread. The guard lets code on it spawn onto

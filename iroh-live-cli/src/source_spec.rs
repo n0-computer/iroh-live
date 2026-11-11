@@ -17,7 +17,7 @@ use serde::{Deserialize, Deserializer, de};
 
 /// A parsed `--video` specifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VideoSourceSpec {
+pub(crate) enum VideoSourceSpec {
     /// A camera, by the id `irl devices` reports. `None` opens the default.
     Camera(Option<String>),
     /// A whole display. `None` opens the main one.
@@ -101,7 +101,7 @@ impl FromStr for VideoSourceSpec {
 
 /// The generated picture `test` and `test:<name>` publish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TestPattern {
+pub(crate) enum TestPattern {
     /// A sweeping bar, a frame counter, a clock, and a flashing marker.
     ///
     /// The marker flashes with the test tone's beep.
@@ -116,7 +116,7 @@ pub enum TestPattern {
 
 /// What `rpicam-vid` hands over: `rpicam` or `rpicam:raw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RpicamMode {
+pub(crate) enum RpicamMode {
     /// H.264 from the Pi's hardware encoder, published unchanged.
     ///
     /// The cheapest option, and the right one for a Pi Zero. There is no
@@ -147,7 +147,7 @@ fn rpicam(_mode: RpicamMode) -> Result<VideoSourceSpec, String> {
 
 /// A parsed `--audio` specifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AudioSourceSpec {
+pub(crate) enum AudioSourceSpec {
     /// An input device, by the id `irl devices` reports.
     ///
     /// `None` opens the default microphone.
@@ -169,7 +169,7 @@ pub enum AudioSourceSpec {
 
 /// The generated tone `test` and `test:<name>` publish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TestTone {
+pub(crate) enum TestTone {
     /// A beep every second, silent in between.
     ///
     /// Each beep sounds while the test pattern's marker is lit, to check A/V

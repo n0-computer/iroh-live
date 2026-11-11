@@ -12,7 +12,7 @@ use tracing::info;
 use crate::{args::PlaybackArgs, transport::Subscribed};
 
 /// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
-pub fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
+pub(crate) fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
     PlayerConfig {
         decoder: args.decoder.into(),
         latency: args.latency.latency(),
@@ -25,7 +25,7 @@ pub fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> Playe
 ///
 /// A broadcast without a catalog fails here instead of opening a black
 /// window, and so does a pinned rendition the catalog does not offer.
-pub async fn open(sub: Subscribed, config: PlayerConfig) -> Result<(Subscribed, Player)> {
+pub(crate) async fn open(sub: Subscribed, config: PlayerConfig) -> Result<(Subscribed, Player)> {
     let catalog = catalog(sub.broadcast()).await?;
     if let RenditionMode::Pinned(name) = &config.rendition {
         video_rendition(&catalog, name)?;
@@ -42,7 +42,7 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 /// # Errors
 ///
 /// Fails if the broadcast closes first or sends none in time.
-pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
+pub(crate) async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
     broadcast
         .catalog_within(CATALOG_TIMEOUT)
         .await
@@ -64,7 +64,7 @@ pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
     clippy::unused_async,
     reason = "a build without playback opens nothing, which is not async"
 )]
-pub async fn output(device: Option<String>) -> Result<AudioTarget> {
+pub(crate) async fn output(device: Option<String>) -> Result<AudioTarget> {
     #[cfg(feature = "playback")]
     {
         if let Some(device) = device {

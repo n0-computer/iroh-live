@@ -18,72 +18,72 @@ use crate::{
 
 /// Where a broadcast is served and how its address is shared.
 #[derive(Args, Debug)]
-pub struct TransportArgs {
+pub(crate) struct TransportArgs {
     /// Broadcast name, as it appears in the ticket.
     #[arg(long, default_value = "hello")]
-    pub name: String,
+    pub(crate) name: String,
 
     /// Also push the broadcast to this relay endpoint.
     ///
     /// Use a relay that keeps each publisher to its own paths, as
     /// iroh-live-relay does. Elsewhere a viewer can be served a forgery.
     #[arg(long)]
-    pub relay: Option<EndpointId>,
+    pub(crate) relay: Option<EndpointId>,
 
     /// Do not accept incoming subscriber connections.
     #[arg(long)]
-    pub no_serve: bool,
+    pub(crate) no_serve: bool,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
-    pub no_qr: bool,
+    pub(crate) no_qr: bool,
 }
 
 /// The default keyframe interval, in seconds.
 ///
 /// Two seconds is upstream's default. The encoder keeps to its target
 /// bitrate, so a shorter interval costs picture quality, not bytes.
-pub const DEFAULT_KEYFRAME_SECONDS: f64 = 2.0;
+pub(crate) const DEFAULT_KEYFRAME_SECONDS: f64 = 2.0;
 
 /// The `--video` specifier when none is given.
-pub const DEFAULT_VIDEO: &str = "cam";
+pub(crate) const DEFAULT_VIDEO: &str = "cam";
 
 /// The `--audio` specifier when none is given.
-pub const DEFAULT_AUDIO: &str = "mic";
+pub(crate) const DEFAULT_AUDIO: &str = "mic";
 
 /// What to capture and how to encode it.
 ///
 /// A `[[send]]` block of `irl run` takes the same keys.
 #[derive(Args, Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct CaptureArgs {
+pub(crate) struct CaptureArgs {
     /// Video source.
     ///
     /// `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`, `app:<id>`,
     /// `rpicam[:raw]`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or
     /// `none`. Run `irl devices` to list the ids.
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
-    pub video: VideoSourceSpec,
+    pub(crate) video: VideoSourceSpec,
 
     /// Audio source.
     ///
     /// `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test[:beeps|:tone]`,
     /// or `none`. Anything else is a device name, such as `hw:0,1`.
     #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
-    pub audio: AudioSourceSpec,
+    pub(crate) audio: AudioSourceSpec,
 
     /// Publish the test pattern and tone, as `--video test --audio test`.
     #[arg(long)]
-    pub test_source: bool,
+    pub(crate) test_source: bool,
 
     /// Video codec. H.265 needs a hardware encoder.
     #[arg(long, value_enum, default_value_t = VideoCodecArg::H264)]
-    pub codec: VideoCodecArg,
+    pub(crate) codec: VideoCodecArg,
 
     /// Encoder backend. A named backend has no fallback.
     #[arg(long, value_parser = Backend::encoder_parser(), default_value = "auto")]
     #[serde(deserialize_with = "Backend::deserialize_encoder")]
-    pub encoder: Backend,
+    pub(crate) encoder: Backend,
 
     /// Simulcast ladder, comma-separated. Default: one unscaled rendition.
     ///
@@ -93,48 +93,48 @@ pub struct CaptureArgs {
     /// All rungs share one capture at the highest rate any rung asks for.
     /// `--fps` overrides the suffixes.
     #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
-    pub renditions: Vec<String>,
+    pub(crate) renditions: Vec<String>,
 
     /// Seconds between keyframes.
     ///
     /// A viewer waits up to this long to join or to switch rendition. One
     /// second suits a call.
     #[arg(long, default_value_t = DEFAULT_KEYFRAME_SECONDS, value_name = "SECONDS")]
-    pub keyframe_interval: f64,
+    pub(crate) keyframe_interval: f64,
 
     /// Target video bitrate of the largest rung, in bits per second.
     ///
     /// Smaller rungs get a share by pixel count. Default: derived from the
     /// resolution.
     #[arg(long, value_name = "BITS_PER_SECOND")]
-    pub bitrate: Option<u64>,
+    pub(crate) bitrate: Option<u64>,
 
     /// Requested capture width. The device picks its nearest mode.
     #[arg(long)]
-    pub width: Option<u32>,
+    pub(crate) width: Option<u32>,
 
     /// Requested capture height.
     #[arg(long)]
-    pub height: Option<u32>,
+    pub(crate) height: Option<u32>,
 
     /// Requested capture frame rate. Overrides the ladder's `@<fps>`.
     ///
     /// Default: 30, or the highest rate a rung asks for. The device picks its
     /// nearest supported rate.
     #[arg(long, verbatim_doc_comment)]
-    pub fps: Option<u32>,
+    pub(crate) fps: Option<u32>,
 
     /// Hide the mouse cursor. Screen, window, and application capture only.
     #[arg(long)]
-    pub no_cursor: bool,
+    pub(crate) no_cursor: bool,
 
     /// Audio codec. PCM is uncompressed: lower latency, much higher bitrate.
     #[arg(long, value_enum, default_value_t = AudioCodecArg::Opus)]
-    pub audio_codec: AudioCodecArg,
+    pub(crate) audio_codec: AudioCodecArg,
 
     /// Target audio bitrate in bits per second. Opus only.
     #[arg(long, value_name = "BITS_PER_SECOND")]
-    pub audio_bitrate: Option<u32>,
+    pub(crate) audio_bitrate: Option<u32>,
 }
 
 impl Default for CaptureArgs {
@@ -165,7 +165,7 @@ impl Default for CaptureArgs {
 
 impl CaptureArgs {
     /// Returns `--video`, or the test pattern under `--test-source`.
-    pub fn video_source(&self) -> VideoSourceSpec {
+    pub(crate) fn video_source(&self) -> VideoSourceSpec {
         if self.test_source {
             return VideoSourceSpec::Test(TestPattern::default());
         }
@@ -173,7 +173,7 @@ impl CaptureArgs {
     }
 
     /// Returns `--audio`, or the test tone under `--test-source`.
-    pub fn audio_source(&self) -> AudioSourceSpec {
+    pub(crate) fn audio_source(&self) -> AudioSourceSpec {
         if self.test_source {
             return AudioSourceSpec::Test(TestTone::default());
         }
@@ -184,7 +184,7 @@ impl CaptureArgs {
 /// The video codec `--codec` selects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum VideoCodecArg {
+pub(crate) enum VideoCodecArg {
     /// H.264 (AVC). Widest support.
     #[default]
     H264,
@@ -204,7 +204,7 @@ impl From<VideoCodecArg> for iroh_live::media::video::encode::Codec {
 /// The audio codec `--audio-codec` selects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AudioCodecArg {
+pub(crate) enum AudioCodecArg {
     /// Opus.
     #[default]
     Opus,
@@ -223,37 +223,37 @@ impl From<AudioCodecArg> for iroh_live::media::audio::encode::Codec {
 
 /// Arguments for `irl publish`.
 #[derive(Args, Debug)]
-pub struct PublishArgs {
+pub(crate) struct PublishArgs {
     #[command(flatten)]
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 
     #[command(flatten)]
-    pub transport: TransportArgs,
+    pub(crate) transport: TransportArgs,
 
     /// Open a preview window of the published video.
     ///
     /// Not for `file:` and `rpicam` sources, which arrive already encoded.
     #[arg(long)]
-    pub preview: bool,
+    pub(crate) preview: bool,
 
     /// Start the preview window in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 
     /// Container of a `file:` video source.
     #[arg(long, value_enum, default_value_t = ImportFormat::Fmp4)]
-    pub format: ImportFormat,
+    pub(crate) format: ImportFormat,
 
     /// Pass a `file:` video source through ffmpeg first.
     ///
     /// Needed for a plain (non-fragmented) MP4 and for `file:<path>:loop`.
     #[arg(long)]
-    pub transcode: bool,
+    pub(crate) transcode: bool,
 }
 
 /// The container a `file:` video source is read as.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum ImportFormat {
+pub(crate) enum ImportFormat {
     /// Fragmented MP4 / CMAF.
     #[default]
     Fmp4,
@@ -263,19 +263,19 @@ pub enum ImportFormat {
 
 /// How a subscriber decodes and plays the video in a window.
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct PlaybackArgs {
+pub(crate) struct PlaybackArgs {
     /// Decoder backend. A named backend has no fallback.
     #[arg(long, value_parser = Backend::decoder_parser(), default_value = "auto")]
-    pub decoder: Backend,
+    pub(crate) decoder: Backend,
 
     /// Trade between delay and smooth playback.
     #[arg(long, value_enum, default_value_t = LatencyArg::default())]
-    pub latency: LatencyArg,
+    pub(crate) latency: LatencyArg,
 }
 
 /// How long the player holds frames back to absorb late arrivals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum LatencyArg {
+pub(crate) enum LatencyArg {
     /// Least delay. For conversations.
     Realtime,
     /// Enough slack for an ordinary network.
@@ -291,7 +291,7 @@ impl LatencyArg {
     /// `min` is the playout hold: two frames at 30 fps for Realtime, a Wi-Fi
     /// retransmission burst for Smooth. `max` is where the player skips ahead.
     /// It must stay above `min`, or the skip drops the frames the hold waits for.
-    pub fn latency(self) -> iroh_live::media::Latency {
+    pub(crate) fn latency(self) -> iroh_live::media::Latency {
         let latency = |min, max| iroh_live::media::Latency {
             min: std::time::Duration::from_millis(min),
             max: std::time::Duration::from_millis(max),
@@ -306,64 +306,64 @@ impl LatencyArg {
 
 /// Arguments for `irl call`.
 #[derive(Args, Debug)]
-pub struct CallArgs {
+pub(crate) struct CallArgs {
     /// Ticket the peer's `irl call` printed. Omit to wait for a call.
-    pub ticket: Option<BroadcastTicket>,
+    pub(crate) ticket: Option<BroadcastTicket>,
 
     #[command(flatten)]
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 
     #[command(flatten)]
-    pub playback: PlaybackArgs,
+    pub(crate) playback: PlaybackArgs,
 
     /// Camera for the QR scanner, as in `irl watch --scan-camera`.
     #[arg(long, value_name = "SPEC", value_parser = crate::scan::camera_spec)]
-    pub scan_camera: Option<VideoSourceSpec>,
+    pub(crate) scan_camera: Option<VideoSourceSpec>,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
-    pub no_qr: bool,
+    pub(crate) no_qr: bool,
 
     /// Start in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 }
 
 /// Arguments for `irl room`.
 #[derive(Args, Debug)]
-pub struct RoomArgs {
+pub(crate) struct RoomArgs {
     /// Ticket another participant's `irl room` printed. Omit to open a new room.
-    pub ticket: Option<RoomTicket>,
+    pub(crate) ticket: Option<RoomTicket>,
 
     #[command(flatten)]
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 
     #[command(flatten)]
-    pub playback: PlaybackArgs,
+    pub(crate) playback: PlaybackArgs,
 
     /// Name shown to other participants. Default: the short endpoint id.
     #[arg(long)]
-    pub display_name: Option<String>,
+    pub(crate) display_name: Option<String>,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
-    pub no_qr: bool,
+    pub(crate) no_qr: bool,
 
     /// Start in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 }
 
 /// The remote broadcast, as a ticket or as endpoint id plus broadcast path.
 #[derive(Args, Debug)]
-pub struct RemoteArgs {
+pub(crate) struct RemoteArgs {
     /// Ticket that `irl publish` printed.
     #[arg(conflicts_with_all = ["endpoint_id", "broadcast_name"])]
-    pub ticket: Option<BroadcastTicket>,
+    pub(crate) ticket: Option<BroadcastTicket>,
 
     /// Remote endpoint id. Needs `--name`.
     #[arg(long, conflicts_with = "ticket", requires = "broadcast_name")]
-    pub endpoint_id: Option<EndpointId>,
+    pub(crate) endpoint_id: Option<EndpointId>,
 
     /// Broadcast name. Needs `--endpoint-id`.
     #[arg(
@@ -372,12 +372,12 @@ pub struct RemoteArgs {
         conflicts_with = "ticket",
         requires = "endpoint_id"
     )]
-    pub broadcast_name: Option<String>,
+    pub(crate) broadcast_name: Option<String>,
 }
 
 impl RemoteArgs {
     /// Returns the ticket from either form, or fails if neither was given.
-    pub fn ticket(&self) -> Result<BroadcastTicket> {
+    pub(crate) fn ticket(&self) -> Result<BroadcastTicket> {
         match (&self.ticket, self.endpoint_id, &self.broadcast_name) {
             (Some(ticket), None, None) => Ok(ticket.clone()),
             (None, Some(id), Some(name)) => Ok(LiveLayout::default().ticket(id, name)?),
@@ -390,82 +390,82 @@ impl RemoteArgs {
 
 /// Arguments for `irl watch`.
 #[derive(Args, Debug)]
-pub struct WatchArgs {
+pub(crate) struct WatchArgs {
     #[command(flatten)]
-    pub remote: RemoteArgs,
+    pub(crate) remote: RemoteArgs,
 
     /// Video decoding. Unused under `--no-video`.
     #[command(flatten)]
-    pub playback: PlaybackArgs,
+    pub(crate) playback: PlaybackArgs,
 
     /// Play audio only. No window opens.
     #[arg(long)]
-    pub no_video: bool,
+    pub(crate) no_video: bool,
 
     /// Read the ticket from a QR code held up to the camera.
     ///
     /// The window shows the camera and connects once a ticket decodes. With
     /// a ticket given, it plays that one and the scanner is one button away.
     #[arg(long, conflicts_with = "no_video")]
-    pub scan: bool,
+    pub(crate) scan: bool,
 
     /// Camera for the QR scanner: `cam`, `cam:<id>`, or `rpicam`.
     ///
     /// Default: the Raspberry Pi camera where available, else the default
     /// camera. On a Pi with a USB webcam, pass `cam`.
     #[arg(long, value_name = "SPEC", value_parser = crate::scan::camera_spec)]
-    pub scan_camera: Option<VideoSourceSpec>,
+    pub(crate) scan_camera: Option<VideoSourceSpec>,
 
     /// Pin a rendition by name instead of adapting to the downlink.
     #[arg(long)]
-    pub rendition: Option<String>,
+    pub(crate) rendition: Option<String>,
 
     /// Start in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 
     /// Audio output device, by the id `irl devices` lists.
     ///
     /// For example `alsa:default`. Default: the system default output.
     #[cfg(feature = "playback")]
     #[arg(long, value_name = "ID")]
-    pub audio_output: Option<String>,
+    pub(crate) audio_output: Option<String>,
 }
 
 /// Arguments for `irl run`.
 #[derive(Args, Debug)]
-pub struct RunArgs {
+pub(crate) struct RunArgs {
     /// TOML session file.
-    pub config: PathBuf,
+    pub(crate) config: PathBuf,
 }
 
 /// Arguments for `irl record`.
 #[derive(Args, Debug)]
-pub struct RecordArgs {
+pub(crate) struct RecordArgs {
     #[command(flatten)]
-    pub remote: RemoteArgs,
+    pub(crate) remote: RemoteArgs,
 
     /// Output file.
     ///
     /// Its extension picks the container unless `--format` is set.
     #[arg(short, long, default_value = "recording.mp4")]
-    pub output: PathBuf,
+    pub(crate) output: PathBuf,
 
     /// Container format, overriding the `--output` extension.
     #[arg(long, value_parser = record_format())]
-    pub format: Option<RecordFormat>,
+    pub(crate) format: Option<RecordFormat>,
 
     /// Record only this video rendition. Default: all of them.
     #[arg(long)]
-    pub rendition: Option<String>,
+    pub(crate) rendition: Option<String>,
 
     /// Stop after this long. Omit to record until interrupted.
     #[arg(long, value_name = "SECONDS")]
-    pub duration: Option<u64>,
+    pub(crate) duration: Option<u64>,
 
     /// How long to wait for a stalled group before skipping it.
     #[arg(long, value_name = "MILLISECONDS", default_value_t = 2_000)]
-    pub max_age: u64,
+    pub(crate) max_age: u64,
 }
 
 /// Parses `--format` into the media crate's [`RecordFormat`].

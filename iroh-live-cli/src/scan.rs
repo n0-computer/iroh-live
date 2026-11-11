@@ -17,7 +17,7 @@ use crate::source_spec::VideoSourceSpec;
 mod camera;
 mod decode;
 
-pub use self::camera::camera_spec;
+pub(crate) use self::camera::camera_spec;
 use self::{
     camera::{Camera, REOPEN_DELAY},
     decode::{Decoder, luma},
@@ -44,11 +44,11 @@ const FIRST_FRAME_GRACE: Duration = Duration::from_secs(5);
 /// Skipping it lets the wait happen behind a live preview, and a different code
 /// still connects at once.
 #[derive(Debug, Clone)]
-pub struct Skip {
+pub(crate) struct Skip {
     /// The ticket to ignore.
-    pub ticket: BroadcastTicket,
+    pub(crate) ticket: BroadcastTicket,
     /// When the scanner may report it again.
-    pub until: Instant,
+    pub(crate) until: Instant,
 }
 
 /// The instruction on the scan screen.
@@ -83,7 +83,7 @@ enum Pictures {
 ///
 /// Dropping it stops the scan and releases a camera it opened.
 #[derive(Debug)]
-pub struct ScanView {
+pub(crate) struct ScanView {
     view: FrameView,
     /// The frames being drawn, once a camera has opened.
     frames: Option<VideoFrames>,
@@ -97,7 +97,7 @@ impl ScanView {
     /// Opens the camera and starts looking for a ticket.
     ///
     /// Returns at once. A camera that does not open is reported on the screen.
-    pub fn new(
+    pub(crate) fn new(
         ctx: &egui::Context,
         render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
@@ -110,7 +110,7 @@ impl ScanView {
     ///
     /// Use this when the window already publishes the camera, since a device
     /// cannot be opened twice.
-    pub fn from_frames(
+    pub(crate) fn from_frames(
         ctx: &egui::Context,
         render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
@@ -143,7 +143,7 @@ impl ScanView {
     }
 
     /// Returns the ticket, once the scanner has found one.
-    pub fn ticket(&self) -> Option<BroadcastTicket> {
+    pub(crate) fn ticket(&self) -> Option<BroadcastTicket> {
         match &*self.state.borrow() {
             ScanState::Found(ticket) => Some((**ticket).clone()),
             _ => None,
@@ -151,7 +151,7 @@ impl ScanView {
     }
 
     /// Draws the camera picture filling `ui`, with the instruction over it.
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if self.opened.has_changed().unwrap_or(false) {
             self.frames = self.opened.borrow_and_update().clone();

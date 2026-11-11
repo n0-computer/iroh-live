@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// Runs the `publish` command.
-pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     match args.capture.video_source() {
         VideoSourceSpec::File { path, looping } => {
             publish_file(FileSource::new(path, looping, &args)?, &args, rt)

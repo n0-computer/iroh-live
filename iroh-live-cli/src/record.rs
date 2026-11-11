@@ -25,7 +25,7 @@ use crate::{args::RecordArgs, transport};
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Runs the `record` command.
-pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
     rt.block_on(record(args))
 }
 
@@ -73,13 +73,13 @@ async fn record_on(node: &Node, ticket: &BroadcastTicket, options: &RecordOption
 
 /// Where a recording goes, what it keeps, and for how long.
 #[derive(Debug, Clone)]
-pub struct RecordOptions {
+pub(crate) struct RecordOptions {
     /// The file to write.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// The container, rendition and stall limit.
-    pub config: RecordConfig,
+    pub(crate) config: RecordConfig,
     /// How long to record, or `None` to record until interrupted.
-    pub duration: Option<Duration>,
+    pub(crate) duration: Option<Duration>,
 }
 
 impl RecordOptions {
@@ -87,7 +87,7 @@ impl RecordOptions {
     ///
     /// Without `format`, the container comes from the extension of `path`.
     /// Fails if neither names a container.
-    pub fn new(path: impl Into<PathBuf>, format: Option<RecordFormat>) -> Result<Self> {
+    pub(crate) fn new(path: impl Into<PathBuf>, format: Option<RecordFormat>) -> Result<Self> {
         let path = path.into();
         let format = match format {
             Some(format) => format,
@@ -108,7 +108,7 @@ impl RecordOptions {
 ///
 /// Fails if the requested rendition is not in `catalog` or the file cannot be
 /// created.
-pub async fn start(
+pub(crate) async fn start(
     broadcast: &RemoteBroadcast,
     catalog: &Catalog,
     options: &RecordOptions,
@@ -127,7 +127,10 @@ pub async fn start(
 ///
 /// Prints progress while it runs. The file is flushed either way, and a
 /// fragmented container is playable at every chunk boundary.
-pub async fn finish(mut recording: Recording, stop: impl Future<Output = ()>) -> Result<u64> {
+pub(crate) async fn finish(
+    mut recording: Recording,
+    stop: impl Future<Output = ()>,
+) -> Result<u64> {
     let started = tokio::time::Instant::now();
     let mut report = tokio::time::interval_at(started + REPORT_INTERVAL, REPORT_INTERVAL);
     let mut stop = std::pin::pin!(stop);

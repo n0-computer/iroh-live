@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// Runs the `run` command.
-pub fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> Result {
     let config = parse_config(&args.config)?;
     println!(
         "loaded {}: {} send, {} recv",
@@ -41,31 +41,31 @@ pub fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// A session file.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunConfig {
+pub(crate) struct RunConfig {
     /// Name of a stored secret key, so the session's tickets survive a restart.
     ///
     /// The key lives in `<config dir>/iroh-live/secret_keys/<name>.key` and is
     /// generated on first use.
-    pub secret_key_name: Option<String>,
+    pub(crate) secret_key_name: Option<String>,
 
     /// The broadcasts this session publishes.
     #[serde(default)]
-    pub send: Vec<SendConfig>,
+    pub(crate) send: Vec<SendConfig>,
 
     /// The broadcasts this session subscribes to.
     #[serde(default)]
-    pub recv: Vec<RecvConfig>,
+    pub(crate) recv: Vec<RecvConfig>,
 }
 
 /// One broadcast to publish: `name` plus the `irl publish` capture flags.
 ///
 /// Hand-deserialized, since `#[serde(flatten)]` cannot reject unknown keys.
 #[derive(Debug)]
-pub struct SendConfig {
+pub(crate) struct SendConfig {
     /// The broadcast name, also the label in output.
-    pub name: String,
+    pub(crate) name: String,
     /// The capture and encoding flags. `file:` sources need `irl publish`.
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 }
 
 impl<'de> Deserialize<'de> for SendConfig {
@@ -85,7 +85,7 @@ impl<'de> Deserialize<'de> for SendConfig {
 /// What a `[[recv]]` block does with the audio it receives.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AudioOutput {
+pub(crate) enum AudioOutput {
     /// Play it through the system default output.
     #[default]
     Default,
@@ -96,24 +96,24 @@ pub enum AudioOutput {
 /// One broadcast to subscribe to.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecvConfig {
+pub(crate) struct RecvConfig {
     /// Label for this subscription in output.
-    pub name: String,
+    pub(crate) name: String,
 
     /// Ticket that `irl publish` printed.
-    pub ticket: String,
+    pub(crate) ticket: String,
 
     /// Whether to play the audio: `default` or `none`.
     ///
     /// All blocks share one output, so this cannot name a device.
     #[serde(default)]
-    pub audio_output: AudioOutput,
+    pub(crate) audio_output: AudioOutput,
 
     /// File to record to. Its extension picks the container.
-    pub record: Option<String>,
+    pub(crate) record: Option<String>,
 
     /// The only video rendition to record. Needs `record`.
-    pub rendition: Option<String>,
+    pub(crate) rendition: Option<String>,
 }
 
 /// Reads and validates the session file at `path`.
