@@ -269,7 +269,7 @@ fn frames(size: Size, framerate: u32, clock: moq_mux::Clock) -> Result<BoxStream
                     .await
                 {
                     Ok(0) => {
-                        debug!("{RPICAM_VID} closed its output");
+                        debug!(command = RPICAM_VID, "the camera command closed its output");
                         // A stream that ended mid-picture means the rows were
                         // not the length we split at, and every picture was
                         // sheared. The exit status does not show that.
@@ -288,7 +288,7 @@ fn frames(size: Size, framerate: u32, clock: moq_mux::Clock) -> Result<BoxStream
                     }
                     Ok(_) => continue,
                     Err(err) => {
-                        warn!(error = %err, "{RPICAM_VID} read failed");
+                        warn!(command = RPICAM_VID, error = %err, "could not read the camera command's output");
                         state.process.report_exit().await;
                         return None;
                     }
@@ -312,7 +312,7 @@ fn annexb(size: Size, framerate: u32, output: Output) -> Result<BoxStream<Bytes>
             // length.
             match state.process.stdout.read_buf(&mut state.buffer).await {
                 Ok(0) => {
-                    debug!("{RPICAM_VID} closed its output");
+                    debug!(command = RPICAM_VID, "the camera command closed its output");
                     state.process.report_exit().await;
                     None
                 }
@@ -321,7 +321,7 @@ fn annexb(size: Size, framerate: u32, output: Output) -> Result<BoxStream<Bytes>
                     Some((chunk, state))
                 }
                 Err(err) => {
-                    warn!(error = %err, "{RPICAM_VID} read failed");
+                    warn!(command = RPICAM_VID, error = %err, "could not read the camera command's output");
                     state.process.report_exit().await;
                     None
                 }
@@ -407,7 +407,7 @@ impl Process {
     /// Fails if the subprocess cannot be started, usually because it is not
     /// installed, or has no stdout pipe.
     fn spawn(size: Size, framerate: u32, output: Output) -> Result<Self, Error> {
-        info!(%size, framerate, ?output, "starting {RPICAM_VID}");
+        info!(command = RPICAM_VID, %size, framerate, ?output, "starting the camera command");
 
         let mut child = tokio::process::Command::new(RPICAM_VID)
             .args(args(size, framerate, output))
@@ -431,7 +431,7 @@ impl Process {
             AbortOnDropHandle::new(spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    debug!(line = %line, "{RPICAM_VID} stderr");
+                    debug!(command = RPICAM_VID, line = %line, "the camera command wrote to stderr");
                     let mut tail = tail.lock().expect("poisoned");
                     if tail.len() == STDERR_TAIL_LINES {
                         tail.pop_front();
@@ -458,19 +458,20 @@ impl Process {
         let status = match tokio::time::timeout(EXIT_TIMEOUT, self.child.wait()).await {
             Ok(Ok(status)) => status,
             Ok(Err(err)) => {
-                warn!(error = %err, "could not collect {RPICAM_VID}'s exit status");
+                warn!(command = RPICAM_VID, error = %err, "could not collect the camera command's exit status");
                 return;
             }
             Err(_) => {
                 warn!(
+                    command = RPICAM_VID,
                     timeout = ?EXIT_TIMEOUT,
-                    "{RPICAM_VID} closed its output but is still running",
+                    "the camera command closed its output but is still running",
                 );
                 return;
             }
         };
         if status.success() {
-            debug!(%status, "{RPICAM_VID} exited");
+            debug!(command = RPICAM_VID, %status, "the camera command exited");
             return;
         }
         // Wait for the stderr task before reading the tail. An app that fails
@@ -479,7 +480,10 @@ impl Process {
         if let Some(task) = self.stderr_reader.take()
             && tokio::time::timeout(EXIT_TIMEOUT, task).await.is_err()
         {
-            debug!("{RPICAM_VID}'s stderr did not end with it");
+            debug!(
+                command = RPICAM_VID,
+                "the camera command's stderr did not end with it"
+            );
         }
         let reason = self
             .stderr_tail
@@ -489,13 +493,13 @@ impl Process {
             .cloned()
             .collect::<Vec<_>>()
             .join("; ");
-        warn!(%status, reason = %reason, "{RPICAM_VID} failed");
+        warn!(command = RPICAM_VID, %status, reason = %reason, "the camera command failed");
     }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
-        debug!("stopping {RPICAM_VID}");
+        debug!(command = RPICAM_VID, "stopping the camera command");
         // `kill_on_drop` already sends the signal. This impl exists for the
         // log line, since a camera that stays on is the failure people notice.
         let _ = self.child.start_kill();

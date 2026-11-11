@@ -343,7 +343,7 @@ pub(crate) fn pull_for(
         match pull_state.pull(&name, &ticket).await {
             Ok(guard) => Some(guard),
             Err(err) => {
-                warn!(%name, "pull failed for the ticket in the url: {err:#}");
+                warn!(%name, error = format_args!("{err:#}"), "pull failed for the ticket in the URL");
                 None
             }
         }
