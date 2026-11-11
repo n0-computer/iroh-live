@@ -13,14 +13,13 @@
 
 use std::{sync::Arc, time::Duration};
 
-use moq_ext_adaptive::Abandoned;
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{Instrument, debug_span, info, info_span};
 
 use crate::{
-    RemoteBroadcast, SwitchError,
+    RemoteBroadcast,
     frames::{FrameSlot, VideoFrames},
     stats::{AudioPlaybackStats, FrameLog, FrameTiming, PlaybackStats, VideoPlaybackStats},
 };
@@ -180,10 +179,6 @@ pub struct PlayerStatus {
     pub switch_error: Option<ByPtr<Error>>,
     /// The decoder backend running, such as `vaapi`.
     pub decoder: Option<String>,
-    /// The rendition whose failure `video` reports when it is `Failed`.
-    ///
-    /// A wait for another rendition must not get an error that is not its own.
-    pub(crate) failed_rendition: Option<String>,
 }
 
 impl PlayerStatus {
@@ -194,15 +189,6 @@ impl PlayerStatus {
         self.switching_to = None;
         self.decoder = None;
     }
-}
-
-/// How a switch to a rendition ended, for [`Player::wait_for_rendition`].
-#[derive(Debug, Clone)]
-pub(crate) enum SwitchEvent {
-    /// The rendition took over.
-    Landed(String),
-    /// A switch to the rendition was given up.
-    Abandoned(String, Abandoned<Arc<Error>>),
 }
 
 /// The writers behind [`PlaybackStats`].
@@ -238,7 +224,6 @@ pub struct Player {
     audio_frames: broadcast::Sender<AudioFrame>,
     status: watch::Sender<PlayerStatus>,
     controls: Arc<Controls>,
-    events: broadcast::Sender<SwitchEvent>,
     clock: PlayoutClock,
     stats: PlaybackRecorder,
     _tasks: Vec<AbortOnDropHandle<()>>,
@@ -273,7 +258,6 @@ impl Player {
             decoder: watch::Sender::new(config.decoder.clone()),
             volume: watch::Sender::new(1.0),
         });
-        let (events, _) = broadcast::channel(16);
         let (audio_frames, _) = broadcast::channel(audio::AUDIO_FRAMES_BACKLOG);
         let clock = PlayoutClock::new(config.latency.min);
         let stats = PlaybackRecorder::default();
@@ -309,7 +293,6 @@ impl Player {
                 frames: slot,
                 controls: controls.clone(),
                 status: status.clone(),
-                events: events.clone(),
                 reports: reports_tx,
                 playing: playing_tx,
                 clock: clock.clone(),
@@ -340,7 +323,6 @@ impl Player {
             audio_frames,
             status,
             controls,
-            events,
             clock,
             stats,
             _tasks: tasks,
@@ -483,86 +465,6 @@ impl Player {
             .into_iter()
             .rev()
             .find(|timing| timing.pts == pts)
-    }
-
-    /// Waits until `name` is on screen.
-    ///
-    /// The wait follows whatever the rendition mode decides meanwhile. Bound it
-    /// with `tokio::time::timeout`.
-    ///
-    /// Cancellation safe: dropping the future leaves the switch running.
-    ///
-    /// # Errors
-    ///
-    /// Fails when a switch to `name` is superseded, withdrawn or fails, when
-    /// the catalog has no such rendition, when the video failed with nothing
-    /// left playing, or when the player's video ended.
-    pub async fn wait_for_rendition(&self, name: &str) -> Result<(), SwitchError> {
-        let mut events = self.events.subscribe();
-        let mut status = self.status.subscribe();
-        let mut catalog = self.broadcast.catalog();
-        loop {
-            let current = status.borrow_and_update().clone();
-            if current.rendition.as_deref() == Some(name) {
-                return Ok(());
-            }
-            if current.mode == RenditionMode::Off {
-                return Err(n0_error::e!(SwitchError::Withdrawn {
-                    rendition: name.to_string()
-                }));
-            }
-            match &current.video {
-                SlotState::Ended => return Err(n0_error::e!(SwitchError::Ended)),
-                // Nothing on screen and nothing on its way: the last switch
-                // failed. Report a failure, whether the status or the event
-                // arrives first.
-                SlotState::Failed(source)
-                    if current.switching_to.is_none()
-                        && current.failed_rendition.as_deref() == Some(name) =>
-                {
-                    return Err(n0_error::e!(SwitchError::Failed {
-                        rendition: name.to_string(),
-                        source: source.0.clone(),
-                    }));
-                }
-                _ => {}
-            }
-            if let Some(known) = catalog.borrow_and_update().clone()
-                && let Err(err) = crate::video_rendition(&known, name)
-            {
-                return Err(n0_error::e!(SwitchError::Failed {
-                    rendition: name.to_string(),
-                    source: Arc::new(err),
-                }));
-            }
-            tokio::select! {
-                event = events.recv() => match event {
-                    Ok(SwitchEvent::Landed(landed)) if landed == name => return Ok(()),
-                    // A switch to `name` under a new decoder configuration is
-                    // still a switch to `name`.
-                    Ok(SwitchEvent::Abandoned(rendition, Abandoned::Superseded))
-                        if rendition == name
-                            && status.borrow().switching_to.as_deref() == Some(name) => {}
-                    Ok(SwitchEvent::Abandoned(rendition, reason)) if rendition == name => {
-                        return Err(SwitchError::from((rendition, reason)));
-                    }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(n0_error::e!(SwitchError::Ended));
-                    }
-                },
-                changed = status.changed() => {
-                    if changed.is_err() {
-                        return Err(n0_error::e!(SwitchError::Ended));
-                    }
-                }
-                changed = catalog.changed() => {
-                    if changed.is_err() {
-                        return Err(n0_error::e!(SwitchError::Ended));
-                    }
-                }
-            }
-        }
     }
 }
 

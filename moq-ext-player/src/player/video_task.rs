@@ -39,11 +39,11 @@ use n0_future::{
     boxed::BoxFuture,
     task::{AbortOnDropHandle, spawn},
 };
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
-    Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
+    Controls, PlaybackRecorder, PlayerStatus, PlayoutClock,
     arrivals::{self, Arrivals},
     select::{DecodeSettings, Desired, Failure, Report},
 };
@@ -85,7 +85,6 @@ pub(crate) struct Inputs {
     pub frames: FrameSlot,
     pub controls: Arc<Controls>,
     pub status: watch::Sender<PlayerStatus>,
-    pub events: broadcast::Sender<SwitchEvent>,
     /// Where failed or ended decoders are reported, for the selector.
     pub reports: mpsc::Sender<Report>,
     /// The target on screen, for the selector.
@@ -141,7 +140,6 @@ pub(crate) async fn run(inputs: Inputs) {
         frames,
         controls,
         status,
-        events,
         reports,
         playing,
         clock,
@@ -150,7 +148,6 @@ pub(crate) async fn run(inputs: Inputs) {
     } = inputs;
     let out = Outlets {
         status: &status,
-        events: &events,
         reports: &reports,
         stats: &stats,
         switch_deadline,
@@ -307,7 +304,6 @@ pub(crate) async fn run(inputs: Inputs) {
 /// Where the video task reports what a transition did.
 struct Outlets<'a> {
     status: &'a watch::Sender<PlayerStatus>,
-    events: &'a broadcast::Sender<SwitchEvent>,
     reports: &'a mpsc::Sender<Report>,
     stats: &'a PlaybackRecorder,
     switch_deadline: Duration,
@@ -322,7 +318,7 @@ struct Ends {
     incumbent: Option<(Target, Option<Arc<Error>>)>,
 }
 
-/// Reports a transition of the switcher to the status, the waiters and the selector.
+/// Reports a transition of the switcher to the status and the selector.
 fn report(
     outcome: Outcome<Error>,
     switcher: &mut VideoSwitcher,
@@ -346,11 +342,9 @@ fn report(
             });
             send_if_changed(out.status, |status| {
                 status.video = SlotState::Running;
-                status.failed_rendition = None;
                 status.rendition = Some(target.rendition.clone());
                 status.decoder = Some(decoder.clone());
             });
-            let _ = out.events.send(SwitchEvent::Landed(target.rendition));
         }
         // A replacement whose track ended cleanly is not a broken decoder.
         // The publisher replaced the track or the route changed, and the
@@ -370,19 +364,18 @@ fn report(
             let rendition = target.rendition.clone();
             let playing = switcher.current().cloned();
             let mut exclude = true;
-            let (reason, failure) = match reason {
+            let failure = match reason {
                 Abandoned::Superseded => {
                     debug!(%rendition, "replacement superseded");
-                    (Abandoned::Superseded, None)
+                    None
                 }
                 Abandoned::Withdrawn => {
                     debug!(%rendition, "replacement withdrawn");
-                    (Abandoned::Withdrawn, None)
+                    None
                 }
                 Abandoned::OpenFailed(err) => {
                     warn!(error = %format!("{err:#}"), %rendition, "replacement decoder failed to open");
-                    let err = Arc::new(err);
-                    (Abandoned::OpenFailed(err.clone()), Some(err))
+                    Some(Arc::new(err))
                 }
                 Abandoned::Ended => {
                     let failure = ends
@@ -390,7 +383,7 @@ fn report(
                         .take()
                         .unwrap_or_else(|| Arc::new(n0_error::e!(Error::Closed)));
                     warn!(error = %format!("{failure:#}"), %rendition, "replacement decoder gave up before it took over");
-                    (Abandoned::Ended, Some(failure))
+                    Some(failure)
                 }
                 Abandoned::TimedOut => {
                     warn!(%rendition, after = ?out.switch_deadline, "replacement did not take over in time");
@@ -401,7 +394,7 @@ fn report(
                         "the decoder for {rendition} did not produce a picture within {}s",
                         out.switch_deadline.as_secs()
                     )));
-                    (Abandoned::TimedOut, Some(failure))
+                    Some(failure)
                 }
             };
             if let Some(err) = &failure {
@@ -414,7 +407,6 @@ fn report(
                     // has failed until the selector finds something to try.
                     if playing.is_none() && status.switching_to.is_none() {
                         status.clear_video(SlotState::Failed(err.clone().into()));
-                        status.failed_rendition = Some(rendition.clone());
                     }
                 });
                 // A full channel means the selector is far behind, and
@@ -425,7 +417,6 @@ fn report(
                     exclude,
                 }));
             }
-            let _ = out.events.send(SwitchEvent::Abandoned(rendition, reason));
         }
         Outcome::Ended => {
             out.stats.video.update(|video| *video = None);
@@ -437,7 +428,6 @@ fn report(
                     warn!(error = %format!("{err:#}"), rendition = %target.rendition, "video failed");
                     send_if_changed(out.status, |status| {
                         status.clear_video(SlotState::Failed(err.clone().into()));
-                        status.failed_rendition = Some(target.rendition.clone());
                         status.switch_error = Some(err.clone().into());
                     });
                     let _ = out.reports.try_send(Report::Failed(Failure {

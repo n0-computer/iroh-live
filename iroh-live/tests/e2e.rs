@@ -324,10 +324,15 @@ async fn adaptive_rendition_switching() {
         .expect("failed to play");
     first_frame(&player).await;
     // Starting at the top makes the drop below a real move.
-    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
-        .await
-        .expect("timed out waiting for the top rendition")
-        .expect("a healthy link starts at the top");
+    tokio::time::timeout(
+        TIMEOUT,
+        player
+            .status()
+            .wait_for(|status| status.rendition.as_deref() == Some("high")),
+    )
+    .await
+    .expect("timed out waiting for the top rendition")
+    .expect("the player is alive");
 
     // A quarter of the packets lost is past the emergency threshold.
     *sample.lock().expect("poisoned") = NetworkSample {

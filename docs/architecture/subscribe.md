@@ -81,10 +81,8 @@ An automatic step down does not overlap the two decoders. See
 [adaptive bitrate](adaptive.md#the-decision).
 
 `Player::set_rendition(mode)` changes the `RenditionMode` and returns at once.
-`Player::wait_for_rendition(name)` waits until the rendition is on screen. It
-fails with a `SwitchError` when a switch to it is superseded, withdrawn or
-fails, when the catalog has no such rendition, or when the video ended. Bound
-the wait with `tokio::time::timeout`.
+To wait until a rendition is on screen, wait on `Player::status()` for its
+`rendition`.
 
 `Player::status()` watches a `PlayerStatus`: each slot's state, the mode, the
 rendition on screen, the one warming up (`switching_to`), why the last switch

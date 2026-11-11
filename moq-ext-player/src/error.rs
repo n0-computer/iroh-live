@@ -1,72 +1,10 @@
-//! The player's own error type, beside the shared [`moq_ext_media_core::Error`].
-//!
-//! Also tells a session that closed from a track that failed. A peer hanging
+//! Tells a session that closed from a track that failed. A peer hanging
 //! up ends every track read over the session with a cancel code, and a
 //! publisher in the same process that goes away ends its tracks as dropped.
 //! That is how playback normally ends, so it is logged at debug and never
 //! reported as a failed decoder.
 
-use std::sync::Arc;
-
-use moq_ext_adaptive::Abandoned;
-use moq_ext_media_core::Error;
 use moq_net::{SessionError, StreamError};
-use n0_error::{e, stack_error};
-
-/// Why a rendition switch did not land.
-///
-/// Returned by [`Player::wait_for_rendition`](crate::Player::wait_for_rendition).
-#[stack_error(derive, add_meta)]
-pub enum SwitchError {
-    /// A newer request replaced it before it landed.
-    #[error("the switch to {rendition} was superseded")]
-    Superseded {
-        /// The rendition the switch was for.
-        rendition: String,
-    },
-    /// The request was withdrawn before it landed.
-    #[error("the switch to {rendition} was withdrawn")]
-    Withdrawn {
-        /// The rendition the switch was for.
-        rendition: String,
-    },
-    /// The switch could not finish.
-    ///
-    /// The decoder did not open, the track ended, the switch timed out, or the
-    /// catalog has no such rendition ([`Error::UnknownRendition`]).
-    #[error("the switch to {rendition} failed")]
-    Failed {
-        /// The rendition the switch was for.
-        rendition: String,
-        /// Why it failed.
-        #[error(source, std_err)]
-        source: Arc<Error>,
-    },
-    /// The player's video ended or was turned off.
-    #[error("the video ended")]
-    Ended,
-}
-
-impl From<(String, Abandoned<Arc<Error>>)> for SwitchError {
-    /// Maps a switch to `rendition` that the switcher gave up on.
-    fn from((rendition, reason): (String, Abandoned<Arc<Error>>)) -> Self {
-        let failed = |source| {
-            e!(SwitchError::Failed {
-                rendition: rendition.clone(),
-                source
-            })
-        };
-        match reason {
-            Abandoned::Superseded => e!(SwitchError::Superseded { rendition }),
-            Abandoned::Withdrawn => e!(SwitchError::Withdrawn { rendition }),
-            Abandoned::OpenFailed(source) => failed(source),
-            Abandoned::Ended => failed(Arc::new(e!(Error::Closed))),
-            Abandoned::TimedOut => failed(Arc::new(Error::decoder_msg(
-                "the decoder did not produce a picture in time",
-            ))),
-        }
-    }
-}
 
 /// An upstream error that may only say the session or the track was closed.
 pub(crate) trait CleanClose {

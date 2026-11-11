@@ -10,8 +10,8 @@ use std::{
 };
 
 use moq_ext_player::{
-    AudioTarget, Error, NetworkSample, PlayerConfig, RecordConfig, RecordFormat, RemoteBroadcast,
-    RenditionMode, SlotState, SwitchError,
+    AudioTarget, Error, NetworkSample, Player, PlayerConfig, RecordConfig, RecordFormat,
+    RemoteBroadcast, RenditionMode, SlotState,
 };
 use moq_ext_publisher::{AudioEncoding, LocalBroadcast, VideoEncoding, VideoRendition};
 use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
@@ -49,6 +49,14 @@ async fn until<T: Clone>(mut receiver: watch::Receiver<T>, done: impl FnMut(&T) 
         .expect("the awaited value never came")
         .expect("the watched value is alive")
         .clone()
+}
+
+/// Waits until the rendition `name` is on screen.
+async fn on_screen(player: &Player, name: &str) {
+    until(player.status(), |status| {
+        status.rendition.as_deref() == Some(name)
+    })
+    .await;
 }
 
 /// Pushes flat grey frames at 30 fps until the source is gone.
@@ -114,10 +122,7 @@ async fn a_local_broadcast_plays_in_process() {
             ..PlayerConfig::default()
         })
         .expect("a valid config");
-    player
-        .wait_for_rendition("low")
-        .await
-        .expect("the pinned rendition lands");
+    on_screen(&player, "low").await;
     let mut frames = player.video();
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;
     let status = player.status().borrow().clone();
@@ -196,20 +201,15 @@ async fn a_held_shortfall_moves_the_player_down() {
     let remote = local(&broadcast);
     remote.set_network(move || *reader.lock().expect("poisoned"));
     let player = remote.play(PlayerConfig::default()).expect("valid");
-    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
-        .await
-        .expect("in time")
-        .expect("a healthy link plays the top rendition");
+    // A healthy link plays the top rendition.
+    on_screen(&player, "high").await;
     // Room for `low` but not for `high`, with no loss, so only the hold delays
     // the switch.
     *sample.lock().expect("poisoned") = NetworkSample {
         delivery: Some(300_000),
         ..NetworkSample::default()
     };
-    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
-        .await
-        .expect("the downgrade never landed")
-        .expect("the switch to low lands");
+    on_screen(&player, "low").await;
 }
 
 /// Two players of one broadcast each keep their own rendition.
@@ -250,35 +250,26 @@ async fn a_pin_switches_without_ending_the_frames() {
     wait_for_size(&mut frames, moq_video::Size::new(640, 360)).await;
 
     player.set_rendition(RenditionMode::pinned("low"));
-    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("low"))
-        .await
-        .expect("the switch lands in time")
-        .expect("the switch lands");
+    on_screen(&player, "low").await;
     // The same handle keeps reading across the switch.
     wait_for_size(&mut frames, moq_video::Size::new(320, 180)).await;
 }
 
 #[tokio::test]
-async fn waiting_for_a_rendition_the_catalog_lacks_fails() {
+async fn a_rendition_the_catalog_lacks_is_unknown() {
     let (broadcast, _source) = ladder();
-    // The test ends within milliseconds. An `Auto` decoder may still be
-    // loading the VA-API driver then, which crashes the process as it exits.
-    let player = local(&broadcast)
-        .play(PlayerConfig {
-            decoder: moq_video::decode::Kind::Software,
-            ..Default::default()
-        })
-        .expect("valid");
-    let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("4k"))
-        .await
-        .expect("the wait ends");
-    let Err(SwitchError::Failed { source, .. }) = result else {
+    let catalog = until(local(&broadcast).catalog(), |catalog| {
+        catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.video.renditions.len() >= 2)
+    })
+    .await
+    .expect("a catalog");
+    let result = moq_ext_player::video_rendition(&catalog, "4k");
+    let Err(Error::UnknownRendition { offered, .. }) = result else {
         panic!("{result:?}");
     };
-    let Error::UnknownRendition { offered, .. } = &*source else {
-        panic!("{source:?}");
-    };
-    assert_eq!(offered, &["high", "low"]);
+    assert_eq!(offered, ["high", "low"]);
 }
 
 /// A pin to a missing rendition falls back to automatic selection.
@@ -310,13 +301,6 @@ async fn a_decoder_that_will_not_open_fails_the_video() {
             ..PlayerConfig::default()
         })
         .expect("valid");
-    let result = tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
-        .await
-        .expect("the wait ends");
-    assert!(
-        matches!(result, Err(SwitchError::Failed { .. })),
-        "{result:?}"
-    );
     let failed = until(player.status(), |status| {
         matches!(status.video, SlotState::Failed(_))
     })
@@ -500,10 +484,7 @@ async fn a_player_keeps_playing_when_its_route_goes() {
     let _ = direct_route.await;
 
     wait_for_size(&mut frames, moq_video::Size::new(640, 360)).await;
-    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("video"))
-        .await
-        .expect("in time")
-        .expect("the relayed broadcast plays");
+    on_screen(&player, "video").await;
     assert!(!remote.is_closed());
     assert_eq!(player.status().borrow().video, SlotState::Running);
     recorder.abort();
@@ -557,10 +538,7 @@ async fn turning_video_off_leaves_nothing_decoding() {
     .await;
     // And it comes back.
     player.set_rendition(RenditionMode::auto());
-    tokio::time::timeout(TIMEOUT, player.wait_for_rendition("high"))
-        .await
-        .expect("in time")
-        .expect("video came back");
+    on_screen(&player, "high").await;
 }
 
 #[tokio::test]

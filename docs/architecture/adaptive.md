@@ -173,6 +173,5 @@ plays as `Auto` would, says why in `PlayerStatus::switch_error`, and returns to
 the pinned rendition when it becomes available. `Off` unsubscribes video while
 audio keeps playing, for a tile scrolled off screen.
 
-`Player::wait_for_rendition(name)` waits until a rendition is on screen. The
-selector keeps running while the catalog has a single rendition, since a
+The selector keeps running while the catalog has a single rendition, since a
 publisher can add renditions mid-broadcast.

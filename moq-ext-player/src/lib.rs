@@ -47,7 +47,6 @@
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
 //! | [`VideoFrames::next`], [`AudioFrames::next`], [`RemoteBroadcast::closed`] | yes | loses nothing |
-//! | [`Player::wait_for_rendition`] | yes | the switch continues |
 //! | `Recording::wait`, `Recording::stop` (feature `record`) | yes, while the recording is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
 
 mod catalog;
@@ -68,7 +67,6 @@ use moq_ext_sources::frames;
 pub use self::record::{RecordConfig, RecordFormat, Recording};
 pub use self::{
     catalog::video_rendition,
-    error::SwitchError,
     network::NetworkSample,
     player::{
         Adaptation, AudioFrame, AudioFrames, AudioTarget, Latency, Player, PlayerConfig,
