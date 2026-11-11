@@ -669,3 +669,55 @@ async fn a_rejection_lands_while_the_policy_keeps_changing() {
     alice.shutdown().await;
     bob.shutdown().await;
 }
+
+/// An expired authorization grants nothing before a slow application answers.
+#[tokio::test]
+#[traced_test]
+async fn an_expired_authorization_narrows_before_a_slow_answer() {
+    let queue = policy::Queue::new(16);
+    let alice = Peer::bare(NodeConfig::default().with_policy(queue.clone())).await;
+    let bob = Peer::spawn().await;
+    let _answering = n0_future::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        let mut slow = n0_future::task::JoinSet::new();
+        while let Some(pending) = queue.next().await {
+            match pending.request().event() {
+                Event::Connect => pending.admit(Authorization {
+                    grant: Grant::everything(),
+                    expires: Some(SystemTime::now() + Duration::from_millis(300)),
+                    ..Default::default()
+                }),
+                _ => {
+                    slow.spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        pending.admit(Grant::subscribe_only());
+                    });
+                }
+            }
+        }
+    }));
+
+    step("bob dials", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    eventually("alice registers bob", || {
+        sessions_with(&alice.node, bob.id()).len() == 1
+    })
+    .await;
+    let session = sessions_with(&alice.node, bob.id()).remove(0);
+    assert_eq!(session.grant(), Grant::everything());
+
+    tokio::time::timeout(Duration::from_millis(1500), async {
+        while session.grant() != Grant::nothing() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the grant lapses at expiry, before the application answers");
+    eventually("the application's answer applies", || {
+        session.grant() == Grant::subscribe_only()
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}

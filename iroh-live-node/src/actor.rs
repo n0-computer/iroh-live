@@ -120,9 +120,7 @@ impl Actor {
                         self.changes = None;
                     }
                 },
-                () = sleep_until(deadline) => {
-                    self.reauth.expire(tokio::time::Instant::now().into_std());
-                }
+                () = sleep_until(deadline) => self.deadline_passed(),
                 Some(decided) = self.decisions.join_next_with_id(), if !self.decisions.is_empty() => {
                     self.redecided(decided);
                 }
@@ -294,6 +292,19 @@ impl Actor {
             if self.reauth.request(&peer) {
                 debug!(remote = %peer.fmt_short(), "deciding the peer again, as asked");
             }
+        }
+    }
+
+    /// Takes the rights of the peers whose authorization expired, and asks the policy again.
+    fn deadline_passed(&mut self) {
+        let expired = self.reauth.expire(tokio::time::Instant::now().into_std());
+        if expired.is_empty() {
+            return;
+        }
+        let mut state = self.shared.state.lock().expect("poisoned");
+        for peer in expired {
+            info!(remote = %peer.fmt_short(), "the peer's authorization expired, narrowing it until the policy decides again");
+            state.lapse(&peer);
         }
     }
 

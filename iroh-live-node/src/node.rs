@@ -63,7 +63,9 @@ pub struct NodeConfig {
     /// authorization, which a later session reuses.
     ///
     /// The node asks again about a live peer, with an
-    /// [`Event`](policy::Event) that says why.
+    /// [`Event`](policy::Event) that says why. When an authorization
+    /// expires, the peer's sessions may do nothing until the new decision
+    /// applies.
     ///
     /// `None` is [`policy::Open`] with [`Grant::subscribe_only`]: every peer
     /// may subscribe to anything and publish nothing.
@@ -271,7 +273,9 @@ impl Node {
     /// Returns the authorization the policy gave `peer`, while it holds a session.
     ///
     /// Every session with the peer shares it. Ticket claims widen the grant
-    /// on top of it, which [`Session::grant`] includes.
+    /// on top of it, which [`Session::grant`] includes. An expired
+    /// authorization stays here until the policy decides again, while
+    /// [`Session::grant`] already grants nothing.
     pub fn grant_for(&self, peer: EndpointId) -> Option<Authorization> {
         self.shared
             .state

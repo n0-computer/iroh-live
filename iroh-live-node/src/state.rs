@@ -64,6 +64,11 @@ struct PeerEntry {
     /// moq skips a grant equal to the last one, so the expiry must not move
     /// on every re-authorization.
     expires: Option<moq_net::time::Instant>,
+    /// Whether the authorization expired before a new decision replaced it.
+    ///
+    /// A lapsed authorization grants nothing, so an expired token loses its
+    /// rights at expiry, not when a slow policy answers.
+    lapsed: bool,
     /// The epoch at which the decision behind `authorization` started.
     decided: u64,
     /// The epoch of the last trigger or rejection for the peer.
@@ -77,19 +82,23 @@ struct PeerEntry {
 impl PeerEntry {
     /// Stores `authorization`, decided at epoch `decided`.
     fn set(&mut self, authorization: Authorization, decided: u64) {
-        self.expires = authorization.expires.and_then(|expires| {
-            let left = expires
-                .duration_since(SystemTime::now())
-                .unwrap_or_default();
-            moq_net::time::Instant::now().checked_add(left)
-        });
+        let left = authorization
+            .expires
+            .map(|expires| expires.duration_since(SystemTime::now()));
+        self.lapsed = matches!(left, Some(Err(_)));
+        self.expires = left
+            .and_then(|left| moq_net::time::Instant::now().checked_add(left.unwrap_or_default()));
         self.authorization = Some(authorization);
         self.decided = decided;
     }
 
     /// Returns the grant the peer's links take now, if the peer is authorized.
     fn grant(&self) -> Option<Grant> {
-        Some(self.authorization.as_ref()?.grant.clone())
+        let authorization = self.authorization.as_ref()?;
+        Some(match self.lapsed {
+            true => Grant::nothing(),
+            false => authorization.grant.clone(),
+        })
     }
 }
 
@@ -320,6 +329,7 @@ impl State {
             None => {
                 entry.authorization = None;
                 entry.expires = None;
+                entry.lapsed = false;
                 entry.decided = started;
                 entry.marked = entry.marked.max(started);
             }
@@ -347,6 +357,17 @@ impl State {
         self.marked_all = self.next_epoch();
     }
 
+    /// Takes the rights of `peer`, whose authorization expired, until a new decision applies.
+    pub(crate) fn lapse(&mut self, peer: &EndpointId) {
+        if let Some(entry) = self.peers.get_mut(peer)
+            && entry.authorization.is_some()
+            && !entry.lapsed
+        {
+            entry.lapsed = true;
+            self.authorize_peer(peer);
+        }
+    }
+
     /// Records that the last registered session with `peer` ended.
     ///
     /// The peer's authorization goes with it, and its links narrow to nothing.
@@ -355,6 +376,7 @@ impl State {
             entry.live = false;
             entry.authorization = None;
             entry.expires = None;
+            entry.lapsed = false;
             self.prune(peer);
             self.authorize_peer(peer);
         }
@@ -387,6 +409,8 @@ impl State {
     }
 
     /// Returns the base grant of `peer`, if it holds an authorization.
+    ///
+    /// A lapsed authorization grants nothing.
     pub(crate) fn peer_grant(&self, peer: &EndpointId) -> Option<Grant> {
         self.peers.get(peer)?.grant()
     }
@@ -502,7 +526,7 @@ impl State {
     ///
     /// A direct link whose peer has no authorization may do nothing: after a
     /// rejection, while the peer's sessions close, and until a stale
-    /// registration is decided again.
+    /// registration is decided again. So may one whose authorization lapsed.
     /// The grant carries the authorization's expiry.
     fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
         let peer = match (&link.grant, &link.remote) {
@@ -1009,6 +1033,20 @@ mod tests {
         assert!(state.decided(&peer, newer, Some(Grant::nothing().into())));
         assert!(!state.decided(&peer, older, Some(Grant::everything().into())));
         assert_eq!(state.peer_grant(&peer), Some(Grant::nothing()));
+    }
+
+    #[test]
+    fn a_lapsed_authorization_grants_nothing_until_a_decision() {
+        let (mut state, peer) = registered(Grant::everything());
+        state.lapse(&peer);
+        assert_eq!(state.peer_grant(&peer), Some(Grant::nothing()));
+        assert!(
+            state.peer_authorization(&peer).is_some(),
+            "the authorization stays for the policy to see"
+        );
+        let started = state.next_epoch();
+        assert!(state.decided(&peer, started, Some(Grant::subscribe_only().into())));
+        assert_eq!(state.peer_grant(&peer), Some(Grant::subscribe_only()));
     }
 
     #[test]

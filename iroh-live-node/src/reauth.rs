@@ -186,21 +186,29 @@ impl Reauth {
     ///
     /// A peer whose authorization expired is decided with
     /// [`Event::Reauthorize`], one only due for revalidation with
-    /// [`Event::Revalidate`].
-    pub(crate) fn expire(&mut self, now: Instant) {
+    /// [`Event::Revalidate`]. Returns the peers whose authorization expired,
+    /// which lose their rights until a new decision applies. A deadline
+    /// before the expiry arms the expiry next, so a slow decision cannot hold
+    /// an expired authorization in force.
+    pub(crate) fn expire(&mut self, now: Instant) -> Vec<EndpointId> {
         let due: Vec<(EndpointId, bool)> = self
             .peers
             .iter_mut()
             .filter(|(_, entry)| entry.deadline.is_some_and(|deadline| deadline <= now))
             .map(|(peer, entry)| {
-                entry.deadline = None;
                 let expired = entry.expires.is_some_and(|expires| expires <= now);
+                entry.deadline = entry.expires.filter(|_| !expired);
                 (*peer, expired)
             })
             .collect();
-        for (peer, expired) in due {
-            self.trigger(&peer, expired);
+        let mut expired = Vec::new();
+        for (peer, lapsed) in due {
+            self.trigger(&peer, lapsed);
+            if lapsed {
+                expired.push(peer);
+            }
         }
+        expired
     }
 
     /// Returns the next decision to start, while fewer than [`MAX_CONCURRENT`] run.
@@ -335,7 +343,7 @@ mod tests {
         admit(&mut reauth, peer(), &Grant::everything().into(), now);
         assert_eq!(reauth.next_deadline(), Some(now + Duration::from_secs(3)));
 
-        reauth.expire(now + Duration::from_secs(4));
+        assert_eq!(reauth.expire(now + Duration::from_secs(4)), [early]);
         let start = reauth.start().expect("the early peer is due");
         assert_eq!(start.peer, early);
         assert!(reauth.start().is_none(), "the late peer is not due yet");
@@ -362,7 +370,7 @@ mod tests {
         );
         admit(&mut reauth, asked, &Grant::everything().into(), now);
 
-        reauth.expire(now + secs(3));
+        assert_eq!(reauth.expire(now + secs(3)), [expiring_peer]);
         reauth.request(&asked);
         let mut events = HashMap::new();
         while let Some(start) = reauth.start() {
@@ -404,9 +412,29 @@ mod tests {
         let asked = reauth.start().expect("a reauthorization");
         assert_eq!(asked.event, Event::Reauthorize);
         // The revalidation interval passes while the application answers.
-        reauth.expire(now + Duration::from_secs(2));
+        assert!(reauth.expire(now + Duration::from_secs(2)).is_empty());
         assert!(reauth.finish(&bob));
         assert!(reauth.start().is_none());
+    }
+
+    #[test]
+    fn the_expiry_stays_armed_while_a_decision_runs() {
+        let now = Instant::now();
+        let bob = peer();
+        let mut reauth = Reauth::default();
+        let authorization = expiring(Duration::from_secs(10), Some(Duration::from_secs(1)));
+        admit(&mut reauth, bob, &authorization, now);
+        assert!(reauth.expire(now + Duration::from_secs(1)).is_empty());
+        let running = reauth.start().expect("a revalidation");
+        assert_eq!(running.event, Event::Revalidate);
+        assert_eq!(reauth.next_deadline(), Some(now + Duration::from_secs(10)));
+
+        // The decision is still running when the authorization expires.
+        assert_eq!(reauth.expire(now + Duration::from_secs(10)), [bob]);
+        assert!(reauth.start().is_none(), "one decision per peer at a time");
+        assert!(reauth.finish(&bob));
+        let next = reauth.start().expect("the expiry decides again");
+        assert_eq!(next.event, Event::Reauthorize);
     }
 
     #[test]
