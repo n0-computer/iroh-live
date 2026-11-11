@@ -22,14 +22,14 @@ use super::{
 };
 use crate::{
     args::{CallArgs, PlaybackArgs},
-    transport::{PEER_TIMEOUT, Subscribed, Transport},
+    transport::{PEER_TIMEOUT, SharedNode, Subscribed},
     ui::{CursorIdle, Pending, RemoteView, TicketQr},
 };
 
 /// Opens the call window and runs it until it closes.
 pub(super) fn run(local: Local, args: CallArgs) -> Result {
     let Local {
-        live,
+        node,
         broadcast,
         calls,
         sources,
@@ -65,7 +65,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
             preview,
             render_state: cc.wgpu_render_state.clone(),
             _heartbeat: crate::ui::spawn_heartbeat(ctx),
-            live,
+            node,
             broadcast,
             calls,
             ringing,
@@ -83,7 +83,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
 
 /// The call window.
 pub(super) struct CallApp {
-    pub(super) live: Transport,
+    pub(super) node: SharedNode,
     /// This node's ticket, shown in the top bar and as a QR code.
     pub(super) ticket: String,
     /// The ticket as a QR code, or `None` where it does not render.
@@ -220,7 +220,7 @@ impl eframe::App for CallApp {
         info!("exit");
         self.screen = Screen::waiting();
         self.pending = None;
-        crate::ui::shutdown_publish_blocking(&self.live, &self.broadcast);
+        crate::ui::shutdown_publish_blocking(&self.node, &self.broadcast);
     }
 }
 

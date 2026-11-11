@@ -144,9 +144,9 @@ async fn run_session(config: RunConfig) -> Result {
         },
         None => EndpointConfig::from_env()?,
     };
-    let live = transport::setup_live_with(options, serve).await?;
-    let result = run_streams(&live, &config).await;
-    live.shutdown().await;
+    let node = transport::bind_node_with(options, serve).await?;
+    let result = run_streams(&node, &config).await;
+    node.shutdown().await;
     println!("done");
     result
 }
@@ -155,7 +155,7 @@ async fn run_session(config: RunConfig) -> Result {
 ///
 /// A block that fails is reported and skipped. Fails only if no block could be
 /// set up.
-async fn run_streams(live: &Node, config: &RunConfig) -> Result {
+async fn run_streams(node: &Node, config: &RunConfig) -> Result {
     // Dropping a handle stops it, so all are kept until shutdown.
     let mut broadcasts: Vec<(LocalBroadcast, source::Opened)> = Vec::new();
     let mut receivers: Vec<Receiver> = Vec::new();
@@ -172,9 +172,9 @@ async fn run_streams(live: &Node, config: &RunConfig) -> Result {
     };
 
     for send in &config.send {
-        match setup_send(live, send).await {
+        match setup_send(node, send).await {
             Ok(published) => {
-                let ticket = LiveLayout::default().ticket(live.id(), &send.name)?;
+                let ticket = LiveLayout::default().ticket(node.id(), &send.name)?;
                 println!("[send] {}: {ticket}", send.name);
                 broadcasts.push(published);
             }
@@ -189,7 +189,7 @@ async fn run_streams(live: &Node, config: &RunConfig) -> Result {
     // has not started would hold up the rest.
     let setups = config.recv.iter().map(|recv| {
         let output = output.as_ref();
-        async move { (recv, setup_recv(live, recv, output).await) }
+        async move { (recv, setup_recv(node, recv, output).await) }
     });
     for (recv, result) in n0_future::join_all(setups).await {
         match result {
@@ -256,8 +256,8 @@ struct Receiver {
 }
 
 /// Publishes one `[[send]]` block.
-async fn setup_send(live: &Node, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
-    let broadcast: LocalBroadcast = LiveLayout::default().publish(live, &config.name)?;
+async fn setup_send(node: &Node, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
+    let broadcast: LocalBroadcast = LiveLayout::default().publish(node, &config.name)?;
     let sources = source::configure(&broadcast, &config.capture, None).await?;
     Ok((broadcast, sources))
 }
@@ -267,7 +267,7 @@ async fn setup_send(live: &Node, config: &SendConfig) -> Result<(LocalBroadcast,
 /// Returns the recording and its path for the caller to finish. Audio that
 /// fails to play is logged and skipped.
 async fn setup_recv(
-    live: &Node,
+    node: &Node,
     config: &RecvConfig,
     output: Option<&media::AudioTarget>,
 ) -> Result<(Receiver, Option<(Recording, std::path::PathBuf)>)> {
@@ -277,7 +277,7 @@ async fn setup_recv(
              printed, starting with `ilv1:`"
         )
     })?;
-    let sub = transport::subscribe(live, &ticket).await?;
+    let sub = transport::subscribe(node, &ticket).await?;
     let catalog = crate::playback::catalog(sub.broadcast()).await?;
 
     let recording = match &config.record {

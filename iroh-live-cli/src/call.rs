@@ -20,7 +20,7 @@ use tracing::info;
 use crate::{
     args::CallArgs,
     source,
-    transport::{self, Transport},
+    transport::{self, SharedNode},
 };
 
 /// Runs the `call` command.
@@ -35,7 +35,7 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
 
 /// This node's side of the call, and the speaker the peer's side plays on.
 struct Local {
-    live: Transport,
+    node: SharedNode,
     broadcast: LocalBroadcast,
     /// Who this node's side is offered to.
     calls: Calls,
@@ -48,12 +48,12 @@ struct Local {
 async fn setup(args: &CallArgs) -> Result<Local> {
     // Opened first so the microphone can cancel its echo.
     let output = crate::playback::output(None).await?;
-    let live = transport::setup_live(true).await?;
-    let (live, (broadcast, calls, sources, ticket)) = transport::with_live(live, async |live| {
+    let node = transport::bind_node(true).await?;
+    let (node, (broadcast, calls, sources, ticket)) = transport::with_node(node, async |node| {
         // Published once, to nobody: each call offers it to its peer.
-        let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(live, &LiveLayout::default())?;
+        let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(node, &LiveLayout::default())?;
         let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
-        let ticket = LiveLayout::default().ticket(live.id(), CALL)?.to_string();
+        let ticket = LiveLayout::default().ticket(node.id(), CALL)?.to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");
@@ -61,7 +61,7 @@ async fn setup(args: &CallArgs) -> Result<Local> {
     })
     .await?;
     Ok(Local {
-        live,
+        node,
         broadcast,
         calls,
         sources,

@@ -34,15 +34,15 @@ async fn record(args: RecordArgs) -> Result {
     let ticket = args.remote.ticket()?;
     let options = options(&args)?;
 
-    let live = transport::setup_live(false).await?;
-    let result = record_on(&live, &ticket, &options).await;
-    live.shutdown().await;
+    let node = transport::bind_node(false).await?;
+    let result = record_on(&node, &ticket, &options).await;
+    node.shutdown().await;
     result
 }
 
-/// Records one broadcast over `live`. The caller shuts `live` down.
-async fn record_on(live: &Node, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
-    let sub = transport::subscribe(live, ticket).await?;
+/// Records one broadcast over `node`. The caller shuts `node` down.
+async fn record_on(node: &Node, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
+    let sub = transport::subscribe(node, ticket).await?;
 
     let catalog = crate::playback::catalog(sub.broadcast()).await?;
     println!(

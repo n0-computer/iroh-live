@@ -39,6 +39,8 @@ const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Waits for the broadcast's first catalog.
 ///
+/// # Errors
+///
 /// Fails if the broadcast closes first or sends none in time.
 pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
     broadcast
@@ -52,8 +54,12 @@ pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>> {
 
 /// Opens the audio output for playback.
 ///
-/// Fails if `device` is set and does not open. Without `device`, a machine
-/// with no speaker gets an output that discards audio, so video still plays.
+/// Without `device`, a machine with no speaker gets an output that discards
+/// audio, so video still plays.
+///
+/// # Errors
+///
+/// Fails if `device` is set and does not open.
 #[allow(
     clippy::unused_async,
     reason = "a build without playback opens nothing, which is not async"

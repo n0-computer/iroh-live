@@ -30,37 +30,37 @@ const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 /// A live node, and the router that accepts its sessions if it serves.
 ///
 /// Shared by the windows of a command, and shut down by whichever ends it.
-pub type Transport = Arc<BoundNode>;
+pub type SharedNode = Arc<BoundNode>;
 
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
 /// With `serve` set, a router accepts incoming subscribers. Without it, only
 /// outbound connections work.
-pub async fn setup_live(serve: bool) -> Result<Transport> {
-    setup_live_with(EndpointConfig::from_env()?, serve).await
+pub async fn bind_node(serve: bool) -> Result<SharedNode> {
+    bind_node_with(EndpointConfig::from_env()?, serve).await
 }
 
-/// Binds an endpoint with `options` and starts the MoQ transport on it.
+/// Binds an endpoint with `config` and starts the MoQ transport on it.
 ///
 /// A ticket carries no addresses, so the endpoint uses mDNS on top of the
 /// preset's pkarr and DNS lookup. A node that does not serve only looks up
 /// others and does not announce itself.
-pub async fn setup_live_with(options: EndpointConfig, serve: bool) -> Result<Transport> {
+pub async fn bind_node_with(config: EndpointConfig, serve: bool) -> Result<SharedNode> {
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
-    let endpoint = EndpointConfig { mdns, ..options }.bind().await?;
-    let live = Node::new(endpoint.clone(), LiveLayout::default().config());
-    let router = serve.then(|| live.mount(Router::builder(endpoint)).spawn());
-    Ok(Arc::new(BoundNode::new(live, router)))
+    let endpoint = EndpointConfig { mdns, ..config }.bind().await?;
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config());
+    let router = serve.then(|| node.mount(Router::builder(endpoint)).spawn());
+    Ok(Arc::new(BoundNode::new(node, router)))
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.
 ///
 /// A [`BoundNode`] dropped without [`BoundNode::shutdown`] shuts down in the
 /// background, which a command that exits right after does not wait for.
-pub async fn with_live<T>(
-    transport: Transport,
-    setup: impl AsyncFnOnce(&Transport) -> Result<T>,
-) -> Result<(Transport, T)> {
+pub async fn with_node<T>(
+    transport: SharedNode,
+    setup: impl AsyncFnOnce(&SharedNode) -> Result<T>,
+) -> Result<(SharedNode, T)> {
     match setup(&transport).await {
         Ok(value) => Ok((transport, value)),
         Err(err) => {
@@ -121,10 +121,10 @@ impl Subscribed {
 ///
 /// Prints a notice if the broadcast takes long to appear. Returns once a route
 /// is found, before the catalog arrives.
-pub async fn subscribe(live: &Node, ticket: &BroadcastTicket) -> Result<Subscribed> {
+pub async fn subscribe(node: &Node, ticket: &BroadcastTicket) -> Result<Subscribed> {
     println!("connecting to {ticket} ...");
     let mut subscribing = std::pin::pin!(async {
-        let subscription = live.subscribe_ticket(ticket).await?;
+        let subscription = node.subscribe_ticket(ticket).await?;
         n0_error::Ok(Subscribed::open(subscription))
     });
 
@@ -159,9 +159,9 @@ pub async fn subscribe(live: &Node, ticket: &BroadcastTicket) -> Result<Subscrib
 ///
 /// Prints the ticket unless `--no-serve` is set, and attaches the relay if one
 /// was named.
-pub fn advertise(live: &Node, args: &TransportArgs) -> Result<String> {
+pub fn advertise(node: &Node, args: &TransportArgs) -> Result<String> {
     let ticket = LiveLayout::default()
-        .ticket(live.id(), &args.name)?
+        .ticket(node.id(), &args.name)?
         .to_string();
     match (args.no_serve, args.relay) {
         (true, Some(_)) => println!("not serving: subscribers reach this broadcast by relay"),
@@ -176,7 +176,7 @@ pub fn advertise(live: &Node, args: &TransportArgs) -> Result<String> {
     }
 
     if let Some(relay) = args.relay {
-        attach_relay(live, relay, &args.name)?;
+        attach_relay(node, relay, &args.name)?;
     }
     Ok(ticket)
 }
@@ -185,13 +185,13 @@ pub fn advertise(live: &Node, args: &TransportArgs) -> Result<String> {
 ///
 /// The relay receives every public broadcast of this node. The link does not
 /// consume, or it would mirror the relay's whole namespace into the route table.
-fn attach_relay(live: &Node, relay: EndpointId, name: &str) -> Result<RelayLink> {
-    let link = live.attach_relay(RelayConfig {
+fn attach_relay(node: &Node, relay: EndpointId, name: &str) -> Result<RelayLink> {
+    let link = node.attach_relay(RelayConfig {
         consume: false,
         ..RelayConfig::iroh(relay)
     })?;
     let path = LiveLayout::default()
-        .ticket(live.id(), name)?
+        .ticket(node.id(), name)?
         .path()
         .clone();
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");

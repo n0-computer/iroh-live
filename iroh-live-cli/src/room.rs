@@ -19,7 +19,7 @@ use tracing::info;
 use crate::{
     args::RoomArgs,
     source,
-    transport::{self, Transport},
+    transport::{self, SharedNode},
 };
 
 mod chat;
@@ -41,7 +41,7 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
 
 /// This node's membership in the room, handed to the window.
 struct Joined {
-    live: Transport,
+    node: SharedNode,
     broadcast: LocalBroadcast,
     sources: source::Opened,
     /// The speaker every participant plays on, and what the microphone cancels.
@@ -65,15 +65,15 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     let rooms = Rooms::new(&node);
     // Mounts rooms' gossip next to the moq ALPNs.
     let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
-    let live = Arc::new(BoundNode::new(node, Some(router)));
+    let node = Arc::new(BoundNode::new(node, Some(router)));
     let (_, joined) =
-        transport::with_live(live, async |live| join(live, &rooms, args, output).await).await?;
+        transport::with_node(node, async |node| join(node, &rooms, args, output).await).await?;
     Ok(joined)
 }
 
-/// Joins the room over `live`, which the caller closes if this fails.
+/// Joins the room over `node`, which the caller closes if this fails.
 async fn join(
-    live: &Transport,
+    node: &SharedNode,
     rooms: &Rooms,
     args: &RoomArgs,
     output: AudioTarget,
@@ -82,7 +82,7 @@ async fn join(
     let display_name = args
         .display_name
         .clone()
-        .unwrap_or_else(|| live.endpoint().id().fmt_short().to_string());
+        .unwrap_or_else(|| node.endpoint().id().fmt_short().to_string());
     let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
     let broadcast: LocalBroadcast = room.publish(BROADCAST_NAME)?;
@@ -95,7 +95,7 @@ async fn join(
     info!(ticket, display_name, "joined the room");
 
     Ok(Joined {
-        live: live.clone(),
+        node: node.clone(),
         broadcast,
         sources,
         output,
@@ -130,7 +130,7 @@ mod window {
     use super::{Joined, chat};
     use crate::{
         args::PlaybackArgs,
-        transport::{PEER_TIMEOUT, Subscribed, Transport},
+        transport::{PEER_TIMEOUT, SharedNode, Subscribed},
         ui::RemoteView,
     };
 
@@ -161,7 +161,7 @@ mod window {
     /// Opens the room window and runs it until it closes.
     pub(super) fn run(joined: Joined, playback: PlaybackArgs, fullscreen: bool) -> Result {
         let Joined {
-            live,
+            node,
             broadcast,
             sources,
             output,
@@ -173,7 +173,7 @@ mod window {
         crate::ui::run_window("irl room", fullscreen, move |cc| {
             let (chat_tx, chat_rx) = mpsc::channel(CHAT_QUEUE);
             RoomApp {
-                live,
+                node,
                 state: room.state(),
                 known: RoomState::default(),
                 _wake: wake_on_room(&cc.egui_ctx, &room),
@@ -207,7 +207,7 @@ mod window {
 
     /// The room window.
     struct RoomApp {
-        live: Transport,
+        node: SharedNode,
         /// This node's own broadcast.
         broadcast: LocalBroadcast,
         room: Room,
@@ -290,7 +290,7 @@ mod window {
             self.peers.clear();
             let room = self.room.clone();
             tokio::runtime::Handle::current().block_on(room.leave());
-            crate::ui::shutdown_publish_blocking(&self.live, &self.broadcast);
+            crate::ui::shutdown_publish_blocking(&self.node, &self.broadcast);
         }
     }
 

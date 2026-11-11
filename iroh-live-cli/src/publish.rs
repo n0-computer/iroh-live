@@ -12,7 +12,7 @@ use crate::{
     import::{FileImport, FileSource},
     source,
     source_spec::VideoSourceSpec,
-    transport::{self, Transport, setup_live},
+    transport::{self, SharedNode, bind_node},
 };
 
 /// Runs the `publish` command.
@@ -43,13 +43,13 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// Opens the devices, publishes them, and prints the ticket.
 async fn setup_capture(
     args: &PublishArgs,
-) -> Result<(Transport, LocalBroadcast, source::Opened, String)> {
-    let live = setup_live(!args.transport.no_serve).await?;
-    let (live, (broadcast, sources, ticket)) = transport::with_live(live, async |live| {
+) -> Result<(SharedNode, LocalBroadcast, source::Opened, String)> {
+    let node = bind_node(!args.transport.no_serve).await?;
+    let (node, (broadcast, sources, ticket)) = transport::with_node(node, async |node| {
         let broadcast: LocalBroadcast =
-            LiveLayout::default().publish(live, &args.transport.name)?;
+            LiveLayout::default().publish(node, &args.transport.name)?;
         let sources = source::configure(&broadcast, &args.capture, None).await?;
-        let ticket = transport::advertise(live, &args.transport)?;
+        let ticket = transport::advertise(node, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.
         info!(
             name = %args.transport.name,
@@ -60,20 +60,20 @@ async fn setup_capture(
         Ok((broadcast, sources, ticket))
     })
     .await?;
-    Ok((live, broadcast, sources, ticket))
+    Ok((node, broadcast, sources, ticket))
 }
 
 /// Publishes capture devices, optionally alongside a preview window.
 fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    let (live, broadcast, sources, ticket) = rt.block_on(setup_capture(args))?;
+    let (node, broadcast, sources, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
-        return wait_for_ctrl_c(rt, live, broadcast, sources);
+        return wait_for_ctrl_c(rt, node, broadcast, sources);
     }
 
     // eframe takes the main thread. The guard keeps the runtime entered.
     let _guard = rt.enter();
-    preview::run(live, broadcast, sources, ticket, args)
+    preview::run(node, broadcast, sources, ticket, args)
 }
 
 /// Publishes a media file, republishing its tracks without decoding them.
@@ -90,20 +90,20 @@ fn publish_file(source: FileSource, args: &PublishArgs, rt: &tokio::runtime::Run
 
 /// Publishes the file and holds it open until end of input or an interrupt.
 async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
-    let live = setup_live(!args.transport.no_serve).await?;
-    let result = publish_import(&live, source, args).await;
-    live.shutdown().await;
+    let node = bind_node(!args.transport.no_serve).await?;
+    let result = publish_import(&node, source, args).await;
+    node.shutdown().await;
     result
 }
 
-/// Publishes the file on `live`. The caller shuts `live` down.
-async fn publish_import(live: &Node, source: FileSource, args: &PublishArgs) -> Result {
+/// Publishes the file on `node`. The caller shuts `node` down.
+async fn publish_import(node: &Node, source: FileSource, args: &PublishArgs) -> Result {
     // The import creates its tracks once it has read the file's header, a
     // moment after the broadcast is published. A reader that asks within that
     // moment finds no catalog yet: `RemoteBroadcast` asks again until it
     // appears, while other readers may give up.
     let producer: broadcast::Producer =
-        LiveLayout::default().publish(live, &args.transport.name)?;
+        LiveLayout::default().publish(node, &args.transport.name)?;
     let import = match FileImport::open(producer.clone(), source).await {
         Ok(import) => import,
         Err(err) => {
@@ -112,7 +112,7 @@ async fn publish_import(live: &Node, source: FileSource, args: &PublishArgs) -> 
             return Err(err);
         }
     };
-    transport::advertise(live, &args.transport)?;
+    transport::advertise(node, &args.transport)?;
     info!(name = %args.transport.name, "publishing a file");
 
     println!("press Ctrl+C to stop");
@@ -129,7 +129,7 @@ async fn publish_import(live: &Node, source: FileSource, args: &PublishArgs) -> 
 /// Holds the broadcast and its sources open until the user interrupts.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
-    live: Transport,
+    node: SharedNode,
     broadcast: LocalBroadcast,
     sources: source::Opened,
 ) -> Result {
@@ -139,7 +139,7 @@ fn wait_for_ctrl_c(
         broadcast.close();
         broadcast.closed().await;
         drop(sources);
-        live.shutdown().await;
+        node.shutdown().await;
         Ok(())
     })
 }
@@ -162,13 +162,13 @@ mod preview {
         args::{CaptureArgs, PublishArgs},
         source::{self, Opened},
         source_spec::{TestPattern, VideoSourceSpec},
-        transport::Transport,
+        transport::SharedNode,
         ui::Pending,
     };
 
     /// Opens the preview window and runs it until it closes.
     pub(super) fn run(
-        live: Transport,
+        node: SharedNode,
         broadcast: LocalBroadcast,
         sources: Opened,
         ticket: String,
@@ -183,7 +183,7 @@ mod preview {
                 cc.wgpu_render_state.as_ref(),
             );
             PreviewApp {
-                live,
+                node,
                 broadcast,
                 ticket,
                 view,
@@ -195,7 +195,7 @@ mod preview {
 
     /// The `irl publish --preview` window.
     struct PreviewApp {
-        live: Transport,
+        node: SharedNode,
         broadcast: LocalBroadcast,
         ticket: String,
         view: VideoView,
@@ -230,7 +230,7 @@ mod preview {
 
         fn on_exit(&mut self) {
             info!("exit");
-            crate::ui::shutdown_publish_blocking(&self.live, &self.broadcast);
+            crate::ui::shutdown_publish_blocking(&self.node, &self.broadcast);
         }
     }
 

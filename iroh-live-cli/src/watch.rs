@@ -14,7 +14,7 @@ use n0_error::{Result, anyerr};
 
 use crate::{
     args::WatchArgs,
-    transport::{self, Subscribed, Transport},
+    transport::{self, SharedNode, Subscribed},
 };
 
 /// Where the first ticket comes from, and who dials it.
@@ -64,29 +64,29 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
 
     let mut options = Options::from(&args);
     options.scan_camera = args.scan_camera.clone();
-    let (live, output) = rt.block_on(setup(&args))?;
+    let (node, output) = rt.block_on(setup(&args))?;
     options.output = output;
 
     let ticket = match start {
         // eframe takes the main thread. The guard lets it spawn onto the runtime.
         Start::Scan => {
             let _guard = rt.enter();
-            return window::run(live, window::Opening::Scanning, options, args.fullscreen);
+            return window::run(node, window::Opening::Scanning, options, args.fullscreen);
         }
         Start::TicketInWindow(ticket) => {
             let _guard = rt.enter();
             let opening = window::Opening::Connecting(Box::new(ticket));
-            return window::run(live, opening, options, args.fullscreen);
+            return window::run(node, opening, options, args.fullscreen);
         }
         Start::Ticket(ticket) => ticket,
     };
 
-    let (live, (sub, player)) = rt.block_on(transport::with_live(live, async |live| {
-        connect(live, &ticket, &options, None).await
+    let (node, (sub, player)) = rt.block_on(transport::with_node(node, async |node| {
+        connect(node, &ticket, &options, None).await
     }))?;
 
     if args.no_video {
-        return wait_for_ctrl_c(rt, live, sub, player);
+        return wait_for_ctrl_c(rt, node, sub, player);
     }
 
     let _guard = rt.enter();
@@ -96,7 +96,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         player,
     };
     let opening = window::Opening::Watching(Box::new(connected));
-    window::run(live, opening, options, args.fullscreen)
+    window::run(node, opening, options, args.fullscreen)
 }
 
 /// Decides where the first ticket comes from and who dials it.
@@ -129,7 +129,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
 ///
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
-async fn setup(args: &WatchArgs) -> Result<(Transport, AudioTarget)> {
+async fn setup(args: &WatchArgs) -> Result<(SharedNode, AudioTarget)> {
     #[cfg(feature = "playback")]
     let device = args.audio_output.clone();
     #[cfg(not(feature = "playback"))]
@@ -138,7 +138,7 @@ async fn setup(args: &WatchArgs) -> Result<(Transport, AudioTarget)> {
         None
     };
     let output = crate::playback::output(device).await?;
-    Ok((transport::setup_live(false).await?, output))
+    Ok((transport::bind_node(false).await?, output))
 }
 
 /// Connects to `ticket` and starts playing.
@@ -150,12 +150,12 @@ async fn setup(args: &WatchArgs) -> Result<(Transport, AudioTarget)> {
 /// Fails if the peer does not answer in time, if the catalog does not arrive,
 /// or if the broadcast does not offer the pinned rendition.
 async fn connect(
-    live: &Node,
+    node: &Node,
     ticket: &BroadcastTicket,
     options: &Options,
     dial_deadline: Option<Duration>,
 ) -> Result<(Subscribed, Player)> {
-    let subscribing = transport::subscribe(live, ticket);
+    let subscribing = transport::subscribe(node, ticket);
     let sub = match dial_deadline {
         Some(deadline) => tokio::time::timeout(deadline, subscribing)
             .await
@@ -185,7 +185,7 @@ async fn connect(
 /// Plays until the user interrupts, with no window.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
-    live: Transport,
+    node: SharedNode,
     sub: Subscribed,
     player: Player,
 ) -> Result {
@@ -194,7 +194,7 @@ fn wait_for_ctrl_c(
         tokio::signal::ctrl_c().await?;
         drop(player);
         sub.close();
-        live.shutdown().await;
+        node.shutdown().await;
         Ok(())
     })
 }
@@ -220,7 +220,7 @@ mod window {
     use super::{Options, connect};
     use crate::{
         scan::{ScanView, Skip},
-        transport::{Subscribed, Transport},
+        transport::{SharedNode, Subscribed},
         ui::{BUTTON, CursorIdle, Pending, RemoteView},
     };
 
@@ -242,7 +242,7 @@ mod window {
 
     /// Opens the player window and runs it until it closes.
     pub(super) fn run(
-        live: Transport,
+        node: SharedNode,
         opening: Opening,
         options: Options,
         fullscreen: bool,
@@ -255,7 +255,7 @@ mod window {
                     watching(ctx, *connected, &options, render_state.as_ref())
                 }
                 Opening::Connecting(ticket) => {
-                    Mode::Connecting(Box::new(connecting(ctx, &live, &options, *ticket, None)))
+                    Mode::Connecting(Box::new(connecting(ctx, &node, &options, *ticket, None)))
                 }
                 Opening::Scanning => scanning(
                     ctx,
@@ -266,7 +266,7 @@ mod window {
                 ),
             };
             WatchApp {
-                live,
+                node,
                 options,
                 render_state,
                 mode,
@@ -427,7 +427,7 @@ mod window {
     /// finishes after its receiver is gone closes the subscription it opened.
     fn connecting(
         ctx: &egui::Context,
-        live: &Node,
+        node: &Node,
         options: &Options,
         ticket: BroadcastTicket,
         previous: Option<Previous>,
@@ -437,13 +437,13 @@ mod window {
             broadcast = %ticket.path(),
             "dialing"
         );
-        let live = live.clone();
+        let node = node.clone();
         let options = options.clone();
         let dialing = ticket.clone();
         let dial = async move {
             // Bounded here because the terminal can wait for Ctrl+C, but a
             // touchscreen would otherwise spin until someone taps Cancel.
-            let dial = connect(&live, &dialing, &options, Some(DIAL_DEADLINE));
+            let dial = connect(&node, &dialing, &options, Some(DIAL_DEADLINE));
             match dial.await {
                 Ok((sub, player)) => Attempt::Connected(Box::new(Connected {
                     ticket: dialing,
@@ -496,7 +496,7 @@ mod window {
 
     /// The `irl watch` window.
     struct WatchApp {
-        live: Transport,
+        node: SharedNode,
         options: Options,
         render_state: Option<RenderState>,
         mode: Mode,
@@ -534,7 +534,7 @@ mod window {
         fn on_exit(&mut self) {
             info!("exit");
             self.close_mode();
-            crate::ui::shutdown_live_blocking(&self.live);
+            crate::ui::shutdown_node_blocking(&self.node);
         }
     }
 
@@ -596,7 +596,7 @@ mod window {
             self.message = None;
             self.mode = Mode::Connecting(Box::new(connecting(
                 ctx,
-                &self.live,
+                &self.node,
                 &self.options,
                 ticket,
                 previous,

@@ -16,7 +16,7 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::{backend::Backend, transport::Transport};
+use crate::{backend::Backend, transport::SharedNode};
 
 /// How often a window's state machine runs while nothing draws the window.
 const HEARTBEAT: Duration = Duration::from_millis(100);
@@ -276,21 +276,21 @@ pub fn spawn_heartbeat(ctx: &egui::Context) -> AbortOnDropHandle<()> {
 }
 
 /// Shuts the endpoint down from eframe's `on_exit`, outside any async context.
-pub fn shutdown_live_blocking(live: &Transport) {
-    let live = live.clone();
+pub fn shutdown_node_blocking(node: &SharedNode) {
+    let node = node.clone();
     tokio::runtime::Handle::current().block_on(async move {
-        live.shutdown().await;
+        node.shutdown().await;
     });
 }
 
 /// Closes `broadcast`, then shuts the endpoint down, from outside async context.
-pub fn shutdown_publish_blocking(live: &Transport, broadcast: &LocalBroadcast) {
-    let live = live.clone();
+pub fn shutdown_publish_blocking(node: &SharedNode, broadcast: &LocalBroadcast) {
+    let node = node.clone();
     let broadcast = broadcast.clone();
     tokio::runtime::Handle::current().block_on(async move {
         broadcast.close();
         broadcast.closed().await;
-        live.shutdown().await;
+        node.shutdown().await;
     });
 }
 
