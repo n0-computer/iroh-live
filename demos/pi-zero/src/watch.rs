@@ -8,11 +8,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context as _, Result};
 use drm::{Device as _, control::Device as ControlDevice};
 use gbm::AsRaw;
 use glow::HasContext;
 use iroh_live::media::{Player, VideoFrames, video::Frame};
+use n0_error::{Result, StdResultExt as _, anyerr};
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{info, warn};
 #[cfg(feature = "windowed")]
@@ -105,7 +105,7 @@ impl VtGuard {
                     .write(true)
                     .open("/dev/tty")
             })
-            .context("open /dev/tty0 (run as root or from a linux console)")?;
+            .std_context("open /dev/tty0 (run as root or from a linux console)")?;
 
         // SAFETY: KDSETMODE takes an integer argument and touches no memory of
         // ours, and `tty` is an open console.
@@ -169,7 +169,7 @@ impl DrmDisplay {
                     break;
                 }
             }
-            found.context("no DRM device found")?
+            found.std_context("no DRM device found")?
         };
 
         // Hide the console and take DRM master.
@@ -181,34 +181,34 @@ impl DrmDisplay {
             }
         };
         card.acquire_master_lock()
-            .context("acquire DRM master (try running as root)")?;
+            .std_context("acquire DRM master (try running as root)")?;
 
-        let res = card.resource_handles().context("resource_handles")?;
+        let res = card.resource_handles().std_context("resource_handles")?;
         let (connector, crtc, mode) = {
             let mut result = None;
             for &ch in res.connectors() {
-                let conn = card.get_connector(ch, false).context("get_connector")?;
+                let conn = card.get_connector(ch, false).std_context("get_connector")?;
                 if conn.state() != drm::control::connector::State::Connected {
                     continue;
                 }
                 let modes = conn.modes().to_vec();
-                let mode = *modes.first().context("connector has no modes")?;
-                let enc = conn.current_encoder().context("no encoder")?;
+                let mode = *modes.first().std_context("connector has no modes")?;
+                let enc = conn.current_encoder().std_context("no encoder")?;
                 let crtc = card
                     .get_encoder(enc)
-                    .context("get_encoder")?
+                    .std_context("get_encoder")?
                     .crtc()
-                    .context("no CRTC")?;
+                    .std_context("no CRTC")?;
                 info!(connector = ?ch, mode = ?mode.size(), "found output");
                 result = Some((ch, crtc, mode));
                 break;
             }
-            result.context("no connected display found")?
+            result.std_context("no connected display found")?
         };
 
         let (width, height) = (mode.size().0 as u32, mode.size().1 as u32);
 
-        let gbm_device = gbm::Device::new(card).context("gbm::Device::new")?;
+        let gbm_device = gbm::Device::new(card).std_context("gbm::Device::new")?;
         // vc4 scans out only LINEAR buffers.
         let gbm_surface = gbm_device
             .create_surface_with_modifiers::<()>(
@@ -225,20 +225,20 @@ impl DrmDisplay {
                     gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING,
                 )
             })
-            .context("create_surface")?;
+            .std_context("create_surface")?;
 
         // SAFETY: loads the system's libEGL, whose initializers have no
         // preconditions of ours.
         let egl = unsafe {
             khronos_egl::DynamicInstance::<khronos_egl::EGL1_4>::load_required()
-                .context("load EGL")?
+                .std_context("load EGL")?
         };
         // SAFETY: the GBM device is a valid native display, and outlives the EGL
         // display as a field of the same struct.
         let egl_display =
             unsafe { egl.get_display(gbm_device.as_raw() as khronos_egl::NativeDisplayType) }
-                .context("eglGetDisplay")?;
-        egl.initialize(egl_display).context("eglInitialize")?;
+                .std_context("eglGetDisplay")?;
+        egl.initialize(egl_display).std_context("eglInitialize")?;
 
         let config = egl
             .choose_first_config(
@@ -259,11 +259,11 @@ impl DrmDisplay {
                     khronos_egl::NONE,
                 ],
             )
-            .context("eglChooseConfig")?
-            .context("no matching EGL config")?;
+            .std_context("eglChooseConfig")?
+            .std_context("no matching EGL config")?;
 
         egl.bind_api(khronos_egl::OPENGL_ES_API)
-            .context("eglBindAPI")?;
+            .std_context("eglBindAPI")?;
 
         let context = egl
             .create_context(
@@ -272,7 +272,7 @@ impl DrmDisplay {
                 None,
                 &[khronos_egl::CONTEXT_CLIENT_VERSION, 2, khronos_egl::NONE],
             )
-            .context("eglCreateContext")?;
+            .std_context("eglCreateContext")?;
 
         // SAFETY: the GBM surface is a valid native window for this display,
         // and outlives the EGL surface as a field of the same struct.
@@ -284,7 +284,7 @@ impl DrmDisplay {
                 None,
             )
         }
-        .context("eglCreateWindowSurface")?;
+        .std_context("eglCreateWindowSurface")?;
 
         egl.make_current(
             egl_display,
@@ -292,7 +292,7 @@ impl DrmDisplay {
             Some(egl_surface),
             Some(context),
         )
-        .context("eglMakeCurrent")?;
+        .std_context("eglMakeCurrent")?;
 
         // SAFETY: the context is current on this thread, so EGL returns
         // function pointers that are valid for it.
@@ -315,10 +315,10 @@ impl DrmDisplay {
         // SAFETY: the context is current on this thread.
         unsafe { renderer.draw(width as i32, height as i32) };
         egl.swap_buffers(egl_display, egl_surface)
-            .context("initial swap")?;
+            .std_context("initial swap")?;
 
         // SAFETY: called once, right after the first swap.
-        let front_bo = unsafe { gbm_surface.lock_front_buffer() }.context("lock")?;
+        let front_bo = unsafe { gbm_surface.lock_front_buffer() }.std_context("lock")?;
         info!(
             bo_w = front_bo.width(), bo_h = front_bo.height(),
             stride = front_bo.stride(), modifier = ?front_bo.modifier(),
@@ -326,11 +326,11 @@ impl DrmDisplay {
         );
         let front_fb = gbm_device
             .add_planar_framebuffer(&front_bo, drm::control::FbCmd2Flags::MODIFIERS)
-            .context("addfb")?;
+            .std_context("addfb")?;
         // Reuse the mode the kernel console set. vc4's atomic check already
         // accepted it, and a connector mode can fail there with EINVAL.
-        let crtc_info = gbm_device.get_crtc(crtc).context("get_crtc")?;
-        let active_mode = crtc_info.mode().context("CRTC has no active mode")?;
+        let crtc_info = gbm_device.get_crtc(crtc).std_context("get_crtc")?;
+        let active_mode = crtc_info.mode().std_context("CRTC has no active mode")?;
         info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
         gbm_device
             .set_crtc(
@@ -340,7 +340,7 @@ impl DrmDisplay {
                 &[connector],
                 Some(active_mode),
             )
-            .context("set_crtc")?;
+            .std_context("set_crtc")?;
 
         println!("rendering to HDMI ({width}x{height})");
 
@@ -368,14 +368,14 @@ impl DrmDisplay {
         unsafe { self.renderer.draw(self.width as i32, self.height as i32) };
         self.egl
             .swap_buffers(self.egl_display, self.egl_surface)
-            .context("swap")?;
+            .std_context("swap")?;
 
         // SAFETY: called once, right after this flip's swap.
-        let new_bo = unsafe { self.gbm_surface.lock_front_buffer() }.context("lock")?;
+        let new_bo = unsafe { self.gbm_surface.lock_front_buffer() }.std_context("lock")?;
         let new_fb = self
             .gbm_device
             .add_planar_framebuffer(&new_bo, drm::control::FbCmd2Flags::MODIFIERS)
-            .context("addfb")?;
+            .std_context("addfb")?;
 
         // `set_crtc` waits for vblank. `page_flip` returns EBUSY while a flip
         // is pending and would need an event loop to handle that.
@@ -387,7 +387,7 @@ impl DrmDisplay {
                 &[self.connector],
                 Some(self.mode),
             )
-            .context("flip set_crtc")?;
+            .std_context("flip set_crtc")?;
 
         self.gbm_device.destroy_framebuffer(self.front_fb).ok();
         let old_bo = std::mem::replace(&mut self.front_bo, new_bo);
@@ -419,7 +419,7 @@ async fn show_on_hdmi(mut frames: VideoFrames) -> Result<()> {
     let render_handle = std::thread::Builder::new()
         .name("drm-render".into())
         .spawn(move || render_loop(frame_rx))
-        .context("spawn render thread")?;
+        .std_context("spawn render thread")?;
 
     // Ctrl-C ends the loop instead of the process, so the render thread
     // drops its display and the console goes back to text mode.
@@ -448,8 +448,8 @@ async fn show_on_hdmi(mut frames: VideoFrames) -> Result<()> {
     // `join` blocks its thread, so keep it off the async workers.
     tokio::task::spawn_blocking(move || render_handle.join())
         .await
-        .context("failed to join the render thread")?
-        .map_err(|_| anyhow::anyhow!("render thread panicked"))??;
+        .std_context("failed to join the render thread")?
+        .map_err(|_| anyerr!("render thread panicked"))??;
     Ok(())
 }
 
@@ -636,7 +636,7 @@ pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
         }
     }
 
-    let event_loop = EventLoop::new().context("create event loop")?;
+    let event_loop = EventLoop::new().std_context("create event loop")?;
 
     let mut app = App {
         renderer: None,
@@ -650,6 +650,6 @@ pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
         fps_last: Instant::now(),
     };
 
-    event_loop.run_app(&mut app).context("event loop")?;
+    event_loop.run_app(&mut app).std_context("event loop")?;
     Ok(())
 }

@@ -6,9 +6,9 @@
 //! decoding. Other surfaces go up as one RGBA texture. The renderer works with
 //! any EGL/GLES2 context.
 
-use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 use iroh_live::media::video::{Frame, Surface};
+use n0_error::{Result, StdResultExt as _, anyerr, bail_any};
 use tracing::warn;
 
 const VERT_SRC: &str = "\
@@ -77,7 +77,7 @@ impl PlaneTexture {
     unsafe fn new(gl: &glow::Context) -> Result<Self> {
         // SAFETY: the caller keeps the context current.
         unsafe {
-            let texture = gl.create_texture().map_err(|e| anyhow::anyhow!(e))?;
+            let texture = gl.create_texture().map_err(|e| anyerr!(e))?;
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             for param in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::LINEAR as i32);
@@ -161,13 +161,13 @@ pub(crate) struct GlesRenderer {
 unsafe fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
     // SAFETY: the caller keeps the context current.
     unsafe {
-        let shader = gl.create_shader(kind).map_err(|e| anyhow::anyhow!(e))?;
+        let shader = gl.create_shader(kind).map_err(|e| anyerr!(e))?;
         gl.shader_source(shader, source);
         gl.compile_shader(shader);
         if !gl.get_shader_compile_status(shader) {
             let log = gl.get_shader_info_log(shader);
             gl.delete_shader(shader);
-            bail!("shader compile: {log}");
+            bail_any!("shader compile: {log}");
         }
         Ok(shader)
     }
@@ -185,14 +185,14 @@ unsafe fn link_program(
 ) -> Result<glow::Program> {
     // SAFETY: the caller keeps the context current.
     unsafe {
-        let program = gl.create_program().map_err(|e| anyhow::anyhow!(e))?;
+        let program = gl.create_program().map_err(|e| anyerr!(e))?;
         gl.attach_shader(program, vs);
         gl.attach_shader(program, fs);
         gl.link_program(program);
         if !gl.get_program_link_status(program) {
             let log = gl.get_program_info_log(program);
             gl.delete_program(program);
-            bail!("shader link: {log}");
+            bail_any!("shader link: {log}");
         }
         Ok(program)
     }
@@ -219,7 +219,7 @@ impl GlesRenderer {
             gl.delete_shader(rgba_fs);
             let rgba_a_pos = gl
                 .get_attrib_location(rgba_program, "a_pos")
-                .context("a_pos not found in RGBA program")?;
+                .std_context("a_pos not found in RGBA program")?;
 
             let i420_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
             let i420_program = link_program(&gl, vs, i420_fs)?;
@@ -227,7 +227,7 @@ impl GlesRenderer {
             gl.delete_shader(vs);
             let i420_a_pos = gl
                 .get_attrib_location(i420_program, "a_pos")
-                .context("a_pos not found in I420 program")?;
+                .std_context("a_pos not found in I420 program")?;
 
             // The Y, U and V samplers read texture units 0, 1 and 2.
             gl.use_program(Some(i420_program));
@@ -237,7 +237,7 @@ impl GlesRenderer {
                 }
             }
 
-            let vbo = gl.create_buffer().map_err(|e| anyhow::anyhow!(e))?;
+            let vbo = gl.create_buffer().map_err(|e| anyerr!(e))?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &vertices, glow::STATIC_DRAW);
 

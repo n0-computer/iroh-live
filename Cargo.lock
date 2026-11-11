@@ -7571,7 +7571,6 @@ dependencies = [
 name = "pi-zero-demo"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "drm",
  "drm-fourcc",

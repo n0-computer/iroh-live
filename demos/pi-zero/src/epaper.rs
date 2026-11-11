@@ -36,6 +36,7 @@ use linux_embedded_hal::{
     CdevPin, SpidevDevice,
     spidev::{SpiModeFlags, SpidevOptions},
 };
+use n0_error::{StdResultExt as _, anyerr};
 use qrcode::{EcLevel, QrCode, types::QrError};
 use tracing::{debug, info};
 
@@ -116,41 +117,44 @@ impl OriginDimensions for DisplayBuffer {
 }
 
 /// Opens the SPI device and GPIO lines and initialises the display.
-fn open_epd() -> anyhow::Result<(SpidevDevice, Epd)> {
+fn open_epd() -> n0_error::Result<(SpidevDevice, Epd)> {
     debug!(spi = SPI_DEV, "opening SPI device");
-    let mut spi = SpidevDevice::open(SPI_DEV)?;
+    let mut spi = SpidevDevice::open(SPI_DEV).std_context("open the SPI device")?;
     let opts = SpidevOptions::new()
         .bits_per_word(8)
         .max_speed_hz(4_000_000)
         .mode(SpiModeFlags::SPI_MODE_0)
         .build();
-    spi.configure(&opts)?;
+    spi.configure(&opts).std_context("configure SPI")?;
     debug!("SPI configured: 4 MHz, mode 0");
 
     debug!(chip = GPIO_CHIP, "opening GPIO chip");
-    let mut chip = Chip::new(GPIO_CHIP)?;
+    let mut chip = Chip::new(GPIO_CHIP).std_context("open the GPIO chip")?;
 
     debug!(pin = PIN_DC, "requesting DC pin (output)");
     let dc_line = chip
-        .get_line(PIN_DC)?
-        .request(LineRequestFlags::OUTPUT, 0, "epaper-dc")?;
-    let dc = CdevPin::new(dc_line)?;
+        .get_line(PIN_DC)
+        .and_then(|line| line.request(LineRequestFlags::OUTPUT, 0, "epaper-dc"))
+        .std_context("request the DC pin")?;
+    let dc = CdevPin::new(dc_line).std_context("open the DC pin")?;
 
     debug!(pin = PIN_RST, "requesting RST pin (output)");
     let rst_line = chip
-        .get_line(PIN_RST)?
-        .request(LineRequestFlags::OUTPUT, 1, "epaper-rst")?;
-    let rst = CdevPin::new(rst_line)?;
+        .get_line(PIN_RST)
+        .and_then(|line| line.request(LineRequestFlags::OUTPUT, 1, "epaper-rst"))
+        .std_context("request the RST pin")?;
+    let rst = CdevPin::new(rst_line).std_context("open the RST pin")?;
 
     debug!(pin = PIN_BUSY, "requesting BUSY pin (input)");
     let busy_line = chip
-        .get_line(PIN_BUSY)?
-        .request(LineRequestFlags::INPUT, 0, "epaper-busy")?;
-    let busy = CdevPin::new(busy_line)?;
+        .get_line(PIN_BUSY)
+        .and_then(|line| line.request(LineRequestFlags::INPUT, 0, "epaper-busy"))
+        .std_context("request the BUSY pin")?;
+    let busy = CdevPin::new(busy_line).std_context("open the BUSY pin")?;
 
     debug!("initialising EPD controller (V4 protocol)");
-    let epd = Epd2in13V4::new(&mut spi, dc, rst, busy)
-        .map_err(|e| anyhow::anyhow!("EPD init failed: {e}"))?;
+    let epd =
+        Epd2in13V4::new(&mut spi, dc, rst, busy).map_err(|e| anyerr!("EPD init failed: {e}"))?;
     debug!("EPD controller ready");
 
     Ok((spi, epd))
@@ -208,13 +212,13 @@ fn ticket_qr(data: &str) -> Result<QrCode, QrError> {
 }
 
 /// Generates a QR code from `data` and displays it on the e-paper HAT.
-pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
+pub(crate) fn display_qr(data: &str) -> n0_error::Result<()> {
     info!("display_qr: starting");
     let (mut spi, mut epd) = open_epd()?;
 
     let mut display = DisplayBuffer::new_white();
 
-    let code = ticket_qr(data)?;
+    let code = ticket_qr(data).std_context("encode the ticket QR code")?;
     let modules = code.width();
     debug!(modules, data_len = data.len(), "QR code generated");
 
@@ -238,7 +242,7 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
         let mx = idx % modules;
         let my = idx / modules;
         if dark == qrcode::Color::Dark {
-            Rectangle::new(
+            let Ok(_) = Rectangle::new(
                 Point::new(
                     (x_offset + mx * scale) as i32,
                     (y_offset + my * scale) as i32,
@@ -246,13 +250,14 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
                 Size::new(scale as u32, scale as u32),
             )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(&mut display)?;
+            .draw(&mut display);
         }
     }
 
     let label_y = (y_offset + qr_px + 8) as i32;
     let style = MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
-    Text::new("iroh-live", Point::new(x_offset as i32, label_y), style).draw(&mut display)?;
+    let Ok(_) =
+        Text::new("iroh-live", Point::new(x_offset as i32, label_y), style).draw(&mut display);
 
     let buf = display.buffer();
     let non_ff = buf.iter().filter(|&&b| b != 0xFF).count();
@@ -264,40 +269,40 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
 
     info!("sending frame to EPD (V4 full refresh, ~2 s)");
     epd.display(&mut spi, display.buffer())
-        .map_err(|e| anyhow::anyhow!("display failed: {e}"))?;
+        .map_err(|e| anyerr!("display failed: {e}"))?;
     info!("EPD refresh complete");
 
     debug!("putting EPD to sleep");
     epd.sleep(&mut spi)
-        .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
+        .map_err(|e| anyerr!("sleep failed: {e}"))?;
 
     Ok(())
 }
 
 /// Fills the entire display with a checkerboard pattern for diagnostics.
-pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
+pub(crate) fn display_test_pattern() -> n0_error::Result<()> {
     info!("display_test_pattern: starting");
     let (mut spi, mut epd) = open_epd()?;
 
     let mut display = DisplayBuffer::new_white();
 
-    Rectangle::new(Point::zero(), Size::new(epd_v4::WIDTH, epd_v4::HEIGHT))
+    let Ok(_) = Rectangle::new(Point::zero(), Size::new(epd_v4::WIDTH, epd_v4::HEIGHT))
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(&mut display)?;
+        .draw(&mut display);
 
     let cell = 20u32;
     for y in (0..epd_v4::HEIGHT).step_by(cell as usize * 2) {
         for x in (0..epd_v4::WIDTH).step_by(cell as usize * 2) {
-            Rectangle::new(Point::new(x as i32, y as i32), Size::new(cell, cell))
+            let Ok(_) = Rectangle::new(Point::new(x as i32, y as i32), Size::new(cell, cell))
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
-                .draw(&mut display)?;
+                .draw(&mut display);
         }
     }
     for y in (cell..epd_v4::HEIGHT).step_by(cell as usize * 2) {
         for x in (cell..epd_v4::WIDTH).step_by(cell as usize * 2) {
-            Rectangle::new(Point::new(x as i32, y as i32), Size::new(cell, cell))
+            let Ok(_) = Rectangle::new(Point::new(x as i32, y as i32), Size::new(cell, cell))
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
-                .draw(&mut display)?;
+                .draw(&mut display);
         }
     }
 
@@ -313,27 +318,27 @@ pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
 
     info!("sending test pattern to EPD (V4 full refresh, ~2 s)");
     epd.display(&mut spi, display.buffer())
-        .map_err(|e| anyhow::anyhow!("display failed: {e}"))?;
+        .map_err(|e| anyerr!("display failed: {e}"))?;
     info!("test pattern refresh complete");
 
     epd.sleep(&mut spi)
-        .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
+        .map_err(|e| anyerr!("sleep failed: {e}"))?;
 
     Ok(())
 }
 
 /// Clears the display to white and puts it to sleep.
-pub(crate) fn clear_display() -> anyhow::Result<()> {
+pub(crate) fn clear_display() -> n0_error::Result<()> {
     info!("clear_display: starting");
     let (mut spi, mut epd) = open_epd()?;
 
     info!("clearing EPD to white (V4 full refresh, ~2 s)");
     epd.clear(&mut spi, 0xFF)
-        .map_err(|e| anyhow::anyhow!("clear failed: {e}"))?;
+        .map_err(|e| anyerr!("clear failed: {e}"))?;
     info!("display cleared");
 
     epd.sleep(&mut spi)
-        .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
+        .map_err(|e| anyerr!("sleep failed: {e}"))?;
 
     Ok(())
 }
