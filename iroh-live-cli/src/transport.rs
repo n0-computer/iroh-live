@@ -162,7 +162,7 @@ impl Subscribed {
     /// same session.
     pub fn close(&self) {
         if let Some(session) = self.session() {
-            session.close("stopped watching");
+            session.close(moq_net::Error::Cancel);
         }
     }
 }

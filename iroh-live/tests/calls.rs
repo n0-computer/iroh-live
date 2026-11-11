@@ -253,7 +253,7 @@ async fn losing_the_session_ends_the_call_as_lost() {
     let (call_a, _call_b) = connect(&a, &b).await;
 
     for session in a.node.sessions().get() {
-        session.close("test");
+        session.close(moq_net::Error::Cancel);
     }
     assert_eq!(step("lost", call_a.ended()).await, HungUp::Lost);
 

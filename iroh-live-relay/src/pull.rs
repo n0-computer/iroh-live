@@ -548,7 +548,7 @@ impl Drop for PublisherClaim {
                     remote = %self.publisher.fmt_short(),
                     "last pull of the publisher retired, closing its session"
                 );
-                session.close("no pull left");
+                session.close(moq_net::Error::Cancel);
             }
         }
     }

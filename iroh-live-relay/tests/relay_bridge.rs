@@ -1221,7 +1221,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     subscription
         .session()
         .expect("served directly")
-        .close("testing failover");
+        .close(moq_net::Error::Cancel);
     tokio::time::timeout(TIMEOUT, async {
         while let Ok(Some(_)) = reader.recv_group().await {}
     })
@@ -1337,7 +1337,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     subscription
         .session()
         .expect("served directly")
-        .close("the forger's chance");
+        .close(moq_net::Error::Cancel);
     let read = tokio::time::timeout(TIMEOUT, async {
         loop {
             let Ok(Some(mut group)) = reader.recv_group().await else {

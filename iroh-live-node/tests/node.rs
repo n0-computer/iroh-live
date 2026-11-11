@@ -389,7 +389,7 @@ async fn closing_a_session_cuts_the_peer_off() {
     let mut bob_reading = reading(&subscription.broadcast()).await;
 
     let session = step("alice sees bob", session_with(&alice, bob.id())).await;
-    session.close("cut off");
+    session.close(moq_net::Error::Cancel);
     ends("bob after alice closed the session", &mut bob_reading).await;
 
     alice.shutdown().await;

@@ -41,7 +41,7 @@ async fn a_connect_after_a_close_dials_anew() {
     let first = step("dial", alice.moq.connect(bob.endpoint.addr()))
         .await
         .expect("failed to dial");
-    first.close("done with it");
+    first.close(moq_net::Error::Cancel);
     let second = step("dial again", alice.moq.connect(bob.endpoint.addr()))
         .await
         .expect("the second dial failed");
@@ -104,7 +104,7 @@ async fn an_accepted_session_appears_in_sessions() {
     assert!(!accepted.dialed(), "the accepting side should not");
 
     // Closing it removes it again.
-    accepted.close("test");
+    accepted.close(moq_net::Error::Cancel);
     step("the session leaves the list", async {
         while !sessions.get().is_empty() {
             sessions.updated().await.expect("node gone");
@@ -160,4 +160,42 @@ async fn accept_ends_at_shutdown() {
         "accept should end at shutdown"
     );
     alice.shutdown().await;
+}
+
+/// The peer of a closed session sees the code it was closed with.
+#[tokio::test]
+#[traced_test]
+async fn the_peer_sees_the_close_code() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+
+    let mut sessions = bob.moq.sessions();
+    let dialed = step("dial", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("failed to dial");
+    let accepted = step("the accepted session", async {
+        loop {
+            if let Some(session) = sessions.get().into_iter().next() {
+                return session;
+            }
+            sessions.updated().await.expect("node gone");
+        }
+    })
+    .await;
+
+    dialed.close(moq_net::Error::App(7));
+    let err = step("the peer sees the close", accepted.closed()).await;
+    let Error::SessionClosed { source, .. } = &err else {
+        panic!("expected SessionClosed, got {err:#}");
+    };
+    assert!(
+        matches!(
+            source,
+            moq_net::Error::Session(moq_net::SessionError::App(7))
+        ),
+        "{source:?}"
+    );
+
+    alice.shutdown().await;
+    bob.shutdown().await;
 }

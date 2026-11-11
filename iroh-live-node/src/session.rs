@@ -190,11 +190,15 @@ impl Session {
 
     /// Closes the session, and every subscription over it, in both directions.
     ///
-    /// Logs `reason` locally. The peer sees a clean close.
-    pub fn close(&self, reason: &str) {
-        info!(remote = %self.inner.remote.fmt_short(), reason, "closing session");
+    /// The peer receives `code` as the session's close code.
+    /// [`moq_net::Error::Cancel`] is a clean close, and [`moq_net::Error::App`]
+    /// carries an application code. The peer's [`closed`](Self::closed) then
+    /// reports the code as a [`moq_net::Error::Session`] source, for example
+    /// `Session(SessionError::App(7))` for `App(7)`.
+    pub fn close(&self, code: moq_net::Error) {
+        info!(remote = %self.inner.remote.fmt_short(), %code, "closing session");
         self.inner.closing.store(true, Ordering::Release);
-        self.inner.moq.abort(moq_net::Error::Cancel);
+        self.inner.moq.abort(code);
     }
 
     /// Reports whether the session is closed or on its way to closing.
