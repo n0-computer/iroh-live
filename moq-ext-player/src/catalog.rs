@@ -62,7 +62,9 @@ mod tests {
     use std::time::Instant;
 
     use hang::catalog::{H264, VideoCodec};
-    use moq_ext_adaptive::{Adaptation, Bound, Constraints, Mode, NetworkSample, step_down};
+    use moq_ext_adaptive::{
+        Adaptation, Bound, Constraints, NetworkSample, RenditionMode, step_down,
+    };
 
     use super::*;
 
@@ -173,13 +175,13 @@ mod tests {
         );
 
         assert!(!step_down(
-            &Mode::Auto,
+            &RenditionMode::Auto,
             &ladder,
             Some("fallback"),
             Some("source")
         ));
         assert!(step_down(
-            &Mode::Auto,
+            &RenditionMode::Auto,
             &ladder,
             Some("source"),
             Some("fallback")

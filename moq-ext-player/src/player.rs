@@ -30,11 +30,7 @@ mod output;
 mod select;
 mod video_task;
 
-pub use moq_ext_adaptive::Adaptation;
-/// How to choose the video rendition.
-///
-/// This is [`moq_ext_adaptive::Mode`] under the player's name.
-pub use moq_ext_adaptive::Mode as RenditionMode;
+pub use moq_ext_adaptive::{Adaptation, RenditionMode};
 
 pub(crate) use self::clock::PlayoutClock;
 pub use self::{

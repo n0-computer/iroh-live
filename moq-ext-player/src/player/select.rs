@@ -6,7 +6,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use moq_ext_adaptive::{Adaptation, Backoffs, Bound, Mode, PinProblem, Target};
+use moq_ext_adaptive::{Adaptation, Backoffs, Bound, PinProblem, RenditionMode, Target};
 use moq_ext_media_core::{Error, SlotState, send_if_changed};
 use moq_net::track::Delay;
 use tokio::{
@@ -173,7 +173,7 @@ pub(crate) async fn run(inputs: Inputs) {
     // nothing else would.
     let mut first = true;
     loop {
-        let auto = matches!(*mode.borrow(), Mode::Auto);
+        let auto = matches!(*mode.borrow(), RenditionMode::Auto);
         let ticking = (auto && network.is_some())
             || backoffs.any_excluded(Instant::now().into_std())
             || vanished_since.is_some();
@@ -329,7 +329,7 @@ pub(crate) async fn run(inputs: Inputs) {
                 status.switch_error = why.clone().map(Into::into);
             }
             match (&mode, &status.video) {
-                (Mode::Off, _) => status.video = SlotState::Off,
+                (RenditionMode::Off, _) => status.video = SlotState::Off,
                 (_, SlotState::Off) => status.video = SlotState::Starting,
                 // Video came back to a catalog that had none.
                 (_, SlotState::Ended) if choice.is_some() => status.video = SlotState::Starting,
@@ -353,7 +353,7 @@ pub(crate) async fn run(inputs: Inputs) {
         // A catalog that never had video counts too, so an audio-only
         // broadcast ends its video instead of starting forever.
         let vanished = next.is_none()
-            && !matches!(mode, Mode::Off)
+            && !matches!(mode, RenditionMode::Off)
             && status.borrow().video != SlotState::Ended;
         if vanished {
             let since = *vanished_since.get_or_insert(now);
@@ -449,7 +449,7 @@ mod tests {
         let inputs = Inputs {
             broadcast: RemoteBroadcast::from_consumer(broadcast.consume()),
             controls: Arc::new(Controls {
-                mode: watch::Sender::new(Mode::auto()),
+                mode: watch::Sender::new(RenditionMode::auto()),
                 latency: Latency::default(),
                 decoder: watch::Sender::new(moq_video::decode::Kind::Software),
                 volume: watch::Sender::new(1.0),

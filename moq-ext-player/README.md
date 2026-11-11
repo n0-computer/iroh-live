@@ -22,7 +22,7 @@ while let Some(frame) = frames.next().await {
 }
 ```
 
-`PlayerConfig::rendition` takes a `RenditionMode` (`moq_ext_adaptive::Mode`):
+`PlayerConfig::rendition` takes a `RenditionMode`:
 automatic, pinned to one rendition, or off. `PlayerConfig::audio` takes an
 `AudioTarget`, which is a `moq_audio::playback::Engine` or `AudioTarget::null()`,
 and `None` skips audio. Dropping the `Player` aborts its tasks and returns at

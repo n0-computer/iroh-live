@@ -16,7 +16,7 @@ use crate::{
 
 /// How the rendition is chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Mode {
+pub enum RenditionMode {
     /// Follows the link.
     ///
     /// Without network signals, holds the best rendition that fits.
@@ -30,14 +30,14 @@ pub enum Mode {
     Off,
 }
 
-impl Default for Mode {
+impl Default for RenditionMode {
     /// Automatic selection.
     fn default() -> Self {
         Self::Auto
     }
 }
 
-impl Mode {
+impl RenditionMode {
     /// Returns automatic selection.
     #[must_use]
     pub const fn auto() -> Self {
@@ -120,7 +120,7 @@ impl Backoffs {
     reason = "the rendition asked for and the one on screen are both weighed"
 )]
 pub fn choose(
-    mode: &Mode,
+    mode: &RenditionMode,
     rungs: &[Rung],
     excluded: &BTreeSet<String>,
     current: Option<&str>,
@@ -130,13 +130,13 @@ pub fn choose(
     now: Instant,
 ) -> Choice {
     let pin = match mode {
-        Mode::Off => {
+        RenditionMode::Off => {
             return Choice {
                 rendition: None,
                 pin: None,
             };
         }
-        Mode::Pinned(name) => {
+        RenditionMode::Pinned(name) => {
             if excluded.contains(name) {
                 Some(PinProblem::Excluded(name.clone()))
             } else if !rungs.iter().any(|rung| rung.name == *name) {
@@ -148,7 +148,7 @@ pub fn choose(
                 };
             }
         }
-        Mode::Auto => None,
+        RenditionMode::Auto => None,
     };
     let constraints = Constraints {
         excluded: excluded.clone(),
@@ -174,18 +174,18 @@ pub fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
 /// Reports whether automatic selection is stepping down from `on_screen`.
 ///
 /// `rungs` is the ladder, most expensive first. A switch to a rung further
-/// down, in [`Mode::Auto`], is a step down. Such a switch does not overlap: on a
+/// down, in [`RenditionMode::Auto`], is a step down. Such a switch does not overlap: on a
 /// saturated link the incumbent's track would keep taking the bandwidth the
 /// replacement needs.
 #[must_use]
 pub fn step_down(
-    mode: &Mode,
+    mode: &RenditionMode,
     rungs: &[Rung],
     choice: Option<&str>,
     on_screen: Option<&str>,
 ) -> bool {
     let rank = |name: &str| rungs.iter().position(|rung| rung.name == name);
-    matches!(mode, Mode::Auto)
+    matches!(mode, RenditionMode::Auto)
         && match (choice, on_screen) {
             (Some(choice), Some(playing)) => rank(choice) > rank(playing),
             _ => false,
@@ -209,7 +209,7 @@ mod tests {
         vec![rung("1080p", 4_000_000), rung("360p", 500_000)]
     }
 
-    fn pick(mode: &Mode, excluded: &[&str]) -> Choice {
+    fn pick(mode: &RenditionMode, excluded: &[&str]) -> Choice {
         let excluded = excluded.iter().map(|name| name.to_string()).collect();
         let mut bound = Bound::new(Adaptation::default());
         choose(
@@ -226,12 +226,15 @@ mod tests {
 
     #[test]
     fn auto_without_signals_plays_the_best() {
-        assert_eq!(pick(&Mode::auto(), &[]).rendition.as_deref(), Some("1080p"));
+        assert_eq!(
+            pick(&RenditionMode::auto(), &[]).rendition.as_deref(),
+            Some("1080p")
+        );
     }
 
     #[test]
     fn a_pin_plays_its_rendition() {
-        let choice = pick(&Mode::Pinned("360p".into()), &[]);
+        let choice = pick(&RenditionMode::Pinned("360p".into()), &[]);
         assert_eq!(choice.rendition.as_deref(), Some("360p"));
         assert_eq!(choice.pin, None);
     }
@@ -239,27 +242,29 @@ mod tests {
     /// A pin to a missing rendition falls back to automatic and says why.
     #[test]
     fn a_pin_to_a_missing_rendition_falls_back_and_says_why() {
-        let choice = pick(&Mode::Pinned("4k".into()), &[]);
+        let choice = pick(&RenditionMode::Pinned("4k".into()), &[]);
         assert_eq!(choice.rendition.as_deref(), Some("1080p"));
         assert_eq!(choice.pin, Some(PinProblem::Unknown("4k".into())));
     }
 
     #[test]
     fn a_pin_to_a_failing_rendition_falls_back_until_it_is_retried() {
-        let choice = pick(&Mode::Pinned("1080p".into()), &["1080p"]);
+        let choice = pick(&RenditionMode::Pinned("1080p".into()), &["1080p"]);
         assert_eq!(choice.rendition.as_deref(), Some("360p"));
         assert_eq!(choice.pin, Some(PinProblem::Excluded("1080p".into())));
     }
 
     #[test]
     fn off_plays_nothing() {
-        assert_eq!(pick(&Mode::Off, &[]).rendition, None);
+        assert_eq!(pick(&RenditionMode::Off, &[]).rendition, None);
     }
 
     #[test]
     fn a_failing_rendition_is_skipped_by_auto() {
         assert_eq!(
-            pick(&Mode::auto(), &["1080p"]).rendition.as_deref(),
+            pick(&RenditionMode::auto(), &["1080p"])
+                .rendition
+                .as_deref(),
             Some("360p")
         );
     }
@@ -282,19 +287,24 @@ mod tests {
     fn step_down_needs_auto_and_a_lower_rung() {
         let rungs = ladder();
         assert!(step_down(
-            &Mode::auto(),
+            &RenditionMode::auto(),
             &rungs,
             Some("360p"),
             Some("1080p")
         ));
         assert!(!step_down(
-            &Mode::auto(),
+            &RenditionMode::auto(),
             &rungs,
             Some("1080p"),
             Some("360p")
         ));
-        assert!(!step_down(&Mode::auto(), &rungs, Some("360p"), None));
-        let pinned = Mode::Pinned("360p".into());
+        assert!(!step_down(
+            &RenditionMode::auto(),
+            &rungs,
+            Some("360p"),
+            None
+        ));
+        let pinned = RenditionMode::Pinned("360p".into());
         assert!(!step_down(&pinned, &rungs, Some("360p"), Some("1080p")));
     }
 }

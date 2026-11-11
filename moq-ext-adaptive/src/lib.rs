@@ -11,7 +11,7 @@
 //!   gets the ranked ladder ([`Rung`]s, best first), the caller's
 //!   [`Constraints`] and a [`NetworkSample`], and returns the best rung the
 //!   link carries. Time enters only as hysteresis, tuned by [`Adaptation`].
-//!   [`choose`] wraps it with the rendition [`Mode`] (automatic, pinned or off),
+//!   [`choose`] wraps it with the [`RenditionMode`] (automatic, pinned or off),
 //!   and [`Backoffs`] tracks renditions whose decoders failed. [`step_down`]
 //!   tells whether a switch moves down the ladder.
 //! - [`Switcher`] hands the picture from one decoder to the next. It tracks one
@@ -30,6 +30,6 @@ mod switch;
 pub use self::{
     bound::{Adaptation, Bound, Constraints, Rung},
     network::NetworkSample,
-    select::{Backoffs, Choice, Mode, PinProblem, best, choose, step_down},
+    select::{Backoffs, Choice, PinProblem, RenditionMode, best, choose, step_down},
     switch::{Abandoned, CATCH_UP_PATIENCE, CATCH_UP_SLACK, Outcome, Switcher, Target, Verdict},
 };

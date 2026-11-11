@@ -31,8 +31,8 @@
 //! - [`AudioFrames`]: the decoded audio, for analysis or a custom output.
 //! - [`AudioTarget`]: where a player's audio goes, a `moq_audio::playback::Engine`
 //!   or nowhere. A microphone can cancel the echo of an engine's mix.
-//! - [`RenditionMode`]: how the video rendition is chosen, which is
-//!   `moq_ext_adaptive::Mode`.
+//! - [`RenditionMode`]: how the video rendition is chosen, re-exported from
+//!   `moq_ext_adaptive`.
 //!
 //! A [`RemoteBroadcast`] that follows a route table looks for another route
 //! when its broadcast ends. A player adapts only to the network signals a
