@@ -373,8 +373,9 @@ impl<P: PeerId> Policy<P> for Arc<dyn DynPolicy<P>> {
     }
 }
 
-/// A policy that admits everyone with one grant, such as a node's default
-/// `Open(Grant::subscribe_only())`.
+/// A policy that admits everyone with one grant.
+///
+/// A node's default policy is `Open(Grant::subscribe_only())`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Open(pub Grant);
 

@@ -106,8 +106,10 @@ pub(crate) struct Inputs {
     /// The target on screen, as the supervisor reports it.
     pub playing: watch::Receiver<Option<Target>>,
     pub desired: watch::Sender<Option<Desired>>,
-    /// The player's playout clock, started over on a new route, and set to
-    /// the latency and the catalog's jitter.
+    /// The player's playout clock.
+    ///
+    /// It starts over on a new route, and follows the latency and the
+    /// catalog's jitter.
     pub clock: super::PlayoutClock,
     /// The thresholds and timers the choice follows.
     pub adaptation: Adaptation,

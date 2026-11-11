@@ -92,8 +92,9 @@ impl Node {
     ///
     /// Otherwise the peer has to own the path: the
     /// [`Layout::owner`](crate::Layout::owner) of
-    /// [`NodeConfig::layout`](crate::NodeConfig::layout) decides if it is set. Otherwise exactly one segment of the path is the
-    /// peer's endpoint id, and no other segment parses as one. That keeps a
+    /// [`NodeConfig::layout`](crate::NodeConfig::layout) decides if it is
+    /// set. Otherwise exactly one segment of the path is the peer's endpoint
+    /// id, and no other segment parses as one. That keeps a
     /// claimed path from overlapping any other peer's paths, which hop pinning
     /// and the route table rely on.
     ///

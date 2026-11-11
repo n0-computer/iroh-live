@@ -121,9 +121,10 @@ pub(crate) enum Registered {
     Applied,
     /// The peer holds a newer authorization, which the session takes.
     Kept,
-    /// A trigger or a rejection came after the session's authorization was
-    /// decided. The peer keeps an older authorization, or holds nothing,
-    /// until the node decides again.
+    /// A trigger or a rejection came after the authorization was decided.
+    ///
+    /// The peer keeps an older authorization, or holds nothing, until the
+    /// node decides again.
     Stale,
 }
 

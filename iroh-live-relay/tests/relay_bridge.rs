@@ -80,6 +80,8 @@ impl TestRelay {
         Self::start_with(false, false, Some(free_port()), None).await
     }
 
+    /// Starts a relay with the given options.
+    ///
     /// With `pull`, the shipped admission pulls the tickets iroh sessions name.
     /// With `port`, QUIC and the web listener bind that port, else QUIC binds any.
     /// With `keys`, the shipped admission and the iroh sessions verify JWTs.

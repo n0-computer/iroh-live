@@ -48,7 +48,10 @@ pub struct RelayConfig {
     /// [`token`](Self::token) gives none. An `iroh://` link sends nothing
     /// else of the query.
     pub url: Url,
-    /// Returns the token to present, sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
+    /// The source of the token the node presents to the relay.
+    ///
+    /// The token goes out as `?jwt=` in the URL, and over iroh also in the
+    /// MoQ SETUP.
     ///
     /// An `iroh://` link asks it on every dial, so a redial presents a fresh
     /// token. Other links ask it once, when they attach, since moq-tokio's
@@ -282,8 +285,9 @@ impl Tasks {
 }
 
 impl RelayTask {
-    /// Waits up to the shutdown grace for the task to end, then aborts it and
-    /// reports the link detached.
+    /// Waits for the task to end, then reports the link detached.
+    ///
+    /// Aborts the task if it outlives the shutdown grace.
     async fn finish(mut self) {
         if tokio::time::timeout(crate::actor::SHUTDOWN_GRACE, &mut self.task)
             .await

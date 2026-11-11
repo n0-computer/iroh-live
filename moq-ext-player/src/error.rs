@@ -1,8 +1,9 @@
-//! Tells a session that closed from a track that failed. A peer hanging
-//! up ends every track read over the session with a cancel code, and a
-//! publisher in the same process that goes away ends its tracks as dropped.
-//! That is how playback normally ends, so it is logged at debug and never
-//! reported as a failed decoder.
+//! Tells a session that closed from a track that failed.
+//!
+//! A peer hanging up ends every track read over the session with a cancel
+//! code, and a publisher in the same process that goes away ends its tracks
+//! as dropped. That is how playback normally ends, so it is logged at debug
+//! and never reported as a failed decoder.
 
 use moq_net::{SessionError, StreamError};
 

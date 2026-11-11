@@ -118,8 +118,9 @@ impl Default for Latency {
 }
 
 impl From<Latency> for moq_net::track::Delay {
-    /// Asks the subscription for the whole range: `min` as the target, and
-    /// `max` as the oldest media still worth delivering.
+    /// Asks the subscription for the whole latency range.
+    ///
+    /// `min` is the target, and `max` the oldest media still worth delivering.
     fn from(latency: Latency) -> Self {
         Self::default().with_min(latency.min).with_max(latency.max)
     }
@@ -144,7 +145,9 @@ pub struct PlayerConfig {
     /// an impaired link the wait for the next keyframe alone takes seconds, and
     /// the incumbent keeps playing meanwhile. 15 s by default.
     pub switch_deadline: Duration,
-    /// Whether to record when each video frame arrives, for
+    /// Whether to record when each video frame arrives.
+    ///
+    /// The arrivals fill
     /// [`FrameTiming::arrived`](crate::stats::FrameTiming::arrived).
     ///
     /// The record reads every video track a second time, beside its decoder.

@@ -25,8 +25,8 @@ const SELF_SEGMENT: &str = "~";
 /// The string form is `ilv1:<peer>/<path>`. `<peer>` is the endpoint id in
 /// lowercase base32. Any segment of the path that equals the peer's own id is
 /// written as `~`, and every other byte outside `[A-Za-z0-9._-]` is
-/// percent-encoded. Parsing accepts the id in base32 of either case, or in lowercase hex.
-/// Serde uses the string form.
+/// percent-encoded. Parsing accepts the id in base32 of either case, or in
+/// lowercase hex. Serde uses the string form.
 ///
 /// A ticket says nothing about layouts: the path is whatever the publisher
 /// published at.

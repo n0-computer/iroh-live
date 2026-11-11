@@ -164,6 +164,7 @@ mod tests {
     use super::*;
 
     /// Each medium playing becomes one feedback entry under its rendition.
+    ///
     /// The summary names what it knows and marks the rest.
     #[test]
     fn the_summary_marks_figures_not_known_yet() {

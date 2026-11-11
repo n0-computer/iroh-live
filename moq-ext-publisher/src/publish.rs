@@ -32,12 +32,16 @@ mod encoding;
 pub(crate) mod status;
 mod video;
 
-/// A running slot task. Dropping it cancels and aborts the task.
+/// A running slot task.
+///
+/// Dropping it cancels and aborts the task.
 #[derive(Debug)]
 pub(crate) struct SlotTask {
     stop: CancellationToken,
-    /// Set by [`hand_over`](Self::hand_over) before `stop`, read by the task
-    /// once stopped.
+    /// Whether the task hands its tracks to its successor when it stops.
+    ///
+    /// [`hand_over`](Self::hand_over) sets it before `stop`, and the task
+    /// reads it once stopped.
     handing_over: Arc<AtomicBool>,
     task: Option<AbortOnDropHandle<()>>,
 }

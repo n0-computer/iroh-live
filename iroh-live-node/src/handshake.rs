@@ -100,9 +100,9 @@ pub(crate) struct SessionParts {
 /// Dials `peer` and completes the MoQ handshake as the client.
 ///
 /// Asks the node's policy first, unless the peer already has an
-/// authorization. The session's
-/// authorization is in place before the handshake, so the dialed peer sees
-/// only what its grant and the audiences let it see, as an accepted one does.
+/// authorization. The session's authorization is in place before the
+/// handshake, so the dialed peer sees only what its grant and the audiences
+/// let it see, as an accepted one does.
 pub(crate) async fn dial_session(
     shared: Arc<Shared>,
     peer: EndpointAddr,

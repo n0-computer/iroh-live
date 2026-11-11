@@ -1,5 +1,7 @@
-//! [`MoqPreset`]: iroh's N0 preset with a QUIC transport tuned for MoQ, and
-//! the [`Congestion`] controllers to choose from.
+//! The endpoint preset for MoQ and its congestion controllers.
+//!
+//! [`MoqPreset`] is iroh's N0 preset with a QUIC transport tuned for MoQ.
+//! [`Congestion`] names the controllers to choose from.
 
 use std::{fmt, str::FromStr, sync::Arc};
 
