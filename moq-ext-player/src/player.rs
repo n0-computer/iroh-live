@@ -200,9 +200,9 @@ pub(crate) struct PlaybackRecorder {
     pub(crate) video: Cell<Option<VideoPlaybackStats>>,
     pub(crate) audio: Cell<Option<AudioPlaybackStats>>,
     /// Written by the video task as it presents pictures.
-    pub(crate) video_timeline: FrameLog,
+    pub(crate) video_log: FrameLog,
     /// Written by the audio task as it writes to the output.
-    pub(crate) audio_timeline: FrameLog,
+    pub(crate) audio_log: FrameLog,
 }
 
 /// What the player's controls ask for, shared with its tasks.
@@ -429,10 +429,10 @@ impl Player {
     pub fn timeline(&self) -> Vec<FrameTiming> {
         let mut frames: Vec<FrameTiming> = self
             .stats
-            .video_timeline
+            .video_log
             .snapshot()
             .into_iter()
-            .chain(self.stats.audio_timeline.snapshot())
+            .chain(self.stats.audio_log.snapshot())
             .collect();
         frames.sort_by_key(|timing| timing.presented);
         frames
@@ -462,7 +462,7 @@ impl Player {
     #[must_use]
     pub fn video_timing(&self, pts: Duration) -> Option<FrameTiming> {
         self.stats
-            .video_timeline
+            .video_log
             .snapshot()
             .into_iter()
             .rev()

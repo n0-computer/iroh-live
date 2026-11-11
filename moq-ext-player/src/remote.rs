@@ -13,7 +13,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, info_span, trace, warn};
 
-use crate::{NetworkSample, Player, PlayerConfig, error::CleanClose as _, network::NetworkSignals};
+use crate::{
+    NetworkSample, Player, PlayerConfig, clean_close::CleanClose as _, network::NetworkSignals,
+};
 #[cfg(feature = "record")]
 use crate::{RecordConfig, Recording};
 

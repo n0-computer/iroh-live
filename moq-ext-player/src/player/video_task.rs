@@ -48,7 +48,7 @@ use super::{
     select::{DecodeSettings, Desired, Failure, Report},
 };
 use crate::{
-    error::CleanClose as _,
+    clean_close::CleanClose as _,
     stats::{FrameTiming, MediaKind, VideoPlaybackStats},
 };
 
@@ -266,7 +266,7 @@ fn show(delivery: Delivery, frames: &FrameSlot, stats: &PlaybackRecorder) {
         ..
     } = delivery;
     let arrived = arrivals.get(frame.timestamp);
-    stats.video_timeline.push(FrameTiming {
+    stats.video_log.push(FrameTiming {
         kind: MediaKind::Video,
         pts: frame.timestamp.into(),
         arrived,

@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     RemoteBroadcast,
-    error::CleanClose as _,
+    clean_close::CleanClose as _,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
@@ -325,7 +325,7 @@ impl Job {
             // when the sound of its time plays.
             self.latency.set(self.end_of(&frame), self.sink.buffered());
             self.share(&frame);
-            self.stats.audio_timeline.push(FrameTiming {
+            self.stats.audio_log.push(FrameTiming {
                 kind: MediaKind::Audio,
                 pts: frame.timestamp.into(),
                 arrived: None,
