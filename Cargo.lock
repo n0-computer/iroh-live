@@ -4492,6 +4492,7 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "derive_more",
+ "ed25519-dalek",
  "iroh",
  "moq-ext-access",
  "moq-net",
@@ -4503,6 +4504,7 @@ dependencies = [
  "n0-watcher",
  "noq-proto",
  "percent-encoding",
+ "rcan",
  "serde",
  "tokio",
  "tokio-util",
