@@ -547,9 +547,50 @@ async fn a_cancelled_ticket_subscribe_releases_its_claim() {
     bob.shutdown().await;
 }
 
+/// A ticket claim on a path the policy grant covers holds once the grant narrows.
 #[tokio::test]
 #[traced_test]
-async fn a_covered_ticket_claims_nothing() {
+async fn a_covered_claim_survives_a_narrower_grant() {
+    let alice = Peer::spawn().await;
+    let current = Arc::new(Mutex::new(None));
+    let bob = switchable(current.clone()).await;
+    let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    // A session first, so the claim finds the covering grant.
+    step("bob dials alice", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    let own = common::own_paths(alice.id());
+    until_granted(&bob, alice.id(), &own).await;
+
+    let subscription = step(
+        "subscribe",
+        bob.node.subscribe_ticket(&publication.ticket()),
+    )
+    .await
+    .expect("subscribe");
+    let session = subscription.session().expect("a session");
+    let path = alice.path("cam");
+    assert!(
+        policy_grant(&bob, &session).allows_publish(&path),
+        "covered"
+    );
+
+    *current.lock().expect("poisoned") = Some(Grant::subscribe_only());
+    bob.node.reauthorize(alice.id());
+    until_granted(&bob, alice.id(), &Grant::subscribe_only()).await;
+    assert!(
+        session.grant().allows_publish(&path),
+        "the claim keeps the ticket's path"
+    );
+
+    drop(subscription);
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_covered_ticket_widens_nothing() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
     let publication = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");

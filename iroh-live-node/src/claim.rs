@@ -81,11 +81,12 @@ impl Node {
     /// A live session applies the wider grant a moment after this returns, so
     /// a read of the path that starts at once may still be refused.
     ///
-    /// A path that the peer's live authorization (see
-    /// [`grant_for`](Self::grant_for)) already lets it publish, and any path
-    /// of this node's own id, needs no widening, so the claim is a no-op. A
-    /// claim made before the peer has a session is recorded, and widens
-    /// nothing while the peer's grant covers the path.
+    /// A claim on a path of this node's own id is a no-op. A claim on a
+    /// path the peer owns is recorded even while the peer's authorization
+    /// (see [`grant_for`](Self::grant_for)) already lets it publish there:
+    /// it widens nothing then, and keeps the path if a re-decide narrows
+    /// the authorization. A path the peer does not own but its authorization
+    /// covers is a no-op claim.
     ///
     /// Otherwise the peer has to own the path: the
     /// [`Layout::owner`](crate::Layout::owner) of
@@ -96,9 +97,10 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::NotOwner`] if the peer does not own the path,
-    /// [`Error::TooManyGrants`] if the peer already holds 64 claimed paths or
-    /// 16 KiB of them, and [`Error::ShutDown`] once the node has shut down.
+    /// Fails with [`Error::NotOwner`] if the peer neither owns the path nor
+    /// may publish there, [`Error::TooManyGrants`] if the peer already holds
+    /// 64 claimed paths or 16 KiB of them, and [`Error::ShutDown`] once the
+    /// node has shut down.
     pub fn claim_path(&self, peer: EndpointId, path: &Path) -> Result<PathClaim, Error> {
         if self.shared.shutdown.is_cancelled() {
             return Err(e!(Error::ShutDown));
@@ -110,18 +112,23 @@ impl Node {
             self.grant_for(peer)
                 .is_some_and(|authorization| authorization.grant.allows_publish(path.as_str()))
         };
-        if peer == self.shared.id || granted() {
-            return Ok(PathClaim {
-                peer,
-                path: path.clone(),
-                shared: None,
-            });
+        let unrecorded = || PathClaim {
+            peer,
+            path: path.clone(),
+            shared: None,
+        };
+        if peer == self.shared.id {
+            return Ok(unrecorded());
         }
         let owned = match &self.shared.layout {
             Some(layout) => layout.owner(path.as_str()) == Some(peer),
             None => owns_by_id(&peer, path),
         };
         if !owned {
+            // The authorization alone allows the path, so there is nothing to keep.
+            if granted() {
+                return Ok(unrecorded());
+            }
             return Err(e!(Error::NotOwner {
                 path: path.clone(),
                 peer
