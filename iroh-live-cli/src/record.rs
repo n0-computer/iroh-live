@@ -13,9 +13,7 @@ use std::{
 use bytesize::ByteSize;
 use iroh_live::{
     BroadcastTicket, Node,
-    media::{
-        Catalog, RecordConfig, RecordFormat, Recording, RemoteBroadcast, VideoRenditions as _,
-    },
+    media::{Catalog, RecordConfig, RecordFormat, Recording, RemoteBroadcast, video_rendition},
 };
 use n0_error::{Result, anyerr};
 use tokio::io::BufWriter;
@@ -116,7 +114,7 @@ pub async fn start(
     options: &RecordOptions,
 ) -> Result<Recording> {
     if let Some(name) = &options.config.rendition {
-        catalog.video_rendition(name)?;
+        video_rendition(catalog, name)?;
     }
     let file = tokio::fs::File::create(&options.path)
         .await

@@ -3,9 +3,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use iroh_live::media::{
-    AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode, VideoRenditions as _,
-};
+use iroh_live::media::{AudioTarget, LocalBroadcast, Player, PlayerConfig, RenditionMode};
 use moq_ext_egui::{
     VideoView,
     overlay::{DebugOverlay, StatCategory},
@@ -406,7 +404,7 @@ impl RemoteView {
                 if ui.selectable_label(auto, "Auto").clicked() {
                     chosen = Some(RenditionMode::auto());
                 }
-                for (name, config) in catalog.ranked_video() {
+                for (name, config) in catalog.video.ranked() {
                     let pinned = status.mode == RenditionMode::pinned(name);
                     let text = config.label.as_deref().unwrap_or(name);
                     if ui.selectable_label(pinned, text).clicked() {

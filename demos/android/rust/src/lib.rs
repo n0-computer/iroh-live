@@ -30,8 +30,7 @@ use iroh_live::{
     media::{
         AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
         MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
-        VideoFormat, VideoFrames, VideoRendition, VideoRenditions as _, VideoSource,
-        remote_broadcast,
+        VideoFormat, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
     },
     net::Timestamp,
 };
@@ -1082,9 +1081,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
         .catalog()
         .map(|catalog| {
             catalog
-                .ranked_video()
-                .into_iter()
-                .map(|(name, _)| name)
+                .video
+                .ranked()
+                .map(|(name, _)| name.as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
         })

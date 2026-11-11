@@ -27,9 +27,10 @@ in that table. Nothing waits for a first route, and a publisher that is already
 gone closes the broadcast. `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
 `LocalBroadcast` in-process, without a transport.
 
-`Catalog` is hang's catalog, re-exported. The `VideoRenditions` trait adds
-`ranked_video()`, which lists the video renditions largest first, and
-`video_rendition(name)`.
+`Catalog` is hang's catalog, re-exported. Its `video.ranked()` lists the video
+renditions best first: enabled, then by `preference`, picture size and bitrate.
+`video_rendition(&catalog, name)` looks one up, with an error that lists the
+renditions the catalog has.
 
 `iroh_live::media::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
 `from_resolved` and attaches the serving link's measurements, whether the

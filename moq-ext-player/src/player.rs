@@ -20,7 +20,6 @@ use tracing::{Instrument, debug_span, info, info_span};
 
 use crate::{
     RemoteBroadcast, SwitchError,
-    catalog::VideoRenditions as _,
     frames::{FrameSlot, VideoFrames},
     stats::{AudioPlaybackStats, FrameLog, FrameTiming, PlaybackStats, VideoPlaybackStats},
 };
@@ -524,7 +523,7 @@ impl Player {
                 _ => {}
             }
             if let Some(known) = catalog.borrow_and_update().clone()
-                && let Err(err) = known.video_rendition(name)
+                && let Err(err) = crate::video_rendition(&known, name)
             {
                 return Err(n0_error::e!(SwitchError::Failed {
                     rendition: name.to_string(),

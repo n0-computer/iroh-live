@@ -67,7 +67,7 @@ use moq_ext_sources::frames;
 #[cfg(feature = "record")]
 pub use self::record::{RecordConfig, RecordFormat, Recording};
 pub use self::{
-    catalog::VideoRenditions,
+    catalog::video_rendition,
     error::SwitchError,
     network::NetworkSample,
     player::{

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, Node,
-    media::{AudioTarget, Player, PlayerConfig, RenditionMode, VideoRenditions as _},
+    media::{AudioTarget, Player, PlayerConfig, RenditionMode, video_rendition},
 };
 use n0_error::{Result, anyerr};
 
@@ -172,7 +172,7 @@ async fn connect(
     // A broadcast without a catalog fails here instead of opening a black window.
     let catalog = crate::playback::catalog(sub.broadcast()).await?;
     if let Some(name) = &options.rendition {
-        catalog.video_rendition(name)?;
+        video_rendition(&catalog, name)?;
     }
 
     let config = crate::ui::player_config(&options.playback, Some(&options.output));

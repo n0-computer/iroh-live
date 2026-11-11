@@ -66,10 +66,10 @@ does not read as a queue that never drains.
 
 ## Ranking
 
-`Catalog::ranked_video()` lists the renditions largest first by pixel count,
-and between two of the same size by the higher advertised bitrate. The
-selector walks that list from the top, and the first rendition that passes
-every check wins.
+hang's `video.ranked()` orders the renditions: enabled ones first, then by the
+publisher's `preference`, then largest first by pixel count, and between two of
+the same size by the higher advertised bitrate. The selector walks that list
+from the top, and the first rendition that passes every check wins.
 
 The caller's constraints rule renditions out before any network reading
 counts: a `max_height` from `RenditionMode::Auto` (a grid tile has no use for

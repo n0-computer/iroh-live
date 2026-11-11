@@ -30,7 +30,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span};
 
-use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
+use crate::RemoteBroadcast;
 
 /// A container to record into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -104,7 +104,7 @@ impl Recording {
         if let Some(name) = &config.rendition
             && let Some(catalog) = broadcast.catalog().borrow().clone()
         {
-            catalog.video_rendition(name)?;
+            crate::video_rendition(&catalog, name)?;
         }
         let stop = CancellationToken::new();
         let written = Arc::new(AtomicU64::new(0));

@@ -17,7 +17,7 @@ use tokio::{
 use tracing::{debug, info, trace};
 
 use super::{Controls, Latency, PlayerStatus};
-use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
+use crate::RemoteBroadcast;
 
 /// What the decoder of a target is built with.
 #[derive(derive_more::Debug, Clone)]
@@ -373,8 +373,7 @@ fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error
         PinProblem::Excluded(name) => Error::decoder_msg(format!(
             "the decoder for {name} failed, so another rendition plays until it is retried"
         )),
-        PinProblem::Unknown(name) => catalog
-            .video_rendition(&name)
+        PinProblem::Unknown(name) => crate::video_rendition(catalog, &name)
             .err()
             .unwrap_or_else(|| Error::decoder_msg(format!("no video rendition named {name}"))),
     })
