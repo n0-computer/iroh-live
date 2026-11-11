@@ -4502,6 +4502,7 @@ dependencies = [
  "n0-tracing-test",
  "n0-watcher",
  "noq-proto",
+ "percent-encoding",
  "serde",
  "tokio",
  "tokio-util",

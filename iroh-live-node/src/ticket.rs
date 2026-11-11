@@ -9,6 +9,7 @@ use std::{fmt, str::FromStr};
 use iroh::EndpointId;
 use moq_net::Path;
 use n0_error::e;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, publish::check_path};
@@ -87,42 +88,28 @@ fn invalid(reason: &'static str) -> Error {
     e!(Error::InvalidTicket { reason })
 }
 
-/// Reports whether `byte` is written as itself in a ticket path.
-fn is_plain(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-}
-
-/// Appends `segment` to `out`, percent-encoding what is not plain.
-fn push_encoded(out: &mut String, segment: &str) {
-    for byte in segment.bytes() {
-        if is_plain(byte) {
-            out.push(char::from(byte));
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-}
+/// The bytes a ticket path percent-encodes: all but `[A-Za-z0-9._-]`.
+const ENCODED: &AsciiSet = &NON_ALPHANUMERIC.remove(b'.').remove(b'_').remove(b'-');
 
 /// Reads one percent-encoded segment, exactly once.
+///
+/// Fails on a malformed escape, on bytes that are not UTF-8, and on an
+/// escape that decodes to `/`, which would split the segment in two.
 fn decode_segment(segment: &str) -> Result<String, Error> {
     let bytes = segment.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while at < bytes.len() {
-        if bytes[at] == b'%' {
-            let hex = segment
-                .get(at + 1..at + 3)
-                .ok_or_else(|| invalid("truncated percent escape"))?;
-            let byte =
-                u8::from_str_radix(hex, 16).map_err(|_| invalid("invalid percent escape"))?;
-            out.push(byte);
-            at += 3;
-        } else {
-            out.push(bytes[at]);
-            at += 1;
+    for (at, _) in segment.match_indices('%') {
+        let escape = bytes.get(at + 1..at + 3);
+        if !escape.is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)) {
+            return Err(invalid("invalid percent escape"));
         }
     }
-    String::from_utf8(out).map_err(|_| invalid("path is not UTF-8"))
+    let decoded = percent_decode_str(segment)
+        .decode_utf8()
+        .map_err(|_| invalid("path is not UTF-8"))?;
+    if decoded.contains('/') {
+        return Err(invalid("encoded slash in a path segment"));
+    }
+    Ok(decoded.into_owned())
 }
 
 impl fmt::Display for BroadcastTicket {
@@ -139,7 +126,7 @@ impl fmt::Display for BroadcastTicket {
             if segment == own {
                 path.push_str(SELF_SEGMENT);
             } else {
-                push_encoded(&mut path, segment);
+                path.extend(utf8_percent_encode(segment, ENCODED));
             }
         }
         write!(f, "{SCHEME}{id}/{path}")
@@ -180,10 +167,10 @@ impl FromStr for BroadcastTicket {
                 }
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        if segments.len() > Self::MAX_PARTS {
+        let path = Path::new(&segments.join("/")).map_err(|_| invalid("invalid path"))?;
+        if path.as_str().split('/').count() > Self::MAX_PARTS {
             return Err(invalid("too many path segments"));
         }
-        let path = Path::new(&segments.join("/")).map_err(|_| invalid("invalid path"))?;
         check_path(&path).map_err(|_| invalid("invalid path"))?;
         Ok(Self { peer, path })
     }
@@ -293,6 +280,53 @@ mod tests {
         ] {
             assert!(bad.parse::<BroadcastTicket>().is_err(), "{bad}");
         }
+    }
+
+    /// Returns the id part of a ticket string for `peer`.
+    fn id_part(peer: EndpointId) -> String {
+        ticket(peer, "x").to_string()[5..57].to_owned()
+    }
+
+    #[test]
+    fn a_signed_escape_is_rejected() {
+        let text = format!("ilv1:{}/a/%+1", id_part(id()));
+        assert!(text.parse::<BroadcastTicket>().is_err(), "{text}");
+    }
+
+    #[test]
+    fn an_encoded_slash_is_rejected() {
+        let id = id_part(id());
+        for text in [format!("ilv1:{id}/a%2Fb"), format!("ilv1:{id}/a/%2f")] {
+            assert!(text.parse::<BroadcastTicket>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_percent_is_rejected() {
+        let id = id_part(id());
+        for text in [format!("ilv1:{id}/a/b%"), format!("ilv1:{id}/a%/b")] {
+            assert!(text.parse::<BroadcastTicket>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_path_with_spaces_and_unicode_round_trips() {
+        let original = ticket(id(), "my cam/caf\u{e9} \u{1f600}/x");
+        let text = original.to_string();
+        assert!(text.is_ascii(), "{text}");
+        assert!(text.contains("my%20cam"), "{text}");
+        assert_eq!(text.parse::<BroadcastTicket>().expect(&text), original);
+    }
+
+    #[test]
+    fn the_part_limit_counts_the_decoded_path() {
+        let id = id_part(id());
+        let at_limit = vec!["s"; 31].join("/");
+        let text = format!("ilv1:{id}/{at_limit}");
+        assert!(text.parse::<BroadcastTicket>().is_ok(), "{text}");
+        // An encoded slash must not smuggle in a 32nd segment.
+        let text = format!("ilv1:{id}/{at_limit}%2Fs");
+        assert!(text.parse::<BroadcastTicket>().is_err(), "{text}");
     }
 
     #[test]
