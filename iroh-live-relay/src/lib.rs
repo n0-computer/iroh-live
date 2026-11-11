@@ -30,40 +30,33 @@
 //!
 //! # Cancellation safety
 //!
-//! [`run`] returns on ctrl-c, after closing its listeners. Dropping its future
-//! stops the listeners and the accepted connections. The tasks that dial and
-//! hold a pull are detached, and each holds a clone of the pull's node. They
-//! end when the pull retires, a linger window after its last session, or
-//! later while a dial or a resolve is in flight.
+//! [`run`] returns once a drain started by SIGINT or SIGTERM ends, after
+//! closing its listeners. Dropping its future stops the listeners and the
+//! accepted connections. The tasks that dial and hold a pull end with the
+//! last clone of their [`PullState`](pull::PullState): a linger window after
+//! the last session that named the ticket, or later while a dial or a resolve
+//! is in flight.
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
-use axum::{
-    extract::{Path, State},
-    response::IntoResponse,
-    routing::get,
-};
+use axum::{extract::Path, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::SecretKey;
 use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
-use moq_relay::{Connection, cluster::Cluster};
-use moq_tokio::tls::Certificates;
+use moq_auth::lease;
+use moq_relay::auth::Admissions;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
-use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 mod iroh_sessions;
 pub mod pull;
 
-pub use self::iroh_sessions::{IrohSessions, browser_auth};
+pub use self::iroh_sessions::{IrohSessions, browser_grant};
 
 /// The bundled web viewer, embedded at build time.
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
-
-/// The name this relay gives its auth requests.
-const RELAY_NODE: &str = "iroh-live-relay";
 
 /// Configuration for the relay server, as clap arguments.
 #[derive(Args, Debug, Clone)]
@@ -74,96 +67,65 @@ pub struct Config {
 
     /// Bind address for the web viewer over HTTP.
     ///
-    /// Defaults to the address --bind bound, over TCP.
+    /// Defaults to the --bind address, over TCP.
     #[arg(long)]
     pub http_bind: Option<SocketAddr>,
 }
 
-/// Runs the relay server until ctrl-c or an error.
+/// Runs the relay server until a shutdown signal or an error.
 ///
-/// Install a rustls crypto provider first, as the crate example does.
+/// The first SIGINT or SIGTERM drains the browser sessions, and a second one
+/// ends the relay at once. Install a rustls crypto provider first, as the
+/// crate example does.
 ///
 /// # Errors
 ///
 /// Fails if the relay's identity cannot be loaded, an endpoint or listener
-/// cannot bind, or the cluster cannot start. A failure of the listener after
-/// startup ends the relay without an error.
+/// cannot bind, the cluster cannot start, or a listener fails.
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    let mut quic = moq_tokio::quic::Config::default();
-    quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
-    let connect = moq_tokio::connect::Config::default();
-
-    let iroh_secret = secret_key()?;
     // mDNS finds a ticket's publisher on this machine or LAN at once, where
     // pkarr and DNS take seconds and need internet. `Announce`, since clients
     // reach the relay by endpoint id.
     let iroh_endpoint = EndpointConfig {
-        secret_key: Some(iroh_secret),
+        secret_key: Some(secret_key()?),
         mdns: Mdns::Announce,
         ..EndpointConfig::default()
     }
     .bind()
     .await?;
-
-    let mut server_config = moq_tokio::server::Config::default();
-    server_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(config.bind));
-    // Self-signed TLS. No ACME yet.
-    server_config.listen.tls.generate = vec!["localhost".to_string()];
-    server_config.quic = quic.clone();
-    // Not `server_config.iroh`: `IrohSessions` accepts iroh clients, since it
-    // knows who they are.
-    let server = server_config.init()?;
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
-    let certificates = server.certificates();
-
-    let auth = browser_auth().init(RELAY_NODE, &connect.tls, false)?;
-
-    let (cluster, driver) = Cluster::new(moq_relay::cluster::Options::new(Default::default()))?;
-    let cluster = cluster.with_connect(connect.clone(), quic);
-    // The origin makes no progress unless its driver runs.
-    let _driver_task = AbortOnDropHandle::new(tokio::spawn(async move {
-        if let Err(err) = driver.run().await {
-            error!(%err, "the cluster driver stopped");
-        }
-    }));
-    // Started before the task, so a cluster that cannot bind fails `run`.
-    let started = cluster.clone().start().await?;
-    let _cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
-        if let Err(err) = started.run().await {
-            error!(%err, "the cluster stopped");
-        }
-    }));
+    let mut relay_config = moq_relay::Config::default();
+    relay_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(config.bind));
+    // Self-signed TLS. No ACME yet.
+    relay_config.listen.tls.generate = vec!["localhost".to_string()];
+    relay_config.web.http.listen = Some(config.http_bind.unwrap_or(config.bind));
+    // The viewer serves `/` and every other path, which the WebSocket
+    // fallback would take.
+    relay_config.web.ws = false;
+    // No `[auth]` source, so `admit` decides every session.
+    let mut relay = moq_relay::Relay::load(relay_config).await?;
+    let admissions = relay
+        .admissions()
+        .context("the relay config names an auth source")?;
 
     // Pulls dial over the relay's own endpoint, with its stable identity.
-    let pull_state = Arc::new(pull::PullState::new(iroh_endpoint.clone(), cluster.clone()));
-    let iroh_router =
-        IrohSessions::new(cluster.clone(), Some(pull_state.clone())).router(iroh_endpoint.clone());
+    let pulls = Arc::new(pull::PullState::new(
+        iroh_endpoint.clone(),
+        relay.cluster().clone(),
+    ));
+    let _admit_task = AbortOnDropHandle::new(tokio::spawn(admit(admissions, Some(pulls.clone()))));
+    // Not moq-relay's iroh listener: `IrohSessions` accepts iroh clients,
+    // since it knows who they are.
+    let iroh_router = IrohSessions::new(relay.cluster().clone(), Some(pulls)).router(iroh_endpoint);
 
-    let quic_addr = server.local_addr()?;
-    let quic_port = quic_addr.port();
-    info!(bind = %quic_addr, "quic listening");
-
-    let static_router = axum::Router::new()
-        .route("/certificate.sha256", get(serve_fingerprint))
-        .route("/", get(|| async { serve_embedded_file("index.html") }))
-        .route(
-            "/{*path}",
-            get(|Path(path): Path<String>| async move { serve_embedded_file(&path) }),
-        )
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([axum::http::Method::GET]),
-        )
-        .with_state(certificates);
-
-    let http_bind = config.http_bind.unwrap_or(quic_addr);
-    let http_listener = tokio::net::TcpListener::bind(http_bind).await?;
-    let http_port = http_listener.local_addr()?.port();
-    info!(http_port, "http listening");
-
+    let quic_port = relay.quic_addr()?.port();
+    let http_port = relay
+        .web_addrs()
+        .http
+        .context("the http listener is not bound")?
+        .port();
     // The e2e test fixtures parse this line.
     println!("http port: {http_port}");
     // `http`, since this listener speaks plain HTTP. The page pins the QUIC
@@ -177,60 +139,69 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     }
     println!("  needs a browser with WebTransport: Chromium, or Firefox 153+");
 
-    let _http_task = AbortOnDropHandle::new(tokio::spawn(async move {
-        if let Err(err) = axum::serve(http_listener, static_router).await {
-            error!(%err, "the http server stopped");
-        }
-    }));
-
-    info!(endpoint_id = %iroh_endpoint.id(), "relay ready");
-
-    let mut listener = server.listen().await?;
-    // moq-tokio's listener does not stop on ctrl-c, so the loop watches for it.
-    let interrupted = tokio::signal::ctrl_c();
-    tokio::pin!(interrupted);
-    let mut conn_id = 0u64;
-    let mut connections = JoinSet::new();
-    loop {
-        let request = tokio::select! {
-            request = listener.accept() => match request {
-                Ok(request) => request,
-                Err(err) => {
-                    warn!(%err, "the listener stopped accepting");
-                    break;
-                }
-            },
-            _ = &mut interrupted => {
-                info!("interrupted, closing the listeners");
-                break;
-            }
-            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
-        };
-        let transport = request.transport();
-        // A name that parses as a ticket starts a pull.
-        let name = extract_name_from_url(&request);
-        debug!(conn_id, %transport, ?name, "accepted connection");
-
-        let pull_state = pull_state.clone();
-        // A session that names a ticket reads the pulled broadcast at that name.
-        let serving = name
-            .as_deref()
-            .map_or_else(|| cluster.clone(), |name| pull::serving(&cluster, name));
-        let conn = Connection::new(request, serving, auth.clone()).with_id(conn_id);
-        connections.spawn(async move {
-            // Held by the task, so it lives exactly as long as this connection.
-            let _pull = name.and_then(|name| pull_for(pull_state, name));
-            conn.run().await;
-        });
-        conn_id += 1;
-    }
-
-    // Releases the listener's sockets before `run` returns.
-    listener.close().await;
+    // moq-relay's routes serve `/certificate.sha256` and apply CORS to GETs.
+    let routes = relay
+        .web()
+        .routes()
+        .route("/", get(|| async { serve_embedded_file("index.html") }))
+        .route(
+            "/{*path}",
+            get(|Path(path): Path<String>| async move { serve_embedded_file(&path) }),
+        );
+    let result = relay.with_web(routes).run().await;
     if let Err(err) = iroh_router.shutdown().await {
         warn!(%err, "the iroh router did not shut down cleanly");
     }
-    Ok(())
+    result
+}
+
+/// Answers the relay's admissions until the relay drops its auth.
+///
+/// Every session gets [`browser_grant`]. A session whose path names a ticket
+/// reads the ticket's broadcast at that name, see [`pull::mounted`]. With
+/// `pulls` set, it also holds a pull of that broadcast while it runs.
+pub async fn admit(mut admissions: Admissions, pulls: Option<Arc<pull::PullState>>) {
+    // One task per session that holds a pull, until the session ends.
+    let mut held = JoinSet::new();
+    loop {
+        let admission = tokio::select! {
+            admission = admissions.next() => match admission {
+                Some(admission) => admission,
+                None => break,
+            },
+            Some(_) = held.join_next(), if !held.is_empty() => continue,
+        };
+        let name = iroh_sessions::requested_name(&admission.request.path);
+        let ticket = name
+            .as_deref()
+            .and_then(|name| name.parse::<BroadcastTicket>().ok());
+        let mut grant = browser_grant();
+        if let Some(ticket) = &ticket {
+            // The session's root is the ticket it dialed, so this mounts the
+            // broadcast at that name.
+            grant
+                .mounts
+                .insert(String::new(), ticket.path().to_string());
+        }
+        debug!(path = %admission.request.path, ticket = ticket.is_some(), "admitting a session");
+        // An attached admission verifies a token for a session already held.
+        let pull = pulls
+            .as_ref()
+            .filter(|_| !admission.attached())
+            .zip(name)
+            .and_then(|(pulls, name)| pull_for(pulls.clone(), name));
+        let Some(pull) = pull else {
+            admission.grant(lease::Consumer::fixed(grant));
+            continue;
+        };
+        // The lease ends with the session, and the pull's claim with it.
+        let (lease, consumer) = lease::Producer::new(grant);
+        admission.grant(consumer);
+        held.spawn(async move {
+            let _pull = pull;
+            lease.closed().await;
+        });
+    }
 }
 
 /// Pulls the broadcast a session named, if the name is a ticket.
@@ -274,22 +245,6 @@ fn secret_key() -> anyhow::Result<SecretKey> {
             path.display()
         )
     })
-}
-
-/// Returns the broadcast name in the path of a connection's request URL, if any.
-fn extract_name_from_url(request: &moq_tokio::server::Request) -> Option<String> {
-    iroh_sessions::requested_name(request.url()?.path())
-}
-
-/// Serves the SHA-256 fingerprint of the relay's self-signed certificate.
-///
-/// The web viewer pins it, so the browser accepts the QUIC connection.
-async fn serve_fingerprint(State(certificates): State<Certificates>) -> impl IntoResponse {
-    certificates
-        .fingerprints()
-        .first()
-        .cloned()
-        .unwrap_or_default()
 }
 
 /// Serves a file of the embedded web viewer, or a 404.

@@ -99,16 +99,6 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
     }
 }
 
-/// Returns the cluster to serve a session that dialed `path`.
-///
-/// [`mounted`] at the name `path` asks for, if it names a ticket, and
-/// `cluster` as it is otherwise.
-pub fn serving(cluster: &Cluster, path: &str) -> Cluster {
-    crate::iroh_sessions::requested_name(path)
-        .and_then(|name| mounted(cluster, &name))
-        .unwrap_or_else(|| cluster.clone())
-}
-
 /// The relay's pulls, shared by every session that names a ticket.
 ///
 /// Cheap to clone. Each pull runs in a task that the clones own together, so

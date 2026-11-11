@@ -4,8 +4,8 @@
 //! would carry no peer identity anyway. So the relay accepts iroh sessions
 //! itself with [`IrohSessions`]. It lets each client publish only at the paths
 //! that name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
-//! Browsers come in through moq-tokio's server, and [`browser_auth`] keeps them
-//! to names of one segment.
+//! Browsers come in through moq-relay's server, and [`browser_grant`] keeps
+//! them to names of one segment.
 
 use std::{sync::Arc, time::Duration};
 
@@ -139,15 +139,15 @@ impl ProtocolHandler for IrohSessions {
     }
 }
 
-/// Returns moq-relay's auth for browsers: subscribe anywhere, publish one segment.
+/// Returns the grant for browsers: subscribe anywhere, publish one segment.
 ///
 /// One segment keeps a browser out of `live/` and `rooms/`, whose paths name
 /// an iroh publisher.
-pub fn browser_auth() -> moq_relay::auth::Config {
-    let mut config = moq_relay::auth::Config::default();
-    config.public_subscribe = vec![Pattern::all()];
-    config.public_publish = vec!["*".parse().expect("a valid pattern")];
-    config
+pub fn browser_grant() -> moq_auth::Grant {
+    moq_auth::Grant::new(
+        "*".parse::<Pattern>().expect("a valid pattern"),
+        Pattern::all(),
+    )
 }
 
 /// Returns the broadcast name a session asked for in its path, if any.
@@ -191,12 +191,9 @@ mod tests {
         assert!(!scope.matches("cam"));
     }
 
-    /// Returns whether [`browser_auth`] lets a browser publish at `path`.
+    /// Returns whether [`browser_grant`] lets a browser publish at `path`.
     fn a_browser_may_publish(path: &str) -> bool {
-        browser_auth()
-            .public_publish
-            .iter()
-            .any(|pattern| pattern.matches(path))
+        browser_grant().publish.matches(path)
     }
 
     #[test]

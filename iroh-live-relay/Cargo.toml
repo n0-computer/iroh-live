@@ -15,6 +15,8 @@ path = "src/main.rs"
 [dependencies]
 moq-relay = { workspace = true, default-features = false, features = ["quic", "websocket"] }
 moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
+# The grants and leases the relay answers its admissions with.
+moq-auth = { workspace = true, features = ["async"] }
 moq-net = { workspace = true }
 iroh = { workspace = true }
 iroh-live-node = { workspace = true }
@@ -38,7 +40,6 @@ anyhow = "1"
 rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
 include_dir = "0.7"
 dirs = "7"
-tower-http = { version = "0.7", features = ["cors"] }
 # Decodes the broadcast name in a request path. Already in the tree through `url`.
 percent-encoding = "2"
 

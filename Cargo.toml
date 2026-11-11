@@ -42,6 +42,7 @@ moq-json = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", features
 # carries AAC, and dropping its audio track is a silent failure.
 moq-audio = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false, features = ["aac"] }
 moq-video = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
+moq-auth = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
 moq-relay = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
 moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", default-features = false }
 moq-room = { git = "https://github.com/moq-dev/moq", rev = "5ac2db31d", features = ["async"] }

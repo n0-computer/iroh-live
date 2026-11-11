@@ -162,7 +162,7 @@ async fn a_ticket_with_reserved_characters_mounts_once() {
         .expect("no timeout")
         .expect("pull");
     // A session that dialed the ticket's URL reads it under the raw string.
-    let serving = pull::serving(&cluster, &format!("/{raw}"));
+    let serving = pull::mounted(&cluster, &raw).expect("a ticket the cluster mounts");
     assert!(routed(&serving, &raw).await, "mounted under {raw}");
     assert!(routed(&cluster, path.as_str()).await, "at its own path");
 

@@ -37,10 +37,12 @@ fn shared_lookup() -> MemoryLookup {
 ///
 /// Its tasks end with it, so a test that panics takes its relay along.
 struct TestRelay {
-    _server_task: AbortOnDropHandle<()>,
+    /// Runs moq-relay: its listener, cluster and sessions.
+    _relay_task: AbortOnDropHandle<()>,
+    /// Answers the shipped relay's admissions.
+    _admit_task: Option<AbortOnDropHandle<()>>,
     /// Accepts iroh clients.
     _iroh_router: iroh::protocol::Router,
-    _cluster_task: AbortOnDropHandle<()>,
     cluster: Cluster,
     noq_addr: std::net::SocketAddr,
     iroh_id: iroh::EndpointId,
@@ -70,10 +72,6 @@ impl TestRelay {
     ///
     /// With `pull`, the shipped admission pulls the tickets iroh sessions name.
     async fn start_with(shipped: bool, pull: bool) -> Self {
-        let mut quic = moq_tokio::quic::Config::default();
-        quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
-        let connect = moq_tokio::connect::Config::default();
-
         let alpns = moq_transport_iroh::alpns()
             .into_iter()
             .map(<[u8]>::to_vec)
@@ -90,76 +88,56 @@ impl TestRelay {
         shared_lookup().add_endpoint_info(iroh.addr());
         let iroh_id = iroh.id();
 
-        let mut server_config = moq_tokio::server::Config::default();
-        server_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(
+        let mut config = moq_relay::Config::default();
+        config.listen.bind = Some(moq_tokio::listen::Bind::Addr(
             "[::]:0".parse().expect("valid address"),
         ));
-        server_config.listen.tls.generate = vec!["localhost".into()];
-        server_config.quic = quic.clone();
-        let server = server_config.init().expect("init server");
+        config.listen.tls.generate = vec!["localhost".into()];
+        if !shipped {
+            config.auth.public = vec![moq_net::Pattern::all()];
+        }
+        let mut relay = moq_relay::Relay::load(config)
+            .await
+            .expect("load relay")
+            .with_signals(false);
+        let cluster = relay.cluster().clone();
+        let noq_addr = relay.quic_addr().expect("a quic listener");
 
-        let auth_config = if shipped {
-            iroh_live_relay::browser_auth()
-        } else {
-            let mut auth_config = moq_relay::auth::Config::default();
-            auth_config.public = vec![moq_net::Pattern::all()];
-            auth_config
-        };
-        let auth = auth_config
-            .init("relay-bridge-test", &connect.tls, false)
-            .expect("init auth");
-
-        let (cluster, driver) = Cluster::new(moq_relay::cluster::Options::new(Default::default()))
-            .expect("init cluster");
-        let cluster = cluster.with_connect(connect.clone(), quic);
-        let started = cluster.clone().start().await.expect("start cluster");
-        let cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            tokio::select! {
-                res = driver.run() => res.expect("cluster driver failed"),
-                res = started.run() => res.expect("cluster failed"),
-            }
-        }));
         // moq-tokio's server has no iroh backend, so iroh clients always come
         // in through a handler: the shipped admission, or one that admits all.
-        let iroh_router = if shipped {
+        let (iroh_router, admit_task) = if shipped {
             let pulls = pull.then(|| {
                 Arc::new(
                     iroh_live_relay::pull::PullState::new(iroh.clone(), cluster.clone())
                         .with_linger(PULL_LINGER),
                 )
             });
-            iroh_live_relay::IrohSessions::new(cluster.clone(), pulls).router(iroh)
+            // As the shipped relay does: a browser session that names a
+            // ticket reads the pulled broadcast at that name.
+            let admissions = relay.admissions().expect("no auth source configured");
+            let admit_task = AbortOnDropHandle::new(tokio::spawn(iroh_live_relay::admit(
+                admissions,
+                pulls.clone(),
+            )));
+            let router = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls).router(iroh);
+            (router, Some(admit_task))
         } else {
             let mut router = iroh::protocol::Router::builder(iroh);
             for alpn in moq_transport_iroh::alpns() {
                 router = router.accept(alpn, OpenSessions(cluster.clone()));
             }
-            router.spawn()
+            (router.spawn(), None)
         };
-
-        let mut listener = server.listen().await.expect("listen");
-        let noq_addr = listener.local_addr().expect("get noq addr");
-        let cluster_clone = cluster.clone();
-        let server_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            let mut conn_id = 0u64;
-            while let Ok(request) = listener.accept().await {
-                // As the shipped relay does: a session that names a ticket
-                // reads the pulled broadcast at that name.
-                let serving = request.url().map_or_else(
-                    || cluster_clone.clone(),
-                    |url| iroh_live_relay::pull::serving(&cluster_clone, url.path()),
-                );
-                let conn =
-                    moq_relay::Connection::new(request, serving, auth.clone()).with_id(conn_id);
-                conn_id += 1;
-                tokio::spawn(conn.run());
-            }
+        let ready = relay.ready();
+        let relay_task = AbortOnDropHandle::new(tokio::spawn(async move {
+            relay.run().await.expect("relay failed");
         }));
+        ready.wait().await.expect("relay ready");
 
         Self {
-            _server_task: server_task,
+            _relay_task: relay_task,
+            _admit_task: admit_task,
             _iroh_router: iroh_router,
-            _cluster_task: cluster_task,
             cluster,
             noq_addr,
             iroh_id,
@@ -523,7 +501,8 @@ async fn noq_publish_iroh_subscribe() {
 #[serial]
 async fn pull_remote_broadcast_via_ticket() {
     let _ = tracing_subscriber::fmt::try_init();
-    let relay = TestRelay::start().await;
+    // Shipped, since its admission mounts the ticket a browser dials.
+    let relay = TestRelay::start_shipped().await;
     let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("remote-stream").await;
 
     let local_name = ticket.to_string();
@@ -586,6 +565,46 @@ async fn an_iroh_relay_url_requests_its_path() {
     link.detach().await;
     node.shutdown().await;
     endpoint.close().await;
+    drop(broadcast);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+}
+
+/// A browser that dials a ticket holds a pull of it until its session ends.
+#[tokio::test]
+#[serial]
+async fn a_browser_that_dials_a_ticket_holds_its_pull() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_pulling().await;
+    let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("dialed").await;
+    let name = ticket.to_string();
+
+    let sub_origin = moq_tokio::origin::spawn();
+    let mut url = relay.url();
+    url.set_path(&name);
+    let session = established(
+        noq_client()
+            .with_subscriber(sub_origin.clone())
+            .connect(url),
+    )
+    .await;
+    let bc = announced_at(&sub_origin, "").await;
+    let _frame = first_frame(&bc, "catalog.json").await;
+
+    // Past the linger window, the live session still holds the pull.
+    tokio::time::sleep(PULL_LINGER * 3).await;
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the pull retired while the browser session ran",
+    );
+
+    // The pull retires a linger window after the session that held it ends.
+    drop(session);
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, false).await,
+        "the pull outlived the browser session that dialed it",
+    );
+
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
