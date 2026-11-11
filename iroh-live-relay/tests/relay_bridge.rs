@@ -693,11 +693,7 @@ async fn bind_endpoint() -> iroh::Endpoint {
 async fn session_closed(node: &iroh_live::Node, peer: iroh::EndpointId, what: &str) {
     let mut sessions = node.sessions();
     tokio::time::timeout(TIMEOUT, async {
-        while sessions
-            .get()
-            .iter()
-            .any(|session| session.remote_id() == peer)
-        {
+        while sessions.get().iter().any(|session| session.peer() == peer) {
             sessions.updated().await.expect("node gone");
         }
     })
@@ -1491,7 +1487,7 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
             .sessions()
             .get()
             .iter()
-            .filter(|session| session.remote_id() == pull_id)
+            .filter(|session| session.peer() == pull_id)
             .count()
     };
     assert_eq!(

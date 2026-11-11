@@ -51,7 +51,7 @@ impl Eq for Session {}
 
 impl Session {
     /// Returns the peer's endpoint id.
-    pub fn remote_id(&self) -> EndpointId {
+    pub fn peer(&self) -> EndpointId {
         self.inner.remote
     }
 

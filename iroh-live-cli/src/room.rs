@@ -314,14 +314,14 @@ mod window {
                 return;
             }
             if changed {
-                for (remote, peer) in &state.peers {
-                    if !self.known.peers.contains_key(remote) {
+                for (remote, peer) in &state.members {
+                    if !self.known.members.contains_key(remote) {
                         let name = peer.display_name.clone().unwrap_or_else(|| short(*remote));
                         self.chat.push_system(format!("{name} joined"));
                     }
                 }
-                for remote in self.known.peers.keys() {
-                    if !state.peers.contains_key(remote) {
+                for remote in self.known.members.keys() {
+                    if !state.members.contains_key(remote) {
                         let name = self.label(*remote);
                         self.chat.push_system(format!("{name} left"));
                     }
@@ -337,7 +337,7 @@ mod window {
         fn reconcile_tiles(&mut self) {
             let wanted: BTreeSet<(EndpointId, String)> = self
                 .known
-                .peers
+                .members
                 .iter()
                 .flat_map(|(remote, peer)| {
                     peer.broadcasts
@@ -371,7 +371,7 @@ mod window {
 
         /// Keeps one chat reader per member that publishes chat.
         fn reconcile_chat(&mut self) {
-            let members = &self.known.peers;
+            let members = &self.known.members;
             self.chat_readers.retain(|remote, _| {
                 members
                     .get(remote)
@@ -424,7 +424,7 @@ mod window {
                 };
                 if !self
                     .known
-                    .peers
+                    .members
                     .get(&remote)
                     .is_some_and(|peer| peer.broadcasts.contains(&name))
                 {
@@ -499,7 +499,7 @@ mod window {
         /// Returns the display name of `remote`, or its short endpoint id.
         fn label(&self, remote: EndpointId) -> String {
             self.known
-                .peers
+                .members
                 .get(&remote)
                 .and_then(|peer| peer.display_name.clone())
                 .unwrap_or_else(|| short(remote))

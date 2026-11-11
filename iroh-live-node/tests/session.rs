@@ -99,7 +99,7 @@ async fn an_accepted_session_appears_in_sessions() {
     })
     .await;
 
-    assert_eq!(accepted.remote_id(), alice.id());
+    assert_eq!(accepted.peer(), alice.id());
     assert!(dialed.dialed(), "the dialing side should report dialed");
     assert!(!accepted.dialed(), "the accepting side should not");
 

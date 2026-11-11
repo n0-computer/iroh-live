@@ -37,8 +37,8 @@
 //!
 //! let mut state = room.state();
 //! # use n0_watcher::Watcher;
-//! let members = state.get();
-//! for (peer, member) in &members.peers {
+//! let room_state = state.get();
+//! for (peer, member) in &room_state.members {
 //!     for name in &member.broadcasts {
 //!         let subscription = room.subscribe(*peer, name).await?;
 //!         # drop(subscription);

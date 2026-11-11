@@ -253,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut state = room.state();
     let (peer, name) = loop {
-        let found = state.get().peers.iter().find_map(|(peer, member)| {
+        let found = state.get().members.iter().find_map(|(peer, member)| {
             member
                 .broadcasts
                 .iter()

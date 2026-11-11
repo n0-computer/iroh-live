@@ -208,7 +208,7 @@ impl Inner {
             .sessions()
             .get()
             .into_iter()
-            .find(|session| session.remote_id() == peer)
+            .find(|session| session.peer() == peer)
             .filter(|session| session.connection().close_reason().is_none())
     }
 
@@ -319,7 +319,7 @@ impl Calls {
             .sessions()
             .get()
             .iter()
-            .any(|session| session.remote_id() == peer);
+            .any(|session| session.peer() == peer);
         if connected || state.dialing.contains_key(&peer) {
             return;
         }

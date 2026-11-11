@@ -543,7 +543,7 @@ impl Drop for PublisherClaim {
         }
         publishers.remove(&self.publisher);
         for session in self.node.sessions().get() {
-            if session.remote_id() == self.publisher {
+            if session.peer() == self.publisher {
                 info!(
                     remote = %self.publisher.fmt_short(),
                     "last pull of the publisher retired, closing its session"

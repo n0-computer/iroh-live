@@ -35,7 +35,7 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     .expect("subscribe");
     read_counter(&subscription.broadcast()).await;
     let session = subscription.session().expect("served by a direct session");
-    assert_eq!(session.remote_id(), alice.id());
+    assert_eq!(session.peer(), alice.id());
     let link = subscription.serving_link().expect("a serving link");
     assert_eq!(link.kind, LinkKind::Direct);
 
@@ -448,7 +448,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     .await
     .expect("the offered publication");
     read_counter(&subscription.broadcast()).await;
-    assert_eq!(session.remote_id(), alice.id());
+    assert_eq!(session.peer(), alice.id());
 
     // The grant does not cover the secret one, so it is not offered.
     stays_pending(
@@ -482,7 +482,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
             .sessions()
             .get()
             .iter()
-            .any(|session| session.remote_id() == mallory.id()),
+            .any(|session| session.peer() == mallory.id()),
         "mallory was admitted"
     );
     let err = step(
@@ -566,7 +566,7 @@ async fn a_peer_cannot_route_another_publishers_path() {
     // moq-net's origin only sees once a reader asks for one.
     assert!(read_counter(&subscription.broadcast()).await < FORGED);
     assert_eq!(
-        subscription.session().map(|session| session.remote_id()),
+        subscription.session().map(|session| session.peer()),
         Some(alice.id()),
         "served by someone other than the publisher"
     );
@@ -618,7 +618,7 @@ async fn refused(dialer: &Peer, to: &Peer, within: Duration) {
             .sessions()
             .get()
             .iter()
-            .any(|session| session.remote_id() == dialer.id()),
+            .any(|session| session.peer() == dialer.id()),
         "the session was admitted"
     );
 }
@@ -1072,7 +1072,7 @@ async fn session_with(node: &Peer, remote: iroh::EndpointId) -> iroh_live_node::
         if let Some(session) = sessions
             .get()
             .into_iter()
-            .find(|session| session.remote_id() == remote)
+            .find(|session| session.peer() == remote)
         {
             return session;
         }

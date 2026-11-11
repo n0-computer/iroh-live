@@ -31,7 +31,7 @@ fn publish_counter(
 fn lists_cam(member: EndpointId) -> impl Fn(&RoomState) -> bool + Copy {
     move |state| {
         state
-            .peers
+            .members
             .get(&member)
             .is_some_and(|peer| peer.broadcasts.contains("cam"))
     }
@@ -71,9 +71,9 @@ async fn members_see_each_other_and_their_broadcasts() {
 
     let (a, b) = (peer_a.id(), peer_b.id());
     let seen_by_b = wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
-    assert_eq!(seen_by_b.peers[&a].display_name.as_deref(), Some("alice"));
+    assert_eq!(seen_by_b.members[&a].display_name.as_deref(), Some("alice"));
     assert!(
-        !seen_by_b.peers.contains_key(&b),
+        !seen_by_b.members.contains_key(&b),
         "a room does not list its own member"
     );
     wait_for_state(&room_a, "a sees b's cam", lists_cam(b)).await;
@@ -135,12 +135,12 @@ async fn ending_a_broadcast_keeps_the_member() {
     cam.close();
     let state = wait_for_state(&room_b, "a's cam is gone", |state| {
         state
-            .peers
+            .members
             .get(&a)
             .is_some_and(|peer| peer.broadcasts.is_empty())
     })
     .await;
-    assert!(state.peers.contains_key(&a), "a is still a member");
+    assert!(state.members.contains_key(&a), "a is still a member");
 
     // And the name is free to publish again, and comes back for the others.
     let _again = publish_counter(&room_a, "cam").expect("publish again");
@@ -156,10 +156,13 @@ async fn ending_a_broadcast_keeps_the_member() {
 async fn leaving_is_seen_at_once() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let a = peer_a.id();
-    wait_for_state(&room_b, "b sees a", |state| state.peers.contains_key(&a)).await;
+    wait_for_state(&room_b, "b sees a", |state| state.members.contains_key(&a)).await;
 
     room_a.leave().await;
-    wait_for_state(&room_b, "a is gone", |state| !state.peers.contains_key(&a)).await;
+    wait_for_state(&room_b, "a is gone", |state| {
+        !state.members.contains_key(&a)
+    })
+    .await;
 
     let Err(err) = publish_counter(&room_a, "cam") else {
         panic!("publish after leaving")
@@ -241,7 +244,7 @@ async fn a_new_display_name_is_seen() {
     room_a.set_display_name(Some("ada".into()));
     wait_for_state(&room_b, "b sees a's new name", |state| {
         state
-            .peers
+            .members
             .get(&a)
             .is_some_and(|peer| peer.display_name.as_deref() == Some("ada"))
     })
@@ -308,7 +311,10 @@ async fn a_member_that_leaves_loses_the_paths() {
     until_announced(&mut updates, path.as_str(), true).await;
 
     room_b.leave().await;
-    wait_for_state(&room_a, "b is gone", |state| !state.peers.contains_key(&b)).await;
+    wait_for_state(&room_a, "b is gone", |state| {
+        !state.members.contains_key(&b)
+    })
+    .await;
     until_announced(&mut updates, path.as_str(), false).await;
 
     peer_a.shutdown().await;

@@ -234,7 +234,7 @@ impl Rooms {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RoomState {
     /// Every other member, by endpoint id. This node is not among them.
-    pub peers: BTreeMap<EndpointId, RoomPeer>,
+    pub members: BTreeMap<EndpointId, RoomPeer>,
 }
 
 /// One member of a room.
@@ -769,7 +769,7 @@ impl Actor {
         self.inner
             .state
             .set(RoomState {
-                peers: self.peers.clone(),
+                members: self.peers.clone(),
             })
             .ok();
     }
