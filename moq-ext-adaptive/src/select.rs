@@ -6,26 +6,13 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crate::{
     NetworkSample,
     bound::{Bound, Constraints, Rung},
 };
-
-/// How long a rendition whose decoder failed is left alone.
-pub const EXCLUSION: Duration = Duration::from_secs(10);
-
-/// How long after a track ended with no successor the target is asked for again.
-pub const REVIVE_AFTER: Duration = Duration::from_secs(2);
-
-/// How long a catalog may lack video before the video counts as over.
-///
-/// A publisher replacing its video removes the old renditions before it adds
-/// the new ones. A closing publisher empties its catalog before its broadcast
-/// ends, and another route may serve the path right after. Both gaps are brief.
-pub const VANISH_GRACE: Duration = Duration::from_secs(3);
 
 /// How the rendition is chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,9 +84,9 @@ pub struct Choice {
 pub struct Backoffs(BTreeMap<String, Instant>);
 
 impl Backoffs {
-    /// Leaves `rendition` alone for [`EXCLUSION`] from `now`.
-    pub fn fail(&mut self, rendition: &str, now: Instant) {
-        self.0.insert(rendition.to_string(), now + EXCLUSION);
+    /// Leaves `rendition` alone until `until`.
+    pub fn fail(&mut self, rendition: &str, until: Instant) {
+        self.0.insert(rendition.to_string(), until);
     }
 
     /// Returns the renditions left alone at `now`.
@@ -298,10 +285,11 @@ mod tests {
         let now = Instant::now();
         let mut backoffs = Backoffs::default();
         assert!(!backoffs.any_excluded(now));
-        backoffs.fail("1080p", now);
+        let until = now + std::time::Duration::from_secs(10);
+        backoffs.fail("1080p", until);
         assert!(backoffs.is_excluded("1080p", now));
         assert_eq!(backoffs.excluded(now).len(), 1);
-        assert!(!backoffs.is_excluded("1080p", now + EXCLUSION));
+        assert!(!backoffs.is_excluded("1080p", until));
         backoffs.clear();
         assert!(!backoffs.any_excluded(now));
     }

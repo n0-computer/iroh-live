@@ -43,7 +43,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
-    Abandon, Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
+    Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, SwitchEvent,
     arrivals::{self, Arrivals},
     select::{DecodeSettings, Desired, Failure, Report},
 };
@@ -334,38 +334,40 @@ pub(crate) async fn run(inputs: Inputs) {
                 let rendition = target.rendition.clone();
                 let playing = switcher.current().cloned();
                 let mut exclude = true;
-                let abandon = match reason {
+                let (reason, failure) = match reason {
                     Abandoned::Superseded => {
                         debug!(%rendition, "replacement superseded");
-                        Abandon::Superseded
+                        (Abandoned::Superseded, None)
                     }
                     Abandoned::Withdrawn => {
                         debug!(%rendition, "replacement withdrawn");
-                        Abandon::Withdrawn
+                        (Abandoned::Withdrawn, None)
                     }
                     Abandoned::OpenFailed(err) => {
                         warn!(error = %format!("{err:#}"), %rendition, "replacement decoder failed to open");
-                        Abandon::Failed(Arc::new(err))
+                        let err = Arc::new(err);
+                        (Abandoned::OpenFailed(err.clone()), Some(err))
                     }
                     Abandoned::Ended => {
                         let failure = replacement_failure
                             .take()
                             .unwrap_or_else(|| Arc::new(n0_error::e!(Error::Closed)));
                         warn!(error = %format!("{failure:#}"), %rendition, "replacement decoder gave up before it took over");
-                        Abandon::Failed(failure)
+                        (Abandoned::Ended, Some(failure))
                     }
                     Abandoned::TimedOut => {
                         warn!(%rendition, after = ?switch_deadline, "replacement did not take over in time");
                         // With nothing on screen, a slow link is no reason to
                         // exclude the rendition, so it is asked for again.
                         exclude = playing.is_some();
-                        Abandon::Failed(Arc::new(Error::decoder_msg(format!(
+                        let failure = Arc::new(Error::decoder_msg(format!(
                             "the decoder for {rendition} did not produce a picture within {}s",
                             switch_deadline.as_secs()
-                        ))))
+                        )));
+                        (Abandoned::TimedOut, Some(failure))
                     }
                 };
-                if let Abandon::Failed(err) = &abandon {
+                if let Some(err) = &failure {
                     let config_only = playing
                         .as_ref()
                         .is_some_and(|playing| playing.rendition == target.rendition);
@@ -386,7 +388,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         exclude,
                     }));
                 }
-                let _ = events.send(SwitchEvent::Abandoned(rendition, abandon));
+                let _ = events.send(SwitchEvent::Abandoned(rendition, reason));
             }
             Outcome::Ended => {
                 delivery = None;

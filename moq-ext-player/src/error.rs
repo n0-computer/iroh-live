@@ -8,9 +8,10 @@
 
 use std::sync::Arc;
 
+use moq_ext_adaptive::Abandoned;
 use moq_ext_media_core::Error;
 use moq_net::{SessionError, StreamError};
-use n0_error::stack_error;
+use n0_error::{e, stack_error};
 
 /// Why a rendition switch did not land.
 ///
@@ -44,6 +45,27 @@ pub enum SwitchError {
     /// The player's video ended or was turned off.
     #[error("the video ended")]
     Ended,
+}
+
+impl From<(String, Abandoned<Arc<Error>>)> for SwitchError {
+    /// Maps a switch to `rendition` that the switcher gave up on.
+    fn from((rendition, reason): (String, Abandoned<Arc<Error>>)) -> Self {
+        let failed = |source| {
+            e!(SwitchError::Failed {
+                rendition: rendition.clone(),
+                source
+            })
+        };
+        match reason {
+            Abandoned::Superseded => e!(SwitchError::Superseded { rendition }),
+            Abandoned::Withdrawn => e!(SwitchError::Withdrawn { rendition }),
+            Abandoned::OpenFailed(source) => failed(source),
+            Abandoned::Ended => failed(Arc::new(e!(Error::Closed))),
+            Abandoned::TimedOut => failed(Arc::new(Error::decoder_msg(
+                "the decoder did not produce a picture in time",
+            ))),
+        }
+    }
 }
 
 /// An upstream error that may only say the session or the track was closed.

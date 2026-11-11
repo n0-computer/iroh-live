@@ -30,9 +30,6 @@ mod switch;
 pub use self::{
     bound::{Adaptation, Bound, Constraints, Rung},
     network::NetworkSample,
-    select::{
-        Backoffs, Choice, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, VANISH_GRACE, best, choose,
-        step_down,
-    },
+    select::{Backoffs, Choice, Mode, PinProblem, best, choose, step_down},
     switch::{Abandoned, CATCH_UP_PATIENCE, CATCH_UP_SLACK, Outcome, Switcher, Target, Verdict},
 };

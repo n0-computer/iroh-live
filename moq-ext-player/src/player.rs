@@ -13,6 +13,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use moq_ext_adaptive::Abandoned;
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -201,18 +202,7 @@ pub(crate) enum SwitchEvent {
     /// The rendition took over.
     Landed(String),
     /// A switch to the rendition was given up.
-    Abandoned(String, Abandon),
-}
-
-/// Why a switch was given up.
-#[derive(Debug, Clone)]
-pub(crate) enum Abandon {
-    /// A newer request replaced the switch.
-    Superseded,
-    /// The request was withdrawn.
-    Withdrawn,
-    /// The decoder failed, or the switch timed out.
-    Failed(Arc<Error>),
+    Abandoned(String, Abandoned<Arc<Error>>),
 }
 
 /// The writers behind [`PlaybackStats`].
@@ -567,15 +557,11 @@ impl Player {
                     Ok(SwitchEvent::Landed(landed)) if landed == name => return Ok(()),
                     // A switch to `name` under a new decoder configuration is
                     // still a switch to `name`.
-                    Ok(SwitchEvent::Abandoned(rendition, Abandon::Superseded))
+                    Ok(SwitchEvent::Abandoned(rendition, Abandoned::Superseded))
                         if rendition == name
                             && status.borrow().switching_to.as_deref() == Some(name) => {}
                     Ok(SwitchEvent::Abandoned(rendition, reason)) if rendition == name => {
-                        return Err(match reason {
-                            Abandon::Superseded => n0_error::e!(SwitchError::Superseded { rendition }),
-                            Abandon::Withdrawn => n0_error::e!(SwitchError::Withdrawn { rendition }),
-                            Abandon::Failed(source) => n0_error::e!(SwitchError::Failed { rendition, source }),
-                        });
+                        return Err(SwitchError::from((rendition, reason)));
                     }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => {

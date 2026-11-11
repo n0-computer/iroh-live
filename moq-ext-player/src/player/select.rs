@@ -4,11 +4,9 @@
 //! failures into one [`Desired`] value for the video supervisor. It never
 //! opens a decoder.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use moq_ext_adaptive::{
-    Adaptation, Backoffs, Bound, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, Target, VANISH_GRACE,
-};
+use moq_ext_adaptive::{Adaptation, Backoffs, Bound, Mode, PinProblem, Target};
 use moq_ext_media_core::{Error, SlotState, send_if_changed};
 use moq_net::track::Delay;
 use tokio::{
@@ -19,6 +17,19 @@ use tracing::{debug, info, trace};
 
 use super::{Controls, Latency, PlayerStatus};
 use crate::RemoteBroadcast;
+
+/// How long a rendition whose decoder failed is left alone.
+const EXCLUSION: Duration = Duration::from_secs(10);
+
+/// How long after a track ended with no successor the target is asked for again.
+const REVIVE_AFTER: Duration = Duration::from_secs(2);
+
+/// How long a catalog may lack video before the video counts as over.
+///
+/// A publisher replacing its video removes the old renditions before it adds
+/// the new ones. A closing publisher empties its catalog before its broadcast
+/// ends, and another route may serve the path right after. Both gaps are brief.
+const VANISH_GRACE: Duration = Duration::from_secs(3);
 
 /// What the decoder of a target is built with.
 #[derive(derive_more::Debug, Clone)]
@@ -228,7 +239,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     Some(Report::Failed(reported)) => {
                         let rendition = &reported.target.rendition;
                         if reported.exclude && !reported.config_only {
-                            backoffs.fail(rendition, Instant::now().into_std());
+                            backoffs.fail(rendition, (Instant::now() + EXCLUSION).into_std());
                             info!(%rendition, after = ?EXCLUSION, "leaving a failing rendition alone");
                         }
                         failed = Some(reported);
@@ -401,8 +412,6 @@ fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
     /// A running selector and what drives it.
