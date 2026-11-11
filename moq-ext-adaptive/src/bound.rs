@@ -237,9 +237,10 @@ impl Bound {
 
     /// Picks the rendition to play.
     ///
-    /// `ranked` is the catalog's video renditions, best first. `current` is the
-    /// one last asked for, on screen or on its way, and the hold timers weigh
-    /// the target against it. `on_screen` is the one playing. While the two
+    /// `ranked` is the catalog's video renditions, most expensive first: a
+    /// higher index must never cost more. `current` is the one last asked
+    /// for, on screen or on its way, and the hold timers weigh the target
+    /// against it. `on_screen` is the one playing. While the two
     /// differ, a switch is in flight and loss is not followed: the loss then is
     /// the old rendition's, and a step on it would stack onto the first.
     ///

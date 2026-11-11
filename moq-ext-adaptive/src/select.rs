@@ -109,9 +109,9 @@ impl Backoffs {
 
 /// Picks the rendition to play, and why a pin could not be honoured.
 ///
-/// `rungs` is the ladder, best first. `current` is the rendition last asked
-/// for and `on_screen` the one playing. `sample` is the link, if the transport
-/// measures one. Without it the best allowed rendition plays.
+/// `rungs` is the ladder, most expensive first. `current` is the rendition
+/// last asked for and `on_screen` the one playing. `sample` is the link, if
+/// the transport measures one. Without it the best allowed rendition plays.
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
@@ -171,8 +171,8 @@ pub fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
 
 /// Reports whether automatic selection is stepping down from `on_screen`.
 ///
-/// `rungs` is the ladder, best first. A switch to a rung further down, in
-/// [`Mode::Auto`], is a step down. Such a switch does not overlap: on a
+/// `rungs` is the ladder, most expensive first. A switch to a rung further
+/// down, in [`Mode::Auto`], is a step down. Such a switch does not overlap: on a
 /// saturated link the incumbent's track would keep taking the bandwidth the
 /// replacement needs.
 #[must_use]
