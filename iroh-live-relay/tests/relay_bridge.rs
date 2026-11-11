@@ -54,25 +54,35 @@ impl TestRelay {
     ///
     /// The forgery tests use it as the relay a node must not trust.
     async fn start() -> Self {
-        Self::start_with(false, false).await
+        Self::start_with(false, false, None).await
     }
 
     /// Starts a relay with the admission `iroh_live_relay::run` uses.
     async fn start_shipped() -> Self {
-        Self::start_with(true, false).await
+        Self::start_with(true, false, None).await
     }
 
     /// Starts a relay as [`start_shipped`](Self::start_shipped) does, which also pulls tickets.
     ///
     /// An iroh session that names a ticket in its path pulls the ticket's broadcast.
     async fn start_pulling() -> Self {
-        Self::start_with(true, true).await
+        Self::start_with(true, true, None).await
     }
 
     /// Starts a relay with the admission of the shipped relay if `shipped`, else an open one.
     ///
+    /// Starts a relay that lets anyone publish anywhere, and serves its
+    /// certificate's fingerprint over HTTP on the port of its QUIC listener.
+    ///
+    /// A client dials it as `http://localhost:<port>`: moq-tokio fetches the
+    /// fingerprint there and pins the self-signed certificate.
+    async fn start_http() -> Self {
+        Self::start_with(false, false, Some(free_port())).await
+    }
+
     /// With `pull`, the shipped admission pulls the tickets iroh sessions name.
-    async fn start_with(shipped: bool, pull: bool) -> Self {
+    /// With `port`, QUIC and the web listener bind that port, else QUIC binds any.
+    async fn start_with(shipped: bool, pull: bool, port: Option<u16>) -> Self {
         let alpns = moq_transport_iroh::alpns()
             .into_iter()
             .map(<[u8]>::to_vec)
@@ -90,9 +100,11 @@ impl TestRelay {
         let iroh_id = iroh.id();
 
         let mut config = moq_relay::Config::default();
-        config.listen.bind = Some(moq_tokio::listen::Bind::Addr(
-            "[::]:0".parse().expect("valid address"),
-        ));
+        let bind = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port.unwrap_or(0)));
+        config.listen.bind = Some(moq_tokio::listen::Bind::Addr(bind));
+        if port.is_some() {
+            config.web.http.listen = Some(bind);
+        }
         config.listen.tls.generate = vec!["localhost".into()];
         if !shipped {
             config.auth.public = vec![moq_net::Pattern::all()];
@@ -145,12 +157,37 @@ impl TestRelay {
         }
     }
 
+    /// Returns the URL that pins the relay's certificate through its fingerprint.
+    ///
+    /// Only a relay from [`start_http`](Self::start_http) serves the fingerprint.
+    fn http_url(&self) -> url::Url {
+        format!("http://localhost:{}", self.noq_addr.port())
+            .parse()
+            .expect("valid url")
+    }
+
     /// Returns the WebTransport URL a browser would dial.
     fn url(&self) -> url::Url {
         format!("https://localhost:{}", self.noq_addr.port())
             .parse()
             .expect("valid url")
     }
+}
+
+/// Returns a port that is free for both UDP and TCP right now.
+///
+/// The relay's QUIC listener and its web listener share the port, since an
+/// `http://` client fetches the fingerprint from the port it dials.
+fn free_port() -> u16 {
+    for _ in 0..16 {
+        let udp =
+            std::net::UdpSocket::bind((std::net::Ipv6Addr::UNSPECIFIED, 0)).expect("bind udp");
+        let port = udp.local_addr().expect("an address").port();
+        if std::net::TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no port free for both UDP and TCP");
 }
 
 /// Admits every iroh client to publish and subscribe anywhere in the cluster.
@@ -942,12 +979,19 @@ async fn attached(
     relay: &TestRelay,
     offer: RelayOffer,
 ) -> iroh_live_node::RelayLink {
-    let link = node
-        .attach_relay(RelayConfig {
+    connected(
+        node,
+        RelayConfig {
             offer,
             ..RelayConfig::iroh(relay.iroh_id)
-        })
-        .expect("attach");
+        },
+    )
+    .await
+}
+
+/// Attaches `node` to the relay `config` names and waits for the link to connect.
+async fn connected(node: &iroh_live::Node, config: RelayConfig) -> iroh_live_node::RelayLink {
+    let link = node.attach_relay(config).expect("attach");
     let mut status = link.status();
     tokio::time::timeout(TIMEOUT, async {
         while status.get() != RelayStatus::Connected {
@@ -1641,4 +1685,49 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
     bob_router.shutdown().await.expect("router");
     alice_router.shutdown().await.expect("router");
     drop((alice_endpoint, link));
+}
+
+/// A relay link over QUIC, through moq-tokio, publishes one node's broadcast to another.
+///
+/// Both nodes dial `http://`, which pins the relay's self-signed certificate.
+/// `https://` and `moqt://` take the same moq-tokio path, but verify against
+/// the system's roots, which a test certificate is not in.
+#[tokio::test]
+async fn a_relay_link_over_quic_carries_a_broadcast() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_http().await;
+
+    let (_publisher_endpoint, publisher) = relay_node().await;
+    let _publisher_link = connected(
+        &publisher,
+        RelayConfig {
+            consume: false,
+            ..RelayConfig::new(relay.http_url())
+        },
+    )
+    .await;
+    let _broadcast = publish_video(&publisher, "studio");
+    let path = live_path(publisher.id(), "studio");
+    routed(&relay.cluster.origin.consume(), &path).await;
+
+    let (_viewer_endpoint, viewer) = relay_node().await;
+    let link = connected(
+        &viewer,
+        RelayConfig {
+            offer: RelayOffer::Nothing,
+            ..RelayConfig::new(relay.http_url())
+        },
+    )
+    .await;
+    let subscription = tokio::time::timeout(TIMEOUT, viewer.subscribe(path, Reach::Relays))
+        .await
+        .expect("subscribe timeout")
+        .expect("subscribe through the relay");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+    let serving = subscription.serving_link().expect("a serving link");
+    assert_eq!(serving.kind, LinkKind::Relay);
+    assert_eq!(serving.id, link.id());
+
+    viewer.shutdown().await;
+    publisher.shutdown().await;
 }
