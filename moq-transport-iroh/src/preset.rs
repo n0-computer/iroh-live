@@ -119,7 +119,7 @@ impl FromStr for Congestion {
 /// An error returned when a name is not that of a [`Congestion`] controller.
 #[stack_error(derive)]
 #[derive(Clone, PartialEq, Eq)]
-#[error("unknown congestion controller {_0:?}: expected bbr3, cubic or newreno")]
+#[error("unknown congestion controller {_0:?}: expected BBR3, CUBIC, or NewReno (any case)")]
 pub struct UnknownCongestion(String);
 
 #[cfg(test)]

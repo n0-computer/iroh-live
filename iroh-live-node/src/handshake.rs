@@ -121,7 +121,7 @@ pub(crate) async fn dial_session(
         debug!(%congestion, "dialing with its own congestion controller");
     }
     let transport = transport::dial_with(&shared.endpoint, peer, options.quic()).await?;
-    let connection = transport.conn().clone();
+    let connection = transport.connection().clone();
     let auth = authorized(&shared, peer_id, grant);
     let (moq, driver) = client_handshake(
         transport,

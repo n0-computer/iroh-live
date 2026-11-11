@@ -90,7 +90,7 @@ pub(crate) async fn monitor_relay(monitor: moq_tokio::connection::Monitor, state
             // Between sessions nothing is measured.
             None => {
                 let mut sample = LinkSample::default();
-                sample.network.path_generation = sampler.generation();
+                sample.network.path_generation = sampler.path_generation();
                 sample
             }
         };

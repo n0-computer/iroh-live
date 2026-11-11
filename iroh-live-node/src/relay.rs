@@ -615,7 +615,7 @@ async fn iroh_uplink(
                 };
                 // The monitor must not overwrite the cleared reading.
                 drop(monitor);
-                link_state.clear(sampler.lock().expect("poisoned").generation());
+                link_state.clear(sampler.lock().expect("poisoned").path_generation());
                 if closing {
                     moq.close().await.ok();
                     break;
@@ -660,7 +660,7 @@ async fn dial_relay(
     Error,
 > {
     let transport = transport::dial(&shared.endpoint, relay).await?;
-    let connection = transport.conn().clone();
+    let connection = transport.connection().clone();
     let (moq, driver) = client_handshake(
         transport,
         options,

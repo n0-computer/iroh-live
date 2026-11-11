@@ -22,7 +22,7 @@ use moq_net::{
     },
 };
 use n0_error::{AnyError, e};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 
@@ -135,7 +135,8 @@ impl Transport {
         let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
         let peer = connection.remote_id().fmt_short();
         if !moq_net::ALPNS.contains(&alpn.as_str()) {
-            debug!(%alpn, %peer, "unsupported ALPN");
+            // Only a handler mounted under a wrong ALPN gets here.
+            warn!(%alpn, %peer, "unsupported ALPN");
             return Err(e!(Error::UnsupportedAlpn { alpn }));
         }
         debug!(%alpn, %peer, side = ?connection.side(), "MoQ transport opened");
@@ -153,7 +154,7 @@ impl Transport {
 
     /// Returns the iroh connection the transport runs over.
     #[must_use]
-    pub fn conn(&self) -> &Connection {
+    pub fn connection(&self) -> &Connection {
         &self.conn
     }
 

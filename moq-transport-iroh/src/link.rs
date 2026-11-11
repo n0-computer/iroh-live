@@ -60,8 +60,9 @@ enum PathKey {
 /// Samples `session` every [`SAMPLE_INTERVAL`] until `connection` closes.
 ///
 /// Each sample goes to `publish`. A sampler that outlives the call carries the
-/// path generation on across the sessions of one link. Holding the session's
-/// bandwidth estimate is what asks the peer to probe.
+/// path generation on across the sessions of one link. The sampler holds the
+/// session's receive-bandwidth handle while it runs, and that handle asks the
+/// peer to send probes.
 ///
 /// The future is cancel-safe: dropping it only stops the sampling.
 pub async fn sample_link(
@@ -126,9 +127,9 @@ impl LinkSampler {
         self.readings.clear();
     }
 
-    /// Returns the generation the link is at.
+    /// Returns the path generation the link is at.
     #[must_use]
-    pub fn generation(&self) -> u64 {
+    pub fn path_generation(&self) -> u64 {
         self.path_generation
     }
 
@@ -156,12 +157,17 @@ impl LinkSampler {
         Some(sample)
     }
 
-    /// Reads `stats` of session number `session` of a link that reconnects.
+    /// Reads `stats` of the session `session_number` of a link that reconnects.
     ///
     /// A new session number starts a new path, as a new QUIC path does.
     #[must_use]
-    pub fn sample_session(&mut self, session: u64, stats: &Stats, now: Instant) -> LinkSample {
-        self.sample(PathKey::Session(session), stats, None, now)
+    pub fn sample_session(
+        &mut self,
+        session_number: u64,
+        stats: &Stats,
+        now: Instant,
+    ) -> LinkSample {
+        self.sample(PathKey::Session(session_number), stats, None, now)
     }
 
     /// Folds `stats`, read on `path` at `now`, into a sample.
@@ -306,14 +312,14 @@ mod tests {
         let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         run(&mut sampler, t0, 3, (1, 0, 0));
-        assert_eq!(sampler.generation(), 0);
+        assert_eq!(sampler.path_generation(), 0);
         sampler.new_session();
         let first = sampler.sample(DIRECT, &stats(20, 0, 0, 0), None, t0 + SAMPLE_INTERVAL * 4);
         assert_eq!(first.network.path_generation, 1);
         // A session that never sampled adds nothing.
         sampler.new_session();
         sampler.new_session();
-        assert_eq!(sampler.generation(), 2);
+        assert_eq!(sampler.path_generation(), 2);
     }
 
     #[test]
