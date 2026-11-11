@@ -154,3 +154,41 @@ impl Node {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    use super::*;
+
+    fn path(path: &str) -> Path {
+        Path::new(path).expect("a path")
+    }
+
+    #[test]
+    fn a_path_naming_the_peer_once_is_its_own() {
+        let peer = SecretKey::generate().public();
+        assert!(owns_by_id(&peer, &path(&format!("live/{peer}/cam"))));
+        assert!(owns_by_id(&peer, &path(&format!("{peer}"))));
+        assert!(owns_by_id(&peer, &path(&format!("a/b/{peer}"))));
+    }
+
+    #[test]
+    fn a_path_naming_another_peer_or_none_is_not_its_own() {
+        let (peer, other) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        assert!(!owns_by_id(&peer, &path("live/cam")));
+        assert!(!owns_by_id(&peer, &path(&format!("live/{other}/cam"))));
+        assert!(!owns_by_id(&peer, &path(&format!("live/{peer}/{other}"))));
+        assert!(!owns_by_id(&peer, &path(&format!("live/{peer}/{peer}"))));
+    }
+
+    #[test]
+    fn only_the_canonical_spelling_of_the_id_counts() {
+        let peer = SecretKey::generate().public();
+        let upper = peer.to_string().to_ascii_uppercase();
+        assert!(!owns_by_id(&peer, &path(&format!("live/{upper}/cam"))));
+    }
+}

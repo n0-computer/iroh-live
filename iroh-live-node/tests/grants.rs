@@ -799,3 +799,57 @@ async fn a_policy_that_asks_for_transit_closes_the_session() {
     alice.shutdown().await;
     bob.shutdown().await;
 }
+
+#[tokio::test]
+#[traced_test]
+async fn a_claim_after_shutdown_fails() {
+    let alice = Peer::spawn().await;
+    let bob = viewer().await;
+    bob.node.shutdown().await;
+
+    let err = bob
+        .node
+        .claim_path(alice.id(), &path_of(&alice, "cam"))
+        .expect_err("shut down");
+    assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_claim_on_the_nodes_own_path_widens_nothing() {
+    let alice = Peer::spawn().await;
+    let bob = viewer().await;
+    let session = step("dial", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+
+    let path = path_of(&bob, "cam");
+    let claim = bob.node.claim_path(bob.id(), &path).expect("a no-op claim");
+    assert_eq!(claim.peer(), bob.id());
+    assert_eq!(claim.path(), &path);
+    assert!(!session.grant().allows_publish(path.as_str()));
+    assert_eq!(session.grant(), policy_grant(&bob, &session));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_path_that_is_no_literal_cannot_be_claimed() {
+    let alice = Peer::spawn().await;
+    let bob = viewer().await;
+
+    let wildcard = Path::new(&alice.path("*")).expect("path");
+    let err = bob
+        .node
+        .claim_path(alice.id(), &wildcard)
+        .expect_err("a wildcard names no one path");
+    assert!(matches!(err, Error::InvalidPath { .. }), "{err:#}");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}

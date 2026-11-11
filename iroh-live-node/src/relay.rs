@@ -711,4 +711,61 @@ mod tests {
         assert_eq!(config.url.scheme(), "iroh");
         assert_eq!(config.url.host_str(), Some(id.to_string().as_str()));
     }
+
+    #[test]
+    fn an_iroh_url_names_its_relay_by_endpoint_id() {
+        let id = SecretKey::generate().public();
+        let url: Url = format!("iroh://{id}/live").parse().expect("url");
+        assert_eq!(iroh_relay(&url).expect("valid"), Some(id));
+        for other in [
+            "https://relay.example/",
+            "http://relay.example/",
+            "moqt://relay.example/",
+        ] {
+            let url: Url = other.parse().expect("url");
+            assert_eq!(iroh_relay(&url).expect(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn an_iroh_url_without_an_endpoint_id_is_invalid() {
+        let url: Url = "iroh://relay.example/".parse().expect("url");
+        let err = iroh_relay(&url).expect_err("no endpoint id");
+        assert!(
+            matches!(err, Error::InvalidRelayUrl { reason, .. } if reason.contains("endpoint id")),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_scheme_is_invalid() {
+        let url: Url = "ftp://relay.example/".parse().expect("url");
+        let err = iroh_relay(&url).expect_err("unsupported");
+        assert!(
+            matches!(err, Error::InvalidRelayUrl { reason, .. } if reason.contains("scheme")),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_token_fn_is_asked_each_time_a_url_is_built() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = asked.clone();
+        let mut config = RelayConfig::new("https://relay.example/".parse().expect("url"));
+        config.token = Some(TokenFn::new(move || {
+            let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(format!("t{n}"))
+        }));
+        assert_eq!(config.dial_url().query(), Some("jwt=t0"));
+        assert_eq!(config.dial_url().query(), Some("jwt=t1"));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_token_fn_without_a_token_leaves_the_url_alone() {
+        let mut config = RelayConfig::new("https://relay.example/room?x=1".parse().expect("url"));
+        config.token = Some(TokenFn::new(|| None));
+        assert_eq!(config.dial_url().as_str(), "https://relay.example/room?x=1");
+        assert_eq!(format!("{:?}", TokenFn::fixed("secret")), "TokenFn(..)");
+    }
 }

@@ -1132,3 +1132,18 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     bob.shutdown().await;
     carol.shutdown().await;
 }
+
+#[tokio::test]
+#[traced_test]
+async fn attaching_a_relay_with_an_unusable_url_fails() {
+    let alice = Peer::spawn().await;
+    for url in ["ftp://relay.example/", "iroh://not-an-endpoint-id/"] {
+        let config = iroh_live_node::RelayConfig::new(url.parse().expect("a URL"));
+        let err = alice.node.attach_relay(config).expect_err(url);
+        assert!(
+            matches!(err, Error::InvalidRelayUrl { .. }),
+            "{url}: {err:#}"
+        );
+    }
+    alice.shutdown().await;
+}

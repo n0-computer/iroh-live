@@ -890,3 +890,85 @@ async fn a_revalidation_interval_beyond_the_clock_is_never() {
     bob.shutdown().await;
     carol.shutdown().await;
 }
+
+/// Reauthorizing a peer the node holds no session with asks the policy nothing.
+#[tokio::test]
+#[traced_test]
+async fn reauthorizing_a_peer_without_a_session_asks_nothing() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
+        move |request: &PeerRequest| {
+            seen.lock()
+                .expect("poisoned")
+                .push((*request.peer(), request.event()));
+            Ok(Grant::subscribe_only().into())
+        },
+    )))
+    .await;
+    let stranger = iroh::SecretKey::generate().public();
+    alice.node.reauthorize(stranger);
+    assert_eq!(alice.node.grant_for(stranger), None);
+
+    // The node still decides a new session once, at its connect.
+    let bob = Peer::spawn().await;
+    step("bob dials", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob.id()).is_some()
+    })
+    .await;
+    assert_eq!(
+        *events.lock().expect("poisoned"),
+        [(bob.id(), Event::Connect)]
+    );
+    assert_eq!(alice.node.grant_for(stranger), None);
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A shutdown while the application holds a re-decide finishes, and closes the peer's sessions.
+#[tokio::test]
+#[traced_test]
+async fn a_shutdown_during_a_held_reauthorize_finishes() {
+    let queue = policy::Queue::new(16);
+    let alice = Peer::bare(NodeConfig {
+        decide_timeout: Duration::from_secs(600),
+        ..NodeConfig::default().with_policy(queue.clone())
+    })
+    .await;
+    let bob = Peer::spawn().await;
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let holding = held.clone();
+    let _answering = n0_future::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        while let Some(pending) = queue.next().await {
+            match pending.request().event() {
+                Event::Connect => pending.admit(Grant::everything()),
+                // Never answered while the test runs.
+                _ => holding.lock().expect("poisoned").push(pending),
+            }
+        }
+    }));
+
+    let session = step("bob dials", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob.id()).is_some()
+    })
+    .await;
+    alice.node.reauthorize(bob.id());
+    eventually("the re-decide waits for the application", || {
+        !held.lock().expect("poisoned").is_empty()
+    })
+    .await;
+
+    step("the shutdown ends", alice.node.shutdown()).await;
+    assert!(alice.node.sessions().get().is_empty());
+    step("bob sees the close", session.closed()).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
