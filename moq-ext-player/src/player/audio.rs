@@ -7,6 +7,7 @@ use std::{
 
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
 use moq_ext_sources::AudioFormat;
+use moq_net::track::Delay;
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::{broadcast, watch};
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -133,8 +134,8 @@ pub(crate) async fn run(inputs: Inputs) {
         let mut reader = match opened {
             Some((name, config, consumer)) => {
                 send_if_changed(&status, |status| status.audio = SlotState::Starting);
-                let max_age = controls.latency.borrow().max;
-                match open(&name, &config, &consumer, max_age, &output).await {
+                let delay = Delay::from(*controls.latency.borrow());
+                match open(&name, &config, &consumer, delay, &output).await {
                     Ok((decoder, sink, control)) => {
                         control.set_volume(*volume.borrow());
                         info!(rendition = %name, "audio playing");
@@ -250,12 +251,12 @@ async fn open(
     name: &str,
     config: &hang::catalog::AudioConfig,
     consumer: &moq_net::broadcast::Consumer,
-    max_age: Duration,
+    delay: Delay,
     output: &AudioTarget,
 ) -> Result<(moq_audio::decode::Consumer, OutputSink, OutputControl), Error> {
     let mut options = moq_audio::decode::Options::new();
     options.output.format = moq_audio::Format::F32;
-    options.delay = moq_audio::decode::Delay::default().with_max(max_age);
+    options.delay = delay;
     // Start at the live edge. The backlog a track holds is behind it.
     options.start = moq_audio::decode::Start::Latest;
     let decoder = moq_audio::decode::Consumer::new(consumer, config, name, options)

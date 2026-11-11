@@ -4,12 +4,13 @@
 //! failures into one [`Desired`] value for the video supervisor. It never
 //! opens a decoder.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use moq_ext_adaptive::{
     Adaptation, Backoffs, Bound, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, Target, VANISH_GRACE,
 };
 use moq_ext_media_core::{Error, SlotState, send_if_changed};
+use moq_net::track::Delay;
 use tokio::{
     sync::{mpsc, watch},
     time::Instant,
@@ -27,8 +28,8 @@ pub(crate) struct DecodeSettings {
     pub consumer: moq_net::broadcast::Consumer,
     /// The backend to open.
     pub decoder: moq_video::decode::Kind,
-    /// The oldest media still worth decoding.
-    pub max_age: Duration,
+    /// What the subscription asks for: the latency's minimum and maximum.
+    pub delay: Delay,
 }
 
 /// What the video supervisor should play.
@@ -92,7 +93,8 @@ pub(crate) struct Inputs {
     /// The target on screen, as the supervisor reports it.
     pub playing: watch::Receiver<Option<Target>>,
     pub desired: watch::Sender<Option<Desired>>,
-    /// The player's playout clock, started over on a new route.
+    /// The player's playout clock, started over on a new route, and set to
+    /// the latency and the catalog's jitter.
     pub clock: super::PlayoutClock,
     /// The thresholds and timers the choice follows.
     pub adaptation: Adaptation,
@@ -102,7 +104,7 @@ pub(crate) struct Inputs {
 #[derive(Debug, Clone, PartialEq)]
 struct Config {
     decoder: moq_video::decode::Kind,
-    max_age: Duration,
+    delay: Delay,
     /// The generation of the broadcast consumer, bumped on a new route.
     epoch: u64,
     /// Bumped to rebuild a video that ended.
@@ -247,9 +249,21 @@ pub(crate) async fn run(inputs: Inputs) {
         };
 
         let latency: Latency = *latency.borrow();
+        // The ladder's largest jitter, so a switch never moves the schedule.
+        let jitter = catalog
+            .video
+            .renditions
+            .values()
+            .filter_map(|config| config.jitter)
+            .max();
+        let playout = latency.playout_delay(jitter);
+        if playout != clock.latency() {
+            debug!(?playout, ?jitter, "playout delay changed");
+            clock.set_delay(playout);
+        }
         let config = Config {
             decoder: decoder.borrow().clone(),
-            max_age: latency.max,
+            delay: Delay::from(latency),
             epoch: route,
             restart,
         };
@@ -264,7 +278,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let settings = DecodeSettings {
             consumer,
             decoder: decoder.borrow().clone(),
-            max_age: latency.max,
+            delay: Delay::from(latency),
         };
 
         let sample = network.as_ref().map(|network| network());
@@ -381,6 +395,8 @@ fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     /// A running selector and what drives it.

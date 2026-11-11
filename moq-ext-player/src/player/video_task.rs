@@ -537,7 +537,7 @@ fn decode_options(settings: &DecodeSettings) -> moq_video::decode::Options {
     // Frames stay on the GPU for the renderer to import. A frame converts to
     // CPU pixels on demand.
     options.decoder.output = moq_video::Output::Native;
-    options.delay = moq_video::decode::Delay::default().with_max(settings.max_age);
+    options.delay = settings.delay;
     // A player wants the live edge. Without this, a rebuilt decoder or one
     // reopened on an earlier rendition decodes the whole cached backlog first.
     options.start = moq_video::decode::Start::Latest;
@@ -844,7 +844,7 @@ mod tests {
         let settings = DecodeSettings {
             consumer: consumer.clone(),
             decoder: moq_video::decode::Kind::Software,
-            max_age: Duration::from_secs(60),
+            delay: moq_net::track::Delay::default().with_max(Duration::from_secs(60)),
         };
         let remote = RemoteBroadcast::from_consumer(consumer);
         // The catalog has its own track, so the first snapshot may not have

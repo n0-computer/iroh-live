@@ -45,10 +45,13 @@ pub use self::{
 
 /// How far behind live to run.
 ///
-/// The playout clock runs `min` behind the live edge. While audio plays,
-/// pictures show when their sound does. Media later than `max` is skipped. `max` also
-/// bounds what the transport keeps for the player (the moq subscription's
-/// `delay.max`). Setting `min == max` gives a fixed latency.
+/// The playout clock runs `min` behind the live edge, or the publisher's
+/// advertised jitter if that is larger, up to `max`. While audio plays,
+/// pictures show when their sound does. Media later than `max` is skipped.
+/// Both reach the transport as the moq subscription's [`Delay`], so relays and
+/// the publisher see them too. Setting `min == max` gives a fixed latency.
+///
+/// [`Delay`]: moq_net::track::Delay
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Latency {
     /// How far behind the live edge playback runs.
@@ -72,6 +75,18 @@ impl Latency {
         !self.min.is_zero()
     }
 
+    /// Returns the playout clock's delay, given the publisher's `jitter`.
+    ///
+    /// A publisher that flushes frames up to `jitter` late needs a buffer at
+    /// least that deep, so the delay is `min` raised to the jitter, but never
+    /// past `max`. An unpaced latency stays at zero.
+    pub(crate) fn playout_delay(&self, jitter: Option<Duration>) -> Duration {
+        match jitter {
+            Some(jitter) if self.paced() => self.min.max(jitter).min(self.max),
+            _ => self.min,
+        }
+    }
+
     /// Returns an [`Error::InvalidConfig`] if `min` is above `max`.
     fn validate(&self) -> Result<(), Error> {
         if self.min > self.max {
@@ -92,6 +107,14 @@ impl Default for Latency {
             min: Duration::from_millis(100),
             max: Duration::from_millis(150),
         }
+    }
+}
+
+impl From<Latency> for moq_net::track::Delay {
+    /// Asks the subscription for the whole range: `min` as the target, and
+    /// `max` as the oldest media still worth delivering.
+    fn from(latency: Latency) -> Self {
+        Self::default().with_min(latency.min).with_max(latency.max)
     }
 }
 
@@ -381,17 +404,17 @@ impl Player {
 
     /// Changes how far behind live the player runs.
     ///
-    /// A new minimum starts a new playout clock, so the schedule jumps once.
-    /// A new maximum rebuilds the video decoder behind the picture, and the
-    /// new decoder takes over once it has caught up. Audio keeps its old
-    /// maximum until it next opens, because a rebuild would be audible.
+    /// A new playout delay starts a new playout clock, so the schedule jumps
+    /// once. The video decoder is rebuilt behind the picture, so the
+    /// subscription asks for the new range, and the new decoder takes over
+    /// once it has caught up. Audio keeps its old range until it next opens,
+    /// because a rebuild would be audible.
     ///
     /// # Errors
     ///
     /// Fails if `latency.min` is above `latency.max`.
     pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
         latency.validate()?;
-        self.clock.set_delay(latency.min);
         self.controls.latency.send_replace(latency);
         Ok(())
     }
@@ -562,5 +585,40 @@ impl Player {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn ms(millis: u64) -> Duration {
+        Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn a_latency_becomes_the_whole_delay() {
+        let delay = moq_net::track::Delay::from(Latency {
+            min: ms(100),
+            max: ms(400),
+        });
+        assert_eq!(delay.min, Some(ms(100)));
+        assert_eq!(delay.max, Some(ms(400)));
+    }
+
+    #[test]
+    fn the_playout_delay_follows_a_larger_jitter_up_to_the_maximum() {
+        let latency = Latency {
+            min: ms(100),
+            max: ms(400),
+        };
+        assert_eq!(latency.playout_delay(None), ms(100));
+        assert_eq!(latency.playout_delay(Some(ms(40))), ms(100));
+        assert_eq!(latency.playout_delay(Some(ms(250))), ms(250));
+        assert_eq!(latency.playout_delay(Some(ms(2000))), ms(400));
+        assert_eq!(
+            Latency::IMMEDIATE.playout_delay(Some(ms(250))),
+            Duration::ZERO
+        );
     }
 }

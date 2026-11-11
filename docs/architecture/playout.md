@@ -44,17 +44,20 @@ player closes its clock and wakes everything waiting on it.
 
 `PlayerConfig::latency` is a `Latency { min, max }`.
 
-`min` is the clock's delay above. `Player::set_latency` starts a new clock with
-the new delay, so the schedule jumps once, and the next video frame or audio
+`min` sets the clock's delay above. A publisher that advertises a larger
+`jitter` in its catalog, the most it flushes a frame late, raises the delay to
+the ladder's largest jitter, but never past `max`. A change of the delay starts
+a new clock, so the schedule jumps once, and the next video frame or audio
 write anchors it again. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, once with `Latency::IMMEDIATE` and once with the
 default, and prints the figures.
 
-`max` becomes `max_age` on `moq_video::decode::Options` and
-`moq_audio::decode::Options`, where upstream skips old media to return to the
-live edge. The default is 150 ms. Raise it when continuity through congestion
+The whole `Latency` becomes the moq subscription's `Delay` on
+`moq_video::decode::Options` and `moq_audio::decode::Options`, so relays and
+the publisher see the range too. Upstream skips media older than `max` to
+return to the live edge. The default is 150 ms. Raise it when continuity through congestion
 matters more than staying live, and lower it to skip stalls instead of playing
 them out. `play` and `set_latency` refuse a `min` above `max`, since a skip
 threshold below the hold would drop the frames the hold waits for.
