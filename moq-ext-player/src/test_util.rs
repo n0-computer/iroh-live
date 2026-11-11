@@ -19,6 +19,7 @@ use moq_ext_publisher::{LocalBroadcast, SlotState, VideoEncoding, VideoRendition
 use moq_ext_sources::{FrameSender, VideoFormat, VideoFrames, VideoSource};
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_future::task::AbortOnDropHandle;
+use tracing::info;
 
 /// How long the player may take to show the new source after it publishes its first frame.
 ///
@@ -294,7 +295,7 @@ pub async fn shows(
     let latency = started
         .get()
         .map_or(Duration::ZERO, |at| shown_at.saturating_duration_since(at));
-    tracing::info!(what, ?latency, ?look, "switch shown");
+    info!(what, ?latency, ?look, "switch shown");
     latency
 }
 

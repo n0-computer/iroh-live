@@ -12,6 +12,7 @@ use std::time::Duration;
 use moq_audio::playback;
 use moq_ext_media_core::Error;
 use moq_ext_sources::AudioFormat;
+use tracing::warn;
 
 /// Where a player writes its audio: an opened device engine, or nowhere.
 ///
@@ -59,7 +60,7 @@ impl AudioTarget {
         match playback::Engine::open(playback::Config::default()).await {
             Ok(engine) => engine.into(),
             Err(err) => {
-                tracing::warn!(
+                warn!(
                     error = format_args!("{err:#}"),
                     "no audio output, playing audio nowhere"
                 );
