@@ -1,0 +1,458 @@
+//! Admission and authorization of sessions, decided by a [`Policy`].
+//!
+//! A node asks its policy whether a peer may hold a session, and with which
+//! rights. It asks when a session opens, in either direction, and again when
+//! an [`Authorization`] expires or the policy reports a change. The answer is
+//! a [`Decision`]: an [`Authorization`] to keep the session, or a
+//! [`Rejection`] that closes it.
+//!
+//! The building blocks compose:
+//!
+//! - [`Open`] admits everyone with one grant, and [`Closed`] rejects everyone.
+//! - [`from_fn`] decides with a synchronous closure.
+//! - [`Policy::union`] admits what either of two policies admits.
+//! - [`Policy::filter`] rejects the peers a predicate refuses.
+//!
+//! A node stores its policy as an `Arc<dyn DynPolicy<P>>`, which implements
+//! [`Policy`] too.
+//!
+//! # Examples
+//!
+//! Admit everyone to subscribe, except one peer:
+//!
+//! ```
+//! use moq_ext_access::{
+//!     Grant,
+//!     policy::{self, Policy},
+//! };
+//!
+//! let policy = policy::Open(Grant::subscribe_only())
+//!     .filter(|request: &policy::PeerRequest<String>| request.peer() != "mallory");
+//! # drop(policy);
+//! ```
+
+use std::{
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
+
+use moq_net::Patterns;
+use n0_future::{MergeBounded, boxed::BoxStream, future};
+
+use crate::{Grant, PeerId, SessionRequest};
+
+/// A peer's request for a session, as a policy sees it.
+#[derive(Debug, Clone)]
+pub struct PeerRequest<P: PeerId> {
+    peer: P,
+    request: SessionRequest,
+    dialed: bool,
+    event: Event,
+}
+
+impl<P: PeerId> PeerRequest<P> {
+    /// Creates a request of `peer` for a session, as a node asks its policy.
+    ///
+    /// `peer` is the identity the transport authenticated. `dialed` is true
+    /// for a session this node dials, whose `request` is the one it sends.
+    #[must_use]
+    pub fn new(peer: P, request: SessionRequest, dialed: bool, event: Event) -> Self {
+        Self {
+            peer,
+            request,
+            dialed,
+            event,
+        }
+    }
+
+    /// Returns the peer, as the transport authenticated it.
+    pub fn peer(&self) -> &P {
+        &self.peer
+    }
+
+    /// Reports whether this node dialed the session.
+    pub fn dialed(&self) -> bool {
+        self.dialed
+    }
+
+    /// Returns why the node asks.
+    pub fn event(&self) -> Event {
+        self.event
+    }
+
+    /// Returns the path the session requested, without its query.
+    pub fn path(&self) -> &str {
+        self.request.path()
+    }
+
+    /// Returns a query parameter of the session's request.
+    pub fn query(&self, key: &str) -> Option<&str> {
+        self.request.query(key)
+    }
+
+    /// Returns the token the peer presented, if any.
+    ///
+    /// See [`SessionRequest::token`].
+    pub fn token(&self) -> Option<&str> {
+        self.request.token()
+    }
+}
+
+/// Why a node asks its policy, as in moq-auth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// A session opens.
+    Connect,
+    /// A live session is checked again.
+    ///
+    /// Its authorization expired or is due for revalidation, or the policy
+    /// reported a change.
+    Revalidate,
+}
+
+/// A policy's answer: the session's rights, or a rejection that closes it.
+pub type Decision = Result<Authorization, Rejection>;
+
+/// What an admitted session may do, and until when.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Authorization {
+    /// What the peer may subscribe to and publish.
+    pub grant: Grant,
+    /// Which forwarded routes cross the link.
+    pub transit: Transit,
+    /// When the node decides again, such as when a token expires.
+    pub expires: Option<SystemTime>,
+    /// How often, at the longest, the node decides again.
+    pub revalidate: Option<Duration>,
+}
+
+impl Authorization {
+    /// Returns an authorization that allows what either this one or `other` allows.
+    ///
+    /// The grants and the transit patterns are unions, and the peer forwards
+    /// if either says so. The earliest expiry and the shortest revalidation
+    /// interval win, so the node decides again as soon as either half could
+    /// change.
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            grant: self.grant.union(&other.grant),
+            transit: self.transit.union(&other.transit),
+            expires: earliest(self.expires, other.expires),
+            revalidate: earliest(self.revalidate, other.revalidate),
+        }
+    }
+}
+
+impl From<Grant> for Authorization {
+    fn from(grant: Grant) -> Self {
+        Self {
+            grant,
+            ..Default::default()
+        }
+    }
+}
+
+/// Returns the smaller of two optional values, where `None` is no bound.
+fn earliest<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Which forwarded routes cross a link.
+///
+/// The default forwards nothing, which is all a node supports today: a node
+/// refuses a session whose authorization asks for more.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Transit {
+    /// The forwarded routes the peer may read: egress.
+    pub forward_to: Patterns,
+    /// The peer's routes this node may forward to other links: ingress.
+    pub forward_from: Patterns,
+    /// Whether the peer forwards, so it is offered no publication for a set of peers.
+    pub peer_forwards: bool,
+}
+
+impl Transit {
+    /// Reports whether the transit forwards nothing, as the default does.
+    pub fn is_none(&self) -> bool {
+        self.forward_to.is_empty() && self.forward_from.is_empty() && !self.peer_forwards
+    }
+
+    /// Returns a transit that allows what either this one or `other` allows.
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        let mut union = self.clone();
+        union.forward_to.extend(other.forward_to.iter().cloned());
+        union
+            .forward_from
+            .extend(other.forward_from.iter().cloned());
+        union.peer_forwards |= other.peer_forwards;
+        union
+    }
+}
+
+/// Why a policy rejected a session.
+///
+/// The node closes the session with [`code`](Self::code), which the peer
+/// sees, and logs [`reason`](Self::reason), which stays local.
+#[derive(Debug, Clone)]
+pub struct Rejection {
+    code: moq_net::Error,
+    reason: String,
+}
+
+impl Rejection {
+    /// Creates a rejection that closes the session with [`moq_net::Error::Unauthorized`].
+    #[must_use]
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            code: moq_net::Error::Unauthorized,
+            reason: reason.into(),
+        }
+    }
+
+    /// Returns this rejection with another close code, such as [`moq_net::Error::App`].
+    #[must_use]
+    pub fn with_code(mut self, code: moq_net::Error) -> Self {
+        self.code = code;
+        self
+    }
+
+    /// Returns the code the session closes with.
+    pub fn code(&self) -> &moq_net::Error {
+        &self.code
+    }
+
+    /// Returns why the policy rejected the session.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+impl fmt::Display for Rejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "rejected: {} ({})", self.reason, self.code)
+    }
+}
+
+impl std::error::Error for Rejection {}
+
+/// Decides whether a peer may hold a session, and with which rights.
+///
+/// Implement it with `async fn decide`. A node erases the type as an
+/// `Arc<dyn DynPolicy<P>>`, which implements this trait too.
+pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
+    /// Decides whether the peer may hold a session, and with which rights.
+    fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send;
+
+    /// Returns a stream that yields when earlier decisions may be stale.
+    ///
+    /// A node calls it once and keeps the stream. On each item it decides
+    /// again for every peer with a live session. `None`, the default, never
+    /// yields.
+    fn changes(&self) -> Option<BoxStream<()>> {
+        None
+    }
+
+    /// Returns a policy that admits what this one or `other` admits.
+    ///
+    /// When both admit, the authorizations are joined with
+    /// [`Authorization::union`]. When both reject, this policy's rejection
+    /// wins.
+    ///
+    /// [`Open`] and [`Closed`] are policies for every peer type, so a union
+    /// of two of them names the peer type:
+    /// `Policy::<EndpointId>::union(Open(grant), Closed)`.
+    fn union<B: Policy<P>>(self, other: B) -> Union<Self, B>
+    where
+        Self: Sized,
+    {
+        Union { a: self, b: other }
+    }
+
+    /// Returns a policy that rejects the peers `admit` refuses, and asks this one otherwise.
+    ///
+    /// The predicate is not watched: when the state it reads changes, the
+    /// node has to be told to decide again.
+    fn filter<F>(self, admit: F) -> Filter<Self, F>
+    where
+        Self: Sized,
+        F: Fn(&PeerRequest<P>) -> bool + Send + Sync + 'static,
+    {
+        Filter { inner: self, admit }
+    }
+}
+
+/// A [`Policy`] with its type erased, as a node stores it.
+///
+/// Every [`Policy`] implements it, and `Arc<dyn DynPolicy<P>>` implements
+/// [`Policy`]. Implement [`Policy`], not this trait.
+pub trait DynPolicy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
+    /// Decides as [`Policy::decide`] does, with a boxed future.
+    fn decide<'a>(
+        &'a self,
+        request: &'a PeerRequest<P>,
+    ) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>>;
+
+    /// Returns the change stream, as [`Policy::changes`] does.
+    fn changes(&self) -> Option<BoxStream<()>>;
+}
+
+impl<P: PeerId, T: Policy<P>> DynPolicy<P> for T {
+    fn decide<'a>(
+        &'a self,
+        request: &'a PeerRequest<P>,
+    ) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
+        Box::pin(Policy::decide(self, request))
+    }
+
+    fn changes(&self) -> Option<BoxStream<()>> {
+        Policy::changes(self)
+    }
+}
+
+impl<P: PeerId> Policy<P> for Arc<dyn DynPolicy<P>> {
+    async fn decide(&self, request: &PeerRequest<P>) -> Decision {
+        DynPolicy::decide(&**self, request).await
+    }
+
+    fn changes(&self) -> Option<BoxStream<()>> {
+        DynPolicy::changes(&**self)
+    }
+}
+
+/// A policy that admits everyone with one grant.
+///
+/// `Open(Grant::subscribe_only())` is a node's default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Open(pub Grant);
+
+impl<P: PeerId> Policy<P> for Open {
+    fn decide(&self, _request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send {
+        future::ready(Ok(self.0.clone().into()))
+    }
+}
+
+/// A policy that rejects everyone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Closed;
+
+impl<P: PeerId> Policy<P> for Closed {
+    fn decide(&self, _request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send {
+        future::ready(Err(Rejection::new("closed")))
+    }
+}
+
+/// Returns a policy that decides with the synchronous closure `decide`.
+///
+/// # Examples
+///
+/// ```
+/// use moq_ext_access::{
+///     Grant,
+///     policy::{self, PeerRequest, Rejection},
+/// };
+///
+/// let policy = policy::from_fn(|request: &PeerRequest<String>| {
+///     if request.token() == Some("secret") {
+///         Ok(Grant::everything().into())
+///     } else {
+///         Err(Rejection::new("no valid token"))
+///     }
+/// });
+/// # drop(policy);
+/// ```
+pub fn from_fn<P, F>(decide: F) -> FromFn<F>
+where
+    P: PeerId,
+    F: Fn(&PeerRequest<P>) -> Decision + Send + Sync + 'static,
+{
+    FromFn(decide)
+}
+
+/// A policy that decides with a closure, built by [`from_fn`].
+#[derive(Clone)]
+pub struct FromFn<F>(F);
+
+impl<F> fmt::Debug for FromFn<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("FromFn(..)")
+    }
+}
+
+impl<P, F> Policy<P> for FromFn<F>
+where
+    P: PeerId,
+    F: Fn(&PeerRequest<P>) -> Decision + Send + Sync + 'static,
+{
+    fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send {
+        future::ready((self.0)(request))
+    }
+}
+
+/// A policy that admits what either of two policies admits, built by [`Policy::union`].
+#[derive(Debug, Clone)]
+pub struct Union<A, B> {
+    a: A,
+    b: B,
+}
+
+impl<P: PeerId, A: Policy<P>, B: Policy<P>> Policy<P> for Union<A, B> {
+    async fn decide(&self, request: &PeerRequest<P>) -> Decision {
+        let (a, b) = future::zip(self.a.decide(request), self.b.decide(request)).await;
+        match (a, b) {
+            (Ok(a), Ok(b)) => Ok(a.union(&b)),
+            (Ok(admitted), Err(_)) | (Err(_), Ok(admitted)) => Ok(admitted),
+            (Err(rejection), Err(_)) => Err(rejection),
+        }
+    }
+
+    fn changes(&self) -> Option<BoxStream<()>> {
+        match (self.a.changes(), self.b.changes()) {
+            (Some(a), Some(b)) => Some(Box::pin(MergeBounded::from_iter([a, b]))),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+/// A policy that rejects the peers a predicate refuses, built by [`Policy::filter`].
+#[derive(Clone)]
+pub struct Filter<T, F> {
+    inner: T,
+    admit: F,
+}
+
+impl<T: fmt::Debug, F> fmt::Debug for Filter<T, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Filter")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<P, T, F> Policy<P> for Filter<T, F>
+where
+    P: PeerId,
+    T: Policy<P>,
+    F: Fn(&PeerRequest<P>) -> bool + Send + Sync + 'static,
+{
+    async fn decide(&self, request: &PeerRequest<P>) -> Decision {
+        if !(self.admit)(request) {
+            return Err(Rejection::new("filtered"));
+        }
+        self.inner.decide(request).await
+    }
+
+    fn changes(&self) -> Option<BoxStream<()>> {
+        self.inner.changes()
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -7,6 +7,7 @@
 //! - [`visible_paths`]: the paths a link may see, given its [`LinkRole`]. A
 //!   node hands them to moq as the subscribe half of the link's grant, and moq
 //!   enforces it on the live session.
+//! - [`policy`]: who may hold a session, and with which [`Grant`].
 //!
 //! The peer id is any type that implements [`PeerId`], such as an iroh
 //! endpoint id.
@@ -22,6 +23,8 @@ use std::{
 
 use moq_net::{Pattern, Patterns};
 use n0_error::stack_error;
+
+pub mod policy;
 
 /// An error returned when no pattern names exactly one path.
 #[stack_error(derive)]
@@ -42,8 +45,8 @@ impl<T: Clone + Eq + Ord + Hash + Debug + Display + Send + Sync + 'static> PeerI
 ///
 /// The shape of a moq-auth grant, so a token means the same thing to a node
 /// and to a moq relay. Patterns are moq's: `*` matches one segment, `**` a
-/// subtree, anything else itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// subtree, anything else itself. The default grant allows nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grant {
     /// The paths the peer may subscribe to.
     pub subscribe: Patterns,
