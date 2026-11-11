@@ -23,7 +23,7 @@
 //!     relay: iroh_live_relay::Config,
 //! }
 //!
-//! # async fn main_() -> anyhow::Result<()> {
+//! # async fn main_() -> Result<(), iroh_live_relay::Error> {
 //! rustls::crypto::aws_lc_rs::default_provider()
 //!     .install_default()
 //!     .expect("no crypto provider installed yet");
@@ -42,7 +42,6 @@
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use anyhow::Context;
 use axum::{extract::Path, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
@@ -53,7 +52,7 @@ use moq_auth::{KeySet, lease};
 use moq_ext_access::policy::{JwtVerifier, Verify};
 use moq_net::Pattern;
 use moq_relay::auth::Admissions;
-use n0_error::e;
+use n0_error::{AnyError, e};
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, info, warn};
 
@@ -121,9 +120,12 @@ pub struct Config {
 ///
 /// # Errors
 ///
-/// Fails if the relay's identity cannot be loaded, an endpoint or listener
-/// cannot bind, the cluster cannot start, or a listener fails.
-pub async fn run(config: Config) -> anyhow::Result<()> {
+/// Fails with [`Error::NoDataDir`] or [`Error::Identity`] if the relay's
+/// identity cannot be loaded, [`Error::Bind`] if the iroh endpoint cannot
+/// bind, [`Error::Keys`] if the JWT keys cannot be read, and
+/// [`Error::Relay`] if the moq relay cannot start or one of its listeners
+/// fails.
+pub async fn run(config: Config) -> Result<(), Error> {
     // mDNS finds a ticket's publisher on this machine or LAN at once, where
     // pkarr and DNS take seconds and need internet. `Announce`, since clients
     // reach the relay by endpoint id.
@@ -133,7 +135,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         ..EndpointConfig::default()
     }
     .bind()
-    .await?;
+    .await
+    .map_err(|source| {
+        e!(Error::Bind {
+            source: Arc::new(source)
+        })
+    })?;
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
@@ -150,7 +157,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // The viewer serves `/` and every other path, which the WebSocket
     // fallback would take.
     relay_config.web.ws = false;
-    let mut relay = moq_relay::Relay::load(relay_config).await?;
+    let mut relay = moq_relay::Relay::load(relay_config)
+        .await
+        .map_err(relay_error)?;
     let pulls = Arc::new(pull::PullState::new(
         iroh_endpoint.clone(),
         relay.cluster().clone(),
@@ -178,11 +187,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .with_policy(iroh_policy)
         .router(iroh_endpoint);
 
-    let quic_port = relay.quic_addr()?.port();
+    let quic_port = relay.quic_addr().map_err(relay_error)?.port();
     let http_port = relay
         .web_addrs()
         .http
-        .context("the http listener is not bound")?
+        .ok_or_else(|| relay_error(anyhow::anyhow!("the HTTP listener is not bound")))?
         .port();
     // The e2e test fixtures parse this line.
     println!("http port: {http_port}");
@@ -205,11 +214,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             "/{*path}",
             get(|Path(path): Path<String>| async move { serve_embedded_file(&path) }),
         );
-    let result = relay.with_web(routes).run().await;
+    let result = relay.with_web(routes).run().await.map_err(relay_error);
     if let Err(err) = iroh_router.shutdown().await {
         warn!(error = %err, "the iroh router did not shut down cleanly");
     }
     result
+}
+
+/// Wraps an error of moq-relay, which reports anyhow errors.
+fn relay_error(err: anyhow::Error) -> Error {
+    e!(Error::Relay {
+        source: Arc::new(AnyError::from_anyhow(err)),
+    })
 }
 
 /// Answers the relay's admissions until the relay drops its auth.
@@ -318,12 +334,16 @@ fn browser_session_grant(
 }
 
 /// Loads the JWT keys from a file that holds a JWK set or a single JWK.
-fn load_keys(path: &std::path::Path) -> anyhow::Result<KeySet> {
+fn load_keys(path: &std::path::Path) -> Result<KeySet, Error> {
     if let Ok(keys) = KeySet::from_file(path) {
         return Ok(keys);
     }
-    let key = moq_auth::Key::from_file(path)
-        .with_context(|| format!("reading the JWT keys from {}", path.display()))?;
+    let key = moq_auth::Key::from_file(path).map_err(|source| {
+        e!(Error::Keys {
+            path: path.to_owned(),
+            source: Arc::new(source),
+        })
+    })?;
     Ok(KeySet {
         keys: vec![Arc::new(key)],
     })

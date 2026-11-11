@@ -4,9 +4,9 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use iroh::EndpointId;
 use moq_net::Path;
-use n0_error::stack_error;
+use n0_error::{AnyError, stack_error};
 
-/// An error from pulling a broadcast or loading the relay's identity.
+/// An error from running the relay, pulling a broadcast, or loading a key.
 ///
 /// It is cheap to clone, so every session that waits on one pull gets the
 /// same failure. The node's errors sit in a [`Box`], since they are large.
@@ -56,5 +56,24 @@ pub enum Error {
         path: PathBuf,
         #[error(source, std_err)]
         source: Arc<std::io::Error>,
+    },
+    /// The relay's iroh endpoint could not bind.
+    #[error("failed to bind the relay's iroh endpoint")]
+    Bind {
+        #[error(source, std_err)]
+        source: Arc<iroh_live::Error>,
+    },
+    /// The JWT keys could not be read.
+    #[error("cannot read the JWT keys from {}", path.display())]
+    Keys {
+        path: PathBuf,
+        #[error(source, std_err)]
+        source: Arc<moq_auth::Error>,
+    },
+    /// The moq relay failed to start or stopped with an error.
+    #[error("the moq relay failed")]
+    Relay {
+        #[error(source, std_err)]
+        source: Arc<AnyError>,
     },
 }

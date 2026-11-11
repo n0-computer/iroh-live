@@ -26,5 +26,5 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    iroh_live_relay::run(cli.relay).await
+    Ok(iroh_live_relay::run(cli.relay).await?)
 }
