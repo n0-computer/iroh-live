@@ -6,7 +6,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use moq_net::{Path, broadcast, origin::RouteOptions};
+use moq_net::{Path, Pattern, broadcast, origin::RouteOptions};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
@@ -304,9 +304,12 @@ where
     Ok((publication, filled))
 }
 
-/// Refuses a path that is empty or holds a segment only a pattern can spell.
+/// Refuses a path that is empty or that no literal pattern names.
+///
+/// moq patterns have no escape for `*`, so a segment that holds one cannot
+/// be granted, and neither can a path with more segments than a pattern takes.
 pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
-    if path.is_empty() || path.parts().any(|part| part == "*" || part == "**") {
+    if path.is_empty() || Pattern::literal(path.as_str()).is_err() {
         return Err(e!(Error::InvalidPath {
             path: path.as_str().to_owned()
         }));
@@ -331,6 +334,10 @@ mod tests {
             Err(Error::InvalidPath { .. })
         ));
         assert!(matches!(check("live/**"), Err(Error::InvalidPath { .. })));
+        assert!(matches!(
+            check("live/a*b/cam"),
+            Err(Error::InvalidPath { .. })
+        ));
     }
 
     /// A peers task that `set_audience` replaced cannot write its old set back.

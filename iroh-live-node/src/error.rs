@@ -57,7 +57,7 @@ pub enum Error {
     Duplicate { path: Path },
     /// The path cannot be published or subscribed.
     ///
-    /// It is empty, or holds a segment only a pattern can spell.
+    /// It is empty, holds a `*`, or has more segments than a pattern takes.
     #[error("invalid path {path:?}")]
     InvalidPath { path: String },
     /// The session's grant does not cover the path.

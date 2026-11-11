@@ -209,7 +209,9 @@ impl State {
             return base.clone();
         };
         paths.keys().fold(base.clone(), |grant, path| {
-            grant.with_publish_path(path.as_str())
+            grant
+                .with_publish_path(path.as_str())
+                .expect("a claimed path passed check_path, so a literal pattern names it")
         })
     }
 

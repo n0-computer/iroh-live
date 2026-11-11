@@ -13,5 +13,6 @@ workspace = true
 
 [dependencies]
 moq-net = { workspace = true }
+n0-error = "1"
 n0-watcher = "1"
 url = "2.5.8"

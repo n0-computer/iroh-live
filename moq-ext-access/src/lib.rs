@@ -21,6 +21,17 @@ use std::{
 };
 
 use moq_net::{Pattern, Patterns};
+use n0_error::stack_error;
+
+/// An error returned when no pattern names exactly one path.
+#[stack_error(derive)]
+#[error("no pattern names exactly the path {path:?}")]
+pub struct InvalidPath {
+    /// The path that was given.
+    pub path: String,
+    #[error(source, std_err)]
+    source: moq_net::InvalidPattern,
+}
 
 /// A peer's identity: any small, comparable, printable id.
 pub trait PeerId: Clone + Eq + Ord + Hash + Debug + Display + Send + Sync + 'static {}
@@ -81,12 +92,19 @@ impl Grant {
     }
 
     /// Returns this grant with the literal `path` added to what the peer may publish.
-    #[must_use]
-    pub fn with_publish_path(mut self, path: &str) -> Self {
-        if let Ok(pattern) = Pattern::literal(path) {
-            self.publish.insert(pattern);
-        }
-        self
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`InvalidPath`] if no pattern names exactly `path`: a segment
+    /// holds `*`, or the path has too many segments. moq patterns have no
+    /// escape for `*`.
+    pub fn with_publish_path(mut self, path: &str) -> Result<Self, InvalidPath> {
+        let pattern = Pattern::literal(path).map_err(|source| InvalidPath {
+            path: path.to_owned(),
+            source,
+        })?;
+        self.publish.insert(pattern);
+        Ok(self)
     }
 
     /// Returns a grant that allows what either this grant or `other` allows.
@@ -392,10 +410,22 @@ mod tests {
     }
 
     #[test]
+    fn a_publish_path_with_a_wildcard_is_an_error() {
+        for path in ["a/*/b", "a/**", "a/b*c"] {
+            let err = Grant::nothing()
+                .with_publish_path(path)
+                .expect_err("a path with a wildcard");
+            assert_eq!(err.path, path);
+        }
+    }
+
+    #[test]
     fn nothing_and_union_compose() {
         let nothing = Grant::nothing();
         assert!(!nothing.allows_publish("a/b") && !nothing.allows_subscribe("a/b"));
-        let one = Grant::nothing().with_publish_path("a/b");
+        let one = Grant::nothing()
+            .with_publish_path("a/b")
+            .expect("a literal path");
         assert!(one.allows_publish("a/b") && !one.allows_publish("a/b/c"));
         let both = Grant::subscribe_only().union(&one);
         assert!(both.allows_publish("a/b") && both.allows_subscribe("x"));

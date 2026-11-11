@@ -5520,6 +5520,7 @@ name = "moq-ext-access"
 version = "0.1.0"
 dependencies = [
  "moq-net",
+ "n0-error",
  "n0-watcher",
  "url",
 ]
