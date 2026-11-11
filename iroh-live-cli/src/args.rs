@@ -1,7 +1,4 @@
 //! Command-line arguments.
-//!
-//! [`crate::source`] opens the sources these name, and [`crate::rendition`]
-//! parses `--renditions`.
 
 use std::path::PathBuf;
 
@@ -29,8 +26,7 @@ pub struct TransportArgs {
     /// Also push the broadcast to this relay endpoint.
     ///
     /// Use a relay that keeps each publisher to its own paths, as
-    /// iroh-live-relay does. On a relay where anyone may publish anywhere, a
-    /// viewer that reads through it can be served a forgery.
+    /// iroh-live-relay does. Elsewhere a viewer can be served a forgery.
     #[arg(long)]
     pub relay: Option<EndpointId>,
 
@@ -45,9 +41,8 @@ pub struct TransportArgs {
 
 /// The default keyframe interval, in seconds.
 ///
-/// A viewer waits up to this long for a first picture, and a rendition switch
-/// waits as long. Two seconds is upstream's default. The encoder keeps to its
-/// target bitrate, so a shorter interval costs picture quality, not bytes.
+/// Two seconds is upstream's default. The encoder keeps to its target
+/// bitrate, so a shorter interval costs picture quality, not bytes.
 pub const DEFAULT_KEYFRAME_SECONDS: f64 = 2.0;
 
 /// The `--video` specifier when none is given.
@@ -78,8 +73,6 @@ pub struct CaptureArgs {
     pub audio: AudioSourceSpec,
 
     /// Publish the test pattern and tone, as `--video test --audio test`.
-    ///
-    /// The marker in the picture is lit while each beep sounds.
     #[arg(long)]
     pub test_source: bool,
 
@@ -289,8 +282,6 @@ pub enum LatencyArg {
     #[default]
     Balanced,
     /// Rides out a stuttering link, with more delay.
-    ///
-    /// For watching over Wi-Fi or mobile.
     Smooth,
 }
 
@@ -341,9 +332,7 @@ pub struct CallArgs {
 /// Arguments for `irl room`.
 #[derive(Args, Debug)]
 pub struct RoomArgs {
-    /// Ticket another participant's `irl room` printed.
-    ///
-    /// Omit to open a new room.
+    /// Ticket another participant's `irl room` printed. Omit to open a new room.
     pub ticket: Option<RoomTicket>,
 
     #[command(flatten)]
@@ -463,8 +452,6 @@ pub struct RecordArgs {
     pub output: PathBuf,
 
     /// Container format, overriding the `--output` extension.
-    ///
-    /// `fmp4` is fragmented MP4.
     #[arg(long, value_parser = record_format())]
     pub format: Option<RecordFormat>,
 

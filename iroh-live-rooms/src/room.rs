@@ -68,8 +68,6 @@ pub(crate) struct Inner {
     /// Set once the actor has stopped.
     pub(crate) done: Watchable<bool>,
     /// Asks the actor to resubscribe to its gossip map, and hears back once it did.
-    ///
-    /// Only the `test-util` feature's hook sends on it.
     #[cfg(feature = "test-util")]
     #[debug(skip)]
     pub(crate) restart_map: mpsc::Sender<oneshot::Sender<()>>,
@@ -85,9 +83,8 @@ pub(crate) struct Local {
 impl Room {
     /// Ends the room's gossip map subscription, as smol-kv does with one that falls behind.
     ///
-    /// Returns once the room has resubscribed. It then resyncs its members
-    /// from the replay. Only for tests of that path, which no test can reach
-    /// otherwise.
+    /// Returns once the room has resubscribed. Only for tests of that path,
+    /// which no test can reach otherwise.
     #[cfg(feature = "test-util")]
     #[doc(hidden)]
     pub async fn restart_map_subscription(&self) {
@@ -111,13 +108,10 @@ impl Room {
 
     /// Publishes a broadcast into the room as `name`, to its members only, and returns it.
     ///
-    /// The path is `rooms/<topic>/<this member>/<name>`. The broadcast is
-    /// created in the node's route table, and `B` fills it, built from its
-    /// `broadcast::Producer`: a `LocalBroadcast`, or the producer itself.
-    /// Members read it with nothing copied in between, and a member that
-    /// leaves loses it at once. The broadcast stays in this member's
-    /// announcement until it closes, [`unpublish`](Self::unpublish) takes it
-    /// out, or the room is left.
+    /// The path is `rooms/<topic>/<this member>/<name>`. `B` is built from the
+    /// route table's `broadcast::Producer`: a `LocalBroadcast`, or the producer
+    /// itself. The broadcast stays announced until it closes,
+    /// [`unpublish`](Self::unpublish) takes it out, or the room is left.
     ///
     /// # Errors
     ///
@@ -135,9 +129,8 @@ impl Room {
 
     /// Takes `name` out of the room, if this member publishes it.
     ///
-    /// Members lose the path, and what they read there ends. The broadcast
-    /// stays open for whoever holds it, unannounced. Returns whether `name`
-    /// was published.
+    /// The broadcast stays open for whoever holds it, unannounced. Returns
+    /// whether `name` was published.
     pub fn unpublish(&self, name: &str) -> bool {
         let publication = self
             .inner
@@ -210,17 +203,16 @@ impl Room {
 
     /// Resolves `peer`'s broadcast `name` over the session with that member.
     ///
-    /// Dials the member if needed, and reads what the member itself announces
-    /// on that session, so no other peer can stand in for it. Waits until the
-    /// member announces `name` to this node, so bound the wait if the member
-    /// may never publish it.
+    /// Reads what the member itself announces on that session, so no other
+    /// peer can stand in for it. Waits until the member announces `name`, so
+    /// bound the wait if the member may never publish it.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::Left`] once the room was left, and with
-    /// [`Error::Node`] if the member cannot be dialed, if the node's
-    /// policy does not let the member publish under its [`RoomsLayout`] scope, or if
-    /// the session ends before the member announces `name`.
+    /// [`Error::Node`] if the member cannot be dialed, the node's policy does
+    /// not grant the member its [`RoomsLayout`] scope, or the session ends
+    /// before the member announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
         if self.inner.done.get() {
             return Err(e!(Error::Left));
@@ -302,10 +294,9 @@ impl Inner {
 
 /// The path layout of room broadcasts: `rooms/<topic>/<member>/<name>`.
 ///
-/// A member publishes under `rooms/*/<member>/**`, and owns the room paths
-/// that name it in their canonical spelling. A node that runs rooms lets every
-/// peer publish there, as `LiveLayout::policy(&[Arc::new(RoomsLayout)])` in
-/// iroh-live does.
+/// A member publishes under `rooms/*/<member>/**`. A node that runs rooms
+/// lets every peer publish there, as
+/// `LiveLayout::policy(&[Arc::new(RoomsLayout)])` in iroh-live does.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoomsLayout;
 
@@ -333,9 +324,8 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
 
 /// Returns the topic, publisher and name of a room broadcast's path.
 ///
-/// The inverse of the room path layout, `rooms/<topic>/<publisher>/<name>`.
 /// Returns `None` for any other path, and for a topic or publisher that is
-/// not spelled the way the layout spells it.
+/// not spelled canonically.
 fn parse_room_path(path: &str) -> Option<(TopicId, EndpointId, &str)> {
     let (topic_str, rest) = path.strip_prefix("rooms/")?.split_once('/')?;
     let (publisher_str, name) = rest.split_once('/')?;

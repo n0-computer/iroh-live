@@ -1,7 +1,4 @@
 //! Binding an endpoint: [`MoqPreset`] plus a secret key and mDNS.
-//!
-//! [`EndpointConfig`] adds what a preset cannot. [`secret_key_file`] keeps a
-//! key across restarts.
 
 use std::{io::Write, path::Path};
 
@@ -18,13 +15,9 @@ use crate::Error;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mdns {
     /// Publishes this endpoint's addresses and resolves others'.
-    ///
-    /// For a node others dial.
     #[default]
     Announce,
     /// Resolves others without publishing this endpoint.
-    ///
-    /// For a node nobody dials.
     Lookup,
     /// Uses no mDNS at all.
     Off,
@@ -39,9 +32,8 @@ pub struct EndpointConfig {
     pub mdns: Mdns,
     /// The congestion controller of every connection, BBR3 by default.
     ///
-    /// One dial can use another with
-    /// [`ConnectOptions::congestion`](crate::node::ConnectOptions::congestion),
-    /// without a new endpoint.
+    /// One dial can override it with
+    /// [`ConnectOptions::congestion`](crate::node::ConnectOptions::congestion).
     pub congestion: Congestion,
 }
 
@@ -68,12 +60,11 @@ impl EndpointConfig {
 
     /// Applies this config to `builder` and returns it.
     ///
-    /// This sets [`MoqPreset`], the key, mDNS and the congestion controller.
-    /// It is for a caller that builds its own endpoint and sets what this config
-    /// does not, such as the relay mode or another address lookup. The preset
-    /// sets the relay mode, the address lookups and the QUIC transport config,
-    /// so make your own settings after this call, not before. A transport
-    /// config set afterwards replaces the one that carries
+    /// This sets [`MoqPreset`], the key, mDNS and the congestion controller,
+    /// for a caller that builds its own endpoint. The preset sets the relay
+    /// mode, the address lookups and the QUIC transport config, so make your
+    /// own settings after this call, not before. A transport config set
+    /// afterwards replaces the one that carries
     /// [`congestion`](Self::congestion).
     ///
     /// If mDNS cannot start, as in a sandbox or on a phone without a multicast

@@ -3,25 +3,20 @@
 //! The relay's [`Node`] uses the cluster origin as its route table. When a
 //! session names a valid [`BroadcastTicket`], the node subscribes to the
 //! ticket's broadcast, and the publisher's session announces it straight into
-//! the cluster at its own path. Nothing is copied: cluster readers read the
-//! session's broadcast. The node's base grant is nothing, and each pull holds
-//! a [`PathClaim`] that lets the publisher announce exactly the pulled path,
-//! so its other broadcasts stay out. The relay pulls only a path the ticket's
-//! peer owns: its canonical `live/<peer>/<name>` path, or a room path with the
-//! peer as member, as the node's [`Layout`](iroh_live::layout::Layout) says.
-//! Anything else, such as a path in a scheme of the publisher's own, is
-//! refused with [`NotOwner`](iroh_live_node::Error::NotOwner). A session that named the
-//! ticket reads it under the name it asked for through a mount, see
-//! [`mounted`].
+//! the cluster at its own path. The node's base grant is nothing, and each
+//! pull holds a [`PathClaim`] that lets the publisher announce exactly the
+//! pulled path, so its other broadcasts stay out. The relay pulls only a path
+//! the ticket's peer owns: its canonical `live/<peer>/<name>` path, or a room
+//! path with the peer as member. Anything else is refused with
+//! [`NotOwner`](iroh_live_node::Error::NotOwner). A session that named the
+//! ticket reads it under the name it asked for through [`mounted`].
 //!
 //! A pull retires once no local session that named the ticket has held its
 //! [`PullGuard`] for the linger window. Its path then leaves the publisher's
 //! grant, which takes the broadcast out of the cluster, and when the last pull
 //! of a publisher retires, the relay closes its session with that publisher.
 //! An idle timer on the connection cannot stand in for the guards, since
-//! iroh's keep-alives move its counters too. A reader that reaches the
-//! broadcast at its own path without naming the ticket holds no guard, and
-//! loses it when the pull retires.
+//! iroh's keep-alives move its counters too.
 
 use std::{
     collections::HashMap,
@@ -41,8 +36,6 @@ use tracing::{debug, info, warn};
 use crate::Error;
 
 /// Default for [`PullState::with_linger`].
-///
-/// Long enough for a page reload to reuse the connection.
 const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 
 /// How long to wait for the publisher's broadcast to resolve.
@@ -60,19 +53,15 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(8);
 const MAX_RESOLVES: u32 = 5;
 
 /// Returns the layout whose paths a pull may claim: `live/` and room paths.
-///
-/// A path is a peer's if it is exactly the canonical `live/<peer>/<name>`
-/// path of that peer, or a room path `rooms/<topic>/<member>/<name>` whose
-/// member is that peer. Any other path has no owner the relay can verify.
 fn pull_layout() -> (LiveLayout, RoomsLayout) {
     (LiveLayout::default(), RoomsLayout)
 }
 
 /// Returns `cluster` with `requested` reading the broadcast its ticket names.
 ///
-/// Hand it to the session that named the ticket: under it, the session finds
-/// the pulled broadcast at `requested`, which moq resolves at the publisher's
-/// path. `None` if `requested` is no ticket, or the origin refuses the mount.
+/// Hand it to the session that named the ticket, which then finds the pulled
+/// broadcast at `requested`. `None` if `requested` is no ticket, or the origin
+/// refuses the mount.
 pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
     let ticket = requested.parse::<BroadcastTicket>().ok()?;
     match cluster.origin.mount(requested, ticket.path()) {
@@ -126,7 +115,7 @@ pub struct PullState {
 /// A task holds this, so it never keeps its own set alive.
 #[derive(Clone, derive_more::Debug)]
 struct Pulls {
-    /// The node that dials publishers, with the cluster origin as its route table.
+    /// The node that dials publishers.
     node: Node,
     /// How long a pull without sessions stays connected.
     linger: Duration,
@@ -136,8 +125,6 @@ struct Pulls {
     /// is still open.
     pulls: Arc<Mutex<HashMap<String, Arc<Pull>>>>,
     /// How many pulls, live or dialing, each publisher has.
-    ///
-    /// The last one to go closes the session with the publisher.
     publishers: Publishers,
 }
 
@@ -193,11 +180,6 @@ impl Drop for PullGuard {
 
 impl PullState {
     /// Creates pull state that dials over `endpoint` into `cluster`.
-    ///
-    /// The node writes what publishers announce into the cluster origin
-    /// directly. Its base grant is nothing, so a publisher announces only the
-    /// paths a pull claims, and only if it owns them in the `live/` or the
-    /// rooms layout.
     #[must_use]
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         let config = NodeConfig {
@@ -327,8 +309,6 @@ impl PullState {
 
 impl Pulls {
     /// Resolves the ticket's broadcast, and returns it with the publisher's claim.
-    ///
-    /// The caller holds the pull with [`hold`](Self::hold).
     async fn establish(
         &self,
         ticket: &BroadcastTicket,
@@ -388,11 +368,9 @@ impl Pulls {
     /// Holds the session with the publisher until nothing wants the pull.
     ///
     /// When no route serves the publisher's broadcast any more while sessions
-    /// still want it (the session dropped, say), the pull resolves it again,
-    /// which redials. A publisher that re-publishes over a live session needs
-    /// nothing: its session announces the new broadcast into the cluster. The
-    /// pull retires once nobody wants it, or once resolving fails
-    /// [`MAX_RESOLVES`] times in a row.
+    /// still want it, the pull resolves it again, which redials. The pull
+    /// retires once nobody wants it, or once resolving fails [`MAX_RESOLVES`]
+    /// times in a row.
     async fn hold(
         &self,
         ticket: BroadcastTicket,
@@ -427,8 +405,7 @@ impl Pulls {
                 }
             }
         }
-        // Closes the publisher's session if this was its last pull, which
-        // takes the broadcast out of the cluster.
+        // Closes the publisher's session if this was its last pull.
         drop(publisher);
     }
 
@@ -458,9 +435,8 @@ impl Pulls {
 
     /// Waits until no session has claimed the pull for the linger window.
     ///
-    /// Then it retires the pull's entry. The final check runs under the lock
-    /// that [`Self::pull`] claims under, so a pull claimed during the linger
-    /// keeps running.
+    /// The final check runs under the lock that [`Self::pull`] claims under,
+    /// so a pull claimed during the linger keeps running.
     async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
         loop {
             if pull.claimed() {
@@ -505,10 +481,8 @@ type Publishers = Arc<Mutex<HashMap<EndpointId, usize>>>;
 
 /// One pull's share in the session with a publisher, and the claim on its path.
 ///
-/// The claim lets the publisher announce the pulled path into the cluster.
-/// Dropping it takes the path out again, and so out of the cluster. Dropping
-/// the last share of a publisher closes every session the relay's node has
-/// with it.
+/// Dropping it takes the path out of the cluster. Dropping the last share of
+/// a publisher closes every session the relay's node has with it.
 struct PublisherClaim {
     publisher: EndpointId,
     /// The count this claim is part of, shared with [`Pulls`].

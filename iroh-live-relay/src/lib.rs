@@ -1,19 +1,16 @@
 //! A relay that serves iroh-live broadcasts to browsers.
 //!
 //! Browsers connect over WebTransport, iroh clients over iroh. Anyone may
-//! connect and subscribe to anything. An iroh client may publish only at the
-//! paths that name its endpoint id (see [`relay_policy`]), and a browser only
-//! at names of one segment. A session that names a broadcast ticket gets that
-//! broadcast pulled from its publisher (see [`pull`]).
+//! subscribe to anything. An iroh client may publish only at paths that name
+//! its endpoint id ([`relay_policy`]), and a browser only at names of one
+//! segment. A session that names a broadcast ticket gets it pulled, see
+//! [`pull`].
 //!
-//! With `--auth-key`, a browser or an iroh client that presents a JWT signed
-//! by one of the keys gets what the token grants instead, and one with an
-//! invalid token is refused. `--auth-url` and the `--auth-public` flags hand
-//! browser sessions to moq-relay's own auth instead, which then also decides
-//! the sessions that name a ticket, without a pull.
+//! With `--auth-key`, a session that presents a valid JWT gets what the token
+//! grants instead. `--auth-url` and the `--auth-public` flags hand browser
+//! sessions to moq-relay's own auth, which then pulls no tickets.
 //!
-//! The binary wraps [`run`]. Another CLI can embed the relay by flattening
-//! [`Config`] into its arguments.
+//! Another CLI can embed the relay by flattening [`Config`] into its arguments.
 //!
 //! # Examples
 //!
@@ -87,9 +84,8 @@ pub struct Config {
 
     /// Verifies the JWTs that browsers and iroh clients present with the keys in this file.
     ///
-    /// The file holds a JWK or a JWK set, as `moq auth` writes them. A valid
-    /// token grants what its claims grant, an invalid one is refused, and a
-    /// session without a token keeps the public rules.
+    /// The file holds a JWK or a JWK set, as `moq auth` writes them. An invalid
+    /// token is refused, and a session without a token keeps the public rules.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["auth_url", "auth_public", "auth_public_publish", "auth_public_subscribe"])]
     pub auth_key: Option<PathBuf>,
 
@@ -155,7 +151,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // fallback would take.
     relay_config.web.ws = false;
     let mut relay = moq_relay::Relay::load(relay_config).await?;
-    // Pulls dial over the relay's own endpoint, with its stable identity.
     let pulls = Arc::new(pull::PullState::new(
         iroh_endpoint.clone(),
         relay.cluster().clone(),
@@ -191,9 +186,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .port();
     // The e2e test fixtures parse this line.
     println!("http port: {http_port}");
-    // `http`, since this listener speaks plain HTTP. The page pins the QUIC
-    // certificate's fingerprint from `/certificate.sha256`, so the browser
-    // never prompts.
+    // Plain `http`: the page pins the QUIC certificate's fingerprint from
+    // `/certificate.sha256`, so the browser never prompts.
     println!("iroh-live relay listening at http://localhost:{http_port}");
     if quic_port == http_port {
         println!("  WebTransport on UDP {quic_port}; the page above connects to it for you");
@@ -220,18 +214,15 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
 /// Answers the relay's admissions until the relay drops its auth.
 ///
-/// A session gets [`browser_grant`]. With `keys`, a session that presents a
-/// JWT gets what the token grants at its path instead, until the token
-/// expires, and one whose token the keys reject is refused. A session whose
-/// path names a ticket reads the ticket's broadcast at that name, see
-/// [`pull::mounted`]. With `pulls` set, it also holds a pull of that
+/// A session gets [`browser_grant`], or with `keys` what its JWT grants until
+/// the token expires. A session whose path names a ticket reads the ticket's
+/// broadcast at that name, and with `pulls` set it holds a pull of that
 /// broadcast while it runs.
 pub async fn admit(
     mut admissions: Admissions,
     pulls: Option<Arc<pull::PullState>>,
     keys: Option<KeySet>,
 ) {
-    // One task per session that holds a pull, until the session ends.
     let mut held = JoinSet::new();
     loop {
         let admission = tokio::select! {

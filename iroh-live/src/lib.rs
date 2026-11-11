@@ -1,30 +1,24 @@
 //! Live audio and video over iroh.
 //!
-//! A [`Node`] publishes broadcasts at paths and subscribes to paths, over a
-//! direct session with a peer or an attached relay. The transport is
-//! re-exported as [`node`], and the moq-net it builds on as [`net`]. The
-//! `media` module gathers the media crates (sources, broadcasts, players,
-//! codecs), and `rooms` re-exports the rooms crate, each behind its feature.
+//! A [`Node`] publishes and subscribes to broadcasts at paths, over a direct
+//! session with a peer or an attached relay. [`node`] re-exports the
+//! transport and [`net`] the moq-net under it. `media` and `rooms` gather the
+//! media and rooms crates, each behind its feature.
 //!
-//! The moq crates come from the unreleased `main` branch of moq-dev/moq,
-//! pinned by git rev, so this crate cannot be published to crates.io yet.
-//! Depend on it through git.
+//! The moq crates are pinned to a git rev of moq-dev/moq `main`, so this crate
+//! is not on crates.io yet.
 //!
 //! # Paths and layouts
 //!
-//! The node takes any path: [`Node::publish`] and [`Node::subscribe`] know
-//! nothing about how paths are chosen. iroh-live ships one convention,
+//! The node takes any path. iroh-live ships one convention,
 //! [`layout::LiveLayout`], which publishes a peer's broadcasts at
 //! `<root>/<peer>/<name>` (the root is `live` by default) and lets each peer
-//! publish only under its own id. Every use names the layout, so nothing
-//! about it is implicit. An application with its own scheme calls the node
-//! with its own paths and gives it a policy of its own, see
-//! [`NodeConfig::with_policy`].
+//! publish only under its own id. An application with its own scheme passes
+//! its own paths and policy, see [`NodeConfig::with_policy`].
 //!
 //! A [`BroadcastTicket`] names a peer and the path it publishes at, whatever
-//! the layout. [`Node::subscribe_ticket`] reads one on any node: it grants the
-//! ticket's publisher that one path for as long as the subscription lives, so
-//! a viewer needs no layout and no grant of its own.
+//! the layout. [`Node::subscribe_ticket`] grants the ticket's publisher that
+//! one path while the subscription lives, so a viewer needs no layout.
 #![cfg_attr(
     feature = "media",
     doc = r#"
@@ -81,8 +75,8 @@ router.shutdown().await?;
 //!
 //! The main types:
 //!
-//! - [`Node`]: the node. [`Node::mount`] mounts it on the application's
-//!   router, next to the application's own protocols.
+//! - [`Node`]: the node, mounted on the application's router with
+//!   [`Node::mount`].
 //! - [`layout::LiveLayout`]: the `<root>/<peer>/<name>` path convention.
 //! - [`BroadcastTicket`]: a publisher's endpoint id and the path of a broadcast.
 //! - [`calls::Calls`]: one-to-one calls.
@@ -102,8 +96,7 @@ router.shutdown().await?;
 //! | [`Node::shutdown`] | no, idempotent | call again to finish |
 //!
 //! [`Node::shutdown`] does not close the endpoint. Whoever binds it closes
-//! it, directly or through `Router::shutdown`, which also shuts down the node
-//! and every service mounted on the router.
+//! it, directly or through `Router::shutdown`.
 //!
 //! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
@@ -112,10 +105,9 @@ router.shutdown().await?;
 //!
 //! No feature is on by default. `full` turns on `media`, `capture`, `render`,
 //! `record` and `sound-server`. `media` adds the `media` module. Without it
-//! the crate is the layout, calls and endpoint setup only, as the relay uses
-//! it. `playback`, `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam`
-//! add devices and codecs, and imply `media`. `rooms` re-exports
-//! `iroh-live-rooms`.
+//! the crate is the layout, calls and endpoint setup only. `playback`, `aec`,
+//! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
+//! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
 
 mod app;
 pub mod calls;
@@ -155,10 +147,9 @@ pub use iroh_live_rooms as rooms;
 /// Typed JSON tracks over moq-net, including a latest-value track.
 ///
 /// [`snapshot`](json::snapshot) is the latest-value track, for state such
-/// as a setting or the newest result. Every update supersedes the last, and
-/// [`Consumer::latest`](json::snapshot::Consumer::latest) skips to the newest
-/// value. A track keeps its newest group, so a reader that subscribes late
-/// reads the current value at once, and the writer does not repeat it.
+/// as a setting. [`Consumer::latest`](json::snapshot::Consumer::latest) skips
+/// to the newest value. A track keeps its newest group, so a late reader gets
+/// the current value at once without the writer repeating it.
 /// [`stream`](json::stream) is the lossless log, for records that must all
 /// arrive.
 ///

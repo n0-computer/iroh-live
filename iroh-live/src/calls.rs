@@ -3,18 +3,13 @@
 //! [`Calls`] publishes this node's side of its calls at `<root>/<its id>/call`
 //! and offers it to nobody until [`ring`](Calls::ring) adds a peer to its
 //! audience. A peer learns it is called when that path appears in its route
-//! table. It answers by ringing back and subscribing to the caller's side,
-//! and the caller, which waits for exactly that, subscribes to the answerer's.
-//! Two peers that ring each other at once are the normal case of this
-//! protocol, and resolve into one [`Call`] on each side.
+//! table, and answers by ringing back and subscribing to the caller's side.
+//! Two peers that ring each other at once resolve into one [`Call`] on each
+//! side.
 //!
 //! A peer that was hung up on rings again only once it withdraws its side and
 //! offers it anew. Publishing the side again without a withdrawal in between
-//! is no new offer, since the route table lists the path as present
-//! throughout.
-//!
-//! `B`, what fills the side, stays generic: a `LocalBroadcast` for media, or
-//! a bare `broadcast::Producer`.
+//! is no new offer, since the route table lists the path throughout.
 //!
 //! ```no_run
 //! use iroh_live::{Node, calls::{CallEvent, Calls}, layout::LiveLayout};
@@ -68,8 +63,6 @@ use tracing::{debug, info, warn};
 use crate::layout::LiveLayout;
 
 /// The broadcast name of a call side, as `irl call` and the Android demo use it.
-///
-/// Each node publishes its side at `<root>/<its id>/call`.
 pub const CALL: &str = "call";
 
 /// How many events a slow reader may fall behind before it gets [`CallEvent::Lagged`].
@@ -99,8 +92,6 @@ pub enum CallEvent {
 }
 
 /// The stream of [`CallEvent`]s, from [`Calls::events`].
-///
-/// It first replays the peers that ring now.
 pub struct CallEvents(Pin<Box<dyn Stream<Item = CallEvent> + Send>>);
 
 impl fmt::Debug for CallEvents {
@@ -150,7 +141,7 @@ struct CallState {
 }
 
 impl CallState {
-    /// Returns the peers that ring: visible, in no call, and not hung up on.
+    /// Returns the peers that ring, as [`Calls::ringing`] describes.
     fn ringing(&self) -> BTreeSet<EndpointId> {
         self.visible
             .iter()
@@ -207,8 +198,6 @@ impl Inner {
     }
 
     /// Returns why the call with `peer` ended, once its side is gone.
-    ///
-    /// The side goes when the peer withdraws it, or when the session ends.
     fn hung_up(&self, peer: EndpointId) -> HungUp {
         match self.session_with(peer) {
             Some(_) => HungUp::Withdrawn,
@@ -264,19 +253,17 @@ impl Calls {
     ///
     /// Returns the service with the side, which is visible to nobody until a
     /// peer is rung. One side serves every call in turn, so a camera and a
-    /// preview keep running between calls. `B` is what fills it, built from
-    /// the route table's `broadcast::Producer`, before the path is announced.
+    /// preview keep running between calls. `B` is built from the route
+    /// table's `broadcast::Producer` before the path is announced: a
+    /// `LocalBroadcast`, or the producer itself.
     ///
     /// For a `LocalBroadcast`, dropping the side ends every call and
     /// [`closed`](Self::closed) resolves. A bare producer has to be closed by
     /// the application.
     ///
-    /// Both sides of a call read each other's side over a direct session, so
-    /// each node's policy has to let the other publish under the layout:
-    /// `<root>/<peer id>/call`. [`LiveLayout::policy`] does, and a
-    /// [`filter`](iroh_live_node::policy::Policy::filter) on it admits only
-    /// some callers. On a node whose policy does not, [`call`](Self::call)
-    /// and [`answer`](Self::answer) fail with
+    /// Each node's policy has to let the other publish at
+    /// `<root>/<peer id>/call`, as [`LiveLayout::policy`] does. Otherwise
+    /// [`call`](Self::call) and [`answer`](Self::answer) fail with
     /// [`NotGranted`](iroh_live_node::Error::NotGranted).
     ///
     /// # Errors
@@ -314,7 +301,7 @@ impl Calls {
     /// Rings `peer`: offers it this node's side, and dials it if no session exists.
     ///
     /// Non-blocking and idempotent. The peer sees the side appear in its route
-    /// table. [`call`](Self::call) and [`answer`](Self::answer) ring first.
+    /// table.
     pub fn ring(&self, peer: EndpointId) {
         // The audience changes under the state lock, as in `withdraw`, so a
         // ring and a hang-up at once cannot lose either update.
@@ -348,8 +335,8 @@ impl Calls {
 
     /// Calls `peer`: rings it, waits until it answers, and subscribes to its side.
     ///
-    /// The peer answers by ringing back, so this waits as long as the peer
-    /// takes. Bound it with a timeout. Dropping the future hangs up.
+    /// Waits as long as the peer takes to answer, so bound it with a timeout.
+    /// Dropping the future hangs up.
     ///
     /// # Errors
     ///
@@ -379,9 +366,8 @@ impl Calls {
 
     /// Returns the peers that ring this node now, as they change.
     ///
-    /// The source of truth: peers whose side is visible, minus those with a
-    /// call in progress or being placed, and those that were hung up on and
-    /// have not withdrawn their side since.
+    /// The source of truth: peers whose side is visible, in no call, and not
+    /// hung up on since they last offered their side.
     #[must_use]
     pub fn ringing(&self) -> n0_watcher::Direct<BTreeSet<EndpointId>> {
         self.inner.ringing.watch()
@@ -482,9 +468,8 @@ impl Drop for Pending {
 
 /// A call in progress.
 ///
-/// Dropping it, or [`hang_up`](Self::hang_up), ends the call: the peer loses
-/// this node's side, and rings again only once it withdraws its own side and
-/// offers it anew.
+/// Dropping it, or [`hang_up`](Self::hang_up), ends the call. See the
+/// [module](self) for when the peer can ring again.
 #[derive(derive_more::Debug)]
 #[must_use = "dropping a `Call` hangs up"]
 #[debug("Call({})", peer.fmt_short())]

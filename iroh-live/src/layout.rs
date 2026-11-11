@@ -1,12 +1,8 @@
 //! The `<root>/<peer>/<name>` path layout.
 //!
-//! The node takes any path. A layout is one convention for choosing them:
-//! [`LiveLayout`] publishes a peer's broadcasts under `<root>/<peer>/`, and
-//! lets a peer publish only there, so no peer can publish at a path that names
-//! another. Every use names the layout. An application with another scheme
-//! writes its paths through [`Node::publish`](crate::Node::publish) and
-//! [`Node::subscribe`](crate::Node::subscribe), and gives its node a policy of
-//! its own.
+//! The node takes any path. [`LiveLayout`] publishes a peer's broadcasts
+//! under `<root>/<peer>/`, and lets a peer publish only there, so no peer can
+//! publish at a path that names another.
 //!
 //! Rooms paths (`rooms/...`) belong to `iroh-live-rooms`.
 
@@ -27,10 +23,8 @@ const DEFAULT_ROOT: &str = "live";
 
 /// The `<root>/<peer>/<name>` layout, with the root `live` by default.
 ///
-/// A node publishes its broadcasts at `<root>/<its id>/<name>`, and a node
-/// that uses [`policy`](Self::policy) lets each peer publish only under its
-/// own id. Two peers with different roots do not see each other's broadcasts:
-/// the node reports [`NotGranted`](iroh_live_node::Error::NotGranted).
+/// Two peers with different roots do not see each other's broadcasts: the
+/// node reports [`NotGranted`](iroh_live_node::Error::NotGranted).
 ///
 /// # Examples
 ///
@@ -83,8 +77,7 @@ impl LiveLayout {
     /// # Errors
     ///
     /// Fails with [`Error::InvalidPath`] if `name` is empty, has an empty
-    /// segment, or makes no valid path. Names come from flags and user
-    /// interfaces, so they are checked here.
+    /// segment, or makes no valid path.
     pub fn path(&self, peer: EndpointId, name: &str) -> Result<Path, Error> {
         let invalid = || {
             e!(Error::InvalidPath {
@@ -131,9 +124,8 @@ impl LiveLayout {
     /// Returns a policy that admits every peer with its [`grant`](Self::grant).
     ///
     /// Pass `&[]` for no extra layouts, or the rooms layout to let peers
-    /// publish room broadcasts too. Narrow it with
-    /// [`Policy::filter`], and call `Node::reauthorize` when the filter's
-    /// state changes.
+    /// publish room broadcasts too. Narrow it with [`Policy::filter`], and call
+    /// `Node::reauthorize` when the filter's state changes.
     ///
     /// # Examples
     ///
@@ -173,11 +165,9 @@ impl LiveLayout {
 
     /// Publishes a broadcast at `<root>/<this node's id>/<name>` to granted sessions, and returns it.
     ///
-    /// The broadcast is created in the node's route table, and peers read it
-    /// with nothing copied in between. `B` is what fills it, built from the
-    /// table's `broadcast::Producer`: a `LocalBroadcast`, or the producer
-    /// itself. The audience is [`Audience::Granted`], which includes attached
-    /// relays that take public publications.
+    /// `B` is built from the route table's `broadcast::Producer`: a
+    /// `LocalBroadcast`, or the producer itself. The audience is
+    /// [`Audience::Granted`], which includes attached relays.
     ///
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes
@@ -217,8 +207,7 @@ impl LiveLayout {
     /// Publishes a broadcast at `<root>/<this node's id>/<name>` to `audience`, filling it first.
     ///
     /// `fill` runs before the announcement, as in [`Node::publish_with`], so
-    /// no reader finds the broadcast without the tracks it creates, such as a
-    /// catalog. The result comes back with the [`Publication`].
+    /// no reader finds the broadcast without the tracks it creates.
     ///
     /// # Errors
     ///
@@ -239,8 +228,7 @@ impl LiveLayout {
 
     /// Returns the ticket of `peer`'s broadcast `name`.
     ///
-    /// It takes an id, so a command line with `--endpoint-id` and `--name`
-    /// needs no node. Does not check that anything is published there.
+    /// Does not check that anything is published there.
     ///
     /// # Errors
     ///
