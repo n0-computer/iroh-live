@@ -214,7 +214,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
 /// Answers the relay's admissions until the relay drops its auth.
 ///
-/// A session gets [`browser_grant`], or with `keys` what its JWT grants until
+/// A session gets [`browser_grant`] for its path, or with `keys` what its JWT grants until
 /// the token expires. A session whose path names a ticket reads the ticket's
 /// broadcast at that name, and with `pulls` set it holds a pull of that
 /// broadcast while it runs.
@@ -277,10 +277,14 @@ fn browser_session_grant(
     admission: &moq_relay::auth::Admission,
     keys: Option<&KeySet>,
 ) -> Result<moq_auth::Grant, moq_relay::auth::Error> {
-    let Some(keys) = keys else {
-        return Ok(browser_grant());
-    };
     let request = &admission.request;
+    let public = || {
+        browser_grant(&request.path)
+            .map_err(|err| moq_relay::auth::Error::Forbidden(err.to_string()))
+    };
+    let Some(keys) = keys else {
+        return public();
+    };
     let token = if admission.attached() {
         // The credential presented in band, for a session already held.
         request.auth.clone()
@@ -302,7 +306,7 @@ fn browser_session_grant(
         session.token().map(str::to_owned)
     };
     let Some(token) = token else {
-        return Ok(browser_grant());
+        return public();
     };
     let refused =
         |err: moq_auth::Error| moq_relay::auth::Error::Forbidden(format!("invalid token: {err}"));

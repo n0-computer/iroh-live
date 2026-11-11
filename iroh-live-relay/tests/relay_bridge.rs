@@ -1441,6 +1441,65 @@ async fn the_shipped_relay_refuses_forged_paths() {
     drop(mallory_endpoint);
 }
 
+/// A browser that dials an iroh publisher's path cannot publish beneath it.
+///
+/// A grant without a root is rooted at the dialed path, so the browser's
+/// one-segment rule must be reduced to that path, not granted as is.
+#[tokio::test]
+async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_shipped().await;
+    let sub_origin = moq_tokio::origin::spawn();
+    let _viewer = established(
+        noq_client()
+            .with_subscriber(sub_origin.clone())
+            .connect(relay.url()),
+    )
+    .await;
+
+    let alice = iroh::SecretKey::generate().public();
+    let mut sessions = Vec::new();
+    let mut held = Vec::new();
+    for dialed in [format!("live/{alice}"), format!("rooms/topic/{alice}")] {
+        let browser = moq_tokio::origin::spawn();
+        held.push(
+            browser
+                .route("cam", origin::RouteOptions::default())
+                .expect("broadcast"),
+        );
+        let url = relay.url().join(&dialed).expect("a url");
+        sessions
+            .push(established(noq_client().with_publisher(browser.consume()).connect(url)).await);
+    }
+    // A browser at the root still publishes a name of its own.
+    let browser = moq_tokio::origin::spawn();
+    held.push(
+        browser
+            .route("hello", origin::RouteOptions::default())
+            .expect("broadcast"),
+    );
+    sessions.push(
+        established(
+            noq_client()
+                .with_publisher(browser.consume())
+                .connect(relay.url()),
+        )
+        .await,
+    );
+
+    announced_at(&sub_origin, "hello").await;
+    for path in [
+        format!("live/{alice}/cam"),
+        format!("rooms/topic/{alice}/cam"),
+    ] {
+        assert!(
+            !routed_soon(&sub_origin, &path).await,
+            "a browser published at {path}"
+        );
+    }
+    drop((sessions, held));
+}
+
 /// Two pulls of one publisher share a session, which closes with the last.
 #[tokio::test]
 async fn a_publisher_session_outlives_all_but_its_last_pull() {

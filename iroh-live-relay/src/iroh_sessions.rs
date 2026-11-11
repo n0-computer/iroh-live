@@ -6,7 +6,7 @@
 //! default, [`relay_policy`], lets each client publish only at the paths that
 //! name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers
 //! come in through moq-relay's server, and [`browser_grant`] keeps them to
-//! names of one segment.
+//! names of one segment below the root.
 
 use std::{sync::Arc, time::Duration};
 
@@ -218,15 +218,26 @@ impl ProtocolHandler for IrohSessions {
     }
 }
 
-/// Returns the grant for browsers: subscribe anywhere, publish one segment.
+/// Returns the grant for a browser that dialed `path`: subscribe anywhere, publish one segment.
 ///
-/// One segment keeps a browser out of `live/` and `rooms/`, whose paths name
-/// an iroh publisher.
-pub fn browser_grant() -> moq_auth::Grant {
-    moq_auth::Grant::new(
-        "*".parse::<Pattern>().expect("a valid pattern"),
-        Pattern::all(),
-    )
+/// The rule is rooted at `/` and reduced to the dialed path, as moq-relay does
+/// with its public rules. The grant itself is rooted at the dialed path, so
+/// granting the unreduced rule would let a browser that dials `/live/<id>`
+/// publish beneath it. One segment keeps a browser out of `live/` and
+/// `rooms/`, whose paths name an iroh publisher.
+///
+/// # Errors
+///
+/// Returns an error if `path` is not a valid path.
+pub fn browser_grant(path: &str) -> Result<moq_auth::Grant, moq_auth::Error> {
+    let rule = moq_auth::Claims::default()
+        .with_publish(["*".parse::<Pattern>().expect("a valid pattern")])
+        .with_subscribe([Pattern::all()]);
+    let permissions = rule.authorize(path)?;
+    Ok(moq_auth::Grant::new(
+        permissions.publish,
+        permissions.subscribe,
+    ))
 }
 
 /// Returns the broadcast name a session asked for in its path, if any.
@@ -277,9 +288,9 @@ mod tests {
         assert!(!scope.matches("cam"));
     }
 
-    /// Returns whether [`browser_grant`] lets a browser publish at `path`.
+    /// Returns whether [`browser_grant`] lets a browser at the root publish at `path`.
     fn a_browser_may_publish(path: &str) -> bool {
-        browser_grant().publish.matches(path)
+        browser_grant("/").expect("a grant").publish.matches(path)
     }
 
     #[test]
@@ -287,6 +298,39 @@ mod tests {
         assert!(a_browser_may_publish("hello"));
         assert!(!a_browser_may_publish("live/someone/cam"));
         assert!(!a_browser_may_publish("rooms/topic/someone/cam"));
+    }
+
+    /// The grant is rooted at the dialed path, so its publish half must not reach below it.
+    #[test]
+    fn a_browser_grant_is_reduced_to_the_dialed_path() {
+        let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        for dialed in [
+            format!("/live/{peer}"),
+            format!("/rooms/topic/{peer}"),
+            "/live".to_owned(),
+        ] {
+            let grant = browser_grant(&dialed).expect("a grant");
+            assert!(
+                !grant.publish.matches("cam"),
+                "a browser at {dialed} may publish cam beneath it"
+            );
+            assert!(grant.subscribe.matches("cam"), "{dialed}");
+        }
+        // A one-segment path is itself the one segment a browser may publish.
+        let grant = browser_grant("/hello").expect("a grant");
+        assert!(grant.publish.matches(""));
+        assert!(!grant.publish.matches("cam"));
+    }
+
+    /// A browser that dials a ticket reads it, and publishes nothing beneath it.
+    #[test]
+    fn a_browser_at_a_ticket_path_publishes_nothing() {
+        let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let path = LiveLayout::default().path(peer, "cam").expect("a path");
+        let ticket = iroh_live::BroadcastTicket::at(peer, path);
+        let grant = browser_grant(&format!("/{ticket}")).expect("a grant");
+        assert!(grant.publish.is_empty());
+        assert!(grant.subscribe.matches(""));
     }
 
     /// A browser cannot publish at the name a pull is read under.
