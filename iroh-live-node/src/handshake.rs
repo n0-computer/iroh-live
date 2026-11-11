@@ -49,15 +49,6 @@ impl Hop {
     }
 }
 
-/// Returns the instant a session's driver starts from.
-///
-/// Read from tokio's clock, which `moq_net::time::run` polls the driver with.
-/// Under `tokio::time::pause` std's clock runs ahead, and a driver refuses
-/// time that moves backwards.
-pub(crate) fn driver_now() -> moq_net::time::Instant {
-    moq_net::time::Instant::now()
-}
-
 /// Returns an auth handle authorized for what a direct session with `remote` may see now.
 ///
 /// Authorized before the session starts, so its first announcements already
@@ -190,7 +181,7 @@ pub(crate) async fn client_handshake(
     // would hold the dial, and every connect queued behind it, for good.
     tokio::time::timeout(
         transport::HANDSHAKE_TIMEOUT,
-        client.connect(driver_now(), transport),
+        client.connect(moq_net::time::Instant::now(), transport),
     )
     .await
     .map_err(|_| moq_net::Error::Timeout)?

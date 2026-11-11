@@ -128,15 +128,6 @@ impl LiveLayout {
             .expect("the root and an endpoint id are valid path segments")
     }
 
-    /// Returns [`scope`](Self::scope) as a [`Scope`] that owns a copy of the layout.
-    ///
-    /// `a.config(&[b.scope_fn()])` composes two layouts.
-    #[must_use]
-    pub fn scope_fn(&self) -> Scope {
-        let layout = self.clone();
-        Arc::new(move |peer| layout.scope(peer))
-    }
-
     /// Returns the grant a node gives `peer`.
     ///
     /// The peer may subscribe to anything, and publish only under
@@ -316,7 +307,8 @@ mod tests {
     fn two_layouts_compose() {
         let (a, b) = (LiveLayout::new("a"), LiveLayout::new("b"));
         let peer = id();
-        let config = a.config(&[b.scope_fn()]);
+        let b_scope: Scope = Arc::new(move |peer| b.scope(peer));
+        let config = a.config(&[b_scope]);
         let grant = config.grant.as_ref().expect("a grant")(peer);
         assert!(grant.allows_publish(&format!("a/{peer}/cam")));
         assert!(grant.allows_publish(&format!("b/{peer}/cam")));

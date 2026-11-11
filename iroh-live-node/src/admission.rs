@@ -20,7 +20,7 @@ use tracing::{debug, info};
 
 use crate::{
     Error, LinkKind, Session,
-    handshake::{Hop, SessionParts, driver_now, subscriber},
+    handshake::{Hop, SessionParts, subscriber},
     node::Shared,
     state::served,
     transport::{self, HANDSHAKE_TIMEOUT},
@@ -196,7 +196,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     let transport = transport::accept(connection.clone())?;
     let opened = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        moq_net::Server::new().accept_request(driver_now(), transport),
+        moq_net::Server::new().accept_request(moq_net::time::Instant::now(), transport),
     )
     .await;
     let handshake = match opened {
