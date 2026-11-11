@@ -721,3 +721,112 @@ async fn an_expired_authorization_narrows_before_a_slow_answer() {
     alice.shutdown().await;
     bob.shutdown().await;
 }
+
+/// A queue too small for every re-decide at once keeps the sessions and asks again.
+#[tokio::test]
+#[traced_test]
+async fn a_full_queue_keeps_the_sessions_and_asks_again() {
+    const PEERS: usize = 5;
+    let queue = policy::Queue::new(2);
+    let alice = Peer::bare(NodeConfig::default().with_policy(queue.clone())).await;
+    let asked = Arc::new(Mutex::new(BTreeSet::new()));
+    let seen = asked.clone();
+    let _answering = n0_future::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        while let Some(pending) = queue.next().await {
+            if pending.request().event() != Event::Connect {
+                seen.lock()
+                    .expect("poisoned")
+                    .insert(*pending.request().peer());
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            pending.admit(Grant::everything());
+        }
+    }));
+    let mut peers = Vec::new();
+    let mut sessions = Vec::new();
+    for _ in 0..PEERS {
+        let peer = Peer::spawn().await;
+        sessions.push(
+            step("a peer dials", peer.node.connect(alice.endpoint.addr()))
+                .await
+                .expect("admitted"),
+        );
+        let id = peer.id();
+        eventually("alice registers the peer", || {
+            alice.node.grant_for(id).is_some()
+        })
+        .await;
+        peers.push(peer);
+    }
+
+    alice.node.reauthorize_all();
+    eventually("every peer reaches the application", || {
+        asked.lock().expect("poisoned").len() == PEERS
+    })
+    .await;
+    for (peer, session) in peers.iter().zip(&sessions) {
+        assert!(
+            session.connection().close_reason().is_none(),
+            "a full queue closed a session"
+        );
+        assert!(has_session_with(&alice.node, peer.id()));
+    }
+
+    alice.shutdown().await;
+    for peer in &peers {
+        peer.shutdown().await;
+    }
+}
+
+/// A policy whose first revalidation takes longer than the node waits.
+#[derive(Debug, Clone, Default)]
+struct SlowOnce {
+    revalidations: Arc<AtomicUsize>,
+}
+
+impl Policy<EndpointId> for SlowOnce {
+    async fn decide(&self, request: &PeerRequest) -> Decision {
+        if request.event() == Event::Revalidate
+            && self.revalidations.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        Ok(Authorization {
+            grant: Grant::everything(),
+            revalidate: Some(Duration::from_millis(200)),
+            ..Default::default()
+        })
+    }
+}
+
+/// A revalidation that times out keeps the session and its authorization.
+#[tokio::test]
+#[traced_test]
+async fn a_revalidation_that_times_out_keeps_the_session() {
+    let policy = SlowOnce::default();
+    let alice = Peer::bare(NodeConfig {
+        decide_timeout: Duration::from_millis(300),
+        ..NodeConfig::default().with_policy(policy.clone())
+    })
+    .await;
+    let bob = Peer::spawn().await;
+    let session = step("bob dials", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("admitted");
+
+    eventually("a revalidation after the timeout succeeds", || {
+        policy.revalidations.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    assert!(
+        session.connection().close_reason().is_none(),
+        "the timeout closed the session"
+    );
+    assert_eq!(
+        alice.node.grant_for(bob.id()).map(|current| current.grant),
+        Some(Grant::everything())
+    );
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}

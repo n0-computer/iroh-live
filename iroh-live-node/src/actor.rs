@@ -349,9 +349,10 @@ impl Actor {
     ///
     /// An authorization replaces the peer's on every session with it. A
     /// rejection takes the peer's rights at once and closes those sessions
-    /// with the rejection's code.
+    /// with the rejection's code. A decision that timed out or found a full
+    /// queue keeps the peer's authorization and runs again later.
     fn redecided(&mut self, decided: Result<(tokio::task::Id, Redecided), tokio::task::JoinError>) {
-        let ((peer, started, _event), decision) = match decided {
+        let ((peer, started, event), decision) = match decided {
             Ok((id, decided)) => {
                 self.decision_ids.remove(&id);
                 decided
@@ -366,6 +367,20 @@ impl Actor {
         };
         if !self.reauth.finish(&peer) {
             debug!(remote = %peer.fmt_short(), "the peer left before its decision");
+            return;
+        }
+        if let Err(rejection) = &decision
+            && undecided(rejection)
+        {
+            let wait = self
+                .reauth
+                .retry(&peer, event, tokio::time::Instant::now().into_std());
+            warn!(
+                remote = %peer.fmt_short(),
+                reason = rejection.reason(),
+                ?wait,
+                "the policy did not decide, keeping the peer's authorization and asking again later",
+            );
             return;
         }
         let applied = self.shared.state.lock().expect("poisoned").decided(
@@ -603,6 +618,17 @@ async fn next_change(changes: &mut Option<BoxStream<()>>) -> Option<()> {
         Some(changes) => changes.next().await,
         None => std::future::pending().await,
     }
+}
+
+/// Reports whether a re-decide's `rejection` only means the policy could not decide now.
+///
+/// A timeout and a full queue say nothing about the peer, so the peer keeps
+/// its authorization and is asked again. An expiry still narrows it on time.
+fn undecided(rejection: &Rejection) -> bool {
+    matches!(
+        rejection.code(),
+        moq_net::Error::Timeout | moq_net::Error::TooManyRequests
+    )
 }
 
 /// Waits until `deadline`, or forever without one.

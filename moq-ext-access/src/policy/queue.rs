@@ -62,6 +62,11 @@ impl<P: PeerId> fmt::Debug for Queue<P> {
 impl<P: PeerId> Queue<P> {
     /// Creates a queue that holds up to `capacity` requests.
     ///
+    /// A request that finds the queue full is rejected with
+    /// [`moq_net::Error::TooManyRequests`]. A node treats that as no answer
+    /// when it asks again about a live peer: the peer keeps its
+    /// authorization, and the node asks again later.
+    ///
     /// # Panics
     ///
     /// Panics if `capacity` is zero.

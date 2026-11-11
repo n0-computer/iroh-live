@@ -1,4 +1,4 @@
-//! When the node asks its policy again about a peer: deadlines and triggers.
+//! When the node asks its policy again about a peer: deadlines, triggers and retries.
 //!
 //! The actor owns one [`Reauth`] and drives it with the current time. Nothing
 //! here awaits or reads a clock, so the logic is tested without a runtime.
@@ -30,6 +30,12 @@ pub(crate) struct Requests {
     pub(crate) peers: BTreeSet<EndpointId>,
 }
 
+/// The shortest wait before a decision that failed to decide runs again.
+pub(crate) const RETRY_MIN: Duration = Duration::from_millis(500);
+
+/// The longest wait before a decision that failed to decide runs again.
+pub(crate) const RETRY_MAX: Duration = Duration::from_secs(30);
+
 /// The re-decide state of every peer with a live session.
 ///
 /// At most one decision per peer runs at a time. A trigger that arrives
@@ -50,7 +56,7 @@ pub(crate) struct Reauth {
 /// One peer's re-decide state.
 #[derive(Debug, Default)]
 struct Entry {
-    /// When the peer is next due: for revalidation or at expiry.
+    /// When the peer is next due: for revalidation, at expiry, or for a retry.
     deadline: Option<Instant>,
     /// When the peer's authorization lapses.
     expires: Option<Instant>,
@@ -62,6 +68,8 @@ struct Entry {
     queued: bool,
     /// Whether a trigger arrived while a decision ran, so it runs again.
     wanted: bool,
+    /// How many decisions in a row ended without a decision.
+    failures: u32,
 }
 
 /// A decision to start, from [`Reauth::start`].
@@ -121,6 +129,7 @@ impl Reauth {
         if let Some(entry) = self.peers.get_mut(peer) {
             entry.deadline = deadline_of(authorization, now, wall);
             entry.expires = expiry_of(authorization, now, wall);
+            entry.failures = 0;
         }
     }
 
@@ -246,6 +255,24 @@ impl Reauth {
             self.queue.push_back(*peer);
         }
         true
+    }
+
+    /// Schedules another `event` decision for `peer`, whose last one ended without a decision.
+    ///
+    /// The wait doubles with each failure in a row, from [`RETRY_MIN`] up
+    /// to [`RETRY_MAX`]. Returns the wait.
+    pub(crate) fn retry(&mut self, peer: &EndpointId, event: Event, now: Instant) -> Duration {
+        let Some(entry) = self.peers.get_mut(peer) else {
+            return Duration::ZERO;
+        };
+        let wait = RETRY_MIN
+            .saturating_mul(1 << entry.failures.min(16))
+            .min(RETRY_MAX);
+        entry.failures = entry.failures.saturating_add(1);
+        entry.reauthorize |= event == Event::Reauthorize;
+        let at = now + wait;
+        entry.deadline = Some(entry.deadline.map_or(at, |deadline| deadline.min(at)));
+        wait
     }
 }
 
@@ -476,6 +503,40 @@ mod tests {
         assert!(reauth.finish(&bob));
         assert_eq!(running.peer, bob);
         assert!(reauth.start().is_none(), "a new session needs no decision");
+    }
+
+    #[test]
+    fn a_failed_decision_retries_with_a_growing_wait() {
+        let now = Instant::now();
+        let bob = peer();
+        let mut reauth = Reauth::default();
+        admit(&mut reauth, bob, &Grant::everything().into(), now);
+        reauth.request(&bob);
+        let failed = reauth.start().expect("a decision");
+        assert!(reauth.finish(&bob));
+        assert_eq!(reauth.retry(&bob, failed.event, now), RETRY_MIN);
+        assert!(reauth.start().is_none(), "not before the wait");
+        assert!(reauth.expire(now + RETRY_MIN).is_empty());
+        let again = reauth.start().expect("the retry");
+        assert_eq!(again.event, Event::Reauthorize, "a retry keeps its event");
+        assert!(reauth.finish(&bob));
+        assert_eq!(reauth.retry(&bob, again.event, now), RETRY_MIN * 2);
+        for _ in 0..10 {
+            reauth.retry(&bob, again.event, now);
+        }
+        assert_eq!(reauth.retry(&bob, again.event, now), RETRY_MAX);
+
+        reauth.decided(
+            &bob,
+            &Grant::everything().into(),
+            now,
+            SystemTime::UNIX_EPOCH,
+        );
+        assert_eq!(
+            reauth.retry(&bob, again.event, now),
+            RETRY_MIN,
+            "a decision resets it"
+        );
     }
 
     #[test]

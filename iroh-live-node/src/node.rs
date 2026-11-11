@@ -75,6 +75,10 @@ pub struct NodeConfig {
     /// A decision that takes longer is a rejection with
     /// [`moq_net::Error::Timeout`]. The default is [`DECIDE_TIMEOUT`]. Raise it
     /// when a person answers, as with a [`policy::Queue`].
+    ///
+    /// When the node asks again about a live peer, a timeout or a full
+    /// queue ([`moq_net::Error::TooManyRequests`]) is no rejection: the peer
+    /// keeps its authorization, and the node asks again later.
     pub decide_timeout: Duration,
     /// A route table to use instead of a new one, such as a relay's cluster origin.
     ///
