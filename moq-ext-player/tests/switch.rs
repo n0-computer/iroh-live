@@ -8,26 +8,42 @@
 //! The fed sources stand in for real devices. A camera starts its timestamps
 //! near zero whenever it opens, while the test pattern reads one process-wide
 //! clock. That difference is what a switch between them crosses.
+//!
+//! A switch is bounded from the first frame the new source publishes, not
+//! from the switch call. Opening an encoder takes a load-dependent time that
+//! says nothing about whether the player follows the switch.
 
 use std::{
+    cell::Cell,
+    future::{Future, ready},
     sync::OnceLock,
     time::{Duration, Instant},
 };
 
 use moq_ext_player::{PlayerConfig, RemoteBroadcast, VideoFrames};
-use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition};
+use moq_ext_publisher::{LocalBroadcast, SlotState, VideoEncoding, VideoRendition};
 use moq_ext_sources::{FrameSender, VideoFormat, VideoSource};
 use moq_video::{FrameRate, Size};
 use n0_future::task::AbortOnDropHandle;
 
-/// How long a switch may take until the player shows the new source.
+/// How long the player may take to show the new source after it publishes its first frame.
 ///
-/// A new source shows at its first keyframe, so this is mostly the time to
-/// open an encoder and a decoder in a debug build.
+/// A new source shows at its first keyframe, which the encoder makes of its
+/// first frame, so this is the time to decode it and swap the decoder.
 const SWITCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long the first picture may take, with every codec still to open.
+///
+/// Also bounds how long a new source may take to publish its first frame, and
+/// how long the frames after a switch may stall, so a broken switch fails
+/// rather than hangs.
 const FIRST_PICTURE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often [`first_published`] reads the publisher's frame counter.
+const COUNTER_POLL: Duration = Duration::from_millis(5);
+
+/// How long a camera takes to open, during which a pushed source gets no frames.
+const CAMERA_OPENS: Duration = Duration::from_millis(200);
 
 /// How many frames the player must show after a switch to count as playing.
 const FRAMES_AFTER_SWITCH: usize = 10;
@@ -168,34 +184,99 @@ fn fed(feed_with: (Look, u32, Clock)) -> (VideoSource, AbortOnDropHandle<()>) {
     (source, feed(sender, feed_with))
 }
 
-/// Waits until `frames` shows `look`, then until it has shown it [`FRAMES_AFTER_SWITCH`] times.
+/// Returns the frames and bytes `broadcast` has published on its `video` rendition.
+fn published(broadcast: &LocalBroadcast) -> Option<(u64, u64)> {
+    let stats = broadcast.stats();
+    let video = stats.renditions.get("video")?;
+    Some((video.frames, video.bytes))
+}
+
+/// Returns a future that resolves when the source set last publishes its first frame.
+///
+/// Call it right after the switch: after `set_video`, or before a pushed source
+/// is fed again. After `set_video` the video slot is `Starting` until the new
+/// task has taken over from the old one, so the counter is read again once the
+/// slot is `Running`. That way a frame the old source still had in flight does
+/// not count.
+fn first_published(broadcast: &LocalBroadcast) -> impl Future<Output = Instant> + use<> {
+    let broadcast = broadcast.clone();
+    let mut status = broadcast.status();
+    let mut before = published(&broadcast);
+    async move {
+        if status.borrow_and_update().video != SlotState::Running {
+            status
+                .wait_for(|status| status.video == SlotState::Running)
+                .await
+                .expect("the broadcast is alive");
+            before = published(&broadcast);
+        }
+        while published(&broadcast) == before {
+            tokio::time::sleep(COUNTER_POLL).await;
+        }
+        Instant::now()
+    }
+}
+
+/// Waits until `frames` shows `look`, then checks the [`FRAMES_AFTER_SWITCH`] frames after it.
+///
+/// The first matching frame must come within `bound` of the moment `start`
+/// resolves. The frames after it must all show `look`, in timestamp order.
+/// Returns how long the player took after `start`.
 ///
 /// # Panics
 ///
-/// Panics if the first matching frame takes longer than `bound`, or if the
-/// frames after it stop or show something else.
-async fn shows(frames: &mut VideoFrames, look: Look, bound: Duration, what: &str) {
-    let started = Instant::now();
+/// Panics if `start` takes longer than [`FIRST_PICTURE_TIMEOUT`], if the first
+/// matching frame misses its bound, or if the frames after it stop, show
+/// something else, or go back in time.
+async fn shows(
+    frames: &mut VideoFrames,
+    look: Look,
+    start: impl Future<Output = Instant>,
+    bound: Duration,
+    what: &str,
+) -> Duration {
     let mut last = None;
-    let first = tokio::time::timeout(bound, async {
-        loop {
-            let frame = frames.next().await?;
-            let seen = Look::of(&frame);
-            if look.matches(seen) {
-                return Some(());
+    let started = Cell::new(None);
+    let outcome = {
+        let found = async {
+            loop {
+                let frame = frames.next().await?;
+                let seen = Look::of(&frame);
+                if look.matches(seen) {
+                    return Some((Instant::now(), frame.timestamp));
+                }
+                last = Some(seen);
             }
-            last = Some(seen);
+        };
+        let deadline = async {
+            let at = start.await;
+            started.set(Some(at));
+            tokio::time::sleep_until((at + bound).into()).await;
+        };
+        tokio::pin!(found, deadline);
+        tokio::time::timeout(FIRST_PICTURE_TIMEOUT + bound, async {
+            tokio::select! {
+                biased;
+                found = &mut found => Ok(found),
+                () = &mut deadline => Err(()),
+            }
+        })
+        .await
+    };
+    let (shown_at, mut previous) = match outcome {
+        Err(_) if started.get().is_none() => {
+            panic!("{what}: the new source published nothing within {FIRST_PICTURE_TIMEOUT:?}")
         }
-    })
-    .await;
-    match first {
-        Err(_) => panic!("{what}: no {look:?} within {bound:?}, last saw {last:?}"),
-        Ok(None) => panic!("{what}: the video ended while waiting for {look:?}"),
-        Ok(Some(())) => {}
-    }
-    let switched = started.elapsed();
+        Err(_) | Ok(Err(())) => {
+            panic!("{what}: no {look:?} within {bound:?} of the first frame, last saw {last:?}")
+        }
+        Ok(Ok(None)) => panic!("{what}: the video ended while waiting for {look:?}"),
+        Ok(Ok(Some(shown))) => shown,
+    };
+    // Bounded only so that a stall fails rather than hangs. What is checked is
+    // that the new pictures keep coming, in order.
     for index in 0..FRAMES_AFTER_SWITCH {
-        let frame = tokio::time::timeout(SWITCH_TIMEOUT, frames.next())
+        let frame = tokio::time::timeout(FIRST_PICTURE_TIMEOUT, frames.next())
             .await
             .unwrap_or_else(|_| panic!("{what}: frame {index} after the switch never came"))
             .unwrap_or_else(|| panic!("{what}: the video ended {index} frames after the switch"));
@@ -204,8 +285,20 @@ async fn shows(frames: &mut VideoFrames, look: Look, bound: Duration, what: &str
             look.matches(seen),
             "{what}: frame {index} showed {seen:?}, not {look:?}"
         );
+        assert!(
+            frame.timestamp > previous,
+            "{what}: frame {index} at {:?} is not after {previous:?}",
+            frame.timestamp
+        );
+        previous = frame.timestamp;
     }
-    eprintln!("{what}: showed {look:?} after {switched:?}");
+    // The counter is read every few milliseconds, so a fast player can show
+    // the frame before its publication is seen.
+    let latency = started
+        .get()
+        .map_or(Duration::ZERO, |at| shown_at.saturating_duration_since(at));
+    eprintln!("{what}: showed {look:?} {latency:?} after the start");
+    latency
 }
 
 /// Plays `broadcast` in-process.
@@ -237,6 +330,7 @@ async fn switching_what_feeds_a_pushed_source_keeps_playing() {
     shows(
         &mut frames,
         PATTERN.0,
+        ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
     )
@@ -245,7 +339,9 @@ async fn switching_what_feeds_a_pushed_source_keeps_playing() {
         for (name, source) in [("camera", CAMERA), ("pattern", PATTERN)] {
             drop(feeder);
             // A camera takes a moment to open, and nothing is pushed meanwhile.
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            // The gap is part of the switch under test, not a wait.
+            tokio::time::sleep(CAMERA_OPENS).await;
+            let start = first_published(&broadcast);
             feeder = feed(sender.clone(), source);
             // The rendition scales every source to its own size.
             let look = Look {
@@ -255,6 +351,7 @@ async fn switching_what_feeds_a_pushed_source_keeps_playing() {
             shows(
                 &mut frames,
                 look,
+                start,
                 SWITCH_TIMEOUT,
                 &format!("{name} in round {round}"),
             )
@@ -282,16 +379,21 @@ async fn a_pushed_source_plays_on_after_a_pause() {
     shows(
         &mut frames,
         PATTERN.0,
+        ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
     )
     .await;
     drop(feeder);
+    // The pause is what the test is about: the source sends nothing for longer
+    // than a keyframe interval while its clock runs on.
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    let start = first_published(&broadcast);
     let _feeder = feed(sender.clone(), (Look::flat(SD, 120), 30, Clock::Pattern));
     shows(
         &mut frames,
         Look::flat(SD, 120),
+        start,
         SWITCH_TIMEOUT,
         "after the pause",
     )
@@ -312,6 +414,7 @@ async fn replacing_the_video_source_keeps_playing() {
     shows(
         &mut frames,
         Look::pattern(SD),
+        ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
     )
@@ -327,6 +430,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             Look::pattern(HD),
+            first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("HD pattern in round {round}"),
         )
@@ -339,6 +443,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             CAMERA.0,
+            first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("camera in round {round}"),
         )
@@ -352,6 +457,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             PATTERN.0,
+            first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("dark SD in round {round}"),
         )
@@ -364,6 +470,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             bright.0,
+            first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("bright SD in round {round}"),
         )
@@ -378,6 +485,7 @@ async fn replacing_the_video_source_keeps_playing() {
         shows(
             &mut frames,
             Look::pattern(SD),
+            first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("SD pattern in round {round}"),
         )
@@ -399,6 +507,7 @@ async fn a_source_that_fails_does_not_stop_the_next() {
     shows(
         &mut frames,
         Look::pattern(SD),
+        ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
     )
@@ -415,7 +524,14 @@ async fn a_source_that_fails_does_not_stop_the_next() {
     broadcast
         .set_video(broken, single(None))
         .expect("a valid encoding");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut status = broadcast.status();
+    tokio::time::timeout(
+        FIRST_PICTURE_TIMEOUT,
+        status.wait_for(|status| matches!(status.video, SlotState::Failed(_))),
+    )
+    .await
+    .expect("the broken source fails in time")
+    .expect("the broadcast is alive");
 
     broadcast
         .set_video(
@@ -426,8 +542,62 @@ async fn a_source_that_fails_does_not_stop_the_next() {
     shows(
         &mut frames,
         Look::pattern(HD),
+        first_published(&broadcast),
         SWITCH_TIMEOUT,
         "pattern after the failure",
     )
     .await;
+}
+
+/// Prints how long each switch of a pushed source takes, from the switch to the new picture.
+///
+/// The other tests bound a switch from the new source's first frame. This one
+/// measures what a viewer sees, from the moment the application switches.
+/// It asserts nothing beyond the switch happening, since the time depends on
+/// the machine's load. Run it with `--ignored --nocapture`.
+#[tokio::test]
+#[ignore = "prints timings, asserts no bound"]
+async fn prints_the_switch_latency() {
+    let (sender, source) = VideoSource::push(VideoFormat {
+        size: SD,
+        rate: fps(30),
+    });
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(source, single(Some(SD)))
+        .expect("a valid encoding");
+    let (_player, mut frames) = play(&broadcast);
+    let mut feeder = feed(sender.clone(), PATTERN);
+    shows(
+        &mut frames,
+        PATTERN.0,
+        ready(Instant::now()),
+        FIRST_PICTURE_TIMEOUT,
+        "first pattern",
+    )
+    .await;
+    for round in 0..5 {
+        for (name, source) in [("camera", CAMERA), ("pattern", PATTERN)] {
+            drop(feeder);
+            let switched = Instant::now();
+            tokio::time::sleep(CAMERA_OPENS).await;
+            feeder = feed(sender.clone(), source);
+            let look = Look {
+                size: SD,
+                ..source.0
+            };
+            let latency = shows(
+                &mut frames,
+                look,
+                ready(switched),
+                FIRST_PICTURE_TIMEOUT,
+                &format!("{name} in round {round}"),
+            )
+            .await;
+            eprintln!(
+                "switch latency, {name} in round {round}: {latency:?}, \
+                 including a {CAMERA_OPENS:?} gap"
+            );
+        }
+    }
 }
