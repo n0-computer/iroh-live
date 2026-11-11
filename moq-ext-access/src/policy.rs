@@ -535,8 +535,9 @@ impl<P: PeerId, T: Policy<P>> Policy<P> for Timeout<T> {
 /// Asks `policy` about `request` within `timeout`, as a node does before it admits a session.
 ///
 /// A policy that takes longer is a rejection with
-/// [`moq_net::Error::Timeout`]. So is an authorization with a [`Transit`],
-/// since nothing forwards yet.
+/// [`moq_net::Error::Timeout`]. An authorization with a non-empty
+/// [`Transit`] is a rejection with the default code,
+/// [`moq_net::Error::Unauthorized`], since nothing forwards yet.
 ///
 /// Needs a tokio runtime with time enabled. Dropping the future drops the
 /// policy's.
