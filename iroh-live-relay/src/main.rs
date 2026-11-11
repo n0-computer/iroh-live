@@ -16,7 +16,14 @@ async fn main() -> anyhow::Result<()> {
         .install_default()
         .expect("failed to install crypto provider");
 
-    tracing_subscriber::fmt::init();
+    // The relay's startup and session lines are at info, which `RUST_LOG`
+    // left unset would hide.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     let cli = Cli::parse();
     iroh_live_relay::run(cli.relay).await
