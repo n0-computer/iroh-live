@@ -331,15 +331,17 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
     info!(%url, consume = config.consume, "attaching relay");
     let status = Watchable::new(RelayStatus::Connecting);
     let task = spawn_uplink(
-        shared,
         &uplink,
         iroh_relay,
-        config,
-        auth,
-        subscriber,
-        link,
-        link_state,
-        status.clone(),
+        LinkParts {
+            shared: shared.clone(),
+            config,
+            auth,
+            subscriber,
+            link,
+            link_state,
+            status: status.clone(),
+        },
     );
     node.tasks.insert_relay(
         link,
@@ -435,42 +437,37 @@ fn register(shared: &Shared, uplink: &Uplink, entry: LinkEntry) -> Result<LinkId
     Ok(link)
 }
 
-/// Spawns the task that runs a relay link's uplink.
-#[allow(clippy::too_many_arguments, reason = "the parts of one relay link")]
-fn spawn_uplink(
-    shared: &Arc<Shared>,
-    uplink: &Uplink,
-    iroh_relay: Option<EndpointId>,
+/// What a relay link's uplink task owns.
+struct LinkParts {
+    shared: Arc<Shared>,
     config: RelayConfig,
+    /// The authorization the link's sessions share.
     auth: auth::Handle,
+    /// Where the relay's announcements go, if the link consumes them.
     subscriber: Option<origin::Producer>,
     link: LinkId,
     link_state: LinkState,
     status: Watchable<RelayStatus>,
+}
+
+/// Spawns the task that runs a relay link's uplink.
+fn spawn_uplink(
+    uplink: &Uplink,
+    iroh_relay: Option<EndpointId>,
+    parts: LinkParts,
 ) -> tokio::task::JoinHandle<()> {
-    let span = info_span!("relay", url = %config.url, %link);
+    let span = info_span!("relay", url = %parts.config.url, link = %parts.link);
     match (uplink, iroh_relay) {
         (Uplink::Iroh(stop), Some(relay)) => {
-            let run = iroh_uplink(
-                shared.clone(),
-                relay,
-                config,
-                auth,
-                subscriber,
-                link,
-                link_state,
-                status,
-                stop.clone(),
-            );
-            tokio::spawn(run.instrument(span))
+            tokio::spawn(iroh_uplink(parts, relay, stop.clone()).instrument(span))
         }
         (Uplink::Tokio(connection), _) => {
             let run = tokio_uplink(
-                shared.clone(),
+                parts.shared,
                 moq_tokio::Connection::clone(connection),
-                link,
-                link_state,
-                status,
+                parts.link,
+                parts.link_state,
+                parts.status,
             );
             tokio::spawn(run.instrument(span))
         }
@@ -541,18 +538,16 @@ async fn tokio_uplink(
 }
 
 /// Runs an `iroh://` relay link until it is stopped, redialing with backoff.
-#[allow(clippy::too_many_arguments, reason = "one call site, all owned")]
-async fn iroh_uplink(
-    shared: Arc<Shared>,
-    relay: EndpointId,
-    config: RelayConfig,
-    auth: auth::Handle,
-    subscriber: Option<origin::Producer>,
-    link: LinkId,
-    link_state: LinkState,
-    status: Watchable<RelayStatus>,
-    stop: CancellationToken,
-) {
+async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToken) {
+    let LinkParts {
+        shared,
+        config,
+        auth,
+        subscriber,
+        link,
+        link_state,
+        status,
+    } = parts;
     let publish = served(&shared.table);
     let path = config.url.path().trim_start_matches('/');
     // An https link dials the whole URL. Over iroh only the path and a token
