@@ -455,7 +455,6 @@ impl Actor {
                 remote: Some(remote),
                 hop,
                 grant: None,
-                public: true,
                 consume: true,
                 auth,
                 session: Some(session.clone()),

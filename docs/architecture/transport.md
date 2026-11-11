@@ -82,9 +82,8 @@ every protocol version, as client and as server. The node authorizes each
 session before its handshake, so its first announcements already keep to it.
 The grant's subscribe half lists the exact paths of the publications whose
 audience admits the peer, within the session's `Grant`. The audience is
-`Granted` or a watched set of `Peers`. A relay link sees `Granted`
-publications when its `RelayOffer` is public, and never a `Peers` one, which a
-relay would forward to anyone. `Grant`, `SessionRequest`, `Audience` and the
+`Granted` or a watched set of `Peers`. A relay link sees every `Granted`
+publication and never a `Peers` one, which a relay would forward to anyone. `Grant`, `SessionRequest`, `Audience` and the
 rule that turns publications into a link's visible paths (`visible_paths`) live
 in `moq-ext-access`, which has no iroh dependency, and `iroh-live-node` re-exports
 them for endpoint ids.
@@ -139,9 +138,9 @@ as `link sample`.
 `iroh://` links dial through the node's own endpoint, since moq-tokio has no
 iroh transport. The link redials with
 backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
-the `Granted` audience go to the relay by default (`RelayOffer::Public`). The
-relay's routes join the route table at a cost of 10 (`DEFAULT_RELAY_COST`)
-against a direct link's cost of one, so a direct route wins while it exists.
+the `Granted` audience go to the relay. The relay's routes join the route table
+at a cost of 10 against a direct link's cost of one, so a direct route wins
+while it exists.
 
 `RelayConfig::consume` defaults to true, which feeds every route the relay
 knows into the node's route table. A node that only publishes through the
@@ -154,8 +153,9 @@ The node still serves only the table's local view within each session's grant,
 so its peers never see the rest of the cluster.
 
 A relay link runs the same monitor over its current MoQ session, and
-`RelayLink::link_sample()` returns the sample. `relayed` is always false there, and
-each reconnect starts a new path generation.
+`Subscription::serving_link()` returns its sample while the relay serves the
+subscription. `relayed` is always false there, and each reconnect starts a new
+path generation.
 
 ## ALPN negotiation
 

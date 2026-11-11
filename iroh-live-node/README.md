@@ -77,8 +77,8 @@ tokens do.
 
 ## Links
 
-Every link runs a connection monitor. `Session::link_sample()` and
-`RelayLink::link_sample()` return its latest `LinkSample`: round trip, minimum
+Every link runs a connection monitor. `Session::link_sample()` returns its
+latest `LinkSample`: round trip, minimum
 round trip, loss, throughput and the peer's delivery estimate, with `None` for
 what is not measured yet. `Subscription::serving_link()` returns the sample of
 whichever link serves the subscription. `LinkSample`, `MoqPreset`, `alpns()` and `ALPN` come from

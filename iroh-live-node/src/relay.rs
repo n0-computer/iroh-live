@@ -1,8 +1,7 @@
 //! Relay links: staying attached to a moq relay.
 //!
 //! A relay link serves the route table's local view, authorized for the
-//! node's [`Granted`](crate::Audience::Granted) publications when its
-//! [`RelayOffer`] is public and for nothing otherwise. It feeds what the relay
+//! node's [`Granted`](crate::Audience::Granted) publications. It feeds what the relay
 //! announces into the route table, tagged [`Link::Upstream`]: the local view
 //! hides such routes, so a route from a relay is never offered to another link.
 //!
@@ -30,7 +29,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, Node,
+    ConnectOptions, Error, Grant, LinkId, LinkKind, Node,
     handshake::{Hop, client_handshake},
     link::{self, LinkState},
     node::{Shared, Tasks},
@@ -38,11 +37,11 @@ use crate::{
     transport,
 };
 
-/// The cost a relay link adds to every route through it, unless configured.
+/// The cost a relay link adds to every route through it.
 ///
 /// Higher than a direct link's cost of one, so a direct route wins while it
 /// exists.
-pub const DEFAULT_RELAY_COST: u64 = 10;
+const RELAY_COST: u64 = 10;
 
 /// How to attach to a relay.
 #[derive(Debug, Clone)]
@@ -60,12 +59,6 @@ pub struct RelayConfig {
     /// connection redials on its own: detach and attach again for a new
     /// token there. Use [`TokenFn::fixed`] for a token that never changes.
     pub token: Option<TokenFn>,
-    /// Added to every route through this relay.
-    ///
-    /// Defaults to [`DEFAULT_RELAY_COST`].
-    pub cost: u64,
-    /// What the node publishes into the relay.
-    pub offer: RelayOffer,
     /// Whether the relay's routes enter the node's route table.
     ///
     /// A node that only publishes through the relay should turn this off.
@@ -75,14 +68,12 @@ pub struct RelayConfig {
 impl RelayConfig {
     /// Creates a config for the relay at `url`.
     ///
-    /// It offers every public publication and consumes what the relay routes.
+    /// It offers every granted publication and consumes what the relay routes.
     #[must_use]
     pub fn new(url: Url) -> Self {
         Self {
             url,
             token: None,
-            cost: DEFAULT_RELAY_COST,
-            offer: RelayOffer::default(),
             consume: true,
         }
     }
@@ -152,16 +143,6 @@ impl fmt::Debug for TokenFn {
     }
 }
 
-/// What a node publishes into a relay.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum RelayOffer {
-    /// Every publication whose audience is [`Granted`](crate::Audience::Granted).
-    #[default]
-    Public,
-    /// Nothing: the relay is for consuming only.
-    Nothing,
-}
-
 /// The state of a relay link.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RelayStatus {
@@ -207,7 +188,6 @@ pub struct RelayLink {
 struct RelayInner {
     link: LinkId,
     url: Url,
-    link_state: LinkState,
     status: Watchable<RelayStatus>,
     #[debug(skip)]
     uplink: Uplink,
@@ -223,21 +203,9 @@ impl RelayLink {
         self.inner.status.watch()
     }
 
-    /// Returns the URL the link dials, without its token.
-    pub fn url(&self) -> &Url {
-        &self.inner.url
-    }
-
     /// Returns this link's id, as [`ServingLink::id`](crate::ServingLink::id) names it.
     pub fn id(&self) -> LinkId {
         self.inner.link
-    }
-
-    /// Returns the connection monitor's latest reading of this link.
-    ///
-    /// Empty between sessions. Each new session bumps the path generation.
-    pub fn link_sample(&self) -> LinkSample {
-        self.inner.link_state.get()
     }
 
     /// Detaches from the relay.
@@ -359,7 +327,6 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
             remote: iroh_relay,
             hop,
             grant: Some(Grant::everything()),
-            public: matches!(config.offer, RelayOffer::Public),
             consume: config.consume,
             auth: auth.clone(),
             session: None,
@@ -367,7 +334,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         },
     )?;
     let url = config.url.clone();
-    info!(%url, cost = config.cost, consume = config.consume, "attaching relay");
+    info!(%url, consume = config.consume, "attaching relay");
     let status = Watchable::new(RelayStatus::Connecting);
     let task = spawn_uplink(
         shared,
@@ -377,7 +344,7 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         auth,
         subscriber,
         link,
-        link_state.clone(),
+        link_state,
         status.clone(),
     );
     moq.tasks.insert_relay(
@@ -397,7 +364,6 @@ pub(crate) fn attach(moq: &Node, config: RelayConfig) -> Result<RelayLink, Error
         inner: Arc::new(RelayInner {
             link,
             url,
-            link_state,
             status,
             uplink,
             shared: Arc::downgrade(shared),
@@ -454,7 +420,7 @@ fn uplink(
         })?
         .with_publisher(served(&shared.table))
         .with_peer_hop(hop.id())
-        .with_cost(config.cost);
+        .with_cost(RELAY_COST);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
     }
@@ -606,7 +572,7 @@ async fn iroh_uplink(
     let mut options = ConnectOptions {
         token: None,
         path: (!path.is_empty()).then(|| path.to_owned()),
-        cost: Some(config.cost),
+        cost: Some(RELAY_COST),
         congestion: None,
     };
     let mut pause = REDIAL_MIN;
@@ -745,6 +711,5 @@ mod tests {
         let config = RelayConfig::iroh(id);
         assert_eq!(config.url.scheme(), "iroh");
         assert_eq!(config.url.host_str(), Some(id.to_string().as_str()));
-        assert_eq!(config.cost, DEFAULT_RELAY_COST);
     }
 }

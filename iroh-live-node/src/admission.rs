@@ -114,7 +114,6 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         LinkKind::Direct,
         Some(&remote),
         &authorization.grant,
-        true,
     ));
     let handshake = handshake
         .with_publisher(served(&shared.table))

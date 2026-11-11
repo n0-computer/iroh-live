@@ -297,11 +297,8 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
 pub enum LinkRole {
     /// A session with a peer.
     Direct,
-    /// A moq relay.
-    Relay {
-        /// Whether [`Audience::Granted`] publications go to the relay.
-        public: bool,
-    },
+    /// A moq relay, which gets the [`Audience::Granted`] publications.
+    Relay,
 }
 
 /// A path convention: where each peer publishes, and which peer owns a path.
@@ -385,8 +382,7 @@ fn visible<P: PeerId>(
         return false;
     }
     match (audience, role) {
-        (AudienceKind::Granted, LinkRole::Direct) => true,
-        (AudienceKind::Granted, LinkRole::Relay { public }) => public,
+        (AudienceKind::Granted, _) => true,
         (AudienceKind::Peers(peers), LinkRole::Direct) => {
             remote.is_some_and(|remote| peers.contains(remote))
         }
@@ -528,27 +524,8 @@ mod tests {
         assert!(visible("p", &peers, &grant, direct, Some(&a)));
         assert!(!visible("p", &peers, &grant, direct, Some(&b)));
         assert!(!visible("p", &peers, &grant, direct, None));
-        assert!(!visible(
-            "p",
-            &granted,
-            &grant,
-            LinkRole::Relay { public: false },
-            None
-        ));
-        assert!(visible(
-            "p",
-            &granted,
-            &grant,
-            LinkRole::Relay { public: true },
-            None
-        ));
-        assert!(!visible(
-            "p",
-            &peers,
-            &grant,
-            LinkRole::Relay { public: true },
-            Some(&a)
-        ));
+        assert!(visible("p", &granted, &grant, LinkRole::Relay, None));
+        assert!(!visible("p", &peers, &grant, LinkRole::Relay, Some(&a)));
         let none = Grant {
             subscribe: Patterns::new(),
             publish: Patterns::new(),
@@ -580,12 +557,8 @@ mod tests {
         assert!(for_b.matches("live/x/public"));
         assert!(!for_b.matches("live/x/secret"));
 
-        let public = LinkRole::Relay { public: true };
-        let relay = visible_paths(publications, &grant, public, None);
+        let relay = visible_paths(publications, &grant, LinkRole::Relay, None);
         assert!(relay.matches("live/x/public"));
         assert!(!relay.matches("live/x/secret"));
-
-        let private = LinkRole::Relay { public: false };
-        assert!(visible_paths(publications, &grant, private, None).is_empty());
     }
 }

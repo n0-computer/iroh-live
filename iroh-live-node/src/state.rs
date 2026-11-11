@@ -134,8 +134,6 @@ pub(crate) struct LinkEntry {
     ///
     /// `None` for a direct link, which takes its peer's base grant.
     pub(crate) grant: Option<Grant>,
-    /// For a relay, whether `Granted` publications go to it.
-    pub(crate) public: bool,
     /// Whether the link feeds the route table.
     pub(crate) consume: bool,
     /// The link's sessions' authorization, which moq enforces on them.
@@ -353,7 +351,7 @@ impl State {
             (None, Some(entry)) => &entry.authorization.grant,
             (None, None) => &nothing,
         };
-        let mut grant = self.grant_for(link.kind, link.remote.as_ref(), base, link.public);
+        let mut grant = self.grant_for(link.kind, link.remote.as_ref(), base);
         grant.expires = peer.and_then(|entry| entry.expires);
         grant
     }
@@ -371,11 +369,10 @@ impl State {
         kind: LinkKind,
         remote: Option<&EndpointId>,
         base: &Grant,
-        public: bool,
     ) -> auth::Grant {
         let role = match kind {
             LinkKind::Direct => LinkRole::Direct,
-            LinkKind::Relay => LinkRole::Relay { public },
+            LinkKind::Relay => LinkRole::Relay,
         };
         let base = &self.effective_grant(remote, base);
         let subscribe = moq_ext_access::visible_paths(
@@ -532,7 +529,6 @@ mod tests {
             remote: Some(remote),
             hop: Hop::of(&remote),
             grant: (kind == LinkKind::Relay).then(Grant::everything),
-            public: true,
             consume: true,
             auth: auth::Handle::new(),
             session: None,
@@ -674,14 +670,6 @@ mod tests {
         let relay = link(LinkKind::Relay);
         let relay_id = relay.remote.expect("a peer");
         add(&mut state, LinkId(1), relay);
-        add(
-            &mut state,
-            LinkId(2),
-            LinkEntry {
-                public: false,
-                ..link(LinkKind::Relay)
-            },
-        );
 
         // Even a `Peers` audience that names the relay stays off it.
         state.add_publication(
@@ -701,12 +689,6 @@ mod tests {
         assert!(
             grant.publish.matches("anything/at/all"),
             "a relay is trusted with what it forwards"
-        );
-        assert!(
-            !grant_of(&state, LinkId(2))
-                .subscribe
-                .matches("live/me/public"),
-            "a relay that is offered nothing sees nothing"
         );
     }
 

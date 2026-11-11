@@ -62,12 +62,12 @@ impl Hop {
 /// keep to the grant. The node re-authorizes it as its publications change.
 pub(crate) fn authorized(shared: &Shared, remote: EndpointId, grant: &Grant) -> auth::Handle {
     let auth = auth::Handle::new();
-    let scope = shared.state.lock().expect("poisoned").grant_for(
-        LinkKind::Direct,
-        Some(&remote),
-        grant,
-        true,
-    );
+    let scope =
+        shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .grant_for(LinkKind::Direct, Some(&remote), grant);
     auth.authorize(&scope);
     auth
 }

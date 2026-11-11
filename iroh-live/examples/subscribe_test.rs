@@ -11,7 +11,7 @@ use iroh_live::{
     EndpointConfig, Mdns, Node,
     layout::LiveLayout,
     media::{PlayerConfig, remote_broadcast},
-    node::{Reach, RelayConfig, RelayOffer},
+    node::{Reach, RelayConfig},
 };
 use n0_error::bail_any;
 use tracing::info;
@@ -33,10 +33,7 @@ async fn main() -> n0_error::Result {
 
     info!(relay = %cli.relay, name = %cli.name, frames = cli.frames, "subscribing");
     // The link redials, and the subscribe waits until the relay routes the name.
-    let _link = node.attach_relay(RelayConfig {
-        offer: RelayOffer::Nothing,
-        ..RelayConfig::iroh(cli.relay)
-    })?;
+    let _link = node.attach_relay(RelayConfig::iroh(cli.relay))?;
     let subscription = node.subscribe(&cli.name, Reach::Relays).await?;
     let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
     let mut frames = player.video();

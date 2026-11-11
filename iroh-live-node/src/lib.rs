@@ -38,9 +38,8 @@
 //!   peer may subscribe to and publish.
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //!
-//! Every link runs a connection monitor. [`Session::link_sample`],
-//! [`RelayLink::link_sample`] and [`Subscription::serving_link`] return its
-//! latest [`LinkSample`].
+//! Every link runs a connection monitor. [`Session::link_sample`] and
+//! [`Subscription::serving_link`] return its latest [`LinkSample`].
 //!
 //! # Trust and grants
 //!
@@ -127,7 +126,7 @@ pub use self::{
     link::{LinkId, LinkKind, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     publish::{Audience, Publication},
-    relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus, TokenFn},
+    relay::{RelayConfig, RelayLink, RelayStatus, TokenFn},
     route::Subscription,
     session::Session,
     ticket::BroadcastTicket,
