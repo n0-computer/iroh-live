@@ -99,7 +99,7 @@ async fn pcm(
         },
     );
 
-    let mut timeline = SourceClock::new(job.clock.clone());
+    let mut source_clock = SourceClock::new(job.clock.clone());
     loop {
         let frame = tokio::select! {
             frame = frames.recv() => frame,
@@ -114,7 +114,7 @@ async fn pcm(
             }
             Err(broadcast::error::RecvError::Closed) => break,
         };
-        frame.timestamp = timeline.map(frame.timestamp);
+        frame.timestamp = source_clock.map(frame.timestamp);
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
     }

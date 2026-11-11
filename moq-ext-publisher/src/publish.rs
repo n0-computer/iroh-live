@@ -332,15 +332,22 @@ struct Shared {
     span: Span,
 }
 
+impl Shared {
+    /// Finishes the catalog and closes the broadcast.
+    fn end(&self) {
+        if let Err(err) = self.catalog.lock().expect("poisoned").finish() {
+            debug!(error = %err, "catalog did not finish cleanly");
+        }
+        self.producer.close();
+    }
+}
+
 impl Drop for Shared {
     fn drop(&mut self) {
         // The last handle is gone without `close`. End the broadcast so
         // subscribers see it end instead of waiting on it.
         self.closed.cancel();
-        if let Err(err) = self.catalog.lock().expect("poisoned").finish() {
-            debug!(error = %err, "catalog did not finish cleanly");
-        }
-        self.producer.close();
+        self.end();
     }
 }
 
@@ -606,10 +613,7 @@ impl LocalBroadcast {
                 audio.task.finish(FINISH_PATIENCE).await;
             }
             if let Some(shared) = shared.upgrade() {
-                if let Err(err) = shared.catalog.lock().expect("poisoned").finish() {
-                    debug!(error = %err, "catalog did not finish cleanly");
-                }
-                shared.producer.close();
+                shared.end();
             }
             finished.cancel();
         });
