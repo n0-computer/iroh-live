@@ -33,6 +33,8 @@ use moq_net::{
     origin::{self, Link, RouteEvent, Source},
 };
 use n0_error::e;
+use n0_future::task::AbortOnDropHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
@@ -66,29 +68,27 @@ pub enum LinkKind {
 /// A path resolved in a route table.
 ///
 /// moq moves the broadcast between routes of one instance, such as a direct
-/// link and a relay, without ending it. When the instance's last route goes,
-/// the broadcast ends, and [`closed`](Self::closed) asks the table again.
-/// Cheap to clone.
+/// link and a relay, without ending it. A task the subscription owns follows
+/// the path: when another instance takes it over, or the broadcast ends while
+/// a route still serves the path, [`as_moq`](Self::as_moq) switches to what
+/// serves it now. Cheap to clone.
 #[derive(Clone, derive_more::Debug)]
 #[debug("Subscription({}, pinned {})", inner.path, inner.pin.is_some())]
 pub struct Subscription {
     inner: Arc<SubscriptionInner>,
 }
 
-/// The link a subscription reads from, and the stream it announced.
-struct Pin {
-    link: LinkId,
-    /// The instance the link announced, if it declared one.
-    instance: Instance,
-}
-
 struct SubscriptionInner {
     path: Path,
     origin: origin::Consumer,
-    /// The broadcast [`Subscription::as_moq`] returns.
-    current: Mutex<broadcast::Consumer>,
-    /// Set if the subscription does not follow the whole table.
-    pin: Option<Pin>,
+    /// The broadcast [`Subscription::as_moq`] returns, which the follow task updates.
+    current: Arc<Mutex<broadcast::Consumer>>,
+    /// Cancelled once nothing serves the path.
+    ended: CancellationToken,
+    /// Follows the path for as long as the subscription lives.
+    _follow: AbortOnDropHandle<()>,
+    /// The link the subscription reads from, if it does not follow the whole table.
+    pin: Option<LinkId>,
     /// The route serving the path, as the table announces it.
     routes: Mutex<Routes>,
     shared: Weak<Shared>,
@@ -137,7 +137,8 @@ impl Subscription {
     /// Creates a subscription that reads `broadcast`, resolved at `path` in `origin`.
     ///
     /// `pin` is the link, and the instance it announced, that the subscription
-    /// is limited to. `None` follows the whole table.
+    /// is limited to. `None` follows the whole table. Spawns the task that
+    /// follows the path, so it must run inside a tokio runtime.
     pub(crate) fn new(
         path: Path,
         origin: origin::Consumer,
@@ -146,12 +147,23 @@ impl Subscription {
         shared: Weak<Shared>,
     ) -> Self {
         let routes = Routes::new(&origin, &path);
+        let current = Arc::new(Mutex::new(broadcast));
+        let ended = CancellationToken::new();
+        let follow = tokio::spawn(follow(
+            path.clone(),
+            origin.clone(),
+            pin.as_ref().map(|(_, instance)| instance.clone()),
+            current.clone(),
+            ended.clone(),
+        ));
         Self {
             inner: Arc::new(SubscriptionInner {
                 path,
                 origin,
-                current: Mutex::new(broadcast),
-                pin: pin.map(|(link, instance)| Pin { link, instance }),
+                current,
+                ended,
+                _follow: AbortOnDropHandle::new(follow),
+                pin: pin.map(|(link, _)| link),
                 routes: Mutex::new(routes),
                 shared,
                 claim: OnceLock::new(),
@@ -175,10 +187,10 @@ impl Subscription {
         self.inner.origin.clone()
     }
 
-    /// Returns the broadcast the path resolved to.
+    /// Returns the broadcast that serves the path now.
     ///
-    /// Only [`closed`](Self::closed) re-resolves the path, so this stays the
-    /// first broadcast unless something awaits `closed`.
+    /// The subscription's own task re-resolves the path, so a later call may
+    /// return a newer broadcast than an earlier one.
     pub fn as_moq(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
     }
@@ -211,8 +223,8 @@ impl Subscription {
 
     /// Returns the link serving the broadcast now: the pinned one, or the best route's.
     fn serving<'a>(&self, state: &'a State) -> Option<(LinkId, &'a LinkEntry)> {
-        let link = match &self.inner.pin {
-            Some(pin) => pin.link,
+        let link = match self.inner.pin {
+            Some(link) => link,
             None => {
                 let source = self.inner.routes.lock().expect("poisoned").source()?;
                 state.link_for(source)?
@@ -221,57 +233,63 @@ impl Subscription {
         Some((link, state.links.get(&link)?))
     }
 
-    /// Follows the path until nothing serves it.
+    /// Waits until nothing serves the path.
     ///
-    /// Switches [`as_moq`](Self::as_moq) to whatever serves the path now. moq
-    /// moves between routes of one instance by itself. This switches when
-    /// another instance takes the path over, even while the old broadcast is
-    /// still served to its readers. It also asks the table again when the
-    /// broadcast ends, which happens when the instance's last route went while
-    /// another remains. A pinned subscription follows only its own instance.
+    /// The subscription follows the path on its own, so awaiting this has no
+    /// effect on what [`as_moq`](Self::as_moq) returns. A pinned subscription
+    /// ends when another instance takes its path over.
     ///
     /// Cancellation safe: dropping the future loses nothing.
     pub async fn closed(&self) {
-        let instance = self.inner.pin.as_ref().map(|pin| pin.instance.clone());
-        let mut following = self
-            .inner
-            .origin
-            .follow(&self.inner.path, instance.clone())
-            .ok();
-        loop {
-            let current = self.as_moq();
-            let since = tokio::time::Instant::now();
-            let taken = async {
-                match following.as_mut() {
-                    Some(following) => following.available().await.ok().flatten(),
-                    None => std::future::pending().await,
-                }
-            };
-            tokio::select! {
-                Some(next) = taken => {
-                    if !next.is_closed() {
-                        debug!(path = %self.inner.path, "another instance serves the path");
-                        *self.inner.current.lock().expect("poisoned") = next;
-                    }
-                    continue;
-                }
-                _ = current.closed() => {}
+        self.inner.ended.cancelled().await;
+    }
+}
+
+/// Follows `path` in `origin` and keeps `current` on what serves it, until nothing does.
+///
+/// moq moves between routes of one instance by itself. This switches when
+/// another instance takes the path over, even while the old broadcast is still
+/// served to its readers. It also asks the table again when the broadcast
+/// ends, which happens when the instance's last route went while another
+/// remains. With `instance` set, it follows only that instance. Cancels `ended`
+/// when it returns.
+async fn follow(
+    path: Path,
+    origin: origin::Consumer,
+    instance: Option<Instance>,
+    current: Arc<Mutex<broadcast::Consumer>>,
+    ended: CancellationToken,
+) {
+    let _ended = ended.drop_guard();
+    let mut following = origin.follow(&path, instance.clone()).ok();
+    loop {
+        let serving = current.lock().expect("poisoned").clone();
+        let since = tokio::time::Instant::now();
+        let taken = async {
+            match following.as_mut() {
+                Some(following) => following.available().await.ok().flatten(),
+                None => std::future::pending().await,
             }
-            if since.elapsed() < REASK_WINDOW {
-                tokio::time::sleep(REASK_PAUSE).await;
+        };
+        tokio::select! {
+            Some(next) = taken => {
+                if !next.is_closed() {
+                    debug!(%path, "another instance serves the path");
+                    *current.lock().expect("poisoned") = next;
+                }
+                continue;
             }
-            let next = match self
-                .inner
-                .origin
-                .request(&self.inner.path, instance.clone())
-                .await
-            {
-                Ok(next) if !next.is_closed() => next,
-                _ => return,
-            };
-            debug!(path = %self.inner.path, "broadcast ended, a route still serves it");
-            *self.inner.current.lock().expect("poisoned") = next;
+            _ = serving.closed() => {}
         }
+        if since.elapsed() < REASK_WINDOW {
+            tokio::time::sleep(REASK_PAUSE).await;
+        }
+        let next = match origin.request(&path, instance.clone()).await {
+            Ok(next) if !next.is_closed() => next,
+            _ => return,
+        };
+        debug!(%path, "broadcast ended, a route still serves it");
+        *current.lock().expect("poisoned") = next;
     }
 }
 

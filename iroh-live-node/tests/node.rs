@@ -103,6 +103,63 @@ async fn an_own_publication_resolves_locally() {
     alice.shutdown().await;
 }
 
+/// A subscription follows a new instance of its path without anyone awaiting `closed`.
+#[tokio::test]
+#[traced_test]
+async fn a_subscription_follows_a_new_instance_on_its_own() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let first = publish(&alice.moq, alice.path("cam"), Audience::Everyone).expect("publish");
+    let subscription = step(
+        "subscribe",
+        bob.moq.subscribe(first.path(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
+    assert!(read_counter(&subscription.as_moq()).await < 1000);
+
+    // The publisher replaces its broadcast with a new instance at the same path.
+    first.broadcast().close();
+    drop(first);
+    let _second = publish_from(&alice.moq, alice.path("cam"), Audience::Everyone, 1000)
+        .expect("publish again");
+
+    step("the subscription moves to the new instance", async {
+        loop {
+            let broadcast = subscription.as_moq();
+            if !broadcast.is_closed()
+                && let Ok(Some(counter)) =
+                    tokio::time::timeout(Duration::from_millis(500), try_counter(&broadcast)).await
+                && counter >= 1000
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Reads one counter from the test track of `broadcast`, or `None` if the broadcast fails.
+async fn try_counter(broadcast: &moq_net::broadcast::Consumer) -> Option<u64> {
+    let mut subscriber = broadcast
+        .track("video")
+        .ok()?
+        .subscribe(common::subscription())
+        .await
+        .ok()?;
+    loop {
+        let mut group = subscriber.recv_group().await.ok()??;
+        if let Some(frame) = group.read_frame().await.ok()? {
+            let bytes: [u8; 8] = frame.payload[..].try_into().ok()?;
+            return Some(u64::from_be_bytes(bytes));
+        }
+    }
+}
+
 /// One path holds one publication, and a broadcast that ends frees its path.
 #[tokio::test]
 #[traced_test]
