@@ -51,16 +51,25 @@ impl TestRelay {
     ///
     /// The forgery tests use it as the relay a node must not trust.
     async fn start() -> Self {
-        Self::start_with(false).await
+        Self::start_with(false, false).await
     }
 
     /// Starts a relay with the admission `iroh_live_relay::run` uses.
     async fn start_shipped() -> Self {
-        Self::start_with(true).await
+        Self::start_with(true, false).await
+    }
+
+    /// Starts a relay as [`start_shipped`](Self::start_shipped) does, which also pulls tickets.
+    ///
+    /// An iroh session that names a ticket in its path pulls the ticket's broadcast.
+    async fn start_pulling() -> Self {
+        Self::start_with(true, true).await
     }
 
     /// Starts a relay with the admission of the shipped relay if `shipped`, else an open one.
-    async fn start_with(shipped: bool) -> Self {
+    ///
+    /// With `pull`, the shipped admission pulls the tickets iroh sessions name.
+    async fn start_with(shipped: bool, pull: bool) -> Self {
         let mut quic = moq_tokio::quic::Config::default();
         quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
         let connect = moq_tokio::connect::Config::default();
@@ -113,7 +122,13 @@ impl TestRelay {
         // moq-tokio's server has no iroh backend, so iroh clients always come
         // in through a handler: the shipped admission, or one that admits all.
         let iroh_router = if shipped {
-            iroh_live_relay::IrohSessions::new(cluster.clone(), None).router(iroh)
+            let pulls = pull.then(|| {
+                Arc::new(
+                    iroh_live_relay::pull::PullState::new(iroh.clone(), cluster.clone())
+                        .with_linger(PULL_LINGER),
+                )
+            });
+            iroh_live_relay::IrohSessions::new(cluster.clone(), pulls).router(iroh)
         } else {
             let mut router = iroh::protocol::Router::builder(iroh);
             for alpn in moq_transport_iroh::alpns() {
@@ -538,6 +553,38 @@ async fn pull_remote_broadcast_via_ticket() {
 
     drop(_sub_session);
     drop(guard);
+    drop(broadcast);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+}
+
+/// A relay link over iroh requests the path of its URL, so the relay pulls the ticket it names.
+#[tokio::test]
+#[serial]
+async fn an_iroh_relay_url_requests_its_path() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_pulling().await;
+    let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("by-path").await;
+    let name = ticket.to_string();
+
+    let (endpoint, node) = relay_node().await;
+    let url = format!("iroh://{}/{name}", relay.iroh_id)
+        .parse()
+        .expect("a valid URL");
+    let link = node
+        .attach_relay(RelayConfig {
+            offer: RelayOffer::Nothing,
+            ..RelayConfig::new(url)
+        })
+        .expect("attach");
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull the ticket the link URL names",
+    );
+
+    link.detach().await;
+    node.shutdown().await;
+    endpoint.close().await;
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;

@@ -128,13 +128,23 @@ pub mod token {
         }
     }
 
-    /// Returns the setup path that carries `token` in its `jwt` query.
+    /// Returns the setup target for `path`, with `token` in its `jwt` query.
+    ///
+    /// `path` is a URL path, without its query. Escapes it already holds stay
+    /// as they are, so a path taken from a parsed URL passes through
+    /// unchanged. Characters a URL path cannot hold, such as a space or `?`,
+    /// are percent-encoded.
     #[must_use]
-    pub fn setup_path(token: &str) -> String {
-        let query: String = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("jwt", token)
-            .finish();
-        format!("/?{query}")
+    pub fn setup_url(path: &str, token: Option<&str>) -> String {
+        let mut url = url::Url::parse("moqt://setup/").expect("a valid URL");
+        url.set_path(&format!("/{}", path.trim_start_matches('/')));
+        if let Some(token) = token {
+            url.query_pairs_mut().append_pair("jwt", token);
+        }
+        match url.query() {
+            Some(query) => format!("{}?{query}", url.path()),
+            None => url.path().to_owned(),
+        }
     }
 }
 
@@ -339,9 +349,28 @@ mod tests {
 
     #[test]
     fn a_token_rides_the_setup_path() {
-        let path = token::setup_path("a+b");
-        assert_eq!(SessionRequest::new(&path).token(), Some("a+b"));
+        let target = token::setup_url("", Some("a+b"));
+        assert_eq!(target, "/?jwt=a%2Bb");
+        assert_eq!(SessionRequest::new(&target).token(), Some("a+b"));
         assert_eq!(token::setup_token("a+b").value, b"a+b");
+    }
+
+    #[test]
+    fn a_setup_url_joins_path_and_token() {
+        assert_eq!(token::setup_url("", None), "/");
+        assert_eq!(token::setup_url("studio/cam", None), "/studio/cam");
+        assert_eq!(token::setup_url("/studio", None), "/studio");
+        assert_eq!(token::setup_url("studio", Some("abc")), "/studio?jwt=abc");
+        let request = SessionRequest::new(&token::setup_url("studio", Some("abc")));
+        assert_eq!(request.path(), "studio");
+        assert_eq!(request.token(), Some("abc"));
+    }
+
+    #[test]
+    fn a_setup_url_encodes_what_a_path_cannot_hold() {
+        assert_eq!(token::setup_url("my cam?x#y", None), "/my%20cam%3Fx%23y");
+        // An escape the path already holds is not encoded twice.
+        assert_eq!(token::setup_url("my%20cam", None), "/my%20cam");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use moq_net::{
     origin::{self, Source},
 };
 use n0_error::e;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     ConnectOptions, Error, Grant, LinkKind, SessionRequest, node::Shared, state::served, transport,
@@ -175,13 +175,15 @@ pub(crate) async fn client_handshake(
     }
     // The SETUP of moq-lite-06, the newest version iroh peers negotiate, has no
     // token field, so the token also rides the setup path.
-    if let Some(path) = options
-        .token
-        .as_deref()
-        .map(moq_ext_access::token::setup_path)
-        && let Ok(url) = url::Url::parse(&format!("moqt://iroh{path}"))
-    {
-        client = client.with_url(url);
+    if options.path.is_some() || options.token.is_some() {
+        let target = moq_ext_access::token::setup_url(
+            options.path.as_deref().unwrap_or_default(),
+            options.token.as_deref(),
+        );
+        match url::Url::parse(&format!("moqt://iroh{target}")) {
+            Ok(url) => client = client.with_url(url),
+            Err(err) => warn!(%err, %target, "setup target is no valid URL, requesting the root"),
+        }
     }
     // moq-lite-06 starts without a round trip, but a version that exchanges
     // SETUP on a stream waits for the peer's reply. A peer that never sends it

@@ -59,6 +59,11 @@ pub struct ConnectOptions {
     ///
     /// The accepting node reads it as [`SessionRequest::token`].
     pub token: Option<String>,
+    /// The path the SETUP requests, without a query.
+    ///
+    /// The accepting node reads it as [`SessionRequest::path`]. `None` requests
+    /// the root.
+    pub path: Option<String>,
     /// The cost added to every route learned over this link.
     ///
     /// `None` keeps moq's default of one.

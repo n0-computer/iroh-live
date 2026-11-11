@@ -47,6 +47,9 @@ pub const DEFAULT_RELAY_COST: u64 = 10;
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
+    ///
+    /// The path is the one the session requests, such as a ticket the relay
+    /// pulls. Over iroh it rides the MoQ SETUP.
     pub url: Url,
     /// Sent as `?jwt=` in the URL, and over iroh also in the MoQ SETUP.
     pub token: Option<String>,
@@ -489,8 +492,10 @@ async fn iroh_uplink(
     stop: CancellationToken,
 ) {
     let publish = served(&shared.table);
+    let path = config.url.path().trim_start_matches('/');
     let options = ConnectOptions {
         token: config.token.clone(),
+        path: (!path.is_empty()).then(|| path.to_owned()),
         cost: Some(config.cost),
         grant: Some(Grant::everything()),
         congestion: None,
