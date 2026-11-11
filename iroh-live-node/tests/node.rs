@@ -9,8 +9,8 @@ use std::{
 };
 
 use common::{
-    Peer, TIMEOUT, announced, ends, publish, publish_from, read_counter, reading, retracted,
-    stays_pending, step,
+    Peer, TIMEOUT, announced, ends, has_session_with, publish, publish_from, read_counter, reading,
+    retracted, session_with, stays_pending, step,
 };
 use iroh::endpoint::PathId;
 use iroh_live_node::{
@@ -392,7 +392,7 @@ async fn closing_a_session_cuts_the_peer_off() {
     .expect("subscribe");
     let mut bob_reading = reading(&subscription.broadcast()).await;
 
-    let session = step("alice sees bob", session_with(&alice, bob.id())).await;
+    let session = step("alice sees bob", session_with(&alice.node, bob.id())).await;
     session.close(moq_net::Error::Cancel);
     ends("bob after alice closed the session", &mut bob_reading).await;
 
@@ -405,34 +405,39 @@ fn queued(queue: &Queue) -> NodeConfig {
     NodeConfig::default().with_policy(queue.clone())
 }
 
-/// An application that answers a queue checks a token, and the grant bounds what the peer sees.
-#[tokio::test]
-#[traced_test]
-async fn a_queue_checks_a_token_and_bounds_offers() {
-    let queue = Queue::new(16);
-    let alice = Peer::with_config(queued(&queue)).await;
-    let bob = Peer::spawn().await;
-    let mallory = Peer::spawn().await;
-
-    let public = publish(&alice.node, alice.path("public"), Audience::Granted).expect("publish");
-    let secret = publish(&alice.node, alice.path("secret"), Audience::Granted).expect("publish");
-
-    let alice_id = alice.id();
+/// Answers `queue` as an application does: a peer that presents the token reads `public`.
+///
+/// `public` is the path of a publication of `alice`. A peer without the token
+/// is rejected.
+fn answer_with_token(queue: &Queue, alice: iroh::EndpointId) -> AbortOnDropHandle<()> {
     let answering = queue.clone();
-    let accept_loop = AbortOnDropHandle::new(tokio::spawn(async move {
+    AbortOnDropHandle::new(tokio::spawn(async move {
         while let Some(pending) = answering.next().await {
             assert_eq!(pending.request().event(), Event::Connect);
             if pending.request().token() != Some("letmein") {
                 pending.reject(Rejection::new("no token"));
                 continue;
             }
-            let pattern: Pattern = format!("live/{alice_id}/public").parse().expect("pattern");
+            let pattern: Pattern = format!("live/{alice}/public").parse().expect("pattern");
             pending.admit(Grant {
                 subscribe: Patterns::from(pattern),
                 publish: Patterns::new(),
             });
         }
-    }));
+    }))
+}
+
+/// A queue admits a peer with the token, and the grant it answers bounds what the peer sees.
+#[tokio::test]
+#[traced_test]
+async fn a_queue_admits_a_token_within_the_grant_it_answers() {
+    let queue = Queue::new(16);
+    let alice = Peer::with_config(queued(&queue)).await;
+    let bob = Peer::spawn().await;
+
+    let public = publish(&alice.node, alice.path("public"), Audience::Granted).expect("publish");
+    let secret = publish(&alice.node, alice.path("secret"), Audience::Granted).expect("publish");
+    let _answers = answer_with_token(&queue, alice.id());
 
     let session = step(
         "bob connects with the token",
@@ -463,8 +468,23 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
     )
     .await;
 
-    // Without the token the session is refused. The dialer's half of the
-    // handshake completes first, so the refusal arrives as the session closing.
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A queue whose application wants a token refuses a peer that presents none.
+#[tokio::test]
+#[traced_test]
+async fn a_queue_refuses_a_peer_without_a_token() {
+    let queue = Queue::new(16);
+    let alice = Peer::with_config(queued(&queue)).await;
+    let mallory = Peer::spawn().await;
+
+    let public = publish(&alice.node, alice.path("public"), Audience::Granted).expect("publish");
+    let _answers = answer_with_token(&queue, alice.id());
+
+    // The dialer's half of the handshake completes first, so the refusal may
+    // arrive as the session closing.
     match step(
         "mallory connects",
         mallory.node.connect(alice.endpoint.addr()),
@@ -482,12 +502,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
         }
     }
     assert!(
-        !alice
-            .node
-            .sessions()
-            .get()
-            .iter()
-            .any(|session| session.peer() == mallory.id()),
+        !has_session_with(&alice.node, mallory.id()),
         "mallory was admitted"
     );
     let err = step(
@@ -506,9 +521,7 @@ async fn a_queue_checks_a_token_and_bounds_offers() {
         "{err:#}"
     );
 
-    drop(accept_loop);
     alice.shutdown().await;
-    bob.shutdown().await;
     mallory.shutdown().await;
 }
 
@@ -542,7 +555,7 @@ async fn a_peer_cannot_route_another_publishers_path() {
     )
     .await
     .expect("connect");
-    let _session = step("bob sees mallory", session_with(&bob, mallory.id())).await;
+    let _session = step("bob sees mallory", session_with(&bob.node, mallory.id())).await;
 
     // Her own path reaches bob's table, and the forged one does not even
     // reach her session: the grant refuses it.
@@ -766,7 +779,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     step("bob connects", bob.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    step("alice sees bob", session_with(&alice, bob.id())).await;
+    step("alice sees bob", session_with(&alice.node, bob.id())).await;
 
     let subscription = step(
         "within the grant",
@@ -784,7 +797,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     .await
     .expect_err("resolved a path outside bob's grant");
     assert!(matches!(err, Error::NotGranted { .. }), "{err:#}");
-    let session = step("alice sees bob", session_with(&alice, bob.id())).await;
+    let session = step("alice sees bob", session_with(&alice.node, bob.id())).await;
     let err = step("outside the grant", session.subscribe(other.path()))
         .await
         .expect_err("resolved a path outside bob's grant");
@@ -929,7 +942,7 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     assert!(to_bob.dialed() && to_carol.dialed());
 
     announced(&mut bob.node.origin().announced(), path).await;
-    let from_alice = step("bob sees alice", session_with(&bob, alice.id())).await;
+    let from_alice = step("bob sees alice", session_with(&bob.node, alice.id())).await;
     let subscription = step("bob subscribes", from_alice.subscribe(publication.path()))
         .await
         .expect("bob is in the set");
@@ -938,7 +951,7 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     // Carol sees the public one, and never the one for bob.
     let mut carol_table = carol.node.origin().announced();
     announced(&mut carol_table, public.path().as_str()).await;
-    let from_alice = step("carol sees alice", session_with(&carol, alice.id())).await;
+    let from_alice = step("carol sees alice", session_with(&carol.node, alice.id())).await;
     stays_pending(
         "carol resolved a path whose audience leaves her out",
         QUIET,
@@ -1101,8 +1114,8 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     step("carol connects", carol.node.connect(alice.endpoint.addr()))
         .await
         .expect("connect");
-    let with_bob = step("alice sees bob", session_with(&alice, bob.id())).await;
-    let with_carol = step("alice sees carol", session_with(&alice, carol.id())).await;
+    let with_bob = step("alice sees bob", session_with(&alice.node, bob.id())).await;
+    let with_carol = step("alice sees carol", session_with(&alice.node, carol.id())).await;
 
     let subscription = step("carol's session", with_carol.subscribe(publication.path()))
         .await
@@ -1118,19 +1131,4 @@ async fn a_pinned_subscribe_ignores_a_third_peer_with_an_overlapping_grant() {
     alice.shutdown().await;
     bob.shutdown().await;
     carol.shutdown().await;
-}
-
-/// Waits until `node` has a session with `peer`, and returns it.
-async fn session_with(node: &Peer, peer: iroh::EndpointId) -> iroh_live_node::Session {
-    let mut sessions = node.node.sessions();
-    loop {
-        if let Some(session) = sessions
-            .get()
-            .into_iter()
-            .find(|session| session.peer() == peer)
-        {
-            return session;
-        }
-        sessions.updated().await.expect("node gone");
-    }
 }

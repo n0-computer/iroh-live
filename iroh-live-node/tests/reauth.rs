@@ -14,7 +14,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use common::{Peer, endpoint, ends, eventually, publish, reading, step};
+use common::{Peer, endpoint, ends, eventually, has_session_with, publish, reading, step};
 use iroh::{Endpoint, EndpointId};
 use iroh_live_node::{
     Audience, ConnectOptions, Error, Grant, Node, NodeConfig, Reach, Session,
@@ -27,14 +27,6 @@ use tokio::sync::Notify;
 
 /// How long an authorization in these tests lasts before the node asks again.
 const SHORT: Duration = Duration::from_millis(400);
-
-/// Reports whether `node` lists an open session with `peer`.
-fn has_session_with(node: &Node, peer: EndpointId) -> bool {
-    node.sessions()
-        .get()
-        .iter()
-        .any(|session| session.peer() == peer)
-}
 
 #[tokio::test]
 #[traced_test]

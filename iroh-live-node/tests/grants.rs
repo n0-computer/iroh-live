@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-use common::{Peer, announced, ends, eventually, publish, reading, stays_pending, step};
+use common::{
+    Peer, announced, dial_refused, ends, eventually, has_session_with, publish, reading,
+    session_with, stays_pending, step,
+};
 use iroh::EndpointId;
 use iroh_live_node::{
     Audience, Error, Grant, Layout, NodeConfig, Reach, Session,
@@ -658,45 +661,13 @@ async fn rejecting(banned: iroh::EndpointId) -> Peer {
     .await
 }
 
-/// Waits until `node` holds a session with `peer`, and returns it.
-async fn session_with(node: &iroh_live_node::Node, peer: iroh::EndpointId) -> Session {
-    let mut sessions = node.sessions();
-    step("the session registers", async {
-        loop {
-            if let Some(session) = sessions.get().into_iter().find(|s| s.peer() == peer) {
-                return session;
-            }
-            sessions.updated().await.expect("the node is alive");
-        }
-    })
-    .await
-}
-
-/// Reports whether `node` lists a session with `peer`.
-fn has_session_with(node: &iroh_live_node::Node, peer: iroh::EndpointId) -> bool {
-    node.sessions()
-        .get()
-        .iter()
-        .any(|session| session.peer() == peer)
-}
-
-/// Waits for a session the remote side refuses to end, or for the dial to fail.
-async fn refused(dial: Result<Session, Error>) {
-    match dial {
-        Ok(session) => {
-            step("the refused session closes", session.closed()).await;
-        }
-        Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
-    }
-}
-
 #[tokio::test]
 #[traced_test]
 async fn a_policy_rejection_refuses_an_accept_and_fails_a_dial() {
     let mallory = Peer::spawn().await;
     let bob = rejecting(mallory.id()).await;
 
-    refused(step("mallory dials", mallory.node.connect(bob.endpoint.addr())).await).await;
+    dial_refused(step("mallory dials", mallory.node.connect(bob.endpoint.addr())).await).await;
     assert!(!has_session_with(&bob.node, mallory.id()));
 
     let err = step("bob dials", bob.node.connect(mallory.endpoint.addr()))
@@ -716,7 +687,7 @@ async fn a_policy_rejection_refuses_an_accept_and_fails_a_dial() {
     step("carol dials", carol.node.connect(bob.endpoint.addr()))
         .await
         .expect("carol is admitted");
-    session_with(&bob.node, carol.id()).await;
+    step("the session registers", session_with(&bob.node, carol.id())).await;
 
     mallory.shutdown().await;
     bob.shutdown().await;
@@ -773,7 +744,11 @@ async fn a_policy_grant_holds_in_both_directions() {
     )
     .await
     .expect("carol connects");
-    let accepted = session_with(&alice.node, carol.id()).await;
+    let accepted = step(
+        "the session registers",
+        session_with(&alice.node, carol.id()),
+    )
+    .await;
     assert!(!accepted.dialed());
     assert_eq!(accepted.grant(), fleet(&carol.id()));
     let from_carol = step(
@@ -810,7 +785,7 @@ async fn a_policy_that_asks_for_transit_closes_the_session() {
     .await;
     let bob = Peer::spawn().await;
 
-    refused(step("bob dials", bob.node.connect(alice.endpoint.addr())).await).await;
+    dial_refused(step("bob dials", bob.node.connect(alice.endpoint.addr())).await).await;
     assert!(!has_session_with(&alice.node, bob.id()));
 
     let err = step("alice dials", alice.node.connect(bob.endpoint.addr()))

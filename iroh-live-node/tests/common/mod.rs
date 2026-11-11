@@ -15,11 +15,12 @@ use std::time::Duration;
 use iroh::EndpointId;
 pub(crate) use iroh_live_node::test_util::{TIMEOUT, TestNode, endpoint, eventually, step};
 use iroh_live_node::{
-    Audience, Grant, Node, NodeConfig, Publication,
+    Audience, Error, Grant, Node, NodeConfig, Publication, Session,
     policy::{self, PeerRequest, Policy},
 };
 use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
 use n0_future::task::AbortOnDropHandle;
+use n0_watcher::Watcher as _;
 
 /// How long a test track keeps its groups, on both ends.
 pub(crate) const MAX_AGE: Duration = Duration::from_secs(5);
@@ -236,4 +237,39 @@ async fn wait_for(updates: &mut announce::Consumer, path: &str, active: bool) {
         }
     })
     .await
+}
+
+/// Waits until `node` holds a session with `peer`, and returns it.
+///
+/// Waits without a bound. Wrap it in [`step`].
+pub(crate) async fn session_with(node: &Node, peer: EndpointId) -> Session {
+    let mut sessions = node.sessions();
+    loop {
+        if let Some(session) = sessions
+            .get()
+            .into_iter()
+            .find(|session| session.peer() == peer)
+        {
+            return session;
+        }
+        sessions.updated().await.expect("the node is alive");
+    }
+}
+
+/// Reports whether `node` lists a session with `peer`.
+pub(crate) fn has_session_with(node: &Node, peer: EndpointId) -> bool {
+    node.sessions()
+        .get()
+        .iter()
+        .any(|session| session.peer() == peer)
+}
+
+/// Waits for a dialed session the remote side refuses to end, or checks that the dial failed.
+pub(crate) async fn dial_refused(dial: Result<Session, Error>) {
+    match dial {
+        Ok(session) => {
+            step("the refused session closes", session.closed()).await;
+        }
+        Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
+    }
 }

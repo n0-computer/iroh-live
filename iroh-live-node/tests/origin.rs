@@ -263,7 +263,7 @@ async fn wait_for_paths(origin: &origin::Producer, expected: &[&str]) {
 /// reads there is reset, and the other session never notices.
 #[tokio::test]
 #[n0_tracing_test::traced_test]
-async fn grants_show_sessions_different_publications_of_one_origin() {
+async fn two_sessions_see_different_publications_of_one_origin() {
     const UPSTREAM_HOP: u64 = 100;
     const NODE_HOP: u64 = 200;
     const BOB_HOP: u64 = 300;
