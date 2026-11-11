@@ -523,8 +523,10 @@ mod tests {
             }),
             ..Default::default()
         };
-        let mut status = PlayerStatus::default();
-        status.decoder = Some("openh264".to_string());
+        let status = PlayerStatus {
+            decoder: Some("openh264".to_string()),
+            ..PlayerStatus::default()
+        };
         let section = render_playback(&stats, &status);
         assert!(section.summary.starts_with(StatCategory::Render.label()));
         assert!(section.summary.contains("high"), "{}", section.summary);

@@ -596,7 +596,6 @@ mod tests {
     fn an_excluded_rendition_is_left_at_once() {
         let constraints = Constraints {
             excluded: BTreeSet::from(["1080p".to_string()]),
-            ..Constraints::default()
         };
         let chosen = Bound::default().decide(
             &ladder(),
