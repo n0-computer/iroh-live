@@ -90,10 +90,11 @@ router.shutdown().await?;
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
 //! | [`EndpointConfig::bind`] | yes | nothing is bound |
+//! | [`BoundNode::bind`] | yes | nothing is bound |
 //! | [`Node::subscribe`], [`Node::subscribe_ticket`] | yes | abandons the wait, and a dial it started continues for other callers |
 //! | [`calls::Calls::call`], [`calls::Calls::answer`] | yes | hangs up |
 //! | [`EndpointConfig::apply`] | yes | the builder is lost, nothing is bound |
-//! | [`Node::shutdown`] | no, idempotent | call again to finish |
+//! | [`Node::shutdown`], [`BoundNode::shutdown`] | no, idempotent | call again to finish |
 //!
 //! [`Node::shutdown`] does not close the endpoint. Whoever binds it closes
 //! it, directly or through `Router::shutdown`.
@@ -180,6 +181,6 @@ pub use moq_json as json;
 
 pub use self::{
     app::BoundNode,
-    endpoint::{EndpointConfig, Mdns, secret_key_file},
+    endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
     error::Error,
 };

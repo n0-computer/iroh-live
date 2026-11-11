@@ -634,7 +634,7 @@ async fn frames_survive_a_loss_spike() {
 /// Real packet loss steps the ladder down, and clearing it steps back up.
 ///
 /// The loss reaches the adaptation through QUIC loss detection and the
-/// connection monitor. `e2e::adaptive_rendition_switching` feeds made-up
+/// connection monitor. `e2e::heavy_loss_moves_the_player_down_the_ladder` feeds made-up
 /// signals instead.
 #[tokio::test]
 #[traced_test]

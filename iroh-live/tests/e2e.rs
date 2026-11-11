@@ -13,7 +13,7 @@ use std::{
 use iroh::protocol::Router;
 use iroh_live::{
     Node,
-    calls::{Calls, HungUp},
+    calls::{Calls, HangUpReason},
     layout::LiveLayout,
     media::{
         AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player,
@@ -81,7 +81,7 @@ async fn first_frame(player: &Player) {
 /// Decoded frames arrive with non-zero dimensions and non-decreasing timestamps.
 #[tokio::test]
 #[traced_test]
-async fn publish_subscribe_video() {
+async fn a_subscriber_decodes_frames_in_order() {
     let (publisher, _broadcast, _router) = async {
         let node = node().await;
         let router = serve(&node);
@@ -198,7 +198,7 @@ async fn a_call_with_media_rings_answers_and_hangs_up() {
         let hung_up = tokio::time::timeout(TIMEOUT, at_bob.ended())
             .await
             .expect("bob did not notice the hang-up");
-        assert_eq!(hung_up, HungUp::Withdrawn);
+        assert_eq!(hung_up, HangUpReason::Withdrawn);
         drop((at_bob, player));
         // The next round rings anew only once both withdrawals have arrived:
         // Alice's at Bob, and Bob's, from his end of the call, at Alice.
@@ -219,7 +219,7 @@ async fn a_call_with_media_rings_answers_and_hangs_up() {
 /// Plays into a null output, so the test needs no audio device.
 #[tokio::test]
 #[traced_test]
-async fn publish_subscribe_audio() {
+async fn opus_audio_crosses_the_transport_and_decodes() {
     let publisher = node().await;
     let _router = serve(&publisher);
     let broadcast = publish(&publisher, "av-stream");
@@ -258,7 +258,7 @@ async fn publish_subscribe_audio() {
 /// The samples are made up and fed in through `set_network`.
 #[tokio::test]
 #[traced_test]
-async fn adaptive_rendition_switching() {
+async fn heavy_loss_moves_the_player_down_the_ladder() {
     let publisher = node().await;
     let _router = serve(&publisher);
     let broadcast = publish(&publisher, "adaptive-stream");

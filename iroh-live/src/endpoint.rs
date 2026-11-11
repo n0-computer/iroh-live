@@ -146,7 +146,7 @@ impl EndpointConfig {
 ///
 /// Fails if the file cannot be read or written, or holds something other than
 /// a key.
-pub fn secret_key_file(path: &Path) -> std::io::Result<SecretKey> {
+pub fn load_or_create_secret_key(path: &Path) -> std::io::Result<SecretKey> {
     match std::fs::read(path) {
         Ok(stored) => {
             let bytes = <[u8; 32]>::try_from(stored.as_slice()).map_err(|_| {
@@ -183,8 +183,8 @@ mod tests {
     #[test]
     fn a_stored_key_reads_back() {
         let path = scratch();
-        let created = secret_key_file(&path).expect("creates the key");
-        let loaded = secret_key_file(&path).expect("loads the key");
+        let created = load_or_create_secret_key(&path).expect("creates the key");
+        let loaded = load_or_create_secret_key(&path).expect("loads the key");
         std::fs::remove_file(&path).expect("removes the scratch file");
         assert_eq!(created.to_bytes(), loaded.to_bytes());
     }
@@ -193,7 +193,7 @@ mod tests {
     fn a_file_that_is_not_a_key_is_refused() {
         let path = scratch();
         std::fs::write(&path, b"nowhere near a key").expect("writes the scratch file");
-        let result = secret_key_file(&path);
+        let result = load_or_create_secret_key(&path);
         std::fs::remove_file(&path).expect("removes the scratch file");
         assert!(result.is_err());
     }

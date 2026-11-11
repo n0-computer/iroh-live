@@ -7,7 +7,7 @@ use std::{collections::BTreeSet, time::Duration};
 use iroh::EndpointId;
 use iroh_live::{
     Audience, NodeConfig, Reach,
-    calls::{Call, CallEvent, Calls, Error, HungUp},
+    calls::{Call, CallEvent, Calls, Error, HangUpReason},
     layout::LiveLayout,
     node::policy::Policy,
 };
@@ -96,7 +96,10 @@ async fn a_call_rings_answers_and_hangs_up() {
     );
 
     drop(call_a);
-    assert_eq!(step("hang-up", call_b.ended()).await, HungUp::Withdrawn);
+    assert_eq!(
+        step("hang-up", call_b.ended()).await,
+        HangUpReason::Withdrawn
+    );
 
     a.shutdown().await;
     b.shutdown().await;
@@ -172,7 +175,10 @@ async fn a_hung_up_peer_rings_again_only_after_withdrawing() {
         !b.calls.ringing().get().contains(&a.id()),
         "a stays out while its old offer stands"
     );
-    assert_eq!(step("hang-up", call_a.ended()).await, HungUp::Withdrawn);
+    assert_eq!(
+        step("hang-up", call_a.ended()).await,
+        HangUpReason::Withdrawn
+    );
     drop(call_a);
     eventually("the offer was withdrawn", || {
         !b.calls.ringing().get().contains(&a.id())
@@ -201,7 +207,7 @@ async fn losing_the_session_ends_the_call_as_lost() {
     for session in a.node.sessions().get() {
         session.close(moq_net::Error::Cancel);
     }
-    assert_eq!(step("lost", call_a.ended()).await, HungUp::Lost);
+    assert_eq!(step("lost", call_a.ended()).await, HangUpReason::Lost);
 
     a.shutdown().await;
     b.shutdown().await;
@@ -217,7 +223,7 @@ async fn a_callee_that_shuts_down_is_reported_as_lost() {
     // b keeps its call, so its side goes only with its node.
     let peer = b.id();
     b.shutdown().await;
-    assert_eq!(step("lost", call_a.ended()).await, HungUp::Lost);
+    assert_eq!(step("lost", call_a.ended()).await, HangUpReason::Lost);
     let hung_up = step("hang-up event", async {
         loop {
             match events.next().await.expect("an event") {
@@ -227,7 +233,7 @@ async fn a_callee_that_shuts_down_is_reported_as_lost() {
         }
     })
     .await;
-    assert_eq!(hung_up, (peer, HungUp::Lost));
+    assert_eq!(hung_up, (peer, HangUpReason::Lost));
 
     drop(call_b);
     a.shutdown().await;
@@ -403,7 +409,7 @@ async fn a_contacts_only_callee_refuses_strangers_and_drops_removed_contacts() {
     bob.node.reauthorize(alice.id());
     assert_eq!(
         step("the call ends", call_alice.ended()).await,
-        HungUp::Lost
+        HangUpReason::Lost
     );
     assert!(bob.node.grant_for(alice.id()).is_none());
 

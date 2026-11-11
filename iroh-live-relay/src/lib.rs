@@ -376,7 +376,7 @@ fn secret_key() -> Result<SecretKey, Error> {
     };
     let path = dir.join("iroh_secret_key");
     std::fs::create_dir_all(&dir)
-        .and_then(|()| iroh_live::secret_key_file(&path))
+        .and_then(|()| iroh_live::load_or_create_secret_key(&path))
         .map_err(|source| {
             e!(Error::Identity {
                 path,

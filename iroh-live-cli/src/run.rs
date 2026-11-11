@@ -10,8 +10,8 @@ use iroh::SecretKey;
 use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
+    load_or_create_secret_key,
     media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
-    secret_key_file,
 };
 use n0_error::{Result, anyerr};
 use serde::{Deserialize, Deserializer, de};
@@ -349,7 +349,7 @@ fn stored_secret_key(name: &str) -> Result<SecretKey> {
     std::fs::create_dir_all(&dir)
         .map_err(|err| anyerr!("failed to create {}: {err}", dir.display()))?;
     let path = dir.join(format!("{name}.key"));
-    let key = secret_key_file(&path)
+    let key = load_or_create_secret_key(&path)
         .map_err(|err| anyerr!("failed to load {}: {err}", path.display()))?;
     info!(name, path = %path.display(), "session secret key ready");
     Ok(key)

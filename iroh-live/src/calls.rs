@@ -70,7 +70,7 @@ const EVENT_QUEUE: usize = 64;
 
 /// Why a call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HungUp {
+pub enum HangUpReason {
     /// The peer withdrew its side of the call.
     Withdrawn,
     /// The session with the peer ended.
@@ -86,7 +86,7 @@ pub enum CallEvent {
     /// The peer rings this node.
     Ringing(EndpointId),
     /// The peer ended the call that was in progress.
-    HungUp(EndpointId, HungUp),
+    HungUp(EndpointId, HangUpReason),
     /// The reader fell behind and missed events. Read [`Calls::ringing`] again.
     Lagged,
 }
@@ -198,10 +198,10 @@ impl Inner {
     }
 
     /// Returns why the call with `peer` ended, once its side is gone.
-    fn hung_up(&self, peer: EndpointId) -> HungUp {
+    fn hung_up(&self, peer: EndpointId) -> HangUpReason {
         match self.session_with(peer) {
-            Some(_) => HungUp::Withdrawn,
-            None => HungUp::Lost,
+            Some(_) => HangUpReason::Withdrawn,
+            None => HangUpReason::Lost,
         }
     }
 
@@ -318,13 +318,9 @@ impl Calls {
         if audience.insert(peer) {
             self.inner.audience.set(audience).ok();
         }
-        let connected = self
-            .inner
-            .node
-            .sessions()
-            .get()
-            .iter()
-            .any(|session| session.peer() == peer);
+        // A session that is closing does not count, or a ring right after a
+        // hang-up would skip the redial.
+        let connected = self.inner.session_with(peer).is_some();
         if connected || state.dialing.contains_key(&peer) {
             return;
         }
@@ -506,7 +502,7 @@ impl Call {
     /// Waits until the call ends, and returns why.
     ///
     /// Cancellation safe.
-    pub async fn ended(&self) -> HungUp {
+    pub async fn ended(&self) -> HangUpReason {
         let broadcast = self.subscription.broadcast();
         let mut sessions = self.inner.node.sessions();
         // The session is looked up on every pass rather than kept from the
@@ -515,14 +511,14 @@ impl Call {
             match self.inner.session_with(self.peer) {
                 Some(session) => {
                     return select! {
-                        _ = session.closed() => HungUp::Lost,
+                        _ = session.closed() => HangUpReason::Lost,
                         _ = broadcast.closed() => self.inner.hung_up(self.peer),
                     };
                 }
                 None => select! {
-                    _ = broadcast.closed() => return HungUp::Lost,
+                    _ = broadcast.closed() => return HangUpReason::Lost,
                     updated = sessions.updated() => if updated.is_err() {
-                        return HungUp::Lost;
+                        return HangUpReason::Lost;
                     },
                 },
             }
