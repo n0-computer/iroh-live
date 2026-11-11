@@ -38,3 +38,7 @@ rcan = [
     "dep:postcard",
     "dep:serde",
 ]
+
+[dev-dependencies]
+# A runtime with paused time, for `Policy::timeout` and `decide_within`.
+tokio = { version = "1.53.1", features = ["macros", "rt", "time", "test-util"] }

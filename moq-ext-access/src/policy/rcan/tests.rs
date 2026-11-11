@@ -250,3 +250,68 @@ fn an_expired_chain_from_someone_else_is_unauthorized_not_expired() {
         rejection.code()
     );
 }
+
+#[test]
+fn an_empty_chain_rejects() {
+    let rejection = verify(&alice_verifier(), &key(2), &encode_chain(&[])).expect_err("rejected");
+    assert!(rejection.reason().contains("empty"), "{rejection}");
+    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
+}
+
+#[test]
+fn a_peer_id_that_is_no_ed25519_key_rejects() {
+    let (alice, bob) = (key(1), key(2));
+    let link =
+        Rcan::issuing_builder(&alice, bob.verifying_key(), publish_under("bob")).sign(hours(1));
+    // Some 32-byte strings are no point on the curve.
+    let bytes = (0..=u8::MAX)
+        .map(|byte| [byte; 32])
+        .find(|bytes| VerifyingKey::from_bytes(bytes).is_err())
+        .expect("a byte string that is no key");
+    let request = PeerRequest::new(Device(bytes), SessionRequest::default(), Event::Connect);
+    let rejection = alice_verifier()
+        .verify(&encode_chain(&[link]), &request)
+        .expect_err("rejected");
+    assert!(rejection.reason().contains("ed25519"), "{rejection}");
+}
+
+#[test]
+fn a_forged_chain_rejects_as_unauthorized() {
+    let (alice, bob, phone) = (key(1), key(2), key(3));
+    let issued =
+        Rcan::issuing_builder(&alice, bob.verifying_key(), publish_under("bob")).sign(hours(1));
+    // Signed by the phone, which nobody delegated to.
+    let forged = Rcan::delegating_builder(
+        &phone,
+        phone.verifying_key(),
+        alice.verifying_key(),
+        publish_under("bob"),
+    )
+    .sign(hours(1));
+    let rejection =
+        verify(&alice_verifier(), &phone, &encode_chain(&[issued, forged])).expect_err("rejected");
+    assert!(
+        matches!(rejection.code(), moq_net::Error::Unauthorized),
+        "{rejection}"
+    );
+}
+
+#[test]
+fn the_root_matches_whole_segments() {
+    assert!(within("spaces/alice", "spaces/alice"));
+    assert!(within("spaces/alice/bob", "spaces/alice"));
+    assert!(within("/spaces/alice/", "spaces/alice"));
+    assert!(within("anything", ""));
+    assert!(!within("spaces/alicea", "spaces/alice"));
+    assert!(!within("spaces", "spaces/alice"));
+}
+
+#[test]
+fn a_verifier_at_the_empty_root_admits_any_root() {
+    let (alice, bob) = (key(1), key(2));
+    let elsewhere = MoqCapability::new("fleet").with_publish(pattern("**"));
+    let link = Rcan::issuing_builder(&alice, bob.verifying_key(), elsewhere).sign(hours(1));
+    let verifier = RcanVerifier::new(alice.verifying_key(), "");
+    let authorization = verify(&verifier, &bob, &encode_chain(&[link])).expect("admitted");
+    assert!(authorization.grant.allows_publish("fleet/cam"));
+}

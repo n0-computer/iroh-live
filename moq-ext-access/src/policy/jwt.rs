@@ -203,4 +203,39 @@ mod tests {
         let no_exp = verify(&verifier, &sign(&keys, &self::claims()), "/").expect("admitted");
         assert_eq!(no_exp.expires, None);
     }
+
+    #[test]
+    fn a_malformed_token_rejects_as_unauthorized() {
+        let verifier = JwtVerifier::new(keys());
+        for token in ["", "not-a-jwt", "a.b.c", "rcan1:aaaa"] {
+            let rejection = verify(&verifier, token, "/").expect_err(token);
+            assert!(
+                matches!(rejection.code(), moq_net::Error::Unauthorized),
+                "{token}: {rejection}"
+            );
+            assert!(
+                rejection.reason().starts_with("invalid token"),
+                "{rejection}"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_grant_keeps_the_patterns_relative_to_the_path() {
+        let keys = keys();
+        let verifier = JwtVerifier::new(keys.clone());
+        let token = sign(&keys, &claims());
+        let grant = verifier
+            .verify_grant(&token, "spaces/alice")
+            .expect("admitted");
+        assert!(grant.publish.matches("bob/cam"));
+        assert!(!grant.publish.matches("spaces/alice/bob/cam"));
+        assert_eq!(grant.expires, None);
+        verifier
+            .verify_grant(&token, "spaces/eve")
+            .expect_err("another root");
+        verifier
+            .verify_grant("garbage", "spaces/alice")
+            .expect_err("not a token");
+    }
 }

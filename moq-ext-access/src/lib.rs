@@ -586,4 +586,43 @@ mod tests {
         assert!(relay.matches("live/x/public"));
         assert!(!relay.matches("live/x/secret"));
     }
+
+    #[test]
+    fn a_setup_token_out_of_band_becomes_the_token() {
+        let token = token::setup_token("from-setup");
+        let request =
+            SessionRequest::from_setup("/studio?jwt=from-query", Some((token.kind, &token.value)));
+        assert_eq!(request.path(), "studio");
+        assert_eq!(request.token(), Some("from-setup"));
+    }
+
+    #[test]
+    fn a_setup_token_of_another_kind_leaves_the_query_token() {
+        let other = moq_net::setup::Token::OUT_OF_BAND + 1;
+        let request = SessionRequest::from_setup("/studio?jwt=from-query", Some((other, b"x")));
+        assert_eq!(request.token(), Some("from-query"));
+        let request = SessionRequest::from_setup("/studio", Some((other, b"x")));
+        assert_eq!(request.token(), None);
+    }
+
+    #[test]
+    fn a_setup_token_that_is_not_utf8_is_ignored() {
+        let kind = moq_net::setup::Token::OUT_OF_BAND;
+        let request = SessionRequest::from_setup("/studio?token=t", Some((kind, &[0xff, 0xfe])));
+        assert_eq!(request.token(), Some("t"));
+        assert_eq!(SessionRequest::from_setup("/studio", None).token(), None);
+    }
+
+    #[test]
+    fn debug_output_redacts_a_setup_token() {
+        let token = token::setup_token("secret-setup");
+        let request = SessionRequest::from_setup("/studio", Some((token.kind, &token.value)));
+        let printed = format!("{request:?}");
+        assert!(!printed.contains("secret"), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+        assert!(
+            !format!("{:?}", SessionRequest::new("/studio")).contains("<redacted>"),
+            "no token, nothing to redact"
+        );
+    }
 }

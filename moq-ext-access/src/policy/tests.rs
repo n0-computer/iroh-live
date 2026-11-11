@@ -498,3 +498,200 @@ fn debug_output_never_shows_a_token() {
         "query keys are shown"
     );
 }
+
+/// A policy that never decides.
+#[derive(Debug)]
+struct Never;
+
+impl Policy<Peer> for Never {
+    async fn decide(&self, _request: &PeerRequest<Peer>) -> Decision {
+        future::pending().await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timeout_rejects_a_slow_policy_with_the_timeout_code() {
+    let policy = Never.timeout(Duration::from_secs(5));
+    let rejection = Policy::decide(&policy, &request("bob"))
+        .await
+        .expect_err("timed out");
+    assert!(
+        matches!(rejection.code(), moq_net::Error::Timeout),
+        "{rejection}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timeout_passes_a_fast_decision_through() {
+    let admitted = Policy::decide(
+        &Policy::<Peer>::timeout(Open(under("a")), Duration::from_secs(5)),
+        &request("bob"),
+    )
+    .await
+    .expect("admitted");
+    assert_eq!(admitted.grant, under("a"));
+    let closed = Policy::<Peer>::timeout(Closed, Duration::from_secs(5));
+    let rejection = Policy::decide(&closed, &request("bob"))
+        .await
+        .expect_err("rejected");
+    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_union_admits_on_its_fast_half_when_the_slow_half_times_out() {
+    let policy = Open(under("a")).union(Never.timeout(Duration::from_secs(5)));
+    let admitted = Policy::decide(&policy, &request("bob"))
+        .await
+        .expect("admitted");
+    assert_eq!(admitted.grant, under("a"));
+}
+
+#[test]
+fn a_timeout_keeps_the_inner_changes() {
+    let (changing, sender) = Changing::new();
+    let policy = changing.timeout(Duration::from_secs(5));
+    let mut changes = Policy::changes(&policy).expect("a change stream");
+    sender.try_send(()).expect("room");
+    assert_eq!(block_on(changes.next()), Some(()));
+    let closed = Policy::<Peer>::timeout(Closed, Duration::from_secs(5));
+    assert!(Policy::<Peer>::changes(&closed).is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn decide_within_passes_an_admission_through() {
+    let admitted = decide_within(&Open(under("a")), &request("bob"), Duration::from_secs(5))
+        .await
+        .expect("admitted");
+    assert_eq!(admitted, Authorization::from(under("a")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn decide_within_rejects_a_policy_that_takes_too_long() {
+    let rejection = decide_within(&Never, &request("bob"), Duration::from_secs(5))
+        .await
+        .expect_err("timed out");
+    assert!(
+        matches!(rejection.code(), moq_net::Error::Timeout),
+        "{rejection}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn decide_within_keeps_the_policys_own_rejection() {
+    let policy = from_fn(|_: &PeerRequest<Peer>| {
+        Err(Rejection::new("banned").with_code(moq_net::Error::App(9)))
+    });
+    let rejection = decide_within(&policy, &request("bob"), Duration::from_secs(5))
+        .await
+        .expect_err("rejected");
+    assert_eq!(rejection.reason(), "banned");
+    assert!(matches!(rejection.code(), moq_net::Error::App(9)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn decide_within_rejects_an_authorization_that_asks_for_transit() {
+    let policy = from_fn(|_: &PeerRequest<Peer>| {
+        Ok(Authorization {
+            transit: Transit {
+                peer_forwards: true,
+                ..Default::default()
+            },
+            ..Grant::everything().into()
+        })
+    });
+    let rejection = decide_within(&policy, &request("bob"), Duration::from_secs(5))
+        .await
+        .expect_err("rejected");
+    assert!(rejection.reason().contains("transit"), "{rejection}");
+    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
+}
+
+#[test]
+fn a_queue_frees_its_slot_once_the_application_takes_a_request() {
+    let queue = Queue::new(1);
+    let bob = request("bob");
+    let mut waiting = Box::pin(Policy::decide(&queue, &bob));
+    assert!(block_on(future::poll_once(&mut waiting)).is_none());
+    let pending = block_on(queue.next()).expect("bob's request");
+    // The request left the queue, so another fits while bob's is answered.
+    let decision = decide_queued(&queue, &request("carol"), |pending| {
+        pending.admit(under("carol"));
+    });
+    assert_eq!(decision.expect("admitted").grant, under("carol"));
+    pending.admit(under("bob"));
+    assert_eq!(block_on(waiting).expect("admitted").grant, under("bob"));
+}
+
+#[test]
+fn closing_a_queue_still_hands_out_the_waiting_requests() {
+    let queue = Queue::new(4);
+    let bob = request("bob");
+    let mut waiting = Box::pin(Policy::decide(&queue, &bob));
+    assert!(block_on(future::poll_once(&mut waiting)).is_none());
+    queue.close();
+    block_on(queue.next())
+        .expect("bob's request outlives the close")
+        .admit(Grant::subscribe_only());
+    assert!(block_on(waiting).is_ok());
+    assert!(block_on(queue.next()).is_none());
+}
+
+#[test]
+fn a_queue_asks_the_application_at_a_revalidation_without_an_authorization() {
+    let queue = Queue::new(4);
+    let revalidate = PeerRequest::new(
+        "bob".to_owned(),
+        SessionRequest::default(),
+        Event::Revalidate,
+    );
+    let decision = decide_queued(&queue, &revalidate, |pending| {
+        assert_eq!(pending.request().event(), Event::Revalidate);
+        pending.admit(under("bob"));
+    });
+    assert_eq!(decision.expect("admitted").grant, under("bob"));
+}
+
+#[test]
+fn an_answer_after_the_decision_was_dropped_is_ignored() {
+    let queue = Queue::new(4);
+    let bob = request("bob");
+    let mut waiting = Box::pin(Policy::decide(&queue, &bob));
+    assert!(block_on(future::poll_once(&mut waiting)).is_none());
+    drop(waiting);
+    // Nobody waits for the answer any more, which is no error.
+    block_on(queue.next())
+        .expect("bob's request")
+        .admit(Grant::everything());
+}
+
+#[test]
+fn a_fallback_rejection_keeps_its_code() {
+    let fallback = from_fn(|_: &PeerRequest<Peer>| {
+        Err(Rejection::new("strangers").with_code(moq_net::Error::App(4)))
+    });
+    let policy = Verify::new(Stub).with_fallback(fallback);
+    let rejection = decide(&policy, &request_for("bob", "/")).expect_err("rejected");
+    assert_eq!(rejection.reason(), "strangers");
+    assert!(matches!(rejection.code(), moq_net::Error::App(4)));
+}
+
+#[test]
+fn a_good_token_keeps_its_expiry() {
+    #[derive(Debug)]
+    struct Expiring(SystemTime);
+
+    impl TokenVerifier<Peer> for Expiring {
+        fn verify(&self, _token: &str, _request: &PeerRequest<Peer>) -> Decision {
+            Ok(Authorization {
+                expires: Some(self.0),
+                ..Grant::everything().into()
+            })
+        }
+    }
+
+    let expires = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+    let policy = Verify::new(Expiring(expires)).with_fallback(Open(Grant::subscribe_only()));
+    let authorization = decide(&policy, &request_for("bob", "/?jwt=any")).expect("admitted");
+    assert_eq!(authorization.expires, Some(expires));
+    assert_eq!(authorization.grant, Grant::everything());
+}
