@@ -307,6 +307,22 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     {
         Filter { inner: self, admit }
     }
+
+    /// Returns a policy that rejects with [`moq_net::Error::Timeout`] when this one takes longer than `after`.
+    ///
+    /// A [`union`](Self::union) waits for both halves, so a half that never
+    /// answers, such as a [`Queue`] nobody reads, holds the union until the
+    /// node's own decide timeout rejects it as a whole. Wrap that half with
+    /// a shorter timeout, and the union admits on the other half:
+    /// `Open(grant).union(queue.timeout(Duration::from_secs(5)))`.
+    ///
+    /// Needs a tokio runtime with time enabled, as the node runs on.
+    fn timeout(self, after: Duration) -> Timeout<Self>
+    where
+        Self: Sized,
+    {
+        Timeout { inner: self, after }
+    }
 }
 
 /// A [`Policy`] with its type erased, as a node stores it.
@@ -416,6 +432,9 @@ where
 }
 
 /// A policy that admits what either of two policies admits, built by [`Policy::union`].
+///
+/// It waits for both halves. Wrap a half that may not answer in time with
+/// [`Policy::timeout`].
 #[derive(Debug, Clone)]
 pub struct Union<A, B> {
     a: A,
@@ -466,6 +485,28 @@ where
             return Err(Rejection::new("filtered"));
         }
         self.inner.decide(request).await
+    }
+
+    fn changes(&self) -> Option<BoxStream<()>> {
+        self.inner.changes()
+    }
+}
+
+/// A policy that gives up after a while, built by [`Policy::timeout`].
+#[derive(Debug, Clone)]
+pub struct Timeout<T> {
+    inner: T,
+    after: Duration,
+}
+
+impl<P: PeerId, T: Policy<P>> Policy<P> for Timeout<T> {
+    async fn decide(&self, request: &PeerRequest<P>) -> Decision {
+        n0_future::time::timeout(self.after, self.inner.decide(request))
+            .await
+            .unwrap_or_else(|_| {
+                Err(Rejection::new("the policy did not decide in time")
+                    .with_code(moq_net::Error::Timeout))
+            })
     }
 
     fn changes(&self) -> Option<BoxStream<()>> {

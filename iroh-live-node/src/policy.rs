@@ -49,7 +49,7 @@ use iroh::EndpointId;
 pub use moq_ext_access::policy::JwtVerifier;
 pub use moq_ext_access::policy::{
     Authorization, Closed, Decision, DynPolicy, Event, Filter, FromFn, Open, Policy, Rejection,
-    TokenVerifier, Transit, Union, Verify, from_fn,
+    Timeout, TokenVerifier, Transit, Union, Verify, from_fn,
 };
 #[cfg(feature = "rcan")]
 pub use moq_ext_access::policy::{MoqCapability, RcanVerifier, encode_chain};
