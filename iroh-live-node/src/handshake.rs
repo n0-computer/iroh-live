@@ -107,7 +107,8 @@ pub(crate) async fn dial_session(
     options: ConnectOptions,
 ) -> Result<SessionParts, Error> {
     let remote_id = remote.id;
-    let authorization = dial_authorization(&shared, remote_id, &options).await?;
+    let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
+    let authorization = dial_authorization(&shared, remote_id, &request, &options).await?;
     let grant = &authorization.grant;
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
@@ -133,7 +134,7 @@ pub(crate) async fn dial_session(
         connection,
         dialed: true,
         authorization,
-        request: SessionRequest::default(),
+        request,
         moq,
         driver,
         auth,
@@ -144,10 +145,11 @@ pub(crate) async fn dial_session(
 ///
 /// [`ConnectOptions::grant`] wins, then the authorization a live session with
 /// the peer already holds, and then the policy decides, with `dialed` set and
-/// the path the dial requests.
+/// `request`, the path the dial requests.
 async fn dial_authorization(
     shared: &Shared,
     remote: EndpointId,
+    request: &SessionRequest,
     options: &ConnectOptions,
 ) -> Result<Authorization, Error> {
     if let Some(grant) = &options.grant {
@@ -163,8 +165,7 @@ async fn dial_authorization(
         debug!("the peer already holds an authorization");
         return Ok(authorization);
     }
-    let path = options.path.as_deref().unwrap_or_default();
-    let request = PeerRequest::new(remote, SessionRequest::new(path), true, Event::Connect);
+    let request = PeerRequest::new(remote, request.clone(), true, Event::Connect);
     decide(shared, &request).await.map_err(|source| {
         info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
         e!(Error::Rejected { source })

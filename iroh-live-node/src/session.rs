@@ -128,7 +128,7 @@ impl Session {
 
     /// Returns what the peer asked for when it opened the session.
     ///
-    /// Empty for a session this node dialed.
+    /// For a session this node dialed, the path it requested, without a token.
     pub fn request(&self) -> &SessionRequest {
         &self.inner.request
     }

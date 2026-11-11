@@ -18,7 +18,7 @@ use moq_net::{Path, broadcast, origin};
 use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
@@ -29,7 +29,7 @@ use crate::{
     admission::{self, INCOMING_QUEUE},
     handshake::{Hop, SessionParts},
     policy::{self, Authorization, DynPolicy, PeerRequest, Policy},
-    publish, relay, route,
+    publish, reauth, relay, route,
     state::State,
 };
 
@@ -58,6 +58,12 @@ pub struct NodeConfig {
     /// with the rejection's code, and fails a dial with [`Error::Rejected`].
     /// Every session with one peer shares the authorization the first of
     /// them got. Set it with [`with_policy`](Self::with_policy).
+    ///
+    /// The node asks again, with [`Event::Revalidate`](policy::Event::Revalidate),
+    /// when an authorization expires or is due for revalidation, for every
+    /// peer when the policy's [`changes`](Policy::changes) stream yields, and
+    /// when [`Node::reauthorize`] asks. A new authorization replaces the old
+    /// one on every live session with the peer, and a rejection closes them.
     ///
     /// `None` builds a policy from [`grant`](Self::grant): every peer is
     /// admitted with the grant it returns, or with
@@ -150,6 +156,10 @@ pub(crate) struct Shared {
     pub(crate) admission: Admission,
     /// Decides sessions, built from the configured grant if none was given.
     pub(crate) policy: Arc<dyn DynPolicy<EndpointId>>,
+    /// The re-decides the application asked for, until the actor takes them.
+    pub(crate) reauth_requests: Mutex<reauth::Requests>,
+    /// Wakes the actor for new [`reauth_requests`](Self::reauth_requests).
+    pub(crate) reauth_notify: Notify,
     pub(crate) owner: Option<OwnerFn>,
     /// The route table.
     pub(crate) table: origin::Producer,
@@ -220,6 +230,8 @@ impl Node {
             id,
             admission: config.admission,
             policy,
+            reauth_requests: Mutex::new(reauth::Requests::default()),
+            reauth_notify: Notify::new(),
             owner: config.owner,
             table,
             state: Mutex::new(State::default()),
@@ -286,6 +298,35 @@ impl Node {
             .expect("poisoned")
             .peer_authorization(&peer)
             .cloned()
+    }
+
+    /// Asks the policy again about `peer`, for every live session with it.
+    ///
+    /// Call it when state the policy reads changes and its
+    /// [`changes`](Policy::changes) stream does not cover it, such as a
+    /// [`filter`](Policy::filter) predicate. The decision runs in the
+    /// background: a new authorization replaces the old one on every session
+    /// with the peer, and a rejection closes them with its code. Does nothing
+    /// for a peer without a live session.
+    pub fn reauthorize(&self, peer: EndpointId) {
+        if self.grant_for(peer).is_none() {
+            return;
+        }
+        self.shared
+            .reauth_requests
+            .lock()
+            .expect("poisoned")
+            .peers
+            .insert(peer);
+        self.shared.reauth_notify.notify_one();
+    }
+
+    /// Asks the policy again about every peer with a live session.
+    ///
+    /// As [`reauthorize`](Self::reauthorize), for every peer.
+    pub fn reauthorize_all(&self) {
+        self.shared.reauth_requests.lock().expect("poisoned").all = true;
+        self.shared.reauth_notify.notify_one();
     }
 
     /// Returns a future that resolves when the node shuts down.

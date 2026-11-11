@@ -15,7 +15,10 @@
 //! The crate docs, under "Trust and grants", explain what the grants protect.
 //! The lock order is on `Shared::state`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::SystemTime,
+};
 
 use iroh::EndpointId;
 use moq_ext_access::LinkRole;
@@ -42,8 +45,36 @@ pub(crate) struct State {
     /// The policy's authorization of each peer with a live direct session.
     ///
     /// Every direct session with the peer shares it. Set when a session is
-    /// registered, and removed when the peer's last session ends.
-    peers: HashMap<EndpointId, Authorization>,
+    /// registered or a re-decide admits the peer again, and removed when the
+    /// peer's last session ends or a re-decide rejects it.
+    peers: HashMap<EndpointId, PeerEntry>,
+}
+
+/// A peer's authorization, as the node applies it to the peer's sessions.
+#[derive(Debug)]
+struct PeerEntry {
+    authorization: Authorization,
+    /// The authorization's expiry on moq's clock, worked out once when it is stored.
+    ///
+    /// moq skips a grant equal to the last one, so the expiry must not move
+    /// on every re-authorization.
+    expires: Option<moq_net::time::Instant>,
+}
+
+impl PeerEntry {
+    /// Returns the entry for `authorization`, converting its expiry to moq's clock.
+    fn new(authorization: Authorization) -> Self {
+        let expires = authorization.expires.and_then(|expires| {
+            let left = expires
+                .duration_since(SystemTime::now())
+                .unwrap_or_default();
+            moq_net::time::Instant::now().checked_add(left)
+        });
+        Self {
+            authorization,
+            expires,
+        }
+    }
 }
 
 /// How many paths a ticket may widen one peer's grant to.
@@ -172,33 +203,37 @@ impl State {
     /// Called as a session with the peer is registered, so the authorization
     /// holds for every session with the peer, older ones included.
     pub(crate) fn admit_peer(&mut self, peer: EndpointId, authorization: Authorization) {
-        self.peers.insert(peer, authorization);
+        self.peers.insert(peer, PeerEntry::new(authorization));
         self.authorize_peer(&peer);
     }
 
     /// Replaces the base grant of `peer`, if it has a live session, and re-authorizes its links.
     pub(crate) fn set_peer_grant(&mut self, peer: &EndpointId, grant: Grant) {
-        let Some(authorization) = self.peers.get_mut(peer) else {
+        let Some(entry) = self.peers.get_mut(peer) else {
             return;
         };
-        authorization.grant = grant;
+        entry.authorization.grant = grant;
         self.authorize_peer(peer);
     }
 
-    /// Forgets the authorization of `peer`, once its last session has ended.
+    /// Forgets the authorization of `peer`, and narrows its links to nothing.
+    ///
+    /// Called once the peer's last session has ended, or when a re-decide
+    /// rejects the peer and its sessions are closing.
     pub(crate) fn remove_peer(&mut self, peer: &EndpointId) {
-        self.peers.remove(peer);
+        if self.peers.remove(peer).is_some() {
+            self.authorize_peer(peer);
+        }
     }
 
     /// Returns the authorization of `peer`, if it has a live session.
     pub(crate) fn peer_authorization(&self, peer: &EndpointId) -> Option<&Authorization> {
-        self.peers.get(peer)
+        self.peers.get(peer).map(|entry| &entry.authorization)
     }
 
     /// Returns the base grant of `peer`, if it has a live session.
     pub(crate) fn peer_grant(&self, peer: &EndpointId) -> Option<&Grant> {
-        self.peers
-            .get(peer)
+        self.peer_authorization(peer)
             .map(|authorization| &authorization.grant)
     }
 
@@ -311,18 +346,25 @@ impl State {
         link.auth.authorize(&grant);
     }
 
-    /// Returns the moq grant of `link`, from its own grant or its peer's.
+    /// Returns the moq grant of `link`, from its own grant or its peer's authorization.
     ///
-    /// A direct link whose peer has no base grant yet, which registration
-    /// rules out, may do nothing.
+    /// A direct link whose peer has no authorization may do nothing: before
+    /// registration, which rules that out, and while a rejected peer's
+    /// sessions close. The grant carries the authorization's expiry.
     fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
         let nothing = Grant::nothing();
-        let base = match (&link.grant, &link.remote) {
+        let peer = match (&link.grant, &link.remote) {
+            (None, Some(peer)) => self.peers.get(peer),
+            _ => None,
+        };
+        let base = match (&link.grant, peer) {
             (Some(grant), _) => grant,
-            (None, Some(peer)) => self.peer_grant(peer).unwrap_or(&nothing),
+            (None, Some(entry)) => &entry.authorization.grant,
             (None, None) => &nothing,
         };
-        self.grant_for(link.kind, link.remote.as_ref(), base, link.public)
+        let mut grant = self.grant_for(link.kind, link.remote.as_ref(), base, link.public);
+        grant.expires = peer.and_then(|entry| entry.expires);
+        grant
     }
 
     /// Returns the moq grant of a link, from the publications it may see.

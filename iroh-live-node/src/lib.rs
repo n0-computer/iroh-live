@@ -55,10 +55,14 @@
 //! This holds on both sides of a session, dialed or accepted, and on every
 //! protocol version.
 //!
-//! [`NodeConfig::grant`] gives each peer its grant from its endpoint id.
-//! Without it, a peer may subscribe to anything and publish nothing.
-//! [`Grant::publish_under`] lets a peer publish only at paths that name it, so
-//! it cannot stand in for another peer.
+//! A [`policy`] decides who may hold a session and with which grant, on
+//! accept and on dial (see [`NodeConfig::policy`]). The node asks it again
+//! when an authorization expires, when the policy reports a change, and on
+//! [`Node::reauthorize`], and applies the answer to the peer's live sessions.
+//! Without a policy, [`NodeConfig::grant`] gives each peer its grant from its
+//! endpoint id, and without that, a peer may subscribe to anything and
+//! publish nothing. [`Grant::publish_under`] lets a peer publish only at
+//! paths that name it, so it cannot stand in for another peer.
 //!
 //! A [`BroadcastTicket`] names a peer and the path it publishes at.
 //! [`Node::subscribe_ticket`] claims that path for that peer with
@@ -106,6 +110,7 @@ mod link;
 mod node;
 pub mod policy;
 mod publish;
+mod reauth;
 mod relay;
 mod route;
 mod session;

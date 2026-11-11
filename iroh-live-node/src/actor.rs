@@ -1,10 +1,14 @@
 //! The actor that runs a node's sessions and dials.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use iroh::{EndpointAddr, EndpointId};
 use n0_error::{AnyError, e};
-use n0_future::task::AbortOnDropHandle;
+use n0_future::{StreamExt, boxed::BoxStream, task::AbortOnDropHandle};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
@@ -13,12 +17,18 @@ use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
     ConnectOptions, Error, LinkId, LinkKind, Session,
+    admission::decide,
     handshake::{Hop, SessionParts, dial_session},
     link::{self, LinkState},
     node::Shared,
+    policy::{Authorization, DynPolicy, Event, PeerRequest, Rejection},
+    reauth::{Finished, Reauth},
     session::SessionInner,
     state::LinkEntry,
 };
+
+/// The result of one re-decide: the peer, the generation it started at, and the decision.
+type Redecided = (EndpointId, u64, Result<Authorization, Rejection>);
 
 /// How long [`Node::shutdown`] gives a session to tell its peer it is closing.
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
@@ -50,6 +60,14 @@ pub(crate) struct Actor {
     pending: HashMap<EndpointId, Vec<oneshot::Sender<Result<Session, Error>>>>,
     dials: JoinSet<Result<SessionParts, Error>>,
     dial_ids: HashMap<tokio::task::Id, EndpointId>,
+    /// When each peer is decided again, and which decisions are current.
+    reauth: Reauth,
+    /// The re-decides in flight.
+    decisions: JoinSet<Redecided>,
+    /// What each re-decide task runs, so a task that panics still finishes.
+    decision_ids: HashMap<tokio::task::Id, (EndpointId, u64)>,
+    /// The policy's change stream, until it ends.
+    changes: Option<BoxStream<()>>,
 }
 
 impl Drop for Actor {
@@ -61,6 +79,7 @@ impl Drop for Actor {
 impl Actor {
     /// Creates an actor for the node `shared`.
     pub(crate) fn new(shared: Arc<Shared>) -> Self {
+        let changes = DynPolicy::changes(&*shared.policy);
         Self {
             shared,
             peers: HashMap::new(),
@@ -69,6 +88,10 @@ impl Actor {
             pending: HashMap::new(),
             dials: JoinSet::new(),
             dial_ids: HashMap::new(),
+            reauth: Reauth::default(),
+            decisions: JoinSet::new(),
+            decision_ids: HashMap::new(),
+            changes,
         }
     }
 
@@ -76,10 +99,28 @@ impl Actor {
     pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
         let shutdown = self.shared.shutdown.clone();
         loop {
+            let deadline = self.reauth.next_deadline();
             tokio::select! {
                 () = shutdown.cancelled() => {
                     info!(sessions = self.sessions.len(), "shutting down");
                     break;
+                }
+                () = self.shared.reauth_notify.notified() => self.take_reauth_requests(),
+                change = next_change(&mut self.changes) => match change {
+                    Some(()) => {
+                        debug!(peers = self.peers.len(), "the policy changed, deciding every peer again");
+                        self.reauth.request_all();
+                    }
+                    None => {
+                        debug!("the policy's change stream ended");
+                        self.changes = None;
+                    }
+                },
+                () = sleep_until(deadline) => {
+                    self.reauth.expire(tokio::time::Instant::now().into_std());
+                }
+                Some(decided) = self.decisions.join_next_with_id(), if !self.decisions.is_empty() => {
+                    self.redecided(decided);
                 }
                 message = inbox.recv() => match message {
                     Some(message) => self.handle(message),
@@ -108,6 +149,7 @@ impl Actor {
                     }
                 }
             }
+            self.start_decisions();
         }
         self.drain().await;
         // The rest happens in `Drop`, which also runs if this task panics.
@@ -234,6 +276,110 @@ impl Actor {
         }
     }
 
+    /// Takes the re-decides the application asked for.
+    fn take_reauth_requests(&mut self) {
+        let requests = std::mem::take(&mut *self.shared.reauth_requests.lock().expect("poisoned"));
+        if requests.all {
+            debug!(
+                peers = self.peers.len(),
+                "deciding every peer again, as asked"
+            );
+            self.reauth.request_all();
+        }
+        for peer in requests.peers {
+            if self.reauth.request(&peer) {
+                debug!(remote = %peer.fmt_short(), "deciding the peer again, as asked");
+            }
+        }
+    }
+
+    /// Starts the re-decides that wait, as far as the concurrency limit allows.
+    fn start_decisions(&mut self) {
+        while let Some(start) = self.reauth.start() {
+            let request =
+                PeerRequest::new(start.peer, start.request, start.dialed, Event::Revalidate);
+            let shared = self.shared.clone();
+            let (peer, generation) = (start.peer, start.generation);
+            let handle = self.decisions.spawn(
+                async move {
+                    let decision = decide(&shared, &request).await;
+                    (peer, generation, decision)
+                }
+                .instrument(info_span!("redecide", remote = %peer.fmt_short(), generation)),
+            );
+            self.decision_ids.insert(handle.id(), (peer, generation));
+        }
+    }
+
+    /// Applies a finished re-decide, unless a newer one replaced it.
+    ///
+    /// An authorization replaces the peer's on every session with it. A
+    /// rejection takes the peer's rights at once and closes those sessions
+    /// with the rejection's code.
+    fn redecided(&mut self, decided: Result<(tokio::task::Id, Redecided), tokio::task::JoinError>) {
+        let (peer, generation, decision) = match decided {
+            Ok((id, decided)) => {
+                self.decision_ids.remove(&id);
+                decided
+            }
+            Err(err) => {
+                let Some((peer, generation)) = self.decision_ids.remove(&err.id()) else {
+                    return;
+                };
+                error!(remote = %peer.fmt_short(), %err, "re-decide task failed, rejecting the peer");
+                (peer, generation, Err(Rejection::new("the policy failed")))
+            }
+        };
+        match self.reauth.finish(&peer, generation) {
+            Finished::Gone => {
+                debug!(remote = %peer.fmt_short(), "the peer left before its decision")
+            }
+            Finished::Stale => {
+                debug!(remote = %peer.fmt_short(), generation, "dropping a decision a newer one replaced");
+            }
+            Finished::Apply => match decision {
+                Ok(authorization) => {
+                    debug!(
+                        remote = %peer.fmt_short(),
+                        grant = ?authorization.grant,
+                        expires = ?authorization.expires,
+                        "the policy decided again",
+                    );
+                    self.reauth.decided(
+                        &peer,
+                        &authorization,
+                        tokio::time::Instant::now().into_std(),
+                        SystemTime::now(),
+                    );
+                    self.shared
+                        .state
+                        .lock()
+                        .expect("poisoned")
+                        .admit_peer(peer, authorization);
+                }
+                Err(rejection) => {
+                    info!(
+                        remote = %peer.fmt_short(),
+                        reason = rejection.reason(),
+                        code = %rejection.code(),
+                        "the policy rejected the peer, closing its sessions",
+                    );
+                    self.reauth.remove(&peer);
+                    // Taken at once, so a session that is still closing keeps
+                    // nothing, and a new one is decided afresh.
+                    self.shared
+                        .state
+                        .lock()
+                        .expect("poisoned")
+                        .remove_peer(&peer);
+                    for session in self.peers.get(&peer).into_iter().flatten() {
+                        session.close(rejection.code().clone());
+                    }
+                }
+            },
+        }
+    }
+
     /// Starts running an established session and makes it reachable.
     fn register(&mut self, parts: SessionParts) -> Session {
         let (session, driver) = self.add_link(parts);
@@ -252,7 +398,7 @@ impl Actor {
     /// Adds an established session's link to the node's state.
     ///
     /// Returns the session and the driver that runs it.
-    fn add_link(&self, parts: SessionParts) -> (Session, moq_net::Driver) {
+    fn add_link(&mut self, parts: SessionParts) -> (Session, moq_net::Driver) {
         let SessionParts {
             remote,
             connection,
@@ -265,6 +411,14 @@ impl Actor {
         } = parts;
         let link_state = LinkState::default();
         let hop = Hop::of(&remote);
+        self.reauth.admitted(
+            remote,
+            &authorization,
+            request.clone(),
+            dialed,
+            tokio::time::Instant::now().into_std(),
+            SystemTime::now(),
+        );
         let mut state = self.shared.state.lock().expect("poisoned");
         let link = LinkId(state.next_id());
         let session = Session {
@@ -391,6 +545,7 @@ impl Actor {
         state.remove_link(link);
         if last {
             state.remove_peer(&remote);
+            self.reauth.remove(&remote);
         }
         drop(state);
         self.publish_sessions();
@@ -400,5 +555,21 @@ impl Actor {
     fn publish_sessions(&self) {
         let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
         self.shared.sessions.set(sessions).ok();
+    }
+}
+
+/// Waits for the next item of the policy's change stream, or forever without one.
+async fn next_change(changes: &mut Option<BoxStream<()>>) -> Option<()> {
+    match changes {
+        Some(changes) => changes.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Waits until `deadline`, or forever without one.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
     }
 }
