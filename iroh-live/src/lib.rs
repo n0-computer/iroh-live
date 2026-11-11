@@ -164,25 +164,19 @@ pub use iroh_live_rooms as rooms;
 /// This publishes a latency in milliseconds and reads it back:
 ///
 /// ```no_run
-/// use iroh_live::{
-///     Audience, Node, Reach,
-///     json::snapshot,
-///     layout::LiveLayout,
-///     net::track,
-/// };
+/// use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, net::track};
 ///
 /// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
 /// let path = LiveLayout::default().path(node.id(), "control")?;
-/// let (_publication, track) = node.publish_with(path.clone(), Audience::Everyone, |producer| {
-///     producer.create_track("latency", track::Info::default())
-/// })?;
+/// let (_publication, track) =
+///     node.publish_with(path.clone(), Audience::Everyone, |producer| {
+///         producer.create_track("latency", track::Info::default())
+///     })?;
 /// let mut latency = snapshot::Producer::<u64>::new(track, snapshot::Config::default());
 /// latency.update(&150)?;
 ///
 /// // On another node.
-/// let subscription = other
-///     .subscribe(&path, Reach::Direct(node.id()))
-///     .await?;
+/// let subscription = other.subscribe(&path, Reach::Direct(node.id())).await?;
 /// let track = subscription.as_moq().track("latency")?;
 /// let mut latency = snapshot::Consumer::<u64>::new(track, Default::default());
 /// while let Some(newest) = latency.latest().await? {

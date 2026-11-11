@@ -18,6 +18,8 @@ use std::{
     time::Duration,
 };
 
+use moq_ext_media_core::Error;
+use moq_ext_sources::{AudioSource, EncodedVideoSource, VideoSource};
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
@@ -29,9 +31,6 @@ pub use self::{
     encoding::{AudioEncoding, VideoEncoding, VideoRendition},
     status::{PublishStatus, RenditionState},
 };
-use moq_ext_media_core::Error;
-use moq_ext_sources::{AudioSource, EncodedVideoSource, VideoSource};
-
 use crate::stats::{PublishRecorder, PublishStats};
 
 mod audio;

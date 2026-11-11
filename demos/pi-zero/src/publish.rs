@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use clap::Parser;
 use iroh::{EndpointId, protocol::Router};
-use iroh_live::layout::LiveLayout;
 use iroh_live::{
     Node,
+    layout::LiveLayout,
     media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
     node::RelayConfig,
 };

@@ -5,15 +5,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
+use moq_ext_sources::AudioFormat;
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::{broadcast, watch};
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::output::{AudioTarget, OutputControl, OutputSink};
-use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, clock::AudioLatency};
-use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
-use moq_ext_sources::AudioFormat;
-
+use super::{
+    Controls, PlaybackRecorder, PlayerStatus, PlayoutClock,
+    clock::AudioLatency,
+    output::{AudioTarget, OutputControl, OutputSink},
+};
 use crate::{
     RemoteBroadcast,
     error::CleanClose as _,

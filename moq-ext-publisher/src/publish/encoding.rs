@@ -2,10 +2,9 @@
 
 use std::{collections::BTreeSet, time::Duration};
 
-use moq_net::bandwidth::Rate;
-
 use moq_ext_media_core::Error;
 use moq_ext_sources::AudioFormat;
+use moq_net::bandwidth::Rate;
 
 /// The frame durations Opus accepts, in microseconds.
 ///

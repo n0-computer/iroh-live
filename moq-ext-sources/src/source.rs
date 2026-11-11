@@ -20,8 +20,7 @@ use tracing::{debug, warn};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
-pub use self::sender::FrameSender;
-pub use self::sender::{Demand, DemandGuard, PcmFanout, WeakPcmFanout};
+pub use self::sender::{Demand, DemandGuard, FrameSender, PcmFanout, WeakPcmFanout};
 use crate::{
     Error, audio,
     frames::{FrameReader, FrameSlot, VideoFrames},

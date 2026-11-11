@@ -19,7 +19,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::renderer::AndroidRenderer;
 use iroh::protocol::Router;
 use iroh_live::{
     BroadcastTicket, EndpointOptions, Node,
@@ -43,6 +42,8 @@ use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::{StreamExt as _, task::AbortOnDropHandle};
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
+
+use crate::renderer::AndroidRenderer;
 
 /// Log targets and levels the demo wants in logcat.
 const LOGCAT_FILTER: &str = "\

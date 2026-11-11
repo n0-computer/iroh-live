@@ -6,7 +6,6 @@ use std::{
 };
 
 use iroh::{EndpointId, endpoint::Connection};
-
 /// What a session may subscribe to from this node, and publish into it.
 ///
 /// See [`moq_ext_access::Grant`].

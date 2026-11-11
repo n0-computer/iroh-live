@@ -9,13 +9,12 @@ use std::{
 };
 
 use hang::catalog::Catalog;
+use moq_ext_media_core::Error;
 use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, info_span, trace, warn};
-
-use moq_ext_media_core::Error;
 
 use crate::{NetworkSample, Player, PlayerConfig, error::CleanClose as _, network::NetworkSignals};
 #[cfg(feature = "record")]

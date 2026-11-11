@@ -80,14 +80,13 @@ pub mod local_task;
 mod source;
 
 use moq_audio as audio;
+pub use moq_ext_media_core::{Closed, Error};
 use moq_video as video;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::RpicamConfig;
 #[cfg(feature = "capture")]
 pub use self::source::{EchoReference, MicrophoneConfig};
-pub use moq_ext_media_core::{Closed, Error};
-
 pub use self::{
     frames::VideoFrames,
     source::{

@@ -59,6 +59,9 @@ mod record;
 mod remote;
 mod stats;
 
+pub use hang::catalog::Catalog;
+pub use moq_ext_media_core::{Closed, Error, SlotState};
+pub use moq_ext_sources::VideoFrames;
 use moq_ext_sources::frames;
 
 #[cfg(feature = "record")]
@@ -74,6 +77,3 @@ pub use self::{
     remote::RemoteBroadcast,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind, PlaybackStats, VideoPlaybackStats},
 };
-pub use hang::catalog::Catalog;
-pub use moq_ext_media_core::{Closed, Error, SlotState};
-pub use moq_ext_sources::VideoFrames;

@@ -19,6 +19,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use moq_ext_media_core::Error;
 use moq_mux::{
     catalog::{CatalogFormat, Stream as _},
     container::{fmp4, mkv},
@@ -28,8 +29,6 @@ use n0_future::task::AbortOnDropHandle;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span};
-
-use moq_ext_media_core::Error;
 
 use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
 

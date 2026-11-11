@@ -39,10 +39,11 @@
 mod publish;
 mod stats;
 
+pub use moq_ext_media_core::{Closed, Error, SlotState};
+
 pub use self::{
     publish::{
         AudioEncoding, LocalBroadcast, PublishStatus, RenditionState, VideoEncoding, VideoRendition,
     },
     stats::{AudioEncodeStats, EncodeStats, PublishStats},
 };
-pub use moq_ext_media_core::{Closed, Error, SlotState};

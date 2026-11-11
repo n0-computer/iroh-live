@@ -13,11 +13,10 @@
 
 use std::{sync::Arc, time::Duration};
 
+use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{Instrument, debug_span, info, info_span};
-
-use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 
 use crate::{
     RemoteBroadcast, SwitchError,
@@ -33,18 +32,17 @@ mod output;
 mod select;
 mod video_task;
 
-pub use self::{
-    audio::{AudioFrame, AudioFrames},
-    output::AudioTarget,
-};
-
-pub(crate) use self::clock::PlayoutClock;
 pub use moq_ext_adaptive::Adaptation;
-
 /// How to choose the video rendition.
 ///
 /// This is [`moq_ext_adaptive::Mode`] under the player's name.
 pub use moq_ext_adaptive::Mode as RenditionMode;
+
+pub(crate) use self::clock::PlayoutClock;
+pub use self::{
+    audio::{AudioFrame, AudioFrames},
+    output::AudioTarget,
+};
 
 /// How far behind live to run.
 ///

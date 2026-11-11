@@ -22,6 +22,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use moq_ext_media_core::{
+    ByPtr, Error, SlotState,
+    stats::{Cell, RateMeter, Smoothed},
+};
+use moq_ext_sources::{EncodedVideoSource, VideoSource, frames::VideoFrames};
+use moq_video::encode;
 use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -31,14 +37,6 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
-use moq_video::encode;
-
-use moq_ext_media_core::{
-    ByPtr, Error, SlotState,
-    stats::{Cell, RateMeter, Smoothed},
-};
-use moq_ext_sources::{EncodedVideoSource, VideoSource, frames::VideoFrames};
-
 use crate::stats::EncodeStats;
 
 /// The name of the one rendition a pre-encoded source publishes.

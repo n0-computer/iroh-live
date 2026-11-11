@@ -14,7 +14,11 @@
 //! A conversion to and from `moq_auth::Grant` is left out on purpose:
 //! moq-auth carries the JWT and crypto stack, which this crate stays free of.
 
-use std::{collections::BTreeSet, fmt::Debug, fmt::Display, hash::Hash};
+use std::{
+    collections::BTreeSet,
+    fmt::{Debug, Display},
+    hash::Hash,
+};
 
 use moq_net::{Pattern, Patterns};
 

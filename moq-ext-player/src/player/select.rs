@@ -6,19 +6,17 @@
 
 use std::{sync::Arc, time::Duration};
 
+use moq_ext_adaptive::{
+    Adaptation, Backoffs, Bound, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, Target, VANISH_GRACE,
+};
+use moq_ext_media_core::{Error, SlotState, send_if_changed};
 use tokio::{
     sync::{mpsc, watch},
     time::Instant,
 };
 use tracing::{debug, info, trace};
 
-use moq_ext_adaptive::{
-    Adaptation, Backoffs, Bound, EXCLUSION, Mode, PinProblem, REVIVE_AFTER, Target, VANISH_GRACE,
-};
-
 use super::{Controls, Latency, PlayerStatus};
-use moq_ext_media_core::{Error, SlotState, send_if_changed};
-
 use crate::{RemoteBroadcast, catalog::VideoRenditions as _};
 
 /// What the decoder of a target is built with.

@@ -2,9 +2,10 @@
 
 use std::time::Duration;
 
+use moq_ext_media_core::SlotState;
+
 use super::*;
 use crate::AudioEncoding;
-use moq_ext_media_core::SlotState;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 

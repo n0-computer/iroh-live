@@ -9,9 +9,9 @@
 //! Each window shows its own ticket as a QR code and can scan the peer's off
 //! the camera. Whoever scans places the call, so no keyboard is needed.
 
-use iroh_live::layout::LiveLayout;
 use iroh_live::{
     calls::{CALL, Calls},
+    layout::LiveLayout,
     media::{AudioTarget, LocalBroadcast},
 };
 use n0_error::Result;

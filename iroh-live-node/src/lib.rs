@@ -10,7 +10,7 @@
 //!
 //! ```no_run
 //! use iroh::EndpointId;
-//! use iroh_live_node::{Audience, Node, NodeConfig, MoqPreset, Reach};
+//! use iroh_live_node::{Audience, MoqPreset, Node, NodeConfig, Reach};
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
@@ -94,13 +94,11 @@ mod ticket;
 
 /// The moq-net this crate builds against.
 pub use moq_net as net;
-
 /// The MoQ-over-iroh transport this node is built on.
 ///
 /// It has dial, accept, the ALPNs and moq-net's poll transport over iroh, for
 /// applications that run moq-net's client or server directly.
 pub use moq_transport_iroh as transport;
-
 pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
 
 pub use self::{

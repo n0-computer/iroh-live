@@ -15,12 +15,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
+use moq_ext_access::LinkRole;
 use moq_net::{Path, Pattern, auth, origin, origin::Source};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-
-use moq_ext_access::LinkRole;
 
 use crate::{
     Grant, LinkId, LinkKind, Session, handshake::Hop, link::LinkState, publish::AudienceKind,

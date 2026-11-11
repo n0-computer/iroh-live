@@ -29,6 +29,11 @@ use std::{
 
 use hang::catalog::Reference as _;
 use moq_ext_adaptive::{Abandoned, Outcome, Switcher, Target, Verdict};
+use moq_ext_media_core::{
+    Error, SlotState, send_if_changed,
+    stats::{RateMeter, Smoothed},
+};
+use moq_ext_sources::frames::FrameSlot;
 use n0_future::{
     FutureExt,
     boxed::BoxFuture,
@@ -42,12 +47,6 @@ use super::{
     arrivals::{self, Arrivals},
     select::{DecodeSettings, Desired, Failure, Report},
 };
-use moq_ext_media_core::{
-    Error, SlotState, send_if_changed,
-    stats::{RateMeter, Smoothed},
-};
-use moq_ext_sources::frames::FrameSlot;
-
 use crate::{
     error::CleanClose as _,
     stats::{FrameTiming, MediaKind, VideoPlaybackStats},

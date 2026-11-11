@@ -5,9 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::watch;
-
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
+use tokio::sync::watch;
 
 /// Whether one rendition is encoding.
 ///

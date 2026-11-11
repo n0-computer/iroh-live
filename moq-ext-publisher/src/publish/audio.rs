@@ -1,5 +1,7 @@
 //! The audio publish task: a microphone, or PCM from any other source.
 
+use moq_ext_media_core::{ByPtr, Error, SlotState, stats::Cell};
+use moq_ext_sources::{AudioFormat, AudioKind, AudioSource};
 use tokio::sync::broadcast;
 #[cfg(feature = "capture")]
 use tokio::sync::oneshot;
@@ -9,9 +11,6 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "capture")]
 use super::status::Reporter;
 use super::{Job, Timeline, encoding::AudioEncoding, status::RenditionState};
-use moq_ext_media_core::{ByPtr, Error, SlotState, stats::Cell};
-use moq_ext_sources::{AudioFormat, AudioKind, AudioSource};
-
 use crate::stats::AudioEncodeStats;
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
