@@ -7,10 +7,9 @@ use std::time::Duration;
 use clap::Parser;
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    Node,
+    Node, RelayConfig,
     layout::LiveLayout,
     media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
-    node::RelayConfig,
 };
 use n0_error::StdResultExt;
 use n0_future::task::AbortOnDropHandle;

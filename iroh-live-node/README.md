@@ -14,8 +14,8 @@ broadcast holds whatever tracks you write.
 
 Use it for peer-to-peer MoQ with many sessions, relays, admission and per-peer
 visibility. For a single plain MoQ session without a route table, use
-[`moq-transport-iroh`](../moq-transport-iroh), which this crate is built on and
-re-exports as `iroh_live_node::transport`. For media, use
+[`moq-transport-iroh`](../moq-transport-iroh), which this crate is built on.
+For media, use
 [`iroh-live`](../iroh-live), which re-exports this crate as `iroh_live::node`.
 
 ```rust

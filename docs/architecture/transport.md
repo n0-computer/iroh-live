@@ -171,8 +171,7 @@ negotiate today, has no token field, so the token also rides the setup path as
 query parameter, and `SessionRequest::token` returns the result.
 
 An application that runs moq-net's client or server itself gets the same
-negotiation from `moq_transport_iroh::{dial, accept}` (also
-`iroh_live_node::transport`). Both return a `moq_transport_iroh::Transport`.
+negotiation from `moq_transport_iroh::{dial, accept}`. Both return a `moq_transport_iroh::Transport`.
 `iroh-live-relay` accepts its iroh sessions through `accept`.
 
 ## The poll transport

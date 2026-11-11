@@ -370,10 +370,9 @@ does not need the relay's other routes sets `consume: false`.
 ```rust
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    EndpointOptions, Node,
+    EndpointOptions, Node, RelayConfig,
     layout::LiveLayout,
     media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
-    node::RelayConfig,
 };
 
 #[tokio::main]
