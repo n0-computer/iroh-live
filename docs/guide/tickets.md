@@ -48,7 +48,7 @@ through `Node::claim_path`, for as long as the subscription lives. A node
 accepts at most 64 claimed paths and 16 KiB of paths per peer. It also checks
 that the ticket's publisher owns the path: exactly one segment is the peer's
 64-character hex id, and no other segment parses as an endpoint id. A
-`NodeConfig::owner` function replaces that rule. A path that fails it returns
+`NodeConfig::layout` replaces that rule with the layout's `owner`. A path that fails it returns
 `NotOwner`.
 
 The ticket holds no addresses. iroh finds them from the endpoint id through

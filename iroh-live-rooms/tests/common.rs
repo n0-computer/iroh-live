@@ -6,10 +6,10 @@ use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
 use iroh_live_node::{
-    Grant, Node, NodeConfig,
+    Grant, Layout, Node, NodeConfig,
     policy::{self, PeerRequest},
 };
-use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms};
+use iroh_live_rooms::{Room, RoomState, RoomTicket, Rooms, RoomsLayout};
 use n0_watcher::Watcher;
 
 /// Generous, because the suite shares a machine with whatever else is running.
@@ -42,7 +42,7 @@ impl Peer {
     pub(crate) async fn spawn() -> Self {
         let endpoint = endpoint().await;
         let config = NodeConfig::default().with_policy(policy::from_fn(|request: &PeerRequest| {
-            let scope = iroh_live_rooms::publish_scope(*request.peer());
+            let scope = RoomsLayout.scope(request.peer());
             Ok(Grant::publish_under(scope).into())
         }));
         let node = Node::new(endpoint.clone(), config);

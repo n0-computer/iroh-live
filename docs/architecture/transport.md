@@ -47,7 +47,7 @@ A direct session's routes enter the table only within the grant. `NodeConfig::gr
 computes it from the peer's endpoint id, and the default is
 `Grant::subscribe_only()`: a peer may read anything and publish nothing.
 `LiveLayout::config` lets a peer publish under `live/<peer>/`, and adding
-`iroh_live::rooms::publish_scope` adds `rooms/*/<peer>/`. The table is shared by
+`iroh_live::rooms::RoomsLayout` adds `rooms/*/<peer>/`. The table is shared by
 everything on the node and answers a ticket without dialing. A peer whose grant
 let it announce another publisher's path could stand in for that publisher,
 so grants should name the peer. A relay is trusted with every path it forwards,

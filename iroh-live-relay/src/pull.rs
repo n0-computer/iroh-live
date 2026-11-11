@@ -8,9 +8,9 @@
 //! a [`PathClaim`] that lets the publisher announce exactly the pulled path,
 //! so its other broadcasts stay out. The relay pulls only a path the ticket's
 //! peer owns: its canonical `live/<peer>/<name>` path, or a room path with the
-//! peer as member, see [`owner`]. Anything else, such as a path in a scheme
-//! of the publisher's own, is refused with
-//! [`NotOwner`](iroh_live_node::Error::NotOwner). A session that named the
+//! peer as member, as the node's [`Layout`](iroh_live::layout::Layout) says.
+//! Anything else, such as a path in a scheme of the publisher's own, is
+//! refused with [`NotOwner`](iroh_live_node::Error::NotOwner). A session that named the
 //! ticket reads it under the name it asked for through a mount, see
 //! [`mounted`].
 //!
@@ -30,9 +30,8 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, layout::LiveLayout};
+use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomsLayout};
 use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription};
-use moq_net::Path;
 use moq_relay::cluster::Cluster;
 use n0_error::e;
 use n0_watcher::Watcher;
@@ -60,19 +59,13 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(8);
 /// How many times in a row resolving again may fail before the pull retires.
 const MAX_RESOLVES: u32 = 5;
 
-/// Returns the peer that owns `path`, for the pull node's [`NodeConfig::owner`].
+/// Returns the layout whose paths a pull may claim: `live/` and room paths.
 ///
 /// A path is a peer's if it is exactly the canonical `live/<peer>/<name>`
 /// path of that peer, or a room path `rooms/<topic>/<member>/<name>` whose
 /// member is that peer. Any other path has no owner the relay can verify.
-pub fn owner(path: &Path) -> Option<EndpointId> {
-    let layout = LiveLayout::default();
-    if let Some((peer, name)) = layout.parse(path)
-        && layout.path(peer, name).ok().as_ref() == Some(path)
-    {
-        return Some(peer);
-    }
-    iroh_live::rooms::parse_room_path(path.as_str()).map(|(_topic, member, _name)| member)
+fn pull_layout() -> (LiveLayout, RoomsLayout) {
+    (LiveLayout::default(), RoomsLayout)
 }
 
 /// Returns `cluster` with `requested` reading the broadcast its ticket names.
@@ -203,13 +196,14 @@ impl PullState {
     ///
     /// The node writes what publishers announce into the cluster origin
     /// directly. Its base grant is nothing, so a publisher announces only the
-    /// paths a pull claims, and only if it owns them, see [`owner`].
+    /// paths a pull claims, and only if it owns them in the `live/` or the
+    /// rooms layout.
     #[must_use]
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         let config = NodeConfig {
             table: Some(cluster.origin.clone()),
             grant: Some(Arc::new(|_| Grant::nothing())),
-            owner: Some(Arc::new(owner)),
+            layout: Some(Arc::new(pull_layout())),
             ..Default::default()
         };
         Self {
@@ -581,6 +575,9 @@ impl Drop for PublisherClaim {
 
 #[cfg(test)]
 mod tests {
+    use iroh_live::layout::Layout;
+    use moq_net::Path;
+
     use super::*;
 
     /// Parses `path`, which must be valid.
@@ -590,6 +587,7 @@ mod tests {
 
     #[test]
     fn owner_accepts_only_canonical_live_and_rooms_paths() {
+        let owner = |path: &Path| pull_layout().owner(path.as_str());
         let peer = iroh::SecretKey::from_bytes(&[3; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[4; 32]).public();
         assert_eq!(owner(&path(&format!("live/{peer}/cam"))), Some(peer));

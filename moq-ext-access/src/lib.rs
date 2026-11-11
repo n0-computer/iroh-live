@@ -8,6 +8,8 @@
 //!   node hands them to moq as the subscribe half of the link's grant, and moq
 //!   enforces it on the live session.
 //! - [`policy`]: who may hold a session, and with which [`Grant`].
+//! - [`Layout`]: a path convention, which says where each peer publishes and
+//!   who owns a path.
 //!
 //! The peer id is any type that implements [`PeerId`], such as an iroh
 //! endpoint id.
@@ -19,6 +21,7 @@ use std::{
     collections::BTreeSet,
     fmt::{Debug, Display},
     hash::Hash,
+    sync::Arc,
 };
 
 use moq_net::{Pattern, Patterns};
@@ -299,6 +302,44 @@ pub enum LinkRole {
     },
 }
 
+/// A path convention: where each peer publishes, and which peer owns a path.
+///
+/// The two halves agree: [`owner`](Self::owner) of a path that
+/// [`scope`](Self::scope) gives a peer names that peer, for every path the
+/// convention spells. A policy grants a peer its scope to publish under, and
+/// a node checks a ticket claim against the owner.
+///
+/// A pair `(A, B)` is the union of two layouts.
+pub trait Layout<P: PeerId>: Debug + Send + Sync + 'static {
+    /// Returns the paths `peer` may publish its own broadcasts under.
+    fn scope(&self, peer: &P) -> Patterns;
+
+    /// Returns the peer that owns `path`, or `None` for a path outside the layout.
+    fn owner(&self, path: &str) -> Option<P>;
+}
+
+impl<P: PeerId, T: Layout<P> + ?Sized> Layout<P> for Arc<T> {
+    fn scope(&self, peer: &P) -> Patterns {
+        (**self).scope(peer)
+    }
+
+    fn owner(&self, path: &str) -> Option<P> {
+        (**self).owner(path)
+    }
+}
+
+impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
+    fn scope(&self, peer: &P) -> Patterns {
+        let mut scope = self.0.scope(peer);
+        scope.extend(self.1.scope(peer).iter().cloned());
+        scope
+    }
+
+    fn owner(&self, path: &str) -> Option<P> {
+        self.0.owner(path).or_else(|| self.1.owner(path))
+    }
+}
+
 /// Returns the exact paths of `publications` a link may see, as patterns.
 ///
 /// A publication is visible when the link's `grant` covers its path and its
@@ -354,6 +395,39 @@ fn visible<P: PeerId>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layout that gives each peer `<prefix>/<peer>/**`.
+    #[derive(Debug)]
+    struct Prefix(&'static str);
+
+    impl Layout<String> for Prefix {
+        fn scope(&self, peer: &String) -> Patterns {
+            Patterns::from(
+                format!("{}/{peer}/**", self.0)
+                    .parse::<Pattern>()
+                    .expect("pattern"),
+            )
+        }
+
+        fn owner(&self, path: &str) -> Option<String> {
+            let rest = path.strip_prefix(self.0)?.strip_prefix('/')?;
+            let (peer, name) = rest.split_once('/')?;
+            (!name.is_empty()).then(|| peer.to_owned())
+        }
+    }
+
+    #[test]
+    fn a_pair_of_layouts_is_their_union() {
+        let both = (Prefix("live"), Arc::new(Prefix("rooms")));
+        let bob = "bob".to_owned();
+        let scope = both.scope(&bob);
+        assert!(scope.matches("live/bob/cam"));
+        assert!(scope.matches("rooms/bob/cam"));
+        assert!(!scope.matches("live/carol/cam"));
+        assert_eq!(both.owner("live/bob/cam"), Some(bob.clone()));
+        assert_eq!(both.owner("rooms/bob/cam"), Some(bob));
+        assert_eq!(both.owner("other/bob/cam"), None);
+    }
 
     #[test]
     fn a_request_splits_its_path_and_query() {

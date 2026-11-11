@@ -11,10 +11,10 @@ node's route table and returns it as any type built from a moq-net
 
 ## Joining
 
-`Rooms` owns the gossip instance, and the router mounts it. The node's grant
-must let members publish under `iroh_live::rooms::publish_scope(member)`.
-Pass that scope to the layout's config, and mount the gossip with
-`Rooms::mount` next to the transport. Only an application that passes the scope
+`Rooms` owns the gossip instance, and the router mounts it. The node's policy
+must let members publish under their `iroh_live::rooms::RoomsLayout` scope.
+Pass that layout to the `LiveLayout` config, and mount the gossip with
+`Rooms::mount` next to the transport. Only an application that passes the layout
 grants it. Enabling the `rooms` feature alone grants nothing:
 
 ```rust
@@ -30,7 +30,7 @@ use iroh_live::{
 let layout = LiveLayout::default();
 let node = Node::new(
     endpoint.clone(),
-    layout.config(&[Arc::new(iroh_live::rooms::publish_scope)]),
+    layout.config(&[Arc::new(iroh_live::rooms::RoomsLayout)]),
 );
 let rooms = Rooms::new(&node);
 let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();

@@ -21,9 +21,9 @@
 //! with the people you want in the room, over a channel you trust.
 //!
 //! The node's [policy](iroh_live_node::NodeConfig::with_policy) has to let
-//! each peer publish under [`publish_scope`], or [`Room::subscribe`] fails.
-//! `iroh_live::layout::LiveLayout::policy(&[Arc::new(publish_scope)])` does
-//! that.
+//! each peer publish under its [`RoomsLayout`] scope, or [`Room::subscribe`]
+//! fails. `iroh_live::layout::LiveLayout::policy(&[Arc::new(RoomsLayout)])`
+//! does that.
 //!
 //! ```no_run
 //! # async fn example(node: iroh_live_node::Node)
@@ -68,7 +68,7 @@ mod rooms;
 mod ticket;
 
 pub use self::{
-    room::{Room, RoomPeer, RoomState, parse_room_path, publish_scope},
+    room::{Room, RoomPeer, RoomState, RoomsLayout},
     rooms::{ALPN, Error, Rooms},
     ticket::RoomTicket,
 };

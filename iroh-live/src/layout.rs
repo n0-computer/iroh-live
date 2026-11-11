@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use iroh::EndpointId;
+pub use iroh_live_node::Layout;
 use iroh_live_node::{
     Audience, BroadcastTicket, Error, Grant, Node, NodeConfig, Publication,
     net::{Path, Pattern, Patterns},
@@ -23,13 +24,6 @@ use n0_error::e;
 
 /// The root of a layout that names none.
 const DEFAULT_ROOT: &str = "live";
-
-/// A function that names the paths a peer may publish under, given its id.
-///
-/// Extends a [`LiveLayout`]'s own scope: `layout.policy(&[Arc::new(rooms::publish_scope)])`
-/// lets peers publish room broadcasts too. A closure over a second layout or
-/// application state works as well.
-pub type Scope = Arc<dyn Fn(EndpointId) -> Pattern + Send + Sync>;
 
 /// The `<root>/<peer>/<name>` layout, with the root `live` by default.
 ///
@@ -121,30 +115,23 @@ impl LiveLayout {
         (id.to_string() == peer && !name.is_empty()).then_some((id, name))
     }
 
-    /// Returns the paths `peer` may publish its own broadcasts under: `<root>/<peer>/**`.
-    #[must_use]
-    pub fn scope(&self, peer: EndpointId) -> Pattern {
-        format!("{}/{peer}/**", self.root)
-            .parse()
-            .expect("the root and an endpoint id are valid path segments")
-    }
-
     /// Returns the grant a node gives `peer`.
     ///
-    /// The peer may subscribe to anything, and publish only under
-    /// [`scope`](Self::scope) and the `extra` scopes applied to it.
+    /// The peer may subscribe to anything, and publish only under its
+    /// [`scope`](Layout::scope) in this layout and in the `extra` layouts.
     #[must_use]
-    pub fn grant(&self, peer: EndpointId, extra: &[Scope]) -> Grant {
-        let mut publish = Patterns::from(self.scope(peer));
-        for scope in extra {
-            publish.insert(scope(peer));
+    pub fn grant(&self, peer: EndpointId, extra: &[Arc<dyn Layout<EndpointId>>]) -> Grant {
+        let mut publish = self.scope(&peer);
+        for layout in extra {
+            publish.extend(layout.scope(&peer).iter().cloned());
         }
         Grant::publish_under(publish)
     }
 
     /// Returns a policy that admits every peer with its [`grant`](Self::grant).
     ///
-    /// Pass `&[]` for no extra scopes. Narrow it with
+    /// Pass `&[]` for no extra layouts, or the rooms layout to let peers
+    /// publish room broadcasts too. Narrow it with
     /// [`Policy::filter`], and call `Node::reauthorize` when the filter's
     /// state changes.
     ///
@@ -167,9 +154,12 @@ impl LiveLayout {
     /// # drop((config, contacts));
     /// ```
     #[must_use]
-    pub fn policy(&self, extra: &[Scope]) -> impl Policy<EndpointId> + Clone + use<> {
+    pub fn policy(
+        &self,
+        extra: &[Arc<dyn Layout<EndpointId>>],
+    ) -> impl Policy<EndpointId> + Clone + use<> {
         let layout = self.clone();
-        let extra: Arc<[Scope]> = extra.into();
+        let extra: Arc<[Arc<dyn Layout<EndpointId>>]> = extra.into();
         policy::from_fn(move |request: &PeerRequest| {
             Ok(layout.grant(*request.peer(), &extra).into())
         })
@@ -177,7 +167,7 @@ impl LiveLayout {
 
     /// Returns the [`NodeConfig`] of a node on this layout, with its [`policy`](Self::policy).
     #[must_use]
-    pub fn config(&self, extra: &[Scope]) -> NodeConfig {
+    pub fn config(&self, extra: &[Arc<dyn Layout<EndpointId>>]) -> NodeConfig {
         NodeConfig::default().with_policy(self.policy(extra))
     }
 
@@ -259,6 +249,23 @@ impl LiveLayout {
     }
 }
 
+impl Layout<EndpointId> for LiveLayout {
+    /// Returns `<root>/<peer>/**`.
+    fn scope(&self, peer: &EndpointId) -> Patterns {
+        let pattern: Pattern = format!("{}/{peer}/**", self.root)
+            .parse()
+            .expect("the root and an endpoint id are valid path segments");
+        Patterns::from(pattern)
+    }
+
+    /// Returns the peer a path names, if [`path`](LiveLayout::path) spells it that way.
+    fn owner(&self, path: &str) -> Option<EndpointId> {
+        let path = Path::new(path).ok()?;
+        let (peer, name) = self.parse(&path)?;
+        (self.path(peer, name).ok()? == path).then_some(peer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -316,32 +323,33 @@ mod tests {
     }
 
     #[test]
-    fn extra_scopes_widen_the_grant() {
+    fn the_layout_owns_what_it_scopes() {
         let layout = LiveLayout::default();
-        let peer = id();
-        let extra: Scope = Arc::new(|peer| {
-            format!("rooms/*/{peer}/**")
-                .parse()
-                .expect("a rooms-style pattern")
-        });
-        let grant = layout.grant(peer, &[extra]);
-        assert!(grant.allows_publish(&format!("rooms/topic/{peer}/cam")));
-        assert!(!grant.allows_publish(&format!("rooms/topic/{}/cam", id())));
-        assert!(grant.allows_publish(&format!("live/{peer}/cam")));
+        let (peer, other) = (id(), id());
+        let scope = layout.scope(&peer);
+        for name in ["cam", "cam/hd"] {
+            let path = layout.path(peer, name).expect("a path");
+            assert!(scope.matches(path.as_str()), "{path}");
+            assert_eq!(layout.owner(path.as_str()), Some(peer), "{path}");
+            assert!(!layout.scope(&other).matches(path.as_str()), "{path}");
+        }
+        assert_eq!(layout.owner(&format!("live/{peer}")), None);
+        assert_eq!(layout.owner(&format!("rooms/topic/{peer}/cam")), None);
+        assert_eq!(layout.owner(&format!("fleet/{peer}/cam")), None);
     }
 
     #[test]
     fn two_layouts_compose() {
         let (a, b) = (LiveLayout::new("a"), LiveLayout::new("b"));
         let peer = id();
-        let b_scope: Scope = Arc::new(move |peer| b.scope(peer));
+        let b_layout: Arc<dyn Layout<EndpointId>> = Arc::new(b);
         let request = PeerRequest::new(
             peer,
             SessionRequest::default(),
             false,
             policy::Event::Connect,
         );
-        let grant = n0_future::future::block_on(Policy::decide(&a.policy(&[b_scope]), &request))
+        let grant = n0_future::future::block_on(Policy::decide(&a.policy(&[b_layout]), &request))
             .expect("admitted")
             .grant;
         assert!(grant.allows_publish(&format!("a/{peer}/cam")));

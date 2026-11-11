@@ -69,7 +69,7 @@
 //! [`Node::claim_path`], which widens the peer's grant to exactly that path for
 //! as long as the subscription lives, so a viewer needs no grant of its own.
 //! The peer has to own the path: by default, exactly one segment of it is the
-//! peer's own endpoint id (see [`NodeConfig::owner`]). A claim therefore never
+//! peer's own endpoint id (see [`NodeConfig::layout`]). A claim therefore never
 //! overlaps another peer's paths, which hop pinning and the route table rely on.
 //!
 //! The grants are also what keeps one publisher from taking over another's
@@ -116,6 +116,7 @@ mod session;
 mod state;
 mod ticket;
 
+pub use moq_ext_access::Layout;
 /// The moq-net this crate builds against.
 pub use moq_net as net;
 use moq_transport_iroh as transport;
@@ -123,7 +124,7 @@ pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, Mo
 
 pub use self::{
     admission::{Admission, ConnectOptions, Grant, GrantFn, SessionRequest},
-    claim::{OwnerFn, PathClaim},
+    claim::PathClaim,
     error::Error,
     link::{LinkId, LinkKind, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},

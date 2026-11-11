@@ -7,8 +7,8 @@ use std::{
 
 use iroh::EndpointId;
 use iroh_gossip::TopicId;
-use iroh_live_node::{Audience, Node, Publication, Subscription};
-use moq_net::{Pattern, broadcast};
+use iroh_live_node::{Audience, Layout, Node, Publication, Subscription};
+use moq_net::{Pattern, Patterns, broadcast};
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
@@ -219,7 +219,7 @@ impl Room {
     ///
     /// Fails with [`Error::Left`] once the room was left, and with
     /// [`Error::Node`] if the member cannot be dialed, if the node's
-    /// policy does not let the member publish under [`publish_scope`], or if
+    /// policy does not let the member publish under its [`RoomsLayout`] scope, or if
     /// the session ends before the member announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
         if self.inner.done.get() {
@@ -300,10 +300,27 @@ impl Inner {
     }
 }
 
-/// Returns the paths `member` publishes room broadcasts under, `rooms/*/<member>/**`.
+/// The path layout of room broadcasts: `rooms/<topic>/<member>/<name>`.
 ///
-/// A node that runs rooms adds this to the grant its policy gives every peer.
-pub fn publish_scope(member: EndpointId) -> Pattern {
+/// A member publishes under `rooms/*/<member>/**`, and owns the room paths
+/// that name it in their canonical spelling. A node that runs rooms lets every
+/// peer publish there, as `LiveLayout::policy(&[Arc::new(RoomsLayout)])` in
+/// iroh-live does.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoomsLayout;
+
+impl Layout<EndpointId> for RoomsLayout {
+    fn scope(&self, peer: &EndpointId) -> Patterns {
+        Patterns::from(publish_scope(*peer))
+    }
+
+    fn owner(&self, path: &str) -> Option<EndpointId> {
+        parse_room_path(path).map(|(_topic, member, _name)| member)
+    }
+}
+
+/// Returns the paths `member` publishes room broadcasts under, `rooms/*/<member>/**`.
+fn publish_scope(member: EndpointId) -> Pattern {
     format!("rooms/*/{member}/**")
         .parse()
         .expect("an endpoint id is a valid path segment")
@@ -319,7 +336,7 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
 /// The inverse of the room path layout, `rooms/<topic>/<publisher>/<name>`.
 /// Returns `None` for any other path, and for a topic or publisher that is
 /// not spelled the way the layout spells it.
-pub fn parse_room_path(path: &str) -> Option<(TopicId, EndpointId, &str)> {
+fn parse_room_path(path: &str) -> Option<(TopicId, EndpointId, &str)> {
     let (topic_str, rest) = path.strip_prefix("rooms/")?.split_once('/')?;
     let (publisher_str, name) = rest.split_once('/')?;
     let topic: TopicId = topic_str.parse().ok()?;
@@ -342,6 +359,23 @@ mod tests {
         assert_eq!(path, format!("rooms/{topic}/{publisher}/cam"));
         assert!(publish_scope(publisher).matches(&path));
         assert!(!publish_scope(SecretKey::from_bytes(&[4; 32]).public()).matches(&path));
+    }
+
+    #[test]
+    fn the_rooms_layout_owns_what_it_scopes() {
+        let topic = TopicId::from_bytes([5; 32]);
+        let (member, other) = (
+            SecretKey::from_bytes(&[6; 32]).public(),
+            SecretKey::from_bytes(&[7; 32]).public(),
+        );
+        let scope = RoomsLayout.scope(&member);
+        for name in ["cam", "cam/hd"] {
+            let path = room_path(topic, member, name);
+            assert!(scope.matches(&path), "{path}");
+            assert_eq!(RoomsLayout.owner(&path), Some(member), "{path}");
+            assert!(!RoomsLayout.scope(&other).matches(&path), "{path}");
+        }
+        assert_eq!(RoomsLayout.owner(&format!("live/{member}/cam")), None);
     }
 
     #[test]

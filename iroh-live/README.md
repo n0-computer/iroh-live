@@ -127,8 +127,8 @@ moq-audio's `pipewire` and `pulseaudio` features.
 
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node by adding
-`iroh_live::rooms::publish_scope` to the layout's config, with
-`layout.config(&[Arc::new(iroh_live::rooms::publish_scope)])`, and mount the
+`iroh_live::rooms::RoomsLayout` to the layout's config, with
+`layout.config(&[Arc::new(iroh_live::rooms::RoomsLayout)])`, and mount the
 gossip with `Rooms::mount`:
 
 ```rust

@@ -203,7 +203,7 @@ convention, so they call each other.
 
 ## Rooms
 
-A room is a gossip topic. The node's config takes `rooms::publish_scope`, so
+A room is a gossip topic. The node's config takes `rooms::RoomsLayout`, so
 members can publish under their room paths, and `Rooms::mount` adds the gossip
 protocol to the router next to the transport. `join` returns a `Room` with a watched
 membership. This program creates a room, prints its ticket, publishes a
@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(
         endpoint.clone(),
-        layout.config(&[Arc::new(iroh_live::rooms::publish_scope)]),
+        layout.config(&[Arc::new(iroh_live::rooms::RoomsLayout)]),
     );
     let rooms = Rooms::new(&node);
     // Members dial in over gossip and moq.

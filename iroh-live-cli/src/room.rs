@@ -60,7 +60,7 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(
         endpoint.clone(),
-        LiveLayout::default().config(&[Arc::new(iroh_live::rooms::publish_scope)]),
+        LiveLayout::default().config(&[Arc::new(iroh_live::rooms::RoomsLayout)]),
     );
     let rooms = Rooms::new(&node);
     // Mounts rooms' gossip next to the moq ALPNs.

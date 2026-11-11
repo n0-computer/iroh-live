@@ -1627,7 +1627,7 @@ async fn room_node() -> (
     let endpoint = bind_endpoint().await;
     let node = iroh_live_node::Node::new(
         endpoint.clone(),
-        LiveLayout::default().config(&[Arc::new(iroh_live_rooms::publish_scope)]),
+        LiveLayout::default().config(&[Arc::new(iroh_live_rooms::RoomsLayout)]),
     );
     let rooms = iroh_live_rooms::Rooms::new(&node);
     let router = rooms

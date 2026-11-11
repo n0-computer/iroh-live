@@ -63,7 +63,7 @@ each peer may publish only under its own id. `LiveLayout::config` builds the
 `Node::mount` adds the transport to the application's `RouterBuilder` under
 every ALPN this build speaks, and the application adds its own protocols to the
 same router. `Rooms::mount` adds the rooms' gossip, and the layout's config
-takes `iroh_live::rooms::publish_scope` so members can publish their room
+takes `iroh_live::rooms::RoomsLayout` so members can publish their room
 broadcasts. `Router::shutdown` shuts down the node and every mounted service,
 and closes the endpoint. A node that is neither mounted nor attached to a relay
 logs a warning when it publishes, since no peer can dial in.

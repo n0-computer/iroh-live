@@ -15,7 +15,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_live::layout::LiveLayout;
+use iroh_live::{layout::LiveLayout, rooms::RoomsLayout};
 use iroh_live_node::{
     DECIDE_TIMEOUT, SessionRequest,
     policy::{Authorization, DynPolicy, Event, PeerRequest, Policy, Rejection},
@@ -265,7 +265,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 /// endpoint id. Use it as the fallback of a [`Verify`](moq_ext_access::policy::Verify)
 /// to let a token widen what a client may publish.
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
-    LiveLayout::default().policy(&[Arc::new(iroh_live::rooms::publish_scope)])
+    LiveLayout::default().policy(&[Arc::new(RoomsLayout)])
 }
 
 #[cfg(test)]

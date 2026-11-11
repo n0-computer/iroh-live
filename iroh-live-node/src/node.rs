@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::{
-    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, LinkId, OwnerFn,
+    Admission, Audience, BroadcastTicket, ConnectOptions, Error, Grant, GrantFn, Layout, LinkId,
     Publication, RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission,
@@ -110,13 +110,13 @@ pub struct NodeConfig {
     /// creates a table under the hop derived from the endpoint id.
     #[debug("{}", table.is_some())]
     pub table: Option<origin::Producer>,
-    /// Names the peer that owns a path, for [`Node::claim_path`].
+    /// The path layout that names the peer owning a path, for [`Node::claim_path`].
     ///
     /// `None` uses the generic rule: a path is a peer's when exactly one of
-    /// its segments is the peer's endpoint id. Set it for paths that name
-    /// their publisher some other way, such as a relay's pull paths.
-    #[debug("{}", owner.is_some())]
-    pub owner: Option<OwnerFn>,
+    /// its segments is the peer's endpoint id. Set it to accept only the
+    /// paths of one convention, such as a relay's pull paths.
+    #[debug("{}", layout.is_some())]
+    pub layout: Option<Arc<dyn Layout<EndpointId>>>,
 }
 
 impl Default for NodeConfig {
@@ -127,7 +127,7 @@ impl Default for NodeConfig {
             admission: Admission::default(),
             grant: None,
             table: None,
-            owner: None,
+            layout: None,
         }
     }
 }
@@ -188,7 +188,8 @@ pub(crate) struct Shared {
     pub(crate) reauth_requests: Mutex<reauth::Requests>,
     /// Wakes the actor for new [`reauth_requests`](Self::reauth_requests).
     pub(crate) reauth_notify: Notify,
-    pub(crate) owner: Option<OwnerFn>,
+    /// The layout that names path owners, from [`NodeConfig::layout`].
+    pub(crate) layout: Option<Arc<dyn Layout<EndpointId>>>,
     /// The route table.
     pub(crate) table: origin::Producer,
     /// The node's publications and links.
@@ -257,7 +258,7 @@ impl Node {
             decide_timeout: config.decide_timeout,
             reauth_requests: Mutex::new(reauth::Requests::default()),
             reauth_notify: Notify::new(),
-            owner: config.owner,
+            layout: config.layout,
             table,
             state: Mutex::new(State::default()),
             sessions: Watchable::new(Vec::new()),

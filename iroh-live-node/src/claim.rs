@@ -12,11 +12,6 @@ use tracing::debug;
 
 use crate::{Error, Node, node::Shared, publish::check_path, state::ClaimRefused};
 
-/// Names the peer that owns a path, for [`NodeConfig::owner`](crate::NodeConfig::owner).
-///
-/// Returns `None` for a path no peer owns.
-pub type OwnerFn = Arc<dyn Fn(&Path) -> Option<EndpointId> + Send + Sync>;
-
 /// A claim on one path of one peer, held for as long as it widens the peer's grant.
 ///
 /// Created by [`Node::claim_path`]. Dropping the last claim on a path narrows
@@ -92,8 +87,9 @@ impl Node {
     /// claim made before the peer has a session is recorded, and widens
     /// nothing while the peer's grant covers the path.
     ///
-    /// Otherwise the peer has to own the path: [`NodeConfig::owner`](crate::NodeConfig::owner)
-    /// decides if it is set. Otherwise exactly one segment of the path is the
+    /// Otherwise the peer has to own the path: the
+    /// [`Layout::owner`](crate::Layout::owner) of
+    /// [`NodeConfig::layout`](crate::NodeConfig::layout) decides if it is set. Otherwise exactly one segment of the path is the
     /// peer's endpoint id, and no other segment parses as one. That keeps a
     /// claimed path from overlapping any other peer's paths, which hop pinning
     /// and the route table rely on.
@@ -121,8 +117,8 @@ impl Node {
                 shared: None,
             });
         }
-        let owned = match &self.shared.owner {
-            Some(owner) => owner(path) == Some(peer),
+        let owned = match &self.shared.layout {
+            Some(layout) => layout.owner(path.as_str()) == Some(peer),
             None => owns_by_id(&peer, path),
         };
         if !owned {

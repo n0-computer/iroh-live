@@ -5,11 +5,12 @@ mod common;
 use std::{sync::Arc, time::Duration};
 
 use common::{Peer, announced, ends, publish, reading, stays_pending, step};
+use iroh::EndpointId;
 use iroh_live_node::{
-    Audience, Error, Grant, NodeConfig, Reach, Session,
+    Audience, Error, Grant, Layout, NodeConfig, Reach, Session,
     policy::{self, Authorization, PeerRequest, Rejection, Transit},
 };
-use moq_net::Path;
+use moq_net::{Path, Pattern, Patterns};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
@@ -371,23 +372,38 @@ async fn claims_are_capped_by_bytes_and_repeats_are_free() {
     bob.shutdown().await;
 }
 
+/// A layout in which one peer owns `fleet/cam` and nothing else.
+#[derive(Debug)]
+struct Fleet(EndpointId);
+
+impl Layout<EndpointId> for Fleet {
+    fn scope(&self, peer: &EndpointId) -> Patterns {
+        if *peer == self.0 {
+            Patterns::from(Pattern::literal("fleet/cam").expect("a pattern"))
+        } else {
+            Patterns::new()
+        }
+    }
+
+    fn owner(&self, path: &str) -> Option<EndpointId> {
+        (path == "fleet/cam").then_some(self.0)
+    }
+}
+
 #[tokio::test]
 #[traced_test]
-async fn an_owner_function_replaces_the_generic_rule() {
+async fn a_layout_replaces_the_generic_owner_rule() {
     let alice = Peer::spawn().await;
-    let alice_id = alice.id();
     let bob = Peer::bare(NodeConfig {
         grant: Some(Arc::new(|_| Grant::nothing())),
-        owner: Some(Arc::new(move |path: &Path| {
-            (path.as_str() == "fleet/cam").then_some(alice_id)
-        })),
+        layout: Some(Arc::new(Fleet(alice.id()))),
         ..Default::default()
     })
     .await;
 
     bob.moq
         .claim_path(alice.id(), &Path::new("fleet/cam").expect("path"))
-        .expect("the owner function admits it");
+        .expect("the layout names alice the owner");
     let err = bob
         .moq
         .claim_path(alice.id(), &path_of(&alice, "cam"))
