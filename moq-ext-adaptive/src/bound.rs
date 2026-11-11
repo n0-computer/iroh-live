@@ -7,14 +7,11 @@
 //!   estimate covers [`Adaptation::fit_ratio`] of its advertised bitrate.
 //! - Sustained loss lowers a ceiling one rung at a time, and emergency loss
 //!   drops it to the bottom. A clean stretch raises it one rung at a time.
-//! - The caller's constraints exclude the rest: a catalog `stalled` flag and
-//!   renditions whose decoders failed.
+//! - The caller's [`Constraints`] exclude stalled and failed renditions.
 //! - When nothing fits, the smallest eligible rendition plays.
 //!
-//! Time enters only as hysteresis around that answer. A lower target has to
-//! hold for [`Adaptation::downgrade_hold`] and a higher one for
-//! [`Adaptation::upgrade_hold`]. No step up comes within
-//! [`Adaptation::post_downgrade_cooldown`] of a step down.
+//! Time enters only as hysteresis around that answer, through the hold and
+//! cooldown timers of [`Adaptation`].
 //!
 //! One ratio serves both directions. A publisher parked on a low rung has an
 //! estimate limited by what it sends, and it can still climb back.
@@ -205,8 +202,7 @@ impl Bound {
     /// Moves the loss ceiling on this reading.
     ///
     /// `current` is the index of the rung playing, and `lowest` the index of
-    /// the bottom eligible rung. Sustained loss moves the ceiling one below
-    /// `current`.
+    /// the bottom eligible rung.
     fn follow_loss(&mut self, loss: f64, current: usize, lowest: usize, now: Instant) {
         if self.is_emergency(Some(loss)) {
             self.drop_to_bottom(lowest);

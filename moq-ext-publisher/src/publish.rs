@@ -1,11 +1,5 @@
 //! Publishing: a broadcast that exists apart from any transport.
 //!
-//! A [`LocalBroadcast`] holds a catalog, a media clock, one video slot and one
-//! audio slot. It fills a `broadcast::Producer`: one a transport created for
-//! publishing ([`LocalBroadcast::new_in`]), or one of its own
-//! ([`LocalBroadcast::new`]). A player reads it in-process with
-//! `RemoteBroadcast::from_consumer(broadcast.consume())`.
-//!
 //! The video slot opens its source once and encodes it into every rendition of
 //! a ladder. Each rendition encodes only while someone watches it.
 
@@ -42,16 +36,14 @@ mod video;
 #[derive(Debug)]
 pub(crate) struct SlotTask {
     stop: CancellationToken,
-    /// Set before `stop` when a successor takes the task's tracks over.
+    /// Set by [`hand_over`](Self::hand_over) before `stop`, read by the task
+    /// once stopped.
     handing_over: Arc<AtomicBool>,
     task: Option<AbortOnDropHandle<()>>,
 }
 
 impl SlotTask {
     /// Spawns `run` with a stop token that is a child of `closed`.
-    ///
-    /// `handing_over` is the flag [`hand_over`](Self::hand_over) sets, which
-    /// the task reads once stopped.
     fn spawn<F, Fut>(
         span: Span,
         closed: &CancellationToken,
@@ -119,7 +111,6 @@ struct Job {
     tracks: Arc<tokio::sync::Mutex<()>>,
     /// The tracks a replaced video task left open, for this one to take over.
     handovers: video::Handovers,
-    /// Set when a successor takes this task's tracks over.
     handing_over: Arc<AtomicBool>,
     stats: PublishRecorder,
     reporter: status::Reporter,
@@ -169,9 +160,8 @@ const TIMESTAMP_HISTORY: usize = 1024;
 
 /// The source timestamp of each recently published video frame, by its broadcast timestamp.
 ///
-/// A broadcast timestamp maps to one source timestamp, because the broadcast
-/// clock never goes back. Every rendition publishes a picture at the same
-/// broadcast timestamp, so the renditions of a ladder share one entry.
+/// Every rendition publishes a picture at the same broadcast timestamp, so the
+/// renditions of a ladder share one entry.
 #[derive(Debug, Clone, Default)]
 struct TimestampLog(Arc<Mutex<BTreeMap<moq_net::Timestamp, moq_net::Timestamp>>>);
 
@@ -196,12 +186,10 @@ impl TimestampLog {
 /// Maps a source's timestamps onto the broadcast clock.
 ///
 /// The first frame lands at the clock's current time, and later frames keep
-/// the source's own cadence. When the source's timeline breaks, the next frame
-/// lands at the current time again, so the broadcast never goes back. A
-/// timeline breaks when a frame would land at or before the previous one, or
-/// more than [`MAX_AHEAD`] past the clock. That happens when an application
-/// pushes another device into the same source, such as a camera whose
-/// timestamps start at zero after a test pattern on the process clock.
+/// the source's own cadence. A timeline breaks when a frame would land at or
+/// before the previous one, or more than [`MAX_AHEAD`] past the clock, as when
+/// an application pushes another device into the same source. The next frame
+/// then lands at the current time again, so the broadcast never goes back.
 ///
 /// Clones share the anchor, so every rendition of a ladder carries the same
 /// timestamp for the same picture. Each clone keeps its own last timestamp.
@@ -320,9 +308,7 @@ struct Shared {
     video_timestamps: TimestampLog,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
-    /// Held by a video task while it owns track names.
-    ///
-    /// A replacement waits on it until its predecessor's tracks are gone.
+    /// Held by a video task while it owns track names, for a replacement to wait on.
     video_tracks: Arc<tokio::sync::Mutex<()>>,
     /// The same for audio, whose track name does not change on replacement.
     audio_tracks: Arc<tokio::sync::Mutex<()>>,
@@ -366,9 +352,8 @@ impl Drop for Shared {
 /// The setters spawn an encoding task, so call them from within a Tokio
 /// runtime.
 ///
-/// Dropping the last clone ends the broadcast without waiting. It aborts the
-/// encoding tasks and closes the catalog and the broadcast, so subscribers see
-/// it end.
+/// Dropping the last clone ends the broadcast without waiting: it aborts the
+/// encoding tasks and closes the catalog and the broadcast.
 #[derive(Debug, Clone)]
 pub struct LocalBroadcast {
     shared: Arc<Shared>,
@@ -393,8 +378,7 @@ impl LocalBroadcast {
     /// Creates an empty broadcast of its own, published nowhere.
     ///
     /// For a local preview, a test, or a transport that takes any
-    /// `broadcast::Consumer`. To publish, build it in the transport's broadcast
-    /// with [`new_in`](Self::new_in) instead, so peers read it without a copy.
+    /// `broadcast::Consumer`.
     #[must_use]
     pub fn new() -> Self {
         Self::new_in(moq_net::broadcast::Info::new().produce())
@@ -552,11 +536,9 @@ impl LocalBroadcast {
 
     /// Returns the source timestamp of the video frame this broadcast published at `published`.
     ///
-    /// The broadcast moves every source timestamp onto its own clock, so a
-    /// subscriber's decoded frame carries another timestamp than the frame the
-    /// source produced. A subscriber that sends the decoded frame's timestamp
-    /// back lets the publisher find its own frame with this, without marking
-    /// the pixels. Every rendition shares the timestamp of a picture.
+    /// The broadcast moves every source timestamp onto its own clock. A
+    /// subscriber that sends a decoded frame's timestamp back lets the
+    /// publisher find its own frame with this, without marking the pixels.
     ///
     /// Returns `None` for a timestamp this broadcast did not publish, for one
     /// older than the last 1024 frames, and for a pre-encoded source, whose

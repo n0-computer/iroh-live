@@ -15,11 +15,8 @@
 //!   until it takes over. The deadline covers both the open and the first
 //!   picture.
 //! - A replacement takes over once its playhead is within [`CATCH_UP_SLACK`] of
-//!   the incumbent's, as in `@moq/watch`, so the picture does not step
-//!   backwards. It waits for that at most [`CATCH_UP_PATIENCE`] after its first
-//!   picture, then takes over where it is. While both run they share the link,
-//!   and a replacement asked for because the link cannot carry the incumbent
-//!   may never catch up.
+//!   the incumbent's, so the picture does not step backwards, or at the latest
+//!   [`CATCH_UP_PATIENCE`] after its first picture.
 //! - A replacement takes over on a picture it decoded, never on opening alone.
 //!   A decoder that opens and stays silent runs out its deadline. With nothing
 //!   playing, including after the incumbent ended, its first picture is enough.
@@ -147,7 +144,6 @@ pub struct Switcher<R, O> {
     incumbent: Option<Playing<R>>,
     replacement: Option<Replacement<R, O>>,
     generations: u64,
-    /// How long a replacement has, from its request to taking over.
     patience: Duration,
 }
 
@@ -264,10 +260,6 @@ impl<R, O> Switcher<R, O> {
     }
 
     /// Records that the replacement of `generation` finished opening.
-    ///
-    /// An opened replacement starts warming. It takes over on a picture, in
-    /// [`replacement_frame`](Self::replacement_frame), and keeps its deadline
-    /// until then.
     pub fn opened<E>(&mut self, generation: u64, result: Result<R, E>) -> Outcome<E> {
         let Some(replacement) = self
             .replacement
@@ -339,18 +331,16 @@ impl<R, O> Switcher<R, O> {
 
     /// Drops the incumbent, so the replacement takes over on its first picture.
     ///
-    /// For a step down on a link that cannot carry the incumbent. While both
+    /// For a step down on a link that cannot carry the incumbent: while both
     /// overlap they share the link, and the replacement's groups age out before
-    /// they arrive. Dropping the incumbent's reader drops its subscription. The
-    /// caller keeps its last picture up.
+    /// they arrive. The caller keeps its last picture up.
     pub fn release_incumbent(&mut self) {
         self.incumbent = None;
     }
 
     /// Records that the incumbent's track ended.
     ///
-    /// A replacement on its way keeps its deadline and takes over on its first
-    /// picture. Without one, the video has ended.
+    /// Without a replacement on its way, the video has ended.
     pub fn incumbent_ended<E>(&mut self) -> Outcome<E> {
         self.incumbent = None;
         match &self.replacement {

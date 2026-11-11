@@ -1,8 +1,7 @@
 //! Playback: one player over a remote broadcast.
 //!
 //! A [`Player`] owns its decoders, its playout clock, its rendition choice and
-//! its statistics. Two views of one broadcast are two players, and they do not
-//! interfere.
+//! its statistics, so two players of one broadcast do not interfere.
 //!
 //! Three tasks run underneath. The selector turns the rendition mode, the
 //! catalog and the network into the rendition that should play. The video
@@ -77,9 +76,8 @@ impl Latency {
 
     /// Returns the playout clock's delay, given the publisher's `jitter`.
     ///
-    /// A publisher that flushes frames up to `jitter` late needs a buffer at
-    /// least that deep, so the delay is `min` raised to the jitter, but never
-    /// past `max`. An unpaced latency stays at zero.
+    /// A publisher that flushes frames up to `jitter` late needs a buffer that
+    /// deep. An unpaced latency ignores `jitter`.
     pub(crate) fn playout_delay(&self, jitter: Option<Duration>) -> Duration {
         match jitter {
             Some(jitter) if self.paced() => self.min.max(jitter).min(self.max),
@@ -133,12 +131,9 @@ pub struct PlayerConfig {
     pub adaptation: Adaptation,
     /// How long a replacement decoder has to take over before the switch is given up.
     ///
-    /// It bounds every handover: automatic, pinned, or to another decoder. The
-    /// replacement subscribes to the other rendition, waits for its next
-    /// keyframe, and decodes until it catches up with the picture on screen.
-    /// Encoders open a group every two seconds by default, so on an impaired
-    /// link the wait for the keyframe alone takes seconds. The incumbent keeps
-    /// playing either way. 15 s by default.
+    /// It bounds every handover: automatic, pinned, or to another decoder. On
+    /// an impaired link the wait for the next keyframe alone takes seconds, and
+    /// the incumbent keeps playing meanwhile. 15 s by default.
     pub switch_deadline: Duration,
     /// Whether to record when each video frame arrives, for
     /// [`FrameTiming::arrived`](crate::stats::FrameTiming::arrived).
@@ -215,8 +210,7 @@ pub(crate) struct Controls {
 ///
 /// Dropping it aborts its tasks and returns at once: decoders stop at their
 /// next await point and are not waited for, so a decoder thread may outlive
-/// the player briefly. It is not `Clone`: a second view of the broadcast is a
-/// second player.
+/// the player briefly. A second view of the broadcast is a second player.
 #[derive(Debug)]
 pub struct Player {
     broadcast: RemoteBroadcast,
@@ -345,8 +339,7 @@ impl Player {
     /// they flow only while [`PlayerConfig::audio`] is set. Pass
     /// [`AudioTarget::null`] to decode the audio without playing it, for
     /// analysis. Each call returns a new handle that starts at the next decoded
-    /// frame. The stream follows the audio across new routes and replaced
-    /// tracks, and ends when the player is dropped.
+    /// frame and ends when the player is dropped.
     ///
     /// # Examples
     ///
@@ -440,8 +433,8 @@ impl Player {
     ///
     /// `pts` is the `timestamp` of a frame from [`video`](Self::video). Its
     /// `arrived`, `decoded` and `presented` tell the time on the network from
-    /// the time in the decoder and in the playout clock. The timeline keeps the
-    /// last few hundred pictures, so look a frame up soon after it is handed out.
+    /// the time in the decoder and in the playout clock. Look a frame up soon
+    /// after it is handed out.
     ///
     /// # Examples
     ///

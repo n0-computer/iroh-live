@@ -21,14 +21,9 @@
 //! # }
 //! ```
 //!
-//! The main items are:
-//!
-//! - [`VideoView`] draws a [`VideoFrames`] stream and wakes the window when a
-//!   frame arrives.
-//! - [`FrameView`] draws frames you hand it.
-//! - [`create_egui_wgpu_config`] builds the `wgpu` setup for eframe, with
-//!   DMA-BUF import on Linux.
-//! - [`overlay::DebugOverlay`] paints playback or publish stats over a video.
+//! [`VideoView`] draws a [`VideoFrames`] stream, and [`FrameView`] the frames
+//! you hand it. [`create_egui_wgpu_config`] builds the `wgpu` setup for eframe,
+//! and [`overlay::DebugOverlay`] paints stats over a video.
 
 pub mod overlay;
 
@@ -58,8 +53,6 @@ pub fn format_bitrate(rate: moq_net::bandwidth::Rate) -> String {
 }
 
 /// A renderer that draws decoded frames into an egui texture.
-///
-/// It is bound to one `wgpu` device and queue.
 #[derive(derive_more::Debug)]
 struct EguiVideoRenderer {
     #[debug(skip)]
@@ -113,8 +106,8 @@ impl EguiVideoRenderer {
 impl Drop for EguiVideoRenderer {
     /// Frees the texture registered with egui.
     ///
-    /// egui keeps a native texture registration until it is freed. Without
-    /// this, every dropped view would leave a stale entry in the render state.
+    /// Without this, every dropped view would leave a stale native texture
+    /// registration in egui's render state.
     fn drop(&mut self) {
         if let Some((id, _)) = self.texture.take() {
             self.render_state.renderer.write().free_texture(&id);
@@ -125,7 +118,6 @@ impl Drop for EguiVideoRenderer {
 /// A view that draws the frames you hand it.
 ///
 /// It shows the last drawn frame, or a black placeholder before the first.
-/// [`VideoView`] builds on it and reads frames from a [`VideoFrames`] stream.
 #[derive(derive_more::Debug)]
 pub struct FrameView {
     renderer: Option<EguiVideoRenderer>,
@@ -200,10 +192,9 @@ impl FrameView {
 pub struct VideoView {
     frames: Option<VideoFrames>,
     frame_view: FrameView,
-    /// The frame [`render`](Self::render) last took from the stream.
     #[debug(skip)]
     last: Option<Arc<moq_video::Frame>>,
-    /// The context [`set_frames`](Self::set_frames) wakes for a new stream.
+    /// The context a new stream's wake task repaints.
     #[debug(skip)]
     ctx: egui::Context,
     /// Wakes the window on each frame. Dropping it stops the task.
@@ -235,8 +226,7 @@ impl VideoView {
     /// Creates a view of `frames` that draws through `render_state`.
     ///
     /// `name` names the placeholder texture. A view without frames shows the
-    /// placeholder until [`set_frames`](Self::set_frames) gives it some. A Tokio
-    /// runtime runs the task that wakes the window.
+    /// placeholder until [`set_frames`](Self::set_frames) gives it some.
     ///
     /// # Panics
     ///
@@ -281,10 +271,9 @@ impl VideoView {
 
     /// Returns the frame [`render`](Self::render) last drew, or `None` before the first.
     ///
-    /// Its `timestamp` and `size()` say which picture is on screen, for a
-    /// label beside the video. A frame that failed to draw still counts, as
-    /// does one a view without a renderer skipped. The frame stays after
-    /// [`set_frames`](Self::set_frames), as the picture does.
+    /// A frame that failed to draw still counts, as does one a view without a
+    /// renderer skipped. The frame stays after [`set_frames`](Self::set_frames),
+    /// as the picture does.
     ///
     /// # Examples
     ///

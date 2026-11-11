@@ -12,9 +12,6 @@
 //!   [`VideoSource`](crate::VideoSource) of [`Surface::I420`]. It costs the
 //!   pipe and an encode. It is the only path for anything that needs pixels,
 //!   such as a preview, a QR scanner or a rendition ladder.
-//!
-//! The raw path aligns its geometry with [`aligned`], so libcamera does not
-//! pad its rows.
 
 use std::{
     collections::VecDeque,
@@ -73,9 +70,6 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// `width * height * 3 / 2` byte pictures. Widths 642, 656, 672, 688 and 700
 /// give the same byte count as 704, 800 the same as 832, and 96 the same as
 /// 128. Heights are not padded: 358 and 362 come out exact.
-///
-/// [`aligned`] rounds the width up to this, so reading is a plain split with no
-/// per-row copy.
 const RAW_WIDTH_ALIGN: u32 = 64;
 
 /// Target bitrate for [`Output::H264`] when the caller names none.
@@ -92,9 +86,6 @@ enum Output {
         /// Target bitrate in bits per second.
         bitrate: u32,
         /// Keyframe interval, in frames.
-        ///
-        /// A subscriber cannot start decoding before the next keyframe, so this
-        /// sets join latency more than bitrate.
         keyframe_interval: u32,
     },
     /// Raw planar I420 pictures, tightly packed.
@@ -103,10 +94,9 @@ enum Output {
 
 /// Returns the raw capture size nearest above `size` that libcamera does not pad.
 ///
-/// The width rounds up to [`RAW_WIDTH_ALIGN`] and the height to even. That lets
-/// [`frames`] split pictures by size alone. The encoder scales to the
-/// renditions, so the rounding costs a few captured columns and does not change
-/// what is published.
+/// The width rounds up to [`RAW_WIDTH_ALIGN`] and the height to even, so
+/// [`frames`] splits pictures by size alone with no per-row copy. The encoder
+/// scales to the renditions, so the rounding does not change what is published.
 fn aligned(size: Size) -> Size {
     let capture = Size::new(
         size.width.max(1).div_ceil(RAW_WIDTH_ALIGN) * RAW_WIDTH_ALIGN,
@@ -390,17 +380,12 @@ impl Pictures {
             return None;
         }
         let data: Vec<u8> = self.buffer.split_to(self.frame).into();
-        // `new` checked the size and `frame` is `I420::len` of it, so
-        // `I420::new` cannot fail.
         let picture =
             I420::new(self.size, data).expect("the size and the length were both checked");
         Some(picture)
     }
 
     /// Returns the bytes that do not make a whole picture.
-    ///
-    /// Bytes left at the end of the stream mean the camera wrote another row
-    /// stride, and the pictures handed on were sheared.
     fn leftover(&self) -> usize {
         self.buffer.len()
     }
@@ -411,11 +396,8 @@ struct Process {
     /// Killed on drop, which stops the camera.
     child: tokio::process::Child,
     stdout: tokio::process::ChildStdout,
-    /// The last few lines the subprocess wrote to stderr.
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     /// The task that collects stderr, stopped with the stream.
-    ///
-    /// `None` if the child had no stderr pipe.
     stderr_reader: Option<AbortOnDropHandle<()>>,
 }
 

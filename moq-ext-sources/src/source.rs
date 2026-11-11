@@ -5,9 +5,6 @@
 //! where the application asked for it. Each device lives on its own thread,
 //! because platform capture objects are often not `Send`. Only frames cross
 //! threads.
-//!
-//! A source runs while any clone of it exists, including the clone a
-//! broadcast holds. Any number of broadcasts and previews can read it at once.
 
 #[cfg(feature = "file")]
 use std::path::Path;
@@ -71,7 +68,6 @@ enum Driver {
     /// A task on a thread of its own, for capture objects that cannot move.
     #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
     Local {
-        /// Stops the task when dropped.
         _task: crate::local_task::LocalTask,
     },
     /// Nothing: the application pushes.
@@ -81,12 +77,10 @@ enum Driver {
 /// The shared half of a [`VideoSource`].
 #[derive(Debug)]
 struct VideoInner {
-    /// A short name of the source, for logs and status.
     label: String,
     format: VideoFormat,
     frames: FrameReader,
     demand: Demand,
-    /// Cancelled when the last handle drops, to stop the producer.
     stop: CancellationToken,
     _driver: Driver,
 }
@@ -100,7 +94,8 @@ impl Drop for VideoInner {
 /// A raw video source running on its own thread.
 ///
 /// Capture runs while any clone exists, including the clone a broadcast holds.
-/// Encoding runs only while something wants the frames. Cheap to clone.
+/// Any number of broadcasts and previews can read it at once. Encoding runs
+/// only while something wants the frames. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct VideoSource {
     inner: Arc<VideoInner>,
@@ -141,10 +136,9 @@ impl VideoSource {
     /// its device until the read returns. A V4L2 read gives up after a second,
     /// but a Media Foundation read on Windows has no timeout.
     ///
-    /// On Linux with the `pipewire` feature, the default camera
-    /// (`Source::Camera(None)`) is PipeWire's default camera, which shares the
-    /// device with other applications. If that does not open, for example
-    /// without a PipeWire session, the default V4L2 device opens instead.
+    /// With the `pipewire` feature on Linux, the default camera is PipeWire's,
+    /// which shares the device with other applications. If that does not open,
+    /// the default V4L2 device opens instead.
     ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
@@ -188,8 +182,6 @@ impl VideoSource {
 
     /// Returns a generated test pattern at `size` and `rate`.
     ///
-    /// Needs the `pattern` feature.
-    ///
     /// The pattern shows a sweeping bar, a frame counter and a clock. A marker
     /// flashes in step with the beep of [`AudioSource::test_pattern`].
     ///
@@ -220,10 +212,9 @@ impl VideoSource {
     /// the sender will push, and a broadcast advertises its size. A frame of
     /// another size is scaled to the rendition's.
     ///
-    /// An application may push the frames of whatever device is selected, and
-    /// switch devices while it pushes. Timestamps only have to rise within one
-    /// device's run: a broadcast anchors a timeline that goes back or jumps far
-    /// ahead at its own clock again, and starts a new group there.
+    /// An application may switch devices while it pushes. Timestamps only have
+    /// to rise within one device's run: a broadcast re-anchors a timeline that
+    /// goes back or jumps far ahead, and starts a new group there.
     #[must_use]
     pub fn push(format: VideoFormat) -> (FrameSender<video::Frame>, Self) {
         let slot = FrameSlot::new();
@@ -367,8 +358,7 @@ impl EncodedVideoSource {
 
     /// Splits the source into its byte stream and a guard.
     ///
-    /// The guard keeps the producer of the bytes alive, such as a subprocess.
-    /// Drop the guard to stop the producer.
+    /// Drop the guard to stop the producer of the bytes.
     pub fn into_parts(self) -> EncodedParts {
         (self.bytes, self.guard)
     }
@@ -395,8 +385,7 @@ impl EncodedVideoSource {
 
 /// An audio output whose mix a microphone cancels from its signal.
 ///
-/// Implemented by the application's output type. The source crate only asks it
-/// for a canceller, when a broadcast starts publishing the microphone.
+/// Implemented by the application's output type.
 #[cfg(feature = "capture")]
 pub trait EchoReference: std::fmt::Debug + Send + Sync + 'static {
     /// Builds an echo canceller tapped off this output's mix.
@@ -420,12 +409,8 @@ pub struct MicrophoneConfig {
     pub capture: audio::capture::Config,
     /// The output whose signal is removed from the microphone.
     ///
-    /// `None` turns echo cancellation off, and a handset on speakerphone then
-    /// sends its own output back to the peer. Needs the `aec` feature:
-    /// [`AudioSource::microphone`] refuses the config without it. An output
-    /// feeds one canceller at a time, so the canceller is built when a
-    /// broadcast starts publishing the microphone, after the publication it
-    /// replaces has released its own.
+    /// `None` turns echo cancellation off. Needs the `aec` feature:
+    /// [`AudioSource::microphone`] refuses the config without it.
     pub echo_reference: Option<Arc<dyn EchoReference>>,
 }
 
@@ -453,9 +438,10 @@ impl MicrophoneConfig {
 
     /// Returns the capture config to open, with the echo canceller attached.
     ///
-    /// The publication that encodes the microphone calls this when it starts.
-    /// Each call asks the echo reference for a new canceller, and an output
-    /// cancels the echo of one microphone at a time.
+    /// The publication that encodes the microphone calls this when it starts,
+    /// after the publication it replaces has released its canceller. Each call
+    /// asks the echo reference for a new canceller, and an output cancels the
+    /// echo of one microphone at a time.
     ///
     /// # Errors
     ///
@@ -479,8 +465,6 @@ impl MicrophoneConfig {
 #[derive(Debug)]
 pub enum AudioKind {
     /// A microphone, opened by the publication that encodes it.
-    ///
-    /// The publication also builds its echo canceller.
     #[cfg(feature = "capture")]
     Microphone(MicrophoneConfig),
     /// PCM, fanned out to every broadcast that reads it.
@@ -500,7 +484,6 @@ pub enum AudioKind {
 struct AudioInner {
     label: &'static str,
     kind: AudioKind,
-    /// Held while a broadcast publishes this source.
     demand: Demand,
     stop: CancellationToken,
     _driver: Driver,
@@ -542,12 +525,11 @@ impl AudioSource {
 
     /// Creates a microphone source.
     ///
-    /// This checks that the device exists and that echo cancellation, if asked
-    /// for, is compiled in. The device itself opens when
-    /// `LocalBroadcast::set_audio` publishes the source. A failure then shows
-    /// in that broadcast's status, and the audio slot stays failed until the
-    /// next `set_audio`: a failed microphone is not opened again. The same
-    /// source set on two broadcasts opens the device twice.
+    /// The device opens only when `LocalBroadcast::set_audio` publishes the
+    /// source. A failure then shows in that broadcast's status, and the audio
+    /// slot stays failed until the next `set_audio`: a failed microphone is
+    /// not opened again. The same source set on two broadcasts opens the
+    /// device twice.
     ///
     /// Cancellation safe: dropping the future only abandons the device query.
     ///
@@ -592,8 +574,6 @@ impl AudioSource {
 
     /// Decodes an audio file in real time.
     ///
-    /// Needs the `file` feature.
-    ///
     /// Restarts at the beginning when `looping`, and ends with the file
     /// otherwise. Reads WAV and MP3. The file is probed before this returns,
     /// and decoding starts on its own thread.
@@ -637,8 +617,7 @@ impl AudioSource {
     /// Returns the beeping tone that goes with [`VideoSource::test_pattern`].
     ///
     /// It beeps for a tenth of a second every second, on the timeline the
-    /// pattern's marker flashes on. A viewer can see and hear whether the two
-    /// line up.
+    /// pattern's marker flashes on, so a viewer can check lip sync.
     #[cfg(feature = "pattern")]
     #[must_use]
     pub fn test_pattern(layout: audio::Layout) -> Self {
@@ -682,11 +661,10 @@ impl AudioSource {
 
     /// Returns a source fed by the returned sender.
     ///
-    /// The source ends when every sender is dropped. Frames carry interleaved
-    /// 32-bit float samples in `format`. A broadcast that falls more than a
-    /// few seconds behind loses the oldest frames and counts them in its
-    /// stats. The sender's demand is true while a broadcast publishes the
-    /// source.
+    /// The source ends when every sender is dropped. A broadcast that falls
+    /// more than a few seconds behind loses the oldest frames and counts them
+    /// in its stats. The sender's demand is true while a broadcast publishes
+    /// the source.
     #[must_use]
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);

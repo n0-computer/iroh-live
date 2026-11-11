@@ -2,12 +2,10 @@
 //!
 //! `moq_mux`'s container exporters write encoded frames into fragmented MP4 or
 //! Matroska with no decoder in the path. They also build the container's
-//! decoder configuration from the catalog. For example, they turn an `avc3`
-//! track with inline parameter sets into the `avc1` shape a player expects.
+//! decoder configuration from the catalog.
 //!
-//! A recording differs from a player in two settings. It starts from the
-//! oldest group the track still holds instead of the live edge, and it waits
-//! much longer for a stalled group before skipping it.
+//! A recording starts from the oldest group the track still holds instead of
+//! the live edge, and waits longer than a player for a stalled group.
 
 use std::{
     path::Path,
@@ -135,8 +133,7 @@ impl Recording {
 
     /// Waits until the broadcast ends and the file is finished.
     ///
-    /// Returns the bytes written. A call after it returned gives the same byte
-    /// count.
+    /// Returns the bytes written, also on later calls.
     ///
     /// Cancellation safe. The recording runs on its own task until the
     /// [`Recording`] is dropped, and a later call picks up the wait.
@@ -228,9 +225,8 @@ fn selection(rendition: Option<&str>) -> select::Broadcast {
 
 /// An empty private route table for the exporter, with the task that drives it.
 ///
-/// The exporter resolves a rendition that names a sibling broadcast through a
-/// route table. A bare broadcast has no siblings, so nothing resolves here. A
-/// broadcast that follows a route table records through that table instead.
+/// The exporter resolves sibling broadcasts through a route table, and a bare
+/// broadcast has none.
 struct LocalOrigin {
     origin: moq_net::origin::Producer,
     _driver: AbortOnDropHandle<()>,

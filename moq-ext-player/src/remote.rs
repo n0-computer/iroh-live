@@ -1,7 +1,4 @@
 //! Remote broadcasts: a catalog and a subscription, not yet playing.
-//!
-//! [`RemoteBroadcast`] reads a broadcast's catalog and keeps the subscription
-//! open. Any number of [`Player`]s and recordings can read it.
 
 use std::{
     sync::{Arc, Mutex},
@@ -23,8 +20,7 @@ use crate::{RecordConfig, Recording};
 /// How long to look for an ended broadcast again before it counts as gone.
 ///
 /// After a change of route, the next request finds the broadcast at once. A
-/// longer wait means the publisher left. A deliberate hang-up also closes this
-/// late, as [`RemoteBroadcast::closed`] documents.
+/// longer wait means the publisher left.
 const REROUTE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// The first wait before asking again for a catalog track that is not there yet.
@@ -81,9 +77,9 @@ struct Shared {
 
 /// A broadcast being read.
 ///
-/// Cheap to clone. Holding it keeps the broadcast subscription open, and the
-/// players and recordings that read it subscribe to its tracks. Constructing
-/// one spawns a task, so it must happen inside a Tokio runtime.
+/// Cheap to clone. Holding it keeps the broadcast subscription open, and any
+/// number of [`Player`]s and recordings can read it. Constructing one spawns a
+/// task, so it must happen inside a Tokio runtime.
 #[derive(Debug, Clone)]
 pub struct RemoteBroadcast {
     shared: Arc<Shared>,
@@ -108,10 +104,9 @@ impl RemoteBroadcast {
     /// Follows `path` in a route table, starting from a resolved `broadcast`.
     ///
     /// When a change of route ends the broadcast, it is requested again through
-    /// the next route, and players see a switch instead of an end. Every such
-    /// request is a failover with a time limit, so a publisher that is already
-    /// gone closes the broadcast, as [`closed`](Self::closed) explains. This is
-    /// what `iroh-live` uses on subscribe, after resolving the path.
+    /// the next route, and players see a switch instead of an end.
+    /// [`closed`](Self::closed) explains when a publisher counts as gone.
+    /// `iroh-live` uses this on subscribe.
     ///
     /// # Panics
     ///
@@ -147,10 +142,9 @@ impl RemoteBroadcast {
     /// Attaches network signals for automatic rendition selection.
     ///
     /// `signals` returns the link as it is now. Players call it a few times a
-    /// second and on every [`Player::stats`], so it must not block. `iroh-live`
-    /// attaches it on subscribe. The signals belong to the broadcast, not to
-    /// this handle: every clone sees them, and attaching again replaces them
-    /// for all clones. Players started afterwards use them.
+    /// second and on every [`Player::stats`], so it must not block. The
+    /// signals belong to the broadcast: every clone sees them, and attaching
+    /// again replaces them. Players started afterwards use them.
     pub fn set_network(&self, signals: impl Fn() -> NetworkSample + Send + Sync + 'static) {
         *self.shared.network.lock().expect("poisoned") = Some(Arc::new(signals));
     }
@@ -390,9 +384,8 @@ async fn follow(
 
 /// Reads catalog updates into `catalog` until the catalog track ends.
 ///
-/// A broadcast may be announced before its publisher creates the catalog
-/// track, so a catalog that is not found yet is asked for again, with a
-/// growing wait, until it appears or the broadcast closes. Cancellation safe.
+/// Asks again for a catalog track that is not there yet, as
+/// [`RemoteBroadcast::catalog`] describes. Cancellation safe.
 async fn read_catalog(
     consumer: &moq_net::broadcast::Consumer,
     catalog: &watch::Sender<Option<Arc<Catalog>>>,

@@ -7,22 +7,16 @@
 //!   so tearing breaks it into offset segments.
 //! - A ruler above the sweep marks tenths of the width, one tick per 200 ms of
 //!   the bar's travel, so the rate can be read off.
-//! - Stripes at four pitches sit below the sweep. The three grey columns lose
-//!   their stripes when the picture is scaled or the encoder runs out of bits.
-//!   The magenta and green column has flat luma, so it turns solid olive only
-//!   when chroma detail is lost.
+//! - Stripes at four pitches below the sweep blur when luma or chroma detail
+//!   is lost.
 //! - A frame counter makes dropped frames countable. A clock makes latency
 //!   measurable: photograph the publisher's and the player's screens together
-//!   and subtract the two stamps. Both lines share one digit size and one left
-//!   edge, and the top sixteenth of the frame stays black, so an application
-//!   can paint a marker into the corner without covering a digit.
+//!   and subtract the two stamps.
 //! - A marker lights for [`BEEP_LENGTH`] every [`BEEP_PERIOD`], at the same
 //!   media time as the beep, so a viewer sees and hears whether they agree.
 //!
-//! Both generators take their phase from one process-wide clock, so a picture
-//! and a tone started at different moments still agree. Each paces against an
-//! absolute schedule, because a sleep always overshoots and relative waits
-//! would fall behind the clock.
+//! Each generator paces against an absolute schedule, because a sleep always
+//! overshoots and relative waits would fall behind the clock.
 
 use std::{
     sync::{Arc, OnceLock},
@@ -201,7 +195,6 @@ pub(crate) fn run_tone(
     let per_frame = (f64::from(sample_rate) * TONE_FRAME.as_secs_f64()) as usize;
     let sample_ns = 1_000_000_000 / u64::from(sample_rate);
     let step = hz * std::f64::consts::TAU / f64::from(sample_rate);
-    // Start on the shared test clock, so the beep lines up with the flash.
     let origin = Duration::from(clock.now());
     let started = Instant::now();
     let mut sample = 0usize;
@@ -256,17 +249,15 @@ impl Band {
 /// Where each element lands, for one frame size.
 ///
 /// Bands are cut in sixteenths of the height, so the pattern reads the same at
-/// every frame size. The first sixteenth is left empty.
+/// every frame size. The first sixteenth stays black, so an application can
+/// paint a marker into the corner without covering a digit.
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     size: Size,
-    /// The frame counter.
     counter: Band,
-    /// The time of day.
     clock: Band,
     /// Where the sweeping bar runs, above the stripes.
     sweep: Band,
-    /// The four stripe columns.
     stripes: Band,
     /// The marker that flashes with the beep.
     marker: Band,
@@ -289,10 +280,7 @@ impl Layout {
         }
     }
 
-    /// Returns the rows the sweeping bar spans.
-    ///
-    /// The bar runs from the top of its band to the bottom of the frame, across
-    /// the stripes and the marker. Tearing shows only on a long edge.
+    /// Returns the rows the sweeping bar spans, down to the bottom of the frame.
     fn bar(self) -> Band {
         Band {
             top: self.sweep.top,
@@ -376,8 +364,7 @@ impl Canvas {
     /// Paints one frame and returns its pixels.
     ///
     /// `media` is the frame's presentation time and drives the sweep and the
-    /// marker. Both move at a constant rate on the player's timeline, so a stall
-    /// shows as a jump. `count` and `wall` are only drawn as digits.
+    /// marker. `count` and `wall` are only drawn as digits.
     fn paint(&mut self, count: u64, media: Duration, wall: SystemTime) -> &[u8] {
         let layout = self.layout;
         let size = layout.size;
@@ -468,9 +455,6 @@ fn stripes(rgba: &mut [u8], size: Size, band: Band) {
 }
 
 /// Copies the first row of `band` over the rest of it.
-///
-/// Every band is the same on every row, so only one row is painted pixel by
-/// pixel.
 fn replicate(rgba: &mut [u8], size: Size, band: Band) {
     let stride = size.width as usize * 4;
     let Some(first) = band.rows().next() else {
@@ -509,9 +493,8 @@ const GLYPH_COLS: u32 = 5;
 
 /// Draws each `(band, text)` line in its band, all at one scale and one left edge.
 ///
-/// The scale is the largest at which every line fits its band and the frame,
-/// and the block of lines is centred horizontally. Large digits stay readable
-/// in a photo of a small screen.
+/// Uses the largest scale at which every line fits, so the digits stay
+/// readable in a photo of a small screen.
 fn draw_lines(rgba: &mut [u8], size: Size, lines: &[(Band, String)], ink: [u8; 3]) {
     let columns = |text: &str| text.chars().count() as u32 * (GLYPH_COLS + 1);
     let widest = lines
