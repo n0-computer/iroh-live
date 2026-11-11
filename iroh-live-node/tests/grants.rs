@@ -5,7 +5,10 @@ mod common;
 use std::{sync::Arc, time::Duration};
 
 use common::{Peer, announced, ends, publish, reading, stays_pending, step};
-use iroh_live_node::{Audience, Error, Grant, NodeConfig, Reach, Session};
+use iroh_live_node::{
+    Audience, Error, Grant, NodeConfig, Reach, Session,
+    policy::{self, Authorization, PeerRequest, Rejection, Transit},
+};
 use moq_net::Path;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
@@ -537,5 +540,184 @@ async fn a_forged_ticket_fails_not_owner() {
 
     alice.shutdown().await;
     mallory.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Returns a node whose policy rejects `banned` and lets everyone else subscribe.
+async fn rejecting(banned: iroh::EndpointId) -> Peer {
+    Peer::bare(
+        NodeConfig::default().with_policy(policy::from_fn(move |request: &PeerRequest| {
+            if *request.peer() == banned {
+                Err(Rejection::new("banned"))
+            } else {
+                Ok(Grant::subscribe_only().into())
+            }
+        })),
+    )
+    .await
+}
+
+/// Waits until `node` holds a session with `peer`, and returns it.
+async fn session_with(node: &iroh_live_node::Node, peer: iroh::EndpointId) -> Session {
+    let mut sessions = node.sessions();
+    step("the session registers", async {
+        loop {
+            if let Some(session) = sessions.get().into_iter().find(|s| s.peer() == peer) {
+                return session;
+            }
+            sessions.updated().await.expect("the node is alive");
+        }
+    })
+    .await
+}
+
+/// Reports whether `node` lists a session with `peer`.
+fn has_session_with(node: &iroh_live_node::Node, peer: iroh::EndpointId) -> bool {
+    node.sessions()
+        .get()
+        .iter()
+        .any(|session| session.peer() == peer)
+}
+
+/// Waits for a session the remote side refuses to end, or for the dial to fail.
+async fn refused(dial: Result<Session, Error>) {
+    match dial {
+        Ok(session) => {
+            step("the refused session closes", session.closed()).await;
+        }
+        Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
+    }
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_policy_rejection_refuses_an_accept_and_fails_a_dial() {
+    let mallory = Peer::spawn().await;
+    let bob = rejecting(mallory.id()).await;
+
+    refused(step("mallory dials", mallory.moq.connect(bob.endpoint.addr())).await).await;
+    assert!(!has_session_with(&bob.moq, mallory.id()));
+
+    let err = step("bob dials", bob.moq.connect(mallory.endpoint.addr()))
+        .await
+        .expect_err("bob's own policy rejects mallory");
+    let Error::Rejected { source, .. } = &err else {
+        panic!("not a rejection: {err:#}");
+    };
+    assert_eq!(source.reason(), "banned");
+    assert!(
+        !has_session_with(&mallory.moq, bob.id()),
+        "the dial never reached mallory"
+    );
+
+    // Others still get in.
+    let carol = Peer::spawn().await;
+    step("carol dials", carol.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("carol is admitted");
+    session_with(&bob.moq, carol.id()).await;
+
+    mallory.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_policy_grant_holds_in_both_directions() {
+    let fleet = |peer: &iroh::EndpointId| -> Grant {
+        Grant::publish_under(
+            format!("fleet/{peer}/**")
+                .parse::<moq_net::Pattern>()
+                .expect("pattern"),
+        )
+    };
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
+        move |request: &PeerRequest| Ok(fleet(request.peer()).into()),
+    )))
+    .await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
+    let bob_cam = publish(
+        &bob.moq,
+        format!("fleet/{}/cam", bob.id()),
+        Audience::Everyone,
+    )
+    .expect("publish");
+    let carol_cam = publish(
+        &carol.moq,
+        format!("fleet/{}/cam", carol.id()),
+        Audience::Everyone,
+    )
+    .expect("publish");
+
+    // Alice dials bob: her policy decides the dialed session.
+    let from_bob = step(
+        "alice dials bob",
+        alice.moq.subscribe(bob_cam.path(), Reach::Direct(bob.id())),
+    )
+    .await
+    .expect("the policy lets bob publish under fleet");
+    let session = from_bob.session().expect("a session");
+    assert!(session.dialed());
+    assert_eq!(session.grant(), fleet(&bob.id()));
+    reading(&from_bob.broadcast()).await;
+
+    // Carol dials alice: the same policy decides the accepted session.
+    step(
+        "carol dials alice",
+        carol.moq.connect(alice.endpoint.addr()),
+    )
+    .await
+    .expect("carol connects");
+    let accepted = session_with(&alice.moq, carol.id()).await;
+    assert!(!accepted.dialed());
+    assert_eq!(accepted.grant(), fleet(&carol.id()));
+    let from_carol = step(
+        "alice subscribes over the accepted session",
+        alice
+            .moq
+            .subscribe(carol_cam.path(), Reach::Direct(carol.id())),
+    )
+    .await
+    .expect("the policy lets carol publish under fleet");
+    assert!(!from_carol.session().expect("a session").dialed());
+    reading(&from_carol.broadcast()).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+#[tokio::test]
+#[traced_test]
+async fn a_policy_that_asks_for_transit_closes_the_session() {
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
+        |_: &PeerRequest| {
+            Ok(Authorization {
+                grant: Grant::everything(),
+                transit: Transit {
+                    peer_forwards: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        },
+    )))
+    .await;
+    let bob = Peer::spawn().await;
+
+    refused(step("bob dials", bob.moq.connect(alice.endpoint.addr())).await).await;
+    assert!(!has_session_with(&alice.moq, bob.id()));
+
+    let err = step("alice dials", alice.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect_err("transit is refused");
+    let Error::Rejected { source, .. } = &err else {
+        panic!("not a rejection: {err:#}");
+    };
+    assert!(source.reason().contains("transit"), "{err:#}");
+
+    alice.shutdown().await;
     bob.shutdown().await;
 }

@@ -16,12 +16,13 @@ use moq_net::{server::Handshake, setup::Token};
 use moq_transport_iroh::Congestion;
 use n0_error::e;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     Error, LinkKind, Session,
     handshake::{Hop, SessionParts, subscriber},
     node::Shared,
+    policy::{Authorization, DynPolicy, Event, PeerRequest, Rejection},
     state::served,
     transport::{self, HANDSHAKE_TIMEOUT},
 };
@@ -34,10 +35,10 @@ pub type GrantFn = Arc<dyn Fn(EndpointId) -> Grant + Send + Sync>;
 /// Past this, new sessions wait up to [`ADMISSION_TIMEOUT`] for room.
 pub(crate) const INCOMING_QUEUE: usize = 16;
 
-/// How long an incoming session waits for room in the admission queue.
+/// How long an incoming session waits for room in the admission queue, and a session for its policy.
 ///
-/// Keeps a stalled accept loop from piling up connections whose peers think
-/// they are connected.
+/// Keeps a stalled accept loop or policy from piling up connections whose
+/// peers think they are connected.
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a node treats incoming sessions.
@@ -49,6 +50,8 @@ pub enum Admission {
     #[default]
     Open,
     /// Hands every incoming session to [`Node::accept`](crate::Node::accept) to decide.
+    ///
+    /// The node's policy then decides only the sessions it dials.
     Manual,
 }
 
@@ -140,6 +143,11 @@ impl Incoming {
     /// [`HANDSHAKE_TIMEOUT`], and with [`Error::ShutDown`] once the node has
     /// shut down, which refuses the peer.
     pub async fn admit(self, grant: Grant) -> Result<Session, Error> {
+        self.admit_with(grant.into()).await
+    }
+
+    /// Admits the session with `authorization`, as [`admit`](Self::admit) does.
+    async fn admit_with(self, authorization: Authorization) -> Result<Session, Error> {
         let Some(shared) = self
             .shared
             .upgrade()
@@ -148,14 +156,14 @@ impl Incoming {
             self.handshake.close(moq_net::Error::Cancel);
             return Err(e!(Error::ShutDown));
         };
-        info!(remote = %self.remote.fmt_short(), ?grant, "admitting session");
+        info!(remote = %self.remote.fmt_short(), grant = ?authorization.grant, "admitting session");
         // Authorized before the handshake completes, so the session's first
         // announcements already keep to what the peer may see.
         let auth = self.handshake.auth();
         auth.authorize(&shared.state.lock().expect("poisoned").grant_for(
             LinkKind::Direct,
             Some(&self.remote),
-            &grant,
+            &authorization.grant,
             true,
         ));
         let mut handshake = self
@@ -175,7 +183,7 @@ impl Incoming {
             remote: self.remote,
             connection: self.connection,
             dialed: false,
-            grant,
+            authorization,
             request: self.request,
             moq,
             driver,
@@ -223,7 +231,21 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     };
     match shared.admission {
         Admission::Open => {
-            incoming.admit(shared.grant_for(remote)).await?;
+            let authorization = accept_authorization(shared, &incoming).await;
+            let authorization = match authorization {
+                Ok(authorization) => authorization,
+                Err(rejection) => {
+                    info!(
+                        remote = %remote.fmt_short(),
+                        reason = rejection.reason(),
+                        code = %rejection.code(),
+                        "the policy rejected the session",
+                    );
+                    incoming.handshake.close(rejection.code().clone());
+                    return Err(e!(Error::Rejected { source: rejection }));
+                }
+            };
+            incoming.admit_with(authorization).await?;
         }
         Admission::Manual => {
             let room = tokio::select! {
@@ -250,6 +272,65 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         }
     }
     Ok(())
+}
+
+/// Returns the authorization of an incoming session.
+///
+/// A peer that already holds a live session keeps that session's
+/// authorization, so a second session is not decided again. Otherwise the
+/// policy decides.
+async fn accept_authorization(
+    shared: &Shared,
+    incoming: &Incoming,
+) -> Result<Authorization, Rejection> {
+    let stored = shared
+        .state
+        .lock()
+        .expect("poisoned")
+        .peer_authorization(&incoming.remote)
+        .cloned();
+    if let Some(authorization) = stored {
+        debug!(remote = %incoming.remote.fmt_short(), "the peer already holds an authorization");
+        return Ok(authorization);
+    }
+    let request = PeerRequest::new(
+        incoming.remote,
+        incoming.request.clone(),
+        false,
+        Event::Connect,
+    );
+    decide(shared, &request).await
+}
+
+/// Asks the node's policy about `request`, within [`ADMISSION_TIMEOUT`].
+///
+/// A policy that takes longer is a rejection with
+/// [`moq_net::Error::Timeout`]. So is an authorization whose transit is not
+/// the default, since the node does not forward yet.
+pub(crate) async fn decide(
+    shared: &Shared,
+    request: &PeerRequest,
+) -> Result<Authorization, Rejection> {
+    let decided = tokio::time::timeout(
+        ADMISSION_TIMEOUT,
+        DynPolicy::decide(&*shared.policy, request),
+    )
+    .await;
+    let Ok(decision) = decided else {
+        return Err(
+            Rejection::new("the policy did not decide in time").with_code(moq_net::Error::Timeout)
+        );
+    };
+    let authorization = decision?;
+    if !authorization.transit.is_none() {
+        warn!(
+            peer = %request.peer().fmt_short(),
+            transit = ?authorization.transit,
+            "transit is not supported yet, rejecting the session",
+        );
+        return Err(Rejection::new("transit is not supported yet"));
+    }
+    Ok(authorization)
 }
 
 /// Returns what the peer asked for in its SETUP: a path, and maybe a token.

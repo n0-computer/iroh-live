@@ -8,10 +8,15 @@ use moq_net::{
     origin::{self, Source},
 };
 use n0_error::e;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkKind, SessionRequest, node::Shared, state::served, transport,
+    ConnectOptions, Error, Grant, LinkKind, SessionRequest,
+    admission::decide,
+    node::Shared,
+    policy::{Authorization, Event, PeerRequest},
+    state::served,
+    transport,
 };
 
 /// The moq hop id the routes of one link carry.
@@ -81,7 +86,8 @@ pub(crate) struct SessionParts {
     pub(crate) remote: EndpointId,
     pub(crate) connection: Connection,
     pub(crate) dialed: bool,
-    pub(crate) grant: Grant,
+    /// What the policy decided for the peer, which every session with it shares.
+    pub(crate) authorization: Authorization,
     pub(crate) request: SessionRequest,
     pub(crate) moq: moq_net::Session,
     pub(crate) driver: moq_net::Driver,
@@ -91,25 +97,24 @@ pub(crate) struct SessionParts {
 
 /// Dials `remote` and completes the MoQ handshake as the client.
 ///
-/// The session's authorization is in place before the handshake, so the dialed
-/// peer sees only what its grant and the audiences let it see, as an accepted
-/// one does.
+/// Asks the node's policy first, unless the peer already has an
+/// authorization or [`ConnectOptions::grant`] sets one. The session's
+/// authorization is in place before the handshake, so the dialed peer sees
+/// only what its grant and the audiences let it see, as an accepted one does.
 pub(crate) async fn dial_session(
     shared: Arc<Shared>,
     remote: EndpointAddr,
     options: ConnectOptions,
 ) -> Result<SessionParts, Error> {
     let remote_id = remote.id;
-    let grant = options
-        .grant
-        .clone()
-        .unwrap_or_else(|| shared.grant_for(remote_id));
+    let authorization = dial_authorization(&shared, remote_id, &options).await?;
+    let grant = &authorization.grant;
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
     }
     let transport = transport::dial_with(&shared.endpoint, remote, options.quic()).await?;
     let connection = transport.conn().clone();
-    let auth = authorized(&shared, remote_id, &grant);
+    let auth = authorized(&shared, remote_id, grant);
     let (moq, driver) = client_handshake(
         transport,
         &options,
@@ -127,11 +132,42 @@ pub(crate) async fn dial_session(
         remote: remote_id,
         connection,
         dialed: true,
-        grant,
+        authorization,
         request: SessionRequest::default(),
         moq,
         driver,
         auth,
+    })
+}
+
+/// Returns the authorization a dial to `remote` starts with.
+///
+/// [`ConnectOptions::grant`] wins, then the authorization a live session with
+/// the peer already holds, and then the policy decides, with `dialed` set and
+/// the path the dial requests.
+async fn dial_authorization(
+    shared: &Shared,
+    remote: EndpointId,
+    options: &ConnectOptions,
+) -> Result<Authorization, Error> {
+    if let Some(grant) = &options.grant {
+        return Ok(grant.clone().into());
+    }
+    let stored = shared
+        .state
+        .lock()
+        .expect("poisoned")
+        .peer_authorization(&remote)
+        .cloned();
+    if let Some(authorization) = stored {
+        debug!("the peer already holds an authorization");
+        return Ok(authorization);
+    }
+    let path = options.path.as_deref().unwrap_or_default();
+    let request = PeerRequest::new(remote, SessionRequest::new(path), true, Event::Connect);
+    decide(shared, &request).await.map_err(|source| {
+        info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
+        e!(Error::Rejected { source })
     })
 }
 

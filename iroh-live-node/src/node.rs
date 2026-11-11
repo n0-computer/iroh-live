@@ -28,6 +28,7 @@ use crate::{
     actor::{Actor, ActorMessage},
     admission::{self, INCOMING_QUEUE},
     handshake::{Hop, SessionParts},
+    policy::{self, DynPolicy, PeerRequest, Policy},
     publish, relay, route,
     state::State,
 };
@@ -49,12 +50,26 @@ pub enum Reach {
 /// The configuration of a [`Node`].
 #[derive(Clone, Default, derive_more::Debug)]
 pub struct NodeConfig {
+    /// Decides who may hold a session with the node, and with which rights.
+    ///
+    /// The node asks it when it accepts a session under [`Admission::Open`],
+    /// after the peer's MoQ SETUP, and before it dials a peer without
+    /// [`ConnectOptions::grant`]. A rejection closes an accepted session
+    /// with the rejection's code, and fails a dial with [`Error::Rejected`].
+    /// Every session with one peer shares the authorization the first of
+    /// them got. Set it with [`with_policy`](Self::with_policy).
+    ///
+    /// `None` builds a policy from [`grant`](Self::grant): every peer is
+    /// admitted with the grant it returns, or with
+    /// [`Grant::subscribe_only`] without one.
+    pub policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
     /// How incoming sessions are admitted.
     pub admission: Admission,
     /// Returns the grant of a session with a peer, from its endpoint id.
     ///
-    /// Used for sessions admitted under [`Admission::Open`], and for dials
-    /// without [`ConnectOptions::grant`].
+    /// Used when [`policy`](Self::policy) is `None`, for sessions admitted
+    /// under [`Admission::Open`] and for dials without
+    /// [`ConnectOptions::grant`].
     ///
     /// `None` is the secure default: [`Grant::subscribe_only`], so any peer may
     /// subscribe to anything but no peer may publish. Return
@@ -82,6 +97,17 @@ pub struct NodeConfig {
     /// their publisher some other way, such as a relay's pull paths.
     #[debug("{}", owner.is_some())]
     pub owner: Option<OwnerFn>,
+}
+
+impl NodeConfig {
+    /// Returns this configuration with `policy` deciding who may hold a session.
+    ///
+    /// See [`NodeConfig::policy`].
+    #[must_use]
+    pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
+        self.policy = Some(Arc::new(policy));
+        self
+    }
 }
 
 /// A MoQ node on an iroh endpoint.
@@ -123,6 +149,8 @@ pub(crate) struct Shared {
     pub(crate) id: EndpointId,
     pub(crate) admission: Admission,
     grant: Option<GrantFn>,
+    /// Decides sessions, built from the configured grant if none was given.
+    pub(crate) policy: Arc<dyn DynPolicy<EndpointId>>,
     pub(crate) owner: Option<OwnerFn>,
     /// The route table.
     pub(crate) table: origin::Producer,
@@ -183,6 +211,9 @@ impl Node {
                 (table, Some(AbortOnDropHandle::new(task)))
             }
         };
+        let policy = config
+            .policy
+            .unwrap_or_else(|| legacy_policy(config.grant.clone()));
         let (actor_tx, actor_rx) = mpsc::channel(16);
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         let shared = Arc::new(Shared {
@@ -190,6 +221,7 @@ impl Node {
             id,
             admission: config.admission,
             grant: config.grant,
+            policy,
             owner: config.owner,
             table,
             state: Mutex::new(State::default()),
@@ -414,8 +446,9 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Transport`] if the dial fails, [`Error::Refused`] if
-    /// a peer on an older protocol version refuses during the handshake, and
+    /// Fails with [`Error::Rejected`] if this node's policy rejects the peer,
+    /// [`Error::Transport`] if the dial fails, [`Error::Refused`] if a peer on
+    /// an older protocol version refuses during the handshake, and
     /// [`Error::ShutDown`] once the node has shut down. A handshake that takes
     /// longer than [`HANDSHAKE_TIMEOUT`](crate::HANDSHAKE_TIMEOUT) fails with
     /// [`Error::Moq`].
@@ -516,6 +549,19 @@ impl ProtocolHandler for Node {
     async fn shutdown(&self) {
         // Resolves to the inherent method.
         Self::shutdown(self).await;
+    }
+}
+
+/// Returns the policy that stands in for a configuration without one.
+///
+/// It admits every peer with the grant `grant` gives it, and with
+/// [`Grant::subscribe_only`] without a grant function.
+fn legacy_policy(grant: Option<GrantFn>) -> Arc<dyn DynPolicy<EndpointId>> {
+    match grant {
+        Some(grant) => Arc::new(policy::from_fn(move |request: &PeerRequest| {
+            Ok(grant(*request.peer()).into())
+        })),
+        None => Arc::new(policy::Open(Grant::subscribe_only())),
     }
 }
 

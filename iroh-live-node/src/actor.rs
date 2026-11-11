@@ -257,7 +257,7 @@ impl Actor {
             remote,
             connection,
             dialed,
-            grant,
+            authorization,
             request,
             moq,
             driver,
@@ -281,9 +281,9 @@ impl Actor {
                 closing: Default::default(),
             }),
         };
-        // The peer's grant holds for every session with it, so this session's
-        // admission sets it for older ones too.
-        state.admit_peer(remote, grant);
+        // The peer's authorization holds for every session with it, so this
+        // session's admission sets it for older ones too.
+        state.admit_peer(remote, authorization);
         state.add_link(
             link,
             LinkEntry {

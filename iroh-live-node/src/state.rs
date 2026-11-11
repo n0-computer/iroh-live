@@ -25,7 +25,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    Grant, LinkId, LinkKind, Session, handshake::Hop, link::LinkState, publish::AudienceKind,
+    Grant, LinkId, LinkKind, Session, handshake::Hop, link::LinkState, policy::Authorization,
+    publish::AudienceKind,
 };
 
 /// The node's publications and links.
@@ -38,11 +39,11 @@ pub(crate) struct State {
     pub(crate) closed: bool,
     /// Paths that tickets widened a peer's grant to, with how many claims hold each.
     tickets: HashMap<EndpointId, BTreeMap<Path, usize>>,
-    /// The base grant of each peer with a live direct session.
+    /// The policy's authorization of each peer with a live direct session.
     ///
     /// Every direct session with the peer shares it. Set when a session is
     /// registered, and removed when the peer's last session ends.
-    base: HashMap<EndpointId, Grant>,
+    peers: HashMap<EndpointId, Authorization>,
 }
 
 /// How many paths a ticket may widen one peer's grant to.
@@ -166,45 +167,52 @@ impl State {
         self.authorize_all();
     }
 
-    /// Sets the base grant of `peer`, and re-authorizes every link with it.
+    /// Sets the authorization of `peer`, and re-authorizes every link with it.
     ///
-    /// Called as a session with the peer is registered, so the grant holds
-    /// for every session with the peer, older ones included.
-    pub(crate) fn admit_peer(&mut self, peer: EndpointId, grant: Grant) {
-        self.base.insert(peer, grant);
+    /// Called as a session with the peer is registered, so the authorization
+    /// holds for every session with the peer, older ones included.
+    pub(crate) fn admit_peer(&mut self, peer: EndpointId, authorization: Authorization) {
+        self.peers.insert(peer, authorization);
         self.authorize_peer(&peer);
     }
 
     /// Replaces the base grant of `peer`, if it has a live session, and re-authorizes its links.
     pub(crate) fn set_peer_grant(&mut self, peer: &EndpointId, grant: Grant) {
-        let Some(base) = self.base.get_mut(peer) else {
+        let Some(authorization) = self.peers.get_mut(peer) else {
             return;
         };
-        *base = grant;
+        authorization.grant = grant;
         self.authorize_peer(peer);
     }
 
-    /// Forgets the base grant of `peer`, once its last session has ended.
+    /// Forgets the authorization of `peer`, once its last session has ended.
     pub(crate) fn remove_peer(&mut self, peer: &EndpointId) {
-        self.base.remove(peer);
+        self.peers.remove(peer);
+    }
+
+    /// Returns the authorization of `peer`, if it has a live session.
+    pub(crate) fn peer_authorization(&self, peer: &EndpointId) -> Option<&Authorization> {
+        self.peers.get(peer)
     }
 
     /// Returns the base grant of `peer`, if it has a live session.
     pub(crate) fn peer_grant(&self, peer: &EndpointId) -> Option<&Grant> {
-        self.base.get(peer)
+        self.peers
+            .get(peer)
+            .map(|authorization| &authorization.grant)
     }
 
     /// Returns what `peer` may do on its direct sessions: its base grant and its ticket paths.
     ///
     /// `None` if the peer has no live session.
     pub(crate) fn peer_effective_grant(&self, peer: &EndpointId) -> Option<Grant> {
-        let base = self.base.get(peer)?;
+        let base = self.peer_grant(peer)?;
         Some(self.effective_grant(Some(peer), base))
     }
 
     /// Forgets every peer, as the node shuts down.
     pub(crate) fn clear_peers(&mut self) {
-        self.base.clear();
+        self.peers.clear();
     }
 
     /// Adds one claim on `path` for `peer`, and widens the peer's links to it.
@@ -305,7 +313,7 @@ impl State {
         let nothing = Grant::nothing();
         let base = match (&link.grant, &link.remote) {
             (Some(grant), _) => grant,
-            (None, Some(peer)) => self.base.get(peer).unwrap_or(&nothing),
+            (None, Some(peer)) => self.peer_grant(peer).unwrap_or(&nothing),
             (None, None) => &nothing,
         };
         self.grant_for(link.kind, link.remote.as_ref(), base, link.public)
@@ -465,7 +473,7 @@ mod tests {
         if link.kind == LinkKind::Direct {
             let peer = link.remote.expect("a direct link has a peer");
             if state.peer_grant(&peer).is_none() {
-                state.admit_peer(peer, Grant::everything());
+                state.admit_peer(peer, Grant::everything().into());
             }
         }
         state.add_link(id, link);
@@ -548,7 +556,7 @@ mod tests {
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
         let peer = direct.remote.expect("a peer");
-        state.admit_peer(peer, own_paths(peer));
+        state.admit_peer(peer, own_paths(peer).into());
         add(&mut state, LinkId(1), direct);
         let own = format!("live/{peer}/cam");
         let claimed = Path::new("shows/news").expect("a valid path");
@@ -689,7 +697,7 @@ mod tests {
         let mut state = State::default();
         let direct = link(LinkKind::Direct);
         let peer = direct.remote.expect("a peer");
-        state.admit_peer(peer, Grant::nothing());
+        state.admit_peer(peer, Grant::nothing().into());
         add(&mut state, LinkId(1), direct);
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
@@ -709,7 +717,7 @@ mod tests {
             hop: first.hop,
             ..link(LinkKind::Direct)
         };
-        state.admit_peer(peer, Grant::nothing());
+        state.admit_peer(peer, Grant::nothing().into());
         add(&mut state, LinkId(1), first);
         add(&mut state, LinkId(2), second);
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Everyone));
@@ -726,7 +734,7 @@ mod tests {
         }
 
         // A later session's grant holds for the earlier one too.
-        state.admit_peer(peer, Grant::nothing());
+        state.admit_peer(peer, Grant::nothing().into());
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
 
         // Once the peer is gone, a late change does not bring it back.

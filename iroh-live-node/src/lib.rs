@@ -104,6 +104,7 @@ mod error;
 mod handshake;
 mod link;
 mod node;
+pub mod policy;
 mod publish;
 mod relay;
 mod route;

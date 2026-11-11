@@ -46,6 +46,14 @@ pub enum Error {
         #[error(source, std_err)]
         source: moq_net::Error,
     },
+    /// This node's policy rejected the peer.
+    ///
+    /// A dial fails with it before it reaches the peer.
+    #[error("the policy rejected the session")]
+    Rejected {
+        #[error(source, std_err)]
+        source: crate::policy::Rejection,
+    },
     /// The session ended.
     #[error("the session closed")]
     SessionClosed {
