@@ -15,11 +15,12 @@ use crate::{
 };
 
 /// How the rendition is chosen.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RenditionMode {
     /// Follows the link.
     ///
     /// Without network signals, holds the best rendition that fits.
+    #[default]
     Auto,
     /// Holds the named rendition.
     ///
@@ -30,20 +31,7 @@ pub enum RenditionMode {
     Off,
 }
 
-impl Default for RenditionMode {
-    /// Automatic selection.
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
 impl RenditionMode {
-    /// Returns automatic selection.
-    #[must_use]
-    pub const fn auto() -> Self {
-        Self::Auto
-    }
-
     /// Returns a mode holding the rendition `name`.
     #[must_use]
     pub fn pinned(name: impl Into<String>) -> Self {
@@ -227,7 +215,7 @@ mod tests {
     #[test]
     fn auto_without_signals_plays_the_best() {
         assert_eq!(
-            pick(&RenditionMode::auto(), &[]).rendition.as_deref(),
+            pick(&RenditionMode::Auto, &[]).rendition.as_deref(),
             Some("1080p")
         );
     }
@@ -262,9 +250,7 @@ mod tests {
     #[test]
     fn a_failing_rendition_is_skipped_by_auto() {
         assert_eq!(
-            pick(&RenditionMode::auto(), &["1080p"])
-                .rendition
-                .as_deref(),
+            pick(&RenditionMode::Auto, &["1080p"]).rendition.as_deref(),
             Some("360p")
         );
     }
@@ -287,23 +273,18 @@ mod tests {
     fn step_down_needs_auto_and_a_lower_rung() {
         let rungs = ladder();
         assert!(step_down(
-            &RenditionMode::auto(),
+            &RenditionMode::Auto,
             &rungs,
             Some("360p"),
             Some("1080p")
         ));
         assert!(!step_down(
-            &RenditionMode::auto(),
+            &RenditionMode::Auto,
             &rungs,
             Some("1080p"),
             Some("360p")
         ));
-        assert!(!step_down(
-            &RenditionMode::auto(),
-            &rungs,
-            Some("360p"),
-            None
-        ));
+        assert!(!step_down(&RenditionMode::Auto, &rungs, Some("360p"), None));
         let pinned = RenditionMode::Pinned("360p".into());
         assert!(!step_down(&pinned, &rungs, Some("360p"), Some("1080p")));
     }

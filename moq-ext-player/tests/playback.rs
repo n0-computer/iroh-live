@@ -537,7 +537,7 @@ async fn turning_video_off_leaves_nothing_decoding() {
     })
     .await;
     // And it comes back.
-    player.set_rendition(RenditionMode::auto());
+    player.set_rendition(RenditionMode::Auto);
     on_screen(&player, "high").await;
 }
 

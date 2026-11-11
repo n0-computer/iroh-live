@@ -468,7 +468,7 @@ impl RemoteView {
             .show_ui(ui, |ui| {
                 let auto = matches!(status.mode, RenditionMode::Auto);
                 if ui.selectable_label(auto, "Auto").clicked() {
-                    chosen = Some(RenditionMode::auto());
+                    chosen = Some(RenditionMode::Auto);
                 }
                 for (name, config) in catalog.video.ranked() {
                     let pinned = status.mode == RenditionMode::pinned(name);

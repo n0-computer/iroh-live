@@ -220,13 +220,13 @@ impl Fixture {
     /// For tests that check the ladder holds steady, which only means something
     /// at the timers users get. Waits for `renditions` video renditions first.
     async fn play_auto(&self, renditions: usize) -> Viewer {
-        self.play_with(renditions, RenditionMode::auto(), Adaptation::default())
+        self.play_with(renditions, RenditionMode::Auto, Adaptation::default())
             .await
     }
 
     /// Plays the broadcast with adaptation at [`quick`] timers.
     async fn play_auto_quick(&self, renditions: usize) -> Viewer {
-        self.play_with(renditions, RenditionMode::auto(), quick())
+        self.play_with(renditions, RenditionMode::Auto, quick())
             .await
     }
 

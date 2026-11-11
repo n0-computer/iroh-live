@@ -449,7 +449,7 @@ mod tests {
         let inputs = Inputs {
             broadcast: RemoteBroadcast::from_consumer(broadcast.consume()),
             controls: Arc::new(Controls {
-                mode: watch::Sender::new(RenditionMode::auto()),
+                mode: watch::Sender::new(RenditionMode::Auto),
                 latency: Latency::default(),
                 decoder: watch::Sender::new(moq_video::decode::Kind::Software),
                 volume: watch::Sender::new(1.0),
