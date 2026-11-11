@@ -209,7 +209,7 @@ pub(crate) struct PlaybackRecorder {
 #[derive(Debug)]
 pub(crate) struct Controls {
     pub(crate) mode: watch::Sender<RenditionMode>,
-    pub(crate) latency: Latency,
+    pub(crate) latency: watch::Sender<Latency>,
     pub(crate) decoder: watch::Sender<moq_video::decode::Kind>,
     pub(crate) volume: watch::Sender<f32>,
 }
@@ -256,7 +256,7 @@ impl Player {
         });
         let controls = Arc::new(Controls {
             mode: watch::Sender::new(config.rendition.clone()),
-            latency: config.latency,
+            latency: watch::Sender::new(config.latency),
             decoder: watch::Sender::new(config.decoder.clone()),
             volume: watch::Sender::new(1.0),
         });
@@ -382,6 +382,36 @@ impl Player {
     pub fn set_rendition(&self, mode: RenditionMode) {
         send_if_changed(&self.status, |status| status.mode = mode.clone());
         self.controls.mode.send_replace(mode);
+    }
+
+    /// Changes how far behind live the player runs, without a gap in the picture.
+    ///
+    /// The playout clock starts over at the new delay, so the schedule moves
+    /// once: the next video frame or audio write anchors it again. A changed
+    /// [`Latency`] also changes the subscription's [`Delay`], so the video
+    /// decoder is rebuilt behind the picture with the new range, and it takes
+    /// over once it has caught up, as in a switch. The current picture stays up
+    /// until then. Audio keeps its old range until it next opens, because a
+    /// rebuild would be audible.
+    ///
+    /// This does not block or await, so there is nothing to cancel: the change
+    /// is recorded before it returns, and the player's tasks apply it on their
+    /// next pass. Setting the latency already in force changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`] if `latency.min` is above
+    /// `latency.max`, and leaves the latency unchanged.
+    ///
+    /// [`Delay`]: moq_net::track::Delay
+    pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
+        latency.validate()?;
+        self.controls.latency.send_if_modified(|current| {
+            let changed = *current != latency;
+            *current = latency;
+            changed
+        });
+        Ok(())
     }
 
     /// Changes the video decoder backend.

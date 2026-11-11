@@ -134,7 +134,7 @@ pub(crate) async fn run(inputs: Inputs) {
         let mut reader = match opened {
             Some((name, config, consumer)) => {
                 send_if_changed(&status, |status| status.audio = SlotState::Starting);
-                let delay = Delay::from(controls.latency);
+                let delay = Delay::from(*controls.latency.borrow());
                 match open(&name, &config, &consumer, delay, &output).await {
                     Ok((decoder, sink, control)) => {
                         control.set_volume(*volume.borrow());

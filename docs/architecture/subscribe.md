@@ -137,8 +137,11 @@ decode options, where upstream drops stale groups. The default holds for
 100 ms and skips past 150 ms. `decoder` becomes the video decode options'
 `kind`.
 
-`Player::set_decoder` opens the new backend behind the picture, and it takes
-over once it has caught up, as in a switch. A backend that fails to open leaves the incumbent playing and says why in
+`Player::set_latency` changes the hold at once. A changed `Latency` rebuilds
+the video decoder behind the picture with the new subscription `Delay`, and
+the new one takes over once it has caught up, as in a switch. An audio track
+keeps its range until it next reopens. `Player::set_decoder` also opens the new
+backend behind the picture. A backend that fails to open leaves the incumbent playing and says why in
 `PlayerStatus::switch_error`.
 
 See [playout and sync](playout.md) for what the clock does with `min`.

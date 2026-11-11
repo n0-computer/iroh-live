@@ -17,7 +17,7 @@ use tokio::{
 };
 use tracing::{debug, info, trace};
 
-use super::{Controls, PlayerStatus};
+use super::{Controls, Latency, PlayerStatus};
 use crate::RemoteBroadcast;
 
 /// How long a rendition whose decoder failed is left alone.
@@ -147,7 +147,6 @@ pub(crate) async fn run(inputs: Inputs) {
 /// The selector's inputs, and the state it carries from one pass to the next.
 struct Selector {
     broadcast: RemoteBroadcast,
-    controls: Arc<Controls>,
     status: watch::Sender<PlayerStatus>,
     reports: mpsc::Receiver<Report>,
     playing: watch::Receiver<Option<Target>>,
@@ -155,6 +154,7 @@ struct Selector {
     clock: super::PlayoutClock,
     record_arrivals: bool,
     mode: watch::Receiver<RenditionMode>,
+    latency: watch::Receiver<Latency>,
     decoder: watch::Receiver<moq_video::decode::Kind>,
     catalog: watch::Receiver<Option<Arc<hang::catalog::Catalog>>>,
     epoch: watch::Receiver<crate::remote::Epoch>,
@@ -203,13 +203,13 @@ impl Selector {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         Self {
             mode: controls.mode.subscribe(),
+            latency: controls.latency.subscribe(),
             decoder: controls.decoder.subscribe(),
             catalog: broadcast.catalog(),
             epoch: broadcast.epoch(),
             player: status.subscribe(),
             network: broadcast.network(),
             broadcast,
-            controls,
             status,
             reports,
             playing,
@@ -247,6 +247,7 @@ impl Selector {
                 return false;
             }
             changed = self.mode.changed() => return changed.is_ok(),
+            changed = self.latency.changed() => return changed.is_ok(),
             changed = self.decoder.changed() => return changed.is_ok(),
             changed = self.playing.changed() => {
                 if changed.is_err() {
@@ -433,7 +434,7 @@ impl Selector {
         route: u64,
         consumer: moq_net::broadcast::Consumer,
     ) -> DecodeSettings {
-        let latency = self.controls.latency;
+        let latency = *self.latency.borrow_and_update();
         // The ladder's largest jitter, so a switch never moves the schedule.
         let jitter = catalog
             .video
@@ -499,13 +500,14 @@ fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::Latency;
 
     /// A running selector and what drives it.
     struct Running {
         _broadcast: moq_ext_publisher::LocalBroadcast,
         reports: mpsc::Sender<Report>,
         desired: watch::Receiver<Option<Desired>>,
+        controls: Arc<Controls>,
+        clock: super::super::PlayoutClock,
         _playing: watch::Sender<Option<Target>>,
         _task: n0_future::task::AbortOnDropHandle<()>,
     }
@@ -532,19 +534,21 @@ mod tests {
         // Nothing is ever on screen, which a revival requires.
         let (playing_tx, playing) = watch::channel(None);
         let (desired, desired_rx) = watch::channel(None);
+        let controls = Arc::new(Controls {
+            mode: watch::Sender::new(RenditionMode::Auto),
+            latency: watch::Sender::new(Latency::default()),
+            decoder: watch::Sender::new(moq_video::decode::Kind::Software),
+            volume: watch::Sender::new(1.0),
+        });
+        let clock = super::super::PlayoutClock::new(Latency::default().min);
         let inputs = Inputs {
             broadcast: RemoteBroadcast::from_consumer(broadcast.consume()),
-            controls: Arc::new(Controls {
-                mode: watch::Sender::new(RenditionMode::Auto),
-                latency: Latency::default(),
-                decoder: watch::Sender::new(moq_video::decode::Kind::Software),
-                volume: watch::Sender::new(1.0),
-            }),
+            controls: controls.clone(),
             status: watch::Sender::default(),
             reports,
             playing,
             desired,
-            clock: super::super::PlayoutClock::new(Duration::from_millis(100)),
+            clock: clock.clone(),
             adaptation: Adaptation::default(),
             record_arrivals: false,
         };
@@ -553,6 +557,8 @@ mod tests {
             _broadcast: broadcast,
             reports: reports_tx,
             desired: desired_rx,
+            controls,
+            clock,
             _playing: playing_tx,
             _task: task,
         }
@@ -598,5 +604,34 @@ mod tests {
         let again = next_target(&mut desired, Some(&first)).await;
         assert_eq!(again.rendition, first.rendition);
         assert!(again.config > first.config, "{again:?} after {first:?}");
+    }
+
+    /// A new latency asks for the same rendition under a new configuration with the new delay.
+    ///
+    /// The new configuration is what makes the supervisor build a decoder
+    /// behind the picture, and the playout clock starts over at the new delay.
+    #[tokio::test]
+    async fn a_new_latency_rebuilds_the_target_and_moves_the_clock() {
+        let running = selector();
+        let mut desired = running.desired.clone();
+        let first = next_target(&mut desired, None).await;
+        assert_eq!(
+            desired.borrow().as_ref().expect("a target").settings.delay,
+            Delay::from(Latency::default())
+        );
+
+        let latency = Latency {
+            min: Duration::from_millis(300),
+            max: Duration::from_millis(400),
+        };
+        running.controls.latency.send_replace(latency);
+        let rebuilt = next_target(&mut desired, Some(&first)).await;
+        assert_eq!(rebuilt.rendition, first.rendition);
+        assert!(rebuilt.config > first.config, "{rebuilt:?} after {first:?}");
+        assert_eq!(
+            desired.borrow().as_ref().expect("a target").settings.delay,
+            Delay::from(latency)
+        );
+        assert_eq!(running.clock.latency(), latency.min);
     }
 }

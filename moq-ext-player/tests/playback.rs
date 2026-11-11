@@ -10,7 +10,7 @@ use std::{
 };
 
 use moq_ext_player::{
-    AudioTarget, Error, NetworkSample, Player, PlayerConfig, RecordConfig, RecordFormat,
+    AudioTarget, Error, Latency, NetworkSample, Player, PlayerConfig, RecordConfig, RecordFormat,
     RemoteBroadcast, RenditionMode, SlotState,
 };
 use moq_ext_publisher::{AudioEncoding, LocalBroadcast, VideoEncoding, VideoRendition};
@@ -397,25 +397,44 @@ fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -
             moq_net::origin::RouteOptions::hidden().with_cost(cost),
         )
         .expect("a route");
+    let (_track, encode) = pattern(route.broadcast().clone(), size);
+    route.announce().expect("announced");
     tokio::spawn(async move {
-        let mut broadcast = route.broadcast().clone();
-        let catalog: moq_mux::catalog::Producer = moq_mux::catalog::Producer::new(
-            &mut broadcast,
-            moq_mux::catalog::Config::default().with_catalog(hang::catalog::Catalog::default()),
-        )
-        .expect("a new broadcast has no catalog track yet");
-        let track = broadcast
-            .create_track(
-                "video",
-                Some(catalog.track_info(hang::catalog::PRIORITY.video)),
-            )
-            .expect("a new track");
-        let mut import =
-            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
-                .expect("an importer");
-        let mut split = moq_mux::codec::h264::Split::new();
-        route.announce().expect("announced");
+        let _route = route;
+        encode.await;
+    })
+}
 
+/// Encodes a moving test pattern of `size` into a `video` track of `broadcast`.
+///
+/// Returns the track, whose aggregate subscription shows what the readers ask
+/// for, and the future that encodes until dropped.
+fn pattern(
+    mut broadcast: moq_net::broadcast::Producer,
+    size: moq_video::Size,
+) -> (
+    moq_net::track::Producer,
+    impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let catalog: moq_mux::catalog::Producer = moq_mux::catalog::Producer::new(
+        &mut broadcast,
+        moq_mux::catalog::Config::default().with_catalog(hang::catalog::Catalog::default()),
+    )
+    .expect("a new broadcast has no catalog track yet");
+    let track = broadcast
+        .create_track(
+            "video",
+            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+        )
+        .expect("a new track");
+    let mut import =
+        moq_mux::codec::h264::Import::new(track.clone(), catalog.reserve(), Default::default())
+            .expect("an importer");
+    let encode = async move {
+        // Held until the encoding stops, so the catalog and the broadcast stay up.
+        let _catalog = catalog;
+        let _broadcast = broadcast;
+        let mut split = moq_mux::codec::h264::Split::new();
         let mut config = moq_video::encode::Config::new(size.width, size.height, fps(30));
         config.kind = moq_video::encode::Kind::Software;
         config.join = Duration::from_secs(1);
@@ -447,7 +466,8 @@ fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -
                 import.decode(frames).expect("imported");
             }
         }
-    })
+    };
+    (track, encode)
 }
 
 /// A player keeps playing when its route goes and another serves the path.
@@ -553,6 +573,109 @@ async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
     };
     let result = local(&broadcast).play(config);
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
+}
+
+/// Waits until the readers of `track` ask for `latency`, and nothing else.
+async fn subscribed_with(track: &moq_net::track::Producer, latency: Latency) {
+    let wanted = moq_net::track::Delay::from(latency);
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if track.subscription().is_some_and(|sub| sub.delay == wanted) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the subscription asks for {:?}, not {wanted:?}",
+            track.subscription().map(|sub| sub.delay)
+        )
+    });
+}
+
+/// Waits until the player's playout clock runs `delay` behind live.
+async fn clock_at(player: &Player, delay: Duration) {
+    tokio::time::timeout(TIMEOUT, async {
+        while player.stats().latency != delay {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the clock runs {:?} behind, not {delay:?}",
+            player.stats().latency
+        )
+    });
+}
+
+/// Waits for `count` more pictures.
+async fn more_frames(frames: &mut moq_ext_player::VideoFrames, count: usize) {
+    tokio::time::timeout(TIMEOUT, async {
+        for _ in 0..count {
+            frames.next().await.expect("the player keeps playing");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("fewer than {count} pictures arrived"));
+}
+
+/// A running player takes a new latency without ending its video.
+///
+/// The subscription asks for the new range once the rebuilt decoder has taken
+/// over, and the playout clock runs the new minimum behind live, in both
+/// directions and into an unpaced latency.
+#[tokio::test]
+async fn a_running_player_changes_its_latency() {
+    let size = moq_video::Size::new(320, 180);
+    let broadcast = moq_net::broadcast::Info::new().produce();
+    let consumer = broadcast.consume();
+    let (track, encode) = pattern(broadcast, size);
+    let encode = tokio::spawn(encode);
+    let player = RemoteBroadcast::from_consumer(consumer)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video_frames();
+    wait_for_size(&mut frames, size).await;
+    subscribed_with(&track, Latency::default()).await;
+    clock_at(&player, Latency::default().min).await;
+    let (states, recorder) = record_states(&player);
+
+    let deeper = Latency {
+        min: Duration::from_millis(300),
+        max: Duration::from_millis(400),
+    };
+    player.set_latency(deeper).expect("a valid latency");
+    clock_at(&player, deeper.min).await;
+    subscribed_with(&track, deeper).await;
+    more_frames(&mut frames, 10).await;
+
+    player
+        .set_latency(Latency::IMMEDIATE)
+        .expect("a valid latency");
+    clock_at(&player, Duration::ZERO).await;
+    subscribed_with(&track, Latency::IMMEDIATE).await;
+    more_frames(&mut frames, 10).await;
+
+    // A refused latency changes nothing.
+    let inverted = Latency {
+        min: Duration::from_millis(500),
+        max: Duration::from_millis(100),
+    };
+    assert!(matches!(
+        player.set_latency(inverted),
+        Err(Error::InvalidConfig { .. })
+    ));
+    more_frames(&mut frames, 5).await;
+    assert_eq!(player.stats().latency, Duration::ZERO);
+    subscribed_with(&track, Latency::IMMEDIATE).await;
+
+    assert_eq!(player.status().borrow().video, SlotState::Running);
+    recorder.abort();
+    never_over(&states);
+    encode.abort();
 }
 
 /// Audio plays through a null output.
