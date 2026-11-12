@@ -150,35 +150,75 @@ fn sleep_until(due: Instant, stop: &CancellationToken) -> bool {
     }
 }
 
-/// Paints the pattern into `slot` until `stop` is cancelled.
+/// Paints the timing pattern into `slot` until `stop` is cancelled.
 pub(crate) fn run_pattern(
     size: Size,
     rate: video::FrameRate,
     slot: FrameSlot,
     stop: CancellationToken,
 ) {
+    let mut canvas = Canvas::new(size);
+    run_frames(rate, &slot, &stop, |count, media| {
+        Surface::rgba(canvas.paint(count, media, SystemTime::now()), size)
+    });
+    debug!("test pattern stopped");
+}
+
+/// Paints a diagonal gradient that shifts every frame into `slot` until `stop` is cancelled.
+pub(crate) fn run_gradient(
+    size: Size,
+    rate: video::FrameRate,
+    slot: FrameSlot,
+    stop: CancellationToken,
+) {
+    let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
+    run_frames(rate, &slot, &stop, |count, _| {
+        paint_gradient(&mut rgba, size, count);
+        Surface::rgba(&rgba, size)
+    });
+    debug!("gradient stopped");
+}
+
+/// Sends a picture from `paint` into `slot` at every frame of `rate`, until `stop` is cancelled.
+///
+/// `paint` gets the frame count and the frame's media time.
+fn run_frames(
+    rate: video::FrameRate,
+    slot: &FrameSlot,
+    stop: &CancellationToken,
+    mut paint: impl FnMut(u64, Duration) -> Result<Surface, video::Error>,
+) {
     let clock = test_clock();
     let interval = Duration::from_secs_f64(1.0 / rate.as_f64());
-    let mut canvas = Canvas::new(size);
     let started = Instant::now();
     for count in 0u64.. {
         let due = started + interval.mul_f64(count as f64);
-        if !sleep_until(due, &stop) {
+        if !sleep_until(due, stop) {
             break;
         }
         // Read the clock after the wait, so the frame shows its own time.
         let timestamp = clock.now();
-        let media = Duration::from(timestamp);
-        let rgba = canvas.paint(count, media, SystemTime::now());
-        match Surface::rgba(rgba, size) {
+        match paint(count, Duration::from(timestamp)) {
             Ok(surface) => slot.send(Arc::new(video::Frame::new(surface, timestamp))),
             Err(err) => {
-                warn!(error = %err, "the test pattern could not build a picture");
+                warn!(error = %err, "a generated source could not build a picture");
                 break;
             }
         }
     }
-    debug!("test pattern stopped");
+}
+
+/// Fills `rgba` with a diagonal gradient that shifts with `count`.
+///
+/// A static image would compress to almost nothing, so a stalled pipeline
+/// would look the same as a working one. Every channel wraps on purpose.
+fn paint_gradient(rgba: &mut [u8], size: Size, count: u64) {
+    let phase = (count as u8).wrapping_mul(3);
+    for (offset, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+        let x = (offset as u32 % size.width) as u8;
+        let y = (offset as u32 / size.width) as u8;
+        pixel.copy_from_slice(&[x.wrapping_add(phase), y.wrapping_add(phase), phase, 0xff]);
+    }
 }
 
 /// Generates a gated sine at `hz` into `fanout` until `stop` is cancelled.
@@ -610,6 +650,19 @@ mod tests {
         (0..SIZE.width)
             .find(|&x| pixel(rgba, x, y) == WHITE)
             .expect("the bar is somewhere on the row")
+    }
+
+    /// The gradient differs from one frame to the next and stays opaque.
+    #[test]
+    fn the_gradient_shifts_every_frame() {
+        let mut first = vec![0u8; (SIZE.width * SIZE.height * 4) as usize];
+        let mut second = first.clone();
+        paint_gradient(&mut first, SIZE, 0);
+        paint_gradient(&mut second, SIZE, 1);
+        assert_ne!(first, second);
+        assert_eq!(pixel(&first, 10, 20), [10, 20, 0]);
+        assert_eq!(pixel(&second, 10, 20), [13, 23, 3]);
+        assert!(first.chunks_exact(4).all(|pixel| pixel[3] == 0xff));
     }
 
     /// A quarter of the sweep period moves the bar a quarter of the way across.

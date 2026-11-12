@@ -200,6 +200,33 @@ impl VideoSource {
         ))
     }
 
+    /// Returns a diagonal gradient at `size` and `rate` that shifts every frame.
+    ///
+    /// Cheap to draw, and different in every frame, so a stalled pipeline does
+    /// not look like a working one. Unlike [`test_pattern`](Self::test_pattern),
+    /// it carries no clock or counter.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the thread that draws the gradient cannot be started.
+    #[cfg(feature = "pattern")]
+    pub fn test_gradient(size: video::Size, rate: video::FrameRate) -> Result<Self, Error> {
+        let slot = FrameSlot::new();
+        let reader = slot.reader();
+        let stop = CancellationToken::new();
+        let token = stop.clone();
+        std::thread::Builder::new()
+            .name("test-gradient".into())
+            .spawn(move || generator::run_gradient(size, rate, slot, token))?;
+        Ok(Self::new(
+            "test-gradient",
+            VideoFormat { size, rate },
+            reader,
+            stop,
+            Driver::Thread,
+        ))
+    }
+
     /// Returns a source fed by the returned sender.
     ///
     /// The source ends when every sender is dropped. `format` describes what

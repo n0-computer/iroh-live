@@ -15,6 +15,7 @@
 //! | Source | Constructor | Feature |
 //! |---|---|---|
 //! | Test picture | [`VideoSource::test_pattern`], [`AudioSource::test_pattern`] | `pattern` |
+//! | Moving gradient | [`VideoSource::test_gradient`] | `pattern` |
 //! | Sine tone | [`AudioSource::tone`] | `pattern` |
 //! | WAV and MP3 file | [`AudioSource::file`] | `file` |
 //! | Camera, display, window | [`VideoSource::capture`] | `capture` |

@@ -4,8 +4,7 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioFormat, AudioSource, LocalBroadcast, Rate, VideoFormat, VideoSource, audio,
-    audio_encoding,
+    AudioFormat, AudioSource, LocalBroadcast, Rate, VideoSource, audio, audio_encoding,
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -289,55 +288,7 @@ fn test_pattern(
         .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE");
     match pattern {
         TestPattern::Timing => Ok(VideoSource::test_pattern(size, rate)?),
-        TestPattern::Gradient => gradient(size, framerate.generated()),
-    }
-}
-
-/// Starts a diagonal gradient that shifts every frame, on its own thread.
-///
-/// A static image would compress to almost nothing, so a stalled pipeline
-/// would look the same as a working one.
-fn gradient(size: Size, fps: u32) -> Result<VideoSource> {
-    let rate = video::FrameRate::new(fps, 1).expect("the ladder settles only on valid rates");
-    let format = VideoFormat { size, rate };
-    let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
-    let source = VideoSource::spawn("gradient", format, move |sender| {
-        let clock = moq_mux::Clock::new();
-        let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
-        let mut next = std::time::Instant::now();
-        for tick in 0u32.. {
-            paint_gradient(&mut rgba, size, tick);
-            let surface =
-                video::Surface::rgba(&rgba, size).expect("the buffer is sized for the picture");
-            if sender
-                .push(video::Frame::new(surface, clock.now()))
-                .is_err()
-            {
-                break;
-            }
-            next += interval;
-            std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
-        }
-        Ok(())
-    })?;
-    Ok(source)
-}
-
-/// Fills `rgba` with a diagonal gradient that shifts with `tick`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the gradient wraps on purpose"
-)]
-fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
-    let phase = tick.wrapping_mul(3) as u8;
-    for y in 0..size.height {
-        for x in 0..size.width {
-            let offset = ((y * size.width + x) * 4) as usize;
-            rgba[offset] = (x as u8).wrapping_add(phase);
-            rgba[offset + 1] = (y as u8).wrapping_add(phase);
-            rgba[offset + 2] = phase;
-            rgba[offset + 3] = 0xff;
-        }
+        TestPattern::Gradient => Ok(VideoSource::test_gradient(size, rate)?),
     }
 }
 
