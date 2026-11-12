@@ -84,12 +84,23 @@ from source timestamps to the broadcast clock (`Rebase`). Every rung carries
 the same timestamp for the same picture, so a subscriber that switches sees no
 jump.
 
-The broadcast remembers its last 1024 published pictures. For each it keeps
-the source timestamp and the instant the frame entered the source, which
-`VideoFrames::sent_at` reports: when the application pushed it, or when a
-capture thread handed it over. A subscriber that echoes a decoded timestamp
-back lets the publisher find its own frame with `video_source_timestamp` and
-measure the round trip from capture with `video_captured_at`.
+The rebase means a subscriber only ever sees broadcast timestamps. A
+round-trip measurement, such as the latency from capture to a result a
+subscriber reports back, echoes one of those timestamps to the publisher, which
+then has to name its own frame. `VideoEncoding::record_timestamps` turns on a
+record for that, off by default. `video_source_timestamp` returns the source
+timestamp of an echoed broadcast timestamp, and `video_captured_at` the instant
+the frame entered the source, which `VideoFrames::sent_at` reports: when the
+application pushed it, or when a capture thread handed it over.
+
+The record keeps timestamps and nothing else, no pixels and no encoded data:
+the broadcast timestamp, the source timestamp and the instant, 48 bytes for
+each of the last 512 published pictures, at most 24 KiB per broadcast and
+about 17 s at 30 fps. It is per frame rather than an offset per timeline,
+because the instant is not a function of the source timestamp: a camera stamps
+frames with its device clock, and an application stamps pushed frames however
+it likes. Without the option nothing is recorded and both methods return
+`None`.
 
 Before a rendition is advertised, `encode::Config::probe()` runs once for it,
 so the catalog entry describes exactly what the track will carry. The whole

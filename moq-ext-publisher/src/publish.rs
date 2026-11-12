@@ -4,7 +4,7 @@
 //! a ladder. Each rendition encodes only while someone watches it.
 
 use std::{
-    collections::BTreeMap,
+    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -156,10 +156,15 @@ impl Job {
 /// another timeline.
 const MAX_AHEAD: Duration = Duration::from_secs(1);
 
-/// How many published video frames a broadcast keeps the source timestamp of.
+/// How many published video frames a broadcast keeps the timestamps of, with [`VideoEncoding::record_timestamps`].
 ///
-/// About 30 s at 30 fps, far longer than a round trip to a subscriber takes.
-const TIMESTAMP_HISTORY: usize = 1024;
+/// About 17 s at 30 fps and 8 s at 60 fps, several times what a subscriber
+/// needs to echo a timestamp back. An entry is three timestamps, 48 bytes, so
+/// a full log takes 24 KiB per broadcast. No pixels and no encoded data are
+/// kept.
+///
+/// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
+const TIMESTAMP_HISTORY: usize = 512;
 
 /// What a [`TimestampLog`] keeps of one published frame.
 #[derive(Debug, Clone, Copy)]
@@ -172,10 +177,15 @@ struct Logged {
 
 /// The source timestamp and send instant of each recently published video frame, by its broadcast timestamp.
 ///
-/// Every rendition publishes a picture at the same broadcast timestamp, so the
-/// renditions of a ladder share one entry.
+/// A ring of at most [`TIMESTAMP_HISTORY`] entries, sorted by broadcast
+/// timestamp. Broadcast timestamps rise, so an entry almost always goes at the
+/// end; a slower rendition that publishes a frame the others skipped inserts a
+/// little before it. The ring stays empty unless the video records its
+/// timestamps. Every rendition
+/// publishes a picture at the same broadcast timestamp, so the renditions of a
+/// ladder share one entry.
 #[derive(Debug, Clone, Default)]
-struct TimestampLog(Arc<Mutex<BTreeMap<moq_net::Timestamp, Logged>>>);
+struct TimestampLog(Arc<Mutex<VecDeque<(moq_net::Timestamp, Logged)>>>);
 
 impl TimestampLog {
     /// Records that the frame stamped `source`, sent at `sent_at`, was published at `published`.
@@ -189,15 +199,23 @@ impl TimestampLog {
         sent_at: Option<Instant>,
     ) {
         let mut log = self.0.lock().expect("poisoned");
-        log.entry(published).or_insert(Logged { source, sent_at });
+        let at = log.partition_point(|(logged, _)| *logged < published);
+        if log.get(at).is_some_and(|(logged, _)| *logged == published) {
+            return;
+        }
+        log.insert(at, (published, Logged { source, sent_at }));
         if log.len() > TIMESTAMP_HISTORY {
-            log.pop_first();
+            log.pop_front();
         }
     }
 
     /// Returns what was recorded of the frame published at `published`.
     fn get(&self, published: moq_net::Timestamp) -> Option<Logged> {
-        self.0.lock().expect("poisoned").get(&published).copied()
+        let log = self.0.lock().expect("poisoned");
+        let at = log
+            .binary_search_by_key(&published, |(logged, _)| *logged)
+            .ok()?;
+        Some(log[at].1)
     }
 
     /// Returns the source timestamp of the frame published at `published`.
@@ -588,15 +606,21 @@ impl LocalBroadcast {
     /// subscriber that sends a decoded frame's timestamp back lets the
     /// publisher find its own frame with this, without marking the pixels.
     ///
-    /// Returns `None` for a timestamp this broadcast did not publish, for one
-    /// older than the last 1024 frames, and for a pre-encoded source, whose
-    /// timestamps are published as they are.
+    /// It needs [`VideoEncoding::record_timestamps`] on the encoding the frame
+    /// was published with. Returns `None` without it, for a timestamp this
+    /// broadcast did not publish, for one older than the last 512 frames, and
+    /// for a pre-encoded source, whose timestamps are published as they are.
+    /// The record keeps only timestamps, about 24 KiB at most, and no pixels
+    /// or encoded data.
+    ///
+    /// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # fn example(broadcast: &moq_ext_publisher::LocalBroadcast, echoed: moq_net::Timestamp) {
-    /// // `echoed` is the timestamp of a frame a subscriber decoded.
+    /// // `echoed` is the timestamp of a frame a subscriber decoded, published
+    /// // with `VideoEncoding::record_timestamps` on.
     /// if let Some(source) = broadcast.video_source_timestamp(echoed) {
     ///     println!("the subscriber saw the frame the source stamped {source:?}");
     /// }
@@ -619,14 +643,20 @@ impl LocalBroadcast {
     /// round trip from capture with this, without a clock of its own for the
     /// source's timestamps.
     ///
-    /// Returns `None` in the same cases as
-    /// [`video_source_timestamp`](Self::video_source_timestamp).
+    /// It needs [`VideoEncoding::record_timestamps`] too, and returns `None` in
+    /// the same cases as [`video_source_timestamp`](Self::video_source_timestamp).
+    /// The instant is recorded per frame, not derived from the source
+    /// timestamp, because a source's timestamps come from its own clock: a
+    /// camera's from the device, a pushed frame's from the application.
+    ///
+    /// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # fn example(broadcast: &moq_ext_publisher::LocalBroadcast, echoed: moq_net::Timestamp) {
-    /// // `echoed` is the timestamp of a frame a subscriber decoded and reported back.
+    /// // `echoed` is the timestamp of a frame a subscriber decoded and reported
+    /// // back, published with `VideoEncoding::record_timestamps` on.
     /// if let Some(captured) = broadcast.video_captured_at(echoed) {
     ///     println!("{:?} from capture to the report", captured.elapsed());
     /// }

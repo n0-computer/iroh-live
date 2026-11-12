@@ -134,7 +134,11 @@ pub(super) async fn run_raw(
     let rate = format.rate;
     // Anchors at the first frame any rendition encodes. The clones share the
     // anchor, so every rendition carries the same timestamp for a picture.
-    let source_clock = SourceClock::new(clock).recording(timestamps);
+    let source_clock = SourceClock::new(clock);
+    let source_clock = match encoding.record_timestamps {
+        true => source_clock.recording(timestamps),
+        false => source_clock,
+    };
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
@@ -845,6 +849,28 @@ mod tests {
         assert_eq!(log.source(at(1)), None, "nothing was published at 1 us");
     }
 
+    /// An entry is the three timestamps the docs promise, and nothing more.
+    #[test]
+    fn a_timestamp_log_entry_is_48_bytes() {
+        assert_eq!(
+            std::mem::size_of::<(moq_net::Timestamp, crate::publish::Logged)>(),
+            48
+        );
+    }
+
+    /// A frame a slower rendition publishes after a newer one lands in order, once.
+    #[test]
+    fn the_timestamp_log_takes_a_late_frame_in_order() {
+        let log = TimestampLog::default();
+        log.record(at(10), at(1), None);
+        log.record(at(30), at(3), None);
+        log.record(at(20), at(2), None);
+        log.record(at(20), at(99), None);
+        assert_eq!(log.source(at(20)), Some(at(2)), "the first record wins");
+        assert_eq!(log.source(at(30)), Some(at(3)));
+        assert_eq!(log.source(at(25)), None);
+    }
+
     #[test]
     fn the_timestamp_log_forgets_the_oldest_frames() {
         let log = TimestampLog::default();
@@ -852,7 +878,9 @@ mod tests {
         for micros in 1..=count {
             log.record(at(micros), at(micros + 7), None);
         }
-        assert_eq!(log.source(at(1)), None);
+        assert_eq!(log.0.lock().expect("poisoned").len(), TIMESTAMP_HISTORY);
+        assert_eq!(log.source(at(10)), None);
+        assert_eq!(log.source(at(11)), Some(at(18)), "the oldest kept");
         assert_eq!(log.source(at(count)), Some(at(count + 7)));
     }
 

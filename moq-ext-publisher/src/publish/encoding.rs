@@ -16,6 +16,17 @@ const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_
 pub struct VideoEncoding {
     /// The renditions, which a subscriber chooses among.
     pub renditions: Vec<VideoRendition>,
+    /// Whether the broadcast records each published frame's source timestamp and capture instant.
+    ///
+    /// The broadcast moves source timestamps onto its own clock, so a
+    /// subscriber only ever sees broadcast timestamps. The record maps one
+    /// back, for
+    /// [`LocalBroadcast::video_source_timestamp`](crate::LocalBroadcast::video_source_timestamp)
+    /// and
+    /// [`LocalBroadcast::video_captured_at`](crate::LocalBroadcast::video_captured_at):
+    /// a round-trip measurement such as capture-to-result latency. It keeps
+    /// 48 bytes for each of the last 512 frames, no pixels. Off by default.
+    pub record_timestamps: bool,
 }
 
 impl VideoEncoding {
@@ -30,7 +41,15 @@ impl VideoEncoding {
     pub fn ladder(renditions: impl IntoIterator<Item = VideoRendition>) -> Self {
         Self {
             renditions: renditions.into_iter().collect(),
+            record_timestamps: false,
         }
+    }
+
+    /// Turns on [`record_timestamps`](Self::record_timestamps).
+    #[must_use]
+    pub fn with_recorded_timestamps(mut self) -> Self {
+        self.record_timestamps = true;
+        self
     }
 
     /// Checks everything that can be checked without opening an encoder.

@@ -1001,7 +1001,9 @@ async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
     broadcast
         .set_video(
             source,
-            software(VideoEncoding::single(VideoRendition::new("video"))),
+            software(
+                VideoEncoding::single(VideoRendition::new("video")).with_recorded_timestamps(),
+            ),
         )
         .expect("valid");
     let player = local(&broadcast)
@@ -1065,7 +1067,9 @@ async fn a_decoded_timestamp_maps_back_to_when_its_frame_was_pushed() {
     broadcast
         .set_video(
             source,
-            software(VideoEncoding::single(VideoRendition::new("video"))),
+            software(
+                VideoEncoding::single(VideoRendition::new("video")).with_recorded_timestamps(),
+            ),
         )
         .expect("valid");
     let player = local(&broadcast)
@@ -1094,6 +1098,35 @@ async fn a_decoded_timestamp_maps_back_to_when_its_frame_was_pushed() {
         None,
         "nothing was published at 1 us"
     );
+    drop(player);
+    feeder.abort();
+}
+
+/// A broadcast that does not record its timestamps cannot map one back.
+#[tokio::test]
+async fn timestamps_are_not_recorded_by_default() {
+    let format = VideoFormat {
+        size: moq_video::Size::new(64, 48),
+        rate: fps(30),
+    };
+    let (sender, source) = VideoSource::push(format);
+    let feeder = tokio::spawn(push_frames(sender, format));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            software(VideoEncoding::single(VideoRendition::new("video"))),
+        )
+        .expect("valid");
+    let player = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let frame = tokio::time::timeout(TIMEOUT, player.video_frames().next())
+        .await
+        .expect("a frame")
+        .expect("the video plays");
+    assert_eq!(broadcast.video_source_timestamp(frame.timestamp), None);
+    assert_eq!(broadcast.video_captured_at(frame.timestamp), None);
     drop(player);
     feeder.abort();
 }
