@@ -24,7 +24,7 @@ use crate::{
     playback::Speaker,
     record::{RecordOptions, Recording},
     source,
-    transport::{self, Subscribed},
+    transport::{self, Inbound, Subscribed},
 };
 
 /// Runs the `run` command.
@@ -137,7 +137,12 @@ fn parse_config(path: &Path) -> Result<RunConfig> {
 
 /// Runs the session until Ctrl+C, then closes the endpoint.
 async fn run_session(config: RunConfig) -> Result {
-    let serve = !config.send.is_empty();
+    // A session that publishes nothing has nothing to serve.
+    let inbound = if config.send.is_empty() {
+        Inbound::Refuse
+    } else {
+        Inbound::Accept
+    };
     let endpoint_config = match &config.secret_key_name {
         Some(name) => EndpointConfig {
             secret_key: Some(stored_secret_key(name)?),
@@ -145,7 +150,7 @@ async fn run_session(config: RunConfig) -> Result {
         },
         None => EndpointConfig::from_env()?,
     };
-    let node = transport::bind_node_with(endpoint_config, serve).await?;
+    let node = transport::bind_node_with(endpoint_config, inbound).await?;
     let result = run_streams(&node, &config).await;
     crate::shutdown::Teardown::new(node).run().await;
     println!("done");

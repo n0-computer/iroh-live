@@ -17,7 +17,7 @@ use crate::{
     playback::Speaker,
     shutdown::Teardown,
     source_spec::VideoSourceSpec,
-    transport::{self, SharedNode, Subscribed},
+    transport::{self, Inbound, SharedNode, Subscribed},
 };
 
 /// Where the first ticket comes from, and who dials it.
@@ -141,7 +141,7 @@ async fn setup(args: &WatchArgs) -> Result<(SharedNode, Option<Speaker>)> {
         None
     };
     let speaker = crate::playback::open_speaker(device).await?;
-    Ok((transport::bind_node(false).await?, speaker))
+    Ok((transport::bind_node(Inbound::Refuse).await?, speaker))
 }
 
 /// Connects to `ticket` and starts playing.

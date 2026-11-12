@@ -32,7 +32,10 @@ use tokio::{
 };
 use tracing::{info, warn};
 
-use crate::{args::RecordArgs, transport};
+use crate::{
+    args::RecordArgs,
+    transport::{self, Inbound},
+};
 
 /// How often the progress line is printed while a recording runs.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
@@ -47,7 +50,7 @@ async fn record(args: RecordArgs) -> Result {
     let ticket = args.remote.ticket()?;
     let options = options(&args)?;
 
-    let node = transport::bind_node(false).await?;
+    let node = transport::bind_node(Inbound::Refuse).await?;
     let result = record_on(&node, &ticket, &options).await;
     crate::shutdown::Teardown::new(node).run().await;
     result

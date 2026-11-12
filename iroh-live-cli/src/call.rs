@@ -21,7 +21,7 @@ use crate::{
     args::CallArgs,
     playback::Speaker,
     source,
-    transport::{self, SharedNode},
+    transport::{self, Inbound, SharedNode},
 };
 
 /// Runs the `call` command.
@@ -49,7 +49,7 @@ struct Local {
 async fn setup(args: &CallArgs) -> Result<Local> {
     // Opened first so the microphone can cancel its echo.
     let speaker = crate::playback::open_speaker(None).await?;
-    let node = transport::bind_node(true).await?;
+    let node = transport::bind_node(Inbound::Accept).await?;
     let (node, (broadcast, calls, sources, ticket)) = transport::with_node(node, async |node| {
         // Published once, to nobody: each call offers it to its peer.
         let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(node, &LiveLayout::default())?;

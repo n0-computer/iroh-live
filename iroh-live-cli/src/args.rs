@@ -12,6 +12,7 @@ use crate::{
     backend::Backend,
     record::RecordFormat,
     source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
+    transport::Inbound,
 };
 
 /// Where a broadcast is served and how its address is shared.
@@ -35,6 +36,17 @@ pub(crate) struct TransportArgs {
     /// Suppress the terminal QR code.
     #[arg(long)]
     pub(crate) no_qr: bool,
+}
+
+impl TransportArgs {
+    /// Returns whether the node accepts subscribers, which `--no-serve` turns off.
+    pub(crate) fn inbound(&self) -> Inbound {
+        if self.no_serve {
+            Inbound::Refuse
+        } else {
+            Inbound::Accept
+        }
+    }
 }
 
 /// The default keyframe interval, in seconds.

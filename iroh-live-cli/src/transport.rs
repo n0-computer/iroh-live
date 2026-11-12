@@ -82,27 +82,35 @@ impl Deref for Bound {
     }
 }
 
+/// Whether a node accepts sessions that peers open to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Inbound {
+    /// Accepts subscribers, and announces itself over mDNS.
+    Accept,
+    /// Only dials out, and only looks others up over mDNS.
+    Refuse,
+}
+
 /// Binds an endpoint and starts the MoQ transport on it.
-///
-/// With `serve` set, a router accepts incoming subscribers. Without it, only
-/// outbound connections work.
-pub(crate) async fn bind_node(serve: bool) -> Result<SharedNode> {
-    bind_node_with(EndpointConfig::from_env()?, serve).await
+pub(crate) async fn bind_node(inbound: Inbound) -> Result<SharedNode> {
+    bind_node_with(EndpointConfig::from_env()?, inbound).await
 }
 
 /// Binds an endpoint with `config` and starts the MoQ transport on it.
 ///
 /// A ticket carries no addresses, so the endpoint uses mDNS on top of the
-/// preset's pkarr and DNS lookup. A node that does not serve only looks up
-/// others and does not announce itself.
-pub(crate) async fn bind_node_with(config: EndpointConfig, serve: bool) -> Result<SharedNode> {
-    let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
+/// preset's pkarr and DNS lookup.
+pub(crate) async fn bind_node_with(config: EndpointConfig, inbound: Inbound) -> Result<SharedNode> {
+    let mdns = match inbound {
+        Inbound::Accept => Mdns::Announce,
+        Inbound::Refuse => Mdns::Lookup,
+    };
     let endpoint = EndpointConfig { mdns, ..config }.bind().await?;
     let node = Node::new(endpoint.clone(), LiveLayout::default().config());
     let router = Router::builder(endpoint);
-    let router = match serve {
-        true => node.mount(router),
-        false => router,
+    let router = match inbound {
+        Inbound::Accept => node.mount(router),
+        Inbound::Refuse => router,
     };
     let router = router.spawn();
     Ok(Arc::new(Bound { node, router }))
