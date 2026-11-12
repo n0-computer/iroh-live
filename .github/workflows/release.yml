@@ -2,17 +2,11 @@
 # targets plus the Android demo APK, then re-points the `rolling-release` tag at
 # the new commit and replaces the assets attached to it.
 #
-# Feature sets are chosen per platform rather than with `--all-features`. The
-# CLI's feature table is a union across operating systems, so a build has to ask
-# for the backends its own target can reach and leave the rest alone. The Linux
-# jobs turn on every hardware path (NVENC/NVDEC, VAAPI, the V4L2 memory-to-memory
-# codecs, rpicam, PipeWire screen capture) on top of the default
-# `playback,sound-server`; ALSA, PulseAudio, and PipeWire audio all arrive
-# through `sound-server` and cpal picks between them at runtime. macOS and
-# Windows get VideoToolbox, ScreenCaptureKit, Media Foundation, and WASAPI from
-# `target_os` gating in moq-video and moq-audio, so no feature selects them, and
-# every remaining backend feature pulls Linux-only dependencies. That leaves
-# `aec` as the only addition there.
+# Every build uses the CLI's default features, which are all of them: the
+# Linux-only backends (NVENC/NVDEC, VAAPI, the V4L2 memory-to-memory codecs,
+# rpicam, PipeWire capture and audio) compile to nothing elsewhere, and macOS
+# and Windows get VideoToolbox, ScreenCaptureKit, Media Foundation, and WASAPI
+# from `target_os` gating in moq-video and moq-audio.
 name: Release
 
 on:
@@ -49,7 +43,6 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            features: nvidia,vaapi,v4l2,rpicam,pipewire,aec
             bin: irl
             asset: irl-linux-x86_64
           # Apple silicon only. An Intel Mac is not a target we support, and a
@@ -57,13 +50,11 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
-            features: aec
             bin: irl
             asset: irl-macos-aarch64
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: aec
             bin: irl.exe
             asset: irl-windows-x86_64.exe
 
@@ -105,7 +96,7 @@ jobs:
           echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
 
       - name: Build irl
-        run: cargo build --locked --profile release-dist -p iroh-live-cli --target ${{ matrix.target }} --features ${{ matrix.features }}
+        run: cargo build --locked --profile release-dist -p iroh-live-cli --target ${{ matrix.target }}
 
       - name: Stage the binary
         shell: bash
@@ -164,12 +155,12 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         run: cargo make cross-sysroot-aarch64
 
-      # Same feature set as the x86_64 Linux build. The Bookworm sysroot carries
-      # the PipeWire, VAAPI, V4L2, and ALSA headers those backends compile
-      # against, and everything that talks to a GPU is loaded at runtime, so a
+      # The default features, as in the x86_64 Linux build. The Bookworm
+      # sysroot carries the PipeWire, VAAPI, V4L2, and ALSA headers those
+      # backends compile against, and everything that talks to a GPU is loaded at runtime, so a
       # Pi with no NVIDIA driver falls through to the next encoder.
       - name: Build irl (release-dist)
-        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist --features nvidia,vaapi,v4l2,rpicam,pipewire,aec
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist
       - name: Lockfile must not have moved
         # cargo make / zigbuild take no --locked; assert the lockfile instead.
         run: git diff --exit-code Cargo.lock

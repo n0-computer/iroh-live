@@ -69,7 +69,7 @@ jobs:
         run: cargo make cross-sysroot-aarch64
 
       - name: Build irl CLI (release-dist)
-        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist --features nvidia,vaapi,v4l2,rpicam,pipewire,aec
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist
       - name: Lockfile must not have moved
         # cargo make / zigbuild take no --locked; assert the lockfile instead.
         run: git diff --exit-code Cargo.lock

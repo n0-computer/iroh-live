@@ -54,23 +54,41 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 [features]
 # Capture and rendering are not features here: `irl publish` and `irl watch`
 # are most of the CLI and need both, so the dependencies ask for them directly.
-# Echo cancellation is on by default: `irl call` and `irl room` play the other
-# side while publishing a microphone, and without it a laptop sends the peer
-# back to itself. PipeWire is on by default too: on Linux it makes `cam` the
-# camera PipeWire shares with other applications and `screen` the desktop
-# portal's picker, the only screen capture that works on Wayland.
-# `sound-server` already links libpipewire, so it costs the build nothing more,
-# and off Linux it does nothing.
-default = ["aec", "pipewire", "playback", "sound-server"]
-playback = ["iroh-live/playback"]
-sound-server = ["iroh-live/sound-server"]
+#
+# Every feature is on by default, so a plain `cargo build` or `cargo install`
+# gets each backend its platform can reach. Cargo features cannot depend on
+# the target, so the crates below gate the code and its dependencies on
+# `target_os` instead: off Linux, `pipewire`, `rpicam`, `vaapi`, `nvidia` and
+# `v4l2` compile to nothing, and macOS and Windows get their capture and codec
+# frameworks (AVFoundation, ScreenCaptureKit, VideoToolbox, Media Foundation,
+# WGC, WASAPI) without a feature. On Linux, the build needs libpipewire and
+# libclang for `sound-server` and `pipewire`; the GPU codecs bring their
+# bindings and load their drivers at runtime, so a host without a GPU still
+# builds and runs.
+#
+# Not here: moq-video's `vpx`, which needs libvpx on the build host, and
+# MediaCodec, which only the Android demo uses, since `irl` has no Android
+# build.
+default = ["aec", "nvidia", "pipewire", "playback", "rpicam", "sound-server", "v4l2", "vaapi"]
+# Echo cancellation: `irl call` and `irl room` play the other side while
+# publishing a microphone, and without it a laptop sends the peer back to
+# itself.
 aec = ["iroh-live/aec"]
+playback = ["iroh-live/playback"]
+# PipeWire and PulseAudio audio devices. Linux only.
+sound-server = ["iroh-live/sound-server"]
+# PipeWire's shared camera as `cam` and the desktop portal's picker as
+# `screen`, the only screen capture that works on Wayland. Linux only.
 pipewire = ["iroh-live/pipewire"]
 # `--video rpicam`, which publishes the H.264 `rpicam-vid` already encoded.
+# Linux only.
 rpicam = ["iroh-live/rpicam"]
+# Intel and AMD hardware H.264 and H.265 through VA-API. Linux only.
 vaapi = ["iroh-live/vaapi"]
+# NVENC and NVDEC. Linux only.
 nvidia = ["iroh-live/nvidia"]
 # `--encoder v4l2` and the matching decoder, for an ARM SoC's M2M codec node.
+# Linux only.
 v4l2 = ["iroh-live/v4l2"]
 
 [lints]
