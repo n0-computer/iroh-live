@@ -10,7 +10,8 @@ use std::{
 };
 
 use moq_ext_player::{
-    Error, Latency, NetworkSample, Player, PlayerConfig, RemoteBroadcast, RenditionMode, SlotState,
+    DEFAULT_LATENCY, Delay, Error, IMMEDIATE_LATENCY, NetworkSample, Player, PlayerConfig,
+    RemoteBroadcast, RenditionMode, SlotState,
 };
 use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
 use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
@@ -575,9 +576,9 @@ async fn turning_video_off_leaves_nothing_decoding() {
 async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
     let (broadcast, _source) = ladder();
     let config = PlayerConfig {
-        latency: moq_ext_player::Latency {
-            min: Duration::from_millis(500),
-            max: Duration::from_millis(100),
+        latency: Delay {
+            min: Some(Duration::from_millis(500)),
+            max: Some(Duration::from_millis(100)),
         },
         ..PlayerConfig::default()
     };
@@ -586,8 +587,7 @@ async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
 }
 
 /// Waits until the readers of `track` ask for `latency`, and nothing else.
-async fn subscribed_with(track: &moq_net::track::Producer, latency: Latency) {
-    let wanted = moq_net::track::Delay::from(latency);
+async fn subscribed_with(track: &moq_net::track::Producer, wanted: Delay) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             if track.subscription().is_some_and(|sub| sub.delay == wanted) {
@@ -649,30 +649,30 @@ async fn a_running_player_changes_its_latency() {
         .expect("valid");
     let mut frames = player.video_frames();
     wait_for_size(&mut frames, size).await;
-    subscribed_with(&track, Latency::default()).await;
-    clock_at(&player, Latency::default().min).await;
+    subscribed_with(&track, DEFAULT_LATENCY).await;
+    clock_at(&player, Duration::from_millis(100)).await;
     let (states, recorder) = record_states(&player);
 
-    let deeper = Latency {
-        min: Duration::from_millis(300),
-        max: Duration::from_millis(400),
+    let deeper = Delay {
+        min: Some(Duration::from_millis(300)),
+        max: Some(Duration::from_millis(400)),
     };
     player.set_latency(deeper).expect("a valid latency");
-    clock_at(&player, deeper.min).await;
+    clock_at(&player, Duration::from_millis(300)).await;
     subscribed_with(&track, deeper).await;
     more_frames(&mut frames, 10).await;
 
     player
-        .set_latency(Latency::IMMEDIATE)
+        .set_latency(IMMEDIATE_LATENCY)
         .expect("a valid latency");
     clock_at(&player, Duration::ZERO).await;
-    subscribed_with(&track, Latency::IMMEDIATE).await;
+    subscribed_with(&track, IMMEDIATE_LATENCY).await;
     more_frames(&mut frames, 10).await;
 
     // A refused latency changes nothing.
-    let inverted = Latency {
-        min: Duration::from_millis(500),
-        max: Duration::from_millis(100),
+    let inverted = Delay {
+        min: Some(Duration::from_millis(500)),
+        max: Some(Duration::from_millis(100)),
     };
     assert!(matches!(
         player.set_latency(inverted),
@@ -680,7 +680,7 @@ async fn a_running_player_changes_its_latency() {
     ));
     more_frames(&mut frames, 5).await;
     assert_eq!(player.stats().latency, Duration::ZERO);
-    subscribed_with(&track, Latency::IMMEDIATE).await;
+    subscribed_with(&track, IMMEDIATE_LATENCY).await;
 
     assert_eq!(player.status().borrow().video, SlotState::Running);
     recorder.abort();

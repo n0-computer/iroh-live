@@ -63,13 +63,14 @@ pub use hang::catalog::Catalog;
 pub use moq_ext_media_core::{Error, SlotState, SourceClosed};
 pub use moq_ext_sources::VideoFrames;
 use moq_ext_sources::frames;
+pub use moq_net::track::Delay;
 
 pub use self::{
     catalog::video_rendition,
     network::NetworkSample,
     player::{
-        Adaptation, AudioFrame, AudioFrames, Latency, Player, PlayerConfig, PlayerStatus,
-        RenditionMode,
+        Adaptation, AudioFrame, AudioFrames, DEFAULT_LATENCY, IMMEDIATE_LATENCY, Player,
+        PlayerConfig, PlayerStatus, RenditionMode,
     },
     remote::RemoteBroadcast,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind, PlaybackStats, VideoPlaybackStats},

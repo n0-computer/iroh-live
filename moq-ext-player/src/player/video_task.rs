@@ -575,7 +575,7 @@ fn pace(
             video.fps = Some(fps.round() as u32);
         }
     });
-    let paced = controls.latency.borrow().paced();
+    let paced = super::paced(&controls.latency.borrow());
     let due = if paced {
         clock.received(timestamp);
         let clock = clock.clone();

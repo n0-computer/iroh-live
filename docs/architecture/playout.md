@@ -9,7 +9,7 @@ that keeps them aligned at playout time. It wraps upstream's
 
 The timeline maps media time onto the wall clock through one anchor, and holds
 every result back by a delay, so playback trails the live edge by that delay.
-The delay is the player's `Latency::min`, 100 ms by default.
+The delay is the minimum of the player's latency, 100 ms by default.
 
 While audio plays, the speaker owns the anchor. Each write reports the media
 time it ends at and the sound queued ahead of the speaker after it. The anchor
@@ -42,7 +42,9 @@ player closes its clock and wakes everything waiting on it.
 
 ## Latency
 
-`PlayerConfig::latency` is a `Latency { min, max }`.
+`PlayerConfig::latency` is moq-net's subscription `Delay { min, max }`. An
+unset `min` counts as zero, and an unset `max` waits as long as the publisher
+keeps media.
 
 `min` sets the clock's delay above. A publisher that advertises a larger
 `jitter` in its catalog, the most it flushes a frame late, raises the delay to
@@ -51,10 +53,10 @@ a new clock, so the schedule jumps once, and the next video frame or audio
 write anchors it again. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
-and subscriber in one process, once with `Latency::IMMEDIATE` and once with the
+and subscriber in one process, once with `IMMEDIATE_LATENCY` and once with the
 default, and prints the figures.
 
-The whole `Latency` becomes the moq subscription's `Delay` on
+The whole `Delay` goes on
 `moq_video::decode::Options` and `moq_audio::decode::Options`, so relays and
 the publisher see the range too. Upstream skips media older than `max` to
 return to the live edge. The default is 150 ms. Raise it when continuity through congestion
@@ -63,18 +65,18 @@ them out. `play` and `set_latency` refuse a `min` above `max`, since a skip
 threshold below the hold would drop the frames the hold waits for.
 
 A `min` of zero turns pacing off, and frames go to the renderer as they decode.
-`Latency::IMMEDIATE` is that, with a `max` of 150 ms so the player still skips
+`IMMEDIATE_LATENCY` is that, with a `max` of 150 ms so the player still skips
 to the live edge. It suits a test or a consumer with its own cadence, not live
 playback with audio.
 
 ```rust
 use std::time::Duration;
-use iroh_live::media::{Latency, PlayerConfig, video::decode};
+use iroh_live::media::{Delay, PlayerConfig, video::decode};
 
 let config = PlayerConfig {
-    latency: Latency {
-        min: Duration::from_millis(400),
-        max: Duration::from_millis(600),
+    latency: Delay {
+        min: Some(Duration::from_millis(400)),
+        max: Some(Duration::from_millis(600)),
     },
     decoder: decode::Kind::Software,
     ..Default::default()

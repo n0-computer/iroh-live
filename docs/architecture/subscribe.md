@@ -131,13 +131,14 @@ let config = PlayerConfig {
 It carries the `rendition` mode, the `latency`, the `audio` output, the
 `decoder` backend, the `adaptation` thresholds and timers, and the
 `switch_deadline` of a decoder handover.
-`Latency { min, max }` sets how far behind live to run. The playout clock holds
-each picture for `min`, and `max` becomes `max_age` on the video and audio
-decode options, where upstream drops stale groups. The default holds for
-100 ms and skips past 150 ms. `decoder` becomes the video decode options'
+`latency` is moq-net's subscription `Delay { min, max }` and sets how far
+behind live to run. The playout clock holds each picture for `min`, and the
+whole `Delay` goes on the video and audio decode options, where upstream drops
+groups older than `max`. `DEFAULT_LATENCY` holds for 100 ms and skips past
+150 ms. `decoder` becomes the video decode options'
 `kind`.
 
-`Player::set_latency` changes the hold at once. A changed `Latency` rebuilds
+`Player::set_latency` changes the hold at once. A changed latency rebuilds
 the video decoder behind the picture with the new subscription `Delay`, and
 the new one takes over once it has caught up, as in a switch. An audio track
 keeps its range until it next reopens. `Player::set_decoder` also opens the new

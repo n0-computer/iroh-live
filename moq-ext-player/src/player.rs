@@ -13,6 +13,7 @@
 use std::{sync::Arc, time::Duration};
 
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
+use moq_net::track::Delay;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{Instrument, debug_span, info, info_span};
@@ -34,87 +35,56 @@ pub use moq_ext_adaptive::{Adaptation, RenditionMode};
 pub use self::audio::{AudioFrame, AudioFrames};
 pub(crate) use self::clock::PlayoutClock;
 
-/// How far behind live to run.
-///
-/// The playout clock runs `min` behind the live edge, or the publisher's
-/// advertised jitter if that is larger, up to `max`. While audio plays,
-/// pictures show when their sound does. Media later than `max` is skipped.
-/// Both reach the transport as the moq subscription's [`Delay`], so relays and
-/// the publisher see them too. Setting `min == max` gives a fixed latency.
-///
-/// [`Delay`]: moq_net::track::Delay
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Latency {
-    /// How far behind the live edge playback runs.
-    pub min: Duration,
-    /// The oldest media still worth playing.
-    pub max: Duration,
-}
+/// The latency of [`PlayerConfig::default`]: held for 100 ms, and skipped past 150 ms.
+pub const DEFAULT_LATENCY: Delay = Delay {
+    min: Some(Duration::from_millis(100)),
+    max: Some(Duration::from_millis(150)),
+};
 
-/// How far below [`Latency::max`] a publisher's jitter may raise the playout delay: a frame at 30 fps.
+/// No buffer and no pacing: a frame presents as soon as it decodes.
+///
+/// Media older than 150 ms is still skipped: a player without a buffer wants
+/// the live edge.
+pub const IMMEDIATE_LATENCY: Delay = Delay {
+    min: Some(Duration::ZERO),
+    max: Some(Duration::from_millis(150)),
+};
+
+/// How far below the latency's maximum a publisher's jitter may raise the playout delay: a frame at 30 fps.
 const JITTER_HEADROOM: Duration = Duration::from_millis(33);
 
-impl Latency {
-    /// No buffer and no pacing: a frame presents as soon as it decodes.
-    ///
-    /// Media older than 150 ms is still skipped: a player without a buffer
-    /// wants the live edge.
-    pub const IMMEDIATE: Self = Self {
-        min: Duration::ZERO,
-        max: Duration::from_millis(150),
-    };
+/// Reports whether a player at `latency` holds frames for the clock.
+pub(crate) fn paced(latency: &Delay) -> bool {
+    latency.min.is_some_and(|min| !min.is_zero())
+}
 
-    /// Reports whether frames are held for the clock.
-    pub(crate) fn paced(&self) -> bool {
-        !self.min.is_zero()
-    }
-
-    /// Returns the playout clock's delay, given the publisher's `jitter`.
-    ///
-    /// A publisher that flushes frames up to `jitter` late needs a buffer that
-    /// deep. The jitter raises the delay to at most [`JITTER_HEADROOM`] below
-    /// `max`, the age at which the transport skips media, so a frame that
-    /// arrives a little late is not past `max` before it is due. It never
-    /// lowers the delay below `min`. An unpaced latency ignores `jitter`.
-    pub(crate) fn playout_delay(&self, jitter: Option<Duration>) -> Duration {
-        match jitter {
-            Some(jitter) if self.paced() => {
-                let ceiling = self.max.saturating_sub(JITTER_HEADROOM);
-                self.min.max(jitter.min(ceiling))
-            }
-            _ => self.min,
+/// Returns the playout clock's delay at `latency`, given the publisher's `jitter`.
+///
+/// A publisher that flushes frames up to `jitter` late needs a buffer that
+/// deep. The jitter raises the delay to at most [`JITTER_HEADROOM`] below the
+/// maximum, the age at which the transport skips media, so a frame that
+/// arrives a little late is not past it before it is due. It never lowers the
+/// delay below the minimum. An unpaced latency ignores `jitter`.
+pub(crate) fn playout_delay(latency: &Delay, jitter: Option<Duration>) -> Duration {
+    let min = latency.min.unwrap_or_default();
+    match jitter {
+        Some(jitter) if paced(latency) => {
+            let ceiling = latency
+                .max
+                .map_or(Duration::MAX, |max| max.saturating_sub(JITTER_HEADROOM));
+            min.max(jitter.min(ceiling))
         }
-    }
-
-    /// Returns an [`Error::InvalidConfig`] if `min` is above `max`.
-    fn validate(&self) -> Result<(), Error> {
-        if self.min > self.max {
-            Err(Error::invalid(format!(
-                "a latency's minimum ({:?}) is above its maximum ({:?})",
-                self.min, self.max
-            )))
-        } else {
-            Ok(())
-        }
+        _ => min,
     }
 }
 
-impl Default for Latency {
-    /// Held for 100 ms, and skipped past 150 ms.
-    fn default() -> Self {
-        Self {
-            min: Duration::from_millis(100),
-            max: Duration::from_millis(150),
-        }
-    }
-}
-
-impl From<Latency> for moq_net::track::Delay {
-    /// Asks the subscription for the whole latency range.
-    ///
-    /// `min` is the target, and `max` the oldest media still worth delivering.
-    fn from(latency: Latency) -> Self {
-        Self::default().with_min(latency.min).with_max(latency.max)
+/// Returns an [`Error::InvalidConfig`] if the latency's minimum is above its maximum.
+fn validate(latency: &Delay) -> Result<(), Error> {
+    match (latency.min, latency.max) {
+        (Some(min), Some(max)) if min > max => Err(Error::invalid(format!(
+            "a latency's minimum ({min:?}) is above its maximum ({max:?})"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -123,8 +93,15 @@ impl From<Latency> for moq_net::track::Delay {
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
-    /// How far behind live to run.
-    pub latency: Latency,
+    /// How far behind live to run, as the moq subscription's [`Delay`].
+    ///
+    /// The playout clock runs `min` behind the live edge, or the publisher's
+    /// advertised jitter if that is larger, up to `max`. While audio plays,
+    /// pictures show when their sound does. Media later than `max` is
+    /// skipped. Both reach the transport, so relays and the publisher see
+    /// them too. Setting `min == max` gives a fixed latency, and an unset
+    /// `min` counts as zero. [`DEFAULT_LATENCY`] by default.
+    pub latency: Delay,
     /// Whether to subscribe to the audio and decode it.
     ///
     /// Decoded audio goes to [`Player::audio_frames`], and to the
@@ -162,7 +139,7 @@ impl Default for PlayerConfig {
     fn default() -> Self {
         Self {
             rendition: RenditionMode::default(),
-            latency: Latency::default(),
+            latency: DEFAULT_LATENCY,
             audio: false,
             #[cfg(feature = "playback")]
             speaker: None,
@@ -218,7 +195,7 @@ pub(crate) struct PlaybackRecorder {
 #[derive(Debug)]
 pub(crate) struct Controls {
     pub(crate) mode: watch::Sender<RenditionMode>,
-    pub(crate) latency: watch::Sender<Latency>,
+    pub(crate) latency: watch::Sender<Delay>,
     pub(crate) decoder: watch::Sender<moq_video::decode::Kind>,
     pub(crate) volume: watch::Sender<f32>,
 }
@@ -249,7 +226,7 @@ impl Drop for Player {
 impl Player {
     /// Starts playing `broadcast`, for [`RemoteBroadcast::play`].
     pub(crate) fn start(broadcast: RemoteBroadcast, config: PlayerConfig) -> Result<Self, Error> {
-        config.latency.validate()?;
+        validate(&config.latency)?;
         let span = info_span!(parent: broadcast.span(), "player");
         let status = watch::Sender::new(PlayerStatus {
             mode: config.rendition.clone(),
@@ -270,7 +247,7 @@ impl Player {
             volume: watch::Sender::new(1.0),
         });
         let (audio_frames, _) = broadcast::channel(audio::AUDIO_FRAMES_BACKLOG);
-        let clock = PlayoutClock::new(config.latency.min);
+        let clock = PlayoutClock::new(config.latency.min.unwrap_or_default());
         let stats = PlaybackRecorder::default();
         let slot = FrameSlot::new();
         let frames = slot.frames();
@@ -396,9 +373,9 @@ impl Player {
     /// Changes how far behind live the player runs, without a gap in the picture.
     ///
     /// The playout clock starts over at the new delay, so the schedule moves
-    /// once: the next video frame or audio write anchors it again. A changed
-    /// [`Latency`] also changes the subscription's [`Delay`], so the video
-    /// decoder is rebuilt behind the picture with the new range, and it takes
+    /// once: the next video frame or audio write anchors it again. The
+    /// latency is the subscription's [`Delay`], so a changed one also rebuilds
+    /// the video decoder is rebuilt behind the picture with the new range, and it takes
     /// over once it has caught up, as in a switch. The current picture stays up
     /// until then. Audio keeps its old range until it next opens, because a
     /// rebuild would be audible.
@@ -411,10 +388,8 @@ impl Player {
     ///
     /// Returns [`Error::InvalidConfig`] if `latency.min` is above
     /// `latency.max`, and leaves the latency unchanged.
-    ///
-    /// [`Delay`]: moq_net::track::Delay
-    pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
-        latency.validate()?;
+    pub fn set_latency(&self, latency: Delay) -> Result<(), Error> {
+        validate(&latency)?;
         self.controls.latency.send_if_modified(|current| {
             let changed = *current != latency;
             *current = latency;
@@ -518,40 +493,53 @@ mod tests {
     }
 
     #[test]
-    fn a_latency_becomes_the_whole_delay() {
-        let delay = moq_net::track::Delay::from(Latency {
-            min: ms(100),
-            max: ms(400),
-        });
-        assert_eq!(delay.min, Some(ms(100)));
-        assert_eq!(delay.max, Some(ms(400)));
-    }
-
-    #[test]
     fn the_playout_delay_follows_a_larger_jitter_up_to_the_maximum() {
-        let latency = Latency {
-            min: ms(100),
-            max: ms(400),
+        let latency = Delay {
+            min: Some(ms(100)),
+            max: Some(ms(400)),
         };
-        assert_eq!(latency.playout_delay(None), ms(100));
-        assert_eq!(latency.playout_delay(Some(ms(40))), ms(100));
-        assert_eq!(latency.playout_delay(Some(ms(250))), ms(250));
+        assert_eq!(playout_delay(&latency, None), ms(100));
+        assert_eq!(playout_delay(&latency, Some(ms(40))), ms(100));
+        assert_eq!(playout_delay(&latency, Some(ms(250))), ms(250));
         assert_eq!(
-            latency.playout_delay(Some(ms(2000))),
+            playout_delay(&latency, Some(ms(2000))),
             ms(400) - JITTER_HEADROOM,
             "a frame's worth of headroom stays below the skip threshold"
         );
         // The default keeps headroom at its maximum, and stays at or above its minimum.
-        let delay = Latency::default().playout_delay(Some(ms(150)));
+        let delay = playout_delay(&DEFAULT_LATENCY, Some(ms(150)));
         assert!(delay < ms(150) && delay >= ms(100), "{delay:?}");
-        let tight = Latency {
-            min: ms(150),
-            max: ms(150),
+        let tight = Delay {
+            min: Some(ms(150)),
+            max: Some(ms(150)),
         };
-        assert_eq!(tight.playout_delay(Some(ms(400))), ms(150));
+        assert_eq!(playout_delay(&tight, Some(ms(400))), ms(150));
         assert_eq!(
-            Latency::IMMEDIATE.playout_delay(Some(ms(250))),
+            playout_delay(&IMMEDIATE_LATENCY, Some(ms(250))),
             Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn an_unset_bound_is_no_bound() {
+        let open = Delay {
+            min: None,
+            max: None,
+        };
+        assert!(!paced(&open));
+        assert_eq!(playout_delay(&open, Some(ms(250))), Duration::ZERO);
+        let unbounded = Delay {
+            min: Some(ms(100)),
+            max: None,
+        };
+        assert_eq!(playout_delay(&unbounded, Some(ms(2000))), ms(2000));
+        assert!(validate(&unbounded).is_ok());
+        assert!(
+            validate(&Delay {
+                min: Some(ms(200)),
+                max: Some(ms(100)),
+            })
+            .is_err()
         );
     }
 }

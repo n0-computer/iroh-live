@@ -25,8 +25,8 @@ use iroh_live::{
     Node,
     layout::LiveLayout,
     media::{
-        Latency, LocalBroadcast, PlayerConfig, VideoEncoding, VideoFormat, VideoRendition,
-        VideoSource, remote_broadcast,
+        DEFAULT_LATENCY, Delay, IMMEDIATE_LATENCY, LocalBroadcast, PlayerConfig, VideoEncoding,
+        VideoFormat, VideoRendition, VideoSource, remote_broadcast,
         video::{Frame, FrameRate, Size, Surface, decode},
     },
 };
@@ -116,7 +116,7 @@ fn offset(received: &[(u64, Instant)], handed: &HashMap<u64, Instant>) -> i128 {
 }
 
 /// Plays the stamped source at `latency` and returns the join and frame latencies.
-async fn measure(latency: Latency) -> (Duration, Vec<Duration>) {
+async fn measure(latency: Delay) -> (Duration, Vec<Duration>) {
     let handed: Handed = Arc::default();
 
     let publisher = Node::new(endpoint().await, LiveLayout::default().config());
@@ -202,7 +202,7 @@ fn report(label: &str, join: Duration, latencies: &mut [Duration]) -> Duration {
 #[tokio::test]
 #[traced_test]
 async fn pipeline_latency_without_a_playout_hold() {
-    let (join, mut latencies) = measure(Latency::IMMEDIATE).await;
+    let (join, mut latencies) = measure(IMMEDIATE_LATENCY).await;
     let median = report("unmanaged", join, &mut latencies);
     assert!(
         median < Duration::from_secs(2),
@@ -217,7 +217,7 @@ async fn pipeline_latency_without_a_playout_hold() {
 #[tokio::test]
 #[traced_test]
 async fn pipeline_latency_with_the_default_playout_hold() {
-    let (join, mut latencies) = measure(Latency::default()).await;
+    let (join, mut latencies) = measure(DEFAULT_LATENCY).await;
     let median = report("synced (default)", join, &mut latencies);
     assert!(
         median < Duration::from_secs(3),

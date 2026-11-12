@@ -17,7 +17,7 @@ use tokio::{
 };
 use tracing::{debug, info, trace};
 
-use super::{Controls, Latency, PlayerStatus};
+use super::{Controls, PlayerStatus};
 use crate::RemoteBroadcast;
 
 /// How long a rendition whose decoder failed is left alone.
@@ -154,7 +154,7 @@ struct Selector {
     clock: super::PlayoutClock,
     record_arrivals: bool,
     mode: watch::Receiver<RenditionMode>,
-    latency: watch::Receiver<Latency>,
+    latency: watch::Receiver<Delay>,
     decoder: watch::Receiver<moq_video::decode::Kind>,
     catalog: watch::Receiver<Option<Arc<hang::catalog::Catalog>>>,
     epoch: watch::Receiver<crate::remote::Epoch>,
@@ -442,14 +442,14 @@ impl Selector {
             .values()
             .filter_map(|config| config.jitter)
             .max();
-        let playout = latency.playout_delay(jitter);
+        let playout = super::playout_delay(&latency, jitter);
         if playout != self.clock.latency() {
             debug!(?playout, ?jitter, "playout delay changed");
             self.clock.set_delay(playout);
         }
         let config = Config {
             decoder: self.decoder.borrow().clone(),
-            delay: Delay::from(latency),
+            delay: latency,
             epoch: route,
             restart: self.restart,
         };
@@ -468,7 +468,7 @@ impl Selector {
         DecodeSettings {
             consumer,
             decoder: self.decoder.borrow().clone(),
-            delay: Delay::from(latency),
+            delay: latency,
             record_arrivals: self.record_arrivals,
         }
     }
@@ -531,11 +531,11 @@ mod tests {
         let (desired, desired_rx) = watch::channel(None);
         let controls = Arc::new(Controls {
             mode: watch::Sender::new(RenditionMode::Auto),
-            latency: watch::Sender::new(Latency::default()),
+            latency: watch::Sender::new(super::super::DEFAULT_LATENCY),
             decoder: watch::Sender::new(moq_video::decode::Kind::Software),
             volume: watch::Sender::new(1.0),
         });
-        let clock = super::super::PlayoutClock::new(Latency::default().min);
+        let clock = super::super::PlayoutClock::new(Duration::from_millis(100));
         let inputs = Inputs {
             broadcast: RemoteBroadcast::from_consumer(broadcast.consume()),
             controls: controls.clone(),
@@ -612,12 +612,12 @@ mod tests {
         let first = next_target(&mut desired, None).await;
         assert_eq!(
             desired.borrow().as_ref().expect("a target").settings.delay,
-            Delay::from(Latency::default())
+            super::super::DEFAULT_LATENCY
         );
 
-        let latency = Latency {
-            min: Duration::from_millis(300),
-            max: Duration::from_millis(400),
+        let latency = Delay {
+            min: Some(Duration::from_millis(300)),
+            max: Some(Duration::from_millis(400)),
         };
         running.controls.latency.send_replace(latency);
         let rebuilt = next_target(&mut desired, Some(&first)).await;
@@ -625,8 +625,8 @@ mod tests {
         assert!(rebuilt.config > first.config, "{rebuilt:?} after {first:?}");
         assert_eq!(
             desired.borrow().as_ref().expect("a target").settings.delay,
-            Delay::from(latency)
+            latency
         );
-        assert_eq!(running.clock.latency(), latency.min);
+        assert_eq!(running.clock.latency(), Duration::from_millis(300));
     }
 }
