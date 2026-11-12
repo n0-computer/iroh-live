@@ -67,9 +67,11 @@ impl Shared {
 /// Each call supersedes the one before: [`replace`](Self::replace) and
 /// [`clear`](Self::clear) take effect at once, and [`open`](Self::open)
 /// cancels an open still running. The previous source is dropped before the
-/// next one opens, so the same camera can open again. The switchable source
-/// keeps its last frame while nothing feeds it, and ends when every switch is
-/// dropped. Cheap to clone.
+/// next one opens, so the same camera can open again. [`replace`](Self::replace)
+/// and [`open`](Self::open) also drop the previous source's last frame, so no
+/// reader gets a frame of the old source once they return. After
+/// [`clear`](Self::clear) or the end of its source, the switchable source
+/// keeps its last frame. It ends when every switch is dropped. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct VideoSwitch {
     shared: Arc<Shared>,
@@ -132,7 +134,8 @@ impl VideoSource {
 impl VideoSwitch {
     /// Feeds the switchable source from `source`, from its current frame on.
     ///
-    /// The status becomes [`Running`](SlotState::Running), and
+    /// The previous source's last frame is dropped before this returns. The
+    /// status becomes [`Running`](SlotState::Running), and
     /// [`Ended`](SlotState::Ended) or [`Failed`](SlotState::Failed) when
     /// `source` stops.
     ///
@@ -194,7 +197,7 @@ impl VideoSwitch {
     pub fn clear(&self) {
         info!("video switch: cleared");
         let mut task = self.task.lock().expect("poisoned");
-        drop(self.supersede(None, SlotState::Off).1);
+        drop(self.supersede(None, SlotState::Off, LastFrame::Keep).1);
         *task = None;
     }
 
@@ -205,13 +208,20 @@ impl VideoSwitch {
     }
 
     /// Starts a new install with `source` and `state`, and returns its generation and the source it dropped.
+    ///
+    /// The slot is cleared under the same lock the forwarding tasks write
+    /// through, so a superseded task cannot send a frame after it.
     fn supersede(
         &self,
         source: Option<VideoSource>,
         state: SlotState,
+        last_frame: LastFrame,
     ) -> (u64, Option<VideoSource>) {
         let mut current = self.shared.current.lock().expect("poisoned");
         current.generation += 1;
+        if last_frame == LastFrame::Drop {
+            self.shared.slot.clear();
+        }
         self.shared.status.send_replace(state);
         let previous = std::mem::replace(&mut current.source, source);
         (current.generation, previous)
@@ -224,7 +234,7 @@ impl VideoSwitch {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let mut task = self.task.lock().expect("poisoned");
-        let (generation, previous) = self.supersede(source, state);
+        let (generation, previous) = self.supersede(source, state, LastFrame::Drop);
         // Dropped before the next open runs, so its device is free.
         drop(previous);
         let future = run(self.shared.clone(), generation);
@@ -232,6 +242,15 @@ impl VideoSwitch {
             future.instrument(info_span!("video_switch", generation)),
         )));
     }
+}
+
+/// What a new install does with the frame the switchable source shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastFrame {
+    /// Keeps it, for a switch that stops feeding the source.
+    Keep,
+    /// Drops it, for a switch to another source.
+    Drop,
 }
 
 /// Forwards the frames of install `generation`'s source into the switchable source.
@@ -340,6 +359,42 @@ mod tests {
         assert!(first_sender.is_closed(), "the replaced source was dropped");
         push(&second_sender, 2);
         assert_eq!(next_micros(&mut frames).await, 2);
+    }
+
+    /// No frame of the old source reaches a reader once `replace` returns.
+    #[tokio::test]
+    async fn a_replace_drops_the_last_frame_of_the_old_source() {
+        let (switch, source) = VideoSource::switchable(format());
+        let mut frames = source.frames();
+        let (first_sender, first) = VideoSource::push(format());
+        switch.replace(first);
+        push(&first_sender, 1);
+        assert_eq!(next_micros(&mut frames).await, 1);
+
+        let (second_sender, second) = VideoSource::push(format());
+        switch.replace(second);
+        assert!(frames.current().is_none(), "the old frame is still current");
+        assert!(frames.try_next().is_none(), "the old frame was delivered");
+        assert!(
+            source.frames().current().is_none(),
+            "a fresh handle sees the old frame"
+        );
+        push(&second_sender, 2);
+        assert_eq!(next_micros(&mut frames).await, 2);
+    }
+
+    /// An open drops the old frame at once, before the new source has opened.
+    #[tokio::test]
+    async fn an_open_drops_the_last_frame_of_the_old_source() {
+        let (switch, source) = VideoSource::switchable(format());
+        let mut frames = source.frames();
+        let (sender, first) = VideoSource::push(format());
+        switch.replace(first);
+        push(&sender, 1);
+        assert_eq!(next_micros(&mut frames).await, 1);
+        switch.open(std::future::pending());
+        assert!(frames.current().is_none());
+        assert!(frames.try_next().is_none());
     }
 
     #[tokio::test]

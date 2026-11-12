@@ -57,6 +57,14 @@ impl FrameSlot {
         self.tx.send_replace(Some((frame, at)));
     }
 
+    /// Drops the current frame, so no reader gets it from now on.
+    ///
+    /// A reader waiting in [`next`](VideoFrames::next) keeps waiting for the
+    /// next frame sent.
+    pub(crate) fn clear(&self) {
+        self.tx.send_replace(None);
+    }
+
     /// Records why the stream is about to end, for [`FrameReader::failure`].
     ///
     /// The first failure wins.

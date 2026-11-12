@@ -53,6 +53,8 @@ slot, keeping each frame's `sent_at`, and passes the broadcast's demand back
 to the input. `replace(source)` swaps at once, `open(future)` opens the next
 source in the background and drops one still opening, and `clear()` stops
 feeding. The previous source is dropped first, so the same camera opens again.
+`replace` and `open` also drop the previous source's last frame from the slot,
+so no reader gets a frame of the old source after the switch.
 `status()` watches a `SlotState`: `Starting` while an open runs, then
 `Running`, `Failed` or `Ended`. Unlike a second `set_video`, a switch neither
 probes encoders again nor needs the ladder at hand; the broadcast sees one
