@@ -62,7 +62,7 @@ impl Shared {
     }
 }
 
-/// Swaps the input of a [`VideoSource::switchable`] source.
+/// The handle that swaps the input of a [`VideoSource::switchable`] source.
 ///
 /// Each call supersedes the one before: [`replace`](Self::replace) and
 /// [`clear`](Self::clear) take effect at once, and [`open`](Self::open)

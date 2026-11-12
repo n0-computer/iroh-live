@@ -91,7 +91,7 @@ async fn switching_what_feeds_a_pushed_source_keeps_a_peer_playing() {
     let (_player, mut frames) = peers.play("pushed").await;
     shows(
         &mut frames,
-        PATTERN.0,
+        PATTERN.look,
         ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
@@ -147,7 +147,7 @@ async fn replacing_the_video_source_keeps_a_peer_playing() {
             .expect("a valid encoding");
         shows(
             &mut frames,
-            CAMERA.0,
+            CAMERA.look,
             first_published(&peers.broadcast),
             SWITCH_TIMEOUT,
             &format!("camera in round {round}"),
