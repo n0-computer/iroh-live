@@ -21,8 +21,8 @@ use iroh_live::{
     layout::LiveLayout,
     media::{
         Adaptation, LocalBroadcast, Player, PlayerConfig, Rate, RemoteBroadcast, RenditionMode,
-        VideoEncoding, VideoFormat, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
-        video::{Frame, FrameRate, Size, Surface},
+        VideoEncoding, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
+        video::{Frame, FrameRate, Size},
     },
     node::NetworkSample,
 };
@@ -271,33 +271,8 @@ impl Fixture {
 /// The bitrates quoted in this file were measured on this picture. A different
 /// picture encodes to a different rate.
 fn gradient(size: Size) -> VideoSource {
-    let format = VideoFormat {
-        size,
-        rate: FrameRate::new(FRAMERATE, 1).expect("a valid rate"),
-    };
-    VideoSource::spawn("gradient", format, move |sender| {
-        let started = Instant::now();
-        let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
-        let mut next = Instant::now();
-        for tick in 0u32.. {
-            let phase = tick.wrapping_mul(3) as u8;
-            for (offset, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                let x = (offset as u32 % size.width) as u8;
-                let y = (offset as u32 / size.width) as u8;
-                *pixel = [x.wrapping_add(phase), y.wrapping_add(phase), phase, 0xff];
-            }
-            let surface = Surface::rgba(&rgba, size).expect("the buffer fits the size");
-            let timestamp = moq_net::Timestamp::from_micros(started.elapsed().as_micros() as u64)
-                .expect("in range");
-            if sender.push(Frame::new(surface, timestamp)).is_err() {
-                break;
-            }
-            next += FRAME_INTERVAL;
-            std::thread::sleep(next.saturating_duration_since(Instant::now()));
-        }
-        Ok(())
-    })
-    .expect("the gradient thread starts")
+    let rate = FrameRate::new(FRAMERATE, 1).expect("a valid rate");
+    VideoSource::test_gradient(size, rate).expect("the gradient thread starts")
 }
 
 /// The link serving a subscription, looked up on every read.
