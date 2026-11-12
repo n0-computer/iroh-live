@@ -27,6 +27,19 @@ pub enum Error {
     UnsupportedAlpn { alpn: String },
 }
 
+impl Error {
+    /// Returns a [`Connect`](Self::Connect) error for a dial that failed with `source`.
+    ///
+    /// For a caller that dials with its own options, such as iroh's
+    /// `connect_with_opts`, before it hands the connection to
+    /// [`Transport::new`](crate::Transport::new).
+    pub fn connect(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        n0_error::e!(Self::Connect {
+            source: Arc::new(AnyError::from_std(source))
+        })
+    }
+}
+
 /// A failure of a [`Transport`](crate::Transport)'s connection or of one of its streams.
 ///
 /// moq-net reads the application codes from it: a session close code from

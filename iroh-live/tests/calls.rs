@@ -242,8 +242,9 @@ async fn calls_interoperate_with_a_raw_path_caller() {
     step("dial", raw.connect(b.node.endpoint().addr()))
         .await
         .expect("dial b");
-    let side = layout
-        .publish_with(raw, "call", Audience::Peers(ringing), |producer| {
+    let path = layout.path(raw.id(), "call").expect("a call path");
+    let side = raw
+        .publish_with(path, Audience::Peers(ringing), |producer| {
             Ok::<_, std::convert::Infallible>(producer.clone())
         })
         .expect("publish the raw side");
@@ -290,8 +291,9 @@ async fn calls_interoperate_with_a_raw_path_callee() {
         }
     })
     .await;
-    let (_publication, _side) = layout
-        .publish_with(raw, "call", Audience::peers([a.id()]), |producer| {
+    let path = layout.path(raw.id(), "call").expect("a call path");
+    let (_publication, _side) = raw
+        .publish_with(path, Audience::peers([a.id()]), |producer| {
             Ok::<_, std::convert::Infallible>(producer.clone())
         })
         .expect("publish the raw side");

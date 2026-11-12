@@ -7,7 +7,7 @@ use std::{
 };
 
 use iroh::{EndpointAddr, EndpointId};
-use n0_error::{AnyError, e};
+use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -124,9 +124,7 @@ impl Actor {
                             let id = err.id();
                             error!(error = %err, "dial task failed");
                             let failure = e!(Error::Transport {
-                                source: e!(moq_transport_iroh::Error::Connect {
-                                    source: Arc::new(AnyError::from_display(&err))
-                                })
+                                source: moq_transport_iroh::Error::connect(err)
                             });
                             self.dialed(id, Err(failure));
                         }

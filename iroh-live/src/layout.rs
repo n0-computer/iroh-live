@@ -9,7 +9,7 @@
 use iroh::EndpointId;
 pub use iroh_live_node::Layout;
 use iroh_live_node::{
-    Audience, BroadcastTicket, Error, Grant, Node, NodeConfig, Publication,
+    Audience, BroadcastTicket, Error, Grant, Node, NodeConfig,
     net::{Path, Pattern, Patterns},
     policy::{self, PeerRequest, Policy},
 };
@@ -106,13 +106,7 @@ impl LiveLayout {
         (id.to_string() == peer && !name.is_empty()).then_some((id, name))
     }
 
-    /// Returns the grant a node gives `peer`, as [`grant`] does for this layout.
-    #[must_use]
-    pub fn grant(&self, peer: EndpointId) -> Grant {
-        grant(self, peer)
-    }
-
-    /// Returns a policy that admits every peer with its [`grant`](Self::grant).
+    /// Returns a policy that admits every peer with its [`grant`] under this layout.
     ///
     /// Narrow it with [`Policy::filter`], and call `Node::reauthorize` when
     /// the filter's state changes. To let peers publish room broadcasts too,
@@ -156,8 +150,8 @@ impl LiveLayout {
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes
     /// only when it is closed, since the node holds the broadcast open while
-    /// it is published. To keep the [`Publication`], or to publish to another
-    /// audience, use [`publish_with`](Self::publish_with).
+    /// it is published. To keep the [`Publication`](iroh_live_node::Publication), or to publish to another
+    /// audience, use [`Node::publish_with`] with [`path`](Self::path).
     ///
     /// # Errors
     ///
@@ -181,33 +175,11 @@ impl LiveLayout {
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
-        let (_publication, broadcast) =
-            self.publish_with(node, name, Audience::Granted, |producer| {
-                B::try_from(producer.clone())
-            })?;
-        Ok(broadcast)
-    }
-
-    /// Publishes a broadcast at `<root>/<this node's id>/<name>` to `audience`, filling it first.
-    ///
-    /// `fill` runs before the announcement, as in [`Node::publish_with`], so
-    /// no reader finds the broadcast without the tracks it creates.
-    ///
-    /// # Errors
-    ///
-    /// As [`publish`](Self::publish), and [`Error::Fill`] if `fill` fails.
-    pub fn publish_with<T, E>(
-        &self,
-        node: &Node,
-        name: &str,
-        audience: Audience,
-        fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
-    ) -> Result<(Publication, T), Error>
-    where
-        E: Into<Box<dyn std::error::Error + Send + Sync>>,
-    {
         let path = self.path(node.id(), name)?;
-        node.publish_with(path, audience, fill)
+        let (_publication, broadcast) = node.publish_with(path, Audience::Granted, |producer| {
+            B::try_from(producer.clone())
+        })?;
+        Ok(broadcast)
     }
 
     /// Returns the ticket of `peer`'s broadcast `name`.
@@ -314,7 +286,7 @@ mod tests {
     fn the_scope_matches_only_the_peers_own_paths() {
         let layout = LiveLayout::default();
         let (a, b) = (id(), id());
-        let grant = layout.grant(a);
+        let grant = grant(&layout, a);
         assert!(grant.allows_publish(layout.path(a, "cam").expect("path").as_str()));
         assert!(!grant.allows_publish(layout.path(b, "cam").expect("path").as_str()));
         assert!(grant.allows_subscribe("anything/at/all"));
@@ -378,11 +350,10 @@ mod tests {
     fn the_layout_methods_match_the_free_functions() {
         let layout = LiveLayout::new("fleet");
         let peer = id();
-        assert_eq!(layout.grant(peer), grant(&layout, peer));
-        assert_eq!(decided(&layout.policy(), peer), layout.grant(peer));
+        assert_eq!(decided(&layout.policy(), peer), grant(&layout, peer));
         let config = layout.config();
         let policy = config.policy.expect("a policy");
-        assert_eq!(decided(&policy, peer), layout.grant(peer));
+        assert_eq!(decided(&policy, peer), grant(&layout, peer));
     }
 
     #[test]

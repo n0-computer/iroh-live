@@ -4,7 +4,6 @@ use std::{
     fmt,
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Poll, ready},
     time::Duration,
 };
@@ -21,7 +20,7 @@ use moq_net::{
         poll::{self, BiStreams, SendOptions, Ungrouped},
     },
 };
-use n0_error::{AnyError, e};
+use n0_error::e;
 use tracing::{debug, warn};
 
 use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
@@ -138,7 +137,7 @@ impl Transport {
         endpoint: &Endpoint,
         peer: impl Into<EndpointAddr>,
     ) -> Result<Self, Error> {
-        let connection = endpoint.connect(peer, ALPN).await.map_err(connect_error)?;
+        let connection = endpoint.connect(peer, ALPN).await.map_err(Error::connect)?;
         Self::new(connection)
     }
 
@@ -334,13 +333,6 @@ pub(crate) fn poll_op<T>(
     })
 }
 
-/// Wraps a dial failure.
-fn connect_error(err: impl std::error::Error + Send + Sync + 'static) -> Error {
-    e!(Error::Connect {
-        source: Arc::new(AnyError::from_std(err))
-    })
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use iroh::endpoint::presets;
@@ -388,7 +380,7 @@ pub(crate) mod tests {
                     client
                         .connect(server.addr(), alpn)
                         .await
-                        .map_err(connect_error)?,
+                        .map_err(Error::connect)?,
                 ),
                 None => Transport::connect(&client, server.addr()).await,
             }

@@ -30,7 +30,7 @@ use crate::{
 
 /// The ALPN rooms speak, iroh-gossip's.
 ///
-/// Mount [`Rooms::protocol_handler`] under it.
+/// [`Rooms::mount`] mounts the service under it.
 pub const ALPN: &[u8] = iroh_gossip::ALPN;
 
 /// An error from a room or the room service.
@@ -81,7 +81,7 @@ pub struct Rooms {
     /// The rooms joined here read it, so the gossip map ending under them is
     /// a clean stop and not a failure.
     closing: Arc<AtomicBool>,
-    /// Set once the service is mounted on a router, or its handler is taken.
+    /// Set once the service is mounted on a router.
     mounted: Arc<AtomicBool>,
     /// Set once a join has warned that the service is not mounted.
     warned_unmounted: Arc<AtomicBool>,
@@ -121,17 +121,8 @@ impl Rooms {
     /// shutdown calls [`shutdown`](Self::shutdown).
     #[must_use]
     pub fn mount(&self, router: RouterBuilder) -> RouterBuilder {
-        router.accept(ALPN, self.protocol_handler())
-    }
-
-    /// Returns the handler to mount under [`ALPN`] on the endpoint's router.
-    ///
-    /// Prefer [`mount`](Self::mount). The router's shutdown calls
-    /// [`shutdown`](Self::shutdown).
-    #[must_use]
-    pub fn protocol_handler(&self) -> impl ProtocolHandler + use<> {
         self.mounted.store(true, Ordering::Relaxed);
-        Handler(self.clone())
+        router.accept(ALPN, Handler(self.clone()))
     }
 
     /// Shuts the gossip down for every clone.
