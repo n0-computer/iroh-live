@@ -529,7 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(link) = subscription.serving_link() {
         println!(
             "served by a {:?} link, rtt {:?}",
-            link.kind, link.sample.network.rtt
+            link.kind, link.sample.rtt
         );
     }
 

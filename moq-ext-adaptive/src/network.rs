@@ -30,4 +30,11 @@ pub struct NetworkSample {
     ///
     /// Adaptation drops its history when it changes.
     pub path_generation: u64,
+    /// The rate bytes arrived at, in bits per second.
+    ///
+    /// The count includes packet overhead and duplicates, so it is no
+    /// capacity. Adaptation does not read it.
+    pub throughput: Option<u64>,
+    /// Whether the path goes through a relay server rather than straight to the peer.
+    pub relayed: bool,
 }

@@ -37,7 +37,7 @@
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
-//! returns its latest [`LinkSample`]. [`Session::moq`] gives the moq-net
+//! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
 //! session itself, with its raw statistics.
 //!
 //! # Trust and grants
@@ -105,7 +105,9 @@ pub use moq_ext_access::{Layout, LinkKind};
 /// The moq-net this crate builds against.
 pub use moq_net as net;
 use moq_transport_iroh as transport;
-pub use moq_transport_iroh::{ALPN, Congestion, HANDSHAKE_TIMEOUT, LinkSample, MoqPreset, alpns};
+pub use moq_transport_iroh::{
+    ALPN, Congestion, HANDSHAKE_TIMEOUT, MoqPreset, NetworkSample, alpns,
+};
 
 pub use self::{
     admission::{ConnectOptions, Grant, SessionRequest},

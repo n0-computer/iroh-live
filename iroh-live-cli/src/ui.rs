@@ -364,7 +364,7 @@ impl Link {
             (_, true) => "relayed".to_string(),
             (_, false) => "direct".to_string(),
         }];
-        if let Some(bps) = link.throughput_bps {
+        if let Some(bps) = link.throughput {
             lines.push(format!(
                 "arriving: {}",
                 moq_ext_egui::format_bitrate(iroh_live::media::Rate::from_bps(bps))

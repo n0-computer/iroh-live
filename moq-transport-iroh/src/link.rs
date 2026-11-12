@@ -30,26 +30,6 @@ const MIN_PACKETS: u64 = 20;
 /// moved without a path change.
 const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
 
-/// One reading of a link.
-///
-/// Measured by this endpoint, so the loss rate is of the packets it sends: on
-/// a subscriber, mostly acknowledgements. `None` means not measured yet.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct LinkSample {
-    /// The readings adaptation uses.
-    ///
-    /// The loss rate spans the last two seconds and the minimum round trip
-    /// the last 15 s. The path generation changes when the link moves to
-    /// another path or relay session.
-    pub network: NetworkSample,
-    /// The rate UDP bytes arrived at over the last two seconds, in bits/s.
-    ///
-    /// The count includes packet overhead and duplicates.
-    pub throughput_bps: Option<u64>,
-    /// Whether a direct session's path goes through an iroh relay server.
-    pub relayed: bool,
-}
-
 /// Which path a reading is of: a QUIC path, or one session of a relay link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathKey {
@@ -69,7 +49,7 @@ pub async fn sample_link(
     session: moq_net::Session,
     connection: Connection,
     sampler: Arc<Mutex<LinkSampler>>,
-    mut publish: impl FnMut(LinkSample),
+    mut publish: impl FnMut(NetworkSample),
 ) {
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -102,7 +82,11 @@ struct Reading {
     lost_packets: u64,
 }
 
-/// Turns readings of a session's statistics into [`LinkSample`]s.
+/// Turns readings of a session's statistics into [`NetworkSample`]s.
+///
+/// Measured by this endpoint, so the loss rate is of the packets it sends: on
+/// a subscriber, mostly acknowledgements. The loss rate and the throughput
+/// span the last two seconds, the minimum round trip the last 15 s.
 ///
 /// Keeps the history rates and minimums are taken over, and the path
 /// generation. [`sample_link`] drives one on a timer. Call the `sample_*` methods
@@ -144,7 +128,7 @@ impl LinkSampler {
         connection: &Connection,
         delivery: Option<moq_net::bandwidth::Rate>,
         now: Instant,
-    ) -> Option<LinkSample> {
+    ) -> Option<NetworkSample> {
         let paths = connection.paths();
         let selected = paths.iter().find(|path| path.is_selected())?;
         let mut sample = self.sample(
@@ -166,7 +150,7 @@ impl LinkSampler {
         session_number: u64,
         stats: &Stats,
         now: Instant,
-    ) -> LinkSample {
+    ) -> NetworkSample {
         self.sample(PathKey::Session(session_number), stats, None, now)
     }
 
@@ -180,7 +164,7 @@ impl LinkSampler {
         stats: &Stats,
         recv: Option<moq_net::bandwidth::Rate>,
         now: Instant,
-    ) -> LinkSample {
+    ) -> NetworkSample {
         if self.path != Some(path) {
             if self.path.is_some() {
                 self.path_generation += 1;
@@ -209,23 +193,21 @@ impl LinkSampler {
             .iter()
             .rev()
             .find(|reading| now.duration_since(reading.at) >= WINDOW);
-        LinkSample {
-            network: NetworkSample {
-                rtt: latest.rtt,
-                min_rtt: self.readings.iter().filter_map(|reading| reading.rtt).min(),
-                loss: base.map(|base| {
-                    // The sent count includes the packets later declared lost.
-                    let lost = latest.lost_packets.saturating_sub(base.lost_packets);
-                    let sent = latest.sent_packets.saturating_sub(base.sent_packets);
-                    match sent {
-                        sent if sent < MIN_PACKETS => 0.0,
-                        sent => (lost as f64 / sent as f64).min(1.0),
-                    }
-                }),
-                delivery: recv.map(moq_net::bandwidth::Rate::as_bps),
-                path_generation: self.path_generation,
-            },
-            throughput_bps: base.map(|base| {
+        NetworkSample {
+            rtt: latest.rtt,
+            min_rtt: self.readings.iter().filter_map(|reading| reading.rtt).min(),
+            loss: base.map(|base| {
+                // The sent count includes the packets later declared lost.
+                let lost = latest.lost_packets.saturating_sub(base.lost_packets);
+                let sent = latest.sent_packets.saturating_sub(base.sent_packets);
+                match sent {
+                    sent if sent < MIN_PACKETS => 0.0,
+                    sent => (lost as f64 / sent as f64).min(1.0),
+                }
+            }),
+            delivery: recv.map(moq_net::bandwidth::Rate::as_bps),
+            path_generation: self.path_generation,
+            throughput: base.map(|base| {
                 let bytes = latest.received_bytes.saturating_sub(base.received_bytes);
                 (bytes as f64 * 8.0 / now.duration_since(base.at).as_secs_f64()) as u64
             }),
@@ -257,9 +239,9 @@ mod tests {
         t0: Instant,
         ticks: u32,
         per_tick: (u64, u64, u64),
-    ) -> LinkSample {
+    ) -> NetworkSample {
         let (sent, lost, received) = per_tick;
-        let mut last = LinkSample::default();
+        let mut last = NetworkSample::default();
         for tick in 1..=ticks {
             let n = u64::from(tick);
             last = sampler.sample(
@@ -277,12 +259,12 @@ mod tests {
         let mut sampler = LinkSampler::default();
         let t0 = Instant::now();
         let early = run(&mut sampler, t0, 5, (20, 2, 20_000));
-        assert_eq!(early.network.loss, None);
-        assert_eq!(early.throughput_bps, None);
+        assert_eq!(early.loss, None);
+        assert_eq!(early.throughput, None);
         let full = run(&mut sampler, t0, 12, (20, 2, 20_000));
-        let loss = full.network.loss.expect("a loss rate");
+        let loss = full.loss.expect("a loss rate");
         assert!((loss - 2.0 / 20.0).abs() < 0.01, "{full:?}");
-        let bps = full.throughput_bps.expect("a throughput");
+        let bps = full.throughput.expect("a throughput");
         assert!((700_000..=900_000).contains(&bps), "{bps}");
     }
 
@@ -290,7 +272,7 @@ mod tests {
     fn a_lost_packet_among_a_handful_is_not_loss() {
         let mut sampler = LinkSampler::default();
         let full = run(&mut sampler, Instant::now(), 12, (1, 0, 0));
-        assert_eq!(full.network.loss, Some(0.0), "{full:?}");
+        assert_eq!(full.loss, Some(0.0), "{full:?}");
     }
 
     /// A new path starts over: generation, baseline and rate windows.
@@ -301,9 +283,9 @@ mod tests {
         run(&mut sampler, t0, 12, (10, 5, 0));
         let later = t0 + 13 * SAMPLE_INTERVAL;
         let backup = sampler.sample(BACKUP, &stats(40, 300, 400, 0), None, later);
-        assert_eq!(backup.network.path_generation, 1);
-        assert_eq!(backup.network.min_rtt, Some(Duration::from_millis(40)));
-        assert_eq!(backup.network.loss, None);
+        assert_eq!(backup.path_generation, 1);
+        assert_eq!(backup.min_rtt, Some(Duration::from_millis(40)));
+        assert_eq!(backup.loss, None);
     }
 
     /// A redial is a new path even when the QUIC path id repeats.
@@ -315,7 +297,7 @@ mod tests {
         assert_eq!(sampler.path_generation(), 0);
         sampler.new_session();
         let first = sampler.sample(DIRECT, &stats(20, 0, 0, 0), None, t0 + SAMPLE_INTERVAL * 4);
-        assert_eq!(first.network.path_generation, 1);
+        assert_eq!(first.path_generation, 1);
         // A session that never sampled adds nothing.
         sampler.new_session();
         sampler.new_session();
@@ -328,8 +310,8 @@ mod tests {
         let t0 = Instant::now();
         sampler.sample(DIRECT, &stats(2, 0, 0, 0), None, t0);
         let within = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW);
-        assert_eq!(within.network.min_rtt, Some(Duration::from_millis(2)));
+        assert_eq!(within.min_rtt, Some(Duration::from_millis(2)));
         let past = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW * 2);
-        assert_eq!(past.network.min_rtt, Some(Duration::from_millis(60)));
+        assert_eq!(past.min_rtt, Some(Duration::from_millis(60)));
     }
 }

@@ -39,11 +39,11 @@ pub(crate) fn signals(
         let mut last = last.lock().expect("poisoned");
         let path = link
             .as_ref()
-            .map(|link| (link.id, link.sample.network.path_generation));
+            .map(|link| (link.id, link.sample.path_generation));
         if last.0 != path {
             *last = (path, last.1 + 1);
         }
-        let mut sample = link.map(|link| link.sample.network).unwrap_or_default();
+        let mut sample = link.map(|link| link.sample).unwrap_or_default();
         sample.path_generation = last.1;
         sample
     }

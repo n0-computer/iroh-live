@@ -24,7 +24,7 @@ use iroh_live::{
         VideoEncoding, VideoFormat, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
         video::{Frame, FrameRate, Size, Surface},
     },
-    node::LinkSample,
+    node::NetworkSample,
 };
 use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, NodeId};
@@ -305,7 +305,7 @@ struct Link(Subscription);
 
 impl Link {
     /// Returns the latest reading, or an empty one while no link serves.
-    fn read(&self) -> LinkSample {
+    fn read(&self) -> NetworkSample {
         self.0
             .serving_link()
             .map(|serving| serving.sample)
@@ -316,8 +316,8 @@ impl Link {
 /// Reports whether `sample`'s round trip is over ten times its minimum.
 ///
 /// That means a queue, not a longer path.
-fn queued(sample: &LinkSample) -> bool {
-    matches!((sample.network.rtt, sample.network.min_rtt), (Some(rtt), Some(min)) if rtt > min * 10)
+fn queued(sample: &NetworkSample) -> bool {
+    matches!((sample.rtt, sample.min_rtt), (Some(rtt), Some(min)) if rtt > min * 10)
 }
 
 /// Returns a measured duration in milliseconds, zero while unmeasured.
@@ -708,7 +708,7 @@ async fn adaptation_follows_a_rate_limit() {
         loop {
             if signals
                 .read()
-                .throughput_bps
+                .throughput
                 .is_some_and(|bps| bps >= clear_enough)
             {
                 return;
@@ -743,12 +743,12 @@ async fn adaptation_follows_a_rate_limit() {
         let mut last_sample = None;
         loop {
             let signals = signals.read();
-            worst_loss = worst_loss.max(signals.network.loss.unwrap_or(0.0));
-            let pinned = signals.throughput_bps.is_some_and(|bps| bps < 250_000);
+            worst_loss = worst_loss.max(signals.loss.unwrap_or(0.0));
+            let pinned = signals.throughput.is_some_and(|bps| bps < 250_000);
             if pinned && queued(&signals) {
                 let start = *since.get_or_insert_with(Instant::now);
-                if last_sample != Some(signals.network.rtt) {
-                    last_sample = Some(signals.network.rtt);
+                if last_sample != Some(signals.rtt) {
+                    last_sample = Some(signals.rtt);
                     readings += 1;
                 }
                 if Instant::now().duration_since(start) >= held && readings > QUEUEING_SAMPLES {
@@ -773,9 +773,9 @@ async fn adaptation_follows_a_rate_limit() {
     });
     info!(
         after_ms = impaired.elapsed().as_millis() as u64,
-        throughput_kbps = saw_the_cap.throughput_bps.unwrap_or(0) / 1000,
-        rtt_ms = millis(saw_the_cap.network.rtt),
-        min_rtt_ms = millis(saw_the_cap.network.min_rtt),
+        throughput_kbps = saw_the_cap.throughput.unwrap_or(0) / 1000,
+        rtt_ms = millis(saw_the_cap.rtt),
+        min_rtt_ms = millis(saw_the_cap.min_rtt),
         rtt_readings = readings,
         worst_loss,
         "the rate limit reached the signals",
@@ -923,7 +923,7 @@ async fn a_switch_lands_while_the_link_stays_capped() {
     tokio::time::timeout(SIGNAL_LAG, async {
         loop {
             let signals = signals.read();
-            if signals.throughput_bps.is_some_and(|bps| bps < 250_000) && queued(&signals) {
+            if signals.throughput.is_some_and(|bps| bps < 250_000) && queued(&signals) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1053,9 +1053,9 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     let before = signals.read();
     info!(
-        rtt_ms = millis(before.network.rtt),
-        min_rtt_ms = millis(before.network.min_rtt),
-        throughput_kbps = ?before.throughput_bps.map(|bps| bps / 1000),
+        rtt_ms = millis(before.rtt),
+        min_rtt_ms = millis(before.min_rtt),
+        throughput_kbps = ?before.throughput.map(|bps| bps / 1000),
         "clear link",
     );
 
@@ -1084,9 +1084,9 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
 
     let after = signals.read();
     info!(
-        rtt_ms = millis(after.network.rtt),
-        min_rtt_ms = millis(after.network.min_rtt),
-        throughput_kbps = ?after.throughput_bps.map(|bps| bps / 1000),
+        rtt_ms = millis(after.rtt),
+        min_rtt_ms = millis(after.min_rtt),
+        throughput_kbps = ?after.throughput.map(|bps| bps / 1000),
         switches,
         frames,
         "risen baseline watched",
@@ -1106,13 +1106,12 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
     // queue. Measured: 1 to 3ms on the clear link, 37 to 40ms once impaired.
     assert!(
         after
-            .network
             .min_rtt
             .is_some_and(|min| min >= Duration::from_millis(25)),
         "the round trip minimum went from {}ms to {}ms across {watched:?} of an impairment that \
          added 60ms of round trip, so it never re-baselined onto the longer path",
-        millis(before.network.min_rtt),
-        millis(after.network.min_rtt),
+        millis(before.min_rtt),
+        millis(after.min_rtt),
     );
 
     fixture.shutdown().await;

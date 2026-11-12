@@ -96,10 +96,10 @@ tokens do.
 ## Links
 
 Every link runs a connection monitor. `Subscription::serving_link()` returns
-the latest `LinkSample` of whichever link serves the subscription: round trip,
+the latest `NetworkSample` of whichever link serves the subscription: round trip,
 minimum round trip, loss, throughput and the peer's delivery estimate, with
 `None` for what is not measured yet. `Session::moq()` gives the moq-net
-session itself, with its raw statistics. `LinkSample`, `MoqPreset`, `alpns()` and `ALPN` come from
+session itself, with its raw statistics. `NetworkSample` (from `moq-ext-adaptive`), `MoqPreset`, `alpns()` and `ALPN` come from
 `moq-transport-iroh` and are re-exported here.
 
 ## Examples

@@ -8,7 +8,7 @@ use std::{
 };
 
 use moq_ext_access::LinkKind;
-use moq_transport_iroh::{LinkSample, LinkSampler, SAMPLE_INTERVAL};
+use moq_transport_iroh::{LinkSampler, NetworkSample, SAMPLE_INTERVAL};
 use tracing::trace;
 
 /// Identifies one link of a node: a session or a relay.
@@ -24,35 +24,36 @@ pub struct ServingLink {
     /// What kind of link that is.
     pub kind: LinkKind,
     /// The link's latest reading.
-    pub sample: LinkSample,
+    pub sample: NetworkSample,
 }
 
 /// The latest sample of a link, shared with every handle on it.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct LinkState(Arc<Mutex<LinkSample>>);
+pub(crate) struct LinkState(Arc<Mutex<NetworkSample>>);
 
 impl LinkState {
     /// Returns the latest reading.
-    pub(crate) fn get(&self) -> LinkSample {
+    pub(crate) fn get(&self) -> NetworkSample {
         *self.0.lock().expect("poisoned")
     }
 
     /// Empties the reading, as between sessions, keeping `path_generation`.
     pub(crate) fn clear(&self, path_generation: u64) {
-        let mut sample = LinkSample::default();
-        sample.network.path_generation = path_generation;
-        self.set(sample);
+        self.set(NetworkSample {
+            path_generation,
+            ..NetworkSample::default()
+        });
     }
 
-    pub(crate) fn set(&self, sample: LinkSample) {
+    pub(crate) fn set(&self, sample: NetworkSample) {
         trace!(
-            path_generation = sample.network.path_generation,
+            path_generation = sample.path_generation,
             relayed = sample.relayed,
-            rtt_ms = ?sample.network.rtt.map(|rtt| rtt.as_millis()),
-            min_rtt_ms = ?sample.network.min_rtt.map(|rtt| rtt.as_millis()),
-            loss = ?sample.network.loss,
-            throughput_kbps = ?sample.throughput_bps.map(|bps| bps / 1000),
-            delivery_kbps = ?sample.network.delivery.map(|bps| bps / 1000),
+            rtt_ms = ?sample.rtt.map(|rtt| rtt.as_millis()),
+            min_rtt_ms = ?sample.min_rtt.map(|rtt| rtt.as_millis()),
+            loss = ?sample.loss,
+            throughput_kbps = ?sample.throughput.map(|bps| bps / 1000),
+            delivery_kbps = ?sample.delivery.map(|bps| bps / 1000),
             "link sample",
         );
         *self.0.lock().expect("poisoned") = sample;
@@ -88,11 +89,10 @@ pub(crate) async fn monitor_relay(monitor: moq_tokio::connection::Monitor, state
                 sampler.sample_session(session, &stats, Instant::now())
             }
             // Between sessions nothing is measured.
-            None => {
-                let mut sample = LinkSample::default();
-                sample.network.path_generation = sampler.path_generation();
-                sample
-            }
+            None => NetworkSample {
+                path_generation: sampler.path_generation(),
+                ..NetworkSample::default()
+            },
         };
         state.set(sample);
     }

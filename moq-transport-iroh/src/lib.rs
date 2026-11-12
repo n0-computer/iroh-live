@@ -9,8 +9,8 @@
 //!   negotiated ALPN. Hand the transport to [`moq_net::Client::connect`] or
 //!   [`moq_net::Server::accept_request`].
 //! - [`MoqPreset`] binds an endpoint with a QUIC configuration tuned for MoQ.
-//! - [`LinkSampler`] and [`LinkSample`] read a connection's selected path:
-//!   round trip, loss, delivery rate.
+//! - [`LinkSampler`] reads a connection's selected path into a
+//!   [`NetworkSample`]: round trip, loss, delivery rate.
 //!
 //! MoQ runs on raw QUIC. Raw QUIC has no request URI, so the request path and
 //! any token travel in the MoQ SETUP.
@@ -38,9 +38,11 @@ mod transport;
 
 use std::time::Duration;
 
+pub use moq_ext_adaptive::NetworkSample;
+
 pub use self::{
     error::{Error, TransportError},
-    link::{LinkSample, LinkSampler, SAMPLE_INTERVAL, sample_link},
+    link::{LinkSampler, SAMPLE_INTERVAL, sample_link},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     stream::{RecvStream, SendStream},
     transport::Transport,
