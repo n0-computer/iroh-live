@@ -221,7 +221,7 @@ mod window {
 
     use super::{Options, connect};
     use crate::{
-        scan::{Released, ScanView, Skip},
+        scan::{ScanView, Skip},
         transport::{SharedNode, Subscribed},
         ui::{BUTTON, CursorIdle, Pending, RemoteView},
     };
@@ -252,7 +252,6 @@ mod window {
         crate::ui::run_window("irl watch", fullscreen, move |cc| {
             let ctx = &cc.egui_ctx;
             let render_state = cc.wgpu_render_state.clone();
-            let camera_released = Released::default();
             let mode = match opening {
                 Opening::Watching(connected) => {
                     watching(ctx, *connected, &options, render_state.as_ref())
@@ -266,7 +265,6 @@ mod window {
                     None,
                     None,
                     options.scan_camera.clone(),
-                    camera_released.clone(),
                 ),
             };
             WatchApp {
@@ -277,7 +275,6 @@ mod window {
                 message: None,
                 cursor: CursorIdle::default(),
                 refused: None,
-                camera_released,
                 // A dial can finish while the window is hidden, and the
                 // state machine still has to pick it up.
                 _heartbeat: crate::ui::spawn_heartbeat(ctx),
@@ -419,10 +416,9 @@ mod window {
         previous: Option<Previous>,
         skip: Option<Skip>,
         camera: Option<crate::source_spec::VideoSourceSpec>,
-        released: Released,
     ) -> Mode {
         Mode::Scanning(Box::new(Scanning {
-            view: ScanView::new(ctx, render_state, skip, camera, released),
+            view: ScanView::new(ctx, render_state, skip, camera),
             previous,
         }))
     }
@@ -511,8 +507,6 @@ mod window {
         cursor: CursorIdle,
         /// The ticket the last dial failed on.
         refused: Option<Refused>,
-        /// The release of the last scan's camera.
-        camera_released: Released,
         _heartbeat: AbortOnDropHandle<()>,
     }
 
@@ -641,14 +635,7 @@ mod window {
             }
             self.close_mode();
             let camera = self.options.scan_camera.clone();
-            self.mode = scanning(
-                ctx,
-                self.render_state.as_ref(),
-                previous,
-                skip,
-                camera,
-                self.camera_released.clone(),
-            );
+            self.mode = scanning(ctx, self.render_state.as_ref(), previous, skip, camera);
         }
 
         /// Closes what the current mode holds open.

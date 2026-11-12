@@ -157,7 +157,6 @@ impl CallApp {
                     self.render_state.as_ref(),
                     None,
                     self.scan_camera.clone(),
-                    self.scan_released.clone(),
                 )
             }
             _ => ScanView::new(
@@ -165,7 +164,6 @@ impl CallApp {
                 self.render_state.as_ref(),
                 None,
                 self.scan_camera.clone(),
-                self.scan_released.clone(),
             ),
         };
         self.screen = Screen::Scanning(Box::new(view));

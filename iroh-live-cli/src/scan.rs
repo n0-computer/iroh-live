@@ -3,17 +3,13 @@
 //! Built for a Raspberry Pi with a touchscreen and no keyboard. The QR decoder
 //! runs on its own thread because it is too slow for a runtime worker.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use iroh_live::{BroadcastTicket, media::VideoFrames};
 use moq_ext_egui::FrameView;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
-use tokio_util::sync::WaitForCancellationFutureOwned;
 use tracing::{debug, info, warn};
 
 use crate::source_spec::VideoSourceSpec;
@@ -75,16 +71,10 @@ enum ScanState {
     Failed(String),
 }
 
-/// Holds what resolves once the last camera a scan opened has closed its device.
-///
-/// Share one between the scans of a window, so a scan's camera waits until the
-/// previous scan's camera has let go of the device.
-pub(crate) type Released = Arc<Mutex<Option<WaitForCancellationFutureOwned>>>;
-
 /// Where the scanner's frames come from.
 enum Pictures {
     /// A camera the scanner opens, and reopens if it fails.
-    Open(Option<VideoSourceSpec>, Released),
+    Open(Option<VideoSourceSpec>),
     /// The frames of a source opened elsewhere.
     Borrowed(VideoFrames),
 }
@@ -107,15 +97,13 @@ impl ScanView {
     /// Opens the camera and starts looking for a ticket.
     ///
     /// Returns at once. A camera that does not open is reported on the screen.
-    /// The camera opens once the camera `released` holds has closed.
     pub(crate) fn new(
         ctx: &egui::Context,
         render_state: Option<&moq_ext_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
         camera: Option<VideoSourceSpec>,
-        released: Released,
     ) -> Self {
-        Self::start(ctx, render_state, skip, Pictures::Open(camera, released))
+        Self::start(ctx, render_state, skip, Pictures::Open(camera))
     }
 
     /// Starts looking for a ticket in `frames` from a camera opened elsewhere.
@@ -231,7 +219,7 @@ async fn scan(
     ctx: &egui::Context,
     skip: Option<&Skip>,
 ) {
-    let (choice, released) = match pictures {
+    let choice = match pictures {
         Pictures::Borrowed(frames) => {
             opened.send_replace(Some(frames.clone()));
             report(state, ctx, ScanState::Looking);
@@ -244,15 +232,12 @@ async fn scan(
             }
             return;
         }
-        Pictures::Open(choice, released) => (choice, released),
+        Pictures::Open(choice) => choice,
     };
     let mut said_so = false;
     loop {
-        let previous = released.lock().expect("poisoned").take();
-        crate::source::await_release(previous).await;
         let problem = match Camera::open(choice.as_ref()).await {
             Ok(camera) => {
-                *released.lock().expect("poisoned") = Some(camera.source.released());
                 let size = camera.source.format().size;
                 info!(
                     device = camera.label,

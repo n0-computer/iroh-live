@@ -126,9 +126,13 @@ impl VideoSource {
     /// seconds. A permission dialog the platform shows while the device opens
     /// does not count against that time.
     ///
-    /// A camera that a dropped source still holds fails to open as busy on
-    /// V4L2. Await [`released`](Self::released) of the old source before
-    /// opening the same camera again.
+    /// A camera first waits, for at most 3 seconds, until every camera source
+    /// dropped before this call has closed its device, so a switch back to the
+    /// same camera does not fail as busy. Drop the old source before opening
+    /// its replacement. A capture that does not let go in time is stuck in a
+    /// read: the open proceeds without it, and that thread may hold its device
+    /// until the read returns. A V4L2 read gives up after a second, but a Media
+    /// Foundation read on Windows has no timeout.
     ///
     /// With the `pipewire` feature on Linux, the default camera is PipeWire's,
     /// which shares the device with other applications. If that does not open,
@@ -143,6 +147,9 @@ impl VideoSource {
     /// frame.
     #[cfg(feature = "capture")]
     pub async fn capture(config: video::capture::Config) -> Result<Self, Error> {
+        if matches!(config.source, video::capture::Source::Camera(_)) {
+            capture::settle().await;
+        }
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if config.source == video::capture::Source::Camera(None) {
             let mut pipewire = config.clone();
@@ -351,7 +358,8 @@ impl VideoSource {
     /// dropped. Bound the wait: a thread stuck in a read lets go only once the
     /// read returns, which takes up to a second on V4L2 and has no limit for
     /// Media Foundation on Windows. Resolves at once for a source without a
-    /// device.
+    /// device. [`capture`](Self::capture) already waits for dropped cameras,
+    /// so this is for a device something other than this crate opens next.
     pub fn released(&self) -> WaitForCancellationFutureOwned {
         match &self.inner.driver {
             #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
