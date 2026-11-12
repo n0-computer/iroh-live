@@ -11,7 +11,7 @@ use std::{
 use drm::{Device as _, control::Device as ControlDevice};
 use gbm::AsRaw;
 use glow::HasContext;
-use iroh_live::media::{Player, VideoFrames, video::Frame};
+use iroh_live::media::{VideoFrames, video::Frame};
 use n0_error::{Result, StdResultExt as _, anyerr};
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{info, warn};
@@ -24,6 +24,7 @@ use {
         surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
     },
     glutin_winit::DisplayBuilder,
+    iroh_live::media::Player,
     raw_window_handle::HasWindowHandle,
     std::num::NonZeroU32,
     winit::{
@@ -397,23 +398,11 @@ impl DrmDisplay {
     }
 }
 
-/// Renders a remote broadcast to HDMI over DRM/KMS.
-pub(crate) async fn run_drm(player: Player) -> Result<()> {
-    show_on_hdmi(player.video_frames()).await
-}
-
-/// Renders a local frame stream to HDMI.
-///
-/// Used with [`VideoSource::test_pattern`](iroh_live::media::VideoSource::test_pattern).
-pub(crate) async fn run_fb_demo(frames: VideoFrames) -> Result<()> {
-    show_on_hdmi(frames).await
-}
-
-/// Shows `frames` on HDMI until they end.
+/// Shows `frames` on HDMI over DRM/KMS until they end.
 ///
 /// The display lives on a thread of its own: its EGL context is current on
 /// one thread only, which a task on the runtime could leave at any `.await`.
-async fn show_on_hdmi(mut frames: VideoFrames) -> Result<()> {
+pub(crate) async fn show_on_hdmi(mut frames: VideoFrames) -> Result<()> {
     let (frame_tx, frame_rx) = tokio_mpsc::channel::<Arc<Frame>>(4);
 
     let render_handle = std::thread::Builder::new()

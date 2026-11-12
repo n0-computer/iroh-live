@@ -26,32 +26,32 @@ const EPAPER_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 #[derive(Parser, Debug)]
 pub(crate) struct PublishOpts {
     /// Show the connection ticket as a QR code on the e-paper HAT.
-    #[clap(long)]
+    #[arg(long)]
     epaper: bool,
 
     /// Relay endpoint ID to also push to, so browsers can watch there.
-    #[clap(long)]
-    pub relay: Option<EndpointId>,
+    #[arg(long)]
+    relay: Option<EndpointId>,
 
     /// Broadcast name.
-    #[clap(long, default_value = "pi-zero")]
-    pub name: String,
+    #[arg(long, default_value = "pi-zero")]
+    name: String,
 
     /// Capture width in pixels.
-    #[clap(long, default_value = "640")]
-    pub width: u32,
+    #[arg(long, default_value = "640")]
+    width: u32,
 
     /// Capture height in pixels.
-    #[clap(long, default_value = "360")]
-    pub height: u32,
+    #[arg(long, default_value = "360")]
+    height: u32,
 
     /// Target bitrate (bits/s).
-    #[clap(long, default_value = "500000")]
-    pub bitrate: u32,
+    #[arg(long, default_value = "500000")]
+    bitrate: u32,
 
     /// Capture framerate.
-    #[clap(long, default_value = "30")]
-    pub fps: u32,
+    #[arg(long, default_value = "30")]
+    fps: u32,
 }
 
 /// Publishes the camera stream and shows the ticket QR on e-paper.

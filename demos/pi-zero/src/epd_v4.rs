@@ -115,7 +115,7 @@ where
     /// Blocks until the controller releases the BUSY pin.
     ///
     /// Fails after [`BUSY_TIMEOUT`], so a stuck or missing panel does not
-    /// block its thread for good.
+    /// block its thread forever.
     fn wait_busy(&mut self) -> Result<(), EpdError<SPI::Error>> {
         let deadline = Instant::now() + BUSY_TIMEOUT;
         // The BUSY pin is high while the controller works.

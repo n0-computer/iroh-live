@@ -21,12 +21,14 @@ mod watch;
 /// The command line and the dispatch to each command.
 #[cfg(target_os = "linux")]
 mod app {
+    use std::time::Duration;
+
     use clap::{Parser, Subcommand};
     use iroh_live::{
-        BroadcastTicket, Node,
+        BroadcastTicket, EndpointConfig, Node,
         layout::LiveLayout,
         media::{
-            VideoSource, remote_broadcast,
+            PlayerConfig, VideoSource, remote_broadcast,
             video::{FrameRate, Size},
         },
     };
@@ -44,7 +46,7 @@ mod app {
     /// The demo subcommands.
     #[derive(Subcommand)]
     enum Command {
-        /// Test the e-paper display with a "hello" label and a bogus QR code.
+        /// Test the e-paper display: a checkerboard, then a QR code, then white.
         EpaperDemo,
         /// Publish the camera stream and show the ticket QR on e-paper.
         Publish(publish::PublishOpts),
@@ -60,10 +62,10 @@ mod app {
         /// The broadcast ticket.
         ticket: BroadcastTicket,
         /// Render direct to HDMI framebuffer via DRM/KMS (no window system).
-        #[clap(long)]
+        #[arg(long)]
         fb: bool,
         /// Start in fullscreen mode (windowed mode only, ignored with --fb).
-        #[clap(long)]
+        #[arg(long)]
         fullscreen: bool,
     }
 
@@ -109,7 +111,7 @@ mod app {
             Size::new(640, 480),
             FrameRate::new(30, 1).expect("a valid rate"),
         )?;
-        watch::run_fb_demo(source.frames()).await?;
+        watch::show_on_hdmi(source.frames()).await?;
         Ok(())
     }
 
@@ -121,7 +123,7 @@ mod app {
         // The ticket has no addresses. The viewer finds the publisher through
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
         // network without internet.
-        let endpoint = iroh_live::EndpointConfig::from_env()?.bind().await?;
+        let endpoint = EndpointConfig::from_env()?.bind().await?;
         // Only dials, so it needs no router.
         let node = Node::new(endpoint.clone(), LiveLayout::default().config());
         let result = watch_with(&node, opts).await;
@@ -140,16 +142,14 @@ mod app {
 
         // Wait for a readable catalog, so a bad publisher gives an error and
         // not a black screen.
-        remote
-            .catalog_within(std::time::Duration::from_secs(15))
-            .await?;
+        remote.catalog_within(Duration::from_secs(15)).await?;
 
         // `remote_broadcast` attached the link's signals, so the player picks
         // the rendition on its own.
-        let player = remote.play(iroh_live::media::PlayerConfig::default())?;
+        let player = remote.play(PlayerConfig::default())?;
 
         if opts.fb {
-            watch::run_drm(player).await?;
+            watch::show_on_hdmi(player.video_frames()).await?;
         } else {
             #[cfg(feature = "windowed")]
             watch::run_windowed(player, opts.fullscreen)?;
