@@ -66,16 +66,15 @@ enum Video {
 
 /// Opens the video and audio `args` asks for, and sets them on `broadcast`.
 ///
-/// `output` is the speaker whose echo the microphone cancels. Fails for a
-/// `file:` video source, a ladder that does not parse, or a source that does
-/// not open.
+/// The microphone cancels the echo of `speaker`. Fails for a `file:` video
+/// source, a ladder that does not parse, or a source that does not open.
 pub(crate) async fn configure(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
-    output: Option<&Speaker>,
+    speaker: Option<&Speaker>,
 ) -> Result<Opened> {
     let video = configure_video(broadcast, args).await?;
-    let audio = match audio_source(&args.audio_source(), output).await? {
+    let audio = match audio_source(&args.audio_source(), speaker).await? {
         Some(source) => {
             broadcast.set_audio(source.clone(), audio_config(args, &source))?;
             Some(source)
@@ -310,30 +309,30 @@ fn test_pattern(
     }
 }
 
-/// Returns the capture config for microphone `id`, cancelling the echo of `output`.
+/// Returns the capture config for microphone `id`, cancelling the echo of `speaker`.
 ///
 /// Without the `aec` feature, it warns and captures the microphone as is.
 ///
 /// # Errors
 ///
-/// Fails if `output` already cancels the echo of another microphone.
+/// Fails if `speaker` already cancels the echo of another microphone.
 pub(crate) fn microphone_config(
     id: Option<String>,
-    output: Option<&Speaker>,
+    speaker: Option<&Speaker>,
 ) -> Result<audio::capture::Config> {
     let mut config = audio::capture::Config::default();
     if let Some(id) = id {
         config.source = audio::capture::Source::Microphone(Some(id));
     }
     #[cfg(feature = "aec")]
-    if let Some(engine) = output {
+    if let Some(engine) = speaker {
         let canceller = engine
             .canceller(audio::aec::Config::default())
             .map_err(|err| anyerr!("cannot cancel the echo of the audio output: {err}"))?;
         config.aec = Some(canceller);
     }
     #[cfg(not(feature = "aec"))]
-    if output.is_some() {
+    if speaker.is_some() {
         warn!(
             "this build has no echo cancellation, so the other side may hear itself; \
              build with the `aec` feature to cancel it"
@@ -345,12 +344,12 @@ pub(crate) fn microphone_config(
 /// Opens the audio source `spec` names, or `None` for `--audio none`.
 async fn audio_source(
     spec: &AudioSourceSpec,
-    output: Option<&Speaker>,
+    speaker: Option<&Speaker>,
 ) -> Result<Option<AudioSource>> {
     let source = match spec {
         AudioSourceSpec::None => return Ok(None),
         AudioSourceSpec::Microphone(id) => {
-            AudioSource::microphone(microphone_config(id.clone(), output)?).await?
+            AudioSource::microphone(microphone_config(id.clone(), speaker)?).await?
         }
         AudioSourceSpec::System => {
             let mut config = audio::capture::Config::default();

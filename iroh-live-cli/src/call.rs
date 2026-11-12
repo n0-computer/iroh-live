@@ -41,19 +41,19 @@ struct Local {
     /// Who this node's side is offered to.
     calls: Calls,
     sources: source::Opened,
-    output: Option<Speaker>,
+    speaker: Option<Speaker>,
     ticket: String,
 }
 
 /// Binds the endpoint, opens this node's side, and prints the ticket.
 async fn setup(args: &CallArgs) -> Result<Local> {
     // Opened first so the microphone can cancel its echo.
-    let output = crate::playback::output(None).await?;
+    let speaker = crate::playback::open_speaker(None).await?;
     let node = transport::bind_node(true).await?;
     let (node, (broadcast, calls, sources, ticket)) = transport::with_node(node, async |node| {
         // Published once, to nobody: each call offers it to its peer.
         let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(node, &LiveLayout::default())?;
-        let sources = source::configure(&broadcast, &args.capture, output.as_ref()).await?;
+        let sources = source::configure(&broadcast, &args.capture, speaker.as_ref()).await?;
         let ticket = LiveLayout::default().ticket(node.id(), CALL)?.to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
@@ -66,7 +66,7 @@ async fn setup(args: &CallArgs) -> Result<Local> {
         broadcast,
         calls,
         sources,
-        output,
+        speaker,
         ticket,
     })
 }

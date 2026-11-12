@@ -42,12 +42,12 @@ struct Options {
     playback: PlaybackArgs,
     /// Where the audio plays.
     #[debug(skip)]
-    output: Option<Speaker>,
+    speaker: Option<Speaker>,
 }
 
 impl Options {
-    /// Collects the options from `args`, with the audio on `output`.
-    fn new(args: &WatchArgs, output: Option<Speaker>) -> Self {
+    /// Collects the options from `args`, with the audio on `speaker`.
+    fn new(args: &WatchArgs, speaker: Option<Speaker>) -> Self {
         let rendition = match (args.no_video, &args.rendition) {
             // An unused video decoder would still cost a core.
             (true, _) => RenditionMode::Off,
@@ -58,7 +58,7 @@ impl Options {
             rendition,
             scan_camera: args.scan_camera.clone(),
             playback: args.playback,
-            output,
+            speaker,
         }
     }
 }
@@ -67,8 +67,8 @@ impl Options {
 pub(crate) fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     let start = start(&args)?;
 
-    let (node, output) = rt.block_on(setup(&args))?;
-    let options = Options::new(&args, output);
+    let (node, speaker) = rt.block_on(setup(&args))?;
+    let options = Options::new(&args, speaker);
 
     let ticket = match start {
         // eframe takes the main thread. The guard lets it spawn onto the runtime.
@@ -126,7 +126,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
     Ok(Start::Ticket(ticket))
 }
 
-/// Opens the audio output and binds the endpoint every subscription runs on.
+/// Opens the speaker and binds the endpoint every subscription runs on.
 ///
 /// # Errors
 ///
@@ -140,8 +140,8 @@ async fn setup(args: &WatchArgs) -> Result<(SharedNode, Option<Speaker>)> {
         let _ = args;
         None
     };
-    let output = crate::playback::output(device).await?;
-    Ok((transport::bind_node(false).await?, output))
+    let speaker = crate::playback::open_speaker(device).await?;
+    Ok((transport::bind_node(false).await?, speaker))
 }
 
 /// Connects to `ticket` and starts playing.
@@ -173,7 +173,7 @@ async fn connect(
     };
     let config = PlayerConfig {
         rendition: options.rendition.clone(),
-        ..crate::playback::player_config(&options.playback, options.output.as_ref())
+        ..crate::playback::player_config(&options.playback, options.speaker.as_ref())
     };
     crate::playback::open(sub, config).await
 }

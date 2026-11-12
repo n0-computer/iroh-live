@@ -36,7 +36,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
         broadcast,
         calls,
         sources,
-        output,
+        speaker,
         ticket,
     } = local;
     let teardown = Teardown::new(node).with_broadcast(broadcast.clone());
@@ -60,7 +60,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
             notice: None,
             local_video: sources.video,
             _local_audio: sources.audio,
-            output,
+            speaker,
             scan_camera: args.scan_camera,
             playback: args.playback,
             preview,
@@ -99,7 +99,7 @@ pub(super) struct CallApp {
     /// The local audio, kept alive with the window.
     pub(super) _local_audio: Option<AudioSource>,
     /// Where the peer's voice plays, and what the microphone cancels.
-    pub(super) output: Option<Speaker>,
+    pub(super) speaker: Option<Speaker>,
     pub(super) camera: Camera,
     /// The capture flags, kept to reopen the camera after a scan.
     pub(super) capture: CaptureArgs,
@@ -350,7 +350,7 @@ impl CallApp {
             self.calls.clone(),
             direction,
             self.playback,
-            self.output.clone(),
+            self.speaker.clone(),
         );
         let answer = Pending::spawn(ctx, attempt, |_| {
             info!("the call landed after it was given up on, dropping it");
@@ -398,7 +398,7 @@ pub(super) async fn reach(
     calls: Calls,
     direction: Direction,
     playback: PlaybackArgs,
-    output: Option<Speaker>,
+    speaker: Option<Speaker>,
 ) -> Answer {
     let peer = direction.peer();
     let placing = async {
@@ -418,7 +418,7 @@ pub(super) async fn reach(
         }
     };
     let sub = Subscribed::open(call.subscription().clone());
-    let config = crate::playback::player_config(&playback, output.as_ref());
+    let config = crate::playback::player_config(&playback, speaker.as_ref());
     match crate::playback::open(sub, config).await {
         Ok((sub, player)) => Answer::Connected(Box::new(Connected { call, sub, player })),
         Err(err) => Answer::Failed(format!("{err:#}")),

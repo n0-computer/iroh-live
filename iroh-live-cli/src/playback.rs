@@ -93,18 +93,18 @@ pub(crate) async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>>
     clippy::unused_async,
     reason = "a build without playback opens nothing, which is not async"
 )]
-pub(crate) async fn output(device: Option<String>) -> Result<Option<Speaker>> {
+pub(crate) async fn open_speaker(device: Option<String>) -> Result<Option<Speaker>> {
     #[cfg(feature = "playback")]
     {
         if let Some(device) = device {
-            let output = open_engine(device.clone()).await.map_err(|err| {
+            let speaker = open_engine(device.clone()).await.map_err(|err| {
                 anyerr!(
                     "cannot open audio output '{device}': {err:#}. \
                      Run `irl devices` for the ids this machine accepts"
                 )
             })?;
             info!(%device, "audio output selected");
-            return Ok(Some(output));
+            return Ok(Some(speaker));
         }
         let config = iroh_live::media::audio::playback::Config::default();
         match iroh_live::media::audio::playback::Engine::open(config).await {

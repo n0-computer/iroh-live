@@ -106,7 +106,7 @@ pub(crate) struct RecvConfig {
 
     /// Whether to play the audio: `default` or `none`.
     ///
-    /// All blocks share one output, so this cannot name a device.
+    /// All blocks share one speaker, so this cannot name a device.
     #[serde(default)]
     pub(crate) audio_output: AudioOutput,
 
@@ -167,7 +167,7 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
         .iter()
         .any(|recv| recv.audio_output == AudioOutput::Default)
     {
-        crate::playback::output(None).await?
+        crate::playback::open_speaker(None).await?
     } else {
         None
     };

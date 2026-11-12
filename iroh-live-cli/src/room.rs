@@ -46,7 +46,7 @@ struct Joined {
     broadcast: LocalBroadcast,
     sources: source::Opened,
     /// The speaker every participant plays on, and what the microphone cancels.
-    output: Option<Speaker>,
+    speaker: Option<Speaker>,
     room: Room,
     chat: chat::Writer,
     ticket: String,
@@ -56,7 +56,7 @@ struct Joined {
 /// Joins the room, publishes this node's camera, and prints the ticket.
 async fn setup(args: &RoomArgs) -> Result<Joined> {
     // Opened first so the microphone can cancel its echo.
-    let output = crate::playback::output(None).await?;
+    let speaker = crate::playback::open_speaker(None).await?;
     // Rooms always serve, since other participants dial in.
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(
@@ -68,7 +68,7 @@ async fn setup(args: &RoomArgs) -> Result<Joined> {
     let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
     let node = Arc::new(transport::Bound { node, router });
     let (_, joined) =
-        transport::with_node(node, async |node| join(node, &rooms, args, output).await).await?;
+        transport::with_node(node, async |node| join(node, &rooms, args, speaker).await).await?;
     Ok(joined)
 }
 
@@ -77,7 +77,7 @@ async fn join(
     node: &SharedNode,
     rooms: &Rooms,
     args: &RoomArgs,
-    output: Option<Speaker>,
+    speaker: Option<Speaker>,
 ) -> Result<Joined> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
     let display_name = args
@@ -87,7 +87,7 @@ async fn join(
     let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
     let broadcast: LocalBroadcast = room.publish(BROADCAST_NAME)?;
-    let sources = source::configure(&broadcast, &args.capture, output.as_ref()).await?;
+    let sources = source::configure(&broadcast, &args.capture, speaker.as_ref()).await?;
     let chat = chat::Writer::new(room.publish(chat::NAME)?)?;
 
     let ticket = room.ticket().to_string();
@@ -99,7 +99,7 @@ async fn join(
         node: node.clone(),
         broadcast,
         sources,
-        output,
+        speaker,
         room,
         chat,
         ticket,
@@ -168,7 +168,7 @@ mod window {
             node,
             broadcast,
             sources,
-            output,
+            speaker,
             room,
             chat,
             ticket,
@@ -204,7 +204,7 @@ mod window {
                     cc.wgpu_render_state.as_ref(),
                 ),
                 _sources: sources,
-                output,
+                speaker,
                 render_state: cc.wgpu_render_state.clone(),
                 playback,
             }
@@ -248,7 +248,7 @@ mod window {
         /// The sources this node publishes, held for the window's life.
         _sources: source::Opened,
         /// The speaker every peer plays on.
-        output: Option<Speaker>,
+        speaker: Option<Speaker>,
         render_state: Option<RenderState>,
         /// The playback flags for every peer's broadcast.
         playback: PlaybackArgs,
@@ -362,7 +362,7 @@ mod window {
                     remote,
                     name,
                     self.playback,
-                    self.output.clone(),
+                    self.speaker.clone(),
                 ));
             }
         }
@@ -630,9 +630,9 @@ mod window {
         remote: EndpointId,
         name: String,
         playback: PlaybackArgs,
-        output: Option<Speaker>,
+        speaker: Option<Speaker>,
     ) -> (EndpointId, String, Option<Opened>) {
-        let opened = open_inner(room, remote, &name, playback, output).await;
+        let opened = open_inner(room, remote, &name, playback, speaker).await;
         (remote, name, opened)
     }
 
@@ -642,9 +642,9 @@ mod window {
         remote: EndpointId,
         name: &str,
         playback: PlaybackArgs,
-        output: Option<Speaker>,
+        speaker: Option<Speaker>,
     ) -> Option<Opened> {
-        let config = crate::playback::player_config(&playback, output.as_ref());
+        let config = crate::playback::player_config(&playback, speaker.as_ref());
         // A member may announce a name it never publishes.
         let opened = tokio::time::timeout(PEER_TIMEOUT, async {
             let subscription = room.subscribe(remote, name).await?;
