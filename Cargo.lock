@@ -4470,6 +4470,7 @@ dependencies = [
  "iroh",
  "iroh-live-node",
  "moq-ext-access",
+ "moq-json",
  "moq-net",
  "moq-tokio",
  "moq-transport-iroh",

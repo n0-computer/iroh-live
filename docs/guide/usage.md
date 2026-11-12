@@ -490,6 +490,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Frames are bytes, so the format is yours. The route table, the audiences and the
 grants apply as they do for media.
 
+For state where a reader wants only the newest value, such as a setting or a
+status, `Node::publish_value::<T>(path, audience, name)` publishes a
+latest-value JSON track, and `Subscription::value_track::<T>(name)` reads it:
+`latest()` skips to the newest value, and a late reader gets the current one at
+once. `LocalBroadcast::value_track` puts such a track next to the video and
+audio. Create it in the fill of `Node::publish_with`, so it exists before
+anyone can ask for it.
+
 ## Without a layout
 
 `LiveLayout` is a convenience over `Node`. A program with its own path layout or

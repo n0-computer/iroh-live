@@ -16,6 +16,8 @@ derive_more = { version = "2.1.1", features = ["display", "debug"] }
 data-encoding = "2.11.1"
 iroh = { workspace = true }
 moq-net = { workspace = true }
+# Latest-value JSON tracks, for `Node::publish_value` and `Subscription::value_track`.
+moq-json = { workspace = true }
 moq-ext-access = { workspace = true }
 moq-transport-iroh = { workspace = true }
 # Relay links over QUIC and WebTransport (`https://`, `moqt://`, `moql://`).

@@ -105,6 +105,8 @@ pub mod test_util;
 mod ticket;
 
 pub use moq_ext_access::{Layout, LinkKind};
+/// Typed JSON tracks, as [`Node::publish_value`] and [`Subscription::value_track`] use them.
+pub use moq_json as json;
 /// The moq-net this crate builds against.
 pub use moq_net;
 use moq_transport_iroh as transport;

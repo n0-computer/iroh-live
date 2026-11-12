@@ -148,23 +148,24 @@ pub use iroh_live_rooms as rooms;
 /// [`stream`](json::stream) is the lossless log, for records that must all
 /// arrive.
 ///
-/// This publishes a latency in milliseconds and reads it back:
+/// [`Node::publish_value`] publishes a broadcast with one latest-value track,
+/// and [`Subscription::value_track`] reads it. A track next to media goes
+/// through `LocalBroadcast::value_track`, and any other through
+/// [`snapshot::Producer::new`](json::snapshot::Producer::new) on a track of
+/// your own. This publishes a latency in milliseconds and reads it back:
 ///
 /// ```no_run
-/// use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, moq_net::track};
+/// use iroh_live::{Audience, Node, Reach, layout::LiveLayout};
 ///
 /// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
 /// let path = LiveLayout::default().path(node.id(), "control")?;
-/// let (_publication, track) = node.publish_with(path.clone(), Audience::Granted, |producer| {
-///     producer.create_track("latency", track::Info::default())
-/// })?;
-/// let mut latency = snapshot::Producer::<u64>::new(track, snapshot::Config::default());
+/// let (_publication, mut latency) =
+///     node.publish_value::<u64>(path.clone(), Audience::Granted, "latency")?;
 /// latency.update(&150)?;
 ///
 /// // On another node.
 /// let subscription = other.subscribe(&path, Reach::Direct(node.id())).await?;
-/// let track = subscription.broadcast().track("latency")?;
-/// let mut latency = snapshot::Consumer::<u64>::new(track, Default::default());
+/// let mut latency = subscription.value_track::<u64>("latency")?;
 /// while let Some(newest) = latency.latest().await? {
 ///     println!("latency {} ms", newest.value);
 /// }

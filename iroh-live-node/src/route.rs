@@ -18,12 +18,14 @@ use moq_net::{
 };
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
+use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
     BroadcastTicket, Error, LinkId, Node, PathClaim, Reach, ServingLink, Session,
     handshake::Hop,
+    json,
     node::Shared,
     publish::check_path,
     state::{LinkEntry, State},
@@ -173,6 +175,45 @@ impl Subscription {
     #[must_use]
     pub fn broadcast(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()
+    }
+
+    /// Returns a reader of the latest-value JSON track `name` of the broadcast.
+    ///
+    /// The publisher writes it with [`Node::publish_value`] or a
+    /// [`json::snapshot::Producer`] of its own. The reader skips to the newest
+    /// value with [`latest`](json::snapshot::Consumer::latest), and a late
+    /// reader gets the current value at once. For a reader with other limits,
+    /// pass [`broadcast`](Self::broadcast)`().track(name)` to
+    /// [`json::snapshot::Consumer::new`] with a config of its own.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::Moq`] when the broadcast has ended, or when a local
+    /// broadcast has no track `name`. A remote publisher answers for its
+    /// tracks itself, so there a missing track fails the first read instead.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run(subscription: iroh_live_node::Subscription)
+    /// # -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut latency = subscription.value_track::<u64>("latency")?;
+    /// while let Some(newest) = latency.latest().await? {
+    ///     println!("latency {} ms", newest.value);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn value_track<T: DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Result<json::snapshot::Consumer<T>, Error> {
+        let track = self
+            .broadcast()
+            .track(name)
+            .map_err(|source| e!(Error::Moq { source }))?;
+        debug!(path = %self.inner.path, track = name, "reading value track");
+        Ok(json::snapshot::Consumer::new(track, Default::default()))
     }
 
     /// Returns the session serving the broadcast now, if a direct session does.

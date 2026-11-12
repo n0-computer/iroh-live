@@ -15,7 +15,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
-use moq_net::{Path, broadcast, origin};
+use moq_net::{Path, broadcast, origin, track};
 use n0_error::{AnyError, e};
 use n0_future::{Stream, StreamExt, stream, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
@@ -23,12 +23,15 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
+use serde::Serialize;
+
 use crate::{
     Audience, BroadcastTicket, ConnectOptions, Error, Grant, Layout, LinkId, Publication,
     RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission,
     handshake::{Hop, SessionParts},
+    json,
     policy::{self, Authorization, DynPolicy, Policy},
     publish, reauth, relay, route,
     state::State,
@@ -404,6 +407,51 @@ impl Node {
         let path = crate::error::to_path(path)?;
         self.warn_if_unreachable(&path);
         publish::publish(&self.shared, path, audience, fill)
+    }
+
+    /// Publishes a broadcast at `path` whose one track `name` holds a latest-value JSON track.
+    ///
+    /// For state such as a setting, a status or a result: each
+    /// [`update`](json::snapshot::Producer::update) replaces the value, and
+    /// a reader that subscribes late gets the current one at once. The track
+    /// exists before the broadcast is announced, so no reader misses it.
+    /// Readers open it with [`Subscription::value_track`]. To put the track
+    /// next to others, create it in [`publish_with`](Self::publish_with)'s
+    /// fill and pass it to [`json::snapshot::Producer::new`].
+    ///
+    /// # Errors
+    ///
+    /// As [`publish_with`](Self::publish_with).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn run(node: iroh_live_node::Node) -> Result<(), Box<dyn std::error::Error>> {
+    /// use iroh_live_node::Audience;
+    ///
+    /// let (_publication, mut latency) =
+    ///     node.publish_value::<u64>("live/control", Audience::Granted, "latency")?;
+    /// latency.update(&150)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn publish_value<T: Serialize>(
+        &self,
+        path: impl TryInto<Path, Error: Into<moq_net::Error>>,
+        audience: Audience,
+        name: &str,
+    ) -> Result<(Publication, json::snapshot::Producer<T>), Error> {
+        self.publish_with(path, audience, |broadcast| {
+            let track = broadcast.create_track(name, track::Info::default())?;
+            Ok::<_, moq_net::Error>(json::snapshot::Producer::new(
+                track,
+                json::snapshot::Config::default(),
+            ))
+        })
     }
 
     /// Warns once if no peer can connect to the node to read `path`.

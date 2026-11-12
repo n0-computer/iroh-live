@@ -347,6 +347,52 @@ async fn offers_show_in_the_route_table() {
     carol.shutdown().await;
 }
 
+/// A value published with `publish_value` reaches a late reader of `value_track`, then each update.
+#[tokio::test]
+#[traced_test]
+async fn a_value_track_gives_a_late_reader_the_newest_value() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let (_publication, mut writer) = alice
+        .node
+        .publish_value::<String>(alice.path("status"), Audience::Granted, "status")
+        .expect("publish");
+    for status in ["starting", "ready"] {
+        writer.update(&status.to_owned()).expect("write");
+    }
+
+    let subscription = step(
+        "subscribe",
+        bob.node
+            .subscribe(alice.path("status"), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
+    let mut reader = subscription
+        .value_track::<String>("status")
+        .expect("the track");
+    let mut read = async || {
+        step("a value", reader.latest())
+            .await
+            .expect("a readable track")
+            .expect("the track is open")
+            .value
+    };
+    assert_eq!(read().await, "ready", "the newest value, not an older one");
+    writer.update(&"busy".to_owned()).expect("write");
+    assert_eq!(read().await, "busy");
+
+    // The publisher answers for a remote track, so a missing one fails on read.
+    let mut missing = subscription
+        .value_track::<String>("missing")
+        .expect("a lazy track");
+    let read = step("the missing track's answer", missing.latest()).await;
+    assert!(read.is_err(), "a track nobody publishes read {read:?}");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
 /// Unpublishing takes the path away from peers, and says so on the publication.
 #[tokio::test]
 #[traced_test]
