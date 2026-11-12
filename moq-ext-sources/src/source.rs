@@ -17,7 +17,10 @@ use tracing::{debug, warn};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
-pub use self::sender::{Demand, DemandGuard, FrameSender, PcmFanout, WeakPcmFanout};
+pub use self::{
+    sender::{Demand, DemandGuard, FrameSender, PcmFanout, WeakPcmFanout},
+    switch::VideoSwitch,
+};
 use crate::{
     Error, audio,
     frames::{FrameReader, FrameSlot, VideoFrames},
@@ -33,6 +36,7 @@ mod generator;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 mod rpicam;
 mod sender;
+mod switch;
 
 /// How many PCM frames a broadcast may lag before it loses the oldest.
 ///

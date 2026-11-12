@@ -21,7 +21,8 @@ let audio = AudioSource::test_pattern(layout)?;
 ```
 
 Also available: `VideoSource::push` and `AudioSource::push` for frames the
-application makes. `LocalBroadcast::set_encoded_video` takes a stream of
+application makes. `VideoSource::switchable` returns a source and a `VideoSwitch`
+that swaps or opens what feeds it while a broadcast encodes it. `LocalBroadcast::set_encoded_video` takes a stream of
 Annex-B H.264 that needs no encoder, such as the one `rpicam_h264` returns. The crate docs list every constructor.
 
 `VideoSource::capture` waits up to three seconds for a camera dropped before

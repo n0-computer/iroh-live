@@ -24,6 +24,7 @@
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
 //! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
+//! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
 //! The crate README lists every feature flag. [`local_task::spawn`] runs a
 //! future on a thread of its own for capture streams that are not `Send`.
@@ -79,7 +80,7 @@ pub use self::{
     frames::VideoFrames,
     source::{
         AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FrameSender, PcmFanout,
-        VideoFormat, VideoSource, WeakPcmFanout,
+        VideoFormat, VideoSource, VideoSwitch, WeakPcmFanout,
     },
     status::{ByPtr, SlotState, send_if_changed},
 };

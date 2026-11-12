@@ -1,9 +1,10 @@
 //! Switching the source of a published video while a player plays it.
 //!
-//! An application switches sources in one of two ways. It pushes the frames of
-//! whatever source is selected into one pushed source, as a GPU application
-//! does, or it calls `LocalBroadcast::set_video` with the new source. Either
-//! way the player must go on with the new pictures within a keyframe or so.
+//! An application switches sources in one of three ways. It pushes the frames
+//! of whatever source is selected into one pushed source, as a GPU application
+//! does, it swaps the input of a `VideoSource::switchable` source, or it calls
+//! `LocalBroadcast::set_video` with the new source. Either way the player must
+//! go on with the new pictures within a keyframe or so.
 //! The helpers in `moq_ext_player::test_util` explain how a switch is timed.
 
 use std::{
@@ -298,4 +299,53 @@ async fn prints_the_switch_latency() {
             );
         }
     }
+}
+
+/// A switchable source swaps its input behind one `set_video`, opening the next source in the background.
+#[tokio::test]
+async fn a_switchable_source_plays_each_source_it_switches_to() {
+    let (switch, source) = VideoSource::switchable(VideoFormat {
+        size: SD,
+        rate: fps(30),
+    });
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(source, single(Some(SD)))
+        .expect("a valid encoding");
+    let (_player, mut frames) = play(&broadcast);
+
+    let (pattern, pattern_source) = VideoSource::push(VideoFormat {
+        size: SD,
+        rate: fps(30),
+    });
+    let _pattern = feed(pattern, PATTERN);
+    switch.replace(pattern_source);
+    shows(
+        &mut frames,
+        PATTERN.0,
+        ready(Instant::now()),
+        FIRST_PICTURE_TIMEOUT,
+        "first pattern",
+    )
+    .await;
+
+    // The camera opens in the background, as `VideoSource::capture` would.
+    let start = first_published(&broadcast);
+    switch.open(async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (camera, camera_source) = VideoSource::push(VideoFormat {
+            size: HD,
+            rate: fps(25),
+        });
+        // The feed stops with its source, once the switch drops it.
+        std::mem::forget(feed(camera, CAMERA));
+        Ok(camera_source)
+    });
+    // The rendition scales the camera's larger frames to its own size.
+    let scaled = Look {
+        size: SD,
+        ..CAMERA.0
+    };
+    shows(&mut frames, scaled, start, SWITCH_TIMEOUT, "the camera").await;
+    assert_eq!(*switch.status().borrow(), SlotState::Running);
 }

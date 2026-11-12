@@ -46,6 +46,18 @@ previews can read it.
 application camera can idle while nobody watches. `push` returns `SourceClosed`
 once the source is gone, and the producing loop should stop then.
 
+`switchable(format)` returns a source and a `VideoSwitch` that swaps what
+feeds it, for a camera menu. The broadcast encodes the switchable source once,
+and a forwarding task per input copies the current input's frames into its
+slot, keeping each frame's `sent_at`, and passes the broadcast's demand back
+to the input. `replace(source)` swaps at once, `open(future)` opens the next
+source in the background and drops one still opening, and `clear()` stops
+feeding. The previous source is dropped first, so the same camera opens again.
+`status()` watches a `SlotState`: `Starting` while an open runs, then
+`Running`, `Failed` or `Ended`. Unlike a second `set_video`, a switch neither
+probes encoders again nor needs the ladder at hand; the broadcast sees one
+source whose timeline breaks, and starts a group there.
+
 `set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
 encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
