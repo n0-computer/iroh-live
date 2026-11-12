@@ -1,10 +1,10 @@
 //! Shared transport setup: binding, subscribing, and advertising.
 
-use std::{sync::Arc, time::Duration};
+use std::{ops::Deref, sync::Arc, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BoundNode, BroadcastTicket, EndpointConfig, Mdns, Node, Session, Subscription,
+    BroadcastTicket, EndpointConfig, Mdns, Node, Session, Subscription,
     layout::LiveLayout,
     media::{RemoteBroadcast, remote_broadcast},
     node::{RelayConfig, RelayLink},
@@ -27,10 +27,42 @@ pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// publisher is normal.
 const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
-/// A live node, and the router that accepts its sessions if it serves.
+/// A live node and the router on its endpoint.
 ///
 /// Shared by the windows of a command, and shut down by whichever ends it.
-pub(crate) type SharedNode = Arc<BoundNode>;
+pub(crate) type SharedNode = Arc<Bound>;
+
+/// A node and its router, which accepts the node's sessions if it serves.
+///
+/// A node that does not serve gets a router with nothing mounted, so that
+/// [`shutdown`](Self::shutdown) closes the endpoint either way.
+#[derive(Debug)]
+pub(crate) struct Bound {
+    pub(crate) node: Node,
+    pub(crate) router: Router,
+}
+
+impl Bound {
+    /// Shuts the node down, then the router and the endpoint.
+    pub(crate) async fn shutdown(&self) {
+        // The router shuts down only the handlers mounted on it.
+        self.node.shutdown().await;
+        if let Err(err) = self.router.shutdown().await {
+            warn!(
+                error = format_args!("{err:#}"),
+                "the router failed to shut down"
+            );
+        }
+    }
+}
+
+impl Deref for Bound {
+    type Target = Node;
+
+    fn deref(&self) -> &Node {
+        &self.node
+    }
+}
 
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
@@ -49,14 +81,19 @@ pub(crate) async fn bind_node_with(config: EndpointConfig, serve: bool) -> Resul
     let mdns = if serve { Mdns::Announce } else { Mdns::Lookup };
     let endpoint = EndpointConfig { mdns, ..config }.bind().await?;
     let node = Node::new(endpoint.clone(), LiveLayout::default().config());
-    let router = serve.then(|| node.mount(Router::builder(endpoint)).spawn());
-    Ok(Arc::new(BoundNode::new(node, router)))
+    let router = Router::builder(endpoint);
+    let router = match serve {
+        true => node.mount(router),
+        false => router,
+    };
+    let router = router.spawn();
+    Ok(Arc::new(Bound { node, router }))
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.
 ///
-/// A [`BoundNode`] dropped without [`BoundNode::shutdown`] shuts down in the
-/// background, which a command that exits right after does not wait for.
+/// A [`Bound`] dropped without [`Bound::shutdown`] leaves its peers to time
+/// out.
 pub(crate) async fn with_node<T>(
     transport: SharedNode,
     setup: impl AsyncFnOnce(&SharedNode) -> Result<T>,

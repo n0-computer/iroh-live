@@ -121,13 +121,12 @@ mod app {
         // The ticket has no addresses. The viewer finds the publisher through
         // the same lookups it announces to: pkarr and DNS, plus mDNS on a
         // network without internet.
-        let bound = iroh_live::BoundNode::bind(
-            iroh_live::EndpointConfig::from_env()?,
-            LiveLayout::default().config(),
-        )
-        .await?;
-        let result = watch_with(bound.node(), opts).await;
-        bound.shutdown().await;
+        let endpoint = iroh_live::EndpointConfig::from_env()?.bind().await?;
+        // Only dials, so it needs no router.
+        let node = Node::new(endpoint.clone(), LiveLayout::default().config());
+        let result = watch_with(&node, opts).await;
+        node.shutdown().await;
+        endpoint.close().await;
         result
     }
 

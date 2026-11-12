@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 use clap::Parser;
-use iroh::EndpointId;
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BoundNode, EndpointConfig, RelayConfig,
+    EndpointConfig, Node, RelayConfig,
     layout::LiveLayout,
     media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
 };
@@ -58,10 +58,10 @@ pub(crate) struct PublishOpts {
 pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // The ticket carries only the endpoint id. A viewer on the same network
     // finds the Pi over mDNS, a viewer elsewhere over pkarr and DNS.
-    // The router in it accepts the viewers that dial the Pi directly.
-    let bound =
-        BoundNode::bind(EndpointConfig::from_env()?, LiveLayout::default().config()).await?;
-    let node = bound.node();
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
+    let node = &Node::new(endpoint.clone(), LiveLayout::default().config());
+    // Accepts the viewers that dial the Pi directly.
+    let router = node.mount(Router::builder(endpoint)).spawn();
 
     // Published while `broadcast` lives.
     let broadcast: LocalBroadcast = LiveLayout::default().publish(node, opts.name.as_str())?;
@@ -162,7 +162,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
 
     broadcast.close();
     broadcast.closed().await;
-    // Also closes the endpoint.
-    bound.shutdown().await;
+    // Shuts the node down, then closes the endpoint.
+    router.shutdown().await.std_context("shutting down")?;
     Ok(())
 }

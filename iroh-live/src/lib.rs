@@ -90,11 +90,10 @@ router.shutdown().await?;
 //! | Future | Safe | Dropping it |
 //! |---|---|---|
 //! | [`EndpointConfig::bind`] | yes | nothing is bound |
-//! | [`BoundNode::bind`] | yes | nothing is bound |
 //! | [`Node::subscribe`], [`Node::subscribe_ticket`] | yes | abandons the wait, and a dial it started continues for other callers |
 //! | [`calls::Calls::call`], [`calls::Calls::answer`] | yes | hangs up |
 //! | [`EndpointConfig::apply`] | yes | the builder is lost, nothing is bound |
-//! | [`Node::shutdown`], [`BoundNode::shutdown`] | no, idempotent | call again to finish |
+//! | [`Node::shutdown`] | no, idempotent | call again to finish |
 //!
 //! [`Node::shutdown`] does not close the endpoint. Whoever binds it closes
 //! it, directly or through `Router::shutdown`.
@@ -110,7 +109,6 @@ router.shutdown().await?;
 //! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
 //! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
 
-mod app;
 pub mod calls;
 mod endpoint;
 mod error;
@@ -178,7 +176,6 @@ pub use iroh_live_rooms as rooms;
 pub use moq_json as json;
 
 pub use self::{
-    app::BoundNode,
     endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
     error::Error,
 };

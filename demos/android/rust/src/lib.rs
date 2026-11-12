@@ -22,8 +22,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use iroh::protocol::Router;
 use iroh_live::{
-    BoundNode, BroadcastTicket, EndpointConfig,
+    BroadcastTicket, EndpointConfig, Node,
     calls::{CALL, Call, CallEvent, Calls},
     layout::LiveLayout,
     media::{
@@ -112,10 +113,14 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Binds the endpoint for a screen, with the key from `IROH_SECRET` if set.
 ///
-/// Returns the node with the router that accepts its peers. The demo stores
+/// Returns the node and the router that accepts its peers. Shutting the
+/// router down shuts the node down and closes the endpoint. The demo stores
 /// no key, so without `IROH_SECRET` every screen gets a new endpoint id.
-async fn bind_node() -> Result<BoundNode> {
-    Ok(BoundNode::bind(EndpointConfig::from_env()?, LiveLayout::default().config()).await?)
+async fn bind_node() -> Result<(Node, Router)> {
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config());
+    let router = node.mount(Router::builder(endpoint)).spawn();
+    Ok((node, router))
 }
 
 /// Plays the side of the peer that `call` reached.
@@ -128,10 +133,11 @@ fn play_call(call: &Call, output: Option<&Engine>) -> Result<Player> {
 /// It is shared behind a mutex because the render, camera and UI threads call
 /// in concurrently.
 struct SessionHandle {
-    /// The node, its endpoint and the router that accepts its peers.
+    /// The router that accepts the node's peers.
     ///
-    /// `None` for the offline pipelines. Shutting it down closes the endpoint.
-    node: Option<BoundNode>,
+    /// `None` for the offline pipelines. Shutting it down shuts the node
+    /// down and closes the endpoint.
+    router: Option<Router>,
     /// The call, once it is up. Dropping it hangs up.
     call: Option<Call>,
     /// Playback of the watched broadcast. Dropping it stops decoding and audio.
@@ -175,7 +181,7 @@ impl SessionHandle {
     /// Creates an empty handle.
     fn new() -> Self {
         Self {
-            node: None,
+            router: None,
             call: None,
             player: None,
             _output: None,
@@ -346,10 +352,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
 async fn connect_impl(ticket: String) -> Result<jlong> {
     let ticket: BroadcastTicket = ticket.parse().context("failed to parse ticket")?;
 
-    let bound = bind_node().await?;
+    let (node, router) = bind_node().await?;
     info!(broadcast = %ticket.path(), "connecting to broadcast");
 
-    let subscription = bound.node().subscribe_ticket(&ticket).await?;
+    let subscription = node.subscribe_ticket(&ticket).await?;
     info!("subscribed");
 
     // The player waits for the catalog on its own, so the handle is usable
@@ -362,7 +368,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     session.frames = Some(player.video_frames());
     session.player = Some(player);
     session._output = output;
-    session.node = Some(bound);
+    session.router = Some(router);
     Ok(register(session.into_shared()))
 }
 
@@ -397,13 +403,12 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     info!(%ticket, %size, "parsing call ticket");
     let ticket: BroadcastTicket = ticket.parse().context("failed to parse call ticket")?;
 
-    let bound = bind_node().await?;
-    info!(id = %bound.node().endpoint().id().fmt_short(), "endpoint ready");
+    let (node, router) = bind_node().await?;
+    info!(id = %node.endpoint().id().fmt_short(), "endpoint ready");
 
     let output = speaker().await;
     // Published to nobody, then offered to the peer.
-    let (calls, broadcast): (Calls, LocalBroadcast) =
-        Calls::new(bound.node(), &LiveLayout::default())?;
+    let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(&node, &LiveLayout::default())?;
     let (camera, _preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, output.as_ref()).await;
 
@@ -422,7 +427,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
     session.call = Some(call);
-    session.node = Some(bound);
+    session.router = Some(router);
     Ok(register(session.into_shared()))
 }
 
@@ -452,15 +457,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
 /// Publishes this side of a call and returns a session that waits for the caller.
 async fn answer_impl(size: Size) -> Result<jlong> {
     info!(%size, "waiting for a call");
-    let bound = bind_node().await?;
-    let id = bound.node().endpoint().id();
+    let (node, router) = bind_node().await?;
+    let id = node.endpoint().id();
     info!(id = %id.fmt_short(), "endpoint ready");
 
     // Start the camera now, so the preview runs while the ticket is on screen
     // and the peer's first frame does not wait for the device to open.
     let output = speaker().await;
-    let (calls, broadcast): (Calls, LocalBroadcast) =
-        Calls::new(bound.node(), &LiveLayout::default())?;
+    let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(&node, &LiveLayout::default())?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     set_microphone(&broadcast, output.as_ref()).await;
 
@@ -468,13 +472,9 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.frames = Some(preview);
     session._output = output.clone();
     session.camera = Some(camera);
-    session.ticket = Some(
-        LiveLayout::default()
-            .ticket(bound.node().id(), CALL)?
-            .to_string(),
-    );
+    session.ticket = Some(LiveLayout::default().ticket(node.id(), CALL)?.to_string());
     session.broadcast = Some(broadcast);
-    session.node = Some(bound);
+    session.router = Some(router);
     let shared = session.into_shared();
 
     // The task holds a `Weak`. A strong reference would keep the handle, and
@@ -570,17 +570,15 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
 /// Publishes camera and microphone under `name` and returns the new session.
 async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     info!(%name, %size, "publishing broadcast");
-    let bound = bind_node().await?;
-    info!(id = %bound.node().endpoint().id().fmt_short(), "endpoint ready");
+    let (node, router) = bind_node().await?;
+    info!(id = %node.endpoint().id().fmt_short(), "endpoint ready");
 
-    let broadcast: LocalBroadcast = LiveLayout::default().publish(bound.node(), &name)?;
+    let broadcast: LocalBroadcast = LiveLayout::default().publish(&node, &name)?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     // A publish-only session plays no sound, so there is no echo to cancel.
     set_microphone(&broadcast, None).await;
 
-    let ticket = LiveLayout::default()
-        .ticket(bound.node().id(), &name)?
-        .to_string();
+    let ticket = LiveLayout::default().ticket(node.id(), &name)?.to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();
@@ -588,7 +586,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     session.camera = Some(camera);
     session.ticket = Some(ticket);
     session.broadcast = Some(broadcast);
-    session.node = Some(bound);
+    session.router = Some(router);
     Ok(register(session.into_shared()))
 }
 
@@ -1165,7 +1163,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     };
     // Release the lock before `block_on`. Holding it would stall every other
     // JNI call on this handle until the endpoint closes.
-    let (waiting, player, call, broadcast, bound) = {
+    let (waiting, player, call, broadcast, router) = {
         let mut guard = session.lock().expect("poisoned");
         guard.closing = true;
         (
@@ -1173,7 +1171,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
             guard.player.take(),
             guard.call.take(),
             guard.broadcast.take(),
-            guard.node.take(),
+            guard.router.take(),
         )
     };
     runtime().block_on(async move {
@@ -1187,8 +1185,13 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
             broadcast.closed().await;
         }
         // Closes the sessions, then the endpoint.
-        if let Some(bound) = bound {
-            bound.shutdown().await;
+        if let Some(router) = router
+            && let Err(err) = router.shutdown().await
+        {
+            warn!(
+                error = format_args!("{err:#}"),
+                "the router failed to shut down"
+            );
         }
     });
     info!("disconnected");
