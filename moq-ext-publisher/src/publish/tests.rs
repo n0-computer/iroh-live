@@ -196,3 +196,34 @@ async fn a_watched_rendition_counts_its_frames() {
     .expect("the rendition counts its frames");
     assert!(sent().bytes > 0);
 }
+
+/// A value track carries its newest value to a reader, and refuses a taken name and a closed broadcast.
+#[tokio::test]
+async fn a_value_track_reaches_a_reader_of_the_broadcast() {
+    let broadcast = LocalBroadcast::new();
+    let mut writer = broadcast.value_track::<u32>("control").expect("a new name");
+    writer.update(&30).expect("write");
+    writer.update(&60).expect("write");
+
+    let track = broadcast.consume().track("control").expect("the track");
+    let mut reader = moq_json::snapshot::Consumer::<u32>::new(track, Default::default());
+    let newest = tokio::time::timeout(TIMEOUT, reader.latest())
+        .await
+        .expect("a value in time")
+        .expect("a readable track")
+        .expect("the track is open");
+    assert_eq!(newest.value, 60, "the newest value, not an older one");
+
+    assert!(
+        broadcast.value_track::<u32>("control").is_err(),
+        "a second track took a taken name"
+    );
+    broadcast.close();
+    assert!(
+        matches!(
+            broadcast.value_track::<u32>("other"),
+            Err(Error::Closed { .. })
+        ),
+        "a closed broadcast took a track"
+    );
+}

@@ -581,6 +581,49 @@ impl LocalBroadcast {
         Ok(())
     }
 
+    /// Creates a latest-value JSON track `name` in the broadcast, next to the media.
+    ///
+    /// For a setting or a status that rides along with the video and audio:
+    /// each [`update`](moq_json::snapshot::Producer::update) replaces the
+    /// value, and a reader that subscribes late gets the current one at
+    /// once. A reader that asks for the track before it exists does not
+    /// find it, so create it before the broadcast is announced, for example
+    /// in the fill of `iroh_live_node::Node::publish_with`.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::Closed`] after [`close`](Self::close), and with
+    /// [`Error::Broadcast`] if the broadcast already has a track `name`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use moq_ext_publisher::LocalBroadcast;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let broadcast = LocalBroadcast::new();
+    /// let mut control = broadcast.value_track::<u32>("control")?;
+    /// control.update(&30)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn value_track<T: serde::Serialize>(
+        &self,
+        name: &str,
+    ) -> Result<moq_json::snapshot::Producer<T>, Error> {
+        self.check_open()?;
+        let track = self
+            .shared
+            .producer
+            .create_track(name, moq_net::track::Info::default())
+            .map_err(Error::broadcast)?;
+        debug!(parent: &self.shared.span, track = name, "value track created");
+        Ok(moq_json::snapshot::Producer::new(
+            track,
+            moq_json::snapshot::Config::default(),
+        ))
+    }
+
     /// Stops publishing video.
     pub fn clear_video(&self) {
         self.clear(Medium::Video);
