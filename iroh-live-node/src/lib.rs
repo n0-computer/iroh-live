@@ -31,6 +31,7 @@
 //! - [`Node`]: the node. Mount it on a [`Router`](iroh::protocol::Router) with
 //!   [`Node::mount`].
 //! - [`Publication`]: a published broadcast. Its [`Audience`] says who sees it.
+//!   [`Publication::unpublish_on_drop`] scopes it to a guard.
 //! - [`Subscription`]: a path resolved in the route table.
 //! - [`Session`]: a direct session with a peer. Its [`Grant`] says what the
 //!   peer may subscribe to and publish.
@@ -115,7 +116,7 @@ pub use self::{
     error::Error,
     link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
-    publish::{Audience, Publication},
+    publish::{Audience, Publication, UnpublishOnDrop},
     relay::{RelayConfig, RelayLink, RelayStatus, TokenFn},
     route::Subscription,
     session::Session,

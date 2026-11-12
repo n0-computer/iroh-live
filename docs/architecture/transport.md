@@ -76,7 +76,9 @@ runs before the node takes its lock, so it may fail or call back into the
 node without harm.
 `LiveLayout::publish` builds a `LocalBroadcast` in it this way. A
 publication stays until `unpublish`, until its broadcast closes, or until the
-node shuts down.
+node shuts down. Dropping its handles does not withdraw it, so a publication
+that belongs to a task goes through `Publication::unpublish_on_drop`, whose
+guard unpublishes it when the task ends or is aborted.
 
 Who sees a publication is moq's per-session authorization
 (`moq_net::auth::Handle::authorize`), which every session enforces locally, on

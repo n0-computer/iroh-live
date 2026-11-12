@@ -38,7 +38,8 @@ pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 ///
 /// Cheap to clone. The publication stays until [`unpublish`](Self::unpublish),
 /// until its broadcast closes, or until the node shuts down. Dropping the
-/// handles leaves it in place.
+/// handles leaves it in place; [`unpublish_on_drop`](Self::unpublish_on_drop)
+/// ties it to a scope instead.
 ///
 /// # Examples
 ///
@@ -167,6 +168,70 @@ impl Publication {
             .remove_publication(self.inner.id);
         if let Some(entry) = removed {
             info!(path = %entry.path, "unpublished");
+        }
+    }
+
+    /// Returns a guard that unpublishes the publication when it drops.
+    ///
+    /// For a publication that belongs to a task: when the task ends or is
+    /// aborted, the path is free again, and a later publish there does not
+    /// fail with [`Error::Duplicate`]. The guard unpublishes even while other
+    /// clones of the publication live. [`UnpublishOnDrop::disarm`] gives the
+    /// publication back without unpublishing.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn run(node: iroh_live_node::Node) -> Result<(), iroh_live_node::Error> {
+    /// use iroh_live_node::Audience;
+    ///
+    /// let publication = node
+    ///     .publish("live/results", Audience::Granted)?
+    ///     .unpublish_on_drop();
+    /// let _track = publication.broadcast().create_track("result", None);
+    /// // Leaving the scope unpublishes `live/results`.
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn unpublish_on_drop(self) -> UnpublishOnDrop {
+        UnpublishOnDrop {
+            publication: self,
+            armed: true,
+        }
+    }
+}
+
+/// A [`Publication`] that is unpublished when this guard drops.
+///
+/// Returned by [`Publication::unpublish_on_drop`]. Derefs to the publication.
+#[derive(Debug)]
+#[must_use = "dropping the guard unpublishes the publication at once"]
+pub struct UnpublishOnDrop {
+    publication: Publication,
+    armed: bool,
+}
+
+impl UnpublishOnDrop {
+    /// Returns the publication, which then stays published when the guard drops.
+    pub fn disarm(mut self) -> Publication {
+        self.armed = false;
+        self.publication.clone()
+    }
+}
+
+impl std::ops::Deref for UnpublishOnDrop {
+    type Target = Publication;
+
+    fn deref(&self) -> &Publication {
+        &self.publication
+    }
+}
+
+impl Drop for UnpublishOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            debug!(path = %self.publication.path(), "guard dropped, unpublishing");
+            self.publication.unpublish();
         }
     }
 }
@@ -395,6 +460,36 @@ mod tests {
             check("live/a*b/cam"),
             Err(Error::InvalidPath { .. })
         ));
+    }
+
+    /// Dropping the guard frees the path, and a disarmed guard leaves it published.
+    #[tokio::test]
+    async fn the_unpublish_guard_frees_the_path_unless_disarmed() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");
+        let node = Node::new(endpoint.clone(), NodeConfig::default());
+        let path = "live/test/results";
+
+        let guard = node
+            .publish(path, Audience::Granted)
+            .expect("publish")
+            .unpublish_on_drop();
+        let publication = Publication::clone(&guard);
+        drop(guard);
+        assert!(publication.is_withdrawn(), "the guard did not unpublish");
+
+        let kept = node
+            .publish(path, Audience::Granted)
+            .expect("the path is free again")
+            .unpublish_on_drop()
+            .disarm();
+        assert!(!kept.is_withdrawn(), "disarming unpublished");
+        let err = node
+            .publish(path, Audience::Granted)
+            .expect_err("the disarmed publication still holds the path");
+        assert!(matches!(err, Error::Duplicate { .. }), "{err:#}");
+
+        node.shutdown().await;
+        endpoint.close().await;
     }
 
     /// A peers task that `set_audience` replaced cannot write its old set back.
