@@ -39,7 +39,8 @@
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
 //! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
-//! session itself, with its raw statistics.
+//! session itself, with its raw statistics, and [`Session::connection`] the
+//! iroh connection, with its paths.
 //!
 //! # Trust and grants
 //!

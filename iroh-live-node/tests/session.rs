@@ -77,6 +77,27 @@ async fn concurrent_connects_to_a_peer_share_one_dial() {
     bob.shutdown().await;
 }
 
+/// A session's connection lists the network paths to the peer, one of them selected.
+#[tokio::test]
+#[traced_test]
+async fn a_session_connection_lists_its_paths() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+
+    let session = step("dial", alice.node.connect(bob.endpoint.addr()))
+        .await
+        .expect("failed to dial");
+    let paths = session.connection().paths();
+    assert!(!paths.is_empty(), "an open session has no path");
+    assert!(
+        paths.iter().any(|path| path.is_selected()),
+        "no path is selected"
+    );
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
 /// The accepting side sees its session in `sessions()`.
 #[tokio::test]
 #[traced_test]

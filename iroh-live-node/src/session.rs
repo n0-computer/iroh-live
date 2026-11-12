@@ -170,7 +170,28 @@ impl Session {
         ))
     }
 
-    /// Returns the QUIC connection under the session.
+    /// Returns the iroh connection under the session.
+    ///
+    /// Its paths are iroh's: [`Connection::paths`] lists the open ones, with
+    /// each one's remote address, whether it is selected, and its RTT, and
+    /// [`Connection::paths_stream`] yields the list again whenever it
+    /// changes. [`Connection::stats`] holds the counters of the whole
+    /// connection.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn run(session: iroh_live_node::Session) {
+    /// for path in session.connection().paths().iter() {
+    ///     println!(
+    ///         "{:?} selected={} rtt={:?}",
+    ///         path.remote_addr(),
+    ///         path.is_selected(),
+    ///         path.rtt()
+    ///     );
+    /// }
+    /// # }
+    /// ```
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.inner.connection

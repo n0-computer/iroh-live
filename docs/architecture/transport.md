@@ -145,7 +145,9 @@ over. `Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
 `sample`) of whichever link serves the subscription. `iroh-live/src/network.rs`
 hands the sample to the player and makes its path generation count changes of
 the serving link too. The monitor logs every sample at TRACE
-as `link sample`.
+as `link sample`. The node keeps no list of paths of its own:
+`Session::connection()` is the iroh connection, and its `paths()` and
+`paths_stream()` give each path's remote address, selection and RTT.
 
 ## Relay links
 
