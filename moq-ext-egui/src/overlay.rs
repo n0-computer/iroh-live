@@ -50,7 +50,7 @@ const BG_ALPHA: u8 = 200;
 /// How often the overlay records history, so its length does not depend on the repaint rate.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Points kept per series: twelve seconds at [`SAMPLE_INTERVAL`].
+/// The points kept per series, twelve seconds at [`SAMPLE_INTERVAL`].
 const HISTORY_LEN: usize = 120;
 
 /// The width of a sparkline, in points.

@@ -135,9 +135,9 @@ pub struct Bound {
     ///
     /// Timed for any lower rung, so a target that wavers between two lower
     /// rungs still reaches the hold.
-    lower: Option<Instant>,
+    lower_since: Option<Instant>,
     /// Since when the target has been above the rung playing, likewise.
-    higher: Option<Instant>,
+    higher_since: Option<Instant>,
     /// When the last step down landed, or was last seen still on its way.
     ///
     /// The cooldown runs from the landing. A switch needs a decoder and a
@@ -175,9 +175,9 @@ impl Bound {
             .min(self.adaptation.upgrade_hold_max)
     }
 
-    /// Records the reading's estimate and returns the sliding maximum, if any.
-    fn estimate(&mut self, reading: &NetworkSample, now: Instant) -> Option<u64> {
-        if let Some(delivery) = reading.delivery {
+    /// Records the sample's estimate and returns the sliding maximum, if any.
+    fn estimate(&mut self, sample: &NetworkSample, now: Instant) -> Option<u64> {
+        if let Some(delivery) = sample.delivery {
             self.estimates.push_back((now, delivery));
         }
         while let Some((at, _)) = self.estimates.front()
@@ -200,7 +200,7 @@ impl Bound {
         self.clean_since = None;
     }
 
-    /// Moves the loss ceiling on this reading.
+    /// Moves the loss ceiling on this sample.
     ///
     /// `current` is the index of the rung playing, and `lowest` the index of
     /// the bottom eligible rung.
@@ -238,38 +238,38 @@ impl Bound {
 
     /// Picks the rendition to play.
     ///
-    /// `ranked` is the catalog's video renditions, most expensive first: a
+    /// `rungs` is the catalog's video renditions, most expensive first: a
     /// higher index must never cost more. `current` is the one last asked
     /// for, on screen or on its way, and the hold timers weigh the target
     /// against it. `on_screen` is the one playing. While the two
     /// differ, a switch is in flight and loss is not followed: the loss then is
     /// the old rendition's, and a step on it would stack onto the first.
     ///
-    /// Returns `None` only when `ranked` is empty.
+    /// Returns `None` only when `rungs` is empty.
     #[must_use]
     pub fn decide(
         &mut self,
-        ranked: &[Rung],
+        rungs: &[Rung],
         current: Option<&str>,
         on_screen: Option<&str>,
         constraints: &Constraints,
-        reading: &NetworkSample,
+        sample: &NetworkSample,
         now: Instant,
     ) -> Option<String> {
-        if self.path_generation != Some(reading.path_generation) {
+        if self.path_generation != Some(sample.path_generation) {
             if self.path_generation.is_some() {
                 debug!(
-                    generation = reading.path_generation,
+                    generation = sample.path_generation,
                     "the network path changed, forgetting what the old one taught",
                 );
             }
             *self = Self {
-                path_generation: Some(reading.path_generation),
+                path_generation: Some(sample.path_generation),
                 ..Self::new(self.adaptation)
             };
         }
 
-        let eligible: Vec<usize> = ranked
+        let eligible: Vec<usize> = rungs
             .iter()
             .enumerate()
             .filter(|(_, rung)| constraints.allows(rung))
@@ -277,11 +277,11 @@ impl Bound {
             .collect();
         // With every rung ruled out, the smallest still plays.
         let Some(&lowest) = eligible.last() else {
-            return ranked.last().map(|rung| rung.name.clone());
+            return rungs.last().map(|rung| rung.name.clone());
         };
 
-        let current_index = current.and_then(|name| ranked.iter().position(|r| r.name == name));
-        let estimate = self.estimate(reading, now);
+        let current_index = current.and_then(|name| rungs.iter().position(|r| r.name == name));
+        let estimate = self.estimate(sample, now);
         let in_flight = current.is_some() && current != on_screen;
         if in_flight {
             if self.downgrading {
@@ -289,7 +289,7 @@ impl Bound {
             }
             // An emergency still drops to the bottom at once, overriding the
             // switch on its way.
-            if self.is_emergency(reading.loss) {
+            if self.is_emergency(sample.loss) {
                 self.drop_to_bottom(lowest);
             }
         } else {
@@ -301,7 +301,7 @@ impl Bound {
                     self.lossy_since = Some(now);
                 }
             }
-            if let Some(loss) = reading.loss {
+            if let Some(loss) = sample.loss {
                 self.follow_loss(loss, current_index.unwrap_or(0), lowest, now);
             }
             // A step up that landed starts its trial, and one that played
@@ -329,60 +329,60 @@ impl Bound {
             .iter()
             .copied()
             .filter(|&index| self.loss_ceiling.is_none_or(|ceiling| index >= ceiling))
-            .find(|&index| fits(&ranked[index]))
+            .find(|&index| fits(&rungs[index]))
             .unwrap_or(lowest);
-        let target = &ranked[target_index].name;
+        let target = &rungs[target_index].name;
 
         // A rendition that is gone or no longer allowed is left at once.
         let Some(current_index) = current_index.filter(|index| eligible.contains(index)) else {
-            self.lower = None;
-            self.higher = None;
+            self.lower_since = None;
+            self.higher_since = None;
             return Some(target.clone());
         };
 
         match target_index.cmp(&current_index) {
             Ordering::Equal => {
-                self.lower = None;
-                self.higher = None;
-                Some(ranked[current_index].name.clone())
+                self.lower_since = None;
+                self.higher_since = None;
+                Some(rungs[current_index].name.clone())
             }
             Ordering::Greater => {
-                self.higher = None;
-                let emergency = self.is_emergency(reading.loss);
-                let since = *self.lower.get_or_insert(now);
+                self.higher_since = None;
+                let emergency = self.is_emergency(sample.loss);
+                let since = *self.lower_since.get_or_insert(now);
                 if emergency || now.duration_since(since) >= self.adaptation.downgrade_hold {
-                    self.lower = None;
+                    self.lower_since = None;
                     self.last_downgrade = Some(now);
                     self.downgrading = true;
                     // The rung stepped down from counts as a failed try, and its
                     // trial ends.
-                    let rung = ranked[current_index].name.clone();
+                    let rung = rungs[current_index].name.clone();
                     if self.trial.as_ref().is_some_and(|(trial, _)| *trial == rung) {
                         self.trial = None;
                     }
                     let tries = self.failed_tries.entry(rung).or_default();
                     *tries += 1;
                     debug!(
-                        rung = %ranked[current_index].name,
+                        rung = %rungs[current_index].name,
                         tries = *tries,
                         "stepped down, so the next step up to this rung waits longer"
                     );
                     return Some(target.clone());
                 }
-                Some(ranked[current_index].name.clone())
+                Some(rungs[current_index].name.clone())
             }
             Ordering::Less => {
-                self.lower = None;
+                self.lower_since = None;
                 let cooling = self.last_downgrade.is_some_and(|at| {
                     now.duration_since(at) < self.adaptation.post_downgrade_cooldown
                 });
-                let since = *self.higher.get_or_insert(now);
+                let since = *self.higher_since.get_or_insert(now);
                 if !cooling && now.duration_since(since) >= self.upgrade_hold(target) {
-                    self.higher = None;
+                    self.higher_since = None;
                     self.trial = Some((target.clone(), None));
                     return Some(target.clone());
                 }
-                Some(ranked[current_index].name.clone())
+                Some(rungs[current_index].name.clone())
             }
         }
     }

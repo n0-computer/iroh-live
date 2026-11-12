@@ -59,7 +59,7 @@ fn gap_color(gap_ms: f32, expected_ms: f32) -> egui::Color32 {
     }
 }
 
-/// Maps times onto the timeline's x axis.
+/// The timeline's x axis, which maps times to coordinates.
 struct Lanes {
     rect: egui::Rect,
     left: Instant,

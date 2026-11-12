@@ -160,9 +160,9 @@ pub fn best(rungs: &[Rung], constraints: &Constraints) -> Option<String> {
 /// Reports whether automatic selection is stepping down from `on_screen`.
 ///
 /// `rungs` is the ladder, most expensive first. A switch to a rung further
-/// down, in [`RenditionMode::Auto`], is a step down. Such a switch does not overlap: on a
-/// saturated link the incumbent's track would keep taking the bandwidth the
-/// replacement needs.
+/// down, in [`RenditionMode::Auto`], is a step down. Such a switch does not
+/// overlap: on a saturated link the incumbent's track would keep taking the
+/// bandwidth the replacement needs.
 #[must_use]
 pub fn step_down(
     mode: &RenditionMode,
