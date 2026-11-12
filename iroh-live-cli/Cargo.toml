@@ -56,8 +56,12 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 # are most of the CLI and need both, so the dependencies ask for them directly.
 # Echo cancellation is on by default: `irl call` and `irl room` play the other
 # side while publishing a microphone, and without it a laptop sends the peer
-# back to itself.
-default = ["aec", "playback", "sound-server"]
+# back to itself. PipeWire is on by default too: on Linux it makes `cam` the
+# camera PipeWire shares with other applications and `screen` the desktop
+# portal's picker, the only screen capture that works on Wayland.
+# `sound-server` already links libpipewire, so it costs the build nothing more,
+# and off Linux it does nothing.
+default = ["aec", "pipewire", "playback", "sound-server"]
 playback = ["iroh-live/playback"]
 sound-server = ["iroh-live/sound-server"]
 aec = ["iroh-live/aec"]

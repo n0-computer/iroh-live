@@ -22,9 +22,14 @@ pub(crate) enum VideoSourceSpec {
     Camera(Option<String>),
     /// A whole display. `None` opens the main one.
     ///
-    /// On Linux the desktop portal picks, and the id is ignored.
+    /// On Linux, `None` and `portal` let the user pick a screen in the desktop
+    /// portal's dialog. An `x11:` id opens that X11 display, which on Wayland
+    /// shows only XWayland's windows.
     Display(Option<String>),
-    /// A single window, by id. macOS only.
+    /// A single window, by id. Supported on macOS, Windows and X11.
+    ///
+    /// On Linux, `portal` lets the user pick a window in the desktop portal's
+    /// dialog.
     Window(String),
     /// Every window of one application, by bundle id. macOS only.
     App(String),
@@ -434,7 +439,10 @@ mod tests {
             "cam",
             "cam:/dev/video2",
             "screen:1",
+            "screen:portal",
+            "screen:x11:0",
             "window:1042",
+            "window:portal",
             "app:com.apple.Safari",
             "test",
             "test:gradient",

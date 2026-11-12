@@ -127,6 +127,58 @@ fn default_rate() -> video::FrameRate {
     video::FrameRate::new(30, 1).expect("30/1 is a valid rate")
 }
 
+/// Returns the PipeWire source to try before `source`, if `source` is a default.
+///
+/// The default camera becomes PipeWire's default camera, and the default
+/// display becomes a screen picked in the desktop portal. Sources that name a
+/// device open exactly that device.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub(super) fn pipewire_default(source: &video::capture::Source) -> Option<video::capture::Source> {
+    use video::capture::{
+        Source,
+        portal::{Kind, Selection},
+    };
+    match source {
+        Source::Camera(None) => Some(Source::Camera(Some("pipewire".to_string()))),
+        Source::Display(None) => Some(Source::Portal(Selection::new(Kind::Screen))),
+        _ => None,
+    }
+}
+
+/// Returns whether `source` should still open after its PipeWire default failed with `err`.
+///
+/// A camera always falls back to V4L2. A display falls back to X11 only on an
+/// X11 session, and not when the user declined the portal's dialog: on
+/// Wayland, X11 capture sees only XWayland's windows, and the main display is
+/// mostly black.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub(super) fn falls_back(source: &video::capture::Source, err: &Error) -> bool {
+    match source {
+        video::capture::Source::Display(_) => !wayland_session() && !declined(err),
+        _ => true,
+    }
+}
+
+/// Returns whether this process runs in a Wayland session.
+///
+/// Uses the test moq-video's X11 backend applies before it refuses a display.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+fn wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+/// Returns whether `err` is the user declining a permission dialog.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+fn declined(err: &Error) -> bool {
+    match err {
+        Error::Device { source, .. } => matches!(
+            source.downcast_ref::<video::Error>(),
+            Some(video::Error::PermissionDenied(_))
+        ),
+        _ => false,
+    }
+}
+
 /// Waits at most [`RELEASE_PATIENCE`] for the dropped cameras to release their devices.
 pub(super) async fn settle() {
     CAMERAS.settle(RELEASE_PATIENCE).await;

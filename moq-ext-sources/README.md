@@ -27,7 +27,9 @@ Annex-B H.264 that needs no encoder, such as the one `rpicam_h264` returns. The 
 `VideoSource::capture` waits up to three seconds for a camera dropped before
 it to release the device, so a switch back to the same camera does not fail as
 busy. With the `pipewire` feature on Linux, the default camera is PipeWire's,
-which other applications can share, and V4L2 is the fallback. A microphone
+which other applications can share, and V4L2 is the fallback. The default
+display is the screen the user picks in the desktop portal's dialog, with the
+main X11 display as the fallback on an X11 session only. A microphone
 opens when a broadcast starts to publish it. If it fails, it is not opened
 again.
 
@@ -43,5 +45,5 @@ return too.
 | `capture` | no | camera, screen and microphone |
 | `sound-server` | no | PipeWire and PulseAudio devices (Linux) |
 | `aec` | no | echo cancellation for the microphone |
-| `pipewire` | no | Linux screen capture through the desktop portal, and PipeWire's default camera |
+| `pipewire` | no | Linux screen capture through the desktop portal, and PipeWire's default camera, as the defaults |
 | `rpicam` | no | the Raspberry Pi camera through `rpicam-vid` (Linux) |

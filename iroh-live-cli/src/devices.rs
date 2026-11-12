@@ -38,6 +38,17 @@ async fn cameras() {
         }
     };
 
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    if video::capture::camera_modes(Some(PIPEWIRE_DEFAULT_CAMERA))
+        .await
+        .is_ok()
+    {
+        // The modes are those of the device below it in the list.
+        println!(
+            "  cam:{PIPEWIRE_DEFAULT_CAMERA}  PipeWire's default camera, shared with other \
+             applications (what `cam` opens)"
+        );
+    }
     for camera in &cameras {
         println!("  cam:{}  {}", camera.id, camera.name);
         // A camera that reports no modes still has a usable identifier.
@@ -52,6 +63,42 @@ async fn cameras() {
         }
     }
     println!();
+}
+
+/// The camera id that opens PipeWire's default camera.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+const PIPEWIRE_DEFAULT_CAMERA: &str = "pipewire";
+
+/// Returns the display lines.
+///
+/// On Linux with the `pipewire` feature, the desktop portal's picker comes
+/// first, since it is what `screen` opens. The X11 displays follow. On a
+/// Wayland session they are XWayland's, which shows only X11 windows, so a
+/// capture of one is mostly black and they are marked as such.
+async fn displays() -> Result<Vec<String>, String> {
+    let mut lines = Vec::new();
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    lines.push(format!(
+        "screen:{}  pick a screen in the desktop portal's dialog (what `screen` opens)",
+        crate::source::PORTAL
+    ));
+    let xwayland = cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let note = if xwayland {
+        "  XWayland: shows only X11 windows"
+    } else {
+        ""
+    };
+    match video::capture::displays().await {
+        Ok(displays) => lines.extend(displays.iter().map(|display| {
+            format!(
+                "screen:{}  {} ({}x{}){note}",
+                display.id, display.name, display.width, display.height
+            )
+        })),
+        Err(err) if lines.is_empty() => return Err(err.to_string()),
+        Err(err) => lines.push(format!("(no X11 displays: {err})")),
+    }
+    Ok(lines)
 }
 
 /// Formats one size and its frame rates as a line under its camera.
@@ -90,12 +137,17 @@ async fn list() {
         String::clone,
     );
 
-    section("displays", video::capture::displays().await, |display| {
-        format!(
-            "screen:{}  {} ({}x{})",
-            display.id, display.name, display.width, display.height
-        )
-    });
+    section("displays", displays().await, String::clone);
+
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    section(
+        "windows",
+        Ok::<_, String>(vec![format!(
+            "window:{}  pick a window in the desktop portal's dialog",
+            crate::source::PORTAL
+        )]),
+        String::clone,
+    );
 
     // Window and app capture exist only on macOS (ScreenCaptureKit).
     #[cfg(target_os = "macos")]

@@ -134,9 +134,13 @@ impl VideoSource {
     /// until the read returns. A V4L2 read gives up after a second, but a Media
     /// Foundation read on Windows has no timeout.
     ///
-    /// With the `pipewire` feature on Linux, the default camera is PipeWire's,
-    /// which shares the device with other applications. If that does not open,
-    /// the default V4L2 device opens instead.
+    /// With the `pipewire` feature on Linux, the defaults go through PipeWire
+    /// first. The default camera is PipeWire's, which shares the device with
+    /// other applications, and the default V4L2 device opens if it does not.
+    /// The default display is the one the user picks in the desktop portal's
+    /// screen-sharing dialog. On an X11 session the main X11 display opens if
+    /// the portal is unavailable. On Wayland there is no fallback, because X11
+    /// capture there sees only XWayland's windows.
     ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
@@ -151,14 +155,16 @@ impl VideoSource {
             capture::settle().await;
         }
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
-        if config.source == video::capture::Source::Camera(None) {
+        if let Some(preferred) = capture::pipewire_default(&config.source) {
             let mut pipewire = config.clone();
-            pipewire.source = video::capture::Source::Camera(Some("pipewire".to_string()));
+            pipewire.source = preferred;
             match Self::capture_device(pipewire).await {
                 Ok(source) => return Ok(source),
+                Err(err) if !capture::falls_back(&config.source, &err) => return Err(err),
                 Err(err) => info!(
                     error = format_args!("{err:#}"),
-                    "PipeWire's default camera did not open, trying V4L2"
+                    source = ?config.source,
+                    "PipeWire did not open the default source, trying the fallback"
                 ),
             }
         }

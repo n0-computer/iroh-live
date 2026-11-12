@@ -31,7 +31,7 @@ irl watch <ticket>
 | `aec` | yes | echo cancellation for `call` and `room` |
 | `playback` | yes | audio playback |
 | `sound-server` | yes | PipeWire and PulseAudio devices |
-| `pipewire` | no | Linux screen capture through the desktop portal |
+| `pipewire` | yes | PipeWire's default camera and the desktop portal's screen picker as the Linux defaults |
 | `rpicam` | no | `--video rpicam`, the Raspberry Pi camera |
 | `vaapi`, `nvidia` | no | hardware encode and decode on Intel and AMD (VA-API) or NVIDIA |
 | `v4l2` | no | the V4L2 memory-to-memory H.264 codecs of ARM SoCs, such as a Pi 4 |

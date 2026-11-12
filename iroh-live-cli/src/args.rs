@@ -62,7 +62,8 @@ pub(crate) struct CaptureArgs {
     ///
     /// `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`, `app:<id>`,
     /// `rpicam[:raw]`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or
-    /// `none`. Run `irl devices` to list the ids.
+    /// `none`. Run `irl devices` to list the ids. On Linux, `screen` and
+    /// `screen:portal` (or `window:portal`) open the desktop portal's picker.
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
     pub(crate) video: VideoSourceSpec,
 
