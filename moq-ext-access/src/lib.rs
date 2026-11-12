@@ -2,9 +2,10 @@
 //!
 //! - [`Grant`]: what a session may subscribe to and publish.
 //! - [`SessionRequest`]: what a peer asked for when it opened a session.
+//! - [`Direction`]: which side opened a session.
 //! - [`Audience`]: who may see a publication, generic over the peer id.
 //! - [`AudienceKind`]: an [`Audience`] as a registry keeps it, the current set.
-//! - [`visible_paths`]: the paths a link may see, given its [`LinkKind`].
+//! - [`visible_paths`]: the paths a link may see, given its [`Viewer`].
 //! - [`policy`]: who may hold a session, and with which [`Grant`].
 //! - [`Layout`]: a path convention, which says where each peer publishes and
 //!   who owns a path.
@@ -320,6 +321,15 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
     }
 }
 
+/// Which side opened a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// The peer dialed this node.
+    Accepted,
+    /// This node dialed the peer.
+    Dialed,
+}
+
 /// What kind of link a session or a relay attachment is.
 ///
 /// The kind decides which publications a link may be offered.
@@ -327,6 +337,15 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
 pub enum LinkKind {
     /// A session with a peer, dialed or accepted.
     Direct,
+    /// A moq relay, which gets the [`Audience::Granted`] publications.
+    Relay,
+}
+
+/// The link that [`visible_paths`] works out the visible publications for.
+#[derive(Debug)]
+pub enum Viewer<'a, P: PeerId> {
+    /// A session with this peer, dialed or accepted.
+    Direct(&'a P),
     /// A moq relay, which gets the [`Audience::Granted`] publications.
     Relay,
 }
@@ -367,12 +386,12 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
     }
 }
 
-/// Returns the exact paths of `publications` a link may see, as patterns.
+/// Returns the exact paths of `publications` that `viewer` may see, as patterns.
 ///
 /// A publication is visible when the link's `grant` covers its path and its
 /// audience admits the link. A relay sees `Granted` publications, and never a
 /// `Peers` one, which a relay would forward to anyone. A direct link is in a
-/// `Peers` audience when its `peer` is in the set.
+/// `Peers` audience when its peer is in the set.
 ///
 /// Each path is a literal pattern, so nothing beside the listed publications
 /// matches. A path no pattern can spell is left out.
@@ -385,12 +404,11 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 pub fn visible_paths<'a, P: PeerId>(
     publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,
     grant: &Grant,
-    kind: LinkKind,
-    peer: Option<&P>,
+    viewer: Viewer<'_, P>,
 ) -> Patterns {
     publications
         .into_iter()
-        .filter(|(path, audience)| visible(path, audience, grant, kind, peer))
+        .filter(|(path, audience)| visible(path, audience, grant, &viewer))
         .filter_map(|(path, _)| Pattern::literal(path).ok())
         .collect()
 }
@@ -400,18 +418,15 @@ fn visible<P: PeerId>(
     path: &str,
     audience: &AudienceKind<P>,
     grant: &Grant,
-    kind: LinkKind,
-    peer: Option<&P>,
+    viewer: &Viewer<'_, P>,
 ) -> bool {
     if !grant.allows_subscribe(path) {
         return false;
     }
-    match (audience, kind) {
+    match (audience, viewer) {
         (AudienceKind::Granted, _) => true,
-        (AudienceKind::Peers(peers), LinkKind::Direct) => {
-            peer.is_some_and(|peer| peers.contains(peer))
-        }
-        _ => false,
+        (AudienceKind::Peers(peers), Viewer::Direct(peer)) => peers.contains(*peer),
+        (AudienceKind::Peers(_), Viewer::Relay) => false,
     }
 }
 
@@ -542,20 +557,18 @@ mod tests {
         let grant = Grant::everything();
         let granted = AudienceKind::<String>::Granted;
         let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
-        let direct = LinkKind::Direct;
         let a = "a".to_string();
         let b = "b".to_string();
-        assert!(visible("p", &granted, &grant, direct, Some(&b)));
-        assert!(visible("p", &peers, &grant, direct, Some(&a)));
-        assert!(!visible("p", &peers, &grant, direct, Some(&b)));
-        assert!(!visible("p", &peers, &grant, direct, None));
-        assert!(visible("p", &granted, &grant, LinkKind::Relay, None));
-        assert!(!visible("p", &peers, &grant, LinkKind::Relay, Some(&a)));
+        assert!(visible("p", &granted, &grant, &Viewer::Direct(&b)));
+        assert!(visible("p", &peers, &grant, &Viewer::Direct(&a)));
+        assert!(!visible("p", &peers, &grant, &Viewer::Direct(&b)));
+        assert!(visible("p", &granted, &grant, &Viewer::Relay));
+        assert!(!visible("p", &peers, &grant, &Viewer::Relay));
         let none = Grant {
             subscribe: Patterns::new(),
             publish: Patterns::new(),
         };
-        assert!(!visible("p", &granted, &none, direct, Some(&a)));
+        assert!(!visible("p", &granted, &none, &Viewer::Direct(&a)));
     }
 
     #[test]
@@ -566,7 +579,7 @@ mod tests {
         let grant = Grant::everything();
         let (a, b) = ("a".to_string(), "b".to_string());
 
-        let for_a = visible_paths(publications, &grant, LinkKind::Direct, Some(&a));
+        let for_a = visible_paths(publications, &grant, Viewer::Direct(&a));
         assert!(for_a.matches("live/x/public"));
         assert!(for_a.matches("live/x/secret"));
         assert!(
@@ -578,11 +591,11 @@ mod tests {
             "a path nobody published here"
         );
 
-        let for_b = visible_paths(publications, &grant, LinkKind::Direct, Some(&b));
+        let for_b = visible_paths(publications, &grant, Viewer::Direct(&b));
         assert!(for_b.matches("live/x/public"));
         assert!(!for_b.matches("live/x/secret"));
 
-        let relay = visible_paths(publications, &grant, LinkKind::Relay, None);
+        let relay = visible_paths(publications, &grant, Viewer::Relay);
         assert!(relay.matches("live/x/public"));
         assert!(!relay.matches("live/x/secret"));
     }

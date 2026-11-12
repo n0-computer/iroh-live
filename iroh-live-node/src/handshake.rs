@@ -3,6 +3,7 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
+use moq_ext_access::Viewer;
 use moq_net::{
     auth,
     origin::{self, Source},
@@ -11,7 +12,7 @@ use n0_error::e;
 use tracing::{info, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkKind, SessionRequest, admission::authorize, node::Shared,
+    ConnectOptions, Direction, Error, Grant, SessionRequest, admission::authorize, node::Shared,
     policy::Authorization, state::served, transport,
 };
 
@@ -62,12 +63,11 @@ pub(crate) fn authorize_direct(
     peer: EndpointId,
     grant: &Grant,
 ) {
-    let view =
-        shared
-            .state
-            .lock()
-            .expect("poisoned")
-            .link_view(LinkKind::Direct, Some(&peer), grant);
+    let view = shared
+        .state
+        .lock()
+        .expect("poisoned")
+        .link_view(Viewer::Direct(&peer), grant);
     auth.authorize(&view);
 }
 
@@ -84,7 +84,7 @@ pub(crate) fn subscriber(shared: &Shared) -> origin::Producer {
 pub(crate) struct SessionParts {
     pub(crate) peer: EndpointId,
     pub(crate) connection: Connection,
-    pub(crate) dialed: bool,
+    pub(crate) direction: Direction,
     /// What the policy decided for the session before the handshake.
     pub(crate) authorization: Authorization,
     /// The count of `Node::reauthorize` calls before that decision started.
@@ -108,12 +108,12 @@ pub(crate) async fn dial_session(
 ) -> Result<SessionParts, Error> {
     let peer_id = peer.id;
     let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
-    let (authorization, reauthorized) = authorize(&shared, peer_id, &request, true).await.map_err(
-        |source| {
+    let (authorization, reauthorized) = authorize(&shared, peer_id, &request, Direction::Dialed)
+        .await
+        .map_err(|source| {
             info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
             e!(Error::Rejected { source })
-        },
-    )?;
+        })?;
     let connection = shared
         .endpoint
         .connect_with_opts(peer, crate::ALPN, options.quic.clone())
@@ -141,7 +141,7 @@ pub(crate) async fn dial_session(
     Ok(SessionParts {
         peer: peer_id,
         connection,
-        dialed: true,
+        direction: Direction::Dialed,
         authorization,
         reauthorized,
         request,

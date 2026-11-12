@@ -17,7 +17,7 @@ use std::{
 use common::{Peer, endpoint, ends, eventually, has_session_with, publish, reading, step};
 use iroh::{Endpoint, EndpointId};
 use iroh_live_node::{
-    Audience, ConnectOptions, Error, Grant, Node, NodeConfig, Reach, Session,
+    Audience, ConnectOptions, Direction, Error, Grant, Node, NodeConfig, Reach, Session,
     policy::{self, Authorization, Decision, Event, PeerRequest, Policy, Rejection},
 };
 use n0_tracing_test::traced_test;
@@ -458,7 +458,7 @@ impl Policy<EndpointId> for Contacts {
             .lock()
             .expect("poisoned")
             .contains(request.peer());
-        if request.event() == Event::Connect && request.dialed() {
+        if request.event() == Event::Connect && request.direction() == Direction::Dialed {
             self.started.notify_one();
             self.gate.notified().await;
         }

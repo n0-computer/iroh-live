@@ -14,7 +14,8 @@ use common::{
 };
 use iroh::endpoint::PathId;
 use iroh_live_node::{
-    Audience, Congestion, ConnectOptions, Error, Grant, LinkKind, NodeConfig, Reach, Session,
+    Audience, Congestion, ConnectOptions, Direction, Error, Grant, LinkKind, NodeConfig, Reach,
+    Session,
     policy::{self, Event, PeerRequest, Queue, Rejection},
 };
 use moq_net::{Pattern, Patterns};
@@ -986,7 +987,8 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     )
     .await
     .expect("connect");
-    assert!(to_bob.dialed() && to_carol.dialed());
+    assert_eq!(to_bob.direction(), Direction::Dialed);
+    assert_eq!(to_carol.direction(), Direction::Dialed);
 
     announced(&mut bob.node.origin().announced(), path).await;
     let from_alice = step("bob sees alice", session_with(&bob.node, alice.id())).await;

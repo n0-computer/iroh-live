@@ -11,7 +11,7 @@ use n0_error::e;
 use tracing::info;
 
 use crate::{
-    Error, Grant, LinkId, SessionRequest, Subscription, handshake::Hop, link::LinkState,
+    Direction, Error, Grant, LinkId, SessionRequest, Subscription, handshake::Hop, link::LinkState,
     node::Shared, route,
 };
 
@@ -36,7 +36,7 @@ use crate::{
 /// # }
 /// ```
 #[derive(Clone, derive_more::Debug)]
-#[debug("Session({}, {}, dialed {})", inner.peer.fmt_short(), inner.link, inner.dialed)]
+#[debug("Session({}, {}, {:?})", inner.peer.fmt_short(), inner.link, inner.direction)]
 pub struct Session {
     pub(crate) inner: Arc<SessionInner>,
 }
@@ -44,7 +44,7 @@ pub struct Session {
 pub(crate) struct SessionInner {
     pub(crate) link: LinkId,
     pub(crate) peer: EndpointId,
-    pub(crate) dialed: bool,
+    pub(crate) direction: Direction,
     pub(crate) request: SessionRequest,
     pub(crate) connection: Connection,
     pub(crate) moq: moq_net::Session,
@@ -71,10 +71,10 @@ impl Session {
         self.inner.peer
     }
 
-    /// Reports whether this node dialed the session.
+    /// Returns which side opened the session.
     #[must_use]
-    pub fn dialed(&self) -> bool {
-        self.inner.dialed
+    pub fn direction(&self) -> Direction {
+        self.inner.direction
     }
 
     /// Returns what the peer may do on this session.

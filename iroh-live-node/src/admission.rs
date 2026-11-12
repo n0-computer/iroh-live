@@ -13,7 +13,7 @@ use n0_error::e;
 use tracing::{debug, info};
 
 use crate::{
-    Error,
+    Direction, Error,
     handshake::{Hop, SessionParts, authorize_direct, subscriber},
     node::Shared,
     policy::{Authorization, Event, PeerRequest, Rejection},
@@ -71,7 +71,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     let request = SessionRequest::from_handshake(&handshake);
     debug!(peer = %peer.fmt_short(), path = request.path(), "session requested");
     let decided = tokio::select! {
-        decided = authorize(shared, peer, &request, false) => decided,
+        decided = authorize(shared, peer, &request, Direction::Accepted) => decided,
         _ = shared.shutdown.cancelled() => {
             handshake.close(moq_net::Error::Cancel);
             return Err(e!(Error::ShutDown));
@@ -112,7 +112,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     let parts = SessionParts {
         peer,
         connection,
-        dialed: false,
+        direction: Direction::Accepted,
         authorization,
         reauthorized,
         request,
@@ -124,7 +124,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     Ok(())
 }
 
-/// Decides a new session with `peer`, with `dialed` set when this node dialed it.
+/// Decides a new session with `peer`, opened in `direction`.
 ///
 /// Returns the authorization and the count of `Node::reauthorize` calls
 /// before the decision started, which the session compares when it
@@ -133,13 +133,10 @@ pub(crate) async fn authorize(
     shared: &Shared,
     peer: EndpointId,
     request: &SessionRequest,
-    dialed: bool,
+    direction: Direction,
 ) -> Result<(Authorization, u64), Rejection> {
     let reauthorized = shared.state.lock().expect("poisoned").reauthorized;
-    let mut request = PeerRequest::new(peer, request.clone(), Event::Connect);
-    if dialed {
-        request = request.with_dialed();
-    }
+    let request = PeerRequest::new(peer, request.clone(), Event::Connect).with_direction(direction);
     Ok((decide(shared, &request).await?, reauthorized))
 }
 

@@ -13,7 +13,7 @@ use common::{
 };
 use iroh::EndpointId;
 use iroh_live_node::{
-    Audience, Error, Grant, Layout, NodeConfig, Reach, Session,
+    Audience, Direction, Error, Grant, Layout, NodeConfig, Reach, Session,
     policy::{self, PeerRequest, Rejection},
 };
 use moq_net::{Path, Pattern, Patterns};
@@ -102,7 +102,7 @@ async fn a_claim_widens_a_session_bob_accepted() {
     let session = step("dial", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("alice dials bob");
-    assert!(session.dialed());
+    assert_eq!(session.direction(), Direction::Dialed);
 
     let _claim = bob
         .node
@@ -133,7 +133,10 @@ async fn a_claim_widens_a_session_bob_accepted() {
         assert!(tokio::time::Instant::now() < deadline, "never let in");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert!(!subscription.session().expect("a session").dialed());
+    assert_eq!(
+        subscription.session().expect("a session").direction(),
+        Direction::Accepted
+    );
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -734,7 +737,7 @@ async fn a_policy_grant_holds_in_both_directions() {
     .await
     .expect("the policy lets bob publish under fleet");
     let session = from_bob.session().expect("a session");
-    assert!(session.dialed());
+    assert_eq!(session.direction(), Direction::Dialed);
     assert_eq!(session.grant(), fleet(&bob.id()));
     reading(&from_bob.broadcast()).await;
 
@@ -750,7 +753,7 @@ async fn a_policy_grant_holds_in_both_directions() {
         session_with(&alice.node, carol.id()),
     )
     .await;
-    assert!(!accepted.dialed());
+    assert_eq!(accepted.direction(), Direction::Accepted);
     assert_eq!(accepted.grant(), fleet(&carol.id()));
     let from_carol = step(
         "alice subscribes over the accepted session",
@@ -760,7 +763,10 @@ async fn a_policy_grant_holds_in_both_directions() {
     )
     .await
     .expect("the policy lets carol publish under fleet");
-    assert!(!from_carol.session().expect("a session").dialed());
+    assert_eq!(
+        from_carol.session().expect("a session").direction(),
+        Direction::Accepted
+    );
     reading(&from_carol.broadcast()).await;
 
     alice.shutdown().await;

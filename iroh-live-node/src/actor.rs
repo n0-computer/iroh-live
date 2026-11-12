@@ -16,7 +16,7 @@ use tokio::{
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    ConnectOptions, Error, LinkId, LinkKind, Session,
+    ConnectOptions, Error, LinkId, Session,
     admission::decide,
     handshake::{Hop, SessionParts, dial_session},
     link::{self, LinkState},
@@ -24,7 +24,7 @@ use crate::{
     policy::{Authorization, Event, PeerRequest, Rejection},
     reauth::Reauth,
     session::SessionInner,
-    state::{Authorized, LinkEntry},
+    state::{Authorized, LinkEntry, LinkRole},
 };
 
 /// The result of one re-decide: the session's link, and the decision.
@@ -308,11 +308,8 @@ impl Actor {
                 continue;
             };
             let inner = &session.inner;
-            let mut request =
-                PeerRequest::new(inner.peer, inner.request.clone(), Event::Reauthorize);
-            if inner.dialed {
-                request = request.with_dialed();
-            }
+            let request = PeerRequest::new(inner.peer, inner.request.clone(), Event::Reauthorize)
+                .with_direction(inner.direction);
             let span = info_span!("redecide", peer = %inner.peer.fmt_short(), %link);
             let shared = self.shared.clone();
             let handle = self
@@ -405,7 +402,7 @@ impl Actor {
         info!(
             peer = %inner.peer.fmt_short(),
             link = %inner.link,
-            dialed = inner.dialed,
+            direction = ?inner.direction,
             "session started",
         );
         self.spawn_session(session.clone(), driver);
@@ -419,7 +416,7 @@ impl Actor {
         let SessionParts {
             peer,
             connection,
-            dialed,
+            direction,
             authorization,
             reauthorized,
             request,
@@ -435,7 +432,7 @@ impl Actor {
             inner: Arc::new(SessionInner {
                 link,
                 peer,
-                dialed,
+                direction,
                 request,
                 connection,
                 moq,
@@ -452,14 +449,12 @@ impl Actor {
         state.add_link(
             link,
             LinkEntry {
-                kind: LinkKind::Direct,
-                peer: Some(peer),
+                role: LinkRole::Direct {
+                    peer,
+                    authorized: (!stale).then(|| Authorized::new(authorization.clone())),
+                },
                 hop,
-                grant: None,
-                authorized: (!stale).then(|| Authorized::new(authorization.clone())),
-                consume: true,
                 auth,
-                session: Some(session.clone()),
                 link_state,
             },
         );

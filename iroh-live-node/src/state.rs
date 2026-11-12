@@ -15,13 +15,14 @@ use std::{
 };
 
 use iroh::EndpointId;
+use moq_ext_access::Viewer;
 use moq_net::{Path, Pattern, auth, origin, origin::Source};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    Grant, LinkId, LinkKind, Session, handshake::Hop, link::LinkState, policy::Authorization,
+    Grant, LinkId, LinkKind, handshake::Hop, link::LinkState, policy::Authorization,
     publish::AudienceKind,
 };
 
@@ -132,30 +133,66 @@ impl Drop for PublicationEntry {
 /// One link: a direct session or a relay.
 #[derive(derive_more::Debug)]
 pub(crate) struct LinkEntry {
-    pub(crate) kind: LinkKind,
-    pub(crate) peer: Option<EndpointId>,
+    /// What the link is, with what only that kind of link has.
+    pub(crate) role: LinkRole,
     /// The identity the link's routes are attributed to in the route table.
     pub(crate) hop: Hop,
-    /// What a relay may do at most, before audiences.
-    ///
-    /// `None` for a direct link, which takes its session's authorization.
-    pub(crate) grant: Option<Grant>,
-    /// What the policy decided for a direct link's session.
-    ///
-    /// `None` for a relay, and for a session that may do nothing: after a
-    /// rejection, while it closes, and until a stale first decision is
-    /// decided again.
-    pub(crate) authorized: Option<Authorized>,
-    /// Whether the link feeds the route table.
-    pub(crate) consume: bool,
     /// The link's sessions' authorization, which moq enforces on them.
     #[debug(skip)]
     pub(crate) auth: auth::Handle,
-    /// The session, for a direct link.
-    pub(crate) session: Option<Session>,
     /// The latest reading of the link's connection monitor.
     #[debug(skip)]
     pub(crate) link_state: LinkState,
+}
+
+/// What a link is: a session with a peer, or a relay.
+#[derive(Debug)]
+pub(crate) enum LinkRole {
+    /// A direct session with `peer`, which takes its rights from the policy.
+    Direct {
+        peer: EndpointId,
+        /// What the policy decided for the session.
+        ///
+        /// `None` for a session that may do nothing: after a rejection, while
+        /// it closes, and until a stale first decision is decided again.
+        authorized: Option<Authorized>,
+    },
+    /// A relay, trusted with every path it forwards.
+    Relay {
+        /// Whether the relay's routes enter the route table.
+        consume: bool,
+    },
+}
+
+impl LinkEntry {
+    /// Returns the kind of link this is.
+    pub(crate) fn kind(&self) -> LinkKind {
+        match self.role {
+            LinkRole::Direct { .. } => LinkKind::Direct,
+            LinkRole::Relay { .. } => LinkKind::Relay,
+        }
+    }
+
+    /// Returns the peer of a direct link, or `None` for a relay.
+    fn peer(&self) -> Option<&EndpointId> {
+        match &self.role {
+            LinkRole::Direct { peer, .. } => Some(peer),
+            LinkRole::Relay { .. } => None,
+        }
+    }
+
+    /// Returns what the policy decided for a direct link's session.
+    fn authorized(&self) -> Option<&Authorized> {
+        match &self.role {
+            LinkRole::Direct { authorized, .. } => authorized.as_ref(),
+            LinkRole::Relay { .. } => None,
+        }
+    }
+
+    /// Reports whether this is a relay whose routes enter the route table.
+    fn is_consuming_relay(&self) -> bool {
+        matches!(self.role, LinkRole::Relay { consume: true })
+    }
 }
 
 impl State {
@@ -208,19 +245,27 @@ impl State {
     ///
     /// `None` is a rejection: the session may do nothing from now on.
     pub(crate) fn decided(&mut self, id: LinkId, authorization: Option<Authorization>) {
-        if let Some(link) = self.links.get_mut(&id) {
-            link.authorized = authorization.map(Authorized::new);
+        if let Some(LinkEntry {
+            role: LinkRole::Direct { authorized, .. },
+            ..
+        }) = self.links.get_mut(&id)
+        {
+            *authorized = authorization.map(Authorized::new);
             self.authorize(id);
         }
     }
 
     /// Takes the rights of the session on link `id`, whose authorization expired, until a new decision applies.
     pub(crate) fn lapse(&mut self, id: LinkId) {
-        if let Some(authorized) = self
-            .links
-            .get_mut(&id)
-            .and_then(|link| link.authorized.as_mut())
-            .filter(|authorized| !authorized.lapsed)
+        if let Some(LinkEntry {
+            role:
+                LinkRole::Direct {
+                    authorized: Some(authorized),
+                    ..
+                },
+            ..
+        }) = self.links.get_mut(&id)
+            && !authorized.lapsed
         {
             authorized.lapsed = true;
             self.authorize(id);
@@ -232,8 +277,8 @@ impl State {
         self.links
             .values()
             .rev()
-            .filter(|link| link.peer.as_ref() == Some(peer))
-            .find_map(|link| link.authorized.as_ref())
+            .filter(|link| link.peer() == Some(peer))
+            .find_map(LinkEntry::authorized)
             .map(|authorized| &authorized.authorization)
     }
 
@@ -245,10 +290,9 @@ impl State {
             return Grant::nothing();
         };
         let base = link
-            .authorized
-            .as_ref()
+            .authorized()
             .map_or_else(Grant::nothing, Authorized::grant);
-        self.effective_grant(link.peer.as_ref(), &base)
+        self.effective_grant(link.peer(), &base)
     }
 
     /// Adds one claim on `path` for `peer`, and widens the peer's links to it.
@@ -310,7 +354,7 @@ impl State {
     /// Re-authorizes every link with `peer`.
     fn authorize_peer(&self, peer: &EndpointId) {
         for (id, link) in &self.links {
-            if link.peer.as_ref() == Some(peer) {
+            if link.peer() == Some(peer) {
                 self.authorize(*id);
             }
         }
@@ -347,22 +391,25 @@ impl State {
         link.auth.authorize(&grant);
     }
 
-    /// Returns the moq grant of `link`, from a relay's grant or a session's authorization.
+    /// Returns the moq grant of `link`, from a session's authorization.
     ///
-    /// A session without an authorization, or with a lapsed one, may do
-    /// nothing. The grant carries the authorization's expiry.
+    /// A relay may do everything before audiences. A session without an
+    /// authorization, or with a lapsed one, may do nothing. The grant carries
+    /// the authorization's expiry.
     fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
-        let base = match (&link.grant, &link.authorized) {
-            (Some(grant), _) => grant.clone(),
-            (None, Some(authorized)) => authorized.grant(),
-            (None, None) => Grant::nothing(),
-        };
-        let mut grant = self.link_view(link.kind, link.peer.as_ref(), &base);
-        grant.expires = link
-            .authorized
-            .as_ref()
-            .and_then(|authorized| authorized.expires);
-        grant
+        match &link.role {
+            LinkRole::Relay { .. } => self.link_view(Viewer::Relay, &Grant::everything()),
+            LinkRole::Direct { peer, authorized } => {
+                let base = authorized
+                    .as_ref()
+                    .map_or_else(Grant::nothing, Authorized::grant);
+                let mut grant = self.link_view(Viewer::Direct(peer), &base);
+                grant.expires = authorized
+                    .as_ref()
+                    .and_then(|authorized| authorized.expires);
+                grant
+            }
+        }
     }
 
     /// Returns the moq grant of a link, from the publications it may see.
@@ -371,25 +418,23 @@ impl State {
     /// audience admits the link, within `base`. Its publish half is `base`'s
     /// for a session, and anything for a relay, which is trusted with what it
     /// forwards.
-    pub(crate) fn link_view(
-        &self,
-        kind: LinkKind,
-        peer: Option<&EndpointId>,
-        base: &Grant,
-    ) -> auth::Grant {
+    pub(crate) fn link_view(&self, viewer: Viewer<'_, EndpointId>, base: &Grant) -> auth::Grant {
+        let peer = match viewer {
+            Viewer::Direct(peer) => Some(peer),
+            Viewer::Relay => None,
+        };
         let base = &self.effective_grant(peer, base);
+        let publish = match viewer {
+            Viewer::Direct(_) => base.publish.clone(),
+            Viewer::Relay => Pattern::all().into(),
+        };
         let subscribe = moq_ext_access::visible_paths(
             self.publications
                 .values()
                 .map(|publication| (publication.path.as_str(), &publication.audience)),
             base,
-            kind,
-            peer,
+            viewer,
         );
-        let publish = match kind {
-            LinkKind::Direct => base.publish.clone(),
-            LinkKind::Relay => Pattern::all().into(),
-        };
         let mut grant = auth::Grant::default();
         grant.publish = publish;
         grant.subscribe = subscribe;
@@ -416,7 +461,7 @@ impl State {
         let mut relays = self
             .links
             .iter()
-            .filter(|(_, link)| link.kind == LinkKind::Relay && link.consume)
+            .filter(|(_, link)| link.is_consuming_relay())
             .map(|(id, _)| *id);
         match (relays.next(), relays.next()) {
             (Some(id), None) => Some(id),
@@ -434,9 +479,7 @@ impl State {
 
     /// Reports whether a relay link feeds the route table.
     pub(crate) fn has_relays(&self) -> bool {
-        self.links
-            .values()
-            .any(|link| link.kind == LinkKind::Relay && link.consume)
+        self.links.values().any(LinkEntry::is_consuming_relay)
     }
 }
 
@@ -512,23 +555,35 @@ mod tests {
         Grant::publish_under(own)
     }
 
-    /// Returns a link entry of `kind` with a peer of its own, which feeds the table.
-    ///
-    /// A direct link's session holds every right.
-    fn link(kind: LinkKind) -> LinkEntry {
-        let peer = SecretKey::generate().public();
+    /// Returns a link entry for `role`, with a hop of its own.
+    fn link(role: LinkRole) -> LinkEntry {
         LinkEntry {
-            kind,
-            peer: Some(peer),
-            hop: Hop::of(&peer),
-            grant: (kind == LinkKind::Relay).then(Grant::everything),
-            authorized: (kind == LinkKind::Direct)
-                .then(|| Authorized::new(Grant::everything().into())),
-            consume: true,
+            role,
+            hop: Hop::of(&SecretKey::generate().public()),
             auth: auth::Handle::new(),
-            session: None,
             link_state: LinkState::default(),
         }
+    }
+
+    /// Returns a direct link with a peer of its own, whose session holds every right.
+    fn direct() -> LinkEntry {
+        direct_with(SecretKey::generate().public(), Grant::everything())
+    }
+
+    /// Returns a direct link with `peer`, whose session holds `grant`.
+    fn direct_with(peer: EndpointId, grant: Grant) -> LinkEntry {
+        LinkEntry {
+            hop: Hop::of(&peer),
+            ..link(LinkRole::Direct {
+                peer,
+                authorized: Some(Authorized::new(grant.into())),
+            })
+        }
+    }
+
+    /// Returns a relay link whose routes enter the table.
+    fn relay() -> LinkEntry {
+        link(LinkRole::Relay { consume: true })
     }
 
     /// Returns a route source with a hop no link carries.
@@ -541,27 +596,24 @@ mod tests {
         let mut state = State::default();
         assert_eq!(state.link_for(unknown_hop()), None);
 
-        add(&mut state, LinkId(1), link(LinkKind::Direct));
+        add(&mut state, LinkId(1), direct());
         assert_eq!(state.link_for(unknown_hop()), None);
 
-        add(&mut state, LinkId(2), link(LinkKind::Relay));
+        add(&mut state, LinkId(2), relay());
         assert_eq!(state.link_for(unknown_hop()), Some(LinkId(2)));
 
-        add(&mut state, LinkId(3), link(LinkKind::Relay));
+        add(&mut state, LinkId(3), relay());
         assert_eq!(state.link_for(unknown_hop()), None);
     }
 
     #[test]
     fn link_for_ignores_a_relay_that_feeds_nothing() {
         let mut state = State::default();
-        add(&mut state, LinkId(1), link(LinkKind::Relay));
+        add(&mut state, LinkId(1), relay());
         add(
             &mut state,
             LinkId(2),
-            LinkEntry {
-                consume: false,
-                ..link(LinkKind::Relay)
-            },
+            link(LinkRole::Relay { consume: false }),
         );
         assert_eq!(state.link_for(unknown_hop()), Some(LinkId(1)));
     }
@@ -569,11 +621,11 @@ mod tests {
     #[test]
     fn link_for_finds_a_known_hop_and_skips_local_routes() {
         let mut state = State::default();
-        let direct = link(LinkKind::Direct);
+        let direct = direct();
         let hop = direct.hop;
         add(&mut state, LinkId(1), direct);
-        add(&mut state, LinkId(2), link(LinkKind::Relay));
-        add(&mut state, LinkId(3), link(LinkKind::Relay));
+        add(&mut state, LinkId(2), relay());
+        add(&mut state, LinkId(3), relay());
         assert_eq!(
             state.link_for(Source::Peer(hop.id().get())),
             Some(LinkId(1))
@@ -584,10 +636,8 @@ mod tests {
     #[tokio::test]
     async fn a_ticket_claim_widens_the_policy_grant_to_its_path() {
         let mut state = State::default();
-        let mut direct = link(LinkKind::Direct);
-        let peer = direct.peer.expect("a peer");
-        direct.authorized = Some(Authorized::new(own_paths(peer).into()));
-        add(&mut state, LinkId(1), direct);
+        let peer = SecretKey::generate().public();
+        add(&mut state, LinkId(1), direct_with(peer, own_paths(peer)));
         let own = format!("live/{peer}/cam");
         let claimed = Path::new("shows/news").expect("a valid path");
         assert!(grant_of(&state, LinkId(1)).publish.matches(&own));
@@ -636,11 +686,13 @@ mod tests {
     async fn an_audience_change_moves_a_publication_between_links() {
         let table = Table::new();
         let mut state = State::default();
-        let alice = link(LinkKind::Direct);
-        let bob = link(LinkKind::Direct);
-        let alice_id = alice.peer.expect("a peer");
-        add(&mut state, LinkId(1), alice);
-        add(&mut state, LinkId(2), bob);
+        let alice_id = SecretKey::generate().public();
+        add(
+            &mut state,
+            LinkId(1),
+            direct_with(alice_id, Grant::everything()),
+        );
+        add(&mut state, LinkId(2), direct());
 
         let path = "live/me/cam";
         state.add_publication(
@@ -662,11 +714,17 @@ mod tests {
     async fn a_relay_link_sees_public_publications_only() {
         let table = Table::new();
         let mut state = State::default();
-        let relay = link(LinkKind::Relay);
-        let relay_id = relay.peer.expect("a peer");
-        add(&mut state, LinkId(1), relay);
+        let relay_id = SecretKey::generate().public();
+        add(
+            &mut state,
+            LinkId(1),
+            LinkEntry {
+                hop: Hop::of(&relay_id),
+                ..relay()
+            },
+        );
 
-        // Even a `Peers` audience that names the relay stays off it.
+        // Even a `Peers` audience that names the relay's endpoint id stays off it.
         state.add_publication(
             10,
             table.publication(
@@ -691,8 +749,8 @@ mod tests {
     async fn a_removed_publication_leaves_every_grant() {
         let table = Table::new();
         let mut state = State::default();
-        add(&mut state, LinkId(1), link(LinkKind::Direct));
-        add(&mut state, LinkId(2), link(LinkKind::Relay));
+        add(&mut state, LinkId(1), direct());
+        add(&mut state, LinkId(2), relay());
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
         state.add_publication(11, table.publication("live/me/mic", AudienceKind::Granted));
         assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
@@ -711,7 +769,7 @@ mod tests {
     async fn the_policy_grant_bounds_what_a_link_sees() {
         let table = Table::new();
         let mut state = State::default();
-        add(&mut state, LinkId(1), link(LinkKind::Direct));
+        add(&mut state, LinkId(1), direct());
         state.decided(LinkId(1), Some(Grant::nothing().into()));
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
         assert!(grant_of(&state, LinkId(1)).subscribe.is_empty());
@@ -724,15 +782,17 @@ mod tests {
     async fn each_session_of_a_peer_holds_its_own_authorization() {
         let table = Table::new();
         let mut state = State::default();
-        let first = link(LinkKind::Direct);
-        let peer = first.peer.expect("a peer");
-        let second = LinkEntry {
-            peer: Some(peer),
-            hop: first.hop,
-            ..link(LinkKind::Direct)
-        };
-        add(&mut state, LinkId(1), first);
-        add(&mut state, LinkId(2), second);
+        let peer = SecretKey::generate().public();
+        add(
+            &mut state,
+            LinkId(1),
+            direct_with(peer, Grant::everything()),
+        );
+        add(
+            &mut state,
+            LinkId(2),
+            direct_with(peer, Grant::everything()),
+        );
         state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
 
         state.decided(LinkId(1), Some(Grant::nothing().into()));
@@ -760,7 +820,7 @@ mod tests {
     #[test]
     fn a_lapsed_authorization_grants_nothing_until_a_decision() {
         let mut state = State::default();
-        add(&mut state, LinkId(1), link(LinkKind::Direct));
+        add(&mut state, LinkId(1), direct());
         state.lapse(LinkId(1));
         assert_eq!(state.session_grant(LinkId(1)), Grant::nothing());
         assert!(grant_of(&state, LinkId(1)).publish.is_empty());
@@ -769,7 +829,7 @@ mod tests {
                 .links
                 .values()
                 .next()
-                .is_some_and(|link| link.authorized.is_some()),
+                .is_some_and(|link| link.authorized().is_some()),
             "the authorization stays for the policy to see"
         );
         state.decided(LinkId(1), Some(Grant::subscribe_only().into()));

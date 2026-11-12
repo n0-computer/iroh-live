@@ -23,9 +23,10 @@ fn decide(policy: &impl Policy<Peer>, request: &PeerRequest<Peer>) -> Decision {
 #[test]
 fn a_request_reads_through_to_the_session_request() {
     let session = SessionRequest::new("/studio?jwt=abc&x=1");
-    let request = PeerRequest::new("bob".to_owned(), session, Event::Reauthorize).with_dialed();
+    let request = PeerRequest::new("bob".to_owned(), session, Event::Reauthorize)
+        .with_direction(Direction::Dialed);
     assert_eq!(request.peer(), "bob");
-    assert!(request.dialed());
+    assert_eq!(request.direction(), Direction::Dialed);
     assert_eq!(request.event(), Event::Reauthorize);
     assert_eq!(request.path(), "studio");
     assert_eq!(request.query("x"), Some("1"));

@@ -19,15 +19,14 @@ use moq_net::{Path, broadcast, origin, track};
 use n0_error::{AnyError, e};
 use n0_future::{Stream, StreamExt, stream, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
+use serde::Serialize;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
-use serde::Serialize;
-
 use crate::{
-    Audience, BroadcastTicket, ConnectOptions, Error, Grant, Layout, LinkId, Publication,
-    RelayConfig, RelayLink, Session, Subscription,
+    Audience, BroadcastTicket, ConnectOptions, Direction, Error, Grant, Layout, LinkId,
+    Publication, RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission,
     handshake::{Hop, SessionParts},
@@ -635,7 +634,9 @@ impl Node {
                     sessions.iter().map(|session| session.inner.link).collect();
                 state.seen.retain(|link| listed.contains(link));
                 for session in sessions {
-                    if !session.dialed() && state.seen.insert(session.inner.link) {
+                    if session.direction() == Direction::Accepted
+                        && state.seen.insert(session.inner.link)
+                    {
                         trace!(
                             peer = %session.peer().fmt_short(),
                             link = %session.inner.link,

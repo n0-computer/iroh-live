@@ -24,11 +24,11 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkId, LinkKind, Node, SessionRequest,
+    ConnectOptions, Error, LinkId, Node, SessionRequest,
     handshake::{Hop, client_handshake},
     link::{self, LinkState},
     node::{Shared, Tasks},
-    state::{LinkEntry, served},
+    state::{LinkEntry, LinkRole, served},
     transport,
 };
 
@@ -317,14 +317,11 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
         shared,
         &uplink,
         LinkEntry {
-            kind: LinkKind::Relay,
-            peer: iroh_relay,
+            role: LinkRole::Relay {
+                consume: config.consume,
+            },
             hop,
-            grant: Some(Grant::everything()),
-            authorized: None,
-            consume: config.consume,
             auth: auth.clone(),
-            session: None,
             link_state: link_state.clone(),
         },
     )?;

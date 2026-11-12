@@ -72,7 +72,8 @@ A policy implements `Policy<EndpointId>`. The node calls its `decide` with a
 `PeerRequest`, which holds:
 
 - `peer()`: the peer's endpoint id.
-- `dialed()`: whether this node dialed the peer.
+- `direction()`: `Direction::Dialed` if this node dialed the peer, else
+  `Direction::Accepted`.
 - `event()`: why the node asks, see [when the node asks](#when-the-node-asks).
 - `path()`, `query(key)` and `token()`: what the peer asked for in its MoQ
   SETUP.
@@ -304,7 +305,7 @@ The node asks its policy at these times:
 | When | Event |
 |---|---|
 | It accepts a session, after the peer's MoQ SETUP | `Connect` |
-| It dials a peer, with `dialed()` set and no token | `Connect` |
+| It dials a peer, with `Direction::Dialed` and no token | `Connect` |
 | An authorization reaches its `expires` time | `Reauthorize` |
 | The application calls `Node::reauthorize(peer)` or `Node::reauthorize_all()` | `Reauthorize` |
 
@@ -370,7 +371,7 @@ parameter, then `token`.
 
 The node dials with no token, so the fallback decides every dial. Under
 `Closed` the node can dial nobody. Give a node that dials a fallback, or check
-`request.dialed()` in it.
+`request.direction()` in it.
 
 Two verifiers ship behind features of `moq-ext-access`, which `iroh-live-node`
 and `iroh-live` forward:

@@ -17,7 +17,7 @@
 //! the peer's key. A dial carries no token, so it gets the verifier's
 //! fallback: with the default [`Closed`], every dial of the node fails with
 //! [`Error::Rejected`](crate::Error::Rejected). Give a node that dials a
-//! fallback, or check `request.dialed()` in it.
+//! fallback, or check `request.direction()` in it.
 //!
 //! # Examples
 //!

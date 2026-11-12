@@ -3,7 +3,7 @@
 mod common;
 
 use common::{Peer, TIMEOUT, publish, read_counter, step};
-use iroh_live_node::{Audience, Error, Reach};
+use iroh_live_node::{Audience, Direction, Error, Reach};
 use n0_future::StreamExt;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
@@ -122,8 +122,8 @@ async fn an_accepted_session_appears_in_sessions() {
     .await;
 
     assert_eq!(accepted.peer(), alice.id());
-    assert!(dialed.dialed(), "the dialing side should report dialed");
-    assert!(!accepted.dialed(), "the accepting side should not");
+    assert_eq!(dialed.direction(), Direction::Dialed);
+    assert_eq!(accepted.direction(), Direction::Accepted);
 
     // Closing it removes it again.
     accepted.close(moq_net::Error::Cancel);
@@ -172,7 +172,7 @@ async fn accepted_yields_each_accepted_session_once() {
         .await
         .expect("the stream ended");
     assert_eq!(second.peer(), carol.id(), "yielded {second:?}");
-    assert!(!second.dialed());
+    assert_eq!(second.direction(), Direction::Accepted);
 
     bob.node.shutdown().await;
     let end = step("the end of the stream", accepted.next()).await;

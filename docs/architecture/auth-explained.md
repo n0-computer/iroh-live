@@ -179,8 +179,8 @@ token, if the peer sent one. Then it asks the policy, with
 `Event::Connect`.
 
 On dial, the node asks its own policy *before* it opens the connection. The
-request then holds the path this node is about to send, `dialed()` is set,
-and there is no token. A node can thus refuse to dial a peer, and the dial
+request then holds the path this node is about to send, its `direction()` is
+`Direction::Dialed`, and there is no token. A node can thus refuse to dial a peer, and the dial
 fails with `Error::Rejected`. The policy also decides what the dialed peer
 may read and publish on that session. Both directions get the same
 treatment.

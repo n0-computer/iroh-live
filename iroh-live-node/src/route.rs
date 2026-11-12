@@ -220,9 +220,13 @@ impl Subscription {
     #[must_use]
     pub fn session(&self) -> Option<Session> {
         let shared = self.inner.shared.upgrade()?;
-        let state = shared.state.lock().expect("poisoned");
-        let (_, entry) = self.serving(&state)?;
-        entry.session.clone()
+        let (link, _) = self.serving(&shared.state.lock().expect("poisoned"))?;
+        // Link ids are unique across sessions and relays, so a relay finds none.
+        shared
+            .sessions
+            .get()
+            .into_iter()
+            .find(|session| session.inner.link == link)
     }
 
     /// Returns the link serving the broadcast now, and its latest reading.
@@ -238,7 +242,7 @@ impl Subscription {
         let (link, entry) = self.serving(&state)?;
         Some(ServingLink {
             id: link,
-            kind: entry.kind,
+            kind: entry.kind(),
             sample: entry.link_state.get(),
         })
     }

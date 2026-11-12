@@ -44,7 +44,7 @@ pub use self::{
     queue::{Pending, Queue},
     verify::{TokenVerifier, Verify},
 };
-use crate::{Grant, PeerId, SessionRequest};
+use crate::{Direction, Grant, PeerId, SessionRequest};
 
 #[cfg(feature = "jwt")]
 mod jwt;
@@ -58,7 +58,7 @@ mod verify;
 pub struct PeerRequest<P: PeerId> {
     peer: P,
     request: SessionRequest,
-    dialed: bool,
+    direction: Direction,
     event: Event,
 }
 
@@ -69,17 +69,17 @@ impl<P: PeerId> PeerRequest<P> {
         Self {
             peer,
             request,
-            dialed: false,
+            direction: Direction::Accepted,
             event,
         }
     }
 
-    /// Returns this request for a session this node dials.
+    /// Returns this request with `direction` saying which side opens the session.
     ///
-    /// The request is then the one the node sends.
+    /// For a session this node dials, the request is the one the node sends.
     #[must_use]
-    pub fn with_dialed(mut self) -> Self {
-        self.dialed = true;
+    pub fn with_direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
         self
     }
 
@@ -89,10 +89,10 @@ impl<P: PeerId> PeerRequest<P> {
         &self.peer
     }
 
-    /// Reports whether this node dialed the session.
+    /// Returns which side opened the session.
     #[must_use]
-    pub fn dialed(&self) -> bool {
-        self.dialed
+    pub fn direction(&self) -> Direction {
+        self.direction
     }
 
     /// Returns why the node asks.
