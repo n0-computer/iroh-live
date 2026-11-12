@@ -125,7 +125,9 @@ pub(super) async fn run_raw(
     // until watched, such as a phone camera, produces no frame before a track
     // exists. A frame that is already there refines the size, and a later
     // frame of another size is scaled to the advertised one.
-    let frames = source.frames();
+    // Observed, not wanted: this reader only measures the frame rate, and the
+    // source is wanted only while a rendition encodes.
+    let frames = source.observe();
     let format = source.format();
     let (size, color) = match frames.current() {
         Some(frame) => (frame.size(), frame.surface.color()),
@@ -176,7 +178,7 @@ pub(super) async fn run_raw(
             name: rendition.name.clone(),
             producer,
             config,
-            frames: source.frames(),
+            frames: source.observe(),
             source: source.clone(),
             clock: source_clock.clone().after(last),
             pending: VecDeque::new(),
@@ -397,6 +399,7 @@ struct Encoder {
     name: String,
     producer: encode::Producer,
     config: encode::Config,
+    /// The source's frames, observed: the encoder wants them only while it encodes.
     frames: VideoFrames,
     source: VideoSource,
     /// Maps source timestamps onto the broadcast clock, shared with the other renditions.

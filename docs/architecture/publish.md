@@ -42,15 +42,16 @@ previews can read it.
 - `rpicam(config)` reads raw pictures from `rpicam-vid` on a Raspberry Pi.
 
 `FrameSender::push` never blocks: a new video frame replaces one not yet taken.
-`FrameSender::demand()` reports whether any rendition is encoding, so an
-application camera can idle while nobody watches. `push` returns `SourceClosed`
+`FrameSender::demand()` reports whether anything wants the frames: a rendition
+that encodes, or a `VideoFrames` handle from `VideoSource::frames()`. An
+application camera can idle while nothing does. `push` returns `SourceClosed`
 once the source is gone, and the producing loop should stop then.
 
 `switchable(format)` returns a `VideoSwitch` and the source it feeds, for a
 camera menu. The broadcast encodes the switchable source once. A forwarding
 task per input copies the current input's frames into the source's slot,
-keeps each frame's `sent_at`, and passes the broadcast's demand back to the
-input. `replace(source)` swaps at once, `open(future)` opens the next source
+keeps each frame's `sent_at`, and passes the switchable source's demand back
+to the input. `replace(source)` swaps at once, `open(future)` opens the next source
 in the background and drops one still opening, and `clear()` stops feeding.
 The previous source is dropped first, so the same camera opens again.
 `replace` and `open` also drop the previous source's last frame from the slot,
@@ -142,12 +143,16 @@ reports. When the last viewer leaves, the encoder closes and the producer
 records a discontinuity, so the next timestamp does not stretch a frame across
 the gap. The track and its catalog entry stay advertised throughout.
 
-The source itself keeps running while nobody watches, because the publisher's
-preview reads the same frames. A microphone is not a shared source. The audio
-slot opens it on a thread of its own as soon as `set_audio` runs, as one
-`moq_audio::capture::Producer` that feeds the encoder. A failure, at open or
-later, shows in `status()` as a `Failed` audio slot, and the slot stays failed
-until the next `set_audio`.
+The encoders and the publisher's frame-rate meter read the source through
+`VideoSource::observe()`, which does not count as demand, so an idle broadcast
+does not keep an application camera running. A preview's handle does count, so
+such a camera still feeds the publisher's own preview while nobody watches.
+Capture devices and generators run regardless of demand.
+
+A microphone is not a shared source. The audio slot opens it on a thread of
+its own as soon as `set_audio` runs, as one `moq_audio::capture::Producer` that
+feeds the encoder. A failure, at open or later, shows in `status()` as a
+`Failed` audio slot, and the slot stays failed until the next `set_audio`.
 
 `LocalBroadcast::status()` watches a `PublishStatus`: each slot's `SlotState`
 (`Off`, `Starting`, `Running`, `Failed`, `Ended`), and per rendition a
@@ -158,7 +163,8 @@ a `PublishStats` snapshot with one entry per rendition.
 
 `VideoSource::frames()` returns a `VideoFrames` handle onto the source's raw
 frames. These are the frames the encoders receive, so a preview costs no
-decode, and reading it does not count as demand. The preview belongs to the
+decode, and the handle counts as demand until it and its clones are dropped,
+so a source that idles until wanted produces frames for it. The preview belongs to the
 source, so it works before any broadcast exists. Pre-encoded video has no
 preview.
 

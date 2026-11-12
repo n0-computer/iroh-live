@@ -4,7 +4,7 @@
 //! source is an ordinary [`VideoSource`] over a latest-wins slot, so a broadcast
 //! encodes it once and a preview reads it, and neither sees a switch. The
 //! switch forwards the frames of whichever source is current into that slot,
-//! on one task per source, and passes the broadcast's demand back to it.
+//! on one task per source, and passes the demand of its readers back to it.
 
 use std::{
     future::Future,
@@ -261,7 +261,8 @@ enum LastFrame {
 async fn forward(shared: Arc<Shared>, generation: u64) {
     let mut frames = None;
     shared.if_current(generation, |current, _| {
-        frames = current.as_ref().map(VideoSource::frames);
+        // Observed, so the input is wanted only while the switchable source is.
+        frames = current.as_ref().map(VideoSource::observe);
     });
     let Some(mut frames) = frames else {
         return;
@@ -410,18 +411,27 @@ mod tests {
         assert_eq!(frames.sent_at(), inner_frames.sent_at());
     }
 
+    /// A reader of the switchable source wants the input's frames, and nothing else does.
     #[tokio::test]
     async fn the_switchable_source_passes_its_demand_on() {
         let (switch, source) = VideoSource::switchable(format());
         let (sender, inner) = VideoSource::push(format());
         let mut demand = sender.demand();
         switch.replace(inner);
-        let wanted = source.want();
+        let mut observed = source.observe();
+        push(&sender, 1);
+        assert_eq!(
+            next_micros(&mut observed).await,
+            1,
+            "the input is forwarded"
+        );
+        assert!(!*demand.borrow(), "the forwarding task wants the input");
+        let frames = source.frames();
         tokio::time::timeout(TIMEOUT, demand.wait_for(|wanted| *wanted))
             .await
             .expect("the demand reached the source")
             .expect("open");
-        drop(wanted);
+        drop(frames);
         tokio::time::timeout(TIMEOUT, demand.wait_for(|wanted| !*wanted))
             .await
             .expect("the demand left the source")

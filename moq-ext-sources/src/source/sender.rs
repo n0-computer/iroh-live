@@ -9,8 +9,9 @@ use crate::{SourceClosed, audio, frames::FrameSlot, video};
 
 /// Whether anything currently wants a source's frames.
 ///
-/// Every running encoder holds a [`DemandGuard`]. The source is wanted while
-/// any guard lives.
+/// Every running encoder holds a [`DemandGuard`], and so does every handle
+/// from [`VideoSource::frames`](crate::VideoSource::frames). The source is
+/// wanted while any guard lives.
 #[derive(Debug, Clone, Default)]
 pub struct Demand {
     count: Arc<Mutex<usize>>,
@@ -138,8 +139,10 @@ impl<T: 'static> FrameSender<T> {
     /// Returns whether any broadcast wants frames.
     ///
     /// It is true while a broadcast this source feeds encodes it, which for
-    /// video means while somebody watches. A camera the application drives
-    /// itself can idle while it is false.
+    /// video means while somebody watches. A video source is also wanted
+    /// while a handle from [`VideoSource::frames`](crate::VideoSource::frames)
+    /// lives. A camera the application drives itself can idle while it is
+    /// false.
     #[must_use]
     pub fn demand(&self) -> watch::Receiver<bool> {
         self.demand.watch()

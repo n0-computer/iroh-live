@@ -330,10 +330,23 @@ impl VideoSource {
 
     /// Returns the source's frames, for a local preview or a QR scanner.
     ///
-    /// Every call returns a handle onto the same stream. Reading it does not
-    /// encode and does not count as demand.
+    /// Every call returns a handle onto the same stream. The handle counts as
+    /// demand, which [`FrameSender::demand`] reports, until it and its clones
+    /// are dropped, so a source that idles until wanted produces frames for
+    /// it. Reading it does not encode.
     #[must_use]
     pub fn frames(&self) -> VideoFrames {
+        self.observe().wanting(self.want())
+    }
+
+    /// Returns the source's frames without counting as demand.
+    ///
+    /// For a reader that wants the frames only some of the time, and holds a
+    /// [`want`](Self::want) guard while it does. A publisher's encoder reads
+    /// the source this way, and wants it only while somebody watches. A
+    /// source that idles until wanted produces nothing for this handle alone.
+    #[must_use]
+    pub fn observe(&self) -> VideoFrames {
         self.inner.frames.frames()
     }
 
@@ -346,6 +359,10 @@ impl VideoSource {
     }
 
     /// Registers a consumer that wants frames, for [`FrameSender::demand`].
+    ///
+    /// The demand lasts until the guard is dropped. A handle from
+    /// [`frames`](Self::frames) already holds one, so this is only for a
+    /// reader from [`observe`](Self::observe).
     pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
@@ -728,7 +745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pushed_source_reports_demand_while_something_encodes() {
+    async fn a_pushed_source_reports_demand_while_something_wants_it() {
         let format = VideoFormat {
             size: video::Size::new(2, 2),
             rate: rate(30),
@@ -740,8 +757,45 @@ mod tests {
         assert!(*demand.borrow());
         drop(wanted);
         assert!(!*demand.borrow());
+
+        let _observed = source.observe();
+        assert!(!*demand.borrow(), "an observer is not demand");
+        let frames = source.frames();
+        let clone = frames.clone();
+        assert!(*demand.borrow(), "a frames reader is demand");
+        drop(frames);
+        assert!(*demand.borrow(), "the clone still wants frames");
+        drop(clone);
+        assert!(!*demand.borrow());
         drop(source);
         assert!(sender.is_closed());
+    }
+
+    /// A source that pushes only while wanted feeds a plain frames reader.
+    #[tokio::test]
+    async fn a_frames_reader_gets_frames_from_a_source_that_waits_for_demand() {
+        let format = VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        };
+        let (sender, source) = VideoSource::push(format);
+        let producer = tokio::spawn(async move {
+            sender
+                .demand()
+                .wait_for(|wanted| *wanted)
+                .await
+                .expect("the source is open");
+            let surface = video::Surface::rgba(&[0; 16], format.size).expect("2x2");
+            let timestamp = moq_net::Timestamp::from_micros(7).expect("in range");
+            sender.push(video::Frame::new(surface, timestamp))
+        });
+        let mut frames = source.frames();
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+            .await
+            .expect("the source produced for the reader")
+            .expect("the source is open");
+        assert_eq!(frame.timestamp.as_micros(), 7);
+        producer.await.expect("joined").expect("pushed");
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use std::{
 
 use tokio::sync::watch;
 
-use crate::{Error, video};
+use crate::{DemandGuard, Error, video};
 
 /// A frame in a slot, with the instant it was sent.
 type Sent = Option<(Arc<video::Frame>, Instant)>;
@@ -119,19 +119,34 @@ impl FrameReader {
 ///
 /// On a fresh handle, the first [`next`](Self::next) returns at once if a
 /// picture is already there.
+///
+/// A handle from [`VideoSource::frames`](crate::VideoSource::frames) wants
+/// the source's frames until it and every clone of it are dropped.
 #[derive(derive_more::Debug, Clone)]
 pub struct VideoFrames {
     #[debug(skip)]
     rx: watch::Receiver<Sent>,
     /// When the frame this handle last returned was sent.
     sent_at: Option<Instant>,
+    /// The demand this handle and its clones hold on their source, if any.
+    demand: Option<Arc<DemandGuard>>,
 }
 
 impl VideoFrames {
     /// Creates a handle whose first [`next`](Self::next) returns the current frame.
     fn new(mut rx: watch::Receiver<Sent>) -> Self {
         rx.mark_changed();
-        Self { rx, sent_at: None }
+        Self {
+            rx,
+            sent_at: None,
+            demand: None,
+        }
+    }
+
+    /// Holds `demand` for as long as this handle or a clone of it lives.
+    pub(crate) fn wanting(mut self, demand: DemandGuard) -> Self {
+        self.demand = Some(Arc::new(demand));
+        self
     }
 
     /// Returns the newest frame, seen or not, without moving the cursor.
