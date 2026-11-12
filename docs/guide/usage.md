@@ -41,8 +41,8 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        AudioEncoding, AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
-        audio::Layout, video,
+        AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
+        audio::Layout, audio_encoding, video,
     },
 };
 
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     broadcast.set_audio(
         AudioSource::test_pattern(Layout::Mono)?,
-        AudioEncoding::voice(),
+        audio_encoding::voice(),
     )?;
     println!("{}", layout.ticket(node.id(), "pattern")?);
 
@@ -150,8 +150,8 @@ use iroh_live::{
     calls::Calls,
     layout::LiveLayout,
     media::{
-        AudioEncoding, AudioSource, LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition,
-        VideoSource, audio::Layout, remote_broadcast, video,
+        AudioSource, LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
+        audio::Layout, audio_encoding, remote_broadcast, video,
     },
 };
 
@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     broadcast.set_audio(
         AudioSource::test_pattern(Layout::Mono)?,
-        AudioEncoding::voice(),
+        audio_encoding::voice(),
     )?;
 
     let call = tokio::time::timeout(Duration::from_secs(60), calls.call(peer)).await??;

@@ -5,7 +5,7 @@ use std::time::Duration;
 use moq_ext_media_core::SlotState;
 
 use super::*;
-use crate::AudioEncoding;
+use crate::audio_encoding;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -32,7 +32,7 @@ async fn a_replacement_waits_for_the_track_names() {
         target
             .set_audio(
                 AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-                AudioEncoding::voice(),
+                audio_encoding::voice(),
             )
             .expect("a valid encoding");
     }
@@ -59,11 +59,11 @@ async fn two_audio_sets_in_a_row_keep_publishing() {
     let tone =
         || AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts");
     broadcast
-        .set_audio(tone(), AudioEncoding::voice())
+        .set_audio(tone(), audio_encoding::voice())
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
     broadcast
-        .set_audio(tone(), AudioEncoding::voice())
+        .set_audio(tone(), audio_encoding::voice())
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
     let frames = |broadcast: &LocalBroadcast| {
@@ -90,7 +90,7 @@ async fn clearing_audio_turns_it_off() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
@@ -106,7 +106,7 @@ async fn closing_finishes_the_broadcast() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
@@ -121,7 +121,7 @@ async fn closing_finishes_the_broadcast() {
     assert!(matches!(
         broadcast.set_audio(
             AudioSource::tone(1.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice()
+            audio_encoding::voice()
         ),
         Err(Error::Closed { .. })
     ));
@@ -137,7 +137,7 @@ async fn a_pushed_audio_source_ends_when_its_senders_go() {
     let (sender, source) = AudioSource::push(format);
     let broadcast = LocalBroadcast::new();
     broadcast
-        .set_audio(source, AudioEncoding::voice())
+        .set_audio(source, audio_encoding::voice())
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
     let silence = bytes::Bytes::from(vec![0u8; 960 * 4]);

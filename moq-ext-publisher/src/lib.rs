@@ -40,11 +40,14 @@
 mod publish;
 mod stats;
 
+/// Audio encodings for [`LocalBroadcast::set_audio`], as moq-audio configs.
+pub mod audio_encoding {
+    pub use crate::publish::{music, pcm, voice};
+}
+
 pub use moq_ext_media_core::{Error, SlotState, SourceClosed};
 
 pub use self::{
-    publish::{
-        AudioEncoding, LocalBroadcast, PublishStatus, RenditionState, VideoEncoding, VideoRendition,
-    },
+    publish::{LocalBroadcast, PublishStatus, RenditionState, VideoEncoding, VideoRendition},
     stats::{AudioEncodeStats, EncodeStats, PublishStats},
 };

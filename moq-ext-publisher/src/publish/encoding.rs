@@ -1,6 +1,6 @@
 //! How a broadcast encodes its sources: renditions and their presets.
 
-use std::{collections::BTreeSet, time::Duration};
+use std::collections::BTreeSet;
 
 use moq_ext_media_core::Error;
 use moq_ext_sources::AudioFormat;
@@ -17,11 +17,6 @@ const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_
 pub struct VideoEncoding {
     /// The renditions, which a subscriber chooses among.
     pub renditions: Vec<VideoRendition>,
-    /// Whether hardware encoders are tried first. Default: true.
-    ///
-    /// A rendition falls back to software once if the hardware encoder fails
-    /// to open or fails mid-stream.
-    pub prefer_hardware: bool,
 }
 
 impl VideoEncoding {
@@ -36,7 +31,6 @@ impl VideoEncoding {
     pub fn ladder(renditions: impl IntoIterator<Item = VideoRendition>) -> Self {
         Self {
             renditions: renditions.into_iter().collect(),
-            prefer_hardware: true,
         }
     }
 
@@ -77,7 +71,7 @@ impl VideoEncoding {
                     rendition.name
                 )));
             }
-            if rendition.keyframe_interval.is_zero() {
+            if rendition.config.join.is_zero() {
                 return Err(Error::invalid(format!(
                     "rendition {} has a zero keyframe interval",
                     rendition.name
@@ -85,9 +79,9 @@ impl VideoEncoding {
             }
             // OpenH264 is the one encoder every build carries, and it only
             // encodes H.264. A software-only H.265 rendition can never open.
-            let software_only =
-                !self.prefer_hardware || rendition.encoder == moq_video::encode::Kind::Software;
-            if rendition.codec == moq_video::encode::Codec::H265 && software_only {
+            if rendition.config.codec == moq_video::encode::Codec::H265
+                && rendition.config.kind == moq_video::encode::Kind::Software
+            {
                 return Err(n0_error::e!(Error::NoEncoder {
                     codec: "H.265 in software".to_string()
                 }));
@@ -98,41 +92,41 @@ impl VideoEncoding {
 }
 
 /// One encoding of a broadcast's picture.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The encoder settings are moq-video's own [`Config`]. Its `width`, `height`
+/// and `framerate` are filled in from [`size`](Self::size), [`rate`](Self::rate)
+/// and the source when the rendition opens, and so is its `color` unless set.
+/// Its `join` is the keyframe interval: a subscriber cannot draw anything
+/// before a keyframe, so it sets how long a new viewer waits for a picture and
+/// how long a rendition switch takes.
+///
+/// [`Config`]: moq_video::encode::Config
+#[derive(Debug, Clone)]
 pub struct VideoRendition {
     /// The track name, which a subscriber picks the rendition by.
     pub name: String,
     /// The encoded size. `None` encodes at the source's own size.
     pub size: Option<moq_video::Size>,
-    /// The target bitrate. `None` derives one from the size and rate.
-    pub bitrate: Option<Rate>,
     /// The frame rate. `None` follows the source. It cannot exceed the source's rate.
     pub rate: Option<moq_video::FrameRate>,
-    /// How often the encoder inserts a keyframe and opens a group.
-    ///
-    /// This is the encoder's join time, rounded to whole frames at the
-    /// rendition's rate. A subscriber cannot draw anything before a keyframe,
-    /// so this interval sets how long a new viewer waits for a picture and how
-    /// long a rendition switch takes. It cannot be zero.
-    pub keyframe_interval: Duration,
-    /// Which codec to encode.
-    pub codec: moq_video::encode::Codec,
-    /// Which encoder backend to use.
-    pub encoder: moq_video::encode::Kind,
+    /// The encoder settings: bitrate, keyframe interval, codec, backend, preset.
+    pub config: moq_video::encode::Config,
 }
 
 impl VideoRendition {
-    /// Creates a rendition at the source's size with a keyframe every two seconds.
+    /// Creates a rendition at the source's size with moq-video's default settings.
+    ///
+    /// The defaults are H.264 from any backend, a keyframe every two seconds,
+    /// and a bitrate derived from the size and rate.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
+        let rate = moq_video::FrameRate::new(30, 1).expect("30 fps is a valid rate");
         Self {
             name: name.into(),
             size: None,
-            bitrate: None,
             rate: None,
-            keyframe_interval: Duration::from_secs(2),
-            codec: moq_video::encode::Codec::default(),
-            encoder: moq_video::encode::Kind::default(),
+            // The size and rate are placeholders until the rendition opens.
+            config: moq_video::encode::Config::new(0, 0, rate),
         }
     }
 
@@ -154,11 +148,10 @@ impl VideoRendition {
     /// rendition that starves at its ceiling looks worse than one that spends a
     /// bit more.
     fn preset(name: &str, width: u32, height: u32, kbps: u64) -> Self {
-        Self {
-            size: Some(moq_video::Size::new(width, height)),
-            bitrate: Some(Rate::from_kbps(kbps)),
-            ..Self::new(name)
-        }
+        let mut rendition = Self::new(name);
+        rendition.size = Some(moq_video::Size::new(width, height));
+        rendition.config.bitrate = Some(Rate::from_kbps(kbps));
+        rendition
     }
 
     /// Returns the encoder config for this rendition of a source of `size` at `rate`.
@@ -167,124 +160,78 @@ impl VideoRendition {
         size: moq_video::Size,
         rate: moq_video::FrameRate,
         color: Option<moq_video::Color>,
-        prefer_hardware: bool,
     ) -> moq_video::encode::Config {
         let size = self.size.unwrap_or(size);
-        let rate = self.rate.unwrap_or(rate);
-        let mut config = moq_video::encode::Config::new(size.width, size.height, rate);
-        config.bitrate = self.bitrate;
-        config.codec = self.codec;
-        config.kind = match (&self.encoder, prefer_hardware) {
-            (moq_video::encode::Kind::Auto, false) => moq_video::encode::Kind::Software,
-            (kind, _) => kind.clone(),
-        };
-        config.color = color;
-        config.join = self.keyframe_interval;
+        let mut config = self.config.clone();
+        config.width = size.width;
+        config.height = size.height;
+        config.framerate = self.rate.unwrap_or(rate);
+        config.color = config.color.or(color);
         config
     }
 }
 
-/// How an audio source is encoded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AudioEncoding {
-    /// Which codec to encode.
-    pub codec: moq_audio::encode::Codec,
-    /// The target bitrate. `None` lets the codec pick, and PCM always does.
-    pub bitrate: Option<Rate>,
-    /// The channel layout. `None` follows the source.
-    pub layout: Option<moq_audio::Layout>,
-    /// The duration of one encoded frame.
-    ///
-    /// Opus accepts 2.5, 5, 10, 20, 40 or 60 ms.
-    pub frame_duration: Duration,
+/// Returns Opus mono at 32 kbit/s in 20 ms frames, for speech.
+#[must_use]
+pub fn voice() -> moq_audio::encode::Config {
+    opus(moq_audio::Layout::Mono, 32)
 }
 
-impl AudioEncoding {
-    /// Returns Opus mono at 32 kbit/s, for speech.
-    #[must_use]
-    pub fn voice() -> Self {
-        Self {
-            codec: moq_audio::encode::Codec::Opus,
-            bitrate: Some(Rate::from_kbps(32)),
-            layout: Some(moq_audio::Layout::Mono),
-            frame_duration: Duration::from_millis(20),
-        }
-    }
-
-    /// Returns Opus stereo at 128 kbit/s, for music.
-    #[must_use]
-    pub fn music() -> Self {
-        Self {
-            codec: moq_audio::encode::Codec::Opus,
-            bitrate: Some(Rate::from_kbps(128)),
-            layout: Some(moq_audio::Layout::Stereo),
-            frame_duration: Duration::from_millis(20),
-        }
-    }
-
-    /// Returns uncompressed PCM at the source's own rate and layout.
-    #[must_use]
-    pub fn pcm() -> Self {
-        Self {
-            codec: moq_audio::encode::Codec::Pcm,
-            bitrate: None,
-            layout: None,
-            frame_duration: Duration::from_millis(20),
-        }
-    }
-
-    /// Returns the track name the encoding publishes under.
-    pub(crate) fn track_name(&self) -> String {
-        self.codec.to_string()
-    }
-
-    /// Checks everything that can be checked without opening an encoder.
-    pub(crate) fn validate(&self) -> Result<(), Error> {
-        if self.codec == moq_audio::encode::Codec::Pcm && self.bitrate.is_some() {
-            return Err(Error::invalid(
-                "PCM's bitrate follows from its rate and layout and cannot be set",
-            ));
-        }
-        if self.frame_duration.is_zero() {
-            return Err(Error::invalid("an audio frame duration cannot be zero"));
-        }
-        if self.codec == moq_audio::encode::Codec::Opus
-            && !OPUS_FRAMES_MICROS.contains(&self.frame_duration.as_micros())
-        {
-            return Err(Error::invalid(format!(
-                "Opus encodes frames of 2.5, 5, 10, 20, 40 or 60 ms, not {:?}",
-                self.frame_duration
-            )));
-        }
-        Ok(())
-    }
-
-    /// Returns the codec settings for a source in `format`.
-    ///
-    /// Without a format, the codec's default rate applies.
-    pub(crate) fn settings(&self, format: Option<AudioFormat>) -> moq_audio::encode::Config {
-        let input = match format {
-            Some(format) => moq_audio::encode::Input::new(format.sample_rate, format.layout),
-            None => moq_audio::encode::Input::default(),
-        };
-        let mut settings = moq_audio::encode::Config::from_input(self.codec, &input);
-        if let Some(layout) = self.layout {
-            settings.layout = layout;
-        }
-        settings.bitrate = self.bitrate;
-        settings.frame_duration = self.frame_duration;
-        settings
-    }
+/// Returns Opus stereo at 128 kbit/s in 20 ms frames, for music.
+#[must_use]
+pub fn music() -> moq_audio::encode::Config {
+    opus(moq_audio::Layout::Stereo, 128)
 }
 
-impl Default for AudioEncoding {
-    fn default() -> Self {
-        Self::voice()
+/// Returns uncompressed PCM in 20 ms frames at the rate and layout of `format`.
+///
+/// Pass the source's own format, so the samples go out as they come in. A
+/// microphone's format is known only once it opens, and is resampled to
+/// whatever is passed here.
+#[must_use]
+pub fn pcm(format: AudioFormat) -> moq_audio::encode::Config {
+    let input = moq_audio::encode::Input::new(format.sample_rate, format.layout);
+    moq_audio::encode::Config::from_input(moq_audio::encode::Codec::Pcm, &input)
+}
+
+/// Returns Opus at 48 kHz in `layout` at `kbps`.
+fn opus(layout: moq_audio::Layout, kbps: u64) -> moq_audio::encode::Config {
+    let mut config = moq_audio::encode::Config::new(48_000, layout);
+    config.codec = moq_audio::encode::Codec::Opus;
+    config.bitrate = Some(Rate::from_kbps(kbps));
+    config
+}
+
+/// Returns the track name an audio encoding publishes under.
+pub(crate) fn audio_track_name(config: &moq_audio::encode::Config) -> String {
+    config.codec.to_string()
+}
+
+/// Checks everything about an audio encoding that can be checked without opening an encoder.
+pub(crate) fn validate_audio(config: &moq_audio::encode::Config) -> Result<(), Error> {
+    if config.codec == moq_audio::encode::Codec::Pcm && config.bitrate.is_some() {
+        return Err(Error::invalid(
+            "PCM's bitrate follows from its rate and layout and cannot be set",
+        ));
     }
+    if config.frame_duration.is_zero() {
+        return Err(Error::invalid("an audio frame duration cannot be zero"));
+    }
+    if config.codec == moq_audio::encode::Codec::Opus
+        && !OPUS_FRAMES_MICROS.contains(&config.frame_duration.as_micros())
+    {
+        return Err(Error::invalid(format!(
+            "Opus encodes frames of 2.5, 5, 10, 20, 40 or 60 ms, not {:?}",
+            config.frame_duration
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn fps(n: u32) -> moq_video::FrameRate {
@@ -321,71 +268,57 @@ mod tests {
 
     #[test]
     fn software_h265_has_no_encoder() {
-        let encoding = VideoEncoding {
-            prefer_hardware: false,
-            ..VideoEncoding::single(VideoRendition {
-                codec: moq_video::encode::Codec::H265,
-                ..VideoRendition::p360()
-            })
-        };
+        let mut rendition = VideoRendition::p360();
+        rendition.config.codec = moq_video::encode::Codec::H265;
+        rendition.config.kind = moq_video::encode::Kind::Software;
         assert!(matches!(
-            encoding.validate(fps(30)),
+            VideoEncoding::single(rendition).validate(fps(30)),
             Err(Error::NoEncoder { .. })
         ));
     }
 
     #[test]
     fn the_keyframe_interval_sets_the_encoder_join() {
-        let rendition = VideoRendition {
-            keyframe_interval: Duration::from_secs(1),
-            ..VideoRendition::new("video")
-        };
+        let mut rendition = VideoRendition::new("video");
+        rendition.config.join = Duration::from_secs(1);
         let size = moq_video::Size::new(1280, 720);
         for rate in [fps(30), fps(15)] {
-            let config = rendition.encode_config(size, rate, None, true);
+            let config = rendition.encode_config(size, rate, None);
             assert_eq!(config.join, Duration::from_secs(1));
             assert_eq!(config.effective_join(), Duration::from_secs(1));
         }
     }
 
     #[test]
-    fn preferring_software_forces_it_for_auto_only() {
-        let size = moq_video::Size::new(640, 360);
-        let auto = VideoRendition::p360().encode_config(size, fps(30), None, false);
-        assert_eq!(auto.kind, moq_video::encode::Kind::Software);
-        let named = VideoRendition {
-            encoder: moq_video::encode::Kind::Named("vaapi".into()),
+    fn the_rendition_size_and_rate_override_the_source() {
+        let rendition = VideoRendition {
+            rate: Some(fps(15)),
             ..VideoRendition::p360()
-        }
-        .encode_config(size, fps(30), None, false);
-        assert_eq!(named.kind, moq_video::encode::Kind::Named("vaapi".into()));
+        };
+        let config = rendition.encode_config(moq_video::Size::new(1280, 720), fps(30), None);
+        assert_eq!(config.size(), moq_video::Size::new(640, 360));
+        assert_eq!(config.framerate, fps(15));
+        assert_eq!(config.bitrate, Some(Rate::from_kbps(500)));
     }
 
     #[test]
     fn voice_is_mono_opus() {
-        let settings = AudioEncoding::voice().settings(Some(AudioFormat {
-            sample_rate: 48_000,
-            layout: moq_audio::Layout::Stereo,
-        }));
-        assert_eq!(settings.layout, moq_audio::Layout::Mono);
-        assert_eq!(settings.codec, moq_audio::encode::Codec::Opus);
+        let config = voice();
+        assert_eq!(config.layout, moq_audio::Layout::Mono);
+        assert_eq!(config.codec, moq_audio::encode::Codec::Opus);
+        assert!(validate_audio(&config).is_ok());
     }
 
     #[test]
     fn pcm_follows_the_source() {
-        let settings = AudioEncoding::pcm().settings(Some(AudioFormat {
+        let mut config = pcm(AudioFormat {
             sample_rate: 44_100,
             layout: moq_audio::Layout::Stereo,
-        }));
-        assert_eq!(settings.sample_rate, 44_100);
-        assert_eq!(settings.layout, moq_audio::Layout::Stereo);
-        assert!(
-            AudioEncoding {
-                bitrate: Some(Rate::from_kbps(1)),
-                ..AudioEncoding::pcm()
-            }
-            .validate()
-            .is_err()
-        );
+        });
+        assert_eq!(config.sample_rate, 44_100);
+        assert_eq!(config.layout, moq_audio::Layout::Stereo);
+        assert!(validate_audio(&config).is_ok());
+        config.bitrate = Some(Rate::from_kbps(1));
+        assert!(validate_audio(&config).is_err());
     }
 }

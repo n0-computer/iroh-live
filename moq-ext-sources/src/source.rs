@@ -702,6 +702,18 @@ impl AudioSource {
         &self.inner.kind
     }
 
+    /// Returns the format of the samples, or `None` for a microphone.
+    ///
+    /// A microphone's format is known only once the publication opens it.
+    #[must_use]
+    pub fn format(&self) -> Option<AudioFormat> {
+        match &self.inner.kind {
+            AudioKind::Pcm { format, .. } => Some(*format),
+            #[cfg(feature = "capture")]
+            AudioKind::Microphone(_) => None,
+        }
+    }
+
     /// Returns a short name of the source, for logs.
     #[must_use]
     pub fn label(&self) -> &str {

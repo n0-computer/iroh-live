@@ -64,14 +64,13 @@ pub fn fps(frames_per_second: u32) -> FrameRate {
 /// Returns one software-encoded rendition named `video`, at `size` or the source's.
 #[must_use]
 pub fn single(size: Option<Size>) -> VideoEncoding {
-    VideoEncoding {
-        prefer_hardware: false,
-        ..VideoEncoding::single(VideoRendition {
-            size,
-            keyframe_interval: Duration::from_secs(1),
-            ..VideoRendition::new("video")
-        })
-    }
+    let mut rendition = VideoRendition {
+        size,
+        ..VideoRendition::new("video")
+    };
+    rendition.config.kind = moq_video::encode::Kind::Software;
+    rendition.config.join = Duration::from_secs(1);
+    VideoEncoding::single(rendition)
 }
 
 /// Where a fed source's timestamps start.

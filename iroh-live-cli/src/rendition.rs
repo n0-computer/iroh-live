@@ -309,16 +309,16 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
         .map(|rung| {
             let mut rendition = VideoRendition {
                 size: rung.size,
-                codec,
-                encoder: kind.clone(),
                 ..VideoRendition::new(rung.name.clone())
             };
+            rendition.config.codec = codec;
+            rendition.config.kind = kind.clone();
             if args.keyframe_interval > 0.0 {
-                rendition.keyframe_interval = Duration::from_secs_f64(args.keyframe_interval);
+                rendition.config.join = Duration::from_secs_f64(args.keyframe_interval);
             }
             // A subscriber picks a rung by comparing its bandwidth estimate
             // with each rung's bitrate, so the rungs must differ.
-            rendition.bitrate = args
+            rendition.config.bitrate = args
                 .bitrate
                 .map(|bitrate| Rate::from_bps(scaled_bitrate(bitrate, rung.size, largest)));
             rendition

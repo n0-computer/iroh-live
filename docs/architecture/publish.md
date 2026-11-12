@@ -62,10 +62,11 @@ falls further behind loses the oldest frames and counts them in its stats.
 
 `set_video(source, encoding)` takes a `VideoEncoding`. `VideoEncoding::single`
 publishes one rendition and `VideoEncoding::ladder` several. A
-`VideoRendition`'s `name` is its track name. It also has an optional `size`,
-`bitrate` and `rate`, a `keyframe_interval` (two seconds by default), a
-`codec` and an `encoder` backend. `VideoRendition::new(name)` encodes at the
-source's size.
+`VideoRendition`'s `name` is its track name. It also has an optional `size`
+and `rate`, and moq-video's own `encode::Config` for the rest: bitrate,
+keyframe interval (`join`, two seconds by default), codec, backend (`kind`)
+and preset. The config's size, rate and color are filled in when the rendition
+opens. `VideoRendition::new(name)` encodes at the source's size.
 `p360` and `p720` are 16:9 presets at 500 kbit/s and 1.8 Mbit/s.
 
 `set_video` fails at once for an empty ladder, an empty or duplicate name, an
@@ -85,14 +86,15 @@ Before a rendition is advertised, `encode::Config::probe()` runs once for it,
 so the catalog entry describes exactly what the track will carry. The whole
 ladder is probed before any of it reaches the catalog. With the encoder `Auto`
 or `Hardware`, a hardware encoder that fails to open or fails mid-stream falls
-back to software once. `prefer_hardware: false` asks for software from the
-start. A backend named explicitly is never replaced, so a broken driver shows
+back to software once. `Kind::Software` asks for software from the start. A
+backend named explicitly is never replaced, so a broken driver shows
 as a failed rendition.
 
 Audio has no ladder. `set_audio(source, encoding)` publishes one track, named
-after its codec. `AudioEncoding::voice()` is Opus mono at 32 kbit/s,
-`AudioEncoding::music()` Opus stereo at 128 kbit/s, and `AudioEncoding::pcm()`
-uncompressed PCM at the source's rate and layout.
+after its codec. The encoding is moq-audio's `encode::Config`, and the
+`audio_encoding` module has three: `voice()` is Opus mono at 32 kbit/s,
+`music()` Opus stereo at 128 kbit/s, and `pcm(format)` uncompressed PCM in the
+given format, usually the source's (`AudioSource::format`).
 
 ## Demand
 

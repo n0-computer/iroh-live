@@ -16,8 +16,8 @@ use iroh_live::{
     calls::{Calls, HangUpReason},
     layout::LiveLayout,
     media::{
-        AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player,
-        PlayerConfig, Rate, RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
+        AudioSource, AudioTarget, LocalBroadcast, NetworkSample, Player, PlayerConfig, Rate,
+        RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio, audio_encoding,
         remote_broadcast,
         video::{FrameRate, Size, decode},
     },
@@ -62,6 +62,16 @@ async fn subscribe(node: &Node, publisher: &Node, name: &str) -> RemoteBroadcast
 }
 
 /// Sets a generated pattern of `size` on `broadcast`, as one rendition.
+/// Returns a rendition named `name` at `size`, or the source's, and `bitrate`.
+fn rendition(name: &str, size: Option<Size>, bitrate: Rate) -> VideoRendition {
+    let mut rendition = VideoRendition {
+        size,
+        ..VideoRendition::new(name)
+    };
+    rendition.config.bitrate = Some(bitrate);
+    rendition
+}
+
 fn set_pattern(broadcast: &LocalBroadcast, size: Size) {
     let source = VideoSource::test_pattern(size, FrameRate::new(30, 1).expect("a valid rate"))
         .expect("the pattern thread starts");
@@ -227,7 +237,7 @@ async fn opus_audio_crosses_the_transport_and_decodes() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("failed to set audio");
 
@@ -267,15 +277,8 @@ async fn heavy_loss_moves_the_player_down_the_ladder() {
             VideoSource::test_pattern(Size::new(640, 480), FrameRate::new(30, 1).expect("valid"))
                 .expect("the pattern thread starts"),
             VideoEncoding::ladder([
-                VideoRendition {
-                    bitrate: Some(Rate::from_bps(2_000_000)),
-                    ..VideoRendition::new("high")
-                },
-                VideoRendition {
-                    size: Some(Size::new(320, 240)),
-                    bitrate: Some(Rate::from_bps(200_000)),
-                    ..VideoRendition::new("low")
-                },
+                rendition("high", None, Rate::from_bps(2_000_000)),
+                rendition("low", Some(Size::new(320, 240)), Rate::from_bps(200_000)),
             ]),
         )
         .expect("failed to set video");

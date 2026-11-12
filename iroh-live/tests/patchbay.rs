@@ -477,6 +477,16 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
     );
 }
 
+/// Returns a rendition named `name` at `size`, or the source's, and `bitrate`.
+fn rendition(name: &str, size: Option<Size>, bitrate: Rate) -> VideoRendition {
+    let mut rendition = VideoRendition {
+        size,
+        ..VideoRendition::new(name)
+    };
+    rendition.config.bitrate = Some(bitrate);
+    rendition
+}
+
 /// Returns a two-rung ladder, `high` at 800 kbit/s and `low` at 200 kbit/s.
 ///
 /// The bitrates are encoder ceilings. Over a clear link this picture arrives at
@@ -484,15 +494,8 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
 /// impairment has to be tighter than the ladder suggests.
 fn ladder() -> Vec<VideoRendition> {
     vec![
-        VideoRendition {
-            bitrate: Some(Rate::from_bps(800_000)),
-            ..VideoRendition::new("high")
-        },
-        VideoRendition {
-            size: Some(Size::new(320, 240)),
-            bitrate: Some(Rate::from_bps(200_000)),
-            ..VideoRendition::new("low")
-        },
+        rendition("high", None, Rate::from_bps(800_000)),
+        rendition("low", Some(Size::new(320, 240)), Rate::from_bps(200_000)),
     ]
 }
 
@@ -515,10 +518,7 @@ const RTT_CORROBORATION: Duration = Duration::from_secs(30);
 async fn frames_survive_a_latency_ramp() {
     let fixture = Fixture::start(
         Size::new(320, 240),
-        vec![VideoRendition {
-            bitrate: Some(Rate::from_bps(500_000)),
-            ..VideoRendition::new("video")
-        }],
+        vec![rendition("video", None, Rate::from_bps(500_000))],
     )
     .await;
     let mut viewer = fixture.play(1, "video").await;
@@ -580,10 +580,7 @@ async fn frames_survive_a_latency_ramp() {
 async fn frames_survive_a_loss_spike() {
     let fixture = Fixture::start(
         Size::new(320, 240),
-        vec![VideoRendition {
-            bitrate: Some(Rate::from_bps(500_000)),
-            ..VideoRendition::new("video")
-        }],
+        vec![rendition("video", None, Rate::from_bps(500_000))],
     )
     .await;
     let mut viewer = fixture.play(1, "video").await;

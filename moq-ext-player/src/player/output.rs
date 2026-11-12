@@ -205,7 +205,7 @@ mod tests {
     use std::sync::Arc;
 
     #[cfg(feature = "aec")]
-    use moq_ext_publisher::{AudioEncoding, LocalBroadcast};
+    use moq_ext_publisher::{LocalBroadcast, audio_encoding};
     #[cfg(feature = "aec")]
     use moq_ext_sources::{AudioSource, MicrophoneConfig};
 
@@ -295,7 +295,7 @@ mod tests {
         broadcast
             .set_audio(
                 AudioSource::microphone_unchecked(config),
-                AudioEncoding::voice(),
+                audio_encoding::voice(),
             )
             .expect("a valid encoding");
         tokio::time::timeout(TIMEOUT, async {

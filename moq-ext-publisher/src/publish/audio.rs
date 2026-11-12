@@ -10,14 +10,14 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "capture")]
 use super::status::Reporter;
-use super::{Job, SourceClock, encoding::AudioEncoding, status::RenditionState};
+use super::{Job, SourceClock, encoding::audio_track_name, status::RenditionState};
 use crate::stats::AudioEncodeStats;
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
 pub(super) async fn run(
     mut job: Job,
     source: AudioSource,
-    encoding: AudioEncoding,
+    encoding: moq_audio::encode::Config,
     stop: CancellationToken,
 ) {
     let Some(_tracks) = job.take_over(&stop).await else {
@@ -79,21 +79,21 @@ async fn pcm(
     stats: &Cell<AudioEncodeStats>,
     format: AudioFormat,
     mut frames: broadcast::Receiver<moq_audio::Frame>,
-    encoding: &AudioEncoding,
+    encoding: &moq_audio::encode::Config,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
     let input = moq_audio::encode::Input::new(format.sample_rate, format.layout);
     let mut options = moq_audio::encode::Options::default();
-    options.track = Some(encoding.track_name());
-    options.config = encoding.settings(Some(format));
+    options.track = Some(audio_track_name(&encoding));
+    options.config = encoding.clone();
     let mut broadcast = job.producer.clone();
     let mut encoder =
         moq_audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
             .map_err(Error::encoder)?;
-    info!(track = %encoding.track_name(), rate = format.sample_rate, "publishing audio");
+    info!(track = %audio_track_name(&encoding), rate = format.sample_rate, "publishing audio");
     job.reporter.slot(SlotState::Running);
     job.reporter.rendition(
-        &encoding.track_name(),
+        &audio_track_name(&encoding),
         RenditionState::Encoding {
             encoder: encoding.codec.to_string(),
         },
@@ -130,12 +130,12 @@ async fn pcm(
 async fn microphone(
     job: &Job,
     capture: moq_audio::capture::Config,
-    encoding: &AudioEncoding,
+    encoding: &moq_audio::encode::Config,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
-    let track = encoding.track_name();
+    let track = audio_track_name(&encoding);
     let encode_track = track.clone();
-    let encode_config = encoding.settings(None);
+    let encode_config = encoding.clone();
 
     let (handle_tx, handle) = oneshot::channel();
     let broadcast = job.producer.clone();
@@ -201,7 +201,7 @@ async fn follow(
     handle: oneshot::Receiver<Result<moq_audio::encode::Control, Error>>,
     reporter: &Reporter,
     track: &str,
-    encoding: &AudioEncoding,
+    encoding: &moq_audio::encode::Config,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
     let mut publication = handle

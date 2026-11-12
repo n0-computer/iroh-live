@@ -12,7 +12,7 @@ its own in-process.
 (from `moq-ext-sources`) and hand it to the broadcast with an encoding:
 
 ```rust
-use moq_ext_publisher::{AudioEncoding, LocalBroadcast, VideoEncoding, VideoRendition};
+use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
 use moq_ext_sources::{AudioSource, VideoSource};
 
 let broadcast = LocalBroadcast::new();
@@ -21,7 +21,7 @@ broadcast.set_video(
     camera,
     VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
 )?;
-broadcast.set_audio(AudioSource::tone(440.0, moq_audio::Layout::Mono)?, AudioEncoding::voice())?;
+broadcast.set_audio(AudioSource::tone(440.0, moq_audio::Layout::Mono)?, audio_encoding::voice())?;
 ```
 
 The source is opened once and every rendition gets its own encoder. A rendition

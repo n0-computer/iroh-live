@@ -22,7 +22,7 @@ use tracing::{Instrument, Span, debug, info, info_span};
 
 use self::status::{Medium, StatusCell};
 pub use self::{
-    encoding::{AudioEncoding, VideoEncoding, VideoRendition},
+    encoding::{VideoEncoding, VideoRendition, music, pcm, voice},
     status::{PublishStatus, RenditionState},
 };
 use crate::stats::{PublishRecorder, PublishStats};
@@ -515,10 +515,14 @@ impl LocalBroadcast {
     /// # Panics
     ///
     /// Panics when called outside a Tokio runtime.
-    pub fn set_audio(&self, source: AudioSource, encoding: AudioEncoding) -> Result<(), Error> {
+    pub fn set_audio(
+        &self,
+        source: AudioSource,
+        encoding: moq_audio::encode::Config,
+    ) -> Result<(), Error> {
         self.check_open()?;
-        encoding.validate()?;
-        let name = encoding.track_name();
+        encoding::validate_audio(&encoding)?;
+        let name = encoding::audio_track_name(&encoding);
         info!(parent: &self.shared.span, source = source.label(), track = %name, "audio set");
         self.replace(Medium::Audio, vec![name], move |job, stop| {
             audio::run(job, source, encoding, stop)

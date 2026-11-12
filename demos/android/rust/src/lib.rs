@@ -27,9 +27,9 @@ use iroh_live::{
     calls::{CALL, Call, CallEvent, Calls},
     layout::LiveLayout,
     media::{
-        AudioEncoding, AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast,
-        MicrophoneConfig, Player, PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding,
-        VideoFormat, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
+        AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast, MicrophoneConfig, Player,
+        PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFormat, VideoFrames,
+        VideoRendition, VideoSource, audio_encoding, remote_broadcast,
     },
     net::Timestamp,
 };
@@ -287,7 +287,7 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) 
         ..MicrophoneConfig::default()
     };
     let published = match AudioSource::microphone(config).await {
-        Ok(source) => broadcast.set_audio(source, AudioEncoding::voice()),
+        Ok(source) => broadcast.set_audio(source, audio_encoding::voice()),
         Err(err) => Err(err.into()),
     };
     if let Err(err) = published {

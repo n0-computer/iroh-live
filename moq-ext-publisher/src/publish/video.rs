@@ -229,7 +229,7 @@ async fn probe_ladder<'a>(
 )> {
     let mut probed = Vec::with_capacity(encoding.renditions.len());
     for rendition in &encoding.renditions {
-        let mut config = rendition.encode_config(size, rate, color, encoding.prefer_hardware);
+        let mut config = rendition.encode_config(size, rate, color);
         match probe(&mut config).await {
             Ok(published) => probed.push((rendition, config, published)),
             Err(err) => fail(&rendition.name, err),

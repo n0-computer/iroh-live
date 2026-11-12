@@ -4,8 +4,8 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioEncoding, AudioSource, AudioTarget, LocalBroadcast, MicrophoneConfig, Rate, VideoFormat,
-    VideoSource, audio,
+    AudioFormat, AudioSource, AudioTarget, LocalBroadcast, MicrophoneConfig, Rate, VideoFormat,
+    VideoSource, audio, audio_encoding,
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -77,7 +77,7 @@ pub(crate) async fn configure(
     let video = configure_video(broadcast, args).await?;
     let audio = match audio_source(&args.audio_source(), output).await? {
         Some(source) => {
-            broadcast.set_audio(source.clone(), audio_encoding(args))?;
+            broadcast.set_audio(source.clone(), audio_config(args, &source))?;
             Some(source)
         }
         None => None,
@@ -365,15 +365,22 @@ async fn audio_source(
     Ok(Some(source))
 }
 
-/// Returns the encoding for `--audio-codec` and `--audio-bitrate`.
+/// Returns the encoding of `source` for `--audio-codec` and `--audio-bitrate`.
 ///
 /// A microphone gets the voice preset. Any other source may be music and
-/// keeps its channels. PCM ignores `--audio-bitrate`.
-fn audio_encoding(args: &CaptureArgs) -> AudioEncoding {
+/// keeps its channels. PCM keeps the source's format, 48 kHz stereo for a
+/// microphone, and ignores `--audio-bitrate`.
+fn audio_config(args: &CaptureArgs, source: &AudioSource) -> audio::encode::Config {
     let mut encoding = match (args.audio_codec, is_microphone(args)) {
-        (AudioCodecArg::Pcm, _) => return AudioEncoding::pcm(),
-        (AudioCodecArg::Opus, true) => AudioEncoding::voice(),
-        (AudioCodecArg::Opus, false) => AudioEncoding::music(),
+        (AudioCodecArg::Pcm, _) => {
+            let format = source.format().unwrap_or(AudioFormat {
+                sample_rate: 48_000,
+                layout: audio::Layout::Stereo,
+            });
+            return audio_encoding::pcm(format);
+        }
+        (AudioCodecArg::Opus, true) => audio_encoding::voice(),
+        (AudioCodecArg::Opus, false) => audio_encoding::music(),
     };
     if let Some(bps) = args.audio_bitrate {
         encoding.bitrate = Some(Rate::from_bps(bps.into()));

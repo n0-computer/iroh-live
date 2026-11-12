@@ -13,7 +13,7 @@ use moq_ext_player::{
     AudioTarget, Error, Latency, NetworkSample, Player, PlayerConfig, RecordConfig, RecordFormat,
     RemoteBroadcast, RenditionMode, SlotState,
 };
-use moq_ext_publisher::{AudioEncoding, LocalBroadcast, VideoEncoding, VideoRendition};
+use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
 use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
 use moq_net::bandwidth::Rate;
 use tokio::{sync::watch, task::JoinHandle};
@@ -35,11 +35,21 @@ fn fps(frames_per_second: u32) -> moq_video::FrameRate {
 }
 
 /// Returns `encoding` on the software encoder, which every build has.
-fn software(encoding: VideoEncoding) -> VideoEncoding {
-    VideoEncoding {
-        prefer_hardware: false,
-        ..encoding
+fn software(mut encoding: VideoEncoding) -> VideoEncoding {
+    for rendition in &mut encoding.renditions {
+        rendition.config.kind = moq_video::encode::Kind::Software;
     }
+    encoding
+}
+
+/// Returns a rendition named `name` at `size` and `bitrate`.
+fn rung(name: &str, size: moq_video::Size, bitrate: Rate) -> VideoRendition {
+    let mut rendition = VideoRendition {
+        size: Some(size),
+        ..VideoRendition::new(name)
+    };
+    rendition.config.bitrate = Some(bitrate);
+    rendition
 }
 
 /// Waits until `receiver` holds a value `done` accepts, and returns it.
@@ -180,16 +190,16 @@ async fn a_held_shortfall_moves_the_player_down() {
         .set_video(
             source,
             software(VideoEncoding::ladder([
-                VideoRendition {
-                    size: Some(moq_video::Size::new(640, 360)),
-                    bitrate: Some(Rate::from_bps(2_000_000)),
-                    ..VideoRendition::new("high")
-                },
-                VideoRendition {
-                    size: Some(moq_video::Size::new(320, 180)),
-                    bitrate: Some(Rate::from_bps(200_000)),
-                    ..VideoRendition::new("low")
-                },
+                rung(
+                    "high",
+                    moq_video::Size::new(640, 360),
+                    Rate::from_bps(2_000_000),
+                ),
+                rung(
+                    "low",
+                    moq_video::Size::new(320, 180),
+                    Rate::from_bps(200_000),
+                ),
             ])),
         )
         .expect("a valid ladder");
@@ -687,7 +697,7 @@ async fn audio_plays_through_a_null_output() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
@@ -716,7 +726,7 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
@@ -772,7 +782,7 @@ async fn closing_the_broadcast_ends_the_audio() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
@@ -793,7 +803,7 @@ async fn an_audio_only_broadcast_ends_the_video() {
     broadcast
         .set_audio(
             AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts"),
-            AudioEncoding::voice(),
+            audio_encoding::voice(),
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
@@ -813,7 +823,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
     let tone =
         || AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts");
     broadcast
-        .set_audio(tone(), AudioEncoding::voice())
+        .set_audio(tone(), audio_encoding::voice())
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
@@ -841,7 +851,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
         .expect("the first track played");
     let played = player.stats().audio.map_or(0, |audio| audio.frames);
     broadcast
-        .set_audio(tone(), AudioEncoding::voice())
+        .set_audio(tone(), audio_encoding::voice())
         .expect("a valid encoding");
     // The stats restart with every track, so a lower count means the first
     // track ended. This polls, because the status can pass through `Ended`

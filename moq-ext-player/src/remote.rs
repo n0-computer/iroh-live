@@ -475,12 +475,7 @@ mod tests {
                     moq_video::FrameRate::new(30, 1).expect("a valid rate"),
                 )
                 .expect("the pattern thread starts"),
-                moq_ext_publisher::VideoEncoding {
-                    prefer_hardware: false,
-                    ..moq_ext_publisher::VideoEncoding::single(
-                        moq_ext_publisher::VideoRendition::new("video"),
-                    )
-                },
+                crate::test_util::single(None),
             )
             .expect("a valid encoding");
         let catalog = remote
@@ -518,12 +513,7 @@ mod tests {
                     moq_video::FrameRate::new(30, 1).expect("a valid rate"),
                 )
                 .expect("the pattern thread starts"),
-                moq_ext_publisher::VideoEncoding {
-                    prefer_hardware: false,
-                    ..moq_ext_publisher::VideoEncoding::single(
-                        moq_ext_publisher::VideoRendition::new("video"),
-                    )
-                },
+                crate::test_util::single(None),
             )
             .expect("a valid encoding");
         let mut catalog = remote.catalog();
