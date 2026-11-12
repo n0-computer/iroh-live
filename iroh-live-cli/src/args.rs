@@ -7,12 +7,13 @@ use clap::{
     builder::{PossibleValuesParser, TypedValueParser},
 };
 use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, layout::LiveLayout, media::RecordFormat, rooms::RoomTicket};
+use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
 use crate::{
     backend::Backend,
+    record::RecordFormat,
     source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
 };
 
@@ -468,7 +469,7 @@ pub(crate) struct RecordArgs {
     pub(crate) max_age: u64,
 }
 
-/// Parses `--format` into the media crate's [`RecordFormat`].
+/// Parses `--format` into a [`RecordFormat`].
 fn record_format() -> impl TypedValueParser<Value = RecordFormat> {
     PossibleValuesParser::new(["fmp4", "mkv"]).map(|format| match format.as_str() {
         "mkv" => RecordFormat::Mkv,

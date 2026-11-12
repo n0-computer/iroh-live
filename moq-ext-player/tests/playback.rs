@@ -10,11 +10,12 @@ use std::{
 };
 
 use moq_ext_player::{
-    AudioTarget, Error, Latency, NetworkSample, Player, PlayerConfig, RecordConfig, RecordFormat,
-    RemoteBroadcast, RenditionMode, SlotState,
+    AudioTarget, Error, Latency, NetworkSample, Player, PlayerConfig, RemoteBroadcast,
+    RenditionMode, SlotState,
 };
 use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
 use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
+use moq_mux::catalog::Stream as _;
 use moq_net::bandwidth::Rate;
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -1141,41 +1142,39 @@ async fn the_audio_frames_of_a_player_without_audio_end_with_it() {
     drop(broadcast);
 }
 
-/// A recording remuxes the broadcast into a container without decoding it.
+/// A moq-mux export over the broadcast's source remuxes it into a container.
 #[tokio::test]
-async fn a_recording_writes_a_container() {
+async fn a_mux_source_exports_a_container() {
     let (broadcast, _source) = ladder();
     let remote = local(&broadcast);
-    let dir = std::env::temp_dir().join(format!("moq-ext-player-record-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("a temp dir");
-    let path = dir.join("out.mp4");
-    let file = tokio::fs::File::create(&path)
+    let source = tokio::time::timeout(TIMEOUT, remote.mux_source())
         .await
-        .expect("the file opens");
-    let mut recording = remote
-        .record(
-            file,
-            RecordConfig {
-                format: RecordFormat::Fmp4,
-                rendition: Some("low".into()),
-                ..RecordConfig::default()
-            },
-        )
-        .expect("a valid config");
+        .expect("the broadcast has a route and a catalog")
+        .expect("the broadcast is open");
+    let catalog = moq_mux::catalog::Consumer::<()>::new(&source.broadcast(), Default::default())
+        .await
+        .expect("the catalog reads")
+        .select(
+            moq_mux::select::Broadcast::default()
+                .video(moq_mux::select::Video::default().name("low")),
+        );
+    let mut export = moq_mux::container::fmp4::Export::new(source, catalog);
+    let mut bytes = Vec::new();
     tokio::time::timeout(TIMEOUT, async {
-        while recording.written() < 4_096 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        while bytes.len() < 4_096 {
+            let chunk = export
+                .next()
+                .await
+                .expect("the export runs")
+                .expect("the broadcast goes on");
+            bytes.extend_from_slice(&chunk);
         }
     })
     .await
-    .expect("the recording wrote something");
-    let written = recording.stop().await.expect("the recording finishes");
-    let bytes = std::fs::read(&path).expect("the file is there");
-    assert_eq!(bytes.len() as u64, written);
+    .expect("the export wrote something");
     assert_eq!(
         &bytes[4..8],
         b"ftyp",
         "an MP4 starts with its file type box"
     );
-    std::fs::remove_file(&path).ok();
 }

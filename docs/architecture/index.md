@@ -13,7 +13,7 @@ This repository holds the layer that joins them.
 | `moq-ext-access` | Access control: grants, session requests, audiences, layouts, and the policies that admit and authorize peers, with JWT and rcan verifiers behind features. No transport dependency |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `LiveLayout` and `Calls`, the facade that joins media and transport, endpoint setup, and the re-exports |
-| `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording |
+| `moq-ext-player` | A player over moq-video and moq-audio: rendition choice, audio/video sync, the input of a moq-mux recording |
 | `moq-ext-publisher` | A broadcast that encodes sources into renditions |
 | `moq-ext-adaptive` | Rendition choice and decoder handover as pure state machines |
 | `moq-ext-sources` | Video and audio sources: test pattern, files, capture, push senders |

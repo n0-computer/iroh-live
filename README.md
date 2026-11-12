@@ -94,7 +94,7 @@ these APIs, crates.io versions will replace the git pins.
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`moq-ext-access`](moq-ext-access) | Access control: grants, policies, token verifiers, layouts, and who sees a publication. No iroh dependency |
 | [`moq-ext-adaptive`](moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines |
-| [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, recording. No iroh dependency |
+| [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, the input of a moq-mux recording. No iroh dependency |
 | [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |
 | [`moq-ext-sources`](moq-ext-sources) | Video and audio sources: test pattern, files, capture, push senders |
 | [`moq-ext-media-core`](moq-ext-media-core) | The error, slot state and stats helpers the player and publisher share |

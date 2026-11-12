@@ -36,7 +36,7 @@ A broadcast published in the same process is read the same way: pass
 
 | Feature | Default | What it adds |
 |---|---|---|
-| `record` | no | `RemoteBroadcast::record`: remux to fragmented MP4 or Matroska without decoding |
+| `record` | no | `RemoteBroadcast::mux_source`, the input of moq-mux's fragmented MP4 and Matroska export |
 | `playback` | no | Speaker output |
 | `capture` | no | Lets an `AudioTarget` serve as a microphone's echo reference |
 | `aec` | no | Echo cancellation. Implies `capture` and `playback` |

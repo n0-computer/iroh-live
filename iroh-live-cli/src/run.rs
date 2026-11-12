@@ -11,7 +11,7 @@ use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     load_or_create_secret_key,
-    media::{self, LocalBroadcast, Player, PlayerConfig, Recording, RenditionMode},
+    media::{self, LocalBroadcast, Player, PlayerConfig, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 use serde::{Deserialize, Deserializer, de};
@@ -21,7 +21,7 @@ use tracing::{info, warn};
 
 use crate::{
     args::{CaptureArgs, RunArgs},
-    record::RecordOptions,
+    record::{RecordOptions, Recording},
     source,
     transport::{self, Subscribed},
 };
@@ -284,7 +284,7 @@ async fn setup_recv(
         None => None,
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
-            options.config.rendition = config.rendition.clone();
+            options.rendition = config.rendition.clone();
             let recording = crate::record::start(sub.broadcast(), &catalog, &options).await?;
             Some((recording, std::path::PathBuf::from(path)))
         }

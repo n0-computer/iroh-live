@@ -49,14 +49,12 @@
 //! | [`VideoFrames::next`], [`AudioFrames::next`], [`RemoteBroadcast::closed`] | yes | loses nothing |
 //! | [`RemoteBroadcast::catalog_within`] | yes | stops waiting |
 //! | `AudioTarget::default_or_null` (feature `playback`) | yes | abandons opening the speaker |
-//! | `Recording::wait`, `Recording::stop` (feature `record`) | yes, while the recording is kept | the recording runs on its own task. Dropping the `Recording` stops it without flushing |
+//! | `RemoteBroadcast::mux_source` (feature `record`) | yes | stops waiting |
 
 mod catalog;
 mod clean_close;
 mod network;
 mod player;
-#[cfg(feature = "record")]
-mod record;
 mod remote;
 mod stats;
 // Helpers for this workspace's tests, not part of the public API.
@@ -69,8 +67,6 @@ pub use moq_ext_media_core::{Error, SlotState, SourceClosed};
 pub use moq_ext_sources::VideoFrames;
 use moq_ext_sources::frames;
 
-#[cfg(feature = "record")]
-pub use self::record::{RecordConfig, RecordFormat, Recording};
 pub use self::{
     catalog::video_rendition,
     network::NetworkSample,

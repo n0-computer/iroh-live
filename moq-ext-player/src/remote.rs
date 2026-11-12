@@ -16,8 +16,6 @@ use tracing::{Instrument, Span, debug, info, info_span, trace, warn};
 use crate::{
     NetworkSample, Player, PlayerConfig, clean_close::CleanClose as _, network::NetworkSignals,
 };
-#[cfg(feature = "record")]
-use crate::{RecordConfig, Recording};
 
 /// How long to look for an ended broadcast again before it counts as gone.
 ///
@@ -62,9 +60,13 @@ struct Shared {
     #[debug(skip)]
     #[cfg_attr(
         not(feature = "record"),
-        allow(dead_code, reason = "only a recording asks for the route table")
+        allow(dead_code, reason = "only a moq-mux source asks for the route table")
     )]
     origin: Origin,
+    /// The empty route table of a moq-mux source over a bare consumer.
+    #[cfg(feature = "record")]
+    #[debug(skip)]
+    local: std::sync::OnceLock<LocalOrigin>,
     #[debug("{:?}", epoch.borrow())]
     epoch: watch::Sender<Epoch>,
     #[debug(skip)]
@@ -201,21 +203,67 @@ impl RemoteBroadcast {
         Player::start(self.clone(), config)
     }
 
-    /// Starts recording the broadcast into `out`, remuxed without decoding.
+    /// Returns a [`moq_mux::Source`] of the current route, for a moq-mux export.
     ///
-    /// The recording starts once the broadcast has a route and a catalog.
+    /// Waits until the broadcast has a route and a catalog, since an exporter's
+    /// catalog reader does not ask again for a catalog track that is not there
+    /// yet. The source reads one route, so a change of route ends the exports
+    /// that read it. One of a broadcast from [`from_resolved`](Self::from_resolved)
+    /// resolves sibling broadcasts through the route table.
+    ///
+    /// Recording composes this with moq-mux's fragmented MP4 or Matroska
+    /// export, which remuxes without decoding:
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     broadcast: moq_ext_player::RemoteBroadcast,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// use moq_mux::{catalog::Stream as _, container::fmp4};
+    /// use tokio::io::AsyncWriteExt as _;
+    ///
+    /// let source = broadcast.mux_source().await?;
+    /// let catalog = moq_mux::catalog::Consumer::<()>::new(&source.broadcast(), Default::default())
+    ///     .await?
+    ///     .select(moq_mux::select::Broadcast::default());
+    /// let mut export = fmp4::Export::new(source, catalog);
+    /// let mut file = tokio::fs::File::create("out.mp4").await?;
+    /// while let Some(chunk) = export.next().await? {
+    ///     file.write_all(&chunk).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Cancellation safe.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::UnknownRendition`] if the catalog is already known
-    /// and lacks the rendition the config names.
+    /// Fails with [`Error::Closed`] if the broadcast closes first.
     #[cfg(feature = "record")]
-    pub fn record(
-        &self,
-        out: impl tokio::io::AsyncWrite + Send + Unpin + 'static,
-        config: RecordConfig,
-    ) -> Result<Recording, Error> {
-        Recording::start(self, Box::new(out), config)
+    pub async fn mux_source(&self) -> Result<moq_mux::Source, Error> {
+        // The broadcast held here keeps the watch senders alive, so only
+        // `closed` ends a wait on a broadcast that is gone.
+        let mut epoch = self.epoch();
+        let consumer = tokio::select! {
+            epoch = epoch.wait_for(|epoch| epoch.consumer.is_some()) => {
+                epoch.ok().and_then(|epoch| epoch.consumer.clone())
+            }
+            () = self.closed() => None,
+        };
+        let consumer = consumer.ok_or_else(|| n0_error::e!(Error::Closed))?;
+        let mut catalog = self.catalog();
+        let known = tokio::select! {
+            seen = catalog.wait_for(Option::is_some) => seen.is_ok(),
+            () = self.closed() => false,
+        };
+        if !known {
+            return Err(n0_error::e!(Error::Closed));
+        }
+        let origin = match &self.shared.origin {
+            Origin::Routed { origin, .. } => origin.as_ref().clone(),
+            Origin::Consumer => self.shared.local.get_or_init(LocalOrigin::new).consume(),
+        };
+        Ok(moq_mux::Source::new(origin, consumer))
     }
 
     /// Waits until the broadcast has closed.
@@ -256,15 +304,6 @@ impl RemoteBroadcast {
         &self.shared.span
     }
 
-    /// Returns the route table, for a broadcast that follows one.
-    #[cfg(feature = "record")]
-    pub(crate) fn routed(&self) -> Option<moq_net::origin::Consumer> {
-        match &self.shared.origin {
-            Origin::Routed { origin, .. } => Some(origin.as_ref().clone()),
-            Origin::Consumer => None,
-        }
-    }
-
     fn spawn(origin: Origin, first: Option<moq_net::broadcast::Consumer>, span: Span) -> Self {
         let epoch = watch::Sender::new(Epoch::default());
         let catalog = watch::Sender::new(None);
@@ -284,11 +323,42 @@ impl RemoteBroadcast {
                 epoch,
                 catalog,
                 closed,
+                #[cfg(feature = "record")]
+                local: std::sync::OnceLock::new(),
                 network: Mutex::new(None),
                 span,
                 _task: AbortOnDropHandle::new(task),
             }),
         }
+    }
+}
+
+/// An empty route table with the task that drives it.
+///
+/// A moq-mux source resolves sibling broadcasts through a route table, and a
+/// bare consumer has none.
+#[cfg(feature = "record")]
+struct LocalOrigin {
+    origin: moq_net::origin::Producer,
+    _driver: AbortOnDropHandle<()>,
+}
+
+#[cfg(feature = "record")]
+impl LocalOrigin {
+    fn new() -> Self {
+        let (origin, driver) = moq_net::origin::Producer::new(moq_net::origin::Config::default());
+        let driver = n0_future::task::spawn(async move {
+            let err = moq_net::time::run(driver).await;
+            debug!(error = %err, "the moq-mux source's route table stopped");
+        });
+        Self {
+            origin,
+            _driver: AbortOnDropHandle::new(driver),
+        }
+    }
+
+    fn consume(&self) -> moq_net::origin::Consumer {
+        self.origin.consume()
     }
 }
 
@@ -452,6 +522,26 @@ mod tests {
     use super::*;
 
     /// A broadcast that never describes itself fails the wait, and one that closes fails it at once.
+    /// A broadcast that closes before it has a catalog ends the wait for a moq-mux source.
+    #[cfg(feature = "record")]
+    #[tokio::test]
+    async fn a_close_before_the_catalog_ends_the_mux_source_wait() {
+        let producer = moq_net::broadcast::Info::new().produce();
+        let remote = RemoteBroadcast::from_consumer(producer.consume());
+        let source = remote.mux_source();
+        let close = async {
+            // Long enough for the source to wait on the catalog.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            producer.close();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(source, close)
+        })
+        .await
+        .expect("the wait ended with the broadcast");
+        assert!(matches!(result, Err(Error::Closed { .. })));
+    }
+
     #[tokio::test]
     async fn a_catalog_wait_ends_on_timeout_and_on_close() {
         let producer = moq_net::broadcast::Info::new().produce();
