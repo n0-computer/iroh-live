@@ -84,6 +84,7 @@ impl BroadcastTicket {
     }
 }
 
+/// Returns the [`Error::InvalidTicket`] for `reason`.
 fn invalid(reason: &'static str) -> Error {
     e!(Error::InvalidTicket { reason })
 }

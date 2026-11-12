@@ -22,12 +22,12 @@ use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 use rcan::{Expires, Rcan};
 
-/// The key of the account whose space alice's node shares.
+/// Returns the key of the account whose space alice's node shares.
 fn alice_account() -> SigningKey {
     SigningKey::from_bytes(&[1; 32])
 }
 
-/// The key of bob's account, which delegates to bob's device.
+/// Returns the key of bob's account, which delegates to bob's device.
 fn bob_account() -> SigningKey {
     SigningKey::from_bytes(&[2; 32])
 }

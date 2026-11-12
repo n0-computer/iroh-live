@@ -98,7 +98,7 @@ impl RelayConfig {
     }
 }
 
-/// Returns the token a relay link presents, each time the link asks.
+/// A source of the token a relay link presents, asked each time the link needs one.
 ///
 /// # Examples
 ///
@@ -186,6 +186,7 @@ pub struct RelayLink {
     inner: Arc<RelayInner>,
 }
 
+/// What every clone of a [`RelayLink`] shares.
 #[derive(derive_more::Debug)]
 struct RelayInner {
     link: LinkId,
@@ -677,7 +678,7 @@ fn jitter_factor() -> f64 {
     0.5 + f64::from(nanos % 1_000_000) / 2_000_000.0
 }
 
-/// Aborts a moq-tokio connection when dropped.
+/// A guard that aborts a moq-tokio connection when dropped.
 struct StopOnDrop(moq_tokio::Connection);
 
 impl Drop for StopOnDrop {

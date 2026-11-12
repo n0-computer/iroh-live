@@ -198,7 +198,8 @@ pub(crate) async fn client_handshake(
     }
     // moq-lite-06 starts without a round trip, but a version that exchanges
     // SETUP on a stream waits for the peer's reply. A peer that never sends it
-    // would hold the dial, and every connect queued behind it, for good.
+    // would hold the dial, and every connect queued behind it, until the
+    // connection closes.
     tokio::time::timeout(
         transport::HANDSHAKE_TIMEOUT,
         client.connect(moq_net::time::Instant::now(), transport),

@@ -30,7 +30,7 @@ use crate::{
 /// The result of one re-decide: the session's link, and the decision.
 type Redecided = (LinkId, Result<Authorization, Rejection>);
 
-/// How long [`Node::shutdown`] gives a session to tell its peer it is closing.
+/// How long [`Node::shutdown`](crate::Node::shutdown) gives a session to tell its peer it is closing.
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// What the node asks of its actor.
@@ -46,7 +46,7 @@ pub(crate) enum ActorMessage {
     },
 }
 
-/// Runs the node's sessions and dials, and coalesces connects.
+/// The task that runs the node's sessions and dials, and coalesces connects.
 pub(crate) struct Actor {
     shared: Arc<Shared>,
     /// Every live session per peer, oldest first.
@@ -139,7 +139,7 @@ impl Actor {
 
     /// Tears the node's state down and reports the shutdown done.
     ///
-    /// Runs from `Drop`, so [`Node::shutdown`] returns even if the actor
+    /// Runs from `Drop`, so [`Node::shutdown`](crate::Node::shutdown) returns even if the actor
     /// panicked.
     fn finish(&mut self) {
         // A panic may have poisoned the lock. Do not panic again while
@@ -568,7 +568,7 @@ impl Actor {
         self.publish_sessions();
     }
 
-    /// Publishes the current sessions to the watchers of [`Node::sessions`].
+    /// Publishes the current sessions to the watchers of [`Node::sessions`](crate::Node::sessions).
     fn publish_sessions(&self) {
         let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
         self.shared.sessions.set(sessions).ok();

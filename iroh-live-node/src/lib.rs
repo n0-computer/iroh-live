@@ -42,8 +42,6 @@
 //! session itself, with its raw statistics, and [`Session::connection`] the
 //! iroh connection, with its paths.
 //!
-//! # Trust and grants
-//!
 //! Every link serves only this node's own publications, never a route it
 //! learned from another link. A peer sees the exact paths of the publications
 //! whose audience admits it, within its [`Grant`]. The node re-authorizes every
@@ -72,9 +70,9 @@
 //! - A relay is trusted with the paths it forwards. Attach only relays that
 //!   keep each publisher to its own paths, as moq-relay's tokens do.
 //!
-//! # Cancellation safety
+//! The futures differ in what dropping them leaves behind:
 //!
-//! | Future | Safe | When dropped |
+//! | Future | Cancellation safe | When dropped |
 //! |---|---|---|
 //! | [`Node::connect`], [`Node::connect_with`], [`Node::subscribe`], [`Node::subscribe_ticket`], [`Session::subscribe`] | yes | a dial it started continues for other callers |
 //! | [`policy::Queue::next`] | yes | loses nothing |

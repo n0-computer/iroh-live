@@ -65,6 +65,7 @@ pub struct Subscription {
     inner: Arc<SubscriptionInner>,
 }
 
+/// What every clone of a [`Subscription`] shares.
 struct SubscriptionInner {
     path: Path,
     origin: origin::Consumer,
@@ -83,7 +84,7 @@ struct SubscriptionInner {
     claim: OnceLock<PathClaim>,
 }
 
-/// Follows the route that serves one path.
+/// The route that serves one path, as the route table announces it.
 struct Routes {
     announced: Option<origin::Routes>,
     source: Option<Source>,

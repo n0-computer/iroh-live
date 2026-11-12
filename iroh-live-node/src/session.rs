@@ -41,6 +41,7 @@ pub struct Session {
     pub(crate) inner: Arc<SessionInner>,
 }
 
+/// What every clone of a [`Session`] shares.
 pub(crate) struct SessionInner {
     pub(crate) link: LinkId,
     pub(crate) peer: EndpointId,

@@ -26,7 +26,7 @@ use n0_watcher::Watcher as _;
 /// How long a test track keeps its groups, on both ends.
 pub(crate) const MAX_AGE: Duration = Duration::from_secs(5);
 
-/// The subscription the tests read with: it tolerates [`MAX_AGE`] of reordering.
+/// Returns the subscription the tests read with, which tolerates [`MAX_AGE`] of reordering.
 pub(crate) fn subscription() -> track::Subscription {
     track::Subscription::default().with_delay(track::Delay::default().with_max(MAX_AGE))
 }

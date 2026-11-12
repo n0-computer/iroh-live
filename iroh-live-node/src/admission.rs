@@ -37,10 +37,10 @@ pub struct ConnectOptions {
     ///
     /// `None` keeps moq's default of one.
     pub cost: Option<u64>,
-    /// iroh's options for the QUIC dial, such as a transport config with another
-    /// [`Congestion`](crate::Congestion) controller.
+    /// iroh's options for the QUIC dial.
     ///
-    /// The default keeps the endpoint's transport config, which runs BBR3
+    /// Set a transport config here to dial with another
+    /// [`Congestion`](crate::Congestion) controller. The default keeps the endpoint's transport config, which runs BBR3
     /// under [`MoqPreset`](crate::MoqPreset). It applies to a direct dial
     /// only: a session that already exists keeps its connection, so close it
     /// first to dial again with other options. A relay link ignores it.

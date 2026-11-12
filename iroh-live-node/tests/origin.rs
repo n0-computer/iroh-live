@@ -31,7 +31,7 @@ fn now() -> moq_net::time::Instant {
     moq_net::time::Instant::now()
 }
 
-/// Hands every accepted connection to the test.
+/// A protocol handler that hands every accepted connection to the test.
 #[derive(Debug, Clone)]
 struct Forward(mpsc::Sender<Connection>);
 

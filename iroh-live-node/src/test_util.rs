@@ -70,7 +70,7 @@ pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
 pub struct TestNode {
     /// The endpoint the node runs on.
     pub endpoint: Endpoint,
-    /// The node.
+    /// The node, mounted on [`router`](Self::router).
     pub node: Node,
     /// The router that accepts the node's protocols.
     pub router: Router,

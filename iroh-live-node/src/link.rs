@@ -11,7 +11,7 @@ use moq_ext_access::LinkKind;
 use moq_transport_iroh::{LinkSampler, NetworkSample, SAMPLE_INTERVAL};
 use tracing::trace;
 
-/// Identifies one link of a node: a session or a relay.
+/// The id of one link of a node: a session or a relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
 #[display("link-{_0}")]
 pub struct LinkId(pub(crate) u64);

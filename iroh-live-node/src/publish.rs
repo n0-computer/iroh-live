@@ -64,6 +64,7 @@ pub struct Publication {
     inner: Arc<PublicationInner>,
 }
 
+/// What every clone of a [`Publication`] shares.
 #[derive(derive_more::Debug)]
 struct PublicationInner {
     id: u64,

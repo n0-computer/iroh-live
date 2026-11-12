@@ -607,7 +607,9 @@ impl Node {
     /// # }
     /// ```
     pub fn accepted(&self) -> impl Stream<Item = Session> + Send + Unpin + 'static {
+        /// What the stream carries from one poll to the next.
         struct State {
+            /// Every list of sessions the node publishes.
             lists: n0_watcher::Stream<n0_watcher::Direct<Vec<Session>>>,
             shutdown: CancellationToken,
             /// The links of the accepted sessions already yielded and still listed.
