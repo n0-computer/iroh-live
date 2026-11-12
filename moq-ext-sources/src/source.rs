@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 #[cfg(feature = "capture")]
 use tracing::info;
 use tracing::{debug, warn};
@@ -67,7 +67,7 @@ enum Driver {
     Thread,
     /// A task on a thread of its own, for capture objects that cannot move.
     #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
-    Local { _task: crate::local_task::LocalTask },
+    Local(crate::local_task::LocalTask),
     /// Nothing: the application pushes.
     Pushed,
 }
@@ -80,7 +80,7 @@ struct VideoInner {
     frames: FrameReader,
     demand: Demand,
     stop: CancellationToken,
-    _driver: Driver,
+    driver: Driver,
 }
 
 impl Drop for VideoInner {
@@ -114,7 +114,7 @@ impl VideoSource {
                 frames,
                 demand: Demand::default(),
                 stop,
-                _driver: driver,
+                driver,
             }),
         }
     }
@@ -126,13 +126,9 @@ impl VideoSource {
     /// seconds. A permission dialog the platform shows while the device opens
     /// does not count against that time.
     ///
-    /// A camera first waits, for at most 3 seconds, until every camera source
-    /// dropped before this call has closed its device. Drop the old source
-    /// before opening its replacement, and a switch back to the same camera
-    /// does not fail as busy. A capture that does not let go in time is
-    /// stuck in a read: the open proceeds without it, and that thread may hold
-    /// its device until the read returns. A V4L2 read gives up after a second,
-    /// but a Media Foundation read on Windows has no timeout.
+    /// A camera that a dropped source still holds fails to open as busy on
+    /// V4L2. Await [`released`](Self::released) of the old source before
+    /// opening the same camera again.
     ///
     /// With the `pipewire` feature on Linux, the default camera is PipeWire's,
     /// which shares the device with other applications. If that does not open,
@@ -174,7 +170,7 @@ impl VideoSource {
             format,
             reader,
             stop,
-            Driver::Local { _task: task },
+            Driver::Local(task),
         ))
     }
 
@@ -284,7 +280,7 @@ impl VideoSource {
             format,
             reader,
             stop,
-            Driver::Local { _task: task },
+            Driver::Local(task),
         ))
     }
 
@@ -320,6 +316,26 @@ impl VideoSource {
     #[must_use]
     pub fn label(&self) -> &str {
         &self.inner.label
+    }
+
+    /// Returns a future that resolves once the source has closed its device.
+    ///
+    /// The device closes on the capture thread after the last handle is
+    /// dropped. Bound the wait: a thread stuck in a read lets go only once the
+    /// read returns, which takes up to a second on V4L2 and has no limit for
+    /// Media Foundation on Windows. Resolves at once for a source without a
+    /// device.
+    #[must_use]
+    pub fn released(&self) -> WaitForCancellationFutureOwned {
+        match &self.inner.driver {
+            #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
+            Driver::Local(task) => task.released().cancelled_owned(),
+            Driver::Thread | Driver::Pushed => {
+                let released = CancellationToken::new();
+                released.cancel();
+                released.cancelled_owned()
+            }
+        }
     }
 }
 
@@ -773,6 +789,16 @@ mod tests {
         assert!(frames.next().await.is_some());
         drop(sender);
         assert!(frames.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_source_without_a_device_is_released_at_once() {
+        let (_sender, source) = VideoSource::push(VideoFormat {
+            size: video::Size::new(2, 2),
+            rate: rate(30),
+        });
+        // A pushed source holds no device, so nothing waits on it.
+        source.released().await;
     }
 
     #[tokio::test]

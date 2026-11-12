@@ -55,6 +55,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
             capture: args.capture.clone(),
             restoring: None,
             camera_owed: false,
+            scan_released: Default::default(),
             camera_epoch: Arc::default(),
             notice: None,
             local_video: sources.video,
@@ -108,6 +109,8 @@ pub(super) struct CallApp {
     /// Settled whenever the scan screen is not up. A call answered mid-scan
     /// replaces the screen without going through [`CallApp::leave_scan`].
     pub(super) camera_owed: bool,
+    /// The release of the last scan's camera.
+    pub(super) scan_released: crate::scan::Released,
     /// Bumped under its lock each time the scan screen takes the camera.
     ///
     /// A restore still opening the device checks it, so it cannot set the

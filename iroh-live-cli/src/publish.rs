@@ -156,6 +156,7 @@ mod preview {
         overlay::{DebugOverlay, StatCategory, fit_to_aspect},
     };
     use n0_error::{Result, anyerr};
+    use tokio_util::sync::WaitForCancellationFutureOwned;
     use tracing::{info, warn};
 
     use crate::{
@@ -302,6 +303,8 @@ mod preview {
         sources: Opened,
         /// A source switch in flight.
         opening: Option<Pending<Result<Option<VideoSource>>>>,
+        /// Resolves once the last replaced source has closed its device.
+        released: Option<WaitForCancellationFutureOwned>,
     }
 
     impl SourcePicker {
@@ -314,6 +317,7 @@ mod preview {
                 error: None,
                 sources,
                 opening: None,
+                released: None,
             }
         }
 
@@ -358,7 +362,9 @@ mod preview {
             match result {
                 Ok(video) => {
                     let frames = video.as_ref().map(VideoSource::frames);
-                    self.sources.video = video;
+                    if let Some(old) = std::mem::replace(&mut self.sources.video, video) {
+                        self.released = Some(old.released());
+                    }
                     Some(frames)
                 }
                 Err(err) => {
@@ -383,13 +389,21 @@ mod preview {
                 ..self.capture.clone()
             };
             let broadcast = broadcast.clone();
+            // Only a camera can be the one the replaced source still holds.
+            let released = match selected {
+                PickedSource::Camera => self.released.take(),
+                _ => None,
+            };
             let switch = async move {
                 match selected {
                     PickedSource::None => {
                         broadcast.clear_video();
                         Ok(None)
                     }
-                    _ => source::configure_video(&broadcast, &capture).await,
+                    _ => {
+                        source::await_release(released).await;
+                        source::configure_video(&broadcast, &capture).await
+                    }
                 }
             };
             self.opening = Some(Pending::spawn(ctx, switch, drop));

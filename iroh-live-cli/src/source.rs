@@ -11,7 +11,7 @@ use iroh_live::media::{
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::media::{EncodedVideoSource, RpicamConfig};
 use n0_error::{Result, anyerr};
-#[cfg(not(feature = "aec"))]
+use tokio_util::sync::WaitForCancellationFutureOwned;
 use tracing::warn;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -44,6 +44,31 @@ const TEST_TONE_HZ: f32 = 440.0;
 
 /// Speaker layout of the test tones.
 const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
+
+/// How long a camera open waits for a dropped camera to close its device.
+///
+/// A stopped capture lets go within a frame interval, and a V4L2 read that
+/// waits for a frame gives up after a second. A capture that takes longer is
+/// stuck in a read, and waiting longer would not help.
+const RELEASE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Waits at most [`RELEASE_PATIENCE`] for a dropped camera source to close its device.
+///
+/// Opening a camera that a dropped source still holds fails as busy on V4L2.
+pub(crate) async fn await_release(released: Option<WaitForCancellationFutureOwned>) {
+    let Some(released) = released else {
+        return;
+    };
+    if tokio::time::timeout(RELEASE_PATIENCE, released)
+        .await
+        .is_err()
+    {
+        warn!(
+            patience = ?RELEASE_PATIENCE,
+            "a stopped capture still holds its device, opening without it"
+        );
+    }
+}
 
 /// The sources [`configure`] opened, for a preview or a QR scanner.
 #[derive(Debug, Default)]

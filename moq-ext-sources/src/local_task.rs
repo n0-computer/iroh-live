@@ -48,7 +48,7 @@ impl LocalTask {
     ///
     /// It outlives this handle, so a caller can wait for the release after the
     /// handle is gone.
-    #[cfg(feature = "capture")]
+    #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
     pub(crate) fn released(&self) -> CancellationToken {
         self.released.clone()
     }
