@@ -25,7 +25,7 @@ use std::{
 use iroh::protocol::Router;
 use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
-    calls::{CALL, Call, CallEvent, Calls},
+    calls::{CALL, Call, Calls},
     layout::LiveLayout,
     media::{
         AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
@@ -41,7 +41,8 @@ use jni::{
 };
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
-use n0_future::{StreamExt as _, task::AbortOnDropHandle};
+use n0_future::task::AbortOnDropHandle;
+use n0_watcher::Watcher as _;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -493,19 +494,20 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 
 /// Answers the first peer that calls and installs a player for it on `session`.
 ///
-/// A caller offers its side to this node only, which `calls` reports as a
-/// ring.
+/// A caller offers its side to this node only, which `calls` lists as
+/// ringing.
 async fn accept_one(
     calls: Calls,
     output: Option<Engine>,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
-    let mut events = calls.events();
+    let mut ringing = calls.ringing();
     let peer = loop {
-        match events.next().await {
-            Some(CallEvent::Ringing(peer)) => break peer,
-            Some(_) => {}
-            None => return Ok(()),
+        if let Some(peer) = ringing.get().first().copied() {
+            break peer;
+        }
+        if ringing.updated().await.is_err() {
+            return Ok(());
         }
     };
     info!(peer = %peer.fmt_short(), "answering");

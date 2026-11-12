@@ -104,8 +104,8 @@ let mut frames = player.video_frames();
   `<root>/<id>/call`, visible to nobody. `ring(peer)` offers it to that peer
   only, `call(peer)` rings and waits for the peer to answer, and
   `answer(peer)` resolves the other side. Each returns a `Call`, and dropping
-  it hangs up. `events()` streams `CallEvent`, and `ringing()` watches the
-  peers that ring.
+  it hangs up. `ringing()` watches the peers that ring, and `Call::ended()`
+  says how a call in progress ended.
 - `EndpointConfig` binds an endpoint with `MoqPreset`, a secret key and mDNS.
   `EndpointConfig::apply` does the same on your own endpoint builder.
 - `NodeConfig::default()` is subscribe-only: peers may read and publish

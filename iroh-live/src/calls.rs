@@ -12,9 +12,9 @@
 //! is no new offer, since the route table lists the path throughout.
 //!
 //! ```no_run
-//! use iroh_live::{Node, calls::{CallEvent, Calls}, layout::LiveLayout};
+//! use iroh_live::{Node, calls::Calls, layout::LiveLayout};
 //! use moq_net::broadcast;
-//! use n0_future::StreamExt;
+//! use n0_watcher::Watcher;
 //!
 //! # async fn run(node: Node, peer: iroh::EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let (calls, _side): (Calls, broadcast::Producer) = Calls::new(&node, &LiveLayout::default())?;
@@ -22,14 +22,18 @@
 //! // Place a call: ring, wait for the peer to answer, subscribe.
 //! let call = tokio::time::timeout(std::time::Duration::from_secs(30), calls.call(peer)).await??;
 //!
-//! // Take calls.
-//! let mut events = calls.events();
-//! while let Some(event) = events.next().await {
-//!     if let CallEvent::Ringing(peer) = event {
-//!         let call = calls.answer(peer).await?;
-//!         # drop(call);
+//! // Take the first call that rings.
+//! let mut ringing = calls.ringing();
+//! let peer = loop {
+//!     if let Some(peer) = ringing.get().first().copied() {
+//!         break peer;
 //!     }
-//! }
+//!     ringing.updated().await?;
+//! };
+//! let answered = calls.answer(peer).await?;
+//! // Ends with the reason once the peer hangs up.
+//! let reason = answered.ended().await;
+//! # drop(reason);
 //! # drop(call);
 //! # Ok(())
 //! # }
@@ -43,20 +47,16 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt,
-    pin::Pin,
     sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
-    task::{Context, Poll},
 };
 
 use iroh::EndpointId;
 use iroh_live_node::{Audience, Node, Publication, Reach, Session, Subscription};
 use moq_net::{announce::Event, broadcast};
 use n0_error::{e, stack_error};
-use n0_future::{Stream, StreamExt, stream, task::AbortOnDropHandle};
+use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::{select, sync::broadcast as events_channel};
-use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -65,9 +65,6 @@ use crate::layout::LiveLayout;
 /// The broadcast name of a call side, as `irl call` and the Android demo use it.
 pub const CALL: &str = "call";
 
-/// How many events a slow reader may fall behind before it gets [`CallEvent::Lagged`].
-const EVENT_QUEUE: usize = 64;
-
 /// Why a call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HangUpReason {
@@ -75,37 +72,6 @@ pub enum HangUpReason {
     Withdrawn,
     /// The session with the peer ended.
     Lost,
-}
-
-/// A change in who is calling, from [`Calls::events`].
-///
-/// Best-effort: the route table's announcement listing can drop a ring that
-/// is withdrawn before it is read. [`Calls::ringing`] is the source of truth.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallEvent {
-    /// The peer rings this node.
-    Ringing(EndpointId),
-    /// The peer ended the call that was in progress.
-    HungUp(EndpointId, HangUpReason),
-    /// The reader fell behind and missed events. Read [`Calls::ringing`] again.
-    Lagged,
-}
-
-/// The stream of [`CallEvent`]s, from [`Calls::events`].
-pub struct CallEvents(Pin<Box<dyn Stream<Item = CallEvent> + Send>>);
-
-impl fmt::Debug for CallEvents {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("CallEvents")
-    }
-}
-
-impl Stream for CallEvents {
-    type Item = CallEvent;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<CallEvent>> {
-        self.0.as_mut().poll_next(cx)
-    }
 }
 
 /// An error from [`Calls`].
@@ -161,8 +127,6 @@ struct Inner {
     layout: LiveLayout,
     /// Who this node's side is offered to.
     audience: Watchable<BTreeSet<EndpointId>>,
-    /// Carries [`CallEvent`]s to every [`CallEvents`] stream.
-    events: events_channel::Sender<CallEvent>,
     /// The peers that ring, as [`CallState::ringing`] derives them.
     ringing: Watchable<BTreeSet<EndpointId>>,
     /// Cancelled once the service ends.
@@ -173,7 +137,7 @@ struct Inner {
 }
 
 impl Inner {
-    /// Updates the ringing set from `state`, and reports the peers that began to ring.
+    /// Updates the ringing set from `state`.
     fn recompute(&self, state: &CallState) {
         let now = state.ringing();
         let before = self.ringing.get();
@@ -182,7 +146,6 @@ impl Inner {
         }
         for peer in now.difference(&before) {
             debug!(peer = %peer.fmt_short(), "ringing");
-            self.events.send(CallEvent::Ringing(*peer)).ok();
         }
         self.ringing.set(now).ok();
     }
@@ -285,12 +248,10 @@ impl Calls {
             node.publish_with(path, Audience::Peers(audience.clone()), |producer| {
                 B::try_from(producer.clone())
             })?;
-        let (events, _) = events_channel::channel(EVENT_QUEUE);
         let inner = Arc::new(Inner {
             node: node.clone(),
             layout: layout.clone(),
             audience,
-            events,
             ringing: Watchable::new(BTreeSet::new()),
             closed: CancellationToken::new(),
             state: Mutex::new(CallState::default()),
@@ -370,31 +331,13 @@ impl Calls {
 
     /// Returns the peers that ring this node now, as they change.
     ///
-    /// The source of truth: peers whose side is visible, in no call, and not
-    /// hung up on since they last offered their side.
+    /// These are the peers whose side is visible, in no call, and not hung up
+    /// on since they last offered their side. A peer leaves the set when it
+    /// withdraws its side before an answer, and when this node answers or
+    /// calls it. [`Call::ended`] reports how a call in progress ends.
     #[must_use]
     pub fn ringing(&self) -> n0_watcher::Direct<BTreeSet<EndpointId>> {
         self.inner.ringing.watch()
-    }
-
-    /// Returns a stream of calls and hang-ups.
-    ///
-    /// It first replays the peers that ring now. See [`CallEvent`] for what
-    /// it does not guarantee.
-    #[must_use]
-    pub fn events(&self) -> CallEvents {
-        let live = BroadcastStream::new(self.inner.events.subscribe()).map(|event| match event {
-            Ok(event) => event,
-            Err(BroadcastStreamRecvError::Lagged(_)) => CallEvent::Lagged,
-        });
-        let replay = self
-            .inner
-            .ringing
-            .get()
-            .into_iter()
-            .map(CallEvent::Ringing)
-            .collect::<Vec<_>>();
-        CallEvents(Box::pin(stream::iter(replay).chain(live)))
     }
 
     /// Waits until the service ends: the node shut down, or the call side was withdrawn.
@@ -584,10 +527,6 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
         } else {
             state.visible.remove(&peer);
             state.ended.remove(&peer);
-            if state.active.contains(&peer) {
-                let reason = inner.hung_up(peer);
-                inner.events.send(CallEvent::HungUp(peer, reason)).ok();
-            }
         }
         inner.recompute(&state);
     }

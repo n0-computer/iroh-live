@@ -7,13 +7,12 @@ use std::{collections::BTreeSet, time::Duration};
 use iroh::EndpointId;
 use iroh_live::{
     Audience, NodeConfig, Reach,
-    calls::{Call, CallEvent, Calls, Error, HangUpReason},
+    calls::{Call, Calls, Error, HangUpReason},
     layout::LiveLayout,
     node::policy::Policy,
 };
 use iroh_live_node::test_util::{TestNode, eventually, step};
 use moq_net::broadcast;
-use n0_future::StreamExt;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher as _};
 
@@ -73,15 +72,13 @@ async fn connect(a: &Peer, b: &Peer) -> (Call, Call) {
 #[traced_test]
 async fn a_call_rings_answers_and_hangs_up() {
     let (a, b) = (Peer::start().await, Peer::start().await);
-    let mut events = b.calls.events();
 
     let call_a = {
         let calls = a.calls.clone();
         let peer = b.id();
         tokio::spawn(async move { calls.call(peer).await })
     };
-    let event = step("ring event", events.next()).await.expect("an event");
-    assert_eq!(event, CallEvent::Ringing(a.id()));
+    eventually("b rings", || b.calls.ringing().get().contains(&a.id())).await;
     assert_eq!(b.calls.ringing().get(), BTreeSet::from([a.id()]));
 
     let call_b = step("answer", b.calls.answer(a.id()))
@@ -151,21 +148,6 @@ async fn answer_requires_a_ring() {
 
 #[tokio::test]
 #[traced_test]
-async fn a_new_events_stream_replays_ringing() {
-    let (a, b) = (Peer::start().await, Peer::start().await);
-
-    a.calls.ring(b.id());
-    eventually("b rings", || b.calls.ringing().get().contains(&a.id())).await;
-    let mut events = b.calls.events();
-    let first = step("replay", events.next()).await.expect("an event");
-    assert_eq!(first, CallEvent::Ringing(a.id()));
-
-    a.shutdown().await;
-    b.shutdown().await;
-}
-
-#[tokio::test]
-#[traced_test]
 async fn a_hung_up_peer_rings_again_only_after_withdrawing() {
     let (a, b) = (Peer::start().await, Peer::start().await);
     let (call_a, call_b) = connect(&a, &b).await;
@@ -217,23 +199,15 @@ async fn losing_the_session_ends_the_call_as_lost() {
 #[traced_test]
 async fn a_callee_that_shuts_down_is_reported_as_lost() {
     let (a, b) = (Peer::start().await, Peer::start().await);
-    let mut events = a.calls.events();
     let (call_a, call_b) = connect(&a, &b).await;
 
     // b keeps its call, so its side goes only with its node.
-    let peer = b.id();
     b.shutdown().await;
     assert_eq!(step("lost", call_a.ended()).await, HangUpReason::Lost);
-    let hung_up = step("hang-up event", async {
-        loop {
-            match events.next().await.expect("an event") {
-                CallEvent::HungUp(from, reason) => break (from, reason),
-                _ => continue,
-            }
-        }
-    })
-    .await;
-    assert_eq!(hung_up, (peer, HangUpReason::Lost));
+    assert!(
+        a.calls.ringing().get().is_empty(),
+        "a lost call does not ring"
+    );
 
     drop(call_b);
     a.shutdown().await;
@@ -346,44 +320,6 @@ async fn rings(calls: &Calls, peer: EndpointId, ringing: bool) {
     .await;
 }
 
-/// A reader that falls behind the bounded event queue gets `Lagged`, then the newer events.
-#[tokio::test]
-#[traced_test]
-async fn a_lagging_event_reader_is_told_it_lagged() {
-    // More rings than the event queue holds, which is 64.
-    const RINGS: usize = 70;
-    let layout = LiveLayout::default();
-    let b = Peer::start().await;
-    let test = raw().await;
-    let raw = &test.node;
-    step("dial", raw.connect(b.node.endpoint().addr()))
-        .await
-        .expect("dial b");
-    let audience = n0_watcher::Watchable::new(BTreeSet::new());
-    let _side = layout
-        .publish_with(raw, "call", Audience::Peers(audience.clone()), |producer| {
-            Ok::<_, std::convert::Infallible>(producer.clone())
-        })
-        .expect("publish the raw side");
-
-    // Subscribed now, and never read until the rings are over.
-    let mut events = b.calls.events();
-    for _ in 0..RINGS {
-        audience.set(BTreeSet::from([b.id()])).ok();
-        rings(&b.calls, raw.id(), true).await;
-        audience.set(BTreeSet::new()).ok();
-        rings(&b.calls, raw.id(), false).await;
-    }
-
-    let first = step("the first event", events.next()).await;
-    assert_eq!(first, Some(CallEvent::Lagged));
-    let next = step("the event after the lag", events.next()).await;
-    assert_eq!(next, Some(CallEvent::Ringing(raw.id())));
-
-    test.shutdown().await;
-    b.shutdown().await;
-}
-
 /// A callee that admits only its contacts refuses a stranger's ring, and drops a removed contact.
 #[tokio::test]
 #[traced_test]
@@ -416,39 +352,6 @@ async fn a_contacts_only_callee_refuses_strangers_and_drops_removed_contacts() {
     for peer in [alice, bob, carol] {
         peer.shutdown().await;
     }
-}
-
-/// Waits for the next `HungUp` event on `events`, skipping the others.
-async fn next_hang_up(events: &mut iroh_live::calls::CallEvents) -> (EndpointId, HangUpReason) {
-    step("a hang-up event", async {
-        loop {
-            if let CallEvent::HungUp(peer, reason) = events.next().await.expect("an event") {
-                return (peer, reason);
-            }
-        }
-    })
-    .await
-}
-
-#[tokio::test]
-#[traced_test]
-async fn a_hang_up_reaches_the_other_side_as_an_event() {
-    let (a, b) = (Peer::start().await, Peer::start().await);
-    let mut events = b.calls.events();
-    let (call_a, call_b) = connect(&a, &b).await;
-
-    call_a.hang_up();
-    assert_eq!(
-        next_hang_up(&mut events).await,
-        (a.id(), HangUpReason::Withdrawn)
-    );
-    assert_eq!(
-        step("b's call ends", call_b.ended()).await,
-        HangUpReason::Withdrawn
-    );
-
-    a.shutdown().await;
-    b.shutdown().await;
 }
 
 #[tokio::test]
