@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::{Authorization, Decision, Event, PeerRequest, Policy, Rejection};
+use super::{Authorization, Decision, PeerRequest, Policy, Rejection};
 use crate::PeerId;
 
 /// A policy that hands each decision to the application, through a bounded queue.
@@ -17,10 +17,6 @@ use crate::PeerId;
 /// sessions whose peers wait. A node also gives up on a decision after its
 /// decide timeout, such as `NodeConfig::decide_timeout` in iroh-live-node,
 /// which is 10 seconds there by default. Raise it when a person answers.
-///
-/// The application sees [`Event::Connect`] and [`Event::Reauthorize`]. The
-/// queue answers [`Event::Revalidate`] itself with the authorization the
-/// peer holds, since a periodic check has nothing new to ask.
 ///
 /// # Examples
 ///
@@ -95,11 +91,6 @@ impl<P: PeerId> Queue<P> {
 
 impl<P: PeerId> Policy<P> for Queue<P> {
     async fn decide(&self, request: &PeerRequest<P>) -> Decision {
-        if request.event() == Event::Revalidate
-            && let Some(current) = request.current()
-        {
-            return Ok(current.clone());
-        }
         let (reply, answer) = async_channel::bounded(1);
         let pending = Pending {
             request: request.clone(),

@@ -1,4 +1,4 @@
-//! Re-decides: the policy is asked again at expiry, on revalidation, on change and on request.
+//! Re-decides: the policy is asked again at expiry and on request.
 //!
 //! These run on real time with short durations, and wait on conditions with
 //! a timeout rather than for fixed spans.
@@ -20,9 +20,8 @@ use iroh_live_node::{
     Audience, ConnectOptions, Error, Grant, Node, NodeConfig, Reach, Session,
     policy::{self, Authorization, Decision, Event, PeerRequest, Policy, Rejection},
 };
-use n0_future::{StreamExt, boxed::BoxStream};
 use n0_tracing_test::traced_test;
-use n0_watcher::{Watchable, Watcher};
+use n0_watcher::Watcher;
 use tokio::sync::Notify;
 
 /// How long an authorization in these tests lasts before the node asks again.
@@ -42,7 +41,7 @@ async fn an_expiring_authorization_narrows_the_live_session() {
                     expires: Some(SystemTime::now() + SHORT),
                     ..Default::default()
                 }),
-                Event::Revalidate | Event::Reauthorize => Ok(Grant::subscribe_only().into()),
+                Event::Reauthorize => Ok(Grant::subscribe_only().into()),
             }
         },
     )))
@@ -96,17 +95,15 @@ async fn an_expiring_authorization_narrows_the_live_session() {
 
 #[tokio::test]
 #[traced_test]
-async fn a_rejection_at_revalidation_closes_the_sessions_with_its_code() {
+async fn a_rejection_at_expiry_closes_the_sessions_with_its_code() {
     let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
         |request: &PeerRequest| match request.event() {
             Event::Connect => Ok(Authorization {
                 grant: Grant::subscribe_only(),
-                revalidate: Some(SHORT),
+                expires: Some(SystemTime::now() + SHORT),
                 ..Default::default()
             }),
-            Event::Revalidate | Event::Reauthorize => {
-                Err(Rejection::new("revoked").with_code(moq_net::Error::App(42)))
-            }
+            Event::Reauthorize => Err(Rejection::new("revoked").with_code(moq_net::Error::App(42))),
         },
     )))
     .await;
@@ -135,52 +132,15 @@ async fn a_rejection_at_revalidation_closes_the_sessions_with_its_code() {
     bob.shutdown().await;
 }
 
-/// A policy whose grant the test switches, and which reports the switch.
-#[derive(Clone)]
-struct Switchable {
-    grant: Arc<Mutex<Grant>>,
-    changed: Watchable<u64>,
-}
-
-impl std::fmt::Debug for Switchable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Switchable").finish_non_exhaustive()
-    }
-}
-
-impl Switchable {
-    fn new(grant: Grant) -> Self {
-        Self {
-            grant: Arc::new(Mutex::new(grant)),
-            changed: Watchable::new(0),
-        }
-    }
-
-    /// Replaces the grant and tells the node.
-    fn switch(&self, grant: Grant) {
-        *self.grant.lock().expect("poisoned") = grant;
-        let next = self.changed.get() + 1;
-        self.changed.set(next).ok();
-    }
-}
-
-impl Policy<EndpointId> for Switchable {
-    async fn decide(&self, _request: &PeerRequest) -> Decision {
-        Ok(self.grant.lock().expect("poisoned").clone().into())
-    }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        Some(Box::pin(
-            self.changed.watch().stream_updates_only().map(|_| ()),
-        ))
-    }
-}
-
 #[tokio::test]
 #[traced_test]
-async fn a_policy_change_decides_every_peer_again() {
-    let policy = Switchable::new(Grant::everything());
-    let alice = Peer::bare(NodeConfig::default().with_policy(policy.clone())).await;
+async fn reauthorize_all_decides_every_peer_again() {
+    let grant = Arc::new(Mutex::new(Grant::everything()));
+    let current = grant.clone();
+    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
+        move |_request: &PeerRequest| Ok(current.lock().expect("poisoned").clone().into()),
+    )))
+    .await;
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
     for peer in [&bob, &carol] {
@@ -193,7 +153,8 @@ async fn a_policy_change_decides_every_peer_again() {
         .await;
     }
 
-    policy.switch(Grant::subscribe_only());
+    *grant.lock().expect("poisoned") = Grant::subscribe_only();
+    alice.node.reauthorize_all();
     let narrowed = Some(Authorization::from(Grant::subscribe_only()));
     eventually("both peers narrow", || {
         alice.node.grant_for(bob.id()) == narrowed && alice.node.grant_for(carol.id()) == narrowed
@@ -290,7 +251,7 @@ async fn reauthorize_decides_one_peer_again() {
 
 #[tokio::test]
 #[traced_test]
-async fn a_queue_answers_revalidations_and_asks_the_application_to_reauthorize() {
+async fn a_queue_asks_the_application_to_reauthorize() {
     let queue = policy::Queue::new(16);
     let alice = Peer::bare(NodeConfig::default().with_policy(queue.clone())).await;
     let bob = Peer::spawn().await;
@@ -301,12 +262,8 @@ async fn a_queue_answers_revalidations_and_asks_the_application_to_reauthorize()
             let event = pending.request().event();
             seen.lock().expect("poisoned").push(event);
             match event {
-                Event::Connect => pending.admit(Authorization {
-                    grant: Grant::everything(),
-                    revalidate: Some(Duration::from_millis(100)),
-                    ..Default::default()
-                }),
-                _ => pending.admit(Grant::subscribe_only()),
+                Event::Connect => pending.admit(Grant::everything()),
+                Event::Reauthorize => pending.admit(Grant::subscribe_only()),
             }
         }
     }));
@@ -318,15 +275,6 @@ async fn a_queue_answers_revalidations_and_asks_the_application_to_reauthorize()
         alice.node.grant_for(bob.id()).is_some()
     })
     .await;
-    // Several revalidation intervals pass without the application.
-    tokio::time::sleep(SHORT).await;
-    assert_eq!(*answered.lock().expect("poisoned"), [Event::Connect]);
-    assert_eq!(
-        alice.node.grant_for(bob.id()).map(|current| current.grant),
-        Some(Grant::everything()),
-        "the queue keeps the authorization"
-    );
-
     alice.node.reauthorize(bob.id());
     eventually("the application narrows bob", || {
         alice.node.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
@@ -508,49 +456,6 @@ async fn a_session_decided_before_a_rejection_does_not_undo_it() {
     alice.shutdown().await;
 }
 
-/// A peer that opens sessions faster than its revalidation interval is still revalidated.
-#[tokio::test]
-#[traced_test]
-async fn a_peer_that_keeps_reconnecting_is_still_revalidated() {
-    let revalidations = Arc::new(AtomicUsize::new(0));
-    let counted = revalidations.clone();
-    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
-        move |request: &PeerRequest| {
-            if request.event() == Event::Revalidate {
-                counted.fetch_add(1, Ordering::SeqCst);
-            }
-            Ok(Authorization {
-                grant: Grant::everything(),
-                revalidate: Some(Duration::from_millis(300)),
-                ..Default::default()
-            })
-        },
-    )))
-    .await;
-    let bob_endpoint = endpoint().await;
-    let mut nodes = vec![dialer(&bob_endpoint)];
-    step("bob dials", nodes[0].connect(alice.endpoint.addr()))
-        .await
-        .expect("admitted");
-
-    let churn = tokio::time::Instant::now() + Duration::from_millis(1200);
-    while tokio::time::Instant::now() < churn && revalidations.load(Ordering::SeqCst) == 0 {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let node = dialer(&bob_endpoint);
-        step("bob dials again", node.connect(alice.endpoint.addr()))
-            .await
-            .expect("admitted");
-        nodes.push(node);
-    }
-    assert!(
-        revalidations.load(Ordering::SeqCst) > 0,
-        "new sessions every 200 ms held off a 300 ms revalidation"
-    );
-
-    close(&nodes.iter().collect::<Vec<_>>(), &bob_endpoint).await;
-    alice.shutdown().await;
-}
-
 /// A peer removed while this node dials it never holds the grant it had before.
 #[tokio::test]
 #[traced_test]
@@ -622,13 +527,13 @@ impl Policy<EndpointId> for Contacts {
     }
 }
 
-/// A policy that changes all the time and decides slowly still applies a rejection.
+/// A policy that decides slowly, and rejects every re-decide once the test says so.
 #[derive(Debug, Clone, Default)]
-struct Chatty {
+struct Slow {
     rejecting: Arc<AtomicBool>,
 }
 
-impl Policy<EndpointId> for Chatty {
+impl Policy<EndpointId> for Slow {
     async fn decide(&self, request: &PeerRequest) -> Decision {
         tokio::time::sleep(Duration::from_millis(150)).await;
         if request.event() != Event::Connect && self.rejecting.load(Ordering::SeqCst) {
@@ -636,19 +541,13 @@ impl Policy<EndpointId> for Chatty {
         }
         Ok(Grant::everything().into())
     }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        Some(Box::pin(n0_future::stream::unfold((), |()| async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            Some(((), ()))
-        })))
-    }
 }
 
+/// A rejection lands while the application asks for re-decides faster than the policy decides.
 #[tokio::test]
 #[traced_test]
-async fn a_rejection_lands_while_the_policy_keeps_changing() {
-    let policy = Chatty::default();
+async fn a_rejection_lands_while_the_triggers_keep_coming() {
+    let policy = Slow::default();
     let alice = Peer::bare(NodeConfig::default().with_policy(policy.clone())).await;
     let bob = Peer::spawn().await;
     let session = step("bob dials", bob.node.connect(alice.endpoint.addr()))
@@ -656,6 +555,13 @@ async fn a_rejection_lands_while_the_policy_keeps_changing() {
         .expect("admitted");
 
     policy.rejecting.store(true, Ordering::SeqCst);
+    let node = alice.node.clone();
+    let _flood = n0_future::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        loop {
+            node.reauthorize_all();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }));
     step("the session closes", session.closed()).await;
 
     alice.shutdown().await;
@@ -770,31 +676,27 @@ async fn a_full_queue_keeps_the_sessions_and_asks_again() {
     }
 }
 
-/// A policy whose first revalidation takes longer than the node waits.
+/// A policy whose first re-decide takes longer than the node waits.
 #[derive(Debug, Clone, Default)]
 struct SlowOnce {
-    revalidations: Arc<AtomicUsize>,
+    redecides: Arc<AtomicUsize>,
 }
 
 impl Policy<EndpointId> for SlowOnce {
     async fn decide(&self, request: &PeerRequest) -> Decision {
-        if request.event() == Event::Revalidate
-            && self.revalidations.fetch_add(1, Ordering::SeqCst) == 0
+        if request.event() == Event::Reauthorize
+            && self.redecides.fetch_add(1, Ordering::SeqCst) == 0
         {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        Ok(Authorization {
-            grant: Grant::everything(),
-            revalidate: Some(Duration::from_millis(200)),
-            ..Default::default()
-        })
+        Ok(Grant::everything().into())
     }
 }
 
-/// A revalidation that times out keeps the session and its authorization.
+/// A re-decide that times out keeps the session and its authorization, and runs again.
 #[tokio::test]
 #[traced_test]
-async fn a_revalidation_that_times_out_keeps_the_session() {
+async fn a_redecide_that_times_out_keeps_the_session() {
     let policy = SlowOnce::default();
     let alice = Peer::bare(NodeConfig {
         decide_timeout: Duration::from_millis(300),
@@ -806,8 +708,13 @@ async fn a_revalidation_that_times_out_keeps_the_session() {
         .await
         .expect("admitted");
 
-    eventually("a revalidation after the timeout succeeds", || {
-        policy.revalidations.load(Ordering::SeqCst) >= 2
+    eventually("alice registers bob", || {
+        alice.node.grant_for(bob.id()).is_some()
+    })
+    .await;
+    alice.node.reauthorize(bob.id());
+    eventually("a re-decide after the timeout succeeds", || {
+        policy.redecides.load(Ordering::SeqCst) >= 2
     })
     .await;
     assert!(
@@ -853,15 +760,15 @@ async fn a_union_admits_on_its_fast_half_when_the_queue_times_out() {
     bob.shutdown().await;
 }
 
-/// A revalidation interval beyond the clock's range means never, and the node keeps running.
+/// An expiry beyond the clock's range means never, and the node keeps running.
 #[tokio::test]
 #[traced_test]
-async fn a_revalidation_interval_beyond_the_clock_is_never() {
+async fn an_expiry_beyond_the_clock_is_never() {
     let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
         |_request: &PeerRequest| {
             Ok(Authorization {
                 grant: Grant::everything(),
-                revalidate: Some(Duration::MAX),
+                expires: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(u64::MAX / 4)),
                 ..Default::default()
             })
         },

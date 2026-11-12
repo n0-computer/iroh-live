@@ -70,13 +70,12 @@ A policy implements `Policy<EndpointId>`. The node calls its `decide` with a
 - `peer()`: the peer's endpoint id.
 - `dialed()`: whether this node dialed the peer.
 - `event()`: why the node asks, see [when the node asks](#when-the-node-asks).
-- `current()`: the authorization the peer holds, when the node asks again.
 - `path()`, `query(key)` and `token()`: what the peer asked for in its MoQ
   SETUP.
 
 `decide` returns a `Decision`, which is `Result<Authorization, Rejection>`.
-An `Authorization` holds the `grant`, an optional `expires` time, and an
-optional `revalidate` interval. A `Grant` converts into an `Authorization`
+An `Authorization` holds the `grant` and an optional `expires` time. A
+`Grant` converts into an `Authorization`
 with no expiry. A `Rejection` has a reason, which stays local, and a code,
 which the peer sees when its session closes. The code is `Unauthorized`
 unless you set another with `Rejection::with_code`.
@@ -210,8 +209,8 @@ policy: a stranger's ring never reaches the application.
 ### A policy of your own
 
 A policy that needs I/O, such as a database lookup, implements the trait with
-`async fn decide`. It can also give the authorization an expiry, and report
-through `changes` when earlier decisions may be stale:
+`async fn decide`. It can also give the authorization an expiry, so the node
+asks again when it passes:
 
 ```rust
 use std::time::{Duration, SystemTime};
@@ -220,14 +219,9 @@ use iroh_live::node::{
     Grant,
     policy::{Authorization, Decision, PeerRequest, Policy, Rejection},
 };
-use n0_future::{StreamExt, boxed::BoxStream};
-use n0_watcher::{Watchable, Watcher};
 
 #[derive(Debug)]
-struct Members {
-    /// Bumped when the member list changes.
-    version: Watchable<u64>,
-}
+struct Members;
 
 impl Policy<iroh::EndpointId> for Members {
     async fn decide(&self, request: &PeerRequest) -> Decision {
@@ -241,15 +235,11 @@ impl Policy<iroh::EndpointId> for Members {
             ..Default::default()
         })
     }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        Some(Box::pin(self.version.watch().stream().map(|_| ())))
-    }
 }
 ```
 
-`changes` makes the node decide again about every peer with a session, at
-most 16 at once.
+When the member list changes, call `Node::reauthorize_all()`. The node then
+decides again about every peer with a session, at most 16 at once.
 
 ### Admission by the application
 
@@ -283,9 +273,7 @@ while let Some(pending) = queue.next().await {
 }
 ```
 
-A full queue rejects at once with `TooManyRequests`. The queue answers a
-periodic revalidation itself, with the authorization the peer already holds,
-so the application sees only new sessions and re-decisions.
+A full queue rejects at once with `TooManyRequests`.
 
 `decide_timeout` covers the whole policy. Some nodes admit every peer with a
 small grant and ask the application for more. Give the slow half its own
@@ -306,9 +294,7 @@ The node asks its policy at these times:
 | It accepts a session, after the peer's MoQ SETUP | `Connect` |
 | It dials a peer, with `dialed()` set and no token | `Connect` |
 | An authorization reaches its `expires` time | `Reauthorize` |
-| The policy's `changes` stream yields, for every peer with a session | `Reauthorize` |
 | The application calls `Node::reauthorize(peer)` or `Node::reauthorize_all()` | `Reauthorize` |
-| A `revalidate` interval ends, if the authorization sets one | `Revalidate` |
 
 Every session with one peer shares one authorization. A second session with
 the peer reuses it, unless it brings a token that no other session brought.

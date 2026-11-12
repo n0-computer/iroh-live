@@ -121,9 +121,8 @@ admitted with `Grant::subscribe_only()`. Each decision may take up to
 The node keeps one authorization per peer (`state.rs`), which every session
 with the peer shares. The effective grant of a session is that authorization's
 grant plus the peer's ticket claims. A deadline per peer (`reauth.rs`) fires at
-the authorization's `expires` time or its `revalidate` interval, and the actor
-then asks the policy again. So do a yield of the policy's `changes()` stream
-and `Node::reauthorize`. A new decision replaces the authorization and
+the authorization's `expires` time, and the actor then asks the policy again.
+So does `Node::reauthorize`. A new decision replaces the authorization and
 re-authorizes the peer's sessions, and a rejection closes them all. One
 decision per peer runs at a time, and at most 16 run at once. A trigger that
 arrives while a decision runs makes the actor ask once more afterwards, so no

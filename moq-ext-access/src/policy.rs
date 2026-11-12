@@ -35,7 +35,7 @@ use std::{
 };
 
 use moq_net::Patterns;
-use n0_future::{MergeBounded, boxed::BoxStream, future};
+use n0_future::future;
 
 #[cfg(feature = "jwt")]
 pub use self::jwt::JwtVerifier;
@@ -61,7 +61,6 @@ pub struct PeerRequest<P: PeerId> {
     request: SessionRequest,
     dialed: bool,
     event: Event,
-    current: Option<Authorization>,
 }
 
 impl<P: PeerId> PeerRequest<P> {
@@ -73,7 +72,6 @@ impl<P: PeerId> PeerRequest<P> {
             request,
             dialed: false,
             event,
-            current: None,
         }
     }
 
@@ -83,13 +81,6 @@ impl<P: PeerId> PeerRequest<P> {
     #[must_use]
     pub fn with_dialed(mut self) -> Self {
         self.dialed = true;
-        self
-    }
-
-    /// Returns this request with the authorization the peer holds now.
-    #[must_use]
-    pub fn with_current(mut self, authorization: Authorization) -> Self {
-        self.current = Some(authorization);
         self
     }
 
@@ -109,12 +100,6 @@ impl<P: PeerId> PeerRequest<P> {
     #[must_use]
     pub fn event(&self) -> Event {
         self.event
-    }
-
-    /// Returns the authorization the peer holds, when the node decides again.
-    #[must_use]
-    pub fn current(&self) -> Option<&Authorization> {
-        self.current.as_ref()
     }
 
     /// Returns the path the session requested, without its query.
@@ -137,18 +122,11 @@ impl<P: PeerId> PeerRequest<P> {
 }
 
 /// Why a node asks its policy.
-///
-/// `Connect` and `Revalidate` are moq-auth's events of the same names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// A session opens.
     Connect,
-    /// A live session's authorization is due for its [`Authorization::revalidate`] check.
-    Revalidate,
-    /// A live session is decided again, because something may have changed.
-    ///
-    /// Its authorization expired, the policy's change stream yielded, or the
-    /// application asked.
+    /// A live session is decided again, because its authorization expired or the application asked.
     Reauthorize,
 }
 
@@ -164,22 +142,19 @@ pub struct Authorization {
     pub transit: Transit,
     /// When the node decides again, such as when a token expires.
     pub expires: Option<SystemTime>,
-    /// How often, at the longest, the node decides again.
-    pub revalidate: Option<Duration>,
 }
 
 impl Authorization {
     /// Returns an authorization that allows what either this one or `other` allows.
     ///
-    /// The earliest expiry and the shortest revalidation interval win, so the
-    /// node decides again as soon as either half could change.
+    /// The earlier expiry wins, so the node decides again as soon as either
+    /// half could change.
     #[must_use]
     pub fn union(&self, other: &Self) -> Self {
         Self {
             grant: self.grant.union(&other.grant),
             transit: self.transit.union(&other.transit),
             expires: earliest(self.expires, other.expires),
-            revalidate: earliest(self.revalidate, other.revalidate),
         }
     }
 }
@@ -292,14 +267,6 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// so an implementation must tolerate cancellation at any await.
     fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send;
 
-    /// Returns a stream that yields when earlier decisions may be stale.
-    ///
-    /// A node calls it once and keeps the stream. On each item it decides
-    /// again for every peer with a live session.
-    fn changes(&self) -> Option<BoxStream<()>> {
-        None
-    }
-
     /// Returns a policy that admits what this one or `other` admits.
     ///
     /// When both admit, the authorizations are joined with
@@ -354,9 +321,6 @@ pub trait DynPolicy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
         &'a self,
         request: &'a PeerRequest<P>,
     ) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>>;
-
-    /// Returns the change stream, as [`Policy::changes`] does.
-    fn changes(&self) -> Option<BoxStream<()>>;
 }
 
 impl<P: PeerId, T: Policy<P>> DynPolicy<P> for T {
@@ -366,19 +330,11 @@ impl<P: PeerId, T: Policy<P>> DynPolicy<P> for T {
     ) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
         Box::pin(Policy::decide(self, request))
     }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        Policy::changes(self)
-    }
 }
 
 impl<P: PeerId> Policy<P> for Arc<dyn DynPolicy<P>> {
     async fn decide(&self, request: &PeerRequest<P>) -> Decision {
         DynPolicy::decide(&**self, request).await
-    }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        DynPolicy::changes(&**self)
     }
 }
 
@@ -471,13 +427,6 @@ impl<P: PeerId, A: Policy<P>, B: Policy<P>> Policy<P> for Union<A, B> {
             (Err(rejection), Err(_)) => Err(rejection),
         }
     }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        match (self.a.changes(), self.b.changes()) {
-            (Some(a), Some(b)) => Some(Box::pin(MergeBounded::from_iter([a, b]))),
-            (a, b) => a.or(b),
-        }
-    }
 }
 
 /// A policy that rejects the peers a predicate refuses, built by [`Policy::filter`].
@@ -507,10 +456,6 @@ where
         }
         self.inner.decide(request).await
     }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        self.inner.changes()
-    }
 }
 
 /// A policy that gives up after a while, built by [`Policy::timeout`].
@@ -525,10 +470,6 @@ impl<P: PeerId, T: Policy<P>> Policy<P> for Timeout<T> {
         n0_future::time::timeout(self.after, self.inner.decide(request))
             .await
             .unwrap_or_else(|_| Err(too_slow()))
-    }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        self.inner.changes()
     }
 }
 

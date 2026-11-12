@@ -1,7 +1,5 @@
-use std::sync::Mutex;
-
 use moq_net::Pattern;
-use n0_future::{StreamExt, future::block_on, stream};
+use n0_future::future::block_on;
 
 use super::*;
 
@@ -22,35 +20,13 @@ fn decide(policy: &impl Policy<Peer>, request: &PeerRequest<Peer>) -> Decision {
     block_on(policy.decide(request))
 }
 
-/// A policy whose change stream yields once per item a test sends.
-#[derive(Debug)]
-struct Changing(Mutex<Option<async_channel::Receiver<()>>>);
-
-impl Changing {
-    fn new() -> (Self, async_channel::Sender<()>) {
-        let (sender, receiver) = async_channel::bounded(4);
-        (Self(Mutex::new(Some(receiver))), sender)
-    }
-}
-
-impl Policy<Peer> for Changing {
-    async fn decide(&self, _request: &PeerRequest<Peer>) -> Decision {
-        Err(Rejection::new("changing"))
-    }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        let receiver = self.0.lock().expect("poisoned").take()?;
-        Some(Box::pin(receiver))
-    }
-}
-
 #[test]
 fn a_request_reads_through_to_the_session_request() {
     let session = SessionRequest::new("/studio?jwt=abc&x=1");
-    let request = PeerRequest::new("bob".to_owned(), session, Event::Revalidate).with_dialed();
+    let request = PeerRequest::new("bob".to_owned(), session, Event::Reauthorize).with_dialed();
     assert_eq!(request.peer(), "bob");
     assert!(request.dialed());
-    assert_eq!(request.event(), Event::Revalidate);
+    assert_eq!(request.event(), Event::Reauthorize);
     assert_eq!(request.path(), "studio");
     assert_eq!(request.query("x"), Some("1"));
     assert_eq!(request.token(), Some("abc"));
@@ -130,7 +106,6 @@ fn a_union_of_two_admits_joins_patterns_and_takes_the_earliest_expiry() {
                 ..Default::default()
             },
             expires: Some(later),
-            revalidate: None,
         })
     });
     let b = from_fn(move |_: &PeerRequest<Peer>| {
@@ -141,7 +116,6 @@ fn a_union_of_two_admits_joins_patterns_and_takes_the_earliest_expiry() {
                 ..Default::default()
             },
             expires: Some(soon),
-            revalidate: Some(Duration::from_secs(30)),
         })
     });
     let joined = decide(&a.union(b), &request("bob")).expect("admitted");
@@ -151,7 +125,6 @@ fn a_union_of_two_admits_joins_patterns_and_takes_the_earliest_expiry() {
     assert!(joined.transit.forward_to.matches("any/path"));
     assert!(joined.transit.peer_forwards);
     assert_eq!(joined.expires, Some(soon));
-    assert_eq!(joined.revalidate, Some(Duration::from_secs(30)));
 }
 
 #[test]
@@ -164,61 +137,12 @@ fn a_filter_rejects_what_its_predicate_refuses() {
 }
 
 #[test]
-fn a_filter_keeps_the_inner_changes() {
-    let (changing, sender) = Changing::new();
-    let policy = changing.filter(|_| true);
-    let mut changes = Policy::changes(&policy).expect("a change stream");
-    sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-}
-
-#[test]
-fn a_union_yields_when_either_side_changes() {
-    let (left, left_sender) = Changing::new();
-    let (right, right_sender) = Changing::new();
-    let union = left.union(right);
-    let mut changes = Policy::changes(&union).expect("a change stream");
-
-    right_sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-    left_sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-
-    // One side ending leaves the other.
-    drop(left_sender);
-    right_sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-    drop(right_sender);
-    assert_eq!(block_on(changes.next()), None);
-}
-
-#[test]
-fn a_union_with_one_changing_side_yields_its_changes() {
-    let (changing, sender) = Changing::new();
-    let union = Open(Grant::everything()).union(changing);
-    let mut changes = Policy::changes(&union).expect("a change stream");
-    sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-    assert!(
-        Policy::<Peer>::changes(&Policy::<Peer>::union(Open(Grant::everything()), Closed))
-            .is_none()
-    );
-}
-
-#[test]
-fn an_erased_policy_forwards_decide_and_changes() {
-    let (changing, sender) = Changing::new();
-    let erased: Arc<dyn DynPolicy<Peer>> = Arc::new(Open(under("a")).union(changing));
+fn an_erased_policy_forwards_decide() {
+    let erased: Arc<dyn DynPolicy<Peer>> = Arc::new(Open(under("a")));
     let decision = decide(&erased, &request("bob"));
     assert_eq!(decision.expect("admitted").grant, under("a"));
-
-    let mut changes = Policy::changes(&erased).expect("a change stream");
-    sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-
     let closed: Arc<dyn DynPolicy<Peer>> = Arc::new(Closed);
     assert!(decide(&closed, &request("bob")).is_err());
-    assert!(Policy::changes(&closed).is_none());
 }
 
 #[test]
@@ -247,16 +171,6 @@ fn the_default_grant_allows_nothing() {
     assert!(!authorization.grant.allows_subscribe("a"));
     assert!(authorization.transit.is_empty());
     assert_eq!(authorization.expires, None);
-}
-
-#[test]
-fn an_empty_stream_ends_a_union() {
-    // A stream that ends at once does not hold the merged stream open.
-    let union: BoxStream<()> = Box::pin(MergeBounded::from_iter([
-        Box::pin(stream::empty()) as BoxStream<()>,
-        Box::pin(stream::empty()),
-    ]));
-    assert_eq!(block_on(union.collect::<Vec<_>>()), Vec::<()>::new());
 }
 
 /// Decides `request` with `queue` while `answer` handles the queued request.
@@ -326,40 +240,15 @@ fn a_closed_queue_rejects_and_ends() {
 }
 
 #[test]
-fn a_queue_keeps_the_authorization_at_a_revalidation() {
-    let queue = Queue::new(4);
-    let current = Authorization {
-        revalidate: Some(Duration::from_secs(5)),
-        ..under("bob").into()
-    };
-    let revalidate = PeerRequest::new(
-        "bob".to_owned(),
-        SessionRequest::default(),
-        Event::Revalidate,
-    )
-    .with_current(current.clone());
-    assert_eq!(decide(&queue, &revalidate).expect("kept"), current);
-    assert!(
-        block_on(future::poll_once(queue.next())).is_none(),
-        "the application saw a revalidation"
-    );
-}
-
-#[test]
 fn a_queue_asks_the_application_to_reauthorize() {
     let queue = Queue::new(4);
     let reauthorize = PeerRequest::new(
         "bob".to_owned(),
         SessionRequest::default(),
         Event::Reauthorize,
-    )
-    .with_current(under("bob").into());
+    );
     let decision = decide_queued(&queue, &reauthorize, |pending| {
         assert_eq!(pending.request().event(), Event::Reauthorize);
-        assert_eq!(
-            pending.request().current().map(|current| &current.grant),
-            Some(&under("bob"))
-        );
         pending.admit(Grant::subscribe_only());
     });
     assert_eq!(decision.expect("admitted").grant, Grant::subscribe_only());
@@ -428,16 +317,6 @@ fn a_token_query_is_read_too() {
     assert!(decide(&policy, &request_for("bob", "/?token=good")).is_ok());
 }
 
-#[test]
-fn verify_takes_its_changes_from_the_fallback() {
-    let (changing, sender) = Changing::new();
-    let policy = Verify::new(Stub).with_fallback(changing);
-    let mut changes = Policy::<Peer>::changes(&policy).expect("a change stream");
-    sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-    assert!(Policy::<Peer>::changes(&Verify::new(Stub)).is_none());
-}
-
 /// Rejects every token as expired.
 #[derive(Debug)]
 struct Lapsed;
@@ -455,15 +334,13 @@ fn an_expired_token_falls_through_only_when_deciding_again() {
     let connect = PeerRequest::new("bob".to_owned(), session.clone(), Event::Connect);
     let rejection = decide(&policy, &connect).expect_err("a new session is rejected");
     assert!(matches!(rejection.code(), moq_net::Error::Expired));
-    for event in [Event::Revalidate, Event::Reauthorize] {
-        let again = PeerRequest::new("bob".to_owned(), session.clone(), event);
-        assert_eq!(
-            decide(&policy, &again).expect("narrowed").grant,
-            Grant::subscribe_only()
-        );
-        // Under the default fallback, the session closes.
-        decide(&Verify::new(Lapsed), &again).expect_err("closed");
-    }
+    let again = PeerRequest::new("bob".to_owned(), session, Event::Reauthorize);
+    assert_eq!(
+        decide(&policy, &again).expect("narrowed").grant,
+        Grant::subscribe_only()
+    );
+    // Under the default fallback, the session closes.
+    decide(&Verify::new(Lapsed), &again).expect_err("closed");
     // A token rejected for another reason never falls through.
     let forged = PeerRequest::new(
         "bob".to_owned(),
@@ -546,17 +423,6 @@ async fn a_union_admits_on_its_fast_half_when_the_slow_half_times_out() {
     assert_eq!(admitted.grant, under("a"));
 }
 
-#[test]
-fn a_timeout_keeps_the_inner_changes() {
-    let (changing, sender) = Changing::new();
-    let policy = changing.timeout(Duration::from_secs(5));
-    let mut changes = Policy::changes(&policy).expect("a change stream");
-    sender.try_send(()).expect("room");
-    assert_eq!(block_on(changes.next()), Some(()));
-    let closed = Policy::<Peer>::timeout(Closed, Duration::from_secs(5));
-    assert!(Policy::<Peer>::changes(&closed).is_none());
-}
-
 #[tokio::test(start_paused = true)]
 async fn decide_within_passes_an_admission_through() {
     let admitted = decide_within(&Open(under("a")), &request("bob"), Duration::from_secs(5))
@@ -634,21 +500,6 @@ fn closing_a_queue_still_hands_out_the_waiting_requests() {
         .admit(Grant::subscribe_only());
     assert!(block_on(waiting).is_ok());
     assert!(block_on(queue.next()).is_none());
-}
-
-#[test]
-fn a_queue_asks_the_application_at_a_revalidation_without_an_authorization() {
-    let queue = Queue::new(4);
-    let revalidate = PeerRequest::new(
-        "bob".to_owned(),
-        SessionRequest::default(),
-        Event::Revalidate,
-    );
-    let decision = decide_queued(&queue, &revalidate, |pending| {
-        assert_eq!(pending.request().event(), Event::Revalidate);
-        pending.admit(under("bob"));
-    });
-    assert_eq!(decision.expect("admitted").grant, under("bob"));
 }
 
 #[test]

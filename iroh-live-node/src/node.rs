@@ -308,8 +308,7 @@ impl Node {
     ///
     /// A session with the peer that is still being decided or handshaken
     /// is decided again too, so it never registers with rights from before
-    /// the call. Call it when state the policy reads changes and its
-    /// [`changes`](Policy::changes) stream does not cover it, such as a
+    /// the call. Call it when state the policy reads changes, such as a
     /// [`filter`](Policy::filter) predicate. The decision runs in the
     /// background: a new authorization replaces the old one on every session
     /// with the peer, and a rejection closes them with its code.

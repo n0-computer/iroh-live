@@ -8,7 +8,7 @@ use std::{
 
 use iroh::{EndpointAddr, EndpointId};
 use n0_error::{AnyError, e};
-use n0_future::{StreamExt, boxed::BoxStream, task::AbortOnDropHandle};
+use n0_future::task::AbortOnDropHandle;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
@@ -21,14 +21,14 @@ use crate::{
     handshake::{Hop, SessionParts, dial_session},
     link::{self, LinkState},
     node::Shared,
-    policy::{Authorization, DynPolicy, Event, PeerRequest, Rejection},
+    policy::{Authorization, Event, PeerRequest, Rejection},
     reauth::Reauth,
     session::SessionInner,
     state::{LinkEntry, Registered},
 };
 
-/// What one re-decide asked: the peer, the epoch it started at, and the event.
-type Asked = (EndpointId, u64, Event);
+/// What one re-decide asked: the peer and the epoch it started at.
+type Asked = (EndpointId, u64);
 
 /// The result of one re-decide: what it asked, and the decision.
 type Redecided = (Asked, Result<Authorization, Rejection>);
@@ -69,8 +69,6 @@ pub(crate) struct Actor {
     decisions: JoinSet<Redecided>,
     /// What each re-decide task asked, so a task that panics still finishes.
     decision_ids: HashMap<tokio::task::Id, Asked>,
-    /// The policy's change stream, until it ends.
-    changes: Option<BoxStream<()>>,
 }
 
 impl Drop for Actor {
@@ -82,7 +80,6 @@ impl Drop for Actor {
 impl Actor {
     /// Creates an actor for the node `shared`.
     pub(crate) fn new(shared: Arc<Shared>) -> Self {
-        let changes = DynPolicy::changes(&*shared.policy);
         Self {
             shared,
             peers: HashMap::new(),
@@ -94,7 +91,6 @@ impl Actor {
             reauth: Reauth::default(),
             decisions: JoinSet::new(),
             decision_ids: HashMap::new(),
-            changes,
         }
     }
 
@@ -109,17 +105,6 @@ impl Actor {
                     break;
                 }
                 () = self.shared.reauth_notify.notified() => self.take_reauth_requests(),
-                change = next_change(&mut self.changes) => match change {
-                    Some(()) => {
-                        debug!(peers = self.peers.len(), "the policy changed, deciding every peer again");
-                        self.shared.state.lock().expect("poisoned").mark_all();
-                        self.reauth.request_all();
-                    }
-                    None => {
-                        debug!("the policy's change stream ended");
-                        self.changes = None;
-                    }
-                },
                 () = sleep_until(deadline) => self.deadline_passed(),
                 Some(decided) = self.decisions.join_next_with_id(), if !self.decisions.is_empty() => {
                     self.redecided(decided);
@@ -310,28 +295,21 @@ impl Actor {
 
     /// Starts the re-decides that wait, as far as the concurrency limit allows.
     fn start_decisions(&mut self) {
-        while let Some(start) = self.reauth.start() {
-            let (request, dialed) = self.replayed_request(&start.peer);
-            let (started, current) = {
-                let mut state = self.shared.state.lock().expect("poisoned");
-                let current = state.peer_authorization(&start.peer).cloned();
-                (state.next_epoch(), current)
-            };
-            let mut request = PeerRequest::new(start.peer, request, start.event);
+        while let Some(peer) = self.reauth.start() {
+            let (request, dialed) = self.replayed_request(&peer);
+            let started = self.shared.state.lock().expect("poisoned").next_epoch();
+            let mut request = PeerRequest::new(peer, request, Event::Reauthorize);
             if dialed {
                 request = request.with_dialed();
             }
-            if let Some(current) = current {
-                request = request.with_current(current);
-            }
             let shared = self.shared.clone();
-            let asked = (start.peer, started, start.event);
+            let asked = (peer, started);
             let handle = self.decisions.spawn(
                 async move {
                     let decision = decide(&shared, &request).await;
                     (asked, decision)
                 }
-                .instrument(info_span!("redecide", peer = %start.peer.fmt_short(), started)),
+                .instrument(info_span!("redecide", peer = %peer.fmt_short(), started)),
             );
             self.decision_ids.insert(handle.id(), asked);
         }
@@ -362,7 +340,7 @@ impl Actor {
     /// with the rejection's code. A decision that timed out or found a full
     /// queue keeps the peer's authorization and runs again later.
     fn redecided(&mut self, decided: Result<(tokio::task::Id, Redecided), tokio::task::JoinError>) {
-        let ((peer, started, event), decision) = match decided {
+        let ((peer, started), decision) = match decided {
             Ok((id, decided)) => {
                 self.decision_ids.remove(&id);
                 decided
@@ -384,7 +362,7 @@ impl Actor {
         {
             let wait = self
                 .reauth
-                .retry(&peer, event, tokio::time::Instant::now().into_std());
+                .retry(&peer, tokio::time::Instant::now().into_std());
             warn!(
                 peer = %peer.fmt_short(),
                 reason = rejection.reason(),
@@ -636,14 +614,6 @@ impl Actor {
     fn publish_sessions(&self) {
         let sessions: Vec<Session> = self.peers.values().flatten().cloned().collect();
         self.shared.sessions.set(sessions).ok();
-    }
-}
-
-/// Waits for the next item of the policy's change stream, or forever without one.
-async fn next_change(changes: &mut Option<BoxStream<()>>) -> Option<()> {
-    match changes {
-        Some(changes) => changes.next().await,
-        None => std::future::pending().await,
     }
 }
 

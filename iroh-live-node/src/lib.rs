@@ -50,8 +50,7 @@
 //!
 //! A [`policy`] decides who may hold a session and with which grant, on
 //! accept and on dial (see [`NodeConfig::policy`]). The node asks it again
-//! when an authorization expires, when the policy reports a change, and on
-//! [`Node::reauthorize`]. [`Grant::publish_under`] lets a peer publish only
+//! when an authorization expires, and on [`Node::reauthorize`]. [`Grant::publish_under`] lets a peer publish only
 //! at paths that name it, so it cannot stand in for another peer.
 //!
 //! [`Node::subscribe_ticket`] claims a [`BroadcastTicket`]'s path for its peer

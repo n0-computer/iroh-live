@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-use n0_future::boxed::BoxStream;
-
 use super::{Closed, Decision, Event, PeerRequest, Policy};
 use crate::PeerId;
 
@@ -111,9 +109,5 @@ where
             }
             decision => decision,
         }
-    }
-
-    fn changes(&self) -> Option<BoxStream<()>> {
-        self.fallback.changes()
     }
 }
