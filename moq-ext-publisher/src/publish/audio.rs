@@ -78,18 +78,19 @@ async fn pcm(
     encoding: &moq_audio::encode::Config,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
+    let track = audio_track_name(encoding);
     let input = moq_audio::encode::Input::new(format.sample_rate, format.layout);
     let mut options = moq_audio::encode::Options::default();
-    options.track = Some(audio_track_name(encoding));
+    options.track = Some(track.clone());
     options.config = encoding.clone();
     let mut broadcast = job.producer.clone();
     let mut encoder =
         moq_audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
             .map_err(Error::encoder)?;
-    info!(track = %audio_track_name(encoding), rate = format.sample_rate, "publishing audio");
+    info!(track = %track, rate = format.sample_rate, "publishing audio");
     job.reporter.slot(SlotState::Running);
     job.reporter.rendition(
-        &audio_track_name(encoding),
+        &track,
         RenditionState::Encoding {
             encoder: encoding.codec.to_string(),
         },
@@ -114,7 +115,7 @@ async fn pcm(
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
     }
-    // Every packet is out; dropping the finished track releases it.
+    // Every packet is out. Dropping the finished track releases it.
     encoder.finish().map(drop).map_err(Error::encoder)
 }
 

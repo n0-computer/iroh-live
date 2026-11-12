@@ -134,11 +134,10 @@ pub(super) async fn run_raw(
     let rate = format.rate;
     // Anchors at the first frame any rendition encodes. The clones share the
     // anchor, so every rendition carries the same timestamp for a picture.
-    let source_clock = SourceClock::new(clock);
-    let source_clock = match encoding.record_timestamps {
-        true => source_clock.recording(timestamps),
-        false => source_clock,
-    };
+    let mut source_clock = SourceClock::new(clock);
+    if encoding.record_timestamps {
+        source_clock = source_clock.recording(timestamps);
+    }
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
@@ -512,7 +511,7 @@ impl Encoder {
                     .map_err(encode_error)?,
                 Err(err) => return Err(encode_error(err)),
             };
-            self.encoding(encoder.name());
+            self.report_encoder(encoder.name());
 
             let mut due: Option<moq_net::Timestamp> = None;
             let mut meter = RateMeter::default();
@@ -595,7 +594,7 @@ impl Encoder {
                     encoder = encode::Sink::open(&self.config)
                         .await
                         .map_err(encode_error)?;
-                    self.encoding(encoder.name());
+                    self.report_encoder(encoder.name());
                 }
 
                 if self.pending.len() == MAX_PENDING {
@@ -613,7 +612,7 @@ impl Encoder {
                         encoder = encode::Sink::open(&self.config)
                             .await
                             .map_err(encode_error)?;
-                        self.encoding(encoder.name());
+                        self.report_encoder(encoder.name());
                         continue;
                     }
                     Err(err) => return Err(encode_error(err)),
@@ -645,8 +644,8 @@ impl Encoder {
         }
     }
 
-    /// Records which encoder is running.
-    fn encoding(&self, encoder: &str) {
+    /// Reports which encoder backend is running.
+    fn report_encoder(&self, encoder: &str) {
         debug!(encoder, "rendition encoding");
         self.reporter.rendition(
             &self.name,
@@ -837,14 +836,14 @@ mod tests {
     fn a_recording_source_clock_maps_back_to_the_source() {
         let log = TimestampLog::default();
         let mut source_clock = SourceClock::new(moq_mux::Clock::new()).recording(log.clone());
-        let sent = Instant::now();
-        let pattern = source_clock.map(at(80_000_000), Some(sent));
+        let captured = Instant::now();
+        let pattern = source_clock.map(at(80_000_000), Some(captured));
         let camera = source_clock.map(at(20_000), None);
         assert_eq!(log.source(pattern), Some(at(80_000_000)));
         assert_eq!(log.source(camera), Some(at(20_000)));
         assert_eq!(
-            log.get(pattern).and_then(|logged| logged.sent_at),
-            Some(sent)
+            log.get(pattern).and_then(|logged| logged.captured_at),
+            Some(captured)
         );
         assert_eq!(log.source(at(1)), None, "nothing was published at 1 us");
     }

@@ -10,7 +10,7 @@
 //! The sources come from `moq-ext-sources`, and the codecs from `moq_video`
 //! and `moq_audio`. Nothing here depends on iroh or on a player.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! # fn example() -> Result<(), moq_ext_publisher::Error> {
