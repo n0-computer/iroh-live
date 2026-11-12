@@ -45,7 +45,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use axum::{extract::Path, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
-use iroh::{EndpointId, SecretKey};
+use iroh::{EndpointId, SecretKey, protocol::Router};
 use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
 use iroh_live_node::{SessionRequest, policy::DynPolicy};
 use moq_auth::{KeySet, lease};
@@ -184,7 +184,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
     // since it knows who they are.
     let iroh_router = IrohSessions::new(relay.cluster().clone(), Some(pulls))
         .with_policy(iroh_policy)
-        .router(iroh_endpoint);
+        .mount(Router::builder(iroh_endpoint))
+        .spawn();
 
     let quic_port = relay.quic_addr().map_err(relay_error)?.port();
     let http_port = relay

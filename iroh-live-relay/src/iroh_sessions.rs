@@ -11,9 +11,9 @@
 use std::{sync::Arc, time::Duration};
 
 use iroh::{
-    Endpoint, EndpointId,
+    EndpointId,
     endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler, Router},
+    protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
 use iroh_live::{layout::LiveLayout, rooms::RoomsLayout};
 use iroh_live_node::{
@@ -74,18 +74,15 @@ impl IrohSessions {
         self
     }
 
-    /// Spawns a router on `endpoint` with this handler.
+    /// Mounts this handler on `router` under every ALPN in [`moq_transport_iroh::alpns`].
     ///
-    /// # Panics
-    ///
-    /// Panics when called outside a Tokio runtime.
+    /// The caller may add its own protocols, and spawns the router.
     #[must_use]
-    pub fn router(self, endpoint: Endpoint) -> Router {
-        let mut router = Router::builder(endpoint);
+    pub fn mount(self, mut router: RouterBuilder) -> RouterBuilder {
         for alpn in moq_transport_iroh::alpns() {
             router = router.accept(alpn, self.clone());
         }
-        router.spawn()
+        router
     }
 
     /// Runs one session until it closes or the relay shuts down.

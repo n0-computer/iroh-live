@@ -145,7 +145,9 @@ impl TestRelay {
                         .with_fallback(iroh_live_relay::relay_policy()),
                 );
             }
-            let router = sessions.router(iroh);
+            let router = sessions
+                .mount(iroh::protocol::Router::builder(iroh))
+                .spawn();
             (router, Some(admit_task))
         } else {
             let mut router = iroh::protocol::Router::builder(iroh);
