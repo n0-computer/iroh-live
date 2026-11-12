@@ -36,7 +36,7 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
-use crate::stats::{EncodeStats, PublishRecorder};
+use crate::stats::{EncodeStats, FrameSizes, PublishRecorder};
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
@@ -519,6 +519,7 @@ impl Encoder {
             let mut due: Option<moq_net::Timestamp> = None;
             let mut meter = RateMeter::default();
             let mut timing = Smoothed::default();
+            let mut sizes = FrameSizes::default();
             loop {
                 let next = tokio::select! {
                     // The last viewer left. Mark the gap so the next timestamp
@@ -629,6 +630,9 @@ impl Encoder {
                 self.stats.update(|stats| {
                     stats.record(rates);
                     stats.encode_time = Some(smoothed);
+                    for unit in &encoded {
+                        sizes.record(stats, unit.payload.len(), unit.keyframe, unit.timestamp);
+                    }
                 });
                 for unit in &encoded {
                     self.producer.publish(unit).map_err(Error::broadcast)?;
