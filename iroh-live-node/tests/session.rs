@@ -4,6 +4,7 @@ mod common;
 
 use common::{Peer, TIMEOUT, publish, read_counter, step};
 use iroh_live_node::{Audience, Error, Reach};
+use n0_future::StreamExt;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
@@ -135,6 +136,52 @@ async fn an_accepted_session_appears_in_sessions() {
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// `accepted()` yields accepted sessions once each, never a dialed one, and ends at shutdown.
+#[tokio::test]
+#[traced_test]
+async fn accepted_yields_each_accepted_session_once() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
+    let dave = Peer::spawn().await;
+
+    step("alice dials", alice.node.connect(bob.endpoint.addr()))
+        .await
+        .expect("failed to dial");
+    step(
+        "bob lists alice",
+        common::session_with(&bob.node, alice.id()),
+    )
+    .await;
+    let mut accepted = bob.node.accepted();
+    let first = step("the open session", accepted.next())
+        .await
+        .expect("the stream ended");
+    assert_eq!(first.peer(), alice.id());
+
+    // A session bob dials is not an accepted one.
+    step("bob dials dave", bob.node.connect(dave.endpoint.addr()))
+        .await
+        .expect("failed to dial");
+    step("carol dials", carol.node.connect(bob.endpoint.addr()))
+        .await
+        .expect("failed to dial");
+    let second = step("the new session", accepted.next())
+        .await
+        .expect("the stream ended");
+    assert_eq!(second.peer(), carol.id(), "yielded {second:?}");
+    assert!(!second.dialed());
+
+    bob.node.shutdown().await;
+    let end = step("the end of the stream", accepted.next()).await;
+    assert!(end.is_none(), "yielded {end:?} after shutdown");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+    dave.shutdown().await;
 }
 
 /// Shutting the transport down closes its sessions and opens no more.

@@ -81,6 +81,7 @@
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
 //! | [`Node::closed`] | yes | loses nothing |
+//! | `next()` on [`Node::accepted`] | yes | loses nothing |
 //! | [`Node::shutdown`] | no | call it again to finish |
 
 mod actor;

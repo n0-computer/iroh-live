@@ -118,7 +118,9 @@ connection. After the peer's setup, the node asks its policy
 authorization. It asks the same before it dials a peer, and a rejection then
 fails the dial with `Error::Rejected`. Without a policy, every session is
 admitted with `Grant::subscribe_only()`. Each decision may take up to
-`NodeConfig::decide_timeout`. `Node::sessions()` watches the open sessions.
+`NodeConfig::decide_timeout`. `Node::sessions()` watches the open sessions,
+and `Node::accepted()` yields each accepted one once, for a node that serves
+every peer that connects.
 
 The node keeps one authorization per session on its link (`state.rs`). The
 effective grant of a session is that authorization's grant plus the peer's

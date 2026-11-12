@@ -1,7 +1,7 @@
 //! The node: one route table, its publications, and its links.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
     sync::{
         Arc, Mutex,
@@ -17,11 +17,11 @@ use iroh::{
 };
 use moq_net::{Path, broadcast, origin};
 use n0_error::{AnyError, e};
-use n0_future::task::AbortOnDropHandle;
+use n0_future::{Stream, StreamExt, stream, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use crate::{
     Audience, BroadcastTicket, ConnectOptions, Error, Grant, Layout, LinkId, Publication,
@@ -531,6 +531,73 @@ impl Node {
     #[must_use]
     pub fn sessions(&self) -> n0_watcher::Direct<Vec<Session>> {
         self.shared.sessions.watch()
+    }
+
+    /// Returns a stream of the sessions this node accepts.
+    ///
+    /// Yields every accepted session open when it is called, then each new
+    /// one as it opens, each once, and ends when the node shuts down. It
+    /// leaves out the sessions this node dialed, which
+    /// [`sessions`](Self::sessions) lists too. It reads the same list, so a
+    /// session that opens and closes between two polls may be skipped.
+    ///
+    /// # Examples
+    ///
+    /// Serve each peer that connects in a task of its own:
+    ///
+    /// ```no_run
+    /// use n0_future::StreamExt;
+    ///
+    /// # async fn run(node: iroh_live_node::Node) {
+    /// let mut accepted = node.accepted();
+    /// while let Some(session) = accepted.next().await {
+    ///     tokio::spawn(async move {
+    ///         // Serve the peer, until the session ends.
+    ///         let reason = session.closed().await;
+    ///         println!("{} left: {reason:#}", session.peer());
+    ///     });
+    /// }
+    /// # }
+    /// ```
+    pub fn accepted(&self) -> impl Stream<Item = Session> + Send + Unpin + 'static {
+        struct State {
+            lists: n0_watcher::Stream<n0_watcher::Direct<Vec<Session>>>,
+            shutdown: CancellationToken,
+            /// The links of the accepted sessions already yielded and still listed.
+            seen: HashSet<LinkId>,
+            /// Accepted sessions not yielded yet.
+            pending: VecDeque<Session>,
+        }
+        let state = State {
+            lists: self.shared.sessions.watch().stream(),
+            shutdown: self.shared.shutdown.clone(),
+            seen: HashSet::new(),
+            pending: VecDeque::new(),
+        };
+        Box::pin(stream::unfold(state, |mut state| async move {
+            loop {
+                if let Some(session) = state.pending.pop_front() {
+                    return Some((session, state));
+                }
+                let sessions = tokio::select! {
+                    sessions = state.lists.next() => sessions?,
+                    () = state.shutdown.cancelled() => return None,
+                };
+                let listed: HashSet<LinkId> =
+                    sessions.iter().map(|session| session.inner.link).collect();
+                state.seen.retain(|link| listed.contains(link));
+                for session in sessions {
+                    if !session.dialed() && state.seen.insert(session.inner.link) {
+                        trace!(
+                            peer = %session.peer().fmt_short(),
+                            link = %session.inner.link,
+                            "yielding accepted session"
+                        );
+                        state.pending.push_back(session);
+                    }
+                }
+            }
+        }))
     }
 
     /// Attaches to the moq relay at `config.url`, redialing it with backoff.
