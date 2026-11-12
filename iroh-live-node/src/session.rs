@@ -11,8 +11,8 @@ use n0_error::e;
 use tracing::info;
 
 use crate::{
-    Error, Grant, LinkId, LinkSample, SessionRequest, Subscription, handshake::Hop,
-    link::LinkState, node::Shared, route,
+    Error, Grant, LinkId, SessionRequest, Subscription, handshake::Hop, link::LinkState,
+    node::Shared, route,
 };
 
 /// A direct session with a peer.
@@ -170,16 +170,18 @@ impl Session {
         ))
     }
 
-    /// Returns the connection monitor's latest reading of this session.
-    #[must_use]
-    pub fn link_sample(&self) -> LinkSample {
-        self.inner.link_state.get()
-    }
-
     /// Returns the QUIC connection under the session.
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.inner.connection
+    }
+
+    /// Returns the moq-net session, for its statistics, bandwidth estimates and announcements.
+    ///
+    /// Closing it closes this session, as [`close`](Self::close) does.
+    #[must_use]
+    pub fn moq(&self) -> &moq_net::Session {
+        &self.inner.moq
     }
 
     /// Closes the session, and every subscription over it, in both directions.

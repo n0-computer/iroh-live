@@ -133,8 +133,8 @@ decision. [Access control](../guide/access.md) describes the policies
 from the application's side.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
-statistics every 200 ms. `Session::link_sample()` returns the latest `LinkSample`.
-Its `network` field is the adaptive crate's `NetworkSample`: round trip, minimum
+statistics every 200 ms into a `LinkSample`, and `Session::moq()` exposes the
+moq-net session it reads. The sample's `network` field is the adaptive crate's `NetworkSample`: round trip, minimum
 round trip over 15 s, loss rate over 2 s, the peer's delivery estimate and a
 path generation. Next to it, the sample holds the throughput over 2 s and
 whether the path is relayed. Every figure is an `Option` and reads `None` until

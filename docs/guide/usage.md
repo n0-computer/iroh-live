@@ -540,7 +540,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Node::sessions` and `Session::link_sample` cover the rest of the node. See
+`Node::sessions` and `Session::moq` cover the rest of the node. See
 [the transport page](../architecture/transport.md). A `policy::Queue` lets the
 application admit each peer itself, and [Access control](access.md) shows it
 with the other policies.

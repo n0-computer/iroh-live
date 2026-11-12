@@ -36,8 +36,9 @@
 //!   peer may subscribe to and publish.
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //!
-//! Every link runs a connection monitor. [`Session::link_sample`] and
-//! [`Subscription::serving_link`] return its latest [`LinkSample`].
+//! Every link runs a connection monitor, and [`Subscription::serving_link`]
+//! returns its latest [`LinkSample`]. [`Session::moq`] gives the moq-net
+//! session itself, with its raw statistics.
 //!
 //! # Trust and grants
 //!
