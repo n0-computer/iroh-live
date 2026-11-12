@@ -72,7 +72,7 @@ drive them without a decoder or a network.
 - A replacement takes over on a picture it decoded, never on opening alone.
   With nothing playing, including after the incumbent ended, its first picture
   is enough.
-- A replacement has `PlayerConfig::switch_deadline` (15 s by default) from the
+- A replacement has 15 s from the
   request to taking over. That covers the open, the wait for the track's next
   keyframe and the catch-up. Past it the replacement is given up and the
   incumbent keeps playing.
@@ -129,8 +129,7 @@ let config = PlayerConfig {
 ```
 
 It carries the `rendition` mode, the `latency`, the `audio` output, the
-`decoder` backend, the `adaptation` thresholds and timers, and the
-`switch_deadline` of a decoder handover.
+`decoder` backend, and the `adaptation` thresholds and timers.
 `latency` is moq-net's subscription `Delay { min, max }` and sets how far
 behind live to run. The playout clock holds each picture for `min`, and the
 whole `Delay` goes on the video and audio decode options, where upstream drops

@@ -119,12 +119,6 @@ pub struct PlayerConfig {
     pub decoder: moq_video::decode::Kind,
     /// How automatic selection follows the link.
     pub adaptation: Adaptation,
-    /// How long a replacement decoder has to take over before the switch is given up.
-    ///
-    /// It bounds every handover: automatic, pinned, or to another decoder. On
-    /// an impaired link the wait for the next keyframe alone takes seconds, and
-    /// the incumbent keeps playing meanwhile. 15 s by default.
-    pub switch_deadline: Duration,
     /// Whether to record when each video frame arrives.
     ///
     /// The arrivals fill
@@ -145,7 +139,6 @@ impl Default for PlayerConfig {
             speaker: None,
             decoder: moq_video::decode::Kind::default(),
             adaptation: Adaptation::default(),
-            switch_deadline: Duration::from_secs(15),
             record_arrivals: false,
         }
     }
@@ -285,7 +278,6 @@ impl Player {
                 playing: playing_tx,
                 clock: clock.clone(),
                 stats: stats.clone(),
-                switch_deadline: config.switch_deadline,
             })
             .instrument(info_span!(parent: &span, "video")),
         )));

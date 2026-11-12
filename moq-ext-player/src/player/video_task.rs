@@ -52,6 +52,13 @@ use crate::{
     stats::{FrameTiming, MediaKind, VideoPlaybackStats},
 };
 
+/// How long a replacement decoder has to take over before the switch is given up.
+///
+/// It bounds every handover: automatic, pinned, or to another decoder. On an
+/// impaired link the wait for the next keyframe alone takes seconds, and the
+/// incumbent keeps playing meanwhile.
+const SWITCH_DEADLINE: Duration = Duration::from_secs(15);
+
 /// How many decoded frames a reader may run ahead of the supervisor.
 ///
 /// Two frames absorb a scheduling hiccup. More would only add latency.
@@ -91,8 +98,6 @@ pub(crate) struct Inputs {
     pub playing: watch::Sender<Option<Target>>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
-    /// How long a replacement decoder has to take over.
-    pub switch_deadline: Duration,
 }
 
 /// Something one of the decoders did.
@@ -144,15 +149,13 @@ pub(crate) async fn run(inputs: Inputs) {
         playing,
         clock,
         stats,
-        switch_deadline,
     } = inputs;
     let out = Outlets {
         status: &status,
         reports: &reports,
         stats: &stats,
-        switch_deadline,
     };
-    let mut switcher = VideoSwitcher::new(switch_deadline);
+    let mut switcher = VideoSwitcher::new(SWITCH_DEADLINE);
     let mut delivery: Option<Delivery> = None;
     // The shown-frame rate.
     let mut shown = RateMeter::default();
@@ -227,7 +230,7 @@ fn apply_desired(
     else {
         // Video is off or nothing is left to play. Drop both decoders and keep
         // the last picture up.
-        *switcher = VideoSwitcher::new(out.switch_deadline);
+        *switcher = VideoSwitcher::new(SWITCH_DEADLINE);
         *delivery = None;
         out.stats.video.update(|video| *video = None);
         send_if_changed(out.status, |status| {
@@ -358,7 +361,6 @@ struct Outlets<'a> {
     status: &'a watch::Sender<PlayerStatus>,
     reports: &'a mpsc::Sender<Report>,
     stats: &'a PlaybackRecorder,
-    switch_deadline: Duration,
 }
 
 /// Why the decoders' tracks stopped, read before the switcher drops their readers.
@@ -438,13 +440,13 @@ fn report(
                     Some(failure)
                 }
                 Abandoned::TimedOut => {
-                    warn!(%rendition, after = ?out.switch_deadline, "replacement did not take over in time");
+                    warn!(%rendition, after = ?SWITCH_DEADLINE, "replacement did not take over in time");
                     // With nothing on screen, a slow link is no reason to
                     // exclude the rendition, so it is asked for again.
                     exclude = playing.is_some();
                     let failure = Arc::new(Error::decoder_msg(format!(
                         "the decoder for {rendition} did not produce a picture within {}s",
-                        out.switch_deadline.as_secs()
+                        SWITCH_DEADLINE.as_secs()
                     )));
                     Some(failure)
                 }
