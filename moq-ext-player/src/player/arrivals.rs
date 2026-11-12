@@ -18,7 +18,6 @@ use std::{
 };
 
 use moq_mux::container::Container as _;
-use moq_net::kio;
 use tracing::debug;
 
 /// How many frames' arrivals a track keeps.

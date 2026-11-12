@@ -1,12 +1,12 @@
-//! A player's playout clock: a `moq_mux::timeline` shared by its tasks.
+//! A player's playout clock: a `moq_mux::sync` clock shared by its tasks.
 //!
-//! The video path folds each decoded frame into the clock with
-//! [`PlayoutClock::received`] and waits for it with
-//! [`PlayoutClock::wait_async`]. While audio plays, the audio path owns the
-//! anchor through an [`AudioLatency`] guard: each write reports the media time
-//! it ends at and the sound queued ahead of it, so a picture shows when its
-//! sound plays. Without audio, video anchors the clock, and playback runs the
-//! clock's delay behind the live edge.
+//! Each media path folds its frames into the clock: video through
+//! [`PlayoutClock::received`], audio through [`AudioLatency::received`]. The
+//! clock's reference is the earliest arrival either has seen, and playback runs
+//! the clock's delay behind it. Video waits for each picture with
+//! [`PlayoutClock::wait_async`]. Audio does not own the clock: the speaker
+//! stretches toward the time [`AudioLatency::anchor`] says its sound is due, so
+//! a late audio path never holds the pictures back.
 
 use std::{
     sync::{
@@ -16,7 +16,10 @@ use std::{
     time::Duration,
 };
 
-use moq_mux::timeline::{Audio, Consumer, Producer};
+use moq_mux::{
+    container::Kind,
+    sync::{Consumer, Producer, Track},
+};
 use moq_net::{Timestamp, time::Instant};
 use tokio::sync::Notify;
 
@@ -31,33 +34,32 @@ pub(crate) struct PlayoutClock {
 }
 
 struct Inner {
-    /// The clock the tasks update, and its delay.
-    ///
-    /// [`PlayoutClock::set_delay`] starts a new clock, so every task updates
-    /// it through here rather than through a clone of its own.
-    current: Mutex<Current>,
-    /// Reads whichever clock the producer last started.
+    /// Hands out the audio paths' tracks on the shared clock.
+    producer: Producer,
+    /// Reads the schedule.
     consumer: Consumer,
+    /// The video path's hold on the clock, which also holds the delay.
+    video: Track,
+    /// How far behind the live edge playback runs, as last set.
+    delay: Mutex<Duration>,
     /// Wakes [`PlayoutClock::wait_async`] when the schedule moves or the clock closes.
     changed: Notify,
     /// Set by [`PlayoutClock::close`] to make every wait return at once.
     closed: AtomicBool,
 }
 
-struct Current {
-    producer: Producer,
-    /// How far behind the live edge playback runs.
-    delay: Duration,
-}
-
 impl PlayoutClock {
     /// Creates a playout clock that runs `delay` behind the live edge.
     pub(crate) fn new(delay: Duration) -> Self {
         let producer = Producer::new(delay);
+        let video = producer.track(Kind::Video);
+        video.set_target(delay);
         Self {
             inner: Arc::new(Inner {
                 consumer: producer.consume(),
-                current: Mutex::new(Current { producer, delay }),
+                producer,
+                video,
+                delay: Mutex::new(delay),
                 changed: Notify::new(),
                 closed: AtomicBool::new(false),
             }),
@@ -66,18 +68,17 @@ impl PlayoutClock {
 
     /// Records the arrival of a video frame stamped `timestamp`.
     pub(crate) fn received(&self, timestamp: Timestamp) {
-        let moved = self.current().producer.video(timestamp, Instant::now());
-        if moved {
+        if self.inner.video.received(timestamp, Instant::now()) {
             self.inner.changed.notify_waiters();
         }
     }
 
     /// Starts the video timeline over, for a broadcast on a new route.
     ///
-    /// A publisher behind the new route may have restarted its timestamps.
-    /// While audio plays, its next write moves the anchor instead.
+    /// A publisher behind the new route may have restarted its timestamps, so
+    /// the video arrivals so far stop holding the clock.
     pub(crate) fn restart(&self) {
-        self.current().producer.video_restarted();
+        self.inner.video.reset();
         self.inner.changed.notify_waiters();
     }
 
@@ -118,28 +119,25 @@ impl PlayoutClock {
 
     /// Returns how far behind the live edge playback runs.
     pub(crate) fn latency(&self) -> Duration {
-        self.current().delay
+        *self.inner.delay.lock().expect("poisoned")
     }
 
     /// Runs playback `delay` behind the live edge from now on.
-    ///
-    /// Starts a new clock, so the schedule moves once: the next video frame or
-    /// audio write anchors it again.
     pub(crate) fn set_delay(&self, delay: Duration) {
-        {
-            let mut current = self.current();
-            current.producer = current.producer.clone().reset(delay);
-            current.delay = delay;
-        }
+        *self.inner.delay.lock().expect("poisoned") = delay;
+        self.inner.video.set_target(delay);
         self.inner.changed.notify_waiters();
     }
 
-    /// Registers an audio path, which owns the anchor while it plays.
+    /// Registers an audio path, which folds its frames into the clock.
     ///
-    /// Dropping the returned guard hands the anchor back to video.
+    /// Dropping the returned guard releases the audio path's hold on the clock.
     pub(crate) fn register_audio(&self) -> AudioLatency {
         AudioLatency {
             clock: self.clone(),
+            track: self.inner.producer.track(Kind::Audio),
+            #[cfg(feature = "playback")]
+            anchored: None,
         }
     }
 
@@ -148,45 +146,63 @@ impl PlayoutClock {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.changed.notify_waiters();
     }
-
-    fn current(&self) -> std::sync::MutexGuard<'_, Current> {
-        self.inner.current.lock().expect("poisoned")
-    }
 }
 
 /// An audio path's registration with a playout clock.
 ///
-/// Created by [`PlayoutClock::register_audio`]. Dropping it tells the clock
-/// that the speaker went quiet, so video takes the anchor back.
-#[derive(Debug)]
+/// Created by [`PlayoutClock::register_audio`]. Dropping it releases the audio
+/// path's arrivals, so video alone holds the clock.
+#[derive(derive_more::Debug)]
+#[debug("AudioLatency")]
 pub(crate) struct AudioLatency {
     clock: PlayoutClock,
+    track: Track,
+    /// The last anchor handed out: when its end was due, the end, and the delay.
+    #[cfg(feature = "playback")]
+    anchored: Option<(Instant, Duration, Duration)>,
+}
+
+/// Where the speaker's written audio should sound, from [`AudioLatency::anchor`].
+#[cfg(feature = "playback")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Anchor {
+    /// When the end of the audio written so far is due.
+    pub(crate) at: Instant,
+    /// How far the clock's reference moved earlier since the last anchor, which
+    /// the speaker skips rather than speeds through.
+    pub(crate) jumped: Duration,
 }
 
 impl AudioLatency {
-    /// Reports a write to the speaker that ends at media time `end`.
-    ///
-    /// `buffered` is the sound queued ahead of the speaker after the write,
-    /// so `end` sounds `buffered` from now.
-    pub(crate) fn set(&self, end: Duration, buffered: Duration) {
-        let moved = {
-            let current = self.clock.current();
-            let audio = Audio {
-                end,
-                buffered,
-                target: current.delay,
-            };
-            current.producer.audio(audio, Instant::now())
-        };
-        if moved {
+    /// Records the arrival of an audio frame stamped `timestamp`.
+    pub(crate) fn received(&self, timestamp: Timestamp) {
+        if self.track.received(timestamp, Instant::now()) {
             self.clock.inner.changed.notify_waiters();
         }
     }
-}
 
-impl Drop for AudioLatency {
-    fn drop(&mut self) {
-        self.clock.current().producer.audio_stopped();
-        self.clock.inner.changed.notify_waiters();
+    /// Returns when the audio written up to media time `end` is due to sound,
+    /// or `None` before the clock has an anchor.
+    #[cfg(feature = "playback")]
+    pub(crate) fn anchor(&mut self, end: Duration) -> Option<Anchor> {
+        let timestamp = Timestamp::try_from(end).ok()?;
+        let at = self.clock.inner.consumer.due(timestamp)?;
+        // The end as the clock placed it, so rounding never reads as a jump.
+        let end = Duration::from(timestamp);
+        let delay = self.clock.inner.consumer.delay();
+        // The reference is `at - end - delay`. Compare it with the last one's.
+        let nanos = |duration: Duration| duration.as_nanos() as i128;
+        let jumped = self
+            .anchored
+            .replace((at, end, delay))
+            .map_or(0, |(was, from, before)| {
+                let earlier = match was.checked_duration_since(at) {
+                    Some(ahead) => nanos(ahead),
+                    None => -nanos(at.duration_since(was)),
+                };
+                earlier + nanos(end) - nanos(from) + nanos(delay) - nanos(before)
+            });
+        let jumped = Duration::from_nanos(jumped.clamp(0, u64::MAX as i128) as u64);
+        Some(Anchor { at, jumped })
     }
 }

@@ -467,11 +467,11 @@ fn pattern(
             }
             let surface = moq_video::Surface::rgba(&rgba, size).expect("valid");
             let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
-            let units = encoder
+            encoder
                 .encode(moq_video::Frame::new(surface, timestamp))
                 .await
                 .expect("the software encoder takes every frame");
-            for unit in units {
+            while let Some(unit) = encoder.receive().expect("the encoder hands out its units") {
                 let mut frames = split.decode(&unit.payload, unit.timestamp).expect("split");
                 frames.extend(split.flush(unit.timestamp).expect("flushed"));
                 import.decode(frames).expect("imported");

@@ -30,11 +30,13 @@ pub mod overlay;
 use std::sync::Arc;
 
 pub use egui_wgpu;
-use moq_ext_player::VideoFrames;
 /// The `wgpu` crate the renderer links.
 ///
 /// Use it to name `wgpu` types, so they always match the renderer's version.
-pub use moq_video::render::wgpu;
+/// egui-wgpu and moq-video link the same `wgpu` major (see the workspace
+/// manifest).
+pub use egui_wgpu::wgpu;
+use moq_ext_player::VideoFrames;
 use tracing::warn;
 #[cfg(target_os = "linux")]
 use tracing::{debug, info};

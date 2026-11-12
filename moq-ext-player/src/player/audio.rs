@@ -23,6 +23,11 @@ use crate::{
 /// How long after audio ended or failed the catalog is read again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 
+/// How far the speaker may fall behind the playout clock while it slows down
+/// for a short buffer, before it skips the audio that trails.
+#[cfg(feature = "playback")]
+const STRETCH: Duration = Duration::from_secs(2);
+
 /// How many decoded frames an [`AudioFrames`] reader may fall behind before it skips.
 ///
 /// One second of 20 ms Opus frames.
@@ -319,7 +324,7 @@ struct Job {
     /// The stream into the speaker, `None` when the audio is only decoded.
     #[cfg(feature = "playback")]
     sink: Option<playback::Sink>,
-    /// Hands the clock's anchor back to video when dropped.
+    /// The audio path's hold on the playout clock.
     latency: AudioLatency,
     stats: PlaybackRecorder,
 }
@@ -352,14 +357,20 @@ impl Job {
                 continue;
             };
             let decoded = Instant::now();
+            self.latency.received(frame.timestamp);
             let buffered = self.buffered();
             #[cfg(feature = "playback")]
-            if let Some(sink) = &mut self.sink {
-                sink.write(&frame.data).map(drop).map_err(Error::device)?;
+            {
+                let end = self.end_of(&frame);
+                if let Some(sink) = &mut self.sink {
+                    sink.write(&frame.data).map(drop).map_err(Error::device)?;
+                    // The speaker follows the shared clock: it stretches toward
+                    // the time the sound of `end` is due, as the pictures do.
+                    if let Some(anchor) = self.latency.anchor(end) {
+                        sink.due(anchor.at, STRETCH, anchor.jumped);
+                    }
+                }
             }
-            // The speaker owns the playout clock: video shows each picture
-            // when the sound of its time plays.
-            self.latency.set(self.end_of(&frame), self.buffered());
             self.share(&frame);
             self.stats.audio_log.push(FrameTiming {
                 kind: MediaKind::Audio,
@@ -408,6 +419,7 @@ impl Job {
     }
 
     /// Returns the media time at the end of `frame`'s samples.
+    #[cfg(feature = "playback")]
     fn end_of(&self, frame: &moq_audio::Frame) -> Duration {
         let samples = frame.data.len() / std::mem::size_of::<f32>();
         Duration::from(frame.timestamp) + play_length(self.format, samples)

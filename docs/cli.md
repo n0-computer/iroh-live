@@ -230,8 +230,8 @@ Every participant subscribes to every other, so rooms suit small groups. The
 ticket a window prints lists this node as the bootstrap peer, so pass that one
 on to the next participant.
 
-Chat is one more broadcast in the room, named `chat`. It carries `moq-room`'s
-chat track, which holds the last ten seconds of messages, so a participant who
+Chat is one more broadcast in the room, named `chat`. Its `chat` track is a
+JSON window in the format `@moq/room` reads, and holds the last ten seconds of messages, so a participant who
 joins sees what was said in that time.
 
 A tile disappears when its broadcast closes or its session drops. It comes

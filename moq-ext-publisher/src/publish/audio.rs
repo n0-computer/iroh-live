@@ -112,7 +112,8 @@ async fn pcm(
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
     }
-    encoder.finish().map_err(Error::encoder)
+    // Every packet is out; dropping the finished track releases it.
+    encoder.finish().map(drop).map_err(Error::encoder)
 }
 
 /// Captures and encodes a microphone through moq-audio's publication.
@@ -150,7 +151,7 @@ async fn microphone(
             options.encode.track = Some(encode_track);
             options.encode.config = encode_config;
             let (publication, driver) =
-                match moq_audio::encode::Control::new(broadcast, catalog, options) {
+                match moq_audio::encode::publish_capture(broadcast, catalog, options) {
                     Ok(created) => created,
                     Err(err) => {
                         let _ = handle_tx.send(Err(Error::device(err)));
@@ -192,7 +193,7 @@ async fn microphone(
 /// Reports the microphone's state changes until it ends or the slot stops.
 #[cfg(feature = "capture")]
 async fn follow(
-    handle: oneshot::Receiver<Result<moq_audio::encode::Control, Error>>,
+    handle: oneshot::Receiver<Result<moq_audio::encode::Publication, Error>>,
     reporter: &Reporter,
     track: &str,
     encoding: &moq_audio::encode::Config,
@@ -214,7 +215,7 @@ async fn follow(
         };
         match state.status() {
             moq_audio::encode::Status::Starting => reporter.slot(SlotState::Starting),
-            moq_audio::encode::Status::Waiting | moq_audio::encode::Status::Stopped => {
+            moq_audio::encode::Status::Waiting => {
                 reporter.slot(SlotState::Running);
                 reporter.rendition(track, RenditionState::Idle);
             }
@@ -227,16 +228,14 @@ async fn follow(
                     },
                 );
             }
-            moq_audio::encode::Status::Failed => {
+            moq_audio::encode::Status::Failed(err) => {
                 // moq-audio does not reopen a failed capture, so the
                 // publication ends here and the caller reports the failure.
-                let reason = state
-                    .failure()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "the microphone failed".to_string());
-                return Err(Error::device_msg(reason));
+                return Err(Error::device_msg(err.to_string()));
             }
-            moq_audio::encode::Status::Ended => return Ok(()),
+            moq_audio::encode::Status::Ended | moq_audio::encode::Status::Cancelled => {
+                return Ok(());
+            }
             _ => {}
         }
     }

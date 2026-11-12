@@ -1080,7 +1080,7 @@ async fn a_peer_reads_the_publishers_own_broadcast() {
 
     for n in 0..3u8 {
         track
-            .write_frame(None, moq_net::bytes::Bytes::from(vec![n]))
+            .write_frame(None, bytes::Bytes::from(vec![n]))
             .expect("write");
         let mut group = step("a group", subscriber.recv_group())
             .await

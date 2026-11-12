@@ -12,13 +12,14 @@
 
 use std::time::Duration;
 
+use bytes::Bytes;
 use iroh::EndpointId;
 pub(crate) use iroh_live_node::test_util::{TIMEOUT, TestNode, endpoint, eventually, step};
 use iroh_live_node::{
     Audience, Error, Grant, Node, NodeConfig, Publication, Session,
     policy::{self, PeerRequest, Policy},
 };
-use moq_net::{Pattern, announce, broadcast, bytes::Bytes, track};
+use moq_net::{Pattern, announce, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher as _;
 
@@ -228,8 +229,12 @@ async fn wait_for(updates: &mut announce::Consumer, path: &str, active: bool) {
         loop {
             let event = updates.next().await.expect("origin closed");
             let (announce, now_active) = match event {
-                announce::Event::Absent(announce) => (announce, false),
-                announce::Event::Present(announce) => (announce, true),
+                announce::Event::Absent(announce) | announce::Event::Offline(announce) => {
+                    (announce, false)
+                }
+                announce::Event::Present(announce)
+                | announce::Event::Unavailable(announce)
+                | announce::Event::Available(announce) => (announce, true),
             };
             if announce.prefix.as_str() == path && now_active == active {
                 return;

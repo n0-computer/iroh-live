@@ -882,9 +882,8 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
         return;
     };
     // SAFETY: JNI just passed a valid JNIEnv and a live `android.view.Surface`.
-    let native_window = unsafe {
-        moq_video::ndk::native_window::NativeWindow::from_surface(env.get_raw(), surface.as_raw())
-    };
+    let native_window =
+        unsafe { ndk::native_window::NativeWindow::from_surface(env.get_raw(), surface.as_raw()) };
     let Some(native_window) = native_window else {
         error!("ANativeWindow_fromSurface returned null");
         return;

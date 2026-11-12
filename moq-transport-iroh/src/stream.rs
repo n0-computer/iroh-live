@@ -8,10 +8,8 @@ use std::{
 
 use bytes::Bytes;
 use iroh::endpoint::{self, StoppedError, VarInt};
-use moq_net::{
-    kio::Waiter,
-    transport::poll::{self, Ungrouped},
-};
+use kio::Waiter;
+use moq_net::transport::poll::{self, Ungrouped};
 
 use crate::{
     TransportError,

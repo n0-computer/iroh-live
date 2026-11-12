@@ -249,7 +249,7 @@ fn open_track(
     let track = producer
         .create_track(name, Some(track_info))
         .map_err(Error::broadcast)?;
-    encode::Producer::with_track(track, reserved, published).map_err(Error::catalog)
+    encode::Producer::new(track, reserved, published).map_err(Error::catalog)
 }
 
 /// Reads the source for its frame rate while the encoders run, and reports how the slot ends.
@@ -367,6 +367,15 @@ fn fall_back(config: &mut encode::Config, err: &moq_video::Error) -> bool {
     warn!(error = %err, "the hardware encoder failed, falling back to software");
     config.kind = encode::Kind::Software;
     true
+}
+
+/// Returns every access unit the encoder has ready.
+fn received(encoder: &mut encode::Sink) -> Result<Vec<encode::Encoded>, moq_video::Error> {
+    let mut encoded = Vec::new();
+    while let Some(unit) = encoder.receive()? {
+        encoded.push(unit);
+    }
+    Ok(encoded)
 }
 
 /// Converts an encoder failure into the crate's error.
@@ -526,9 +535,12 @@ impl Encoder {
                 let frame = match next {
                     Next::Frame(frame) => frame,
                     Next::Ended | Next::Stopped => {
-                        let mut tail = encoder.finish().await.map_err(Error::encoder)?;
+                        encoder.flush().await.map_err(Error::encoder)?;
+                        let mut tail = received(&mut encoder).map_err(Error::encoder)?;
                         self.restamp(&mut tail);
-                        self.producer.publish(&tail).map_err(Error::broadcast)?;
+                        for unit in &tail {
+                            self.producer.publish(unit).map_err(Error::broadcast)?;
+                        }
                         return self.stopped();
                     }
                 };
@@ -587,7 +599,11 @@ impl Encoder {
                 }
                 self.pending.push_back((frame.timestamp, mapped));
                 let started = Instant::now();
-                let mut encoded = match encoder.encode(frame).await {
+                let submitted = match encoder.encode(frame).await {
+                    Ok(()) => received(&mut encoder),
+                    Err(err) => Err(err),
+                };
+                let mut encoded = match submitted {
                     Ok(encoded) => encoded,
                     Err(err) if fall_back(&mut self.config, &err) => {
                         encoder = encode::Sink::open(&self.config)
@@ -607,7 +623,9 @@ impl Encoder {
                     stats.record(rates);
                     stats.encode_time = Some(smoothed);
                 });
-                self.producer.publish(&encoded).map_err(Error::broadcast)?;
+                for unit in &encoded {
+                    self.producer.publish(unit).map_err(Error::broadcast)?;
+                }
                 // A keyframe with another decoder identity, such as a new
                 // level after a switch to a larger source, moves the rendition
                 // to a newly named track and finishes the old one. Follow the

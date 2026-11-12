@@ -390,11 +390,10 @@ impl State {
             LinkKind::Direct => base.publish.clone(),
             LinkKind::Relay => Pattern::all().into(),
         };
-        auth::Grant {
-            publish,
-            subscribe,
-            expires: None,
-        }
+        let mut grant = auth::Grant::default();
+        grant.publish = publish;
+        grant.subscribe = subscribe;
+        grant
     }
 
     /// Returns the link whose peer announced a route from `source`.

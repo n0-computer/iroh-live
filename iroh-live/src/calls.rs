@@ -511,8 +511,10 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
             return;
         };
         let (announce, present) = match &event {
-            Event::Absent(announce) => (announce, false),
-            Event::Present(announce) => (announce, true),
+            Event::Absent(announce) | Event::Offline(announce) => (announce, false),
+            Event::Present(announce)
+            | Event::Unavailable(announce)
+            | Event::Available(announce) => (announce, true),
         };
         let Some((peer, CALL)) = layout.parse(&announce.prefix) else {
             continue;

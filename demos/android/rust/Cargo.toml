@@ -23,11 +23,14 @@ glow = "0.18"
 khronos-egl = { version = "6", features = ["dynamic"] }
 # `Timestamp`, which camera frames are stamped with.
 # `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
-# `mediacodec` gates `Surface::HardwareBuffer` and `moq_video::ndk`, which this
-# crate uses for `NativeWindow`. The workspace turns moq-video's default
-# features off, so this crate asks for it. Safe here, because every
-# dependency in this section is already `cfg(target_os = "android")`.
+# `mediacodec` gates `Surface::HardwareBuffer`. The workspace turns
+# moq-video's default features off, so this crate asks for it. Safe here,
+# because every dependency in this section is already
+# `cfg(target_os = "android")`.
 moq-video = { workspace = true, features = ["mediacodec"] }
+# `NativeWindow`. moq-video no longer re-exports `ndk`, so this names the same
+# 0.9 major its MediaCodec backend links.
+ndk = { version = "0.9", default-features = false }
 # Held at 0.21. jni 0.22 splits `JNIEnv` into an owned `Env` and an
 # `EnvUnowned` that carries no JNI API of its own, which is a safety model
 # rather than a rename: every entry point in this bridge has to be rewritten

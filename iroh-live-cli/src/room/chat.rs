@@ -1,19 +1,32 @@
 //! Room chat: one more broadcast every member publishes into the room.
 //!
-//! The broadcast carries `moq-room`'s chat track, a JSON window of the last ten
-//! seconds of messages, which `@moq/room` reads too.
+//! The broadcast carries a `chat` track, a JSON window of the last ten seconds
+//! of messages, which `@moq/room` reads too. It is the format moq-room wrote
+//! before upstream removed that crate.
 
 use std::{collections::VecDeque, time::Duration};
 
 use eframe::egui;
 use iroh::EndpointId;
 use iroh_live::rooms::Room;
-use moq_net::broadcast;
-use moq_room::chat::{Event, Publisher, Subscriber};
+use moq_json::window;
+use moq_net::{broadcast, track};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, warn};
+
+/// The name of the track that carries the chat window.
+const TRACK: &str = "chat";
+
+/// The chat track's delivery priority, below audio and video.
+const PRIORITY: i8 = 10;
+
+/// How long a sent message stays in the window.
+const HISTORY: Duration = Duration::from_secs(10);
+
+/// A message entering, leaving or missed from the window.
+type Event = window::Event<String>;
 
 /// The name of the chat broadcast.
 pub(super) const NAME: &str = "chat";
@@ -52,8 +65,7 @@ impl Drop for ClosesOnDrop {
 impl Writer {
     /// Writes the chat into `producer`, the broadcast published into the room.
     pub(super) fn new(mut producer: broadcast::Producer) -> Result<Self> {
-        let mut publisher =
-            Publisher::create(&mut producer).std_context("creating the chat track")?;
+        let mut publisher = Publisher::create(&mut producer)?;
         let (tx, mut rx) = mpsc::channel::<String>(SEND_QUEUE);
         let task = tokio::spawn(async move {
             // Closed when the task ends, which withdraws the chat from the
@@ -62,7 +74,7 @@ impl Writer {
             loop {
                 let text = tokio::select! {
                     text = rx.recv() => text,
-                    expired = publisher.expire() => match expired {
+                    () = publisher.expiry() => match publisher.prune() {
                         Ok(()) => continue,
                         Err(err) => {
                             warn!(error = %err, "the chat window failed");
@@ -122,13 +134,11 @@ async fn read_once(
 ) -> Result<()> {
     let subscription = room.subscribe(from, NAME).await?;
     let broadcast = subscription.broadcast();
-    let mut chat = Subscriber::subscribe(&broadcast)
-        .await
-        .std_context("subscribing to the chat")?;
+    let mut chat = subscribe(&broadcast).await?;
     loop {
         // A broadcast whose session died does not always end its tracks.
         let event = tokio::select! {
-            event = chat.recv() => event.std_context("reading the chat")?,
+            event = chat.next() => event.std_context("reading the chat")?,
             _ = broadcast.closed() => None,
         };
         let Some(event) = event else {
@@ -145,6 +155,107 @@ async fn read_once(
         }
         ctx.request_repaint();
     }
+}
+
+/// Writes the chat window and retires messages once their history has passed.
+struct Publisher {
+    producer: window::Producer<String>,
+    /// When each message in the window expires, oldest first.
+    expires: VecDeque<Instant>,
+}
+
+impl Publisher {
+    /// Creates the chat track on `broadcast`.
+    fn create(broadcast: &mut broadcast::Producer) -> Result<Self> {
+        let info = track::Info::default()
+            .with_timescale(moq_net::Timescale::MILLI)
+            .with_priority(PRIORITY);
+        let track = broadcast
+            .create_track(TRACK, info)
+            .std_context("creating the chat track")?;
+        let config = window::ProducerConfig::default().with_ops(false);
+        Ok(Self {
+            producer: window::Producer::new(track, config),
+            expires: VecDeque::new(),
+        })
+    }
+
+    /// Appends `text` to the window, retiring expired messages first.
+    fn send(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.prune()?;
+        let text = text.to_owned();
+        self.producer
+            .push(moq_net::Timed::from(&text).at(moq_net::Timestamp::now()))
+            .std_context("writing the chat window")?;
+        self.expires.push_back(Instant::now() + HISTORY);
+        Ok(())
+    }
+
+    /// Waits until the oldest message expires, or forever with none.
+    async fn expiry(&self) {
+        match self.expires.front() {
+            Some(at) => tokio::time::sleep_until(*at).await,
+            None => std::future::pending().await,
+        }
+    }
+
+    /// Retires the messages whose history has passed.
+    fn prune(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let count = self.expires.iter().take_while(|at| **at <= now).count();
+        if count == 0 {
+            return Ok(());
+        }
+        self.producer
+            .pop(moq_net::Timed::from(count as u64).at(moq_net::Timestamp::now()))
+            .std_context("retiring chat messages")?;
+        self.expires.drain(..count);
+        Ok(())
+    }
+}
+
+/// Reads a member's chat window, from its newest group.
+enum Subscriber {
+    /// Waiting for the track's newest group, which holds the whole window.
+    Positioning(Option<Box<track::Subscriber>>),
+    Reading(Box<window::Consumer<String>>),
+}
+
+impl Subscriber {
+    /// Returns the next window event, or `None` once the track ends.
+    ///
+    /// Cancel safe: a cancelled read keeps its position.
+    async fn next(&mut self) -> moq_json::Result<Option<moq_net::Timed<Event>>> {
+        if let Self::Positioning(pending) = self {
+            let track = pending.as_mut().expect("positioning holds the track");
+            // Older groups only replay what the newest holds.
+            let largest = track.largest().await;
+            let mut track = *pending.take().expect("positioning holds the track");
+            if let Some(largest) = largest {
+                track = track.with_range(largest.group..);
+            }
+            *self = Self::Reading(Box::new(window::Consumer::new(track, Default::default())));
+        }
+        let Self::Reading(consumer) = self else {
+            unreachable!("positioned above");
+        };
+        consumer.next().await
+    }
+}
+
+/// Subscribes to the chat window of `broadcast`.
+async fn subscribe(broadcast: &broadcast::Consumer) -> Result<Subscriber> {
+    let track = broadcast
+        .track(TRACK)
+        .std_context("subscribing to the chat")?;
+    let subscriber = track
+        .subscribe(None)
+        .await
+        .std_context("subscribing to the chat")?;
+    Ok(Subscriber::Positioning(Some(Box::new(subscriber))))
 }
 
 /// Returns the message at `index` once, remembering that it was delivered.
@@ -173,11 +284,9 @@ mod tests {
     async fn a_message_reaches_a_subscriber() {
         let producer = broadcast::Info::new().produce();
         let writer = Writer::new(producer.clone()).expect("writer");
-        let mut chat = Subscriber::subscribe(&producer.consume())
-            .await
-            .expect("subscribe");
+        let mut chat = subscribe(&producer.consume()).await.expect("subscribe");
         writer.send("hello".into());
-        let event = tokio::time::timeout(Duration::from_secs(5), chat.recv())
+        let event = tokio::time::timeout(Duration::from_secs(5), chat.next())
             .await
             .expect("timed out")
             .expect("read")

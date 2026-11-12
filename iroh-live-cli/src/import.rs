@@ -87,17 +87,27 @@ impl Importer {
     /// Flushes the trailing frame and closes the tracks.
     ///
     /// The Annex-B splitter holds the last access unit until the next start
-    /// code, so end of input must flush it.
-    fn finish(&mut self) -> Result<()> {
+    /// code, so end of input must flush it. On failure the tracks end with the
+    /// error, so subscribers see the real cause.
+    fn finish(self) -> Result<()> {
         match self {
-            Self::Avc3 { split, import } => {
-                let tail = split.flush(None).anyerr()?;
-                import.decode(tail).anyerr()?;
-                import.finish().anyerr()?;
+            Self::Avc3 {
+                mut split,
+                mut import,
+            } => {
+                let flushed = split
+                    .flush(None)
+                    .and_then(|tail| import.decode(tail))
+                    .and_then(|()| import.finish())
+                    .anyerr();
+                if let Err(err) = &flushed {
+                    import.abort(moq_net::Error::Transport(err.to_string()));
+                }
+                flushed
             }
-            Self::Container(container) => container.finish().anyerr()?,
+            // A failed finish has already dropped the tracks.
+            Self::Container(container) => container.finish().map(drop).anyerr(),
         }
-        Ok(())
     }
 
     /// Aborts the tracks with `err`, so subscribers see the real cause.
@@ -204,11 +214,13 @@ impl FileImport {
         }
         .await;
 
-        let outcome = outcome.and_then(|()| importer.finish());
-        if let Err(err) = &outcome {
-            importer.abort(moq_net::Error::Transport(err.to_string()));
+        match outcome {
+            Ok(()) => importer.finish(),
+            Err(err) => {
+                importer.abort(moq_net::Error::Transport(err.to_string()));
+                Err(err)
+            }
         }
-        outcome
     }
 }
 

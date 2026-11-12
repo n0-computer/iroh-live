@@ -850,11 +850,12 @@ mod tests {
             let surface = Surface::rgba(&rgba, SIZE).expect("the buffer matches the size");
             let timestamp = moq_net::Timestamp::from_micros(index * FRAME_MICROS)
                 .expect("the stream is a second long");
-            units.extend(
-                encoder
-                    .encode(&moq_video::Frame::new(surface, timestamp))
-                    .expect("the software encoder takes every frame"),
-            );
+            encoder
+                .encode(&moq_video::Frame::new(surface, timestamp))
+                .expect("the software encoder takes every frame");
+            while let Some(unit) = encoder.receive().expect("the encoder hands out its units") {
+                units.push(unit);
+            }
         }
         units
     }

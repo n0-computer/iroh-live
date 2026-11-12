@@ -266,7 +266,11 @@ async fn routed_broadcast(
 /// Returns the announcement an event carries.
 fn announce_of(event: &Event) -> &moq_net::announce::Announce {
     match event {
-        Event::Present(announce) | Event::Absent(announce) => announce,
+        Event::Present(announce)
+        | Event::Unavailable(announce)
+        | Event::Available(announce)
+        | Event::Absent(announce)
+        | Event::Offline(announce) => announce,
     }
 }
 
@@ -1012,7 +1016,9 @@ async fn retracted(updates: &mut moq_net::announce::Consumer, path: &str) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = updates.next().await.expect("origin closed");
-            if matches!(update, Event::Absent(_)) && announce_of(&update).prefix.as_str() == path {
+            if matches!(update, Event::Absent(_) | Event::Offline(_))
+                && announce_of(&update).prefix.as_str() == path
+            {
                 return;
             }
         }

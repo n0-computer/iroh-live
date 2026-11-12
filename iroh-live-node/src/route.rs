@@ -14,7 +14,7 @@ use std::{
 
 use moq_net::{
     Instance, Path, Pattern, Patterns, broadcast,
-    origin::{self, Link, RouteEvent, Source},
+    origin::{self, Link, RouteEvent, RouteKind, Source},
 };
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
@@ -309,12 +309,9 @@ pub(crate) async fn announced_by(
 
 /// Returns the route an event leaves covering the prefix, or `None` once no route does.
 fn live_route(event: &RouteEvent) -> Option<&moq_net::announce::Announce> {
-    match event {
-        RouteEvent::End(_) => None,
-        RouteEvent::Update(announce)
-        | RouteEvent::Start(announce)
-        | RouteEvent::Restart(announce)
-        | RouteEvent::Takeover { announce, .. } => Some(announce),
+    match event.kind {
+        RouteKind::End | RouteKind::Offline => None,
+        RouteKind::Start | RouteKind::Update | RouteKind::Restart => Some(&event.announce),
     }
 }
 

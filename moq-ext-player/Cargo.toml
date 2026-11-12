@@ -21,6 +21,7 @@ moq-ext-adaptive = { workspace = true }
 moq-ext-publisher = { workspace = true, optional = true }
 moq-ext-sources = { workspace = true }
 moq-mux = { workspace = true }
+kio = { workspace = true }
 moq-net = { workspace = true }
 # The software H.264 fallback. The workspace takes moq-video without defaults,
 # which would drop it.

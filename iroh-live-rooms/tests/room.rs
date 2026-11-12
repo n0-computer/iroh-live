@@ -339,8 +339,12 @@ async fn until_announced(updates: &mut announce::Consumer, path: &str, present: 
         loop {
             let update = updates.next().await.expect("origin closed");
             let (announce, is_present) = match &update {
-                announce::Event::Absent(announce) => (announce, false),
-                announce::Event::Present(announce) => (announce, true),
+                announce::Event::Absent(announce) | announce::Event::Offline(announce) => {
+                    (announce, false)
+                }
+                announce::Event::Present(announce)
+                | announce::Event::Unavailable(announce)
+                | announce::Event::Available(announce) => (announce, true),
             };
             if announce.prefix.as_str() == path && is_present == present {
                 return;

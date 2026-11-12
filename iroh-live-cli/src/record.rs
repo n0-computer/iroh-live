@@ -198,12 +198,14 @@ pub(crate) async fn start(
             .await
             .map_err(|err| anyerr!("the catalog did not read: {err}"))?
             .select(selection);
+    // How late a group may fall before the export skips it.
+    let delay = moq_net::track::Delay::default().with_max(options.max_age);
     let export = match options.format {
         RecordFormat::Fmp4 => Export::Fmp4(Box::new(
-            fmp4::Export::new(source, catalog).with_max_delay(options.max_age),
+            fmp4::Export::new(source, catalog).with_delay(delay),
         )),
         RecordFormat::Mkv => Export::Mkv(Box::new(
-            mkv::Export::new(source, catalog).with_delay(options.max_age),
+            mkv::Export::new(source, catalog).with_delay(delay),
         )),
     };
     let file = File::create(&options.path)

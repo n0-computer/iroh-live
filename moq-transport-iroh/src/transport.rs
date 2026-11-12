@@ -13,12 +13,10 @@ use iroh::{
     Endpoint, EndpointAddr,
     endpoint::{self, Connection, ConnectionError, ConnectionStats, PathStats},
 };
-use moq_net::{
-    kio::{Bridge, Waiter},
-    transport::{
-        Address, Wire,
-        poll::{self, BiStreams, SendOptions, Ungrouped},
-    },
+use kio::{Bridge, Waiter};
+use moq_net::transport::{
+    Address, Wire,
+    poll::{self, BiStreams, SendOptions, Ungrouped},
 };
 use n0_error::e;
 use tracing::{debug, warn};
@@ -336,12 +334,9 @@ pub(crate) fn poll_op<T>(
 #[cfg(test)]
 pub(crate) mod tests {
     use iroh::endpoint::presets;
-    use moq_net::{
-        kio,
-        transport::{
-            CloseKind, Error as _,
-            poll::{RecvStream as _, SendStream as _, Session as _},
-        },
+    use moq_net::transport::{
+        CloseKind, Error as _,
+        poll::{RecvStream as _, SendStream as _, Session as _},
     };
 
     use super::*;

@@ -100,7 +100,8 @@ membership the members check, are not built yet.
 ## Chat and other data
 
 A room carries only broadcasts. `irl room` sends chat as one more broadcast,
-named `chat`, which carries `moq-room`'s chat track.
+named `chat`, whose `chat` track is a JSON window of the last ten seconds of
+messages, the format `@moq/room` reads.
 
 ## Limitations
 

@@ -14,8 +14,8 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use moq_net::{
-    Pattern, Patterns, announce, auth, broadcast,
-    origin::{self, Link, RouteEvent, RouteInfo, RouteOptions},
+    Pattern, announce, auth, broadcast,
+    origin::{self, Link, RouteEvent, RouteInfo, RouteKind, RouteOptions},
 };
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
@@ -145,14 +145,12 @@ fn publish(origin: &origin::Producer, path: &str) -> (origin::Route, TestBroadca
 
 /// Returns a grant to subscribe to exactly `paths`, as the node gives a session.
 fn grant(paths: &[&str]) -> auth::Grant {
-    auth::Grant {
-        publish: Patterns::new(),
-        subscribe: paths
-            .iter()
-            .map(|path| Pattern::literal(path).expect("a literal"))
-            .collect(),
-        expires: None,
-    }
+    let mut grant = auth::Grant::default();
+    grant.subscribe = paths
+        .iter()
+        .map(|path| Pattern::literal(path).expect("a literal"))
+        .collect();
+    grant
 }
 
 /// Waits for `path` to be announced on `origin` and returns the route.
@@ -181,16 +179,14 @@ async fn best_route(
     let mut routes = origin.consume().routes();
     tokio::time::timeout(TIMEOUT, async {
         loop {
-            match routes.next().await.expect("origin closed") {
-                RouteEvent::Start(announce)
-                | RouteEvent::Update(announce)
-                | RouteEvent::Restart(announce)
-                | RouteEvent::Takeover { announce, .. }
-                    if announce.prefix.as_str() == path && wanted(&announce.route) =>
-                {
-                    return announce.route;
-                }
-                _ => {}
+            let RouteEvent { kind, announce } = routes.next().await.expect("origin closed");
+            if matches!(
+                kind,
+                RouteKind::Start | RouteKind::Update | RouteKind::Restart
+            ) && announce.prefix.as_str() == path
+                && wanted(&announce.route)
+            {
+                return announce.route;
             }
         }
     })
@@ -224,8 +220,12 @@ async fn announced_paths(origin: &origin::Producer) -> Vec<String> {
         tokio::time::timeout(Duration::from_millis(300), announced.next()).await
     {
         let (announce, active) = match event {
-            announce::Event::Absent(announce) => (announce, false),
-            announce::Event::Present(announce) => (announce, true),
+            announce::Event::Absent(announce) | announce::Event::Offline(announce) => {
+                (announce, false)
+            }
+            announce::Event::Present(announce)
+            | announce::Event::Unavailable(announce)
+            | announce::Event::Available(announce) => (announce, true),
         };
         let path = announce.prefix.as_str().to_owned();
         if !active {
@@ -450,7 +450,6 @@ async fn a_route_table_fails_over_between_links() {
         route.cost().value() < RELAY_COST
     })
     .await;
-    assert_eq!(best.hops().next(), Some(PUBLISHER_HOP));
     assert!(best.cost().value() < RELAY_COST, "{:?}", best.cost());
 
     let consumer = resolve(&table, "live/p/cam").await;

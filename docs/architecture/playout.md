@@ -3,20 +3,20 @@
 Audio and video decode separately, on their own tasks, from their own tracks.
 Each `Player` owns a `PlayoutClock` (`moq-ext-player/src/player/clock.rs`)
 that keeps them aligned at playout time. It wraps upstream's
-`moq_mux::timeline`, the clock the moq players share.
+`moq_mux::sync`, the clock the moq players share.
 
 ## The algorithm
 
-The timeline maps media time onto the wall clock through one anchor, and holds
-every result back by a delay, so playback trails the live edge by that delay.
-The delay is the minimum of the player's latency, 100 ms by default.
+Each media path folds its arrivals into the clock as a track. The clock's
+reference is the earliest arrival either track has seen, measured against its
+timestamp, so it sits on the wall clock and follows the live edge. Playback
+trails that reference by a delay, the player's latency, 100 ms by default.
+Until the first frame anchors the clock, every frame is due at once.
 
-While audio plays, the speaker owns the anchor. Each write reports the media
-time it ends at and the sound queued ahead of the speaker after it. The anchor
-is pinned so that a picture with the same timestamp shows when that sound
-plays. Without audio, each video frame paces the anchor, and the delay alone
-sets when it shows. Until the first frame anchors the clock, every frame is due
-at once.
+Neither path owns the clock. A path that falls behind, such as audio stalled
+by congestion, only arrives late: it never holds the pictures back or moves
+their schedule. Audio converges on the clock by stretching toward the time its
+sound is due instead.
 
 ## Who calls what
 
@@ -30,11 +30,12 @@ the broadcast moves to a new route, since a publisher behind the new route may
 have restarted its timestamps.
 
 Audio writes decoded frames straight to its output sink, and the sink's buffer
-absorbs jitter. After every write it reports the write's end and the sink's
-buffered duration through an `AudioLatency` guard, taken from
-`PlayoutClock::register_audio` when the track opens. Dropping the guard tells
-the clock that the speaker went quiet, and video takes the anchor back. A new
-audio track takes it again on its first write.
+absorbs jitter. Each decoded frame is recorded through an `AudioLatency`
+guard, taken from `PlayoutClock::register_audio` when the track opens. After
+every write the guard says when the end of the written sound is due, and the
+speaker stretches toward that time, skipping ahead rather than speeding up when
+the reference jumps earlier, and dropping what trails by more than two seconds.
+Dropping the guard releases the audio track, so video alone holds the clock.
 
 Each player has its own clock. Two players of one broadcast, say a thumbnail
 and a full-screen view, do not hold back each other's frames. Dropping the
@@ -48,9 +49,8 @@ keeps media.
 
 `min` sets the clock's delay above. A publisher that advertises a larger
 `jitter` in its catalog, the most it flushes a frame late, raises the delay to
-the ladder's largest jitter, but never past `max`. A change of the delay starts
-a new clock, so the schedule jumps once, and the next video frame or audio
-write anchors it again. `irl watch --latency` offers
+the ladder's largest jitter, but never past `max`. A change of the delay moves
+the schedule once, by the difference. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, once with `IMMEDIATE_LATENCY` and once with the
@@ -90,8 +90,8 @@ That helps tell a driver problem from a stream problem.
 
 A changed latency or decoder applies to a running player without a gap:
 `set_latency` and `set_decoder` build a replacement video decoder behind the
-picture, which takes over once it has caught up. A changed latency also starts
-the playout clock over at the new delay, so the schedule moves once. An audio
+picture, which takes over once it has caught up. A changed latency also moves
+the playout clock to the new delay, so the schedule moves once. An audio
 track keeps its range until it next reopens.
 
 ## Timing metrics
