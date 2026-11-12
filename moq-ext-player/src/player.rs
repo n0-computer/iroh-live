@@ -10,7 +10,10 @@
 //! (`moq_ext_adaptive::Switcher`). The audio task decodes into the output and
 //! reports how much it has buffered. The video waits on that figure.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use moq_ext_sources::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 use moq_net::track::Delay;
@@ -202,6 +205,8 @@ pub(crate) struct Controls {
 pub struct Player {
     broadcast: RemoteBroadcast,
     frames: VideoFrames,
+    /// The cursor of [`Player::take_latest_video`].
+    latest: Mutex<VideoFrames>,
     audio_frames: broadcast::Sender<AudioFrame>,
     status: watch::Sender<PlayerStatus>,
     controls: Arc<Controls>,
@@ -300,6 +305,7 @@ impl Player {
 
         Ok(Self {
             broadcast,
+            latest: Mutex::new(frames.clone()),
             frames,
             audio_frames,
             status,
@@ -467,12 +473,45 @@ impl Player {
     /// ```
     #[must_use]
     pub fn video_timing(&self, pts: Duration) -> Option<FrameTiming> {
-        self.stats
-            .video_log
-            .snapshot()
-            .into_iter()
-            .rev()
-            .find(|timing| timing.pts == pts)
+        self.stats.video_log.find(pts)
+    }
+
+    /// Returns the newest presented picture since the last call, with its timing.
+    ///
+    /// For a consumer that samples the video at its own rate, such as an
+    /// analysis loop or a thumbnailer, instead of reading every picture from
+    /// [`video_frames`](Self::video_frames). Pictures presented between two
+    /// calls are skipped. Returns `None` if nothing was presented since the
+    /// last call. The player keeps one cursor for this method, so two callers
+    /// take turns at the same pictures; give each reader its own
+    /// [`VideoFrames`] handle instead.
+    ///
+    /// [`FrameTiming::arrived`] is set only with
+    /// [`PlayerConfig::record_arrivals`] on, because the decoder does not
+    /// report when a picture's data arrived. Without it, `decoded` is the
+    /// earliest instant the player knows of, and covers network and decode
+    /// time together.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run(player: moq_ext_player::Player) {
+    /// let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    /// loop {
+    ///     tick.tick().await;
+    ///     if let Some((frame, timing)) = player.take_latest_video() {
+    ///         let age = timing.presented.elapsed();
+    ///         println!("{} picture, presented {age:?} ago", frame.size());
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn take_latest_video(&self) -> Option<(Arc<moq_video::Frame>, FrameTiming)> {
+        let frame = self.latest.lock().expect("poisoned").try_next()?;
+        // A picture's timing is logged before the picture is handed out.
+        let timing = self.stats.video_log.find(frame.timestamp.into())?;
+        Some((frame, timing))
     }
 }
 

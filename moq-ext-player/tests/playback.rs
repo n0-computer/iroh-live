@@ -1131,6 +1131,59 @@ async fn timestamps_are_not_recorded_by_default() {
     feeder.abort();
 }
 
+/// A sampling reader takes the newest picture with its timing, and nothing twice.
+#[tokio::test]
+async fn take_latest_video_hands_out_the_newest_picture_once() {
+    let format = VideoFormat {
+        size: moq_video::Size::new(64, 48),
+        rate: fps(30),
+    };
+    let (sender, source) = VideoSource::push(format);
+    let feeder = tokio::spawn(push_frames(sender, format));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            software(VideoEncoding::single(VideoRendition::new("video"))),
+        )
+        .expect("valid");
+    let player = local(&broadcast)
+        .play(PlayerConfig {
+            record_arrivals: true,
+            ..PlayerConfig::default()
+        })
+        .expect("valid");
+    let take = || async {
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                if let Some(taken) = player.take_latest_video() {
+                    return taken;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a picture is presented")
+    };
+    let (first, timing) = take().await;
+    assert_eq!(timing.pts, Duration::from(first.timestamp));
+    assert!(timing.decoded <= timing.presented);
+    assert_eq!(player.video_timing(timing.pts), Some(timing));
+    let mut arrived = timing.arrived.is_some();
+    for _ in 0..10 {
+        let (next, timing) = take().await;
+        assert!(
+            next.timestamp > first.timestamp,
+            "{:?} was handed out again",
+            next.timestamp
+        );
+        arrived |= timing.arrived.is_some();
+    }
+    assert!(arrived, "no picture knew when its data arrived");
+    drop(player);
+    feeder.abort();
+}
+
 /// A frame from the player's video looks up when its data arrived, before it was decoded.
 #[tokio::test]
 async fn a_presented_frame_knows_when_its_data_arrived() {

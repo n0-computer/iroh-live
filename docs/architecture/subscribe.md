@@ -98,6 +98,14 @@ that falls behind skips to the newest one. `try_next()` polls without blocking,
 for a render loop, and `next().await` waits for a picture newer than the last
 one the handle read.
 
+Each presented picture's `FrameTiming` (`arrived`, `decoded`, `presented`)
+goes into a log of the last 512, which `Player::video_timing(pts)` searches.
+`Player::take_latest_video()` pairs the two for a consumer that samples at
+its own rate: the newest picture since its last call, with its timing. The
+decoder does not report when a picture's data arrived, so `arrived` needs
+`PlayerConfig::record_arrivals`, which reads each track a second time beside
+the decoder.
+
 ## Audio playback
 
 `PlayerConfig::audio` turns audio on, and `PlayerConfig::speaker` (the

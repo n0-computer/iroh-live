@@ -105,8 +105,9 @@ pub enum MediaKind {
 /// When one frame arrived, left its decoder, and was presented.
 ///
 /// Read with [`Player::timeline`](crate::Player::timeline) for a timeline view
-/// of playback, or [`Player::video_timing`](crate::Player::video_timing) for one
-/// picture. From `arrived` to `decoded` is the time in the decoder, and from
+/// of playback, [`Player::video_timing`](crate::Player::video_timing) for one
+/// picture, or [`Player::take_latest_video`](crate::Player::take_latest_video)
+/// with the newest picture. From `arrived` to `decoded` is the time in the decoder, and from
 /// `decoded` to `presented` the time the playout clock held the frame. Pictures
 /// and audio with the same timestamp should be presented together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +157,19 @@ impl FrameLog {
     /// Returns a copy of every frame kept, oldest first.
     pub(crate) fn snapshot(&self) -> VecDeque<FrameTiming> {
         self.0.get()
+    }
+
+    /// Returns the newest frame kept at `pts`, without copying the log.
+    pub(crate) fn find(&self, pts: Duration) -> Option<FrameTiming> {
+        let mut found = None;
+        self.0.update(|frames| {
+            found = frames
+                .iter()
+                .rev()
+                .find(|timing| timing.pts == pts)
+                .copied();
+        });
+        found
     }
 }
 
