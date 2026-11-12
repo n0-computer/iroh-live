@@ -61,7 +61,6 @@ async fn subscribe(node: &Node, publisher: &Node, name: &str) -> RemoteBroadcast
     remote_broadcast(&subscription)
 }
 
-/// Sets a generated pattern of `size` on `broadcast`, as one rendition.
 /// Returns a rendition named `name` at `size`, or the source's, and `bitrate`.
 fn rendition(name: &str, size: Option<Size>, bitrate: Rate) -> VideoRendition {
     let mut rendition = VideoRendition {

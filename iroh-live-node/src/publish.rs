@@ -38,7 +38,7 @@ pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 ///
 /// Cheap to clone. The publication stays until [`unpublish`](Self::unpublish),
 /// until its broadcast closes, or until the node shuts down. Dropping the
-/// handles leaves it in place; [`unpublish_on_drop`](Self::unpublish_on_drop)
+/// handles leaves it in place. [`unpublish_on_drop`](Self::unpublish_on_drop)
 /// ties it to a scope instead.
 ///
 /// # Examples

@@ -291,12 +291,11 @@ impl Node {
     /// Returns the authorization the policy gave the newest session with `peer` that holds one.
     ///
     /// The node decides each session on its own, so two sessions with one
-    /// peer may hold different authorizations; [`Session::grant`] reads one
-    /// session's. Ticket claims widen the grant on top of it, which
-    /// [`Session::grant`] includes. An expired authorization stays here until
-    /// the policy decides again, while [`Session::grant`] already grants
-    /// nothing. `None` once the peer has no session, or none that holds an
-    /// authorization.
+    /// peer may hold different authorizations. [`Session::grant`] reads the
+    /// grant of one session, with the ticket claims that widen it. An expired
+    /// authorization stays here until the policy decides again, while
+    /// [`Session::grant`] already grants nothing. Returns `None` once the peer
+    /// has no session, or none that holds an authorization.
     #[must_use]
     pub fn authorization_for(&self, peer: EndpointId) -> Option<Authorization> {
         self.shared
