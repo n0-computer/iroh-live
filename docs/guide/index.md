@@ -133,8 +133,9 @@ replaced:
   publish and read. `LiveLayout::config()` builds the config for the layout,
   and `NodeConfig::default()` lets every peer read and publish nothing.
   [Access control](access.md) covers the policies.
-- `LiveLayout::publish_with(&node, name, audience, fill)` publishes under the
-  layout to an audience other than `Granted`, such as `Audience::peers([peer])`.
+- `Node::publish_with(path, audience, fill)`, with a path from
+  `LiveLayout::path(id, name)`, publishes under the layout to an audience other
+  than `Granted`, such as `Audience::peers([peer])`.
 - `Node::publish(path, audience)` and `Node::subscribe(path, reach)` work on any
   path, next to the ticket calls. `media::remote_broadcast(&subscription)`
   reads the media of the result.

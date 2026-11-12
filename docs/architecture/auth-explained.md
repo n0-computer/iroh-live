@@ -616,7 +616,7 @@ changes. Short-lived links bound the damage meanwhile.
 
 ## Cheat sheet
 
-| I want to… | Use |
+| I want to ... | Use |
 |---|---|
 | let every peer read, and nobody publish | the default, `Open(Grant::subscribe_only())` |
 | let every peer read, and publish only under its own id | `LiveLayout::default().config()` |

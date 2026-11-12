@@ -3,8 +3,9 @@
 The `irl` binary is in the `iroh-live-cli` crate. It has seven commands:
 `devices`, `publish`, `watch`, `call`, `room`, `record`, and `run`.
 
-The default features are `aec`, `playback`, and `sound-server`. `record` and
-`run` never open a window.
+Every feature is on by default, and the Linux-only ones compile to nothing on
+macOS and Windows. The [crate README](../iroh-live-cli/README.md#features)
+lists them. `record` and `run` never open a window.
 
 ## `irl devices`
 
@@ -12,9 +13,11 @@ Lists the cameras, displays, and audio devices of this machine. Each line
 starts with the identifier that `--video`, `--audio`, and `--audio-output`
 take.
 
-Windows and applications are listed on macOS only. On Linux the desktop portal
-picks the display, so the displays section may report that listing is
-unavailable. The audio outputs section needs the `playback` feature. A build
+Windows and applications are listed on macOS only. On Linux the desktop
+portal's picker comes first in the displays and windows sections, as
+`screen:portal` and `window:portal`. The X11 displays follow it, or a note
+when they cannot be listed. The audio outputs section needs the `playback`
+feature. A build
 with the `rpicam` feature adds a Raspberry Pi camera section, from
 `rpicam-vid --list-cameras`.
 
@@ -100,10 +103,10 @@ encoder opens. [Platform support](platforms.md) says which platform has which.
 `--relay` attaches the node to the relay and redials it when the session
 drops. Every broadcast of the node with the `Granted` audience goes to the
 relay. The link only publishes: it does not add the relay's routes to this
-node's route table. The
-command prints the path at which viewers find the broadcast on the relay. Use a
-relay that keeps each publisher to its own paths, as `iroh-live-relay` does. On
-one where anyone may publish anywhere, a viewer can be served a forgery.
+node's route table. The command prints the path at which viewers find the
+broadcast on the relay. Use a relay that keeps each publisher to its own
+paths, as `iroh-live-relay` does. On one where anyone may publish anywhere, a
+viewer can be served a forgery.
 
 `--preview` draws the frames that go to the encoders, so it decodes nothing. A
 file source and `--video rpicam` cannot be previewed, because their frames
@@ -130,7 +133,7 @@ nothing is requested there by default.
 The log names the rate and where it came from:
 
 ```
-INFO capture frame rate requested; the device runs at the nearest rate it supports fps=60 origin="--renditions"
+INFO capture frame rate requested. The device runs at the nearest rate it supports fps=60 origin="--renditions"
 ```
 
 `origin` is `--fps`, `--renditions`, `--fps, capping the ladder`, `default`, or
@@ -158,8 +161,8 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 With `--scan`, the window opens on the camera picture and connects as soon as
 it reads a ticket. The window always has a Scan button, so a player started
 with a ticket can switch to another. Without `--scan-camera`, the scanner uses
-the Raspberry Pi camera if the build has `rpicam`, and the default camera
-otherwise. On a Pi, `/dev/video0` is the raw sensor and never delivers a
+the Raspberry Pi camera if the build has `rpicam` and `rpicam-vid` is
+installed, and the default camera otherwise. On a Pi, `/dev/video0` is the raw sensor and never delivers a
 picture, which is why the default camera is not the first choice there. Pass
 `--scan-camera cam` on a Pi with a USB webcam. If a camera opens and sends
 nothing for five seconds, the window says so.
@@ -231,8 +234,9 @@ ticket a window prints lists this node as the bootstrap peer, so pass that one
 on to the next participant.
 
 Chat is one more broadcast in the room, named `chat`. Its `chat` track is a
-JSON window in the format `@moq/room` reads, and holds the last ten seconds of messages, so a participant who
-joins sees what was said in that time.
+JSON window in the format `@moq/room` reads. The window holds the last ten
+seconds of messages, so a participant who joins sees what was said in that
+time.
 
 A tile disappears when its broadcast closes or its session drops. It comes
 back if the participant still lists the broadcast. A participant who publishes

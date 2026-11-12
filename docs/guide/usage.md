@@ -194,9 +194,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 A node learns it is being called when the peer's `call` path appears in its
-route table. `Calls::events` reports it as `CallEvent::Ringing(peer)`, next to
-`HungUp` and `Lagged`, and `Calls::ringing` is a watcher of the peers that ring
-now. `Call::ended` resolves with why the call ended. Hanging up takes the path
+route table. `Calls::ringing` is a watcher of the peers that ring now, and
+`Calls::answer(peer)` takes one of their calls. `Call::ended` resolves with a
+`HangUpReason` that says why the call ended. Hanging up takes the path
 away again, which ends the peer's read. The broadcast keeps running, so the
 next `ring` reuses it. `irl call` and the Android demo use the same
 convention, so they call each other.
