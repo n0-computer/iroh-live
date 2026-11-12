@@ -4,7 +4,7 @@
 //! `[[recv]]` block. The session is headless: a `[[recv]]` block plays audio
 //! and can record, but opens no window.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use iroh::SecretKey;
 use iroh_live::{
@@ -111,7 +111,7 @@ pub(crate) struct RecvConfig {
     pub(crate) audio_output: AudioOutput,
 
     /// File to record to. Its extension picks the container.
-    pub(crate) record: Option<String>,
+    pub(crate) record: Option<PathBuf>,
 
     /// The only video rendition to record. Needs `record`.
     pub(crate) rendition: Option<String>,
@@ -138,14 +138,14 @@ fn parse_config(path: &Path) -> Result<RunConfig> {
 /// Runs the session until Ctrl+C, then closes the endpoint.
 async fn run_session(config: RunConfig) -> Result {
     let serve = !config.send.is_empty();
-    let options = match &config.secret_key_name {
+    let endpoint_config = match &config.secret_key_name {
         Some(name) => EndpointConfig {
             secret_key: Some(stored_secret_key(name)?),
             ..EndpointConfig::default()
         },
         None => EndpointConfig::from_env()?,
     };
-    let node = transport::bind_node_with(options, serve).await?;
+    let node = transport::bind_node_with(endpoint_config, serve).await?;
     let result = run_streams(&node, &config).await;
     crate::shutdown::Teardown::new(node).run().await;
     println!("done");
@@ -196,7 +196,7 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
         match result {
             Ok((receiver, recording)) => {
                 println!("[recv] {}: subscribed to {}", recv.name, recv.ticket);
-                if let Some((recording, path)) = recording {
+                if let (Some(recording), Some(path)) = (recording, &recv.record) {
                     let path = path.display().to_string();
                     println!("[recv] {}: recording to {path}", recv.name);
                     let stop = stop_recording.clone().cancelled_owned();
@@ -266,13 +266,13 @@ async fn setup_send(node: &Node, config: &SendConfig) -> Result<(LocalBroadcast,
 
 /// Subscribes to one `[[recv]]` block, playing and recording as it asks.
 ///
-/// Returns the recording and its path for the caller to finish. Audio that
-/// fails to play is logged and skipped.
+/// Returns the recording, if the block asks for one, for the caller to
+/// finish. Audio that fails to play is logged and skipped.
 async fn setup_recv(
     node: &Node,
     config: &RecvConfig,
     speaker: Option<&Speaker>,
-) -> Result<(Receiver, Option<(Recording, std::path::PathBuf)>)> {
+) -> Result<(Receiver, Option<Recording>)> {
     let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
             "invalid ticket: {err}; it should be the string `irl publish` \
@@ -287,8 +287,7 @@ async fn setup_recv(
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
             options.rendition = config.rendition.clone();
-            let recording = crate::record::start(sub.broadcast(), &catalog, &options).await?;
-            Some((recording, std::path::PathBuf::from(path)))
+            Some(crate::record::start(sub.broadcast(), &catalog, &options).await?)
         }
     };
 

@@ -2,10 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{
-    Args, ValueEnum,
-    builder::{PossibleValuesParser, TypedValueParser},
-};
+use clap::{Args, ValueEnum};
 use iroh::EndpointId;
 use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
@@ -276,7 +273,7 @@ pub(crate) struct PlaybackArgs {
 }
 
 /// How long the player holds frames back to absorb late arrivals.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub(crate) enum LatencyArg {
     /// Least delay. For conversations.
     Realtime,
@@ -454,7 +451,7 @@ pub(crate) struct RecordArgs {
     pub(crate) output: PathBuf,
 
     /// Container format, overriding the `--output` extension.
-    #[arg(long, value_parser = record_format())]
+    #[arg(long, value_enum)]
     pub(crate) format: Option<RecordFormat>,
 
     /// Record only this video rendition. Default: all of them.
@@ -468,14 +465,6 @@ pub(crate) struct RecordArgs {
     /// How long to wait for a stalled group before skipping it.
     #[arg(long, value_name = "MILLISECONDS", default_value_t = 2_000)]
     pub(crate) max_age: u64,
-}
-
-/// Parses `--format` into a [`RecordFormat`].
-fn record_format() -> impl TypedValueParser<Value = RecordFormat> {
-    PossibleValuesParser::new(["fmp4", "mkv"]).map(|format| match format.as_str() {
-        "mkv" => RecordFormat::Mkv,
-        _ => RecordFormat::Fmp4,
-    })
 }
 
 #[cfg(test)]

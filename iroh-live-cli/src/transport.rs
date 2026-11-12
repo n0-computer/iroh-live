@@ -113,13 +113,13 @@ pub(crate) async fn bind_node_with(config: EndpointConfig, serve: bool) -> Resul
 /// A [`Bound`] dropped without [`Bound::shutdown`] leaves its peers to time
 /// out.
 pub(crate) async fn with_node<T>(
-    transport: SharedNode,
+    node: SharedNode,
     setup: impl AsyncFnOnce(&SharedNode) -> Result<T>,
 ) -> Result<(SharedNode, T)> {
-    match setup(&transport).await {
-        Ok(value) => Ok((transport, value)),
+    match setup(&node).await {
+        Ok(value) => Ok((node, value)),
         Err(err) => {
-            transport.shutdown().await;
+            node.shutdown().await;
             Err(err)
         }
     }
@@ -149,7 +149,7 @@ impl Subscribed {
         &self.broadcast
     }
 
-    /// Returns the resolved path.
+    /// Returns the subscription the broadcast arrives over.
     pub(crate) fn subscription(&self) -> &Subscription {
         &self.subscription
     }

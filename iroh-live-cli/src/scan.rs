@@ -19,7 +19,7 @@ mod decode;
 
 pub(crate) use self::camera::camera_spec;
 use self::{
-    camera::{Camera, REOPEN_DELAY},
+    camera::{Camera, CameraKind, REOPEN_DELAY},
     decode::{Decoder, luma},
 };
 
@@ -223,7 +223,7 @@ async fn scan(
         Pictures::Borrowed(frames) => {
             opened.send_replace(Some(frames.clone()));
             report(state, ctx, ScanState::Looking);
-            match look(frames, "the camera", false, state, ctx, skip).await {
+            match look(frames, "the camera", CameraKind::Capture, state, ctx, skip).await {
                 Ok(ticket) => found(state, ctx, ticket),
                 Err(problem) => {
                     warn!(%problem, "the scan camera is unusable");
@@ -249,7 +249,7 @@ async fn scan(
                 report(state, ctx, ScanState::Looking);
                 let frames = camera.source.frames();
                 // Returning drops the camera, so the window dials without it.
-                match look(frames, &camera.label, camera.rpicam, state, ctx, skip).await {
+                match look(frames, &camera.label, camera.kind, state, ctx, skip).await {
                     Ok(ticket) => return found(state, ctx, ticket),
                     Err(problem) => problem,
                 }
@@ -281,7 +281,7 @@ fn found(state: &watch::Sender<ScanState>, ctx: &egui::Context, ticket: Broadcas
 
 /// Reads `frames` until the decoder finds a ticket in one.
 ///
-/// `label` and `rpicam` describe the camera for the error message.
+/// `label` and `kind` describe the camera for the error message.
 ///
 /// # Errors
 ///
@@ -289,7 +289,7 @@ fn found(state: &watch::Sender<ScanState>, ctx: &egui::Context, ticket: Broadcas
 async fn look(
     mut frames: VideoFrames,
     label: &str,
-    rpicam: bool,
+    kind: CameraKind,
     state: &watch::Sender<ScanState>,
     ctx: &egui::Context,
     skip: Option<&Skip>,
@@ -309,7 +309,7 @@ async fn look(
         let frame = match read {
             Ok(Some(frame)) => frame,
             Ok(None) => return Err("the camera stopped".to_string()),
-            Err(_) if !seen_a_frame => return Err(no_frames(label, rpicam)),
+            Err(_) if !seen_a_frame => return Err(no_frames(label, kind)),
             // A stall after frames arrived, which the reopen loop handles.
             Err(_) => {
                 return Err(format!(
@@ -354,18 +354,18 @@ fn still_skipped(skip: Option<&Skip>, ticket: &BroadcastTicket) -> Option<Durati
 }
 
 /// Returns the error for a camera that opened and delivered no frames.
-fn no_frames(device: &str, rpicam: bool) -> String {
-    if rpicam {
-        format!(
+fn no_frames(device: &str, kind: CameraKind) -> String {
+    match kind {
+        #[cfg(all(target_os = "linux", feature = "rpicam"))]
+        CameraKind::Rpicam => format!(
             "{device} opened but sent no pictures within {}s. Check the ribbon cable",
             FIRST_FRAME_GRACE.as_secs()
-        )
-    } else {
-        format!(
+        ),
+        CameraKind::Capture => format!(
             "{device} opened but sent no pictures within {}s. A Raspberry Pi camera is not \
              reachable this way: pass --scan-camera rpicam",
             FIRST_FRAME_GRACE.as_secs()
-        )
+        ),
     }
 }
 

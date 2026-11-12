@@ -7,7 +7,7 @@ use iroh::EndpointId;
 use iroh_live::{
     BroadcastTicket,
     calls::{Call, Calls},
-    media::{LocalBroadcast, Player, VideoSource},
+    media::{AudioSource, LocalBroadcast, Player, VideoSource},
 };
 use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
 use n0_error::Result;
@@ -21,10 +21,11 @@ use super::{
     screens::{Calling, InCall, Screen},
 };
 use crate::{
-    args::{CallArgs, PlaybackArgs},
+    args::{CallArgs, CaptureArgs, PlaybackArgs},
     playback::Speaker,
     shutdown::Teardown,
-    transport::{PEER_TIMEOUT, SharedNode, Subscribed},
+    source_spec::VideoSourceSpec,
+    transport::{PEER_TIMEOUT, Subscribed},
     ui::{CursorIdle, Pending, RemoteView, TicketQr},
 };
 
@@ -38,11 +39,8 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
         output,
         ticket,
     } = local;
-    // Parsed before the window opens, so a bad specifier fails in the
-    // terminal.
-    let scan_camera = args.scan_camera.clone();
-    let teardown = Teardown::new(node.clone()).with_broadcast(broadcast.clone());
-    crate::ui::run_window("irl call", args.fullscreen, teardown, move |cc| {
+    let teardown = Teardown::new(node).with_broadcast(broadcast.clone());
+    crate::ui::run_window("irl call", args.fullscreen, teardown.clone(), move |cc| {
         let ctx = &cc.egui_ctx;
         let ringing = calls.ringing();
         let preview = VideoView::new(
@@ -54,8 +52,8 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
         let mut app = CallApp {
             qr: TicketQr::new(ctx, "call-ticket", &ticket),
             ticket,
-            camera: Camera::of(&args.capture, scan_camera.as_ref()),
-            capture: args.capture.clone(),
+            camera: Camera::of(&args.capture, args.scan_camera.as_ref()),
+            capture: args.capture,
             restoring: None,
             camera_owed: false,
             camera_epoch: Arc::default(),
@@ -63,12 +61,12 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
             local_video: sources.video,
             _local_audio: sources.audio,
             output,
-            scan_camera,
+            scan_camera: args.scan_camera,
             playback: args.playback,
             preview,
             render_state: cc.wgpu_render_state.clone(),
             _heartbeat: crate::ui::spawn_heartbeat(ctx),
-            node,
+            teardown,
             broadcast,
             calls,
             ringing,
@@ -86,7 +84,8 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
 
 /// The call window.
 pub(super) struct CallApp {
-    pub(super) node: SharedNode,
+    /// Closes the broadcast and the node when the window closes.
+    pub(super) teardown: Teardown,
     /// This node's ticket, shown in the top bar and as a QR code.
     pub(super) ticket: String,
     /// The ticket as a QR code, or `None` where it does not render.
@@ -98,12 +97,12 @@ pub(super) struct CallApp {
     /// The local video, which the preview draws and the scan screen may read.
     pub(super) local_video: Option<VideoSource>,
     /// The local audio, kept alive with the window.
-    pub(super) _local_audio: Option<iroh_live::media::AudioSource>,
+    pub(super) _local_audio: Option<AudioSource>,
     /// Where the peer's voice plays, and what the microphone cancels.
     pub(super) output: Option<Speaker>,
     pub(super) camera: Camera,
     /// The capture flags, kept to reopen the camera after a scan.
-    pub(super) capture: crate::args::CaptureArgs,
+    pub(super) capture: CaptureArgs,
     /// The publisher's camera reopening after a scan.
     pub(super) restoring: Option<Pending<Result<Option<VideoSource>>>>,
     /// Whether the scan screen took the publisher's camera and has not returned it.
@@ -135,7 +134,7 @@ pub(super) struct CallApp {
     /// The playback flags for the peer's broadcast.
     pub(super) playback: PlaybackArgs,
     /// Which camera the scan screen opens.
-    pub(super) scan_camera: Option<crate::source_spec::VideoSourceSpec>,
+    pub(super) scan_camera: Option<VideoSourceSpec>,
 }
 
 /// A dial or an answer in flight.
@@ -223,9 +222,7 @@ impl eframe::App for CallApp {
         info!("exit");
         self.screen = Screen::waiting();
         self.pending = None;
-        Teardown::new(self.node.clone())
-            .with_broadcast(self.broadcast.clone())
-            .run_blocking();
+        self.teardown.run_blocking();
     }
 }
 

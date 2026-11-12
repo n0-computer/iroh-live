@@ -34,8 +34,18 @@ pub(super) struct Camera {
     pub(super) source: VideoSource,
     /// The name used in logs and errors.
     pub(super) label: String,
-    /// Whether this is the Raspberry Pi camera, which changes the no-frames hint.
-    pub(super) rpicam: bool,
+    /// The kind of camera, which picks the hint for a camera that sends nothing.
+    pub(super) kind: CameraKind,
+}
+
+/// The kind of camera the scanner reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CameraKind {
+    /// A camera opened through the platform's capture backend.
+    Capture,
+    /// The Raspberry Pi camera, read through `rpicam-vid`.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    Rpicam,
 }
 
 impl Camera {
@@ -72,17 +82,17 @@ impl Camera {
         // camera that opens and then delivers nothing.
         let source = tokio::time::timeout(FIRST_FRAME_GRACE, VideoSource::capture(config))
             .await
-            .map_err(|_| no_frames(&label, false))?
+            .map_err(|_| no_frames(&label, CameraKind::Capture))?
             .map_err(|err| format!("the camera would not open: {err:#}"))?;
         Ok(Self {
             source,
             label,
-            rpicam: false,
+            kind: CameraKind::Capture,
         })
     }
 
-    #[cfg(all(target_os = "linux", feature = "rpicam"))]
     /// Opens the Raspberry Pi camera and waits for a first frame.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub(super) async fn open_rpicam() -> Result<Self, String> {
         let config = RpicamConfig::new(SCAN_SIZE, SCAN_FRAMERATE);
         let source = VideoSource::rpicam(config)
@@ -91,7 +101,7 @@ impl Camera {
         Ok(Self {
             source,
             label: "rpicam-vid".to_string(),
-            rpicam: true,
+            kind: CameraKind::Rpicam,
         })
     }
 }
@@ -137,7 +147,6 @@ pub(super) fn resolve(choice: Option<&VideoSourceSpec>) -> VideoSourceSpec {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     /// `--scan-camera` accepts cameras in the `--video` syntax.

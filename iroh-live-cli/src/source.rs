@@ -163,13 +163,13 @@ async fn video_source(
         VideoSourceSpec::Rpicam(mode) => rpicam_source(args, framerate, *mode).await?,
         VideoSourceSpec::Camera(id) => capture(Source::Camera(id.clone()), args, framerate).await?,
         VideoSourceSpec::Display(Some(id)) if id == PORTAL => {
-            capture(portal(false)?, args, framerate).await?
+            capture(portal(PortalPick::Screen)?, args, framerate).await?
         }
         VideoSourceSpec::Display(id) => {
             capture(Source::Display(id.clone()), args, framerate).await?
         }
         VideoSourceSpec::Window(id) if id == PORTAL => {
-            capture(portal(true)?, args, framerate).await?
+            capture(portal(PortalPick::Window)?, args, framerate).await?
         }
         VideoSourceSpec::Window(id) => capture(Source::Window(id.clone()), args, framerate).await?,
         VideoSourceSpec::App(id) => capture(Source::App(id.clone()), args, framerate).await?,
@@ -177,25 +177,37 @@ async fn video_source(
     Ok(Some(source))
 }
 
-/// The id of `screen:portal` and `window:portal`, which let the user pick in the
-/// desktop portal's screen-sharing dialog.
+/// The id of `screen:portal` and `window:portal`.
+///
+/// Either lets the user pick in the desktop portal's screen-sharing dialog.
 pub(crate) const PORTAL: &str = "portal";
 
-/// Returns the source that asks the desktop portal for a screen, or a window if
-/// `window` is set.
+/// What the desktop portal's picker offers.
+#[derive(Debug, Clone, Copy)]
+enum PortalPick {
+    /// A whole screen, for `screen:portal`.
+    Screen,
+    /// A single window, for `window:portal`.
+    Window,
+}
+
+/// Returns the source that asks the desktop portal for `pick`.
 ///
 /// Fails off Linux and in a build without the `pipewire` feature, which have
 /// no portal.
-fn portal(window: bool) -> Result<video::capture::Source> {
+fn portal(pick: PortalPick) -> Result<video::capture::Source> {
     #[cfg(all(target_os = "linux", feature = "pipewire"))]
     {
         use video::capture::portal::{Kind, Selection};
-        let kind = if window { Kind::Window } else { Kind::Screen };
+        let kind = match pick {
+            PortalPick::Screen => Kind::Screen,
+            PortalPick::Window => Kind::Window,
+        };
         Ok(video::capture::Source::Portal(Selection::new(kind)))
     }
     #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
     {
-        let _ = window;
+        let _ = pick;
         Err(anyerr!(
             "the desktop portal's picker needs a Linux build with the `pipewire` feature"
         ))

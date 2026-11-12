@@ -64,10 +64,12 @@ type Input = Pin<Box<dyn AsyncRead + Send + 'static>>;
 /// Annex-B H.264 has no container framing, so a splitter recovers the
 /// access-unit boundaries first.
 enum Importer {
+    /// Raw H.264 Annex-B, split into access units before the import.
     Avc3 {
         split: Box<moq_mux::codec::h264::Split>,
         import: Box<moq_mux::codec::h264::Import>,
     },
+    /// A container that frames its own samples, such as fMP4.
     Container(Box<moq_mux::import::Container>),
 }
 

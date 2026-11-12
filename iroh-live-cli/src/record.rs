@@ -85,7 +85,7 @@ async fn record_on(node: &Node, ticket: &BroadcastTicket, options: &RecordOption
 }
 
 /// A container to record into.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum RecordFormat {
     /// Fragmented MP4, complete at every fragment boundary.
     #[default]

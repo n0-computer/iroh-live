@@ -133,6 +133,7 @@ mod window {
         args::PlaybackArgs,
         playback::Speaker,
         shutdown::Teardown,
+        source,
         transport::{PEER_TIMEOUT, Subscribed},
         ui::RemoteView,
     };
@@ -191,7 +192,7 @@ mod window {
                 room,
                 ticket,
                 display_name,
-                peers: Vec::new(),
+                tiles: Vec::new(),
                 opening_keys: HashSet::new(),
                 opening: JoinSet::new(),
                 reconcile_at: None,
@@ -234,7 +235,8 @@ mod window {
         ticket: String,
         /// The name this node announced, used to label its own chat lines.
         display_name: String,
-        peers: Vec<PeerTile>,
+        /// The other members' broadcasts on screen, one tile each.
+        tiles: Vec<PeerTile>,
         /// The broadcasts being opened, so none is opened twice.
         opening_keys: HashSet<(EndpointId, String)>,
         /// Subscriptions still opening, with their keys.
@@ -244,7 +246,7 @@ mod window {
         chat: ChatState,
         preview: VideoView,
         /// The sources this node publishes, held for the window's life.
-        _sources: crate::source::Opened,
+        _sources: source::Opened,
         /// The speaker every peer plays on.
         output: Option<Speaker>,
         render_state: Option<RenderState>,
@@ -291,7 +293,7 @@ mod window {
 
         fn on_exit(&mut self) {
             info!("exit");
-            self.peers.clear();
+            self.tiles.clear();
             self.teardown.run_blocking();
         }
     }
@@ -342,15 +344,15 @@ mod window {
                         .map(move |name| (*remote, name.clone()))
                 })
                 .collect();
-            self.close_tiles("no longer published", |peer| {
-                !wanted.contains(&(peer.remote, peer.name.clone()))
+            self.close_tiles("no longer published", |tile| {
+                !wanted.contains(&(tile.remote, tile.name.clone()))
             });
             for (remote, name) in wanted {
                 let key = (remote, name.clone());
                 let shown = self
-                    .peers
+                    .tiles
                     .iter()
-                    .any(|peer| peer.remote == remote && peer.name == name);
+                    .any(|tile| tile.remote == remote && tile.name == name);
                 if shown || !self.opening_keys.insert(key) {
                     continue;
                 }
@@ -436,7 +438,7 @@ mod window {
                     self.render_state.as_ref(),
                 )
                 .with_link(sub.subscription().clone());
-                self.peers.push(PeerTile {
+                self.tiles.push(PeerTile {
                     remote,
                     name,
                     view,
@@ -455,13 +457,13 @@ mod window {
         /// The broadcast closes three seconds after no route serves it, which
         /// also covers a failed session.
         fn drop_closed(&mut self, ctx: &egui::Context) {
-            let dropped = self.close_tiles("the broadcast ended", |peer| {
-                peer.sub.broadcast().is_closed()
+            let dropped = self.close_tiles("the broadcast ended", |tile| {
+                tile.sub.broadcast().is_closed()
             });
             if dropped > 0 {
                 self.reconcile_later(ctx);
             }
-            if !self.peers.is_empty() {
+            if !self.tiles.is_empty() {
                 // A tile without frames requests no repaints, so check on a
                 // timer.
                 ctx.request_repaint_after(TILE_CHECK);
@@ -475,15 +477,15 @@ mod window {
         fn close_tiles(&mut self, reason: &str, drop_it: impl Fn(&PeerTile) -> bool) -> usize {
             let mut dropped = 0;
             let mut index = 0;
-            while index < self.peers.len() {
-                if !drop_it(&self.peers[index]) {
+            while index < self.tiles.len() {
+                if !drop_it(&self.tiles[index]) {
                     index += 1;
                     continue;
                 }
-                let peer = self.peers.remove(index);
+                let tile = self.tiles.remove(index);
                 info!(
-                    peer = %short(peer.remote),
-                    name = %peer.name,
+                    peer = %short(tile.remote),
+                    name = %tile.name,
                     reason,
                     "dropping a peer tile"
                 );
@@ -509,7 +511,7 @@ mod window {
                     ctx.copy_text(self.ticket.clone());
                 }
                 ui.separator();
-                ui.label(format!("{} participants", self.peers.len() + 1));
+                ui.label(format!("{} participants", self.tiles.len() + 1));
             });
         }
 
@@ -517,7 +519,7 @@ mod window {
         fn grid_ui(&mut self, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             let available = ui.available_size();
-            let count = self.peers.len() + 1;
+            let count = self.tiles.len() + 1;
             let (cols, rows, cell) = layout(count, available);
 
             ui.add_space(((available.y - cell.y * rows as f32) * 0.5).max(0.0));
@@ -544,15 +546,15 @@ mod window {
 
         /// Draws one peer's tile: the picture, its label, and the stats bar.
         fn draw_peer(&mut self, ui: &mut egui::Ui, index: usize, cell: egui::Vec2) {
-            let Some(remote) = self.peers.get(index).map(|peer| peer.remote) else {
+            let Some(remote) = self.tiles.get(index).map(|tile| tile.remote) else {
                 return;
             };
             let label = self.label(remote);
-            let Some(peer) = self.peers.get_mut(index) else {
+            let Some(tile) = self.tiles.get_mut(index) else {
                 return;
             };
-            let rect = peer.view.draw(ui, cell).rect;
-            peer.view.draw_overlay(ui, rect);
+            let rect = tile.view.draw(ui, cell).rect;
+            tile.view.draw_overlay(ui, rect);
             tile_label(ui, rect, &label);
         }
 

@@ -221,6 +221,7 @@ impl Publisher {
 enum Subscriber {
     /// Waiting for the track's newest group, which holds the whole window.
     Positioning(Option<Box<track::Subscriber>>),
+    /// Reading the window from that group on.
     Reading(Box<window::Consumer<String>>),
 }
 

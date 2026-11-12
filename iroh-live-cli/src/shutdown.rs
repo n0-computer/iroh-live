@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use crate::transport::SharedNode;
 
 /// How long a graceful shutdown may take before the process exits anyway.
-pub(crate) const GRACE: Duration = Duration::from_secs(5);
+const GRACE: Duration = Duration::from_secs(5);
 
 /// The exit code of a process that a second Ctrl+C interrupted, 128 + SIGINT.
 const INTERRUPTED: i32 = 130;

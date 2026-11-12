@@ -13,9 +13,10 @@ use iroh_live::{
 use n0_error::{Result, anyerr};
 
 use crate::{
-    args::WatchArgs,
+    args::{PlaybackArgs, WatchArgs},
     playback::Speaker,
     shutdown::Teardown,
+    source_spec::VideoSourceSpec,
     transport::{self, SharedNode, Subscribed},
 };
 
@@ -33,30 +34,31 @@ enum Start {
 /// The parts of [`WatchArgs`] a subscription needs, owned so a task can hold them.
 #[derive(derive_more::Debug, Clone)]
 struct Options {
-    /// The rendition `--rendition` pinned.
-    rendition: Option<String>,
+    /// Which video plays: none for `--no-video`, the `--rendition` pin, or adaptive.
+    rendition: RenditionMode,
     /// The camera the scan screen opens.
-    scan_camera: Option<crate::source_spec::VideoSourceSpec>,
-    /// Plays audio only, for `--no-video`.
-    no_video: bool,
+    scan_camera: Option<VideoSourceSpec>,
     /// How the video is decoded.
-    playback: crate::args::PlaybackArgs,
+    playback: PlaybackArgs,
     /// Where the audio plays.
     #[debug(skip)]
     output: Option<Speaker>,
 }
 
-impl From<&WatchArgs> for Options {
-    /// Copies the window options, leaving `scan_camera` and `output` for the caller.
-    fn from(args: &WatchArgs) -> Self {
+impl Options {
+    /// Collects the options from `args`, with the audio on `output`.
+    fn new(args: &WatchArgs, output: Option<Speaker>) -> Self {
+        let rendition = match (args.no_video, &args.rendition) {
+            // An unused video decoder would still cost a core.
+            (true, _) => RenditionMode::Off,
+            (false, Some(name)) => RenditionMode::pinned(name.clone()),
+            (false, None) => RenditionMode::Auto,
+        };
         Self {
-            rendition: args.rendition.clone(),
-            // Parsed by the caller, which can report a bad specifier.
-            scan_camera: None,
-            no_video: args.no_video,
+            rendition,
+            scan_camera: args.scan_camera.clone(),
             playback: args.playback,
-            // Opened by the async `setup`.
-            output: None,
+            output,
         }
     }
 }
@@ -65,10 +67,8 @@ impl From<&WatchArgs> for Options {
 pub(crate) fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     let start = start(&args)?;
 
-    let mut options = Options::from(&args);
-    options.scan_camera = args.scan_camera.clone();
     let (node, output) = rt.block_on(setup(&args))?;
-    options.output = output;
+    let options = Options::new(&args, output);
 
     let ticket = match start {
         // eframe takes the main thread. The guard lets it spawn onto the runtime.
@@ -171,16 +171,9 @@ async fn connect(
             })??,
         None => subscribing.await?,
     };
-    let config = crate::playback::player_config(&options.playback, options.output.as_ref());
-    let rendition = match (options.no_video, &options.rendition) {
-        // An unused video decoder would still cost a core.
-        (true, _) => RenditionMode::Off,
-        (false, Some(name)) => RenditionMode::pinned(name.clone()),
-        (false, None) => config.rendition.clone(),
-    };
     let config = PlayerConfig {
-        rendition,
-        ..config
+        rendition: options.rendition.clone(),
+        ..crate::playback::player_config(&options.playback, options.output.as_ref())
     };
     crate::playback::open(sub, config).await
 }
@@ -224,6 +217,7 @@ mod window {
     use crate::{
         scan::{ScanView, Skip},
         shutdown::Teardown,
+        source_spec::VideoSourceSpec,
         transport::{SharedNode, Subscribed},
         ui::{BUTTON, CursorIdle, Pending, RemoteView},
     };
@@ -252,7 +246,7 @@ mod window {
         fullscreen: bool,
     ) -> Result {
         let teardown = Teardown::new(node.clone());
-        crate::ui::run_window("irl watch", fullscreen, teardown, move |cc| {
+        crate::ui::run_window("irl watch", fullscreen, teardown.clone(), move |cc| {
             let ctx = &cc.egui_ctx;
             let render_state = cc.wgpu_render_state.clone();
             let mode = match opening {
@@ -272,6 +266,7 @@ mod window {
             };
             WatchApp {
                 node,
+                teardown,
                 options,
                 render_state,
                 mode,
@@ -418,7 +413,7 @@ mod window {
         render_state: Option<&RenderState>,
         previous: Option<Previous>,
         skip: Option<Skip>,
-        camera: Option<crate::source_spec::VideoSourceSpec>,
+        camera: Option<VideoSourceSpec>,
     ) -> Mode {
         Mode::Scanning(Box::new(Scanning {
             view: ScanView::new(ctx, render_state, skip, camera),
@@ -487,8 +482,8 @@ mod window {
         let mut remote =
             RemoteView::new(ctx, "video", player, options.playback.decoder, render_state)
                 .with_link(sub.subscription().clone());
-        if let Some(name) = options.rendition.clone() {
-            remote.set_rendition(RenditionMode::pinned(name));
+        if let RenditionMode::Pinned(_) = &options.rendition {
+            remote.set_rendition(options.rendition.clone());
         }
         info!(broadcast = %title, "playing");
         Mode::Watching(Box::new(Watching {
@@ -502,6 +497,8 @@ mod window {
     /// The `irl watch` window.
     struct WatchApp {
         node: SharedNode,
+        /// Closes the node when the window closes.
+        teardown: Teardown,
         options: Options,
         render_state: Option<RenderState>,
         mode: Mode,
@@ -539,7 +536,7 @@ mod window {
         fn on_exit(&mut self) {
             info!("exit");
             self.close_mode();
-            Teardown::new(self.node.clone()).run_blocking();
+            self.teardown.run_blocking();
         }
     }
 

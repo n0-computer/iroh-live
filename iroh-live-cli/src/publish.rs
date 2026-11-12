@@ -176,22 +176,27 @@ mod preview {
     ) -> Result {
         let capture = args.capture.clone();
         let teardown = Teardown::new(node).with_broadcast(broadcast.clone());
-        crate::ui::run_window("irl publish", args.fullscreen, teardown.clone(), move |cc| {
-            let view = VideoView::new(
-                &cc.egui_ctx,
-                "preview",
-                sources.video.as_ref().map(VideoSource::frames),
-                cc.wgpu_render_state.as_ref(),
-            );
-            PreviewApp {
-                teardown,
-                broadcast,
-                ticket,
-                view,
-                picker: SourcePicker::new(capture, sources),
-                overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
-            }
-        })
+        crate::ui::run_window(
+            "irl publish",
+            args.fullscreen,
+            teardown.clone(),
+            move |cc| {
+                let view = VideoView::new(
+                    &cc.egui_ctx,
+                    "preview",
+                    sources.video.as_ref().map(VideoSource::frames),
+                    cc.wgpu_render_state.as_ref(),
+                );
+                PreviewApp {
+                    teardown,
+                    broadcast,
+                    ticket,
+                    view,
+                    picker: SourcePicker::new(capture, sources),
+                    overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
+                }
+            },
+        )
     }
 
     /// The `irl publish --preview` window.
@@ -287,7 +292,7 @@ mod preview {
         }
     }
 
-    /// The source combo.
+    /// The video source picker in the window's control panel.
     ///
     /// A switch opens the new source, then sets it on the broadcast in place of
     /// the old one. If the new source fails to open, the old one keeps

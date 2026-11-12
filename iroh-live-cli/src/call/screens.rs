@@ -202,7 +202,7 @@ impl CallApp {
     /// Draws the call: the peer, this node in a corner, and the overlay.
     pub(super) fn in_call_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let expanded = match &self.screen {
-            Screen::InCall(session) => session.remote.overlay_expanded(),
+            Screen::InCall(call) => call.remote.overlay_expanded(),
             Screen::Waiting(_) | Screen::Scanning(_) | Screen::Calling(_) => false,
         };
         let show_overlay = self.cursor.update(ctx, expanded);
@@ -213,13 +213,13 @@ impl CallApp {
             ticket,
             ..
         } = self;
-        let Screen::InCall(session) = screen else {
+        let Screen::InCall(call) = screen else {
             return;
         };
 
         let available = ui.available_size();
         let video_rect = egui::Rect::from_min_size(ui.cursor().min, available);
-        session.remote.draw(ui, available);
+        call.remote.draw(ui, available);
 
         let pip = egui::vec2(PIP_WIDTH, PIP_WIDTH / ASPECT);
         egui::Area::new(egui::Id::new("call-pip"))
@@ -237,11 +237,11 @@ impl CallApp {
             return;
         }
         crate::ui::top_bar(ui, ctx, ticket);
-        session.remote.draw_overlay(ui, video_rect);
+        call.remote.draw_overlay(ui, video_rect);
 
         let mut hang_up = false;
         crate::ui::control_panel(ctx, "call-controls", |ui| {
-            session.remote.controls(ui, "call");
+            call.remote.controls(ui, "call");
             hang_up = ui
                 .button("Hang up")
                 .on_hover_text("End the call and go back to the ticket")

@@ -90,7 +90,7 @@ pub(super) enum Restored {
 /// Fails if the video does not run within [`RESTORE_PATIENCE`].
 pub(super) async fn restore_once(
     broadcast: &LocalBroadcast,
-    capture: &crate::args::CaptureArgs,
+    capture: &CaptureArgs,
     epoch: &std::sync::Mutex<u64>,
     mine: u64,
 ) -> Result<Restored> {
@@ -140,18 +140,20 @@ impl CallApp {
             (Some(camera), Camera::Publisher) => {
                 ScanView::from_frames(ctx, self.render_state.as_ref(), None, camera.frames())
             }
-            (None, Camera::Publisher) => {
-                // The publisher holds the camera but has no frames to
-                // lend, since `rpicam` outputs encoded H.264. It releases
-                // the sensor for the scan and reopens it afterwards.
-                // Subscribers see the video pause.
-                {
-                    let mut epoch = self.camera_epoch.lock().expect("poisoned");
-                    *epoch += 1;
-                    self.broadcast.clear_video();
+            (local_video, camera) => {
+                if local_video.is_none() && camera == Camera::Publisher {
+                    // The publisher holds the camera but has no frames to
+                    // lend, since `rpicam` outputs encoded H.264. It releases
+                    // the sensor for the scan and reopens it afterwards.
+                    // Subscribers see the video pause.
+                    {
+                        let mut epoch = self.camera_epoch.lock().expect("poisoned");
+                        *epoch += 1;
+                        self.broadcast.clear_video();
+                    }
+                    self.restoring = None;
+                    self.camera_owed = true;
                 }
-                self.restoring = None;
-                self.camera_owed = true;
                 ScanView::new(
                     ctx,
                     self.render_state.as_ref(),
@@ -159,12 +161,6 @@ impl CallApp {
                     self.scan_camera.clone(),
                 )
             }
-            _ => ScanView::new(
-                ctx,
-                self.render_state.as_ref(),
-                None,
-                self.scan_camera.clone(),
-            ),
         };
         self.screen = Screen::Scanning(Box::new(view));
     }
@@ -250,7 +246,7 @@ impl CallApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, CaptureArgs};
+    use super::{Camera, CaptureArgs, Spec};
 
     /// Returns capture flags with the given `--video` specifier.
     fn capture(video: &str) -> CaptureArgs {
@@ -280,7 +276,6 @@ mod tests {
     /// One that may be the same device is shared.
     #[test]
     fn a_scan_camera_of_its_own_leaves_the_publisher_alone() {
-        use crate::source_spec::VideoSourceSpec as Spec;
         let usb = Spec::Camera(Some("usb".to_string()));
         assert_eq!(Camera::of(&capture("cam:0"), Some(&usb)), Camera::Free);
         assert_eq!(
