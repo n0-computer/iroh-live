@@ -1,9 +1,9 @@
 # Transport
 
-`iroh-live-node` is the node. It holds a node's route table, its publications,
-its sessions with peers and its links to moq relays. It sits on `moq-transport-iroh`,
-which turns an iroh connection into a moq-net session and knows nothing about
-nodes, routes or publications.
+`iroh-live-node` is the node. It holds a node's route table, its
+publications, its sessions with peers and its links to moq relays. It sits on
+`moq-transport-iroh`, which turns an iroh connection into a moq-net session and
+knows nothing about nodes, routes or publications.
 
 For MoQ itself, read [the moq-lite layer
 page](https://doc.moq.dev/concept/layer/moq-lite) and [the iroh transport
@@ -11,8 +11,8 @@ page](https://doc.moq.dev/concept/layer/iroh) upstream.
 
 ## Paths name the publisher
 
-`iroh-live-node` has no path layout. `Node::publish` takes a full path, and the crates
-above bring their own layout. `iroh-live` publishes at
+`iroh-live-node` has no path layout. `Node::publish` takes a full path, and
+the crates above bring their own layout. `iroh-live` publishes at
 `live/<endpoint id>/<name>`, and `iroh-live-rooms` at
 `rooms/<topic>/<endpoint id>/<name>`. A broadcast has the same path over every
 link, direct or through any number of relays. That lets the route table see
@@ -35,8 +35,8 @@ one instance does not end the broadcast. When the instance's last route goes,
 the broadcast ends, and `Subscription::closed` asks the table again.
 
 The node can still say which link serves a path (`Subscription::session`,
-`Subscription::serving_link`), from the hop of the route that serves it. `None` means
-no link: the path is the node's own publication, or no route is announced yet.
+`Subscription::serving_link`), from the hop of the route that serves it.
+`None` means no link: the path is the node's own publication, or no route is announced yet.
 A relay that declares a hop of its own is matched to the relay link only while
 exactly one relay link feeds the table, and to no link otherwise.
 `Session::subscribe` resolves a path over one session only, and follows only
@@ -49,8 +49,8 @@ policy decides it for each peer, and the default policy grants
 `Grant::subscribe_only()`: a peer may read anything and publish nothing.
 `LiveLayout::config()` lets a peer publish under `live/<peer>/`, and
 `iroh_live::layout::config((LiveLayout::default(), RoomsLayout))` adds
-`rooms/*/<peer>/`. The table is shared by
-everything on the node and answers a ticket without dialing. A peer whose grant
+`rooms/*/<peer>/`. The table is shared by everything on the node and answers a
+ticket without dialing. A peer whose grant
 let it announce another publisher's path could stand in for that publisher,
 so grants should name the peer. A relay is trusted with every path it forwards,
 since forwarding other publishers' broadcasts is its job. Attach only relays
@@ -73,9 +73,9 @@ origin, and the route table is the only one: peers read the broadcast itself,
 with nothing copied in between. `Node::publish_with` fills the broadcast before
 it is announced, so no reader finds it without its first tracks. The fill
 runs before the node takes its lock, so it may fail or call back into the
-node without harm.
-`LiveLayout::publish` builds a `LocalBroadcast` in it this way. A
-publication stays until `unpublish`, until its broadcast closes, or until the
+node without harm. `LiveLayout::publish` builds a `LocalBroadcast` in it this
+way. `Node::publish_value` uses it to publish one latest-value JSON track, and
+`Subscription::value_track` reads such a track. A publication stays until `unpublish`, until its broadcast closes, or until the
 node shuts down. Dropping its handles does not withdraw it, so a publication
 that belongs to a task goes through `Publication::unpublish_on_drop`, whose
 guard unpublishes it when the task ends or is aborted.
@@ -87,16 +87,16 @@ session before its handshake, so its first announcements already keep to it.
 The grant's subscribe half lists the exact paths of the publications whose
 audience admits the peer, within the session's `Grant`. The audience is
 `Granted` or a watched set of `Peers`. A relay link sees every `Granted`
-publication and never a `Peers` one, which a relay would forward to anyone. `Grant`, `SessionRequest`, `Audience` and the
-rule that turns publications into a link's visible paths (`visible_paths`) live
-in `moq-ext-access`, which has no iroh dependency, and `iroh-live-node` re-exports
-them for endpoint ids.
+publication and never a `Peers` one, which a relay would forward to anyone.
+`Grant`, `SessionRequest`, `Audience` and `visible_paths`, the rule that turns
+publications into a link's visible paths, live in `moq-ext-access`, which has
+no iroh dependency. `iroh-live-node` re-exports them for endpoint ids.
 
 The node works the grants out again, and re-authorizes the sessions whose view
 changed, when a publication is added or removed, when an audience or a `Peers`
 set changes (`Publication::set_audience`), when the policy decides a peer
-again (`Node::reauthorize`), and when a session or relay link is added. A narrower
-grant retracts the path from the peer and resets what it reads there with
+again (`Node::reauthorize`), and when a session or relay link is added. A
+narrower grant retracts the path from the peer and resets what it reads there with
 `Unauthorized`. A wider one announces the path again. The rest of the session
 carries on.
 
@@ -124,8 +124,8 @@ every peer that connects.
 
 The node keeps one authorization per session on its link (`state.rs`). The
 effective grant of a session is that authorization's grant plus the peer's
-ticket claims. A deadline per session (`reauth.rs`) fires at
-the authorization's `expires` time, and the actor then asks the policy again.
+ticket claims. A deadline per session (`reauth.rs`) fires at the
+authorization's `expires` time, and the actor then asks the policy again.
 So does `Node::reauthorize`, for each session with the peer. A new decision
 replaces the session's authorization and re-authorizes it, and a rejection
 closes it. One decision per session runs at a time, and at most 16 run at
@@ -146,8 +146,7 @@ switch to another QUIC path bumps `path_generation` and starts the history
 over. `Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
 `sample`) of whichever link serves the subscription. `iroh-live/src/network.rs`
 hands the sample to the player and makes its path generation count changes of
-the serving link too. The monitor logs every sample at TRACE
-as `link sample`. The node keeps no list of paths of its own:
+the serving link too. The monitor logs every sample at TRACE as `link sample`. The node keeps no list of paths of its own:
 `Session::connection()` is the iroh connection, and its `paths()` and
 `paths_stream()` give each path's remote address, selection and RTT.
 
@@ -156,8 +155,7 @@ as `link sample`. The node keeps no list of paths of its own:
 `Node::attach_relay(RelayConfig::new(url))` attaches to a moq relay at an
 `iroh://` or `https://` URL. `https://` links use moq-tokio's client, and
 `iroh://` links dial through the node's own endpoint, since moq-tokio has no
-iroh transport. The link redials with
-backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
+iroh transport. The link redials with backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
 the `Granted` audience go to the relay. `RelayConfig::token` is a `TokenSource`
 that the link asks for a token: an `iroh://` link before every dial, and an
 `https://` link once, when it attaches. The relay's routes join the route table
@@ -181,11 +179,12 @@ path generation.
 
 ## ALPN negotiation
 
-`moq_transport_iroh::ALPN` is `moq_net::ALPNS[0]`, the newest MoQ version this build
-speaks. `moq_transport_iroh::alpns()` returns all of `moq_net::ALPNS`, newest
+`moq_transport_iroh::ALPN` is `moq_net::ALPNS[0]`, the newest MoQ version this
+build speaks. `moq_transport_iroh::alpns()` returns all of `moq_net::ALPNS`, newest
 first. Mount the node under all of them. A dial offers only the newest: iroh's
 `Router` sorts the ALPNs it accepts and TLS picks the server's first match, so
-a dial that offered the older ones too would settle on moq-lite-03. An ALPN this build does not speak fails with
+a dial that offered the older ones too would settle on moq-lite-03. An ALPN
+this build does not speak fails with
 `moq_transport_iroh::Error::UnsupportedAlpn`, which the node wraps as
 `Error::Transport`.
 

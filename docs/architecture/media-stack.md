@@ -38,8 +38,9 @@ it already encoded. `VideoSource::rpicam` reads raw pictures from the same
 program. See [Raspberry Pi](../guide/raspberry-pi.md).
 
 `AudioSource::file` decodes a WAV or MP3 file with symphonia on its own thread,
-in real time, and fans the PCM out to every broadcast that reads it. moq-audio
-has no container reader.
+in real time, and fans the PCM out to every broadcast that reads it. Its
+`FileEnd` argument stops or restarts the file at its end. moq-audio has no
+container reader.
 
 `VideoSource::test_pattern` and `AudioSource::test_pattern` are a matching
 pair: a sweeping bar, a frame counter, a clock, and a marker that flashes with
@@ -50,14 +51,15 @@ so a test that waits for bytes would pass on a stalled pipeline.
 `AudioSource::tone` is a steady sine.
 
 `moq-ext-egui` draws the texture `moq_video::render` returns in an egui panel,
-and has the debug overlay. The Android demo crate has an EGL renderer. `demos/pi-zero/src/gles.rs` is a GLES2
-renderer for the Pi Zero, which has no Vulkan.
+and has the debug overlay. The Android demo crate has an EGL renderer, and
+`demos/pi-zero/src/gles.rs` is a GLES2 renderer for the Pi Zero, which has no
+Vulkan.
 
 ## Feature flags
 
-`moq-ext-publisher` and `moq-ext-player` define the device and graphics
-features, and `iroh-live` passes them through. `iroh-live` has no default
-features. `full` turns on `media`, `capture`, `render`, `sound-server` and
-`record`, `media` turns the media stack on, and each device feature implies it.
-`iroh-live-cli` always captures and renders, and defaults to `aec`, `playback`
-and `sound-server`.
+`moq-ext-publisher` and `moq-ext-player` define the device, hardware codec
+and graphics features, and `iroh-live` passes them through with no default
+features. In `iroh-live`, `media` turns the media stack on, and each device
+feature implies it. `full` turns on `media`, `capture`, `render`,
+`sound-server` and `record`. `iroh-live-cli` always captures and renders, and
+turns every other feature on by default.

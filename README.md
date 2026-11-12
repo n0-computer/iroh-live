@@ -138,14 +138,13 @@ cargo build --workspace
 Codecs need no system libraries. Device access and graphics do, and
 [Getting started](docs/guide/index.md#system-dependencies) lists them.
 
-Every codec compiles upstream, so there are no per-codec features. The
-features gate devices and graphics. `moq-ext-publisher` and `moq-ext-player`
-define them, and `iroh-live/Cargo.toml` lists them. `iroh-live` passes them
-through and has no default features. `full` turns on `media`, `capture`,
-`render`, `sound-server`, and `record`. `irl` always turns on `capture`,
-`file`, `render`, `rooms` and `record`, and by default `aec`, `playback` and
-`sound-server`. `media` turns the media stack on, and each device
-feature implies it. `rooms` re-exports `iroh-live-rooms`.
+The software codecs always compile. Features gate the hardware codecs, the
+devices and the graphics. `moq-ext-publisher` and `moq-ext-player` define
+them, and `iroh-live` passes them through with no default features. In
+`iroh-live`, `media` turns on the media stack, and each device feature implies
+it. `full` turns on `media`, `capture`, `render`, `sound-server` and `record`,
+and `rooms` re-exports `iroh-live-rooms`. `irl` always turns on `capture`,
+`file`, `render`, `rooms` and `record`, and every other feature by default.
 
 ### Cross-compiling for aarch64
 

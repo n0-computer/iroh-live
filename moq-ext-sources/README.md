@@ -8,8 +8,8 @@ dependency.
 
 Use it to feed [`moq-ext-publisher`](../moq-ext-publisher), or any encoder you
 run yourself. A `VideoSource` feeds several encoders at once and offers a
-latest-wins preview; an `AudioSource` fans PCM out to every broadcast reading
-it.
+latest-wins preview. An `AudioSource` fans PCM out to every broadcast that
+reads it.
 
 ```rust
 use moq_ext_sources::{AudioSource, VideoSource};
@@ -20,10 +20,13 @@ let video = VideoSource::test_pattern(size, rate)?;
 let audio = AudioSource::test_pattern(layout)?;
 ```
 
-Also available: `VideoSource::push` and `AudioSource::push` for frames the
-application makes. `VideoSource::switchable` returns a source and a `VideoSwitch`
-that swaps or opens what feeds it while a broadcast encodes it. `LocalBroadcast::set_encoded_video` takes a stream of
-Annex-B H.264 that needs no encoder, such as the one `rpicam_h264` returns. The crate docs list every constructor.
+`VideoSource::push` and `AudioSource::push` take frames the application
+makes. `VideoSource::switchable` returns a `VideoSwitch` and the source it
+feeds, and the switch swaps or opens what feeds the source while a broadcast
+encodes it. `AudioSource::file(path, FileEnd)` plays a WAV or MP3 file and
+stops or restarts at its end. `rpicam_h264` returns the Annex-B H.264 that
+`rpicam-vid` encoded, for `LocalBroadcast::set_encoded_video`. The crate docs
+list every constructor.
 
 `VideoSource::capture` waits up to three seconds for a camera dropped before
 it to release the device, so a switch back to the same camera does not fail as
@@ -46,5 +49,5 @@ return too.
 | `capture` | no | camera, screen and microphone |
 | `sound-server` | no | PipeWire and PulseAudio devices (Linux) |
 | `aec` | no | echo cancellation for the microphone |
-| `pipewire` | no | Linux screen capture through the desktop portal, and PipeWire's default camera, as the defaults |
+| `pipewire` | no | the desktop portal's screen capture and PipeWire's camera as the Linux defaults |
 | `rpicam` | no | the Raspberry Pi camera through `rpicam-vid` (Linux) |

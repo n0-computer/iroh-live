@@ -22,7 +22,13 @@ irl watch <ticket>
 - `run`: run a multi-stream session described by a TOML file.
 - `devices`: list cameras, displays and audio devices.
 
-`irl <command> --help` lists the options.
+`irl <command> --help` lists the options, and
+[docs/cli.md](../docs/cli.md) describes them all.
+
+The first Ctrl-C shuts down gracefully: it leaves rooms, closes broadcasts and
+then the endpoint, so peers learn at once that the node is gone. A second
+Ctrl-C exits at once, and a watchdog exits the process if the shutdown takes
+longer than five seconds.
 
 ## Features
 
@@ -36,7 +42,7 @@ platform can reach. On Linux the build needs libpipewire and libclang.
 | `aec` | yes | echo cancellation for `call` and `room` |
 | `playback` | yes | audio playback |
 | `sound-server` | yes | PipeWire and PulseAudio devices (Linux) |
-| `pipewire` | yes | PipeWire's default camera and the desktop portal's screen picker as the defaults (Linux) |
+| `pipewire` | yes | PipeWire's camera as the default camera, and the desktop portal's picker for the default screen, `screen:portal` and `window:portal` (Linux) |
 | `rpicam` | yes | `--video rpicam`, the Raspberry Pi camera (Linux) |
 | `vaapi`, `nvidia` | yes | hardware encode and decode on Intel and AMD (VA-API) or NVIDIA (Linux) |
 | `v4l2` | yes | the V4L2 memory-to-memory H.264 codecs of ARM SoCs, such as a Pi 4 (Linux) |

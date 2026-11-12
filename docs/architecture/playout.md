@@ -49,19 +49,19 @@ keeps media.
 
 `min` sets the clock's delay above. A publisher that advertises a larger
 `jitter` in its catalog, the most it flushes a frame late, raises the delay to
-the ladder's largest jitter, but never past `max`. A change of the delay moves
+the ladder's largest jitter. The raised delay stays one 30 fps frame (33 ms)
+below `max`. A change of the delay moves
 the schedule once, by the difference. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, once with `IMMEDIATE_LATENCY` and once with the
 default, and prints the figures.
 
-The whole `Delay` goes on
-`moq_video::decode::Options` and `moq_audio::decode::Options`, so relays and
-the publisher see the range too. Upstream skips media older than `max` to
-return to the live edge. The default is 150 ms. Raise it when continuity through congestion
-matters more than staying live, and lower it to skip stalls instead of playing
-them out. `play` and `set_latency` refuse a `min` above `max`, since a skip
+The whole `Delay` goes on `moq_video::decode::Options` and
+`moq_audio::decode::Options`, so relays and the publisher see the range too.
+Upstream skips media older than `max` to return to the live edge. The default
+is 150 ms. Raise it when continuity through congestion matters more than
+staying live, and lower it to skip stalls instead of playing them out. `play` and `set_latency` refuse a `min` above `max`, since a skip
 threshold below the hold would drop the frames the hold waits for.
 
 A `min` of zero turns pacing off, and frames go to the renderer as they decode.
@@ -97,8 +97,7 @@ track keeps its range until it next reopens.
 ## Timing metrics
 
 `Player::stats()` returns a `PlaybackStats` snapshot. `latency` is the clock's
-delay. `audio.buffered` is
-the sink's fill level alone. `video.decode_time` is one transport read and
+delay, and `audio.buffered` is the sink's fill level alone. `video.decode_time` is one transport read and
 decode together, smoothed. `video.fps` counts frames over a window instead of
 deriving a rate from the gap between two frames. See [developer
 tools](devtools.md) for the overlay that draws them.

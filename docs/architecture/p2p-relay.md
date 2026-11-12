@@ -10,8 +10,8 @@ forwards opaque packets and adds its own round trip.
 The media pipeline does not see the change. It sees a different round trip and
 bandwidth, and the publisher's delivery estimate follows the bandwidth, which
 is what [adaptive rendition switching](adaptive.md) reads. The link monitor in
-`moq-transport-iroh/src/link.rs` counts every change of selected path as a new path
-generation, and the selector forgets what it learned on the old path. The
+`moq-transport-iroh/src/link.rs` counts every change of selected path as a new
+path generation, and the selector forgets what it learned on the old path. The
 monitor's `link sample` TRACE log says whether the selected path is relayed.
 
 An iroh relay and a MoQ relay are unrelated. The first forwards UDP between
@@ -43,25 +43,26 @@ the rest of running it: the certificate, the key and the web client.
 
 The relay does not need to know a publisher in advance. When a session asks for
 a name that parses as a `BroadcastTicket`, the relay subscribes to the ticket's
-broadcast through its own iroh-live-node node (`src/pull.rs`). That node uses the
+broadcast through a node of its own (`src/pull.rs`). That node uses the
 cluster origin as its route table (`NodeConfig::table`), so the publisher's
 session announces the broadcast straight into the cluster at its own path,
 with no copy. The relay pulls only a ticket whose path is the publisher's
-canonical `live/<peer>/<name>` or `rooms/<topic>/<peer>/<name>` path. It refuses
-any other ticket with `NotOwner`. The session that named the ticket is
-served the cluster with a mount at that name (`origin::Producer::mount`), so it
-reads the broadcast under the name it asked for. From then on it is ordinary
+canonical `live/<peer>/<name>` or `rooms/<topic>/<peer>/<name>` path, and
+refuses any other ticket with `NotOwner`. The session that named the ticket is
+served the cluster with a mount at that name (`origin::Producer::mount`), so
+it reads the broadcast under the name it asked for. From then on it is ordinary
 relay fan-out: a second viewer of the same ticket shares the first one's
 upstream session.
 
 Concurrent pulls for one ticket share one dial, so two browsers that arrive
-together open one upstream session. The relay claims each pulled path
-through `Node::claim_path`, on a base grant of nothing. The session's grant
-then lets the publisher announce only the pulled paths, so the cluster carries only the broadcasts the
-tickets name. The relay dials with that grant, which the session enforces from
-before its handshake, and a pull that joins a live session widens it. A pull ends once no session has named the ticket for ten
-seconds, which lets a page reload reuse it, and its path then leaves the
-grant and the cluster. When the last pull of a publisher ends, the relay
+together open one upstream session. The relay claims each pulled path through
+`Node::claim_path`, on a base grant of nothing. The session's grant then lets
+the publisher announce only the pulled paths, so the cluster carries only the
+broadcasts the tickets name. The relay dials with that grant, which the
+session enforces from before its handshake, and a pull that joins a live
+session widens it. A pull ends once no session has named the ticket for ten
+seconds, which lets a page reload reuse it. Its path then leaves the grant and
+the cluster. When the last pull of a publisher ends, the relay
 closes its session with that publisher.
 
 ## Publishing to a relay

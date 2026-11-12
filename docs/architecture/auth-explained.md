@@ -41,10 +41,10 @@ has one owner.
 
 ```
                  who may connect, and with what rights?
-  peer ───────►  Policy::decide ──► Authorization { grant, expires }
-                                         │
-                                         ▼
-  publication ─► Audience ──────►  what this link sees of that publication
+  peer ------->  Policy::decide --> Authorization { grant, expires }
+                                         |
+                                         v
+  publication -> Audience ------>  what this link sees of that publication
                  what does this publication show, and to whom?
 ```
 
@@ -125,15 +125,13 @@ publication never goes to a relay, even if the relay's id is in the set.
 
 The whole rule is one function in `moq-ext-access`, `visible_paths`. It keeps
 a publication on a link when the link's grant covers the path and the
-audience admits the link:
+audience admits the link's viewer:
 
 ```rust
-match (audience, kind) {
+match (audience, viewer) {
     (AudienceKind::Granted, _) => true,
-    (AudienceKind::Peers(peers), LinkKind::Direct) => {
-        peer.is_some_and(|peer| peers.contains(peer))
-    }
-    _ => false, // a Peers publication on a relay link
+    (AudienceKind::Peers(peers), Viewer::Direct(peer)) => peers.contains(*peer),
+    (AudienceKind::Peers(_), Viewer::Relay) => false,
 }
 ```
 
@@ -145,28 +143,28 @@ and publish under `live/<its id>/`.
 
 ```
  Bob                          Alice's node                       Alice's policy
-  │                                │                                    │
-  │── QUIC + TLS ─────────────────►│ remote_id() = bob (authenticated)  │
-  │── MoQ SETUP (path, token?) ───►│ within HANDSHAKE_TIMEOUT           │
-  │                                │── decide(PeerRequest, Connect) ───►│
-  │                                │      within decide_timeout (10 s)  │
-  │                                │◄── Ok(Authorization{grant, exp}) ──│
-  │                                │ auth.authorize(view) before SETUP ok
-  │◄── SETUP ok ───────────────────│                                    │
-  │◄── ANNOUNCE live/alice/studio ─│ only paths in the view             │
-  │── ANNOUNCE live/bob/cam ──────►│ in publish: enters the route table │
-  │── ANNOUNCE live/carol/cam ────►│ outside publish: withheld          │
-  │── SUBSCRIBE live/alice/call ──►│ not in the view                    │
-  │◄── refused: Unauthorized ──────│                                    │
-  │                                │                                    │
-  │          Alice rings Bob: the audience of live/alice/call gains bob │
-  │◄── ANNOUNCE live/alice/call ───│ re-authorized, no policy call      │
-  │                                │                                    │
-  │          the authorization expires                                  │
-  │                                │ lapse: grant nothing until decided │
-  │                                │── decide(PeerRequest, Reauthorize)►│
-  │                                │◄── Ok(new) or Err(rejection) ──────│
-  │◄── close(code) on a rejection ─│                                    │
+  |                                |                                    |
+  |-- QUIC + TLS ----------------->| remote_id() = bob (authenticated)  |
+  |-- MoQ SETUP (path, token?) --->| within HANDSHAKE_TIMEOUT           |
+  |                                |-- decide(PeerRequest, Connect) --->|
+  |                                |      within decide_timeout (10 s)  |
+  |                                |<-- Ok(Authorization{grant, exp}) --|
+  |                                | auth.authorize(view) before SETUP ok
+  |<-- SETUP ok -------------------|                                    |
+  |<-- ANNOUNCE live/alice/studio -| only paths in the view             |
+  |-- ANNOUNCE live/bob/cam ------>| in publish: enters the route table |
+  |-- ANNOUNCE live/carol/cam ---->| outside publish: withheld          |
+  |-- SUBSCRIBE live/alice/call -->| not in the view                    |
+  |<-- refused: Unauthorized ------|                                    |
+  |                                |                                    |
+  |          Alice rings Bob: the audience of live/alice/call gains bob |
+  |<-- ANNOUNCE live/alice/call ---| re-authorized, no policy call      |
+  |                                |                                    |
+  |          the authorization expires                                  |
+  |                                | lapse: grant nothing until decided |
+  |                                |-- decide(PeerRequest, Reauthorize)>|
+  |                                |<-- Ok(new) or Err(rejection) ------|
+  |<-- close(code) on a rejection -|                                    |
 ```
 
 The rest of this section walks through those steps.
@@ -180,8 +178,8 @@ token, if the peer sent one. Then it asks the policy, with
 
 On dial, the node asks its own policy *before* it opens the connection. The
 request then holds the path this node is about to send, its `direction()` is
-`Direction::Dialed`, and there is no token. A node can thus refuse to dial a peer, and the dial
-fails with `Error::Rejected`. The policy also decides what the dialed peer
+`Direction::Dialed`, and there is no token. A node can thus refuse to dial a
+peer, and the dial fails with `Error::Rejected`. The policy also decides what the dialed peer
 may read and publish on that session. Both directions get the same
 treatment.
 
@@ -232,10 +230,10 @@ than that cannot be granted them one by one.
 Three inputs make up what a session may do at any moment:
 
 ```
-publish   = policy.publish ∪ claimed paths of the peer
+publish   = policy.publish + the peer's claimed paths
 subscribe = { path of each own publication
               | policy.subscribe covers path
-              ∧ the audience admits this link }
+              and the audience admits this link }
 ```
 
 Claims add only to the publish half. A lapsed or missing authorization makes
@@ -459,8 +457,8 @@ The publisher's set ends at the publisher's node, so offering the
 publication to a relay would hand it to strangers.
 
 A node's relay links do not go through the policy at all. Their grant is
-`Grant::everything()`, and `LinkKind::Relay` is the only thing that keeps a
-publication off them. A browser, which can only reach a node through a
+`Grant::everything()`, and the `Viewer::Relay` arm of `visible_paths` is the
+only thing that keeps a publication off them. A browser, which can only reach a node through a
 relay, therefore never sees a `Peers` publication.
 
 ### Could a policy do this instead?
@@ -538,8 +536,8 @@ type, but it is still an audience.
 
 **Re-authorization cost.** An audience change recomputes views synchronously
 under the state lock, and it never calls the policy. The peer sees the change
-as soon as moq sends the new grant. A `reauthorize` runs an async decide for every
-session with the peer, bounded by `decide_timeout` and 16 at once. That
+as soon as moq sends the new grant. A `reauthorize` runs an async decide for
+every session with the peer, bounded by `decide_timeout` and 16 at once. That
 cost reaches further than it looks:
 
 - A hang-up takes effect only after the decision finishes, not at once.
@@ -604,10 +602,10 @@ publications only, never a route learned from another link. That is what
 lets the publish half act as a naming rule, and what keeps a `Peers`
 publication at the first hop. A forwarding node would need a separate rule
 for which paths it may relay, and something to carry an audience beyond the
-first hop. `plans/auth-admission.md` (section 7) sketches the options.
-One is to forward only `Granted` publications, on links that declare themselves
-forwarders. Others are rcan capabilities to serve a path to a set, and end-to-end
-encryption.
+first hop. `plans/auth-admission.md` (section 7) sketches the options. One is
+to forward only `Granted` publications, on links that declare themselves
+forwarders. Others are rcan capabilities to serve a path to a set, and
+end-to-end encryption.
 
 **Revocation of rcan chains.** A chain stays valid until its earliest link
 expires. Nothing revokes a link early. A policy can keep its own deny list

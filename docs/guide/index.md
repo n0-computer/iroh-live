@@ -19,15 +19,15 @@ sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
 
 macOS needs `libtool` and `automake` from Homebrew.
 
-`moq-ext-publisher` and `moq-ext-player` have no default features and need none of these. They
-encode and decode, but they cannot open a device or draw until you turn on `capture`, `playback`
-or `render`.
+`moq-ext-publisher` and `moq-ext-player` have no default features and need
+none of these. They encode and decode, but they cannot open a device or draw
+until you turn on `capture`, `playback` or `render`.
 
 ## Building
 
 ```sh
-cargo build --workspace                  # default features
-cargo build --workspace --all-features   # every feature, VA-API and NVIDIA included
+cargo build --workspace                  # default features, which give irl every backend
+cargo build --workspace --all-features   # every feature of every crate
 ```
 
 `iroh-live` itself has no default features. Ask for `full` to get the media
@@ -88,6 +88,7 @@ router.shutdown().await?;
 The router is the application's, so it can carry other protocols next to the
 ones `mount` adds. The broadcast is at `live/<endpoint id>/hello`, and the
 ticket names that path.
+
 A subscriber resolves the ticket, starts a player, and reads decoded frames:
 
 ```rust
@@ -122,9 +123,9 @@ opens on its own thread once `set_audio` runs. A failure then shows in
 `LocalBroadcast::status()`, and the audio stays off until the next
 `set_audio`.
 
-`Node::subscribe_ticket` returns once a route to the broadcast is found. The catalog
-arrives later: `RemoteBroadcast::catalog()` is a watcher that turns `Some`
-when it does.
+`Node::subscribe_ticket` returns once a route to the broadcast is found. The
+catalog arrives later: `RemoteBroadcast::catalog()` is a watcher that turns
+`Some` when it does.
 
 The paths, the access rules and the endpoint are defaults, and each can be
 replaced:

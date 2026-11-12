@@ -9,6 +9,9 @@ one route table fed by every link it has: direct sessions with peers, and moq
 relays it is attached to. A path resolves to its cheapest route. When that
 route dies, moq moves to another route of the same instance without ending the
 subscription, and `Subscription::closed` asks the table again for any other.
+`Publication::unpublish_on_drop` ties a publication to a task's lifetime, and
+`Node::publish_value` publishes a latest-value JSON track that
+`Subscription::value_track` reads.
 The application picks the paths, and nothing here knows about media: a
 broadcast holds whatever tracks you write.
 
@@ -44,8 +47,8 @@ A publication's `Audience` says who sees it: `Granted`, or a watched set of
 in moq-auth's pattern form. `Audience` and `Grant` come from
 [`moq-ext-access`](../moq-ext-access). The node's policy
 (`NodeConfig::with_policy`) gives each peer its grant, and without one a peer
-may read anything and publish nothing. `iroh-live`, for example, lets a peer publish under `live/<its id>/`
-only, so no peer can stand in for another.
+may read anything and publish nothing. `iroh-live`, for example, lets a peer
+publish under `live/<its id>/` only, so no peer can stand in for another.
 
 moq enforces it on each live session: the node authorizes every session, dialed
 or accepted, for exactly the publications whose audience admits its peer, and
@@ -56,8 +59,8 @@ route the node learned from another peer or a relay.
 
 The policy decides each session when it opens, in either direction, and
 again when its authorization expires and on `Node::reauthorize`. A new
-decision replaces the session's authorization, and a rejection closes it. `policy::Open`, `Closed`, `from_fn`
-and `filter` compose policies:
+decision replaces the session's authorization, and a rejection closes it.
+`policy::Open`, `Closed`, `from_fn` and `filter` compose policies:
 
 ```rust
 use iroh_live_node::{Grant, NodeConfig, policy};
@@ -84,8 +87,7 @@ builds the `iroh://` URL from an endpoint id. `RelayConfig::token` is a
 `TokenSource` the link asks for a token to present. Publications with the
 `Granted` audience go to the relay, and the relay's routes join the route
 table at a higher cost than a direct route. A node that only publishes through
-the relay sets
-`RelayConfig::consume` to false.
+the relay sets `RelayConfig::consume` to false.
 
 A relay is trusted with every path it forwards. On a relay where anyone may
 publish anywhere, a peer can publish `live/<victim>/cam`, and a subscriber whose
@@ -95,12 +97,14 @@ tokens do.
 
 ## Links
 
-Every link runs a connection monitor. `Subscription::serving_link()` returns
-the latest `NetworkSample` of whichever link serves the subscription: round trip,
-minimum round trip, loss, throughput and the peer's delivery estimate, with
-`None` for what is not measured yet. `Session::moq()` gives the moq-net
-session itself, with its raw statistics. `NetworkSample` (from `moq-ext-adaptive`), `MoqPreset`, `alpns()` and `ALPN` come from
-`moq-transport-iroh` and are re-exported here.
+Every link runs a connection monitor. `Subscription::serving_link()` returns a
+`ServingLink` for whichever link serves the subscription, with the link's id,
+kind and latest `NetworkSample`: round trip, minimum round trip, loss,
+throughput and the peer's delivery estimate, with `None` for what is not
+measured yet. `Session::moq()` gives the moq-net session itself, with its raw
+statistics. `Node::accepted()` yields each accepted session once.
+`NetworkSample` (from `moq-ext-adaptive`), `MoqPreset`, `alpns()` and `ALPN`
+come from `moq-transport-iroh` and are re-exported here.
 
 ## Examples
 

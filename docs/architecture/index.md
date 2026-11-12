@@ -21,18 +21,17 @@ This repository holds the layer that joins them.
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-No `moq-ext-*` crate depends on iroh, so each could move upstream into moq.
-That includes the UI crate `moq-ext-egui`. `moq-ext-player` and `moq-ext-publisher` do not
-depend on each other. A transport publishes a `LocalBroadcast` by reading it
-through `moq_net::Consume`, and builds a `RemoteBroadcast` from a route table
-with `from_resolved`.
-`iroh-live-rooms` has no media dependency. `iroh-live` depends on both and is
-the only crate that joins them.
+No `moq-ext-*` crate depends on iroh, so each could move upstream into moq,
+the UI crate `moq-ext-egui` included. `moq-ext-player` and `moq-ext-publisher`
+do not depend on each other. A transport publishes a `LocalBroadcast` by
+reading it through `moq_net::Consume`, and builds a `RemoteBroadcast` from a
+route table with `from_resolved`. `iroh-live-rooms` has no media dependency.
+`iroh-live` depends on both and is the only crate that joins them.
 
 ## What the moq-ext crates add
 
 Upstream covers one publisher with one rendition, and one subscriber that takes
-what it is given. This crate adds three things on top.
+what it is given. The `moq-ext-*` crates add three things on top.
 
 [Publishing](publish.md) encodes one source into a simulcast ladder.
 [Subscribing](subscribe.md) starts a player that picks among those renditions
@@ -58,19 +57,22 @@ let router = node.mount(Router::builder(endpoint)).spawn();
 The node takes any path. `LiveLayout` is the one convention iroh-live ships:
 broadcasts at `<root>/<peer>/<name>`, where the root is `live` by default, and
 each peer may publish only under its own id. `LiveLayout::config()` builds
-the `NodeConfig` with that layout's policy. The node owns neither the endpoint nor a router.
-`Node::mount` adds the transport to the application's `RouterBuilder` under
-every ALPN this build speaks, and the application adds its own protocols to the
-same router. `Rooms::mount` adds the rooms' gossip, and
+the `NodeConfig` with that layout's policy.
+
+The node owns neither the endpoint nor a router. `Node::mount` adds the
+transport to the application's `RouterBuilder` under every ALPN this build
+speaks, and the application adds its own protocols to the same router.
+`Rooms::mount` adds the rooms' gossip, and
 `iroh_live::layout::config((LiveLayout::default(), RoomsLayout))` builds a
-config that also lets members publish their room broadcasts. `Router::shutdown` shuts down the node and every mounted service,
-and closes the endpoint. A node that is neither mounted nor attached to a relay
-logs a warning when it publishes, since no peer can dial in.
+config that also lets members publish their room broadcasts.
+`Router::shutdown` shuts down the node and every mounted service, and closes
+the endpoint. A node that is neither mounted nor attached to a relay logs a
+warning when it publishes, since no peer can dial in.
 
 `layout.publish::<LocalBroadcast>(&node, name)` creates a broadcast at
 `live/<our id>/<name>` in the route table, published to every granted session,
-and returns it as an `moq_ext_publisher::LocalBroadcast` (or any type built from a
-`broadcast::Producer`). Peers read it without a copy. `layout.ticket(node.id(),
+and returns it as a `moq_ext_publisher::LocalBroadcast`, or as any type built
+from a `broadcast::Producer`. Peers read it without a copy. `layout.ticket(node.id(),
 name)` returns the `BroadcastTicket` to share. `Node::subscribe_ticket(&ticket)`
 resolves the ticket's path over whichever link serves it and returns the
 `Subscription`. On a node with the default config, it claims exactly the
@@ -93,7 +95,7 @@ control](../guide/access.md) describes the policies.
 broadcast at `<root>/<id>/call`, visible to nobody, and `ring` rings a peer by
 adding it to the `Audience::Peers` set. Each side subscribes to the other's. A
 node learns it is called when a peer's `call` path appears in its route table,
-which `Calls::events` reports as `CallEvent::Ringing`. A hang-up takes the peer
+and `Calls::ringing` then lists that peer. A hang-up takes the peer
 out of the set, which retracts the path and ends the other side's read. The
 session stays open, and the broadcast keeps running for the next call. Each
 node's policy must let the other publish its `call` path, which the layout's

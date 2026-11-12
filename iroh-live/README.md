@@ -4,8 +4,8 @@ Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 
 A `Node` publishes broadcasts at paths and subscribes to paths, over a direct
 session with a peer or an attached relay. The transport is re-exported as
-`iroh_live::node`, and the moq-net it builds on as `iroh_live::moq_net`. The media
-crates are gathered in `iroh_live::media`.
+`iroh_live::node`, and the moq-net it builds on as `iroh_live::moq_net`. The
+media crates are gathered in `iroh_live::media`.
 
 The crate builds against the unreleased `main` branch of
 [moq](https://github.com/moq-dev/moq), pinned by git rev, so it is not on
@@ -81,15 +81,16 @@ let mut frames = player.video_frames();
   every service mounted on the router.
 - `LiveLayout` is the `<root>/<peer>/<name>` convention. `publish::<T>(&node,
   name)` creates a broadcast in the node's route table, published to every
-  granted session, attached relays included, and returns it as a `LocalBroadcast` or a raw
-  `broadcast::Producer`. `publish_with(&node, name, audience, fill)` takes
-  another audience, such as `Audience::peers([peer])`, fills the broadcast
-  before it is announced, and returns the `Publication` with the result.
-  `ticket(peer, name)` returns the ticket for a broadcast.
+  granted session, attached relays included, and returns it as a
+  `LocalBroadcast` or a raw `broadcast::Producer`. `path(peer, name)` builds
+  the path, and `ticket(peer, name)` the ticket for a broadcast.
 - `Node::publish(path, audience)` and `Node::subscribe(path, reach)` are the
   path-level calls: any path, any `Audience`, any `Reach`. They apply no
   layout. `publish` returns the `Publication`, whose `broadcast()` is the
-  producer to fill and whose `ticket()` names it.
+  producer to fill and whose `ticket()` names it. `Node::publish_with(path,
+  audience, fill)` fills the broadcast before it is announced, and returns the
+  `Publication` with the result. Use it with `LiveLayout::path` to publish
+  under the layout to another audience, such as `Audience::peers([peer])`.
 - `BroadcastTicket` holds a publisher's endpoint id and the full path of a
   broadcast. `BroadcastTicket::at(peer, path)` builds one.
 - `Node::subscribe_ticket(&ticket)` returns the `Subscription` once a route is
@@ -133,8 +134,9 @@ model.
 No feature is on by default. `full` turns on `media`, `capture`, `render`,
 `sound-server` and `record`. `media` is the media stack. Without it the crate
 is the layout, calls and endpoint setup only, which is how the relay uses it.
-`playback`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia` and `v4l2` add
-devices and codecs, imply `media`, and pass through to the media crates.
+`file`, `playback`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia` and `v4l2`
+add file input, devices and codecs, imply `media`, and pass through to the
+media crates.
 `sound-server` reaches audio devices through PipeWire or PulseAudio, through
 moq-audio's `pipewire` and `pulseaudio` features.
 
@@ -143,8 +145,8 @@ moq-audio's `pipewire` and `pulseaudio` features.
 `rooms` re-exports [`iroh-live-rooms`](../iroh-live-rooms) as
 `iroh_live::rooms`. Run rooms on a node by adding
 `iroh_live::rooms::RoomsLayout` to the layout's config, with
-`iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout))`, and mount the
-gossip with `Rooms::mount`:
+`iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout))`, and
+mount the gossip with `Rooms::mount`:
 
 ```rust
 let rooms = Rooms::new(&node);

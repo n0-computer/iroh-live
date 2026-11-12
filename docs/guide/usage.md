@@ -30,8 +30,8 @@ needs `tokio` with the `full` feature.
 ## Publish a test pattern
 
 A node binds an endpoint, mounts the transport on a router, and publishes a
-broadcast under a name. `LiveLayout::publish` creates the broadcast in the node's route
-table and hands it back to fill, so peers read it without a copy. The ticket
+broadcast under a name. `LiveLayout::publish` creates the broadcast in the
+node's route table and hands it back to fill, so peers read it without a copy. The ticket
 names that broadcast for viewers. The generated sources need no camera or
 microphone.
 
@@ -88,10 +88,11 @@ while someone watches it. For a camera and microphone, see
 
 ## Watch a ticket
 
-`subscribe_ticket` resolves the ticket's path, dialing the publisher if needed.
-The default `NodeConfig` is enough: the node claims that one path for the
-publisher while the subscription lives. `remote_broadcast` reads the media, and `play` starts a player that picks a
-rendition as the link allows. A player with no `audio` target does not
+`subscribe_ticket` resolves the ticket's path and dials the publisher if
+needed. The default `NodeConfig` is enough: the node claims that one path for
+the publisher while the subscription lives. `remote_broadcast` reads the
+media, and `play` starts a player that picks a rendition as the link allows.
+`PlayerConfig::audio` defaults to `AudioMode::Off`, so this player does not
 subscribe to audio.
 
 ```rust
@@ -136,8 +137,8 @@ enough for a viewer. It then closes the endpoint itself.
 Each side publishes its own broadcast to the other peer only, and subscribes to
 the other's. `Calls::new` publishes at `<root>/<id>/call` to nobody, and `ring`
 lets one peer and no one else see it. `call` rings the peer and waits until the
-peer answers, which can take forever, so bound it with a timeout. `answer`
-takes a call that rings. Both programs run the same code with the other's
+peer answers, with no time limit, so bound it with a timeout. `answer` takes a
+call that rings. Both programs run the same code with the other's
 endpoint id, which each prints on start. Two peers that ring each other at once
 resolve into one `Call` on each side.
 
@@ -205,8 +206,8 @@ convention, so they call each other.
 
 A room is a gossip topic. The node's config takes `rooms::RoomsLayout`, so
 members can publish under their room paths, and `Rooms::mount` adds the gossip
-protocol to the router next to the transport. `join` returns a `Room` with a watched
-membership. This program creates a room, prints its ticket, publishes a
+protocol to the router next to the transport. `join` returns a `Room` with a
+watched membership. This program creates a room, prints its ticket, publishes a
 test pattern, and plays the first broadcast another member announces. Pass a
 ticket to join instead of creating.
 
@@ -280,13 +281,13 @@ application also resubscribes when a broadcast ends: see [Rooms](rooms.md).
 ## Publish at your own path
 
 `LiveLayout::publish` and `Node::subscribe_ticket` use the `live/<id>/<name>`
-layout and a ticket, and `LiveLayout::publish_with` is `publish` for an
-audience other than `Granted`. `Node::publish` and `Node::subscribe` take any
-path, and `Audience::peers` limits who sees the broadcast: moq enforces it on
-each live session, so a peer taken out of the set loses the path at once. To
-change the set later, publish with `Audience::Peers(set)` and keep a clone of
-the `n0_watcher::Watchable` set. Nothing here is a ticket: the subscriber needs
-the publisher's id and the path.
+layout and a ticket, and `LiveLayout::publish` always publishes to the
+`Granted` audience. `Node::publish` takes any path and any audience, and
+`Node::subscribe` any path. `Audience::peers` limits who sees the broadcast, and moq enforces it on each
+live session, so a peer taken out of the set loses the path at once. To change
+the set later, publish with `Audience::Peers(set)` and keep a clone of the
+`n0_watcher::Watchable` set. Nothing here is a ticket: the subscriber needs the
+publisher's id and the path.
 
 The subscriber's node also has to let the publisher announce that path. The
 layout's grant allows only `live/<id>/`, so this program adds a second layout,
@@ -500,12 +501,11 @@ anyone can ask for it.
 
 ## Without a layout
 
-`LiveLayout` is a convenience over `Node`. A program with its own path layout or
-its own access rules uses `Node` itself and gets the same sessions, route table
-and relays, with no media dependency. `Node::mount` adds it to a router as in
-the programs above. The default
-`NodeConfig` lets peers read anything and publish nothing, so the reader below
-grants the publisher `demo/**`. The publishing side is
+`LiveLayout` is a convenience over `Node`. A program with its own path layout
+or its own access rules uses `Node` itself and gets the same sessions, route
+table and relays, with no media dependency. `Node::mount` adds it to a router
+as in the programs above. The default `NodeConfig` lets peers read anything
+and publish nothing, so the reader below grants the publisher `demo/**`. The publishing side is
 [`iroh-live/examples/moq_only.rs`](../../iroh-live/examples/moq_only.rs), which
 serves `demo/hello`.
 

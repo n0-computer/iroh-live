@@ -39,11 +39,11 @@ Applications read it as `moq_ext_player::Catalog`.
 
 ## Where the boundary is
 
-`moq-ext-player` and `moq-ext-publisher` use only `moq_net` types. A `LocalBroadcast` is published
-through `moq_net::Consume`, and a `RemoteBroadcast` is built from what a
-transport subscribed to. The media crate does not know whether that came over
-iroh, a relay, or a local loopback.
+`moq-ext-player` and `moq-ext-publisher` use only `moq_net` types. A
+`LocalBroadcast` is published through `moq_net::Consume`, and a
+`RemoteBroadcast` is built from what a transport subscribed to. The media
+crates do not know whether that came over iroh, a relay, or a local loopback.
 
-`iroh-live-node` is the iroh side. [The transport page](../architecture/transport.md)
-covers the route table, publications and their audiences, sessions, and relay
+`iroh-live-node` is the iroh side.
+[The transport page](../architecture/transport.md) covers the route table, publications and their audiences, sessions, and relay
 links.

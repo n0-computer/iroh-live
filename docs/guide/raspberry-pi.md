@@ -16,19 +16,16 @@ writes Annex-B H.264 to stdout. A Pi Zero can publish those bytes as they are.
 `rpicam_h264(config)` starts `rpicam-vid` and returns its output as a byte
 stream. `LocalBroadcast::set_encoded_video` publishes it as the one rendition
 `video`, with the catalog entry taken from the stream's SPS. The process is
-killed when the stream is dropped. The Pi does no software encoding, and no raw pictures
-cross the pipe.
+killed when the stream is dropped. The Pi does no software encoding, and no
+raw pictures cross the pipe.
 
 `VideoSource::rpicam(config)` reads raw pictures from `rpicam-vid` instead, for
 our own encoders.
 
 Both need the `rpicam` feature, which is Linux only, and `rpicam-vid` on
-`PATH`. Raspberry Pi OS ships it.
-
-From the CLI:
+`PATH`. Raspberry Pi OS ships it. `irl` turns the feature on by default:
 
 ```sh
-cargo build -p iroh-live-cli --features rpicam
 irl publish --video rpicam --width 640 --height 360 --fps 30
 ```
 
@@ -42,10 +39,10 @@ more than one rung in `--renditions`, since the stream arrives encoded.
 ## The V4L2 hardware codecs
 
 The Pi also has a VideoCore memory-to-memory codec, which the kernel exposes as
-a device node. The `v4l2` feature adds an encoder and a decoder for it:
+a device node. The `v4l2` feature, on by default in `irl`, adds an encoder and
+a decoder for it:
 
 ```sh
-cargo build -p iroh-live-cli --features v4l2
 irl publish --video rpicam:raw --encoder v4l2
 ```
 
@@ -59,8 +56,9 @@ is what `--decoder auto` picks on that board.
 The example uses `rpicam:raw` because `--video cam` cannot feed the encoder on
 a Pi: `/dev/video0` serves raw Bayer, so it opens and never delivers a frame.
 
-If probing picks the wrong node, `MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER`
-name one.
+Each side searches the V4L2 nodes for one that converts the right formats. If
+the search picks the wrong node, the `v4l2` field of moq-video's encoder and
+decoder configs names one. `irl` has no flag for it.
 
 ## Pi setup
 

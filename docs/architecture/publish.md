@@ -5,12 +5,12 @@ owns the catalog, a media clock, one video slot and one audio slot.
 `set_video`, `set_encoded_video` and `set_audio` fill a slot and replace what it
 held. `clear_video` and `clear_audio` empty it. A transport creates the
 broadcast it publishes, and `LocalBroadcast::new_in(producer)` (or
-`TryFrom<broadcast::Producer>`) fills that one, so readers get it without a copy.
-In iroh-live, `let broadcast: LocalBroadcast = layout.publish(&node, name)?` publishes
-one at `live/<this node's id>/<name>`. `LocalBroadcast::new()` creates one of
-its own, published nowhere, for a local preview or a test. Closing a
-`LocalBroadcast`, or dropping its last clone, closes the broadcast, which
-withdraws the publication.
+`TryFrom<broadcast::Producer>`) fills that one, so readers get it without a
+copy. In iroh-live, `let broadcast: LocalBroadcast = layout.publish(&node,
+name)?` publishes one at `live/<this node's id>/<name>`.
+`LocalBroadcast::new()` creates one of its own, published nowhere, for a local
+preview or a test. Closing a `LocalBroadcast`, or dropping its last clone,
+closes the broadcast, which withdraws the publication.
 
 Encoding is upstream. `moq_video::encode` and `moq_audio::encode` own the
 codec, its thread and the catalog entry it writes. This crate adds a simulcast
@@ -34,8 +34,8 @@ previews can read it.
   window within 30 seconds.
 - `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock,
   and a marker that flashes in step with `AudioSource::test_pattern`'s beep.
-- `push(format)` returns a `FrameSender` for frames the application makes. The
-  Android demo hands over camera buffers this way.
+- `push(format)` returns a `FrameSender` and the source it feeds, for frames
+  the application makes. The Android demo hands over camera buffers this way.
 - `spawn(name, format, run)` runs `run` on a dedicated thread with a
   current-thread runtime entered, and hands it the sender. It is for
   thread-bound platform objects.
@@ -46,32 +46,35 @@ previews can read it.
 application camera can idle while nobody watches. `push` returns `SourceClosed`
 once the source is gone, and the producing loop should stop then.
 
-`switchable(format)` returns a source and a `VideoSwitch` that swaps what
-feeds it, for a camera menu. The broadcast encodes the switchable source once,
-and a forwarding task per input copies the current input's frames into its
-slot, keeping each frame's `sent_at`, and passes the broadcast's demand back
-to the input. `replace(source)` swaps at once, `open(future)` opens the next
-source in the background and drops one still opening, and `clear()` stops
-feeding. The previous source is dropped first, so the same camera opens again.
+`switchable(format)` returns a `VideoSwitch` and the source it feeds, for a
+camera menu. The broadcast encodes the switchable source once. A forwarding
+task per input copies the current input's frames into the source's slot,
+keeps each frame's `sent_at`, and passes the broadcast's demand back to the
+input. `replace(source)` swaps at once, `open(future)` opens the next source
+in the background and drops one still opening, and `clear()` stops feeding.
+The previous source is dropped first, so the same camera opens again.
 `replace` and `open` also drop the previous source's last frame from the slot,
-so no reader gets a frame of the old source after the switch.
-`status()` watches a `SlotState`: `Starting` while an open runs, then
+so no reader gets a frame of the old source after the switch. `status()`
+watches a `SlotState`: `Starting` while an open runs, then
 `Running`, `Failed` or `Ended`. Unlike a second `set_video`, a switch neither
-probes encoders again nor needs the ladder at hand; the broadcast sees one
+probes encoders again nor needs the ladder at hand. The broadcast sees one
 source whose timeline breaks, and starts a group there.
 
 `set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
 encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
 
-`AudioSource` has `microphone(config)` for moq-audio's `capture::Config`,
-`file(path, at_end)` for a WAV or MP3 decoded in real time,
-`tone(hz, layout)`, `test_pattern(layout)`, and `push(format)` for PCM the
-application produces. For echo cancellation, the config's `aec` holds the
-canceller of the speaker's `playback::Engine`, from `Engine::canceller`
-(needs the `aec` feature). The microphone attaches to it when its publication
-opens the device, after a publication it replaces has let go. A PCM source
-fans out to every broadcast through a buffer of 100 frames. A broadcast that
+`AudioSource` has these constructors:
+
+- `microphone(config)` opens a microphone from moq-audio's `capture::Config`.
+- `file(path, at_end)` decodes a WAV or MP3 in real time. The `FileEnd` says
+  whether it stops or restarts at the end of the file.
+- `tone(hz, layout)` and `test_pattern(layout)` generate sound.
+- `push(format)` returns a `FrameSender` for PCM the application produces.
+For echo cancellation, the config's `aec` holds the canceller of the speaker's
+`playback::Engine`, from `Engine::canceller` (needs the `aec` feature). The
+microphone attaches to it when its publication opens the device, after a
+publication it replaces has let go. A PCM source fans out to every broadcast through a buffer of 100 frames. A broadcast that
 falls further behind loses the oldest frames and counts them in its stats.
 
 ## Simulcast
@@ -101,9 +104,9 @@ jump.
 The rebase means a subscriber only ever sees broadcast timestamps. A
 round-trip measurement, such as the latency from capture to a result a
 subscriber reports back, echoes one of those timestamps to the publisher, which
-then has to name its own frame. `VideoEncoding::record_timestamps` turns on a
-record for that, off by default. `video_source_timestamp` returns the source
-timestamp of an echoed broadcast timestamp, and `video_captured_at` the instant
+then has to name its own frame. `VideoEncoding::with_recorded_timestamps()`
+turns on a record for that, off by default. `video_source_timestamp` returns
+the source timestamp of an echoed broadcast timestamp, and `video_captured_at` the instant
 the frame entered the source, which `VideoFrames::sent_at` reports: when the
 application pushed it, or when a capture thread handed it over.
 

@@ -280,6 +280,8 @@ small grant and ask the application for more. Such a policy waits for the
 queue with a timeout of its own, and falls back to the small grant:
 
 ```rust
+use std::time::Duration;
+
 use iroh_live::node::{
     Grant,
     policy::{Decision, PeerRequest, Policy, Queue},

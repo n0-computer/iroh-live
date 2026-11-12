@@ -21,7 +21,10 @@ broadcast.set_video(
     camera,
     VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
 )?;
-broadcast.set_audio(AudioSource::tone(440.0, moq_audio::Layout::Mono)?, audio_encoding::voice())?;
+broadcast.set_audio(
+    AudioSource::tone(440.0, moq_audio::Layout::Mono)?,
+    audio_encoding::voice(),
+)?;
 ```
 
 The source is opened once and every rendition gets its own encoder. A rendition
@@ -41,6 +44,6 @@ Dropping the last clone ends the broadcast at once, without that wait.
 | `capture` | no | Camera, screen and microphone devices |
 | `sound-server` | no | Audio devices through PipeWire or PulseAudio instead of ALSA |
 | `aec` | no | Echo cancellation. Implies `capture` |
-| `pipewire` | no | Linux screen capture through xdg-desktop-portal |
+| `pipewire` | no | Linux screen capture through xdg-desktop-portal, and PipeWire's camera as the default |
 | `vaapi`, `nvidia`, `v4l2` | no | Hardware H.264 encoding |
 | `rpicam` | no | The `rpicam-vid` sources. Linux only |

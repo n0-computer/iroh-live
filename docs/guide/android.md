@@ -10,17 +10,16 @@ The MediaCodec encoder and decoder are in `moq-video`. Automatic backend
 selection finds them, and `moq_video::encode::Kind::Named("mediacodec")` asks
 for one by name.
 
-The demo crate (`demos/android/rust`) has the parts that are specific to the app side:
+The demo crate, `demos/android/rust`, is the JNI bridge. It runs one tokio
+runtime, passes one `SessionHandle` per session to Kotlin as a `jlong`, and
+sends `tracing` output to logcat. `IrohBridge.kt` declares the matching
+`external fun`s.
 
-- `renderer::AndroidRenderer` owns the EGL display, context, and surface.
-  `render_hardware_buffer` draws an `AHardwareBuffer` through
-  `GL_TEXTURE_EXTERNAL_OES`, which is the zero-copy path out of MediaCodec.
-  `render_nv12` draws an NV12 buffer. Both apply the sensor rotation in the
-  shader.
-
-`demos/android/rust` is the JNI bridge. It runs one tokio runtime, passes one
-`SessionHandle` per session to Kotlin as a `jlong`, and sends `tracing` output
-to logcat. `IrohBridge.kt` declares the matching `external fun`s.
+The crate also draws. `renderer::AndroidRenderer` owns the EGL display,
+context and surface. `render_hardware_buffer` draws an `AHardwareBuffer`
+through `GL_TEXTURE_EXTERNAL_OES`, which is the zero-copy path out of
+MediaCodec, and `render_nv12` draws an NV12 buffer. Both apply the sensor
+rotation in the shader.
 
 ## Modes
 
@@ -37,8 +36,8 @@ call each other. Each side publishes its broadcast with `Calls::new`, as
 `iroh_live::calls::CALL`, rings the other peer only with `Calls::ring`, and
 subscribes to the other's with `Calls::answer`. `dial` offers this side to the
 ticket's peer and returns once the peer answers. `answer` opens this side and
-returns, so the QR code can go on screen. A task then waits for a `CallEvent::Ringing` and
-answers it. The screen polls
+returns at once, so the QR code can go on screen. A task then waits for the
+first peer in `Calls::ringing` and answers it, and the screen polls
 `callConnected` to learn when a caller arrived.
 
 ## Prerequisites
@@ -78,9 +77,9 @@ speaker sends its own output back to the peer.
 
 Video comes from Kotlin, but the Rust side opens the microphone with
 `AudioSource::microphone`. It opens one `playback::Engine` for the speaker and
-passes it to every player as `AudioMode::Play`. In a call it also gives the microphone that
-output's echo canceller (`capture::Config::aec`), so the canceller knows what
-to remove.
+passes it to every player as `AudioMode::Play`. In a call, the microphone also
+gets that engine's echo canceller (`capture::Config::aec`), so the canceller
+knows what to remove.
 
 ## Debugging
 

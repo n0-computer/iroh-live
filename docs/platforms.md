@@ -21,15 +21,16 @@ encode, decode, render, and zero-copy, and
 
 CI checks and tests Linux and macOS, and cross-builds the CLI for aarch64
 Linux. The release workflow builds `irl` for Linux x86-64 and aarch64, macOS
-aarch64, and Windows x86-64, plus an arm64 Android APK. The Linux builds add
-`nvidia`, `vaapi`, `v4l2`, `rpicam`, `pipewire`, and `aec` to the default
-features. macOS and Windows add `aec`.
+aarch64, and Windows x86-64, plus an arm64 Android APK. `irl` turns every
+feature on by default; the Linux-only ones (`nvidia`, `vaapi`, `v4l2`,
+`rpicam`, `pipewire`) compile to nothing on other platforms.
 
 ## Linux
 
-Cameras are captured through V4L2. Screen capture goes through PipeWire and
-xdg-desktop-portal, behind the `pipewire` feature, which links
-`libpipewire-0.3`.
+Cameras open through PipeWire when it lists one, so several applications can
+share a webcam, and through V4L2 otherwise, which holds the device
+exclusively. Screen and window capture go through xdg-desktop-portal's
+picker. Both need the `pipewire` feature, which links `libpipewire-0.3`.
 
 The `vaapi` feature adds VA-API H.264 encode and decode for Intel and AMD.
 Upstream marks the encoder as not yet validated on hardware. The decoder hands
@@ -66,8 +67,8 @@ on `PATH`. `--video rpicam:raw` reads raw pictures from `rpicam-vid` instead,
 for our own encoders.
 
 The `v4l2` feature adds the VideoCore memory-to-memory encoder and decoder.
-Both run on a Pi 4. `MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` name a device
-node when probing picks the wrong one.
+Both run on a Pi 4. When probing picks the wrong device node, the `v4l2`
+field of moq-video's encoder and decoder configs names one explicitly.
 
 The Pi Zero has no Vulkan, so the Pi demo draws with its own GLES2 renderer.
 See [Raspberry Pi](guide/raspberry-pi.md).

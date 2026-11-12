@@ -15,8 +15,9 @@ and `moq-ext-publisher/src/stats.rs`.
 rendition, and an `AudioEncodeStats`. `EncodeStats` has the encoded size,
 frames per second, bitrate and a smoothed encode time. Its frame and byte counts
 come from the catalog's counters (`hang::stats::Rendition`) of the rendition's
-track. The encoder backend is in `PublishStatus`. `AudioEncodeStats` has the codec, the frames written, and the
-frames dropped because the broadcast fell behind its source.
+track. The encoder backend is in `PublishStatus`. `AudioEncodeStats` has the
+codec, the frames written, and the frames dropped because the broadcast fell
+behind its source.
 
 `PlaybackStats` has a `VideoPlaybackStats` while video plays: the rendition,
 the picture size, frames per second, a smoothed

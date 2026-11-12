@@ -13,16 +13,18 @@ the decoder swap, and the [playout clock](playout.md). The code is in
 
 Every constructor starts reading the catalog and returns at once. `catalog()`
 watches an `Option<Arc<Catalog>>` that reads `None` until the first catalog
-arrives.
-A background task follows the catalog track and publishes each update.
+arrives. A background task follows the catalog track and publishes each
+update.
 
 `RemoteBroadcast::from_resolved(origin, path, consumer)` follows a path in a
 route table, starting from a consumer the caller already resolved in that
 table. When a change of route ends the broadcast, it is requested again through
 the next route, and players see a new generation of the broadcast instead of an
 end. The broadcast closes once no route has served the path for three seconds
-(`REROUTE_PATIENCE`), so `closed()` resolves about three seconds after a
-publisher ends its broadcast, and a publisher that is already gone closes it. `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
+(`REROUTE_PATIENCE`). So `closed()` resolves about three seconds after a
+publisher ends its broadcast, or after the open if the publisher was already
+gone.
+`RemoteBroadcast::from_consumer(broadcast.consume())` reads a
 `LocalBroadcast` in-process, without a transport.
 
 `Catalog` is hang's catalog, re-exported. Its `video.ranked()` lists the video
@@ -30,8 +32,8 @@ renditions best first: enabled, then by `preference`, picture size and bitrate.
 `video_rendition(&catalog, name)` looks one up, with an error that lists the
 renditions the catalog has.
 
-`iroh_live::media::remote_broadcast(&subscription)` builds the `RemoteBroadcast` with
-`from_resolved` and attaches the serving link's measurements, whether the
+`iroh_live::media::remote_broadcast(&subscription)` builds the
+`RemoteBroadcast` with `from_resolved` and attaches the serving link's measurements, whether the
 subscription came from `Node::subscribe_ticket`, a room or `Node::subscribe`. See
 [adaptive bitrate](adaptive.md).
 
@@ -72,8 +74,8 @@ drive them without a decoder or a network.
 - A replacement takes over on a picture it decoded, never on opening alone.
   With nothing playing, including after the incumbent ended, its first picture
   is enough.
-- A replacement has 15 s from the
-  request to taking over. That covers the open, the wait for the track's next
+- A replacement has 15 s from the request to taking over
+  (`SWITCH_DEADLINE`). That covers the open, the wait for the track's next
   keyframe and the catch-up. Past it the replacement is given up and the
   incumbent keeps playing.
 
@@ -137,22 +139,16 @@ let config = PlayerConfig {
 ```
 
 It carries the `rendition` mode, the `latency`, the `audio` mode, the
-`decoder` backend, and the `adaptation` thresholds and timers.
-`latency` is moq-net's subscription `Delay { min, max }` and sets how far
-behind live to run. The playout clock holds each picture for `min`, and the
-whole `Delay` goes on the video and audio decode options, where upstream drops
-groups older than `max`. `DEFAULT_LATENCY` holds for 100 ms and skips past
-150 ms. `decoder` becomes the video decode options'
-`kind`.
+`decoder` backend, the `adaptation` thresholds and timers, and
+`record_arrivals`. `latency` is moq-net's subscription `Delay { min, max }`:
+the playout clock holds each picture for `min`, and upstream drops groups
+older than `max`. `DEFAULT_LATENCY` holds for 100 ms and skips past 150 ms.
 
-`Player::set_latency` changes the hold at once. A changed latency rebuilds
-the video decoder behind the picture with the new subscription `Delay`, and
-the new one takes over once it has caught up, as in a switch. An audio track
-keeps its range until it next reopens. `Player::set_decoder` also opens the new
-backend behind the picture. A backend that fails to open leaves the incumbent playing and says why in
-`PlayerStatus::switch_error`.
-
-See [playout and sync](playout.md) for what the clock does with `min`.
+`Player::set_latency` and `Player::set_decoder` change a running player. Each
+opens a new video decoder behind the picture, which takes over once it has
+caught up, as in a switch. A backend that fails to open leaves the incumbent
+playing and says why in `PlayerStatus::switch_error`.
+[Playout and sync](playout.md) covers the latency in full.
 
 ## Shutdown
 

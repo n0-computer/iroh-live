@@ -9,8 +9,8 @@ By default, anyone may connect to the relay and read every broadcast on it.
 Publishing is limited: an iroh client may publish only at paths that name its
 endpoint id, and a browser only at names of one segment. `--auth-key` makes
 the relay verify JWTs, and the `--auth-url` and `--auth-public` flags hand
-browser sessions to moq-relay's own auth. [Access control](access.md#the-relays-auth-flags)
-explains the flags. The [relay README](../../iroh-live-relay/README.md) covers
+browser sessions to moq-relay's own auth.
+[Access control](access.md#the-relays-auth-flags) explains the flags. The [relay README](../../iroh-live-relay/README.md) covers
 the rest of running it: the certificate, where it keeps its key, and which
 browsers work.
 

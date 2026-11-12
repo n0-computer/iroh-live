@@ -43,8 +43,7 @@ members cannot reach its gossip. `Router::shutdown` shuts down the node and the
 rooms. To shut the rooms down yourself, call `Rooms::shutdown`.
 
 Share `room.ticket()` with the people who join. It lists this member as the
-bootstrap endpoint. The ticket is a bearer secret: anyone who has it can join
-and read the room's broadcasts.
+bootstrap endpoint.
 
 ## Membership
 
@@ -75,8 +74,8 @@ let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
 `publish` puts the broadcast at `rooms/<topic>/<this member>/<name>`, and only
 the room's members can read it. A member that leaves or expires loses the path
 at once, and what it reads there ends. `Room::unpublish(name)` or closing the
-broadcast removes the name from this member's announcement. A name must not be empty or
-contain a slash.
+broadcast removes the name from this member's announcement. A name must not be
+empty or contain a slash.
 
 `subscribe` dials the member if needed and reads the broadcast over the session
 with that member, so no other peer can stand in for it. It waits until the
@@ -86,15 +85,16 @@ does not close subscriptions. Errors are `iroh_live_rooms::Error`, and its
 
 A grid cannot follow the room state alone. A member can end a broadcast and
 publish it again before its announcement changes. A member can also drop this
-node from its membership for a moment, which retracts its paths from this node. In
-both cases the state stays the same and the tile freezes. So a grid also drops
-every tile whose `RemoteBroadcast::is_closed()` is true, on a timer, and
-subscribes again if the member still lists the name.
+node from its membership for a moment, which retracts its paths from this
+node. In both cases the state stays the same and the tile freezes. So a grid
+also checks `RemoteBroadcast::is_closed()` on a timer, drops every closed
+tile, and subscribes again if the member still lists the name.
 `iroh-live-cli/src/room.rs` does this.
 
-Rooms have no admission of their own. Anyone who knows the topic id can join
-the room, announce itself, and read the members' room broadcasts, since every
-member admits every other member to its room paths. Closed rooms, with a
+Rooms have no admission of their own. The ticket is a bearer secret: anyone
+who knows the topic id can join the room, announce itself, and read the
+members' room broadcasts, since every member admits every other member to its
+room paths. Closed rooms, with a
 membership the members check, are not built yet.
 
 ## Chat and other data
