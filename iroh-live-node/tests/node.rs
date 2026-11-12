@@ -66,7 +66,8 @@ async fn a_dial_can_choose_its_congestion_controller() {
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
     let options = ConnectOptions {
-        congestion: Some(Congestion::NewReno),
+        quic: iroh::endpoint::ConnectOptions::new()
+            .with_transport_config(Congestion::NewReno.transport_config()),
         ..Default::default()
     };
     let chosen = step(

@@ -132,7 +132,6 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let iroh_endpoint = EndpointConfig {
         secret_key: Some(secret_key()?),
         mdns: Mdns::Announce,
-        ..EndpointConfig::default()
     }
     .bind()
     .await

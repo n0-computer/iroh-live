@@ -497,7 +497,7 @@ impl Node {
         self.connect_with(peer, ConnectOptions::default()).await
     }
 
-    /// Dials `peer` with a token, a path, a cost, or a congestion controller.
+    /// Dials `peer` with a token, a path, a cost, or iroh's connect options.
     ///
     /// An existing session with the peer, or a dial in flight to it, is
     /// returned as it is, and the options go unused. A token then reaches

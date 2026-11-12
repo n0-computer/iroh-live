@@ -9,7 +9,6 @@ use iroh::{EndpointId, endpoint::Connection};
 pub use moq_ext_access::Grant;
 /// What a peer asked for when it opened a session.
 pub use moq_ext_access::SessionRequest;
-use moq_transport_iroh::Congestion;
 use n0_error::e;
 use tracing::{debug, info};
 
@@ -38,24 +37,14 @@ pub struct ConnectOptions {
     ///
     /// `None` keeps moq's default of one.
     pub cost: Option<u64>,
-    /// The congestion controller of this connection.
+    /// iroh's options for the QUIC dial, such as a transport config with another
+    /// [`Congestion`](crate::Congestion) controller.
     ///
-    /// `None` keeps the endpoint's, which is BBR3 under
-    /// [`MoqPreset`](crate::MoqPreset). It applies to a direct dial only: a
-    /// session that already exists keeps its controller, so close it first to
-    /// dial again with another. A relay link ignores it.
-    pub congestion: Option<Congestion>,
-}
-
-impl ConnectOptions {
-    /// Returns iroh's options for the QUIC dial.
-    pub(crate) fn quic(&self) -> iroh::endpoint::ConnectOptions {
-        let options = iroh::endpoint::ConnectOptions::new();
-        match self.congestion {
-            Some(congestion) => options.with_transport_config(congestion.transport_config()),
-            None => options,
-        }
-    }
+    /// The default keeps the endpoint's transport config, which runs BBR3
+    /// under [`MoqPreset`](crate::MoqPreset). It applies to a direct dial
+    /// only: a session that already exists keeps its connection, so close it
+    /// first to dial again with other options. A relay link ignores it.
+    pub quic: iroh::endpoint::ConnectOptions,
 }
 
 /// Admits one incoming connection if the policy does, for the protocol handler.

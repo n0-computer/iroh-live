@@ -569,7 +569,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
         token: None,
         path: (!path.is_empty()).then(|| path.to_owned()),
         cost: Some(RELAY_COST),
-        congestion: None,
+        ..Default::default()
     };
     let mut pause = REDIAL_MIN;
     let sampler = link::SharedSampler::default();

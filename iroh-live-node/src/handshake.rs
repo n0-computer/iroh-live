@@ -8,7 +8,7 @@ use moq_net::{
     origin::{self, Source},
 };
 use n0_error::{AnyError, e};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     ConnectOptions, Error, Grant, LinkKind, SessionRequest, admission::authorize, node::Shared,
@@ -123,12 +123,9 @@ pub(crate) async fn dial_session(
             e!(Error::Rejected { source })
         },
     )?;
-    if let Some(congestion) = options.congestion {
-        debug!(%congestion, "dialing with its own congestion controller");
-    }
     let connection = shared
         .endpoint
-        .connect_with_opts(peer, crate::ALPN, options.quic())
+        .connect_with_opts(peer, crate::ALPN, options.quic.clone())
         .await
         .map_err(connect_error)?
         .await
