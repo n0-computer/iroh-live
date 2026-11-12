@@ -147,10 +147,24 @@ pub async fn run(config: Config) -> Result<(), Error> {
     relay_config.auth.public = config.auth_public.clone();
     relay_config.auth.public_publish = config.auth_public_publish.clone();
     relay_config.auth.public_subscribe = config.auth_public_subscribe.clone();
-    relay_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(config.bind));
+    // HTTP shares the QUIC port unless told otherwise. On port 0 moq-relay
+    // would draw a separate port for each, and the page, which dials the port
+    // it was served from, would find no QUIC listener there.
+    let (quic_bind, http_bind) = match config.http_bind {
+        Some(http_bind) => (config.bind, http_bind),
+        None => {
+            let bind = shared_port(config.bind).map_err(|err| {
+                relay_error(
+                    anyhow::Error::new(err).context("no port is free for both QUIC and HTTP"),
+                )
+            })?;
+            (bind, bind)
+        }
+    };
+    relay_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(quic_bind));
     // Self-signed TLS. No ACME yet.
     relay_config.listen.tls.generate = vec!["localhost".to_string()];
-    relay_config.web.http.listen = Some(config.http_bind.unwrap_or(config.bind));
+    relay_config.web.http.listen = Some(http_bind);
     // The viewer serves `/` and every other path, which the WebSocket
     // fallback would take.
     relay_config.web.ws = false;
@@ -214,6 +228,27 @@ pub async fn run(config: Config) -> Result<(), Error> {
         warn!(error = %err, "the iroh router did not shut down cleanly");
     }
     result
+}
+
+/// Returns `bind` with a port that is free over both UDP and TCP, when `bind` asks for any port.
+///
+/// The probe sockets close before moq-relay binds the port, so another
+/// process can take it in between, and the relay then fails to start rather
+/// than serve QUIC and HTTP on different ports.
+fn shared_port(bind: SocketAddr) -> std::io::Result<SocketAddr> {
+    if bind.port() != 0 {
+        return Ok(bind);
+    }
+    let mut last_err = None;
+    for _ in 0..16 {
+        let udp = std::net::UdpSocket::bind(bind)?;
+        let addr = udp.local_addr()?;
+        match std::net::TcpListener::bind(addr) {
+            Ok(_) => return Ok(addr),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::ErrorKind::AddrInUse.into()))
 }
 
 /// Wraps an error of moq-relay, which reports anyhow errors.
@@ -423,6 +458,17 @@ mod tests {
     fn parse(args: &[&str]) -> Result<Config, clap::Error> {
         Cli::try_parse_from(std::iter::once("relay").chain(args.iter().copied()))
             .map(|cli| cli.relay)
+    }
+
+    /// Any port resolves to one that UDP and TCP can both bind, and a fixed port stays.
+    #[test]
+    fn any_port_resolves_to_one_free_for_quic_and_http() {
+        let bind = shared_port("127.0.0.1:0".parse().unwrap()).expect("a free port");
+        assert_ne!(bind.port(), 0);
+        let _udp = std::net::UdpSocket::bind(bind).expect("UDP binds the port");
+        let _tcp = std::net::TcpListener::bind(bind).expect("TCP binds the port");
+        let fixed: SocketAddr = "127.0.0.1:4443".parse().unwrap();
+        assert_eq!(shared_port(fixed).unwrap(), fixed);
     }
 
     #[test]
