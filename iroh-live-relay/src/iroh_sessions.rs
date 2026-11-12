@@ -25,7 +25,7 @@ use moq_relay::cluster::Cluster;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use crate::pull::PullState;
+use crate::pull::Pulls;
 
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -38,7 +38,7 @@ pub struct IrohSessions {
     #[debug(skip)]
     cluster: Cluster,
     /// Pulls the broadcasts that sessions name by ticket, if enabled.
-    pulls: Option<Arc<PullState>>,
+    pulls: Option<Pulls>,
     /// Decides who may hold a session, and what it may publish and read.
     policy: Arc<dyn DynPolicy<EndpointId>>,
     /// Cancelled when the router shuts down, which closes every session.
@@ -51,7 +51,7 @@ impl IrohSessions {
     /// With `pulls` set, a session that names a ticket in its path pulls the
     /// ticket's broadcast, as a browser's does.
     #[must_use]
-    pub fn new(cluster: Cluster, pulls: Option<Arc<PullState>>) -> Self {
+    pub fn new(cluster: Cluster, pulls: Option<Pulls>) -> Self {
         Self {
             cluster,
             pulls,

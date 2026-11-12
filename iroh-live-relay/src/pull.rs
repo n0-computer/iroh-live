@@ -38,7 +38,7 @@ use tracing::{debug, info, warn};
 
 use crate::Error;
 
-/// Default for [`PullState::with_linger`].
+/// Default for [`Pulls::with_linger`].
 const DEFAULT_LINGER: Duration = Duration::from_secs(10);
 
 /// How long to wait for the publisher's broadcast to resolve.
@@ -95,9 +95,9 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 /// #     requested: &str,
 /// # ) -> Result<(), iroh_live_relay::Error> {
 /// use iroh_live::BroadcastTicket;
-/// use iroh_live_relay::pull::{PullState, mounted};
+/// use iroh_live_relay::pull::{Pulls, mounted};
 ///
-/// let pulls = PullState::new(endpoint, cluster.clone());
+/// let pulls = Pulls::new(endpoint, cluster.clone());
 /// if let Ok(ticket) = requested.parse::<BroadcastTicket>() {
 ///     // Hold the guard while the session that asked runs.
 ///     let _guard = pulls.pull(requested, &ticket).await?;
@@ -107,18 +107,18 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 /// # }
 /// ```
 #[derive(Clone, derive_more::Debug)]
-pub struct PullState {
-    inner: Pulls,
+pub struct Pulls {
+    shared: Shared,
     /// The task of each pull: its dial, and then its hold.
     #[debug(skip)]
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
-/// What the pull tasks share: all of [`PullState`] but its tasks.
+/// What the pull tasks share: all of [`Pulls`] but its tasks.
 ///
 /// A task holds this, so it never keeps its own set alive.
 #[derive(Clone, derive_more::Debug)]
-struct Pulls {
+struct Shared {
     /// The node that dials publishers.
     node: Node,
     /// How long a pull without sessions stays connected.
@@ -182,8 +182,8 @@ impl Drop for PullGuard {
     }
 }
 
-impl PullState {
-    /// Creates pull state that dials over `endpoint` into `cluster`.
+impl Pulls {
+    /// Creates the pulls of a relay, which dial over `endpoint` into `cluster`.
     ///
     /// # Panics
     ///
@@ -196,7 +196,7 @@ impl PullState {
             ..NodeConfig::default().with_policy(policy::Open(Grant::nothing()))
         };
         Self {
-            inner: Pulls {
+            shared: Shared {
                 node: Node::new(endpoint, config),
                 linger: DEFAULT_LINGER,
                 pulls: Arc::new(Mutex::new(HashMap::new())),
@@ -212,7 +212,7 @@ impl PullState {
     /// connection.
     #[must_use]
     pub fn with_linger(mut self, linger: Duration) -> Self {
-        self.inner.linger = linger;
+        self.shared.linger = linger;
         self
     }
 
@@ -245,7 +245,7 @@ impl PullState {
         // Held under the lock retirement takes, so an entry found here
         // outlives this call.
         let (pull, dial) = {
-            let mut pulls = self.inner.pulls.lock().expect("poisoned");
+            let mut pulls = self.shared.pulls.lock().expect("poisoned");
             let (pull, dial) = match pulls.get(&local_name) {
                 Some(pull) => (Arc::clone(pull), false),
                 None => {
@@ -260,22 +260,22 @@ impl PullState {
         let guard = PullGuard { pull };
 
         if dial {
-            let inner = self.inner.clone();
+            let shared = self.shared.clone();
             let ticket = ticket.clone();
             let name = local_name.clone();
             let pull = Arc::clone(&guard.pull);
             self.spawn(async move {
-                match inner.establish(&ticket, &name).await {
+                match shared.establish(&ticket, &name).await {
                     Ok((subscription, publisher)) => {
                         pull.dial.send_replace(Dial::Connected);
-                        inner
+                        shared
                             .hold(ticket, name, pull, subscription, publisher)
                             .await;
                     }
                     Err(err) => {
                         // Retire it, so the next pull dials again.
                         warn!(local_name = %name, error = %err, "pull dial failed");
-                        inner.retire(&name, &pull);
+                        shared.retire(&name, &pull);
                         pull.dial.send_replace(Dial::Failed(Arc::new(err)));
                     }
                 }
@@ -315,7 +315,7 @@ impl PullState {
     }
 }
 
-impl Pulls {
+impl Shared {
     /// Resolves the ticket's broadcast, and returns it with the publisher's claim.
     async fn establish(
         &self,
@@ -493,7 +493,7 @@ type Publishers = Arc<Mutex<HashMap<EndpointId, usize>>>;
 /// a publisher closes every session the relay's node has with it.
 struct PublisherClaim {
     publisher: EndpointId,
-    /// The count this claim is part of, shared with [`Pulls`].
+    /// The count this claim is part of, kept in [`Shared`].
     publishers: Publishers,
     node: Node,
     /// Released after [`Drop::drop`] closes the session, as fields drop after it.
@@ -502,9 +502,9 @@ struct PublisherClaim {
 
 impl PublisherClaim {
     /// Claims the ticket's path for its peer, if the peer owns it.
-    fn new(state: &Pulls, ticket: &BroadcastTicket) -> Result<Self, Error> {
+    fn new(shared: &Shared, ticket: &BroadcastTicket) -> Result<Self, Error> {
         let publisher = ticket.peer();
-        let path = state
+        let path = shared
             .node
             .claim_path(publisher, ticket.path())
             .map_err(|source| {
@@ -513,7 +513,7 @@ impl PublisherClaim {
                     source: Box::new(source)
                 })
             })?;
-        *state
+        *shared
             .publishers
             .lock()
             .expect("poisoned")
@@ -521,8 +521,8 @@ impl PublisherClaim {
             .or_default() += 1;
         Ok(Self {
             publisher,
-            publishers: Arc::clone(&state.publishers),
-            node: state.node.clone(),
+            publishers: Arc::clone(&shared.publishers),
+            node: shared.node.clone(),
             _path: path,
         })
     }

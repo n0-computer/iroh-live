@@ -125,10 +125,8 @@ impl TestRelay {
         // in through a handler: the shipped admission, or one that admits all.
         let (iroh_router, admit_task) = if shipped {
             let pulls = pull.then(|| {
-                Arc::new(
-                    iroh_live_relay::pull::PullState::new(iroh.clone(), cluster.clone())
-                        .with_linger(PULL_LINGER),
-                )
+                iroh_live_relay::pull::Pulls::new(iroh.clone(), cluster.clone())
+                    .with_linger(PULL_LINGER)
             });
             // As the shipped relay does: a browser session that names a
             // ticket reads the pulled broadcast at that name.
@@ -523,9 +521,9 @@ async fn pull_remote_broadcast_via_ticket() {
     let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("remote-stream").await;
 
     let local_name = ticket.to_string();
-    let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
+    let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = step("pull timeout", pull_state.pull(&local_name, &ticket))
+    let guard = step("pull timeout", pulls.pull(&local_name, &ticket))
         .await
         .expect("pull");
 
@@ -759,10 +757,10 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
         .expect("a ticket serializes with its scheme");
     assert_ne!(bare, canonical);
 
-    let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
+    let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
 
-    let guard = step("pull timeout", pull_state.pull(&bare, &ticket))
+    let guard = step("pull timeout", pulls.pull(&bare, &ticket))
         .await
         .expect("pull");
     assert!(
@@ -786,10 +784,10 @@ async fn pull_retires_an_unwatched_session() {
 
     let pull_ep = endpoint().await;
     let pull_id = pull_ep.id();
-    let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
-        .with_linger(PULL_LINGER);
+    let pulls =
+        iroh_live_relay::pull::Pulls::new(pull_ep, relay.cluster.clone()).with_linger(PULL_LINGER);
 
-    let guard = step("pull timeout", pull_state.pull(&local_name, &ticket))
+    let guard = step("pull timeout", pulls.pull(&local_name, &ticket))
         .await
         .expect("pull");
     assert!(
@@ -812,7 +810,7 @@ async fn pull_retires_an_unwatched_session() {
     .await;
 
     // The same ticket dials a new session.
-    let guard = step("re-pull timeout", pull_state.pull(&local_name, &ticket))
+    let guard = step("re-pull timeout", pulls.pull(&local_name, &ticket))
         .await
         .expect("re-pull");
     assert!(
@@ -834,9 +832,9 @@ async fn a_pull_survives_the_publisher_republishing() {
     let (pub_ep, publisher, _router, broadcast, ticket) = start_publisher("republished").await;
     let local_name = ticket.to_string();
 
-    let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
+    let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = step("pull timeout", pull_state.pull(&local_name, &ticket))
+    let guard = step("pull timeout", pulls.pull(&local_name, &ticket))
         .await
         .expect("pull");
     assert!(wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await);
@@ -1503,12 +1501,12 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
 
     let pull_ep = endpoint().await;
     let pull_id = pull_ep.id();
-    let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
-        .with_linger(PULL_LINGER);
-    let first_guard = step("pull timeout", pull_state.pull(&first_name, &first))
+    let pulls =
+        iroh_live_relay::pull::Pulls::new(pull_ep, relay.cluster.clone()).with_linger(PULL_LINGER);
+    let first_guard = step("pull timeout", pulls.pull(&first_name, &first))
         .await
         .expect("pull");
-    let second_guard = step("pull timeout", pull_state.pull(&second_name, &second))
+    let second_guard = step("pull timeout", pulls.pull(&second_name, &second))
         .await
         .expect("pull");
     for name in [&first_name, &second_name] {
@@ -1570,14 +1568,11 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     // Every path the cluster announces, from before the dial on.
     let cluster = relay.cluster.origin.consume();
     let mut announced = cluster.announced();
-    let pull_state = iroh_live_relay::pull::PullState::new(endpoint().await, relay.cluster.clone())
+    let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = step(
-        "pull timeout",
-        pull_state.pull(&wanted.to_string(), &wanted),
-    )
-    .await
-    .expect("pull");
+    let guard = step("pull timeout", pulls.pull(&wanted.to_string(), &wanted))
+        .await
+        .expect("pull");
 
     let mut seen = Vec::new();
     let mut settle = None;

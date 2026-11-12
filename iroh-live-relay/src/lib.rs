@@ -36,7 +36,7 @@
 //! [`run`] returns once a drain started by SIGINT or SIGTERM ends, after
 //! closing its listeners. Dropping its future stops the listeners and the
 //! accepted connections. The tasks that dial and hold a pull end with the
-//! last clone of their [`PullState`](pull::PullState): a linger window after
+//! last clone of their [`Pulls`](pull::Pulls): a linger window after
 //! the last session that named the ticket, or later while a dial or a resolve
 //! is in flight.
 
@@ -159,10 +159,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let mut relay = moq_relay::Relay::load(relay_config)
         .await
         .map_err(relay_error)?;
-    let pulls = Arc::new(pull::PullState::new(
-        iroh_endpoint.clone(),
-        relay.cluster().clone(),
-    ));
+    let pulls = pull::Pulls::new(iroh_endpoint.clone(), relay.cluster().clone());
     // Without an auth source of moq-relay's own, `admit` decides every
     // browser session.
     let _admit_task = match relay.admissions() {
@@ -237,11 +234,7 @@ fn relay_error(err: anyhow::Error) -> Error {
 ///
 /// [`run`] calls it. It is public for a binary that embeds the relay with a
 /// moq-relay of its own, and for the tests.
-pub async fn admit(
-    mut admissions: Admissions,
-    pulls: Option<Arc<pull::PullState>>,
-    keys: Option<KeySet>,
-) {
+pub async fn admit(mut admissions: Admissions, pulls: Option<pull::Pulls>, keys: Option<KeySet>) {
     let verifier = keys.map(JwtVerifier::new);
     let mut held = JoinSet::new();
     loop {
@@ -350,13 +343,13 @@ fn load_keys(path: &std::path::Path) -> Result<KeySet, Error> {
 /// Runs alongside the session, so a session that names an unreachable ticket
 /// still starts. Dropping the handle releases the session's hold on the pull.
 pub(crate) fn pull_for(
-    pull_state: Arc<pull::PullState>,
+    pulls: pull::Pulls,
     name: String,
 ) -> Option<AbortOnDropHandle<Option<pull::PullGuard>>> {
     // The name as requested, since the subscriber is announced under it.
     let ticket = name.parse::<BroadcastTicket>().ok()?;
     Some(AbortOnDropHandle::new(tokio::spawn(async move {
-        match pull_state.pull(&name, &ticket).await {
+        match pulls.pull(&name, &ticket).await {
             Ok(guard) => Some(guard),
             Err(err) => {
                 warn!(%name, error = format_args!("{err:#}"), "pull failed for the ticket in the URL");
