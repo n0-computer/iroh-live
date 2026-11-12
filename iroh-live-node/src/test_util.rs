@@ -103,14 +103,12 @@ impl TestNode {
         self.endpoint.id()
     }
 
-    /// Shuts down the node and the router, then closes the endpoint.
+    /// Shuts the router down, which shuts the node down and closes the endpoint.
     ///
     /// # Panics
     ///
     /// Panics if the router task panicked.
     pub async fn shutdown(&self) {
-        self.node.shutdown().await;
         self.router.shutdown().await.expect("router task panicked");
-        self.endpoint.close().await;
     }
 }
