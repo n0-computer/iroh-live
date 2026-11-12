@@ -70,8 +70,6 @@ use moq_video as video;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::RpicamConfig;
-#[cfg(feature = "capture")]
-pub use self::source::{EchoReference, MicrophoneConfig};
 pub use self::{
     frames::VideoFrames,
     source::{

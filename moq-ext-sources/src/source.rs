@@ -410,90 +410,12 @@ impl EncodedVideoSource {
     }
 }
 
-/// An audio output whose mix a microphone cancels from its signal.
-///
-/// Implemented by the application's output type.
-#[cfg(feature = "capture")]
-pub trait EchoReference: std::fmt::Debug + Send + Sync + 'static {
-    /// Builds an echo canceller tapped off this output's mix.
-    ///
-    /// Returns `None` for an output that plays nothing and so has no echo.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`] while another microphone's canceller
-    /// holds this output's reference, and [`Error::Device`] for other engine
-    /// failures.
-    #[cfg(feature = "aec")]
-    fn canceller(&self) -> Result<Option<audio::aec::Control>, Error>;
-}
-
-/// The microphone to open, and the output to cancel from it.
-#[cfg(feature = "capture")]
-#[derive(Debug, Clone, Default)]
-pub struct MicrophoneConfig {
-    /// The device and its capture settings.
-    pub capture: audio::capture::Config,
-    /// The output whose signal is removed from the microphone.
-    ///
-    /// `None` turns echo cancellation off. Needs the `aec` feature:
-    /// [`AudioSource::microphone`] refuses the config without it.
-    pub echo_reference: Option<Arc<dyn EchoReference>>,
-}
-
-#[cfg(feature = "capture")]
-impl MicrophoneConfig {
-    /// Returns the config with the microphone set to `device`.
-    ///
-    /// `device` is an id as `audio::capture::devices` reports it.
-    #[must_use]
-    pub fn with_device(mut self, device: impl Into<String>) -> Self {
-        self.capture.source = audio::capture::Source::Microphone(Some(device.into()));
-        self
-    }
-
-    /// Checks that echo cancellation, if asked for, is compiled in.
-    fn check(&self) -> Result<(), Error> {
-        if self.echo_reference.is_some() && !cfg!(feature = "aec") {
-            return Err(Error::invalid(
-                "echo cancellation needs the `aec` feature, which this build was \
-                 compiled without",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Returns the capture config to open, with the echo canceller attached.
-    ///
-    /// The publication that encodes the microphone calls this when it starts,
-    /// after the publication it replaces has released its canceller. Each call
-    /// asks the echo reference for a new canceller, and an output cancels the
-    /// echo of one microphone at a time.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`] if echo cancellation is asked for but
-    /// not compiled in, or if the echo reference already cancels another
-    /// microphone. Returns [`Error::Device`] if the echo reference cannot
-    /// build its canceller.
-    pub fn capture_config(&self) -> Result<audio::capture::Config, Error> {
-        self.check()?;
-        #[cfg_attr(not(feature = "aec"), allow(unused_mut, reason = "only aec attaches"))]
-        let mut capture = self.capture.clone();
-        #[cfg(feature = "aec")]
-        if let Some(output) = &self.echo_reference {
-            capture.aec = output.canceller()?;
-        }
-        Ok(capture)
-    }
-}
-
 /// What an audio source produces.
 #[derive(Debug)]
 pub enum AudioKind {
     /// A microphone, opened by the publication that encodes it.
     #[cfg(feature = "capture")]
-    Microphone(MicrophoneConfig),
+    Microphone(audio::capture::Config),
     /// PCM, fanned out to every broadcast that reads it.
     ///
     /// The fan-out is weak, so the source ends when its producer drops the
@@ -558,17 +480,19 @@ impl AudioSource {
     /// not opened again. The same source set on two broadcasts opens the
     /// device twice.
     ///
+    /// For echo cancellation, set `config.aec` to the canceller of the
+    /// speaker's engine, from `playback::Engine::canceller`. Only one open
+    /// microphone attaches to it at a time, and a publication that replaces
+    /// this one attaches once this one has closed.
+    ///
     /// Cancellation safe: dropping the future only abandons the device query.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Device`] if no microphone matches the config, and
-    /// [`Error::InvalidConfig`] if echo cancellation is asked for in a build
-    /// without it.
+    /// Returns [`Error::Device`] if no microphone matches the config.
     #[cfg(feature = "capture")]
-    pub async fn microphone(config: MicrophoneConfig) -> Result<Self, Error> {
-        config.check()?;
-        if let audio::capture::Source::Microphone(wanted) = &config.capture.source {
+    pub async fn microphone(config: audio::capture::Config) -> Result<Self, Error> {
+        if let audio::capture::Source::Microphone(wanted) = &config.source {
             let devices = audio::capture::devices().await.map_err(Error::device)?;
             let found = match wanted {
                 Some(id) => devices.iter().any(|device| &device.id == id),
@@ -581,7 +505,11 @@ impl AudioSource {
                 }));
             }
         }
-        info!(source = ?config.capture.source, echo_cancellation = config.echo_reference.is_some(), "microphone ready");
+        #[cfg(feature = "aec")]
+        let echo_cancellation = config.aec.is_some();
+        #[cfg(not(feature = "aec"))]
+        let echo_cancellation = false;
+        info!(source = ?config.source, echo_cancellation, "microphone ready");
         Ok(Self::microphone_unchecked(config))
     }
 
@@ -590,7 +518,7 @@ impl AudioSource {
     /// A missing device then shows only when a broadcast publishes the source.
     #[cfg(feature = "capture")]
     #[must_use]
-    pub fn microphone_unchecked(config: MicrophoneConfig) -> Self {
+    pub fn microphone_unchecked(config: audio::capture::Config) -> Self {
         Self::new(
             "microphone",
             AudioKind::Microphone(config),

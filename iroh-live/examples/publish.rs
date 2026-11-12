@@ -9,7 +9,7 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
+        AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
         audio_encoding, video,
     },
 };
@@ -65,7 +65,7 @@ async fn main() -> n0_error::Result {
     };
     broadcast.set_video(source, encoding)?;
 
-    match AudioSource::microphone(MicrophoneConfig::default()).await {
+    match AudioSource::microphone(audio::capture::Config::default()).await {
         Ok(microphone) => broadcast.set_audio(microphone, audio_encoding::voice())?,
         Err(err) => warn!(error = %err, "no microphone, publishing video only"),
     }

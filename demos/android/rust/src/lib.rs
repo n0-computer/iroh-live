@@ -27,9 +27,9 @@ use iroh_live::{
     calls::{CALL, Call, CallEvent, Calls},
     layout::LiveLayout,
     media::{
-        AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast, MicrophoneConfig, Player,
-        PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFormat, VideoFrames,
-        VideoRendition, VideoSource, audio_encoding, remote_broadcast,
+        AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig,
+        RemoteBroadcast, RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition,
+        VideoSource, audio, audio_encoding, remote_broadcast,
     },
     net::Timestamp,
 };
@@ -282,10 +282,13 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Fra
 /// voice straight back. If the microphone does not open, the session goes on
 /// with video only.
 async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) {
-    let config = MicrophoneConfig {
-        echo_reference: echo.map(|output| std::sync::Arc::new(output.clone()) as _),
-        ..MicrophoneConfig::default()
-    };
+    let mut config = audio::capture::Config::default();
+    if let Some(engine) = echo.and_then(AudioTarget::engine) {
+        match engine.canceller(audio::aec::Config::default()) {
+            Ok(canceller) => config.aec = Some(canceller),
+            Err(err) => warn!(error = %err, "publishing the microphone without echo cancellation"),
+        }
+    }
     let published = match AudioSource::microphone(config).await {
         Ok(source) => broadcast.set_audio(source, audio_encoding::voice()),
         Err(err) => Err(err.into()),

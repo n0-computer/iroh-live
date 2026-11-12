@@ -4,8 +4,8 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioFormat, AudioSource, AudioTarget, LocalBroadcast, MicrophoneConfig, Rate, VideoFormat,
-    VideoSource, audio, audio_encoding,
+    AudioFormat, AudioSource, AudioTarget, LocalBroadcast, Rate, VideoFormat, VideoSource, audio,
+    audio_encoding,
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -340,32 +340,37 @@ fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
     }
 }
 
-/// Returns the config for microphone `id`, cancelling the echo of `output`.
+/// Returns the capture config for microphone `id`, cancelling the echo of `output`.
 ///
-/// Without the `aec` feature, it warns and publishes the microphone as is.
+/// A null output plays nothing, so it has no echo. Without the `aec`
+/// feature, it warns and captures the microphone as is.
+///
+/// # Errors
+///
+/// Fails if `output` already cancels the echo of another microphone.
 pub(crate) fn microphone_config(
     id: Option<String>,
     output: Option<&AudioTarget>,
-) -> MicrophoneConfig {
-    let mut config = MicrophoneConfig::default();
+) -> Result<audio::capture::Config> {
+    let mut config = audio::capture::Config::default();
     if let Some(id) = id {
-        config = config.with_device(id);
+        config.source = audio::capture::Source::Microphone(Some(id));
     }
-    if let Some(output) = output {
-        #[cfg(feature = "aec")]
-        {
-            config.echo_reference = Some(std::sync::Arc::new(output.clone()));
-        }
-        // A null output plays nothing, so it has no echo.
-        #[cfg(not(feature = "aec"))]
-        if !output.is_null() {
-            warn!(
-                "this build has no echo cancellation, so the other side may hear itself; \
-                 build with the `aec` feature to cancel it"
-            );
-        }
+    #[cfg(feature = "aec")]
+    if let Some(engine) = output.and_then(AudioTarget::engine) {
+        let canceller = engine
+            .canceller(audio::aec::Config::default())
+            .map_err(|err| anyerr!("cannot cancel the echo of the audio output: {err}"))?;
+        config.aec = Some(canceller);
     }
-    config
+    #[cfg(not(feature = "aec"))]
+    if output.is_some_and(|output| !output.is_null()) {
+        warn!(
+            "this build has no echo cancellation, so the other side may hear itself; \
+             build with the `aec` feature to cancel it"
+        );
+    }
+    Ok(config)
 }
 
 /// Opens the audio source `spec` names, or `None` for `--audio none`.
@@ -376,11 +381,11 @@ async fn audio_source(
     let source = match spec {
         AudioSourceSpec::None => return Ok(None),
         AudioSourceSpec::Microphone(id) => {
-            AudioSource::microphone(microphone_config(id.clone(), output)).await?
+            AudioSource::microphone(microphone_config(id.clone(), output)?).await?
         }
         AudioSourceSpec::System => {
-            let mut config = MicrophoneConfig::default();
-            config.capture.source = audio::capture::Source::System;
+            let mut config = audio::capture::Config::default();
+            config.source = audio::capture::Source::System;
             AudioSource::microphone(config).await?
         }
         AudioSourceSpec::Test(TestTone::Beeps) => AudioSource::test_pattern(TEST_TONE_LAYOUT)?,
@@ -422,24 +427,21 @@ fn is_microphone(args: &CaptureArgs) -> bool {
 mod tests {
     use super::*;
 
-    /// The microphone config carries the output as its echo reference.
+    /// A null output plays nothing, so the microphone gets no echo canceller.
     #[cfg(feature = "aec")]
     #[test]
-    fn the_microphone_cancels_the_output_it_is_given() {
+    fn a_null_output_cancels_no_echo() {
         let output = AudioTarget::null();
-        let config = microphone_config(None, Some(&output));
-        assert!(
-            config.echo_reference.is_some(),
-            "the microphone config carries no echo reference"
-        );
-        assert!(microphone_config(None, None).echo_reference.is_none());
+        let config = microphone_config(None, Some(&output)).expect("nothing to cancel");
+        assert!(config.aec.is_none());
+        assert!(microphone_config(None, None).expect("valid").aec.is_none());
     }
 
     #[test]
     fn a_microphone_by_id_keeps_its_id() {
-        let config = microphone_config(Some("hw:1".into()), None);
+        let config = microphone_config(Some("hw:1".into()), None).expect("valid");
         assert_eq!(
-            config.capture.source,
+            config.source,
             audio::capture::Source::Microphone(Some("hw:1".into()))
         );
     }

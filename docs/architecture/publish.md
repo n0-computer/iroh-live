@@ -50,11 +50,13 @@ once the source is gone, and the producing loop should stop then.
 through `annex_b(stream)` or `rpicam(config)`. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
 
-`AudioSource` has `microphone(MicrophoneConfig)`, `file(path, looping)` for a
-WAV or MP3 decoded in real time, `tone(hz, layout)`, `test_pattern(layout)`,
-and `push(format)` for PCM the application produces. `MicrophoneConfig` holds
-the capture config and an optional `echo_reference`, the `AudioTarget` whose
-signal is removed from the microphone (needs the `aec` feature). A PCM source
+`AudioSource` has `microphone(config)` for moq-audio's `capture::Config`,
+`file(path, looping)` for a WAV or MP3 decoded in real time,
+`tone(hz, layout)`, `test_pattern(layout)`, and `push(format)` for PCM the
+application produces. For echo cancellation, the config's `aec` holds the
+canceller of the speaker's `playback::Engine`, from `Engine::canceller`
+(needs the `aec` feature). The microphone attaches to it when its publication
+opens the device, after a publication it replaces has let go. A PCM source
 fans out to every broadcast through a buffer of 100 frames. A broadcast that
 falls further behind loses the oldest frames and counts them in its stats.
 

@@ -124,8 +124,6 @@ pub mod media {
     pub use moq_audio as audio;
     pub use moq_ext_player::*;
     pub use moq_ext_publisher::*;
-    #[cfg(feature = "capture")]
-    pub use moq_ext_sources::MicrophoneConfig;
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::RpicamConfig;
     pub use moq_ext_sources::{

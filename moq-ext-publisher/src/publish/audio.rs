@@ -28,15 +28,10 @@ pub(super) async fn run(
     stats.update(|stats| stats.codec = Some(codec.clone()));
     let result = match source.kind() {
         #[cfg(feature = "capture")]
-        AudioKind::Microphone(config) => {
-            // Resolved after `take_over`, because an output hands its echo
-            // canceller to one microphone at a time, and the publication this
-            // one replaces holds it until it stops.
-            match config.capture_config() {
-                Ok(capture) => microphone(&job, capture, &encoding, &stop).await,
-                Err(err) => Err(err),
-            }
-        }
+        // Opened after `take_over`, because an echo canceller attaches to one
+        // microphone at a time, and the publication this one replaces holds
+        // it until it stops.
+        AudioKind::Microphone(capture) => microphone(&job, capture.clone(), &encoding, &stop).await,
         AudioKind::Pcm { format, fanout } => match fanout.upgrade() {
             Some(fanout) => {
                 let frames = fanout.subscribe();

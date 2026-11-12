@@ -35,8 +35,7 @@ tracing = "0.1.44"
 [dev-dependencies]
 # The tests record too.
 moq-ext-player = { path = ".", features = ["record", "test-util"] }
-# The tests publish what they play. Its `capture` matches the one above, since
-# `moq-ext-sources` is shared.
+# The tests publish what they play.
 moq-ext-publisher = { workspace = true, features = ["capture"] }
 moq-ext-sources = { workspace = true, features = ["pattern", "file"] }
 tokio = { version = "1.53.1", features = ["full"] }
@@ -45,8 +44,6 @@ tokio = { version = "1.53.1", features = ["full"] }
 default = []
 # `RemoteBroadcast::mux_source`, for recording with moq-mux's exporters.
 record = []
-# Lets an `AudioTarget` serve as the echo reference of a microphone.
-capture = ["moq-ext-sources/capture", "moq-audio/capture"]
 # Speaker output.
 playback = ["moq-audio/playback"]
 # GPU rendering of decoded frames, through wgpu.
@@ -57,7 +54,7 @@ nvidia = ["moq-video/nvidia"]
 v4l2 = ["moq-video/v4l2"]
 # Intel and AMD hardware H.264 decoding.
 vaapi = ["moq-video/vaapi"]
-# Echo cancellation reference output.
-aec = ["capture", "playback", "moq-ext-sources/aec", "moq-audio/aec"]
+# `playback::Engine::canceller`, the echo canceller a microphone takes.
+aec = ["playback", "moq-audio/aec"]
 # Helpers for tests that switch a published source, in `test_util`.
 test-util = ["dep:moq-ext-publisher", "tokio/macros", "tokio/rt"]

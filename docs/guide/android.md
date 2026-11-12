@@ -78,8 +78,9 @@ speaker sends its own output back to the peer.
 
 Video comes from Kotlin, but the Rust side opens the microphone with
 `AudioSource::microphone`. It opens one `AudioTarget` for the speaker and
-passes it to every player. In a call it also sets that output as
-`MicrophoneConfig::echo_reference`, so the canceller knows what to remove.
+passes it to every player. In a call it also gives the microphone that
+output's echo canceller (`capture::Config::aec`), so the canceller knows what
+to remove.
 
 ## Debugging
 

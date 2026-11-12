@@ -62,8 +62,8 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        AudioSource, LocalBroadcast, MicrophoneConfig, VideoEncoding, VideoRendition,
-        VideoSource, audio_encoding, video,
+        AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
+        audio_encoding, video,
     },
 };
 
@@ -77,7 +77,7 @@ let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
 
 let camera = VideoSource::capture(video::capture::Config::default()).await?;
 broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
-let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
+let microphone = AudioSource::microphone(audio::capture::Config::default()).await?;
 broadcast.set_audio(microphone, audio_encoding::voice())?;
 println!("{}", layout.ticket(node.id(), "hello")?);
 

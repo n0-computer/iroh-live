@@ -2,8 +2,8 @@
 //!
 //! The application opens an [`Engine`](moq_audio::playback::Engine) and passes
 //! it to every [`PlayerConfig`](crate::PlayerConfig) whose audio should play
-//! there, and to the `MicrophoneConfig` whose echo it should cancel. This keeps
-//! the choice of device explicit. [`AudioTarget::null`] is the output for
+//! there, and its canceller to the microphone whose echo it should cancel.
+//! This keeps the choice of device explicit. [`AudioTarget::null`] is the output for
 //! headless runs and tests.
 
 use std::time::Duration;
@@ -107,28 +107,6 @@ impl AudioTarget {
     }
 }
 
-#[cfg(feature = "aec")]
-impl moq_ext_sources::EchoReference for AudioTarget {
-    /// Returns `None` for a null target, which plays nothing and has no echo.
-    fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, Error> {
-        match &self.inner {
-            Inner::Engine(engine) => engine
-                .canceller(moq_audio::aec::Config::default())
-                .map(Some)
-                .map_err(|err| match err {
-                    moq_audio::Error::Busy(reason) => Error::invalid(format!(
-                        "this output already cancels the echo of another microphone ({reason})"
-                    )),
-                    other => Error::device(other),
-                }),
-            Inner::Null => Ok(None),
-        }
-    }
-}
-
-#[cfg(all(feature = "capture", not(feature = "aec")))]
-impl moq_ext_sources::EchoReference for AudioTarget {}
-
 /// One player's stream into an output.
 #[derive(derive_more::Debug)]
 pub(crate) enum OutputSink {
@@ -201,14 +179,6 @@ impl OutputControl {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "capture")]
-    use std::sync::Arc;
-
-    #[cfg(feature = "aec")]
-    use moq_ext_publisher::{LocalBroadcast, audio_encoding};
-    #[cfg(feature = "aec")]
-    use moq_ext_sources::{AudioSource, MicrophoneConfig};
-
     use super::*;
 
     #[test]
@@ -223,87 +193,5 @@ mod tests {
             .expect("a null sink always opens");
         sink.write(&[0; 64]).expect("discarded");
         assert_eq!(sink.buffered(), Duration::ZERO);
-    }
-
-    /// The microphone config builds its echo canceller from its output.
-    ///
-    /// It needs an output device, so it runs by hand.
-    /// `a_microphone_publication_asks_for_its_canceller` covers the publishing
-    /// side without a device.
-    #[cfg(all(feature = "aec", feature = "playback"))]
-    #[tokio::test]
-    #[ignore = "needs an audio output device"]
-    async fn echo_cancellation_attaches_the_canceller() {
-        let engine = playback::Engine::open(playback::Config::default())
-            .await
-            .expect("an audio output device");
-        let capture = moq_ext_sources::MicrophoneConfig {
-            echo_reference: Some(Arc::new(AudioTarget::from(engine))),
-            ..moq_ext_sources::MicrophoneConfig::default()
-        }
-        .capture_config()
-        .expect("the canceller builds");
-        assert!(
-            capture.aec.is_some(),
-            "the microphone config carries no canceller"
-        );
-        let plain = moq_ext_sources::MicrophoneConfig::default()
-            .capture_config()
-            .expect("resolves");
-        assert!(plain.aec.is_none());
-    }
-
-    #[cfg(all(feature = "capture", not(feature = "aec")))]
-    #[test]
-    fn echo_cancellation_without_the_feature_is_refused() {
-        let config = moq_ext_sources::MicrophoneConfig {
-            echo_reference: Some(Arc::new(AudioTarget::null())),
-            ..moq_ext_sources::MicrophoneConfig::default()
-        };
-        assert!(matches!(
-            config.capture_config(),
-            Err(moq_ext_sources::Error::InvalidConfig { .. })
-        ));
-    }
-
-    /// An echo reference that counts canceller requests and plays nothing.
-    #[cfg(feature = "aec")]
-    #[derive(Debug, Default)]
-    struct CountingReference(std::sync::atomic::AtomicU64);
-
-    #[cfg(feature = "aec")]
-    impl moq_ext_sources::EchoReference for CountingReference {
-        fn canceller(&self) -> Result<Option<moq_audio::aec::Control>, Error> {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(None)
-        }
-    }
-
-    /// A microphone publication asks its echo reference output for a canceller.
-    ///
-    /// A counting double stands in for the output, so no device is needed.
-    #[cfg(feature = "aec")]
-    #[tokio::test]
-    async fn a_microphone_publication_asks_for_its_canceller() {
-        const TIMEOUT: Duration = Duration::from_secs(30);
-        let output = Arc::new(CountingReference::default());
-        let config = MicrophoneConfig {
-            echo_reference: Some(output.clone()),
-            ..MicrophoneConfig::default()
-        };
-        let broadcast = LocalBroadcast::new();
-        broadcast
-            .set_audio(
-                AudioSource::microphone_unchecked(config),
-                audio_encoding::voice(),
-            )
-            .expect("a valid encoding");
-        tokio::time::timeout(TIMEOUT, async {
-            while output.0.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the publication never asked for an echo canceller");
     }
 }
