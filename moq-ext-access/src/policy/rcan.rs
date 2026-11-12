@@ -236,11 +236,7 @@ where
                 }
             })
             .min();
-        Ok(Authorization {
-            grant,
-            expires,
-            ..Default::default()
-        })
+        Ok(Authorization { grant, expires })
     }
 }
 

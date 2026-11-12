@@ -34,7 +34,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use moq_net::Patterns;
 use n0_future::future;
 
 #[cfg(feature = "jwt")]
@@ -138,8 +137,6 @@ pub type Decision = Result<Authorization, Rejection>;
 pub struct Authorization {
     /// What the peer may subscribe to and publish.
     pub grant: Grant,
-    /// Which forwarded routes cross the link.
-    pub transit: Transit,
     /// When the node decides again, such as when a token expires.
     pub expires: Option<SystemTime>,
 }
@@ -150,40 +147,6 @@ impl From<Grant> for Authorization {
             grant,
             ..Default::default()
         }
-    }
-}
-
-/// Which forwarded routes cross a link.
-///
-/// The default forwards nothing, which is all a node supports today: a node
-/// refuses a session whose authorization asks for more.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Transit {
-    /// The forwarded routes the peer may read: egress.
-    pub forward_to: Patterns,
-    /// The peer's routes this node may forward to other links: ingress.
-    pub forward_from: Patterns,
-    /// Whether the peer forwards, so it is offered no publication for a set of peers.
-    pub peer_forwards: bool,
-}
-
-impl Transit {
-    /// Reports whether the transit forwards nothing, as the default does.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.forward_to.is_empty() && self.forward_from.is_empty() && !self.peer_forwards
-    }
-
-    /// Returns a transit that allows what either this one or `other` allows.
-    #[must_use]
-    pub fn union(&self, other: &Self) -> Self {
-        let mut union = self.clone();
-        union.forward_to.extend(other.forward_to.iter().cloned());
-        union
-            .forward_from
-            .extend(other.forward_from.iter().cloned());
-        union.peer_forwards |= other.peer_forwards;
-        union
     }
 }
 
@@ -386,9 +349,7 @@ where
 /// Asks `policy` about `request` within `timeout`, as a node does before it admits a session.
 ///
 /// A policy that takes longer is a rejection with
-/// [`moq_net::Error::Timeout`]. An authorization with a non-empty
-/// [`Transit`] is a rejection with the default code,
-/// [`moq_net::Error::Unauthorized`], since nothing forwards yet.
+/// [`moq_net::Error::Timeout`].
 ///
 /// Needs a tokio runtime with time enabled. Dropping the future drops the
 /// policy's.
@@ -397,13 +358,9 @@ pub async fn decide_within<P: PeerId>(
     request: &PeerRequest<P>,
     timeout: Duration,
 ) -> Decision {
-    let authorization = n0_future::time::timeout(timeout, policy.decide(request))
+    n0_future::time::timeout(timeout, policy.decide(request))
         .await
-        .unwrap_or_else(|_| Err(too_slow()))?;
-    if !authorization.transit.is_empty() {
-        return Err(Rejection::new("transit is not supported yet"));
-    }
-    Ok(authorization)
+        .unwrap_or_else(|_| Err(too_slow()))
 }
 
 /// Returns the rejection of a policy that did not decide in time.

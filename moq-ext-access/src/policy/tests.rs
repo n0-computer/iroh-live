@@ -92,30 +92,10 @@ fn an_erased_policy_forwards_decide() {
 }
 
 #[test]
-fn transit_is_none_only_by_default() {
-    assert!(Transit::default().is_empty());
-    assert!(
-        !Transit {
-            peer_forwards: true,
-            ..Default::default()
-        }
-        .is_empty()
-    );
-    assert!(
-        !Transit {
-            forward_from: Pattern::all().into(),
-            ..Default::default()
-        }
-        .is_empty()
-    );
-}
-
-#[test]
 fn the_default_grant_allows_nothing() {
     assert_eq!(Grant::default(), Grant::nothing());
     let authorization = Authorization::default();
     assert!(!authorization.grant.allows_subscribe("a"));
-    assert!(authorization.transit.is_empty());
     assert_eq!(authorization.expires, None);
 }
 
@@ -361,24 +341,6 @@ async fn decide_within_keeps_the_policys_own_rejection() {
         .expect_err("rejected");
     assert_eq!(rejection.reason(), "banned");
     assert!(matches!(rejection.code(), moq_net::Error::App(9)));
-}
-
-#[tokio::test(start_paused = true)]
-async fn decide_within_rejects_an_authorization_that_asks_for_transit() {
-    let policy = from_fn(|_: &PeerRequest<Peer>| {
-        Ok(Authorization {
-            transit: Transit {
-                peer_forwards: true,
-                ..Default::default()
-            },
-            ..Grant::everything().into()
-        })
-    });
-    let rejection = decide_within(&policy, &request("bob"), Duration::from_secs(5))
-        .await
-        .expect_err("rejected");
-    assert!(rejection.reason().contains("transit"), "{rejection}");
-    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
 }
 
 #[test]

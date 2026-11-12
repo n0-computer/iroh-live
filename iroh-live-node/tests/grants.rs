@@ -14,7 +14,7 @@ use common::{
 use iroh::EndpointId;
 use iroh_live_node::{
     Audience, Error, Grant, Layout, NodeConfig, Reach, Session,
-    policy::{self, Authorization, PeerRequest, Rejection, Transit},
+    policy::{self, PeerRequest, Rejection},
 };
 use moq_net::{Path, Pattern, Patterns};
 use n0_tracing_test::traced_test;
@@ -765,39 +765,6 @@ async fn a_policy_grant_holds_in_both_directions() {
     alice.shutdown().await;
     bob.shutdown().await;
     carol.shutdown().await;
-}
-
-#[tokio::test]
-#[traced_test]
-async fn a_policy_that_asks_for_transit_closes_the_session() {
-    let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(
-        |_: &PeerRequest| {
-            Ok(Authorization {
-                grant: Grant::everything(),
-                transit: Transit {
-                    peer_forwards: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-        },
-    )))
-    .await;
-    let bob = Peer::spawn().await;
-
-    dial_refused(step("bob dials", bob.node.connect(alice.endpoint.addr())).await).await;
-    assert!(!has_session_with(&alice.node, bob.id()));
-
-    let err = step("alice dials", alice.node.connect(bob.endpoint.addr()))
-        .await
-        .expect_err("transit is refused");
-    let Error::Rejected { source, .. } = &err else {
-        panic!("not a rejection: {err:#}");
-    };
-    assert!(source.reason().contains("transit"), "{err:#}");
-
-    alice.shutdown().await;
-    bob.shutdown().await;
 }
 
 #[tokio::test]

@@ -39,7 +39,6 @@ async fn an_expiring_authorization_narrows_the_live_session() {
                 Event::Connect => Ok(Authorization {
                     grant: Grant::everything(),
                     expires: Some(SystemTime::now() + SHORT),
-                    ..Default::default()
                 }),
                 Event::Reauthorize => Ok(Grant::subscribe_only().into()),
             }
@@ -101,7 +100,6 @@ async fn a_rejection_at_expiry_closes_the_sessions_with_its_code() {
             Event::Connect => Ok(Authorization {
                 grant: Grant::subscribe_only(),
                 expires: Some(SystemTime::now() + SHORT),
-                ..Default::default()
             }),
             Event::Reauthorize => Err(Rejection::new("revoked").with_code(moq_net::Error::App(42))),
         },
@@ -582,7 +580,6 @@ async fn an_expired_authorization_narrows_before_a_slow_answer() {
                 Event::Connect => pending.admit(Authorization {
                     grant: Grant::everything(),
                     expires: Some(SystemTime::now() + Duration::from_millis(300)),
-                    ..Default::default()
                 }),
                 _ => {
                     slow.spawn(async move {
@@ -739,7 +736,6 @@ async fn an_expiry_beyond_the_clock_is_never() {
             Ok(Authorization {
                 grant: Grant::everything(),
                 expires: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(u64::MAX / 4)),
-                ..Default::default()
             })
         },
     )))

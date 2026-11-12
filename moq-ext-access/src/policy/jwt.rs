@@ -88,7 +88,6 @@ impl<P: PeerId> TokenVerifier<P> for JwtVerifier {
                 publish: absolute(grant.publish)?,
             },
             expires: grant.expires.map(SystemTime::from),
-            ..Default::default()
         })
     }
 }

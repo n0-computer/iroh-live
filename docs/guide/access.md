@@ -228,7 +228,6 @@ impl Policy<iroh::EndpointId> for Members {
         Ok(Authorization {
             grant: Grant::subscribe_only(),
             expires: Some(SystemTime::now() + Duration::from_secs(3600)),
-            ..Default::default()
         })
     }
 }
@@ -512,9 +511,7 @@ link redials with a fresh token from its `TokenFn`.
   the same broadcast. So a peer that may announce another publisher's paths
   can take over that publisher's readers.
 - **No forwarding.** A node serves only its own publications. It never offers
-  a route it learned from one link on another link. The node refuses a policy
-  answer that asks for `Authorization::transit`, since nodes do not forward
-  yet.
+  a route it learned from one link on another link.
 - **Relays are trusted with what they carry.** A relay link sees every
   `Granted` publication, and the node accepts the relay's routes for any path.
   Attach only relays that keep each publisher to its own paths, as
