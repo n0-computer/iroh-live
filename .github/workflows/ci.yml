@@ -1,7 +1,8 @@
-# The moq crates come from moq-dev/moq `main` by git rev (`02e82fdcd`), set in
-# `[workspace.dependencies]` of the root `Cargo.toml`. There is no `[patch]`
-# block. `Cargo.lock` pins the rev, so the `--locked` jobs build what a local
-# checkout builds. See "The moq dependency" in the README.
+# The moq crates come from git (for now the `iroh-live-pipewire` branch of
+# Frando/moq), set in `[workspace.dependencies]` of the root `Cargo.toml`.
+# There is no `[patch]` block. `Cargo.lock` pins the commit, so the `--locked`
+# jobs build what a local checkout builds. See "The moq dependency" in the
+# README.
 name: CI
 on:
   push:

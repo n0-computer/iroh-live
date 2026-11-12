@@ -287,7 +287,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "x11rb 0.13.2",
 ]
 
@@ -2035,7 +2035,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2649,7 +2649,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3398,7 +3398,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.21.11"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "derive_more",
@@ -4914,7 +4914,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "kio"
 version = "0.6.2"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "crossbeam-epoch",
  "kio-macros",
@@ -4928,7 +4928,7 @@ dependencies = [
 [[package]]
 name = "kio-macros"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5423,7 +5423,7 @@ dependencies = [
 [[package]]
 name = "moq-audio"
 version = "0.1.10"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bitstream-io",
  "block2 0.6.2",
@@ -5455,7 +5455,7 @@ dependencies = [
 [[package]]
 name = "moq-auth"
 version = "0.2.1"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "base64 0.23.1",
  "jsonwebtoken",
@@ -5482,7 +5482,7 @@ dependencies = [
 [[package]]
 name = "moq-congestion"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "kio",
  "rand",
@@ -5493,7 +5493,7 @@ dependencies = [
 [[package]]
 name = "moq-crypto"
 version = "0.0.11"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "data-encoding",
@@ -5617,7 +5617,7 @@ dependencies = [
 [[package]]
 name = "moq-json"
 version = "0.5.8"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "kio",
@@ -5632,7 +5632,7 @@ dependencies = [
 [[package]]
 name = "moq-loc"
 version = "0.2.19"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5642,7 +5642,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.5.1"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "serde",
  "serde_json",
@@ -5652,7 +5652,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.10.11"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -5687,7 +5687,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.3.10"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -5712,7 +5712,7 @@ dependencies = [
 [[package]]
 name = "moq-nvenc"
 version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "cudarc",
  "libloading 0.9.0",
@@ -5722,7 +5722,7 @@ dependencies = [
 [[package]]
 name = "moq-pattern"
 version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "serde",
 ]
@@ -5730,7 +5730,7 @@ dependencies = [
 [[package]]
 name = "moq-quic"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "fastbloom",
@@ -5752,7 +5752,7 @@ dependencies = [
 [[package]]
 name = "moq-relay"
 version = "0.17.2"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "anyhow",
  "axum",
@@ -5798,7 +5798,7 @@ dependencies = [
 [[package]]
 name = "moq-sock"
 version = "0.2.0"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -5813,7 +5813,7 @@ dependencies = [
 [[package]]
 name = "moq-stats"
 version = "0.2.12"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "kio",
  "moq-json",
@@ -5830,7 +5830,7 @@ dependencies = [
 [[package]]
 name = "moq-tokio"
 version = "0.19.23"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -5896,7 +5896,7 @@ dependencies = [
 [[package]]
 name = "moq-v4l"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -5905,7 +5905,7 @@ dependencies = [
 [[package]]
 name = "moq-vaapi"
 version = "0.2.1"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -5917,7 +5917,7 @@ dependencies = [
 [[package]]
 name = "moq-video"
 version = "0.1.10"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "anyhow",
  "ash",
@@ -6640,7 +6640,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7974,7 +7974,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 [[package]]
 name = "qmux"
 version = "0.7.0"
-source = "git+https://github.com/moq-dev/moq?rev=ced5a45c5#ced5a45c5fd2af1d64bafcdd523d56df2df891b2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-pipewire#5be1f6a622bb89de8b279dd9c9af9f82217f2c23"
 dependencies = [
  "bytes",
  "futures",
@@ -8550,7 +8550,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8609,7 +8609,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9748,10 +9748,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11008,7 +11008,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
