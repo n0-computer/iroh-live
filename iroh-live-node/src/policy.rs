@@ -4,8 +4,7 @@
 //! iroh [`EndpointId`]. Set a node's policy with
 //! [`NodeConfig::with_policy`](crate::NodeConfig::with_policy). The node asks
 //! it when it accepts a session, after the peer's MoQ SETUP, and before it
-//! dials a peer. All sessions with one peer share the authorization the
-//! policy gave the first of them.
+//! dials a peer. It decides each session on its own.
 //!
 //! To decide in the application, as a person who answers a call does, use a
 //! [`Queue`] and answer each [`Pending`] it yields. Raise

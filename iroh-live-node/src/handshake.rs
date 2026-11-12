@@ -11,11 +11,8 @@ use n0_error::{AnyError, e};
 use tracing::{debug, info, warn};
 
 use crate::{
-    ConnectOptions, Error, Grant, LinkKind, SessionRequest,
-    admission::{Admitted, authorize},
-    node::Shared,
-    state::served,
-    transport,
+    ConnectOptions, Error, Grant, LinkKind, SessionRequest, admission::authorize, node::Shared,
+    policy::Authorization, state::served, transport,
 };
 
 /// The moq hop id the routes of one link carry.
@@ -88,11 +85,10 @@ pub(crate) struct SessionParts {
     pub(crate) peer: EndpointId,
     pub(crate) connection: Connection,
     pub(crate) dialed: bool,
-    /// What the policy decided for the peer before the handshake.
-    ///
-    /// Every session with the peer shares one authorization, so registration
-    /// reconciles this one with the peer's.
-    pub(crate) admitted: Admitted,
+    /// What the policy decided for the session before the handshake.
+    pub(crate) authorization: Authorization,
+    /// The count of `Node::reauthorize` calls before that decision started.
+    pub(crate) reauthorized: u64,
     pub(crate) request: SessionRequest,
     pub(crate) moq: moq_net::Session,
     pub(crate) driver: moq_net::Driver,
@@ -111,10 +107,9 @@ fn connect_error(err: impl std::error::Error + Send + Sync + 'static) -> Error {
 
 /// Dials `peer` and completes the MoQ handshake as the client.
 ///
-/// Asks the node's policy first, unless the peer already has an
-/// authorization. The session's authorization is in place before the
-/// handshake, so the dialed peer sees only what its grant and the audiences
-/// let it see, as an accepted one does.
+/// Asks the node's policy first. The session's authorization is in place
+/// before the handshake, so the dialed peer sees only what its grant and the
+/// audiences let it see, as an accepted one does.
 pub(crate) async fn dial_session(
     shared: Arc<Shared>,
     peer: EndpointAddr,
@@ -122,13 +117,12 @@ pub(crate) async fn dial_session(
 ) -> Result<SessionParts, Error> {
     let peer_id = peer.id;
     let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
-    let admitted = authorize(&shared, peer_id, &request, true)
-        .await
-        .map_err(|source| {
+    let (authorization, reauthorized) = authorize(&shared, peer_id, &request, true).await.map_err(
+        |source| {
             info!(reason = source.reason(), code = %source.code(), "the policy rejected the dial");
             e!(Error::Rejected { source })
-        })?;
-    let grant = &admitted.authorization.grant;
+        },
+    )?;
     if let Some(congestion) = options.congestion {
         debug!(%congestion, "dialing with its own congestion controller");
     }
@@ -142,7 +136,7 @@ pub(crate) async fn dial_session(
     let transport = transport::Transport::new(connection)?;
     let connection = transport.connection().clone();
     let auth = auth::Handle::new();
-    authorize_direct(&shared, &auth, peer_id, grant);
+    authorize_direct(&shared, &auth, peer_id, &authorization.grant);
     let (moq, driver) = client_handshake(
         transport,
         &options,
@@ -160,7 +154,8 @@ pub(crate) async fn dial_session(
         peer: peer_id,
         connection,
         dialed: true,
-        admitted,
+        authorization,
+        reauthorized,
         request,
         moq,
         driver,

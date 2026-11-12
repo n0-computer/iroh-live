@@ -321,6 +321,7 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
             peer: iroh_relay,
             hop,
             grant: Some(Grant::everything()),
+            authorized: None,
             consume: config.consume,
             auth: auth.clone(),
             session: None,

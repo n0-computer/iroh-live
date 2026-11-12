@@ -75,8 +75,8 @@ impl Node {
     /// Widens what `peer` may publish on this node to `path`, for as long as the claim lives.
     ///
     /// This is how a ticket subscribe reads a path the node's grant would not
-    /// let the peer publish. The claim is added to the peer's grant on top of
-    /// its base grant, on every session with the peer, including ones that
+    /// let the peer publish. The claim is added on top of each session's
+    /// grant, on every session with the peer, including ones that
     /// start later. Dropping the last claim on a path narrows the grant again,
     /// and moq then ends what local readers read at the path from the peer.
     ///

@@ -304,19 +304,23 @@ The node asks its policy at these times:
 | An authorization reaches its `expires` time | `Reauthorize` |
 | The application calls `Node::reauthorize(peer)` or `Node::reauthorize_all()` | `Reauthorize` |
 
-Every session with one peer shares one authorization. A second session with
-the peer reuses it, unless it brings a token that no other session brought.
-Then the node decides again with that token.
+The node decides each session on its own, with the path and token that
+session opened with. A peer's second session asks the policy again, so a
+`Queue` sees it, and a token counts only for the session that presented it.
+`Node::reauthorize(peer)` decides every session with the peer again. A session
+whose first decision is still running when the application calls
+`reauthorize` or `reauthorize_all` holds nothing once it registers, and is
+decided again.
 
-A new decision replaces the old one, and the node applies it to every session
-with the peer. A rejection closes all of them with the rejection's code. When
-an authorization expires before the new decision arrives, the peer's
-sessions may do nothing until it does.
+A new decision replaces the session's authorization. A rejection closes the
+session with the rejection's code. When an authorization expires before the
+new decision arrives, the session may do nothing until it does.
 
 Each decision may take up to `NodeConfig::decide_timeout`, 10 seconds by
 default. A first decision that takes longer rejects the session with
 `Timeout`. A later one that times out, or finds a `Queue` full, is not a
-rejection: the peer keeps its authorization, and the node asks again later.
+rejection: the session keeps its authorization, and the node asks again
+later.
 
 On the dialing side, a rejection by this node's own policy fails the dial with
 `Error::Rejected`. moq-lite-06 has no message for a refusal, so a rejection by
@@ -324,8 +328,8 @@ the remote node shows in one of two ways. The dial fails with
 `Error::Refused`, or the dial succeeds and the session then closes with the
 remote's code.
 
-`Node::grant_for(peer)` returns the authorization a peer holds while it has a
-session.
+`Node::grant_for(peer)` returns the authorization of the peer's newest session
+that holds one, and `Session::grant()` the grant of one session.
 
 ## Ticket claims
 

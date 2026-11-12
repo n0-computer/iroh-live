@@ -54,9 +54,9 @@ out of an audience loses the path at once, and what it read there ends with
 `Unauthorized`. Every link serves only the node's own publications, never a
 route the node learned from another peer or a relay.
 
-The policy decides each peer when a session opens, in either direction, and
-again when an authorization expires and on `Node::reauthorize`. A new decision applies to every session with the peer at
-once, and a rejection closes them. `policy::Open`, `Closed`, `from_fn`
+The policy decides each session when it opens, in either direction, and
+again when its authorization expires and on `Node::reauthorize`. A new
+decision replaces the session's authorization, and a rejection closes it. `policy::Open`, `Closed`, `from_fn`
 and `filter` compose policies:
 
 ```rust

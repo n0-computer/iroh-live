@@ -309,62 +309,6 @@ fn sessions_with(node: &Node, peer: EndpointId) -> Vec<Session> {
         .collect()
 }
 
-/// A session that registers while a queued reauthorization waits does not keep the old rights.
-#[tokio::test]
-#[traced_test]
-async fn a_session_opened_during_a_queued_reauthorize_is_rejected_with_the_rest() {
-    let queue = policy::Queue::new(16);
-    let alice = Peer::bare(NodeConfig::default().with_policy(queue.clone())).await;
-    let bob_endpoint = endpoint().await;
-    let bob = bob_endpoint.id();
-    let first = dialer(&bob_endpoint);
-
-    let dial = tokio::spawn({
-        let first = first.clone();
-        let addr = alice.endpoint.addr();
-        async move { first.connect(addr).await }
-    });
-    let pending = step("bob asks to connect", queue.next())
-        .await
-        .expect("a request");
-    pending.admit(Grant::everything());
-    let first_session = step("bob's first dial", dial)
-        .await
-        .expect("no panic")
-        .expect("admitted");
-    eventually("alice registers bob", || {
-        alice.node.grant_for(bob).is_some()
-    })
-    .await;
-
-    alice.node.reauthorize(bob);
-    let held = step("the application is asked", queue.next())
-        .await
-        .expect("a request");
-    assert_eq!(held.request().event(), Event::Reauthorize);
-
-    // Bob opens a second session while the application decides.
-    let second = dialer(&bob_endpoint);
-    let second_session = step("bob's second dial", second.connect(alice.endpoint.addr()))
-        .await
-        .expect("the stored authorization admits it");
-    eventually("alice registers both sessions", || {
-        sessions_with(&alice.node, bob).len() == 2
-    })
-    .await;
-
-    held.reject(Rejection::new("removed"));
-    step("the first session closes", first_session.closed()).await;
-    step("the second session closes", second_session.closed()).await;
-    eventually("alice forgets bob", || {
-        !has_session_with(&alice.node, bob) && alice.node.grant_for(bob).is_none()
-    })
-    .await;
-
-    close(&[&first, &second], &bob_endpoint).await;
-    alice.shutdown().await;
-}
-
 /// A policy whose `Connect` decision for the path `slow` waits for the test.
 ///
 /// It decides that one as the policy stood when it started, as a snapshot

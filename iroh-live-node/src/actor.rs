@@ -16,7 +16,7 @@ use tokio::{
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::{
-    ConnectOptions, Error, LinkId, LinkKind, Session, SessionRequest,
+    ConnectOptions, Error, LinkId, LinkKind, Session,
     admission::decide,
     handshake::{Hop, SessionParts, dial_session},
     link::{self, LinkState},
@@ -24,14 +24,11 @@ use crate::{
     policy::{Authorization, Event, PeerRequest, Rejection},
     reauth::Reauth,
     session::SessionInner,
-    state::{LinkEntry, Registered},
+    state::{Authorized, LinkEntry},
 };
 
-/// What one re-decide asked: the peer and the epoch it started at.
-type Asked = (EndpointId, u64);
-
-/// The result of one re-decide: what it asked, and the decision.
-type Redecided = (Asked, Result<Authorization, Rejection>);
+/// The result of one re-decide: the session's link, and the decision.
+type Redecided = (LinkId, Result<Authorization, Rejection>);
 
 /// How long [`Node::shutdown`] gives a session to tell its peer it is closing.
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
@@ -63,12 +60,12 @@ pub(crate) struct Actor {
     pending: HashMap<EndpointId, Vec<oneshot::Sender<Result<Session, Error>>>>,
     dials: JoinSet<Result<SessionParts, Error>>,
     dial_ids: HashMap<tokio::task::Id, EndpointId>,
-    /// When each peer is decided again, and which decisions are current.
+    /// When each session is decided again.
     reauth: Reauth,
     /// The re-decides in flight.
     decisions: JoinSet<Redecided>,
-    /// What each re-decide task asked, so a task that panics still finishes.
-    decision_ids: HashMap<tokio::task::Id, Asked>,
+    /// The link each re-decide task decides, so a task that panics still finishes.
+    decision_ids: HashMap<tokio::task::Id, LinkId>,
 }
 
 impl Drop for Actor {
@@ -153,7 +150,6 @@ impl Actor {
             state.closed = true;
             state.publications.clear();
             state.links.clear();
-            state.clear_peers();
         }
         self.shared.sessions.set(Vec::new()).ok();
         // Anyone still waiting on a dial learns it will not come.
@@ -269,92 +265,87 @@ impl Actor {
         if requests.all {
             debug!(
                 peers = self.peers.len(),
-                "deciding every peer again, as asked"
+                "deciding every session again, as asked"
             );
             self.reauth.request_all();
         }
         for peer in requests.peers {
-            if self.reauth.request(&peer) {
-                debug!(peer = %peer.fmt_short(), "deciding the peer again, as asked");
+            for session in self.peers.get(&peer).into_iter().flatten() {
+                if self.reauth.request(&session.inner.link) {
+                    debug!(peer = %peer.fmt_short(), link = %session.inner.link, "deciding the session again, as asked");
+                }
             }
         }
     }
 
-    /// Takes the rights of the peers whose authorization expired, and asks the policy again.
+    /// Takes the rights of the sessions whose authorization expired, and asks the policy again.
     fn deadline_passed(&mut self) {
         let expired = self.reauth.expire(tokio::time::Instant::now().into_std());
         if expired.is_empty() {
             return;
         }
         let mut state = self.shared.state.lock().expect("poisoned");
-        for peer in expired {
-            info!(peer = %peer.fmt_short(), "the peer's authorization expired, narrowing it until the policy decides again");
-            state.lapse(&peer);
+        for link in expired {
+            info!(%link, "the session's authorization expired, narrowing it until the policy decides again");
+            state.lapse(link);
         }
+    }
+
+    /// Returns the session on `link`, if it is still listed.
+    fn session(&self, link: LinkId) -> Option<&Session> {
+        self.peers
+            .values()
+            .flatten()
+            .find(|session| session.inner.link == link)
     }
 
     /// Starts the re-decides that wait, as far as the concurrency limit allows.
+    ///
+    /// Each session is decided again with the request it opened with, so a
+    /// token it presented is verified again.
     fn start_decisions(&mut self) {
-        while let Some(peer) = self.reauth.start() {
-            let (request, dialed) = self.replayed_request(&peer);
-            let started = self.shared.state.lock().expect("poisoned").next_epoch();
-            let mut request = PeerRequest::new(peer, request, Event::Reauthorize);
-            if dialed {
+        while let Some(link) = self.reauth.start() {
+            let Some(session) = self.session(link) else {
+                self.reauth.finish(&link);
+                continue;
+            };
+            let inner = &session.inner;
+            let mut request =
+                PeerRequest::new(inner.peer, inner.request.clone(), Event::Reauthorize);
+            if inner.dialed {
                 request = request.with_dialed();
             }
+            let span = info_span!("redecide", peer = %inner.peer.fmt_short(), %link);
             let shared = self.shared.clone();
-            let asked = (peer, started);
-            let handle = self.decisions.spawn(
-                async move {
-                    let decision = decide(&shared, &request).await;
-                    (asked, decision)
-                }
-                .instrument(info_span!("redecide", peer = %peer.fmt_short(), started)),
-            );
-            self.decision_ids.insert(handle.id(), asked);
+            let handle = self
+                .decisions
+                .spawn(async move { (link, decide(&shared, &request).await) }.instrument(span));
+            self.decision_ids.insert(handle.id(), link);
         }
     }
 
-    /// Returns the request a re-decide of `peer` replays, and whether this node dialed it.
+    /// Applies a finished re-decide to its session.
     ///
-    /// That is the newest session's that carries a token, else the newest
-    /// session's. A peer's sessions share one authorization, so the token
-    /// that grants the most recent rights is the one to verify again. A dial
-    /// carries no token, so a dialed session never hides an accepted
-    /// session's token.
-    fn replayed_request(&self, peer: &EndpointId) -> (SessionRequest, bool) {
-        let sessions = self.peers.get(peer).map(Vec::as_slice).unwrap_or_default();
-        sessions
-            .iter()
-            .rev()
-            .find(|session| session.inner.request.token().is_some())
-            .or_else(|| sessions.last())
-            .map(|session| (session.inner.request.clone(), session.inner.dialed))
-            .unwrap_or_default()
-    }
-
-    /// Applies a finished re-decide, unless a newer decision already applied.
-    ///
-    /// An authorization replaces the peer's on every session with it. A
-    /// rejection takes the peer's rights at once and closes those sessions
-    /// with the rejection's code. A decision that timed out or found a full
-    /// queue keeps the peer's authorization and runs again later.
+    /// An authorization replaces the session's. A rejection takes the
+    /// session's rights at once and closes it with the rejection's code. A
+    /// decision that timed out or found a full queue keeps the session's
+    /// authorization and runs again later.
     fn redecided(&mut self, decided: Result<(tokio::task::Id, Redecided), tokio::task::JoinError>) {
-        let ((peer, started), decision) = match decided {
+        let (link, decision) = match decided {
             Ok((id, decided)) => {
                 self.decision_ids.remove(&id);
                 decided
             }
             Err(err) => {
-                let Some(asked) = self.decision_ids.remove(&err.id()) else {
+                let Some(link) = self.decision_ids.remove(&err.id()) else {
                     return;
                 };
-                error!(peer = %asked.0.fmt_short(), error = %err, "re-decide task failed, rejecting the peer");
-                (asked, Err(Rejection::new("the policy failed")))
+                error!(%link, error = %err, "re-decide task failed, rejecting the session");
+                (link, Err(Rejection::new("the policy failed")))
             }
         };
-        if !self.reauth.finish(&peer) {
-            debug!(peer = %peer.fmt_short(), "the peer left before its decision");
+        if !self.reauth.finish(&link) {
+            debug!(%link, "the session ended before its decision");
             return;
         }
         if let Err(rejection) = &decision
@@ -362,34 +353,30 @@ impl Actor {
         {
             let wait = self
                 .reauth
-                .retry(&peer, tokio::time::Instant::now().into_std());
+                .retry(&link, tokio::time::Instant::now().into_std());
             warn!(
-                peer = %peer.fmt_short(),
+                %link,
                 reason = rejection.reason(),
                 ?wait,
-                "the policy did not decide, keeping the peer's authorization and asking again later",
+                "the policy did not decide, keeping the session's authorization and asking again later",
             );
             return;
         }
-        let applied = self.shared.state.lock().expect("poisoned").decided(
-            &peer,
-            started,
-            decision.as_ref().ok().cloned(),
-        );
-        if !applied {
-            debug!(peer = %peer.fmt_short(), started, "dropping a decision a newer one replaced");
-            return;
-        }
+        self.shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .decided(link, decision.as_ref().ok().cloned());
         match decision {
             Ok(authorization) => {
                 debug!(
-                    peer = %peer.fmt_short(),
+                    %link,
                     grant = ?authorization.grant,
                     expires = ?authorization.expires,
                     "the policy decided again",
                 );
                 self.reauth.decided(
-                    &peer,
+                    &link,
                     &authorization,
                     tokio::time::Instant::now().into_std(),
                     SystemTime::now(),
@@ -397,16 +384,15 @@ impl Actor {
             }
             Err(rejection) => {
                 info!(
-                    peer = %peer.fmt_short(),
+                    %link,
                     reason = rejection.reason(),
                     code = %rejection.code(),
-                    "the policy rejected the peer, closing its sessions",
+                    "the policy rejected the session, closing it",
                 );
-                // The state took the peer's rights already, so a session that
-                // is still closing keeps nothing, and a pending one that was
-                // decided earlier does not undo the rejection.
-                self.reauth.remove(&peer);
-                for session in self.peers.get(&peer).into_iter().flatten() {
+                // The state took the session's rights already, so it keeps
+                // nothing while it closes.
+                self.reauth.remove(&link);
+                if let Some(session) = self.session(link) {
                     session.close(rejection.code().clone());
                 }
             }
@@ -436,7 +422,8 @@ impl Actor {
             peer,
             connection,
             dialed,
-            admitted,
+            authorization,
+            reauthorized,
             request,
             moq,
             driver,
@@ -444,18 +431,6 @@ impl Actor {
         } = parts;
         let link_state = LinkState::default();
         let hop = Hop::of(&peer);
-        // A token no other session with the peer brought may grant more than
-        // the authorization this session reuses, so the policy sees it.
-        let new_token = !admitted.fresh
-            && request.token().is_some_and(|token| {
-                !self
-                    .peers
-                    .get(&peer)
-                    .into_iter()
-                    .flatten()
-                    .any(|session| session.inner.request.token() == Some(token))
-            });
-        let authorization = admitted.authorization.clone();
         let mut state = self.shared.state.lock().expect("poisoned");
         let link = LinkId(state.next_id());
         let session = Session {
@@ -472,11 +447,10 @@ impl Actor {
                 closing: Default::default(),
             }),
         };
-        // The peer's authorization holds for every session with it. This
-        // session's applies only if no newer decision or trigger came since.
-        let registered = admitted
-            .pending
-            .register(&mut state, authorization, admitted.decided);
+        // A reauthorize that came while the policy decided may have taken
+        // rights the decision still grants, so the session holds nothing
+        // until it is decided again.
+        let stale = state.reauthorized != reauthorized;
         state.add_link(
             link,
             LinkEntry {
@@ -484,6 +458,7 @@ impl Actor {
                 peer: Some(peer),
                 hop,
                 grant: None,
+                authorized: (!stale).then(|| Authorized::new(authorization.clone())),
                 consume: true,
                 auth,
                 session: Some(session.clone()),
@@ -491,23 +466,17 @@ impl Actor {
             },
         );
         drop(state);
-        self.reauth.register(peer);
-        match registered {
-            Registered::Applied => self.reauth.decided(
-                &peer,
-                &admitted.authorization,
+        self.reauth.register(link);
+        if stale {
+            debug!(peer = %peer.fmt_short(), %link, "a reauthorize came while the session was decided, deciding it again");
+            self.reauth.request(&link);
+        } else {
+            self.reauth.decided(
+                &link,
+                &authorization,
                 tokio::time::Instant::now().into_std(),
                 SystemTime::now(),
-            ),
-            Registered::Kept => {}
-            Registered::Stale => {
-                debug!(peer = %peer.fmt_short(), "the session's authorization went stale before it registered, deciding again");
-                self.reauth.request(&peer);
-            }
-        }
-        if new_token && registered != Registered::Stale {
-            debug!(peer = %peer.fmt_short(), "the session brought a new token, deciding again");
-            self.reauth.request(&peer);
+            );
         }
         (session, driver)
     }
@@ -592,21 +561,18 @@ impl Actor {
                 error!(peer = %peer.fmt_short(), %link, error = %err, "session task failed")
             }
         }
-        let mut last = false;
         if let Some(sessions) = self.peers.get_mut(&peer) {
             sessions.retain(|session| session.inner.link != link);
             if sessions.is_empty() {
                 self.peers.remove(&peer);
-                last = true;
             }
         }
-        let mut state = self.shared.state.lock().expect("poisoned");
-        state.remove_link(link);
-        if last {
-            state.peer_left(&peer);
-            self.reauth.remove(&peer);
-        }
-        drop(state);
+        self.shared
+            .state
+            .lock()
+            .expect("poisoned")
+            .remove_link(link);
+        self.reauth.remove(&link);
         self.publish_sessions();
     }
 
@@ -619,8 +585,9 @@ impl Actor {
 
 /// Reports whether a re-decide's `rejection` only means the policy could not decide now.
 ///
-/// A timeout and a full queue say nothing about the peer, so the peer keeps
-/// its authorization and is asked again. An expiry still narrows it on time.
+/// A timeout and a full queue say nothing about the peer, so the session
+/// keeps its authorization and is asked again. An expiry still narrows it on
+/// time.
 fn undecided(rejection: &Rejection) -> bool {
     matches!(
         rejection.code(),

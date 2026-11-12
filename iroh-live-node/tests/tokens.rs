@@ -179,11 +179,6 @@ async fn an_expired_delegation_narrows_the_device_to_the_fallback() {
     bob.shutdown().await;
 }
 
-/// A device whose token arrives on a later session gets its delegated scope, and keeps it.
-///
-/// Alice dials the device first, so the stored authorization is the
-/// token-less fallback. A later session without a token does not hide the
-/// chain from a re-decide.
 /// A policy that counts the decisions of the one it wraps.
 #[derive(Debug)]
 struct Counted<T> {
@@ -199,9 +194,14 @@ impl<T: Policy<EndpointId>> Policy<EndpointId> for Counted<T> {
     }
 }
 
+/// A token widens only the session that presented it, and its re-decide verifies it again.
+///
+/// Alice dials the device first, so that session holds the token-less
+/// fallback. The device's own session with the chain gets the delegated
+/// scope, and keeps it when alice decides every session again.
 #[tokio::test]
 #[traced_test]
-async fn a_token_on_a_later_session_widens_the_device_and_survives_a_reauthorize() {
+async fn a_token_widens_only_its_own_session_and_survives_a_reauthorize() {
     let decisions = Arc::new(AtomicUsize::new(0));
     let verifier = RcanVerifier::new(alice_account().verifying_key(), "spaces/alice");
     let alice = Peer::bare(NodeConfig::default().with_policy(Counted {
@@ -210,13 +210,10 @@ async fn a_token_on_a_later_session_widens_the_device_and_survives_a_reauthorize
     }))
     .await;
     let bob = Peer::spawn().await;
-    step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
+    let dialed = step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("a dial carries no token, so the fallback admits");
-    assert_eq!(
-        admitted(&alice, &bob).await,
-        Authorization::from(Grant::subscribe_only())
-    );
+    assert_eq!(dialed.grant(), Grant::subscribe_only());
 
     // Bob's device opens a session of its own with the chain.
     let tokened = Node::new(bob.endpoint.clone(), NodeConfig::default());
@@ -230,49 +227,35 @@ async fn a_token_on_a_later_session_widens_the_device_and_survives_a_reauthorize
     )
     .await
     .expect("admitted");
-    eventually("the chain widens bob", || {
-        alice
-            .node
-            .grant_for(bob.id())
-            .is_some_and(|current| current.grant.allows_publish("spaces/alice/bob/cam"))
-    })
-    .await;
-
-    // A newer session without a token, then a re-decide.
-    let plain = Node::new(bob.endpoint.clone(), NodeConfig::default());
-    step(
-        "bob dials without a token",
-        plain.connect(alice.endpoint.addr()),
-    )
-    .await
-    .expect("admitted");
-    eventually("alice lists three sessions with bob", || {
+    let with_token = || {
         alice
             .node
             .sessions()
             .get()
-            .iter()
-            .filter(|session| session.peer() == bob.id())
-            .count()
-            == 3
+            .into_iter()
+            .find(|session| session.peer() == bob.id() && session.request().token().is_some())
+    };
+    eventually("alice registers the session with the chain", || {
+        with_token().is_some()
     })
     .await;
+    let with_token = with_token().expect("the session with the chain");
+    assert!(with_token.grant().allows_publish("spaces/alice/bob/cam"));
+    assert_eq!(dialed.grant(), Grant::subscribe_only(), "the dial stays");
+
     let before = decisions.load(Ordering::SeqCst);
     alice.node.reauthorize(bob.id());
-    eventually("alice decides again", || {
-        decisions.load(Ordering::SeqCst) > before
+    eventually("alice decides both sessions again", || {
+        decisions.load(Ordering::SeqCst) >= before + 2
     })
     .await;
     assert!(
-        alice
-            .node
-            .grant_for(bob.id())
-            .is_some_and(|current| current.grant.allows_publish("spaces/alice/bob/cam")),
+        with_token.grant().allows_publish("spaces/alice/bob/cam"),
         "the re-decide verified the chain again"
     );
+    assert_eq!(dialed.grant(), Grant::subscribe_only());
 
     tokened.shutdown().await;
-    plain.shutdown().await;
     alice.shutdown().await;
     bob.shutdown().await;
 }

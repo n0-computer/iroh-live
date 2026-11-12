@@ -65,14 +65,14 @@ pub struct NodeConfig {
     /// The node asks it when it accepts a session, after the peer's MoQ
     /// SETUP, and before it dials a peer. A rejection closes an accepted
     /// session with the rejection's code, and fails a dial with
-    /// [`Error::Rejected`]. Every session with one peer shares one
-    /// authorization: a later session reuses the peer's, and one that
-    /// brings a token no other session brought makes the node ask again.
+    /// [`Error::Rejected`]. Each session is decided on its own, with the
+    /// request and token it opened with, so a peer's second session asks
+    /// the policy again.
     ///
-    /// The node asks again about a live peer, with an
-    /// [`Event`](policy::Event) that says why. When an authorization
-    /// expires, the peer's sessions may do nothing until the new decision
-    /// applies.
+    /// The node asks again about a live session when its authorization
+    /// expires and on [`Node::reauthorize`], with
+    /// [`Event::Reauthorize`](policy::Event::Reauthorize). An expired
+    /// session may do nothing until the new decision applies.
     ///
     /// `None` is [`policy::Open`] with [`Grant::subscribe_only`]: every peer
     /// may subscribe to anything and publish nothing.
@@ -83,9 +83,9 @@ pub struct NodeConfig {
     /// [`moq_net::Error::Timeout`]. The default is [`DECIDE_TIMEOUT`]. Raise it
     /// when a person answers, as with a [`policy::Queue`].
     ///
-    /// When the node asks again about a live peer, a timeout or a full
-    /// queue ([`moq_net::Error::TooManyRequests`]) is no rejection: the peer
-    /// keeps its authorization, and the node asks again later.
+    /// When the node asks again about a live session, a timeout or a full
+    /// queue ([`moq_net::Error::TooManyRequests`]) is no rejection: the
+    /// session keeps its authorization, and the node asks again later.
     pub decide_timeout: Duration,
     /// A route table to use instead of a new one, such as a relay's cluster origin.
     ///
@@ -286,36 +286,37 @@ impl Node {
         self.shared.id
     }
 
-    /// Returns the authorization the policy gave `peer`, while it holds a session.
+    /// Returns the authorization the policy gave the newest session with `peer` that holds one.
     ///
-    /// Every session with the peer shares it. Ticket claims widen the grant
-    /// on top of it, which [`Session::grant`] includes. An expired
-    /// authorization stays here until the policy decides again, while
-    /// [`Session::grant`] already grants nothing.
+    /// The node decides each session on its own, so two sessions with one
+    /// peer may hold different authorizations; [`Session::grant`] reads one
+    /// session's. Ticket claims widen the grant on top of it, which
+    /// [`Session::grant`] includes. An expired authorization stays here until
+    /// the policy decides again, while [`Session::grant`] already grants
+    /// nothing. `None` once the peer has no session, or none that holds an
+    /// authorization.
     #[must_use]
     pub fn grant_for(&self, peer: EndpointId) -> Option<Authorization> {
         self.shared
             .state
             .lock()
             .expect("poisoned")
-            .peer_authorization(&peer)
+            .newest_authorization(&peer)
             .cloned()
     }
 
-    /// Asks the policy again about `peer`, for every live session with it.
+    /// Asks the policy again about every live session with `peer`.
     ///
-    /// A session with the peer that is still being decided or handshaken
-    /// is decided again too, so it never registers with rights from before
-    /// the call. Call it when state the policy reads changes, such as a
-    /// [`filter`](Policy::filter) predicate. The decision runs in the
-    /// background: a new authorization replaces the old one on every session
-    /// with the peer, and a rejection closes them with its code.
+    /// Call it when state the policy reads changes, such as a
+    /// [`filter`](Policy::filter) predicate. The decisions run in the
+    /// background: a new authorization replaces a session's, and a
+    /// rejection closes that session with its code.
+    ///
+    /// A session of any peer whose first decision is still running when
+    /// this is called is decided again once it registers, and holds nothing
+    /// until then, so it never keeps rights from before the call.
     pub fn reauthorize(&self, peer: EndpointId) {
-        // Marked at once, so a session that is still being decided or
-        // handshaken is decided again too.
-        if !self.shared.state.lock().expect("poisoned").mark(&peer) {
-            return;
-        }
+        self.shared.state.lock().expect("poisoned").reauthorized += 1;
         self.shared
             .reauth_requests
             .lock()
@@ -325,9 +326,9 @@ impl Node {
         self.shared.reauth_notify.notify_one();
     }
 
-    /// Asks the policy again about every peer with a live session.
+    /// Asks the policy again about every live session, as [`reauthorize`](Self::reauthorize) does for one peer.
     pub fn reauthorize_all(&self) {
-        self.shared.state.lock().expect("poisoned").mark_all();
+        self.shared.state.lock().expect("poisoned").reauthorized += 1;
         self.shared.reauth_requests.lock().expect("poisoned").all = true;
         self.shared.reauth_notify.notify_one();
     }

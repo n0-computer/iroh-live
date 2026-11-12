@@ -118,15 +118,18 @@ fails the dial with `Error::Rejected`. Without a policy, every session is
 admitted with `Grant::subscribe_only()`. Each decision may take up to
 `NodeConfig::decide_timeout`. `Node::sessions()` watches the open sessions.
 
-The node keeps one authorization per peer (`state.rs`), which every session
-with the peer shares. The effective grant of a session is that authorization's
-grant plus the peer's ticket claims. A deadline per peer (`reauth.rs`) fires at
+The node keeps one authorization per session on its link (`state.rs`). The
+effective grant of a session is that authorization's grant plus the peer's
+ticket claims. A deadline per session (`reauth.rs`) fires at
 the authorization's `expires` time, and the actor then asks the policy again.
-So does `Node::reauthorize`. A new decision replaces the authorization and
-re-authorizes the peer's sessions, and a rejection closes them all. One
-decision per peer runs at a time, and at most 16 run at once. A trigger that
-arrives while a decision runs makes the actor ask once more afterwards, so no
-change is lost. [Access control](../guide/access.md) describes the policies
+So does `Node::reauthorize`, for each session with the peer. A new decision
+replaces the session's authorization and re-authorizes it, and a rejection
+closes it. One decision per session runs at a time, and at most 16 run at
+once. A trigger that arrives while a decision runs makes the actor ask once
+more afterwards, so no change is lost. A session whose first decision started
+before a `reauthorize` call registers with nothing and is decided again: the
+state counts the calls, and the session compares the count from before its
+decision. [Access control](../guide/access.md) describes the policies
 from the application's side.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session

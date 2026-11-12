@@ -254,7 +254,7 @@ async fn two_sessions_with(node: &iroh_live_node::Node, peer: iroh::EndpointId) 
 
 #[tokio::test]
 #[traced_test]
-async fn the_sessions_of_one_peer_share_its_grant() {
+async fn reauthorize_decides_every_session_of_the_peer() {
     // A simultaneous dial leaves two sessions with one peer on at least one
     // side almost every time. Try a few pairs until one does.
     const PAIRS: usize = 8;
@@ -286,9 +286,10 @@ async fn the_sessions_of_one_peer_share_its_grant() {
             for grant in [Grant::nothing(), Grant::everything()] {
                 *policy_grant.lock().expect("poisoned") = Some(grant.clone());
                 node.node.reauthorize(peer.id());
-                until_granted(node, peer.id(), &grant).await;
-                assert_eq!(first.grant(), grant, "on the first session");
-                assert_eq!(second.grant(), grant, "on the second session");
+                eventually("both sessions take the new grant", || {
+                    first.grant() == grant && second.grant() == grant
+                })
+                .await;
             }
             checked = true;
         }

@@ -77,19 +77,21 @@ impl Session {
         self.inner.dialed
     }
 
-    /// Returns what the peer may do on this node.
+    /// Returns what the peer may do on this session.
     ///
-    /// That is the peer's base grant, widened by the paths that live ticket
-    /// subscriptions claimed for the peer (see [`Node::claim_path`](crate::Node::claim_path)).
-    /// Once the peer's last session has ended, the grant is [`Grant::nothing`].
+    /// That is the grant the policy decided for this session, widened by the
+    /// paths that live ticket subscriptions claimed for the peer (see
+    /// [`Node::claim_path`](crate::Node::claim_path)). It is
+    /// [`Grant::nothing`] after a rejection, once the authorization expired,
+    /// and once the session has ended.
     #[must_use]
     pub fn grant(&self) -> Grant {
         self.inner
             .shared
             .upgrade()
-            .and_then(|shared| {
+            .map(|shared| {
                 let state = shared.state.lock().expect("poisoned");
-                state.peer_effective_grant(&self.inner.peer)
+                state.session_grant(self.inner.link)
             })
             .unwrap_or_else(Grant::nothing)
     }
