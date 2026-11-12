@@ -108,7 +108,7 @@ async fn pcm(
             }
             Err(broadcast::error::RecvError::Closed) => break,
         };
-        frame.timestamp = source_clock.map(frame.timestamp);
+        frame.timestamp = source_clock.map(frame.timestamp, None);
         encoder.write(&frame).map_err(Error::encoder)?;
         stats.update(|stats| stats.frames += 1);
     }

@@ -84,6 +84,13 @@ from source timestamps to the broadcast clock (`Rebase`). Every rung carries
 the same timestamp for the same picture, so a subscriber that switches sees no
 jump.
 
+The broadcast remembers its last 1024 published pictures. For each it keeps
+the source timestamp and the instant the frame entered the source, which
+`VideoFrames::sent_at` reports: when the application pushed it, or when a
+capture thread handed it over. A subscriber that echoes a decoded timestamp
+back lets the publisher find its own frame with `video_source_timestamp` and
+measure the round trip from capture with `video_captured_at`.
+
 Before a rendition is advertised, `encode::Config::probe()` runs once for it,
 so the catalog entry describes exactly what the track will carry. The whole
 ladder is probed before any of it reaches the catalog. With the encoder `Auto`

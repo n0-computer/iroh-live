@@ -544,7 +544,7 @@ impl Encoder {
                         return self.stopped();
                     }
                 };
-                let mapped = self.clock.map(frame.timestamp);
+                let mapped = self.clock.map(frame.timestamp, self.frames.sent_at());
                 if self.clock.broke() {
                     // Open a group so the new source starts with a keyframe. A
                     // backend that cannot cut keeps its own interval.
@@ -666,7 +666,7 @@ impl Encoder {
                 .position(|(source, _)| *source == packet.timestamp);
             packet.timestamp = match pending.and_then(|index| self.pending.remove(index)) {
                 Some((_, mapped)) => mapped,
-                None => self.clock.map(packet.timestamp),
+                None => self.clock.map(packet.timestamp, None),
             };
         }
     }
@@ -782,8 +782,8 @@ mod tests {
     #[test]
     fn a_source_clock_keeps_the_source_cadence() {
         let mut source_clock = SourceClock::new(moq_mux::Clock::new());
-        let first = source_clock.map(at(1_000_000));
-        let later = source_clock.map(at(1_033_333));
+        let first = source_clock.map(at(1_000_000), None);
+        let later = source_clock.map(at(1_033_333), None);
         assert_eq!(later.as_micros() - first.as_micros(), 33_333);
     }
 
@@ -791,19 +791,19 @@ mod tests {
     #[test]
     fn a_source_clock_that_goes_back_anchors_again_after_the_last_frame() {
         let mut source_clock = SourceClock::new(moq_mux::Clock::new());
-        let pattern = source_clock.map(at(80_000_000));
-        let camera = source_clock.map(at(20_000));
+        let pattern = source_clock.map(at(80_000_000), None);
+        let camera = source_clock.map(at(20_000), None);
         assert!(camera > pattern, "{camera:?} is not after {pattern:?}");
         assert!(camera.as_micros() - pattern.as_micros() < 1_000_000);
-        let next = source_clock.map(at(53_333));
+        let next = source_clock.map(at(53_333), None);
         assert_eq!(next.as_micros() - camera.as_micros(), 33_333);
     }
 
     #[test]
     fn a_source_clock_that_jumps_ahead_anchors_at_the_clock() {
         let mut source_clock = SourceClock::new(moq_mux::Clock::new());
-        let first = source_clock.map(at(20_000));
-        let jumped = source_clock.map(at(3_600_000_000));
+        let first = source_clock.map(at(20_000), None);
+        let jumped = source_clock.map(at(3_600_000_000), None);
         assert!(jumped.as_micros() - first.as_micros() < 1_000_000);
     }
 
@@ -812,8 +812,11 @@ mod tests {
     fn renditions_share_the_offset() {
         let mut first = SourceClock::new(moq_mux::Clock::new());
         let mut second = first.clone();
-        assert_eq!(first.map(at(20_000)), second.map(at(20_000)));
-        assert_eq!(first.map(at(90_000_000)), second.map(at(90_000_000)));
+        assert_eq!(first.map(at(20_000), None), second.map(at(20_000), None));
+        assert_eq!(
+            first.map(at(90_000_000), None),
+            second.map(at(90_000_000), None)
+        );
     }
 
     /// A successor's first frame lands after what its predecessor published on the track.
@@ -822,7 +825,7 @@ mod tests {
         let clock = moq_mux::Clock::new();
         let ahead = at(clock.now().as_micros() as u64 + 500_000);
         let mut source_clock = SourceClock::new(clock).after(Some(ahead));
-        assert!(source_clock.map(at(0)) > ahead);
+        assert!(source_clock.map(at(0), None) > ahead);
     }
 
     /// A recording source clock finds the source timestamp of each frame it mapped, across a break.
@@ -830,10 +833,15 @@ mod tests {
     fn a_recording_source_clock_maps_back_to_the_source() {
         let log = TimestampLog::default();
         let mut source_clock = SourceClock::new(moq_mux::Clock::new()).recording(log.clone());
-        let pattern = source_clock.map(at(80_000_000));
-        let camera = source_clock.map(at(20_000));
+        let sent = Instant::now();
+        let pattern = source_clock.map(at(80_000_000), Some(sent));
+        let camera = source_clock.map(at(20_000), None);
         assert_eq!(log.source(pattern), Some(at(80_000_000)));
         assert_eq!(log.source(camera), Some(at(20_000)));
+        assert_eq!(
+            log.get(pattern).and_then(|logged| logged.sent_at),
+            Some(sent)
+        );
         assert_eq!(log.source(at(1)), None, "nothing was published at 1 us");
     }
 
@@ -842,7 +850,7 @@ mod tests {
         let log = TimestampLog::default();
         let count = TIMESTAMP_HISTORY as u64 + 10;
         for micros in 1..=count {
-            log.record(at(micros), at(micros + 7));
+            log.record(at(micros), at(micros + 7), None);
         }
         assert_eq!(log.source(at(1)), None);
         assert_eq!(log.source(at(count)), Some(at(count + 7)));

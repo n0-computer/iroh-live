@@ -1027,6 +1027,77 @@ async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
     feeder.abort();
 }
 
+/// A decoded timestamp leads the publisher back to when its source frame was pushed.
+#[tokio::test]
+async fn a_decoded_timestamp_maps_back_to_when_its_frame_was_pushed() {
+    let format = VideoFormat {
+        size: moq_video::Size::new(64, 48),
+        rate: fps(30),
+    };
+    let (sender, source) = VideoSource::push(format);
+    // The window around each push, by the source timestamp it carried.
+    let pushed = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let feeder = tokio::spawn({
+        let pushed = pushed.clone();
+        async move {
+            let rgba = vec![0x80u8; format.size.pixels() as usize * 4];
+            let mut tick = tokio::time::interval(Duration::from_millis(33));
+            for index in 0u64.. {
+                tick.tick().await;
+                let surface = moq_video::Surface::rgba(&rgba, format.size).expect("valid");
+                let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
+                let before = std::time::Instant::now();
+                let open = sender
+                    .push(moq_video::Frame::new(surface, timestamp))
+                    .is_ok();
+                let after = std::time::Instant::now();
+                pushed
+                    .lock()
+                    .expect("poisoned")
+                    .insert(timestamp, (before, after));
+                if !open {
+                    return;
+                }
+            }
+        }
+    });
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            software(VideoEncoding::single(VideoRendition::new("video"))),
+        )
+        .expect("valid");
+    let player = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video_frames();
+    for _ in 0..3 {
+        let frame = tokio::time::timeout(TIMEOUT, frames.next())
+            .await
+            .expect("a frame")
+            .expect("the video plays");
+        let source = broadcast
+            .video_source_timestamp(frame.timestamp)
+            .expect("published here");
+        let captured = broadcast
+            .video_captured_at(frame.timestamp)
+            .expect("a pushed frame has a send instant");
+        let (before, after) = pushed.lock().expect("poisoned")[&source];
+        assert!(
+            before <= captured && captured <= after,
+            "{captured:?} is outside the push of {source:?}"
+        );
+    }
+    assert_eq!(
+        broadcast.video_captured_at(moq_net::Timestamp::from_micros(1).expect("1")),
+        None,
+        "nothing was published at 1 us"
+    );
+    drop(player);
+    feeder.abort();
+}
+
 /// A frame from the player's video looks up when its data arrived, before it was decoded.
 #[tokio::test]
 async fn a_presented_frame_knows_when_its_data_arrived() {

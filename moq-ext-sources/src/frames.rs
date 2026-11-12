@@ -3,13 +3,20 @@
 //! Players and sources both hand out this type, and every renderer reads it.
 //! It wraps a `tokio::sync::watch` channel. The producer overwrites one value,
 //! so a reader that falls behind skips to the newest picture instead of
-//! draining a backlog.
+//! draining a backlog. Each frame keeps the instant it was sent, which a
+//! reader gets from [`VideoFrames::sent_at`].
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
 
 use tokio::sync::watch;
 
 use crate::{Error, video};
+
+/// A frame in a slot, with the instant it was sent.
+type Sent = Option<(Arc<video::Frame>, Instant)>;
 
 /// The producing end of a frame stream.
 ///
@@ -18,7 +25,7 @@ use crate::{Error, video};
 #[derive(derive_more::Debug, Clone)]
 pub struct FrameSlot {
     #[debug(skip)]
-    tx: watch::Sender<Option<Arc<video::Frame>>>,
+    tx: watch::Sender<Sent>,
     failure: Arc<OnceLock<Arc<Error>>>,
 }
 
@@ -39,8 +46,15 @@ impl FrameSlot {
     }
 
     /// Replaces the current frame, waking every reader.
+    ///
+    /// Stamps the frame with the current instant, for [`VideoFrames::sent_at`].
     pub fn send(&self, frame: Arc<video::Frame>) {
-        self.tx.send_replace(Some(frame));
+        self.send_at(frame, Instant::now());
+    }
+
+    /// Replaces the current frame with one sent at `at`, for a stream that forwards another.
+    pub(crate) fn send_at(&self, frame: Arc<video::Frame>, at: Instant) {
+        self.tx.send_replace(Some((frame, at)));
     }
 
     /// Records why the stream is about to end, for [`FrameReader::failure`].
@@ -72,7 +86,7 @@ impl FrameSlot {
 #[derive(derive_more::Debug, Clone)]
 pub(crate) struct FrameReader {
     #[debug(skip)]
-    rx: watch::Receiver<Option<Arc<video::Frame>>>,
+    rx: watch::Receiver<Sent>,
     failure: Arc<OnceLock<Arc<Error>>>,
 }
 
@@ -100,14 +114,16 @@ impl FrameReader {
 #[derive(derive_more::Debug, Clone)]
 pub struct VideoFrames {
     #[debug(skip)]
-    rx: watch::Receiver<Option<Arc<video::Frame>>>,
+    rx: watch::Receiver<Sent>,
+    /// When the frame this handle last returned was sent.
+    sent_at: Option<Instant>,
 }
 
 impl VideoFrames {
     /// Creates a handle whose first [`next`](Self::next) returns the current frame.
-    fn new(mut rx: watch::Receiver<Option<Arc<video::Frame>>>) -> Self {
+    fn new(mut rx: watch::Receiver<Sent>) -> Self {
         rx.mark_changed();
-        Self { rx }
+        Self { rx, sent_at: None }
     }
 
     /// Returns the newest frame, seen or not, without moving the cursor.
@@ -115,7 +131,7 @@ impl VideoFrames {
     /// For render loops that redraw every vsync.
     #[must_use]
     pub fn current(&self) -> Option<Arc<video::Frame>> {
-        self.rx.borrow().clone()
+        self.rx.borrow().as_ref().map(|(frame, _)| frame.clone())
     }
 
     /// Waits for a frame newer than the last this handle returned.
@@ -128,7 +144,8 @@ impl VideoFrames {
     pub async fn next(&mut self) -> Option<Arc<video::Frame>> {
         loop {
             self.rx.changed().await.ok()?;
-            if let Some(frame) = self.rx.borrow_and_update().clone() {
+            if let Some((frame, at)) = self.rx.borrow_and_update().clone() {
+                self.sent_at = Some(at);
                 return Some(frame);
             }
         }
@@ -139,12 +156,25 @@ impl VideoFrames {
     /// For a render loop that draws only when the picture changed.
     #[must_use]
     pub fn try_next(&mut self) -> Option<Arc<video::Frame>> {
-        let frame = self.rx.borrow_and_update();
-        if frame.has_changed() {
-            frame.clone()
-        } else {
-            None
+        let sent = self.rx.borrow_and_update();
+        if !sent.has_changed() {
+            return None;
         }
+        let (frame, at) = sent.clone()?;
+        self.sent_at = Some(at);
+        Some(frame)
+    }
+
+    /// Returns when the frame that [`next`](Self::next) or
+    /// [`try_next`](Self::try_next) last returned entered the stream.
+    ///
+    /// For a source, that is when the application pushed the frame or the
+    /// capture thread handed it over, before any encoder saw it. For a player,
+    /// it is when the picture was presented. Returns `None` before the first
+    /// frame.
+    #[must_use]
+    pub fn sent_at(&self) -> Option<Instant> {
+        self.sent_at
     }
 
     /// Waits until the producer is gone.
@@ -209,6 +239,32 @@ mod tests {
         assert_eq!(frames.current().as_deref().map(micros), Some(4));
         assert_eq!(frames.try_next().as_deref().map(micros), Some(4));
         assert!(frames.try_next().is_none(), "the same frame twice");
+    }
+
+    #[tokio::test]
+    async fn a_frame_keeps_the_instant_it_was_sent() {
+        let slot = FrameSlot::new();
+        let mut frames = slot.frames();
+        assert_eq!(frames.sent_at(), None);
+        let before = Instant::now();
+        slot.send(frame(1));
+        let after = Instant::now();
+        frames.next().await.expect("a frame");
+        let sent = frames.sent_at().expect("stamped");
+        assert!(before <= sent && sent <= after, "{sent:?}");
+        let earlier = before - Duration::from_millis(5);
+        slot.send_at(frame(2), earlier);
+        assert!(
+            frames.current().is_some(),
+            "current leaves the cursor alone"
+        );
+        assert_eq!(frames.sent_at(), Some(sent));
+        frames.try_next().expect("a newer frame");
+        assert_eq!(
+            frames.sent_at(),
+            Some(earlier),
+            "a forwarded frame keeps its instant"
+        );
     }
 
     #[tokio::test]

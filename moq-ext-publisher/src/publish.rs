@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use moq_ext_sources::{AudioSource, Error, VideoSource};
@@ -161,28 +161,48 @@ const MAX_AHEAD: Duration = Duration::from_secs(1);
 /// About 30 s at 30 fps, far longer than a round trip to a subscriber takes.
 const TIMESTAMP_HISTORY: usize = 1024;
 
-/// The source timestamp of each recently published video frame, by its broadcast timestamp.
+/// What a [`TimestampLog`] keeps of one published frame.
+#[derive(Debug, Clone, Copy)]
+struct Logged {
+    /// The timestamp the source gave the frame.
+    source: moq_net::Timestamp,
+    /// When the frame entered the source, if known.
+    sent_at: Option<Instant>,
+}
+
+/// The source timestamp and send instant of each recently published video frame, by its broadcast timestamp.
 ///
 /// Every rendition publishes a picture at the same broadcast timestamp, so the
 /// renditions of a ladder share one entry.
 #[derive(Debug, Clone, Default)]
-struct TimestampLog(Arc<Mutex<BTreeMap<moq_net::Timestamp, moq_net::Timestamp>>>);
+struct TimestampLog(Arc<Mutex<BTreeMap<moq_net::Timestamp, Logged>>>);
 
 impl TimestampLog {
-    /// Records that the frame stamped `source` was published at `published`.
+    /// Records that the frame stamped `source`, sent at `sent_at`, was published at `published`.
     ///
-    /// Forgets the oldest entry past [`TIMESTAMP_HISTORY`].
-    fn record(&self, published: moq_net::Timestamp, source: moq_net::Timestamp) {
+    /// The first rendition to publish a frame records it. Forgets the oldest
+    /// entry past [`TIMESTAMP_HISTORY`].
+    fn record(
+        &self,
+        published: moq_net::Timestamp,
+        source: moq_net::Timestamp,
+        sent_at: Option<Instant>,
+    ) {
         let mut log = self.0.lock().expect("poisoned");
-        log.insert(published, source);
+        log.entry(published).or_insert(Logged { source, sent_at });
         if log.len() > TIMESTAMP_HISTORY {
             log.pop_first();
         }
     }
 
+    /// Returns what was recorded of the frame published at `published`.
+    fn get(&self, published: moq_net::Timestamp) -> Option<Logged> {
+        self.0.lock().expect("poisoned").get(&published).copied()
+    }
+
     /// Returns the source timestamp of the frame published at `published`.
     fn source(&self, published: moq_net::Timestamp) -> Option<moq_net::Timestamp> {
-        self.0.lock().expect("poisoned").get(&published).copied()
+        self.get(published).map(|logged| logged.source)
     }
 }
 
@@ -256,7 +276,13 @@ impl SourceClock {
     }
 
     /// Returns `timestamp` on the broadcast clock, anchoring again if the source's timeline broke.
-    fn map(&mut self, timestamp: moq_net::Timestamp) -> moq_net::Timestamp {
+    ///
+    /// `sent_at` is when the frame entered its source, for the log.
+    fn map(
+        &mut self,
+        timestamp: moq_net::Timestamp,
+        sent_at: Option<Instant>,
+    ) -> moq_net::Timestamp {
         let now = self.clock.now().as_micros() as i128;
         let source = timestamp.as_micros() as i128;
         let last = self.last.map(|last| last.as_micros() as i128);
@@ -287,7 +313,7 @@ impl SourceClock {
         let mapped = moq_net::Timestamp::from_micros(micros).unwrap_or(timestamp);
         self.last = Some(mapped);
         if let Some(log) = &self.log {
-            log.record(mapped, timestamp);
+            log.record(mapped, timestamp, sent_at);
         }
         mapped
     }
@@ -307,7 +333,8 @@ struct Shared {
     producer: moq_net::broadcast::Producer,
     catalog: Mutex<moq_mux::catalog::Producer>,
     clock: moq_mux::Clock,
-    /// The source timestamps of the published video, for [`LocalBroadcast::video_source_timestamp`].
+    /// The source timestamps of the published video, for [`LocalBroadcast::video_source_timestamp`]
+    /// and [`LocalBroadcast::video_captured_at`].
     video_timestamps: TimestampLog,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
@@ -581,6 +608,36 @@ impl LocalBroadcast {
         published: moq_net::Timestamp,
     ) -> Option<moq_net::Timestamp> {
         self.shared.video_timestamps.source(published)
+    }
+
+    /// Returns when the video frame this broadcast published at `published` entered its source.
+    ///
+    /// That is when the application pushed the frame into a
+    /// [`VideoSource::push`] sender, or when a capture or generator thread
+    /// handed it over, before it waited for an encoder. A subscriber that
+    /// sends a decoded frame's timestamp back lets the publisher measure the
+    /// round trip from capture with this, without a clock of its own for the
+    /// source's timestamps.
+    ///
+    /// Returns `None` in the same cases as
+    /// [`video_source_timestamp`](Self::video_source_timestamp).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(broadcast: &moq_ext_publisher::LocalBroadcast, echoed: moq_net::Timestamp) {
+    /// // `echoed` is the timestamp of a frame a subscriber decoded and reported back.
+    /// if let Some(captured) = broadcast.video_captured_at(echoed) {
+    ///     println!("{:?} from capture to the report", captured.elapsed());
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn video_captured_at(&self, published: moq_net::Timestamp) -> Option<Instant> {
+        self.shared
+            .video_timestamps
+            .get(published)
+            .and_then(|logged| logged.sent_at)
     }
 
     /// Returns what the broadcast is sending, per rendition.
