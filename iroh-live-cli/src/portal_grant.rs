@@ -5,8 +5,9 @@
 //! compositor that keeps grants. The tokens live in one file per source kind
 //! under the CLI's config directory. The file follows the token of the last
 //! selection opened: it is rewritten when the portal grants a new token, and
-//! deleted when the token is gone because an open failed or the user stopped
-//! sharing.
+//! deleted when moq-video holds none, because an open used the token and
+//! failed, or the stream ended (the user stopped sharing, the stream failed,
+//! or the source went away).
 
 use std::{
     collections::HashMap,
