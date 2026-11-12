@@ -82,7 +82,7 @@ struct Reading {
     lost_packets: u64,
 }
 
-/// Turns readings of a session's statistics into [`NetworkSample`]s.
+/// The state that turns readings of a session's statistics into [`NetworkSample`]s.
 ///
 /// Measured by this endpoint, so the loss rate is of the packets it sends: on
 /// a subscriber, mostly acknowledgements. The loss rate and the throughput
@@ -162,7 +162,7 @@ impl LinkSampler {
         &mut self,
         path: PathKey,
         stats: &Stats,
-        recv: Option<moq_net::bandwidth::Rate>,
+        delivery: Option<moq_net::bandwidth::Rate>,
         now: Instant,
     ) -> NetworkSample {
         if self.path != Some(path) {
@@ -205,7 +205,7 @@ impl LinkSampler {
                     sent => (lost as f64 / sent as f64).min(1.0),
                 }
             }),
-            delivery: recv.map(moq_net::bandwidth::Rate::as_bps),
+            delivery: delivery.map(moq_net::bandwidth::Rate::as_bps),
             path_generation: self.path_generation,
             throughput: base.map(|base| {
                 let bytes = latest.received_bytes.saturating_sub(base.received_bytes);
@@ -298,7 +298,7 @@ mod tests {
         sampler.new_session();
         let first = sampler.sample(DIRECT, &stats(20, 0, 0, 0), None, t0 + SAMPLE_INTERVAL * 4);
         assert_eq!(first.path_generation, 1);
-        // A session that never sampled adds nothing.
+        // A session that took no reading adds nothing.
         sampler.new_session();
         sampler.new_session();
         assert_eq!(sampler.path_generation(), 2);

@@ -41,7 +41,7 @@ use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 /// - [`receive_window`](poll::Session::receive_window) is `None`: iroh does not
 ///   report the receive windows in force. moq-net then never pauses a stream.
 pub struct Transport {
-    conn: Connection,
+    connection: Connection,
     // One slot per operation that may wait. iroh's futures for them borrow
     // the connection, so each slot stores one built from a clone of it, which
     // every task polling the operation shares.
@@ -95,7 +95,7 @@ impl Transport {
         }
         debug!(%alpn, %peer, side = ?connection.side(), "MoQ transport opened");
         Ok(Self {
-            conn: connection,
+            connection,
             accept_uni: OpSlot::default(),
             accept_bi: OpSlot::default(),
             open_uni: OpSlot::default(),
@@ -142,7 +142,7 @@ impl Transport {
     /// Returns the iroh connection the transport runs over.
     #[must_use]
     pub fn connection(&self) -> &Connection {
-        &self.conn
+        &self.connection
     }
 
     /// Starts an operation on a clone of the connection.
@@ -150,15 +150,15 @@ impl Transport {
     where
         F: Future<Output = T> + Send + 'static,
     {
-        move || Box::pin(op(self.conn.clone()))
+        move || Box::pin(op(self.connection.clone()))
     }
 }
 
 impl fmt::Debug for Transport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Transport")
-            .field("peer", &self.conn.remote_id().fmt_short().to_string())
-            .field("alpn", &String::from_utf8_lossy(self.conn.alpn()))
+            .field("peer", &self.connection.remote_id().fmt_short().to_string())
+            .field("alpn", &String::from_utf8_lossy(self.connection.alpn()))
             .finish_non_exhaustive()
     }
 }
@@ -218,7 +218,7 @@ impl poll::Session for Transport {
         payload: Bytes,
         _options: SendOptions<'_, Ungrouped>,
     ) -> Result<(), TransportError> {
-        self.conn.send_datagram(payload).map_err(Into::into)
+        self.connection.send_datagram(payload).map_err(Into::into)
     }
 
     fn poll_recv_datagram(&self, waiter: &Waiter) -> Poll<Result<Bytes, TransportError>> {
@@ -227,11 +227,11 @@ impl poll::Session for Transport {
     }
 
     fn max_datagram_size(&self) -> usize {
-        self.conn.max_datagram_size().unwrap_or(0)
+        self.connection.max_datagram_size().unwrap_or(0)
     }
 
     fn protocol(&self) -> Option<&str> {
-        std::str::from_utf8(self.conn.alpn()).ok()
+        std::str::from_utf8(self.connection.alpn()).ok()
     }
 
     fn address(&self) -> Address {
@@ -240,12 +240,12 @@ impl poll::Session for Transport {
 
     fn close(&self, code: u32, reason: &str) {
         debug!(
-            peer = %self.conn.remote_id().fmt_short(),
+            peer = %self.connection.remote_id().fmt_short(),
             code,
             reason,
             "closing the connection"
         );
-        self.conn.close(code.into(), reason.as_bytes());
+        self.connection.close(code.into(), reason.as_bytes());
     }
 
     fn poll_closed(&self, waiter: &Waiter) -> Poll<TransportError> {
@@ -254,12 +254,12 @@ impl poll::Session for Transport {
     }
 
     fn metrics(&self) -> impl moq_net::transport::Metrics {
-        let stats = self.conn.stats();
+        let stats = self.connection.stats();
         // moq-net reads the wire right after the metrics.
         self.wire.set_sent_bytes(stats.udp_tx.bytes);
         self.wire.set_received_bytes(stats.udp_rx.bytes);
         let path = self
-            .conn
+            .connection
             .paths()
             .iter()
             .find(|path| path.is_selected())
@@ -346,7 +346,7 @@ pub(crate) mod tests {
     /// Returns a dialed and an accepted transport, and the endpoints that drive them.
     ///
     /// The accepting endpoint speaks only `server_alpns`. With `client_alpn`
-    /// the client connects with that ALPN instead of through [`dial`].
+    /// the client connects with that ALPN instead of through [`Transport::connect`].
     async fn pair_with(
         client_alpn: Option<&[u8]>,
         server_alpns: Vec<&[u8]>,

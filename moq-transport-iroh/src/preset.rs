@@ -45,7 +45,7 @@ impl presets::Preset for MoqPreset {
 /// [`transport_config`](Self::transport_config), as
 /// [`Transport::new`](crate::Transport::new) shows.
 ///
-/// It parses from its name, ignoring case, and displays as it.
+/// It parses from its name in any case, and displays as that name.
 ///
 /// ```
 /// use moq_transport_iroh::Congestion;
