@@ -13,11 +13,13 @@ use crate::egl::{self, Egl, Extensions};
 
 /// `GL_TEXTURE_EXTERNAL_OES`, which glow does not define.
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
+// EGL constants for importing an `AHardwareBuffer`, from `eglext.h`.
 const EGL_NATIVE_BUFFER_ANDROID: u32 = 0x3140;
 const EGL_IMAGE_PRESERVED_KHR: i32 = 0x30D2;
 const EGL_TRUE: i32 = 1;
 const EGL_NONE: i32 = 0x3038;
 
+/// Vertex shader for both programs: a fullscreen triangle with flipped texture rows.
 const VERT_SRC: &str = "\
 #version 100
 attribute vec2 a_pos;
@@ -545,22 +547,25 @@ fn create_tex(gl: &glow::Context, target: u32) -> Result<glow::Texture> {
 }
 
 /// Returns the centered `(x, y, w, h)` viewport that keeps the video's aspect ratio.
-fn letterbox_viewport(sw: i32, sh: i32, vw: u32, vh: u32) -> (i32, i32, i32, i32) {
-    if sw <= 0 || sh <= 0 || vw == 0 || vh == 0 {
-        return (0, 0, sw.max(1), sh.max(1));
+fn letterbox_viewport(
+    surface_width: i32,
+    surface_height: i32,
+    video_width: u32,
+    video_height: u32,
+) -> (i32, i32, i32, i32) {
+    if surface_width <= 0 || surface_height <= 0 || video_width == 0 || video_height == 0 {
+        return (0, 0, surface_width.max(1), surface_height.max(1));
     }
-    let video_aspect = vw as f32 / vh as f32;
-    let surface_aspect = sw as f32 / sh as f32;
+    let video_aspect = video_width as f32 / video_height as f32;
+    let surface_aspect = surface_width as f32 / surface_height as f32;
     if video_aspect > surface_aspect {
         // Wider than the surface: bars above and below.
-        let vp_w = sw;
-        let vp_h = (sw as f32 / video_aspect) as i32;
-        (0, (sh - vp_h) / 2, vp_w, vp_h)
+        let height = (surface_width as f32 / video_aspect) as i32;
+        (0, (surface_height - height) / 2, surface_width, height)
     } else {
         // Taller than the surface: bars left and right.
-        let vp_h = sh;
-        let vp_w = (sh as f32 * video_aspect) as i32;
-        ((sw - vp_w) / 2, 0, vp_w, vp_h)
+        let width = (surface_height as f32 * video_aspect) as i32;
+        ((surface_width - width) / 2, 0, width, surface_height)
     }
 }
 

@@ -95,8 +95,10 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
 
 // Global runtime
 
+/// The runtime every JNI call blocks on or spawns onto.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+/// Returns the global runtime, starting it on first use.
 fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -107,7 +109,7 @@ fn runtime() -> &'static Runtime {
     })
 }
 
-// Session handle
+// Endpoint and playback
 
 /// How long a dial waits for the peer to answer.
 const PEER_TIMEOUT: Duration = Duration::from_secs(20);
@@ -128,6 +130,8 @@ async fn bind_node() -> Result<(Node, Router)> {
 fn play_call(call: &Call, output: Option<&Engine>) -> Result<Player> {
     play(&remote_broadcast(call.subscription()), output)
 }
+
+// Session handle
 
 /// The state behind the `jlong` id Kotlin holds.
 ///
@@ -171,11 +175,15 @@ struct SessionHandle {
     waiting: Option<AbortOnDropHandle<()>>,
     /// Set by `disconnect`, so a call answered during teardown is not installed.
     closing: bool,
+    /// How many camera frames reached the publish pipeline.
     camera_frames_pushed: u64,
+    /// How many frames the render loop took to draw.
     decoded_frames_rendered: u64,
+    /// When the session started, the origin of the camera timestamps.
     created_at: Instant,
 }
 
+/// A session as the registry and the JNI calls share it.
 type SharedHandle = Arc<Mutex<SessionHandle>>;
 
 impl SessionHandle {
@@ -200,6 +208,7 @@ impl SessionHandle {
         }
     }
 
+    /// Wraps the handle for the registry.
     fn into_shared(self) -> SharedHandle {
         Arc::new(Mutex::new(self))
     }
@@ -219,7 +228,7 @@ impl SessionHandle {
     }
 
     /// Returns the newest catalog of the watched broadcast, if one arrived.
-    fn catalog(&self) -> Option<std::sync::Arc<Catalog>> {
+    fn catalog(&self) -> Option<Arc<Catalog>> {
         self.player.as_ref()?.broadcast().catalog().borrow().clone()
     }
 }
@@ -339,13 +348,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_connect(
     let Some(ticket) = read_jstring(&mut env, &ticket) else {
         return 0;
     };
-    match runtime().block_on(connect_impl(ticket)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!(error = format_args!("{err:#}"), "connect failed");
-            0
-        }
-    }
+    session_or_zero("connect", runtime().block_on(connect_impl(ticket)))
 }
 
 /// Subscribes to the broadcast `ticket` names and plays it into a new session.
@@ -389,13 +392,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_dial(
         return 0;
     };
     let size = Size::new(camera_width as u32, camera_height as u32);
-    match runtime().block_on(dial_impl(ticket, size)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!(error = format_args!("{err:#}"), "dial failed");
-            0
-        }
-    }
+    session_or_zero("dial", runtime().block_on(dial_impl(ticket, size)))
 }
 
 /// Dials the peer `ticket` names, calls it, and returns the new session.
@@ -445,13 +442,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
     camera_height: jint,
 ) -> jlong {
     let size = Size::new(camera_width as u32, camera_height as u32);
-    match runtime().block_on(answer_impl(size)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!(error = format_args!("{err:#}"), "answer failed");
-            0
-        }
-    }
+    session_or_zero("answer", runtime().block_on(answer_impl(size)))
 }
 
 /// Publishes this side of a call and returns a session that waits for the caller.
@@ -559,13 +550,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
         return 0;
     };
     let size = Size::new(camera_width as u32, camera_height as u32);
-    match runtime().block_on(publish_impl(name, size)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!(error = format_args!("{err:#}"), "publish failed");
-            0
-        }
-    }
+    session_or_zero("publish", runtime().block_on(publish_impl(name, size)))
 }
 
 /// Publishes camera and microphone under `name` and returns the new session.
@@ -620,13 +605,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
     camera_height: jint,
 ) -> jlong {
     let size = Size::new(camera_width as u32, camera_height as u32);
-    match start_direct_impl(size) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!(error = format_args!("{err:#}"), "startDirect failed");
-            0
-        }
-    }
+    session_or_zero("startDirect", start_direct_impl(size))
 }
 
 /// Returns a session that shows the camera without encoding it.
@@ -656,13 +635,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startH264(
     camera_height: jint,
 ) -> jlong {
     let size = Size::new(camera_width as u32, camera_height as u32);
-    match start_h264_impl(size) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!(error = format_args!("{err:#}"), "startH264 failed");
-            0
-        }
-    }
+    session_or_zero("startH264", start_h264_impl(size))
 }
 
 /// Returns a session that loops the camera through MediaCodec and back.
@@ -1055,7 +1028,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
 
     // Prefer the decoded size. The catalog only has the encoded size.
     if let Some(size) = guard.frame_size {
-        return (i64::from(size.width) << 32) | i64::from(size.height);
+        return pack_size(size.width, size.height);
     }
     let (Some(rendition), Some(catalog)) = (guard.rendition(), guard.catalog()) else {
         return 0;
@@ -1065,9 +1038,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
         .renditions
         .get(&rendition)
         .and_then(|config| config.coded_width.zip(config.coded_height))
-        .map_or(0, |(width, height)| {
-            (i64::from(width) << 32) | i64::from(height)
-        })
+        .map_or(0, |(width, height)| pack_size(width, height))
 }
 
 /// Returns the available video renditions, one per line.
@@ -1197,12 +1168,33 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     info!("disconnected");
 }
 
-// JNI string helpers
+// JNI helpers
 
+/// Returns the session id in `result`, or logs the error and returns 0.
+///
+/// Kotlin reads 0 as a session that did not start.
+fn session_or_zero(command: &str, result: Result<jlong>) -> jlong {
+    result.unwrap_or_else(|err| {
+        error!(
+            command,
+            error = format_args!("{err:#}"),
+            "the command failed"
+        );
+        0
+    })
+}
+
+/// Packs `width` and `height` into one `jlong` as `(width << 32) | height`.
+fn pack_size(width: u32, height: u32) -> jlong {
+    (i64::from(width) << 32) | i64::from(height)
+}
+
+/// Returns a new empty Java string.
 fn empty_string<'a>(env: &mut JNIEnv<'a>) -> JString<'a> {
     env.new_string("").expect("allocating an empty JNI string")
 }
 
+/// Returns `value` as a new Java string, or an empty one if it cannot be allocated.
 fn new_string<'a>(env: &mut JNIEnv<'a>, value: &str) -> JString<'a> {
     match env.new_string(value) {
         Ok(string) => string,

@@ -9,8 +9,10 @@ unsafe extern "C" {
     fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
 }
 
+/// The logcat tag of every line, null-terminated for C.
 const TAG: &[u8] = b"iroh_live\0";
 
+// Logcat priorities, from `android/log.h`.
 const VERBOSE: i32 = 2;
 const DEBUG: i32 = 3;
 const INFO: i32 = 4;
