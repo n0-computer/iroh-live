@@ -24,6 +24,7 @@
 | [Overview](architecture/index.md) | The crates, what the `moq-ext-*` crates add to moq-video and moq-audio, and the conventions |
 | [The media stack](architecture/media-stack.md) | What we use from moq-video and moq-audio, and the feature flags |
 | [Transport](architecture/transport.md) | `iroh-live-node` and `moq-transport-iroh`: paths, the route table, publications and audiences, sessions, relay links, and ALPN negotiation |
+| [Authorization and audiences, explained](architecture/auth-explained.md) | A walk through one session's access control: identity, policies and grants, audiences, tokens, relays, and whether `Audience` could become a policy |
 | [Publishing](architecture/publish.md) | `LocalBroadcast`, sources, the simulcast ladder, and encoders that run only on demand |
 | [Subscribing](architecture/subscribe.md) | `RemoteBroadcast`, video decoding, and rendition switches |
 | [Adaptive rendition switching](architecture/adaptive.md) | How a player picks a rendition from the link |

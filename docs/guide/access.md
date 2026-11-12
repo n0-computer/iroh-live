@@ -20,6 +20,10 @@ them, tokens, the relay's flags, and what the model protects against. The
 types live in `moq-ext-access`. `iroh_live::node::policy` re-exports them with
 the peer type fixed to an `EndpointId`.
 
+For the reasoning behind this design, with a walk through one session's life
+and where audiences come in, read
+[Authorization and audiences, explained](../architecture/auth-explained.md).
+
 ## The defaults
 
 You get access control without writing any. Each crate starts from a default:
