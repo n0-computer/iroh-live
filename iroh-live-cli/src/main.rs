@@ -8,6 +8,8 @@ mod call;
 mod devices;
 mod import;
 mod playback;
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+mod portal_grant;
 mod publish;
 mod record;
 mod rendition;

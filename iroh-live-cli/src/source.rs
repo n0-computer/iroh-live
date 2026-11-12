@@ -162,13 +162,18 @@ async fn video_source(
         VideoSourceSpec::Rpicam(mode) => rpicam_source(args, framerate, *mode).await?,
         VideoSourceSpec::Camera(id) => capture(Source::Camera(id.clone()), args, framerate).await?,
         VideoSourceSpec::Display(Some(id)) if id == PORTAL => {
-            capture(portal(PortalPick::Screen)?, args, framerate).await?
+            portal(PortalPick::Screen, args, framerate).await?
+        }
+        // On Wayland the default display is always the portal's picker, which
+        // opens here so its grant is kept for the next run.
+        VideoSourceSpec::Display(None) if portal_default() => {
+            portal(PortalPick::Screen, args, framerate).await?
         }
         VideoSourceSpec::Display(id) => {
             capture(Source::Display(id.clone()), args, framerate).await?
         }
         VideoSourceSpec::Window(id) if id == PORTAL => {
-            capture(portal(PortalPick::Window)?, args, framerate).await?
+            portal(PortalPick::Window, args, framerate).await?
         }
         VideoSourceSpec::Window(id) => capture(Source::Window(id.clone()), args, framerate).await?,
         VideoSourceSpec::App(id) => capture(Source::App(id.clone()), args, framerate).await?,
@@ -190,27 +195,54 @@ enum PortalPick {
     Window,
 }
 
-/// Returns the source that asks the desktop portal for `pick`.
+/// Opens what the user picks for `pick` in the desktop portal's dialog.
 ///
-/// Fails off Linux and in a build without the `pipewire` feature, which have
-/// no portal.
-fn portal(pick: PortalPick) -> Result<video::capture::Source> {
+/// Seeds the portal with the grant an earlier run stored, and keeps the grant
+/// this open gets for the next run. Fails off Linux and in a build without
+/// the `pipewire` feature, which have no portal.
+#[cfg_attr(
+    not(all(target_os = "linux", feature = "pipewire")),
+    expect(clippy::unused_async, reason = "only the portal build awaits")
+)]
+async fn portal(
+    pick: PortalPick,
+    args: &CaptureArgs,
+    framerate: CaptureFramerate,
+) -> Result<Video> {
     #[cfg(all(target_os = "linux", feature = "pipewire"))]
     {
-        use video::capture::portal::{Kind, Selection};
+        use video::capture::portal::Kind;
         let kind = match pick {
             PortalPick::Screen => Kind::Screen,
             PortalPick::Window => Kind::Window,
         };
-        Ok(video::capture::Source::Portal(Selection::new(kind)))
+        let selection = crate::portal_grant::selection(kind);
+        let opened = capture(
+            video::capture::Source::Portal(selection.clone()),
+            args,
+            framerate,
+        )
+        .await;
+        crate::portal_grant::watch(kind, selection);
+        opened
     }
     #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
     {
-        let _ = pick;
+        let _ = (pick, args, framerate);
         Err(anyerr!(
             "the desktop portal's picker needs a Linux build with the `pipewire` feature"
         ))
     }
+}
+
+/// Returns whether the default display opens the desktop portal's picker.
+///
+/// True in a Wayland session on Linux with the `pipewire` feature. An X11
+/// session keeps the default display, which tries the portal and falls back
+/// to X11.
+fn portal_default() -> bool {
+    cfg!(all(target_os = "linux", feature = "pipewire"))
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
 /// Opens a capture device with the geometry hints from the flags.
