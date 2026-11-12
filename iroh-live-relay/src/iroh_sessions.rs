@@ -32,8 +32,7 @@ const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Accepts iroh clients' MoQ sessions into the cluster.
 ///
-/// Mount it under every ALPN in [`moq_transport_iroh::alpns`], or use
-/// [`router`](Self::router).
+/// Mount it on a router with [`mount`](Self::mount).
 #[derive(Clone, derive_more::Debug)]
 pub struct IrohSessions {
     #[debug(skip)]
