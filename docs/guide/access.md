@@ -455,15 +455,15 @@ runs both sides in one process.
 
 ### Tokens for a relay link
 
-A node presents a token to a relay through `RelayConfig::token`, a `TokenFn`.
-`TokenFn::fixed(token)` presents one token. `TokenFn::new(f)` calls `f` each
-time the link asks:
+A node presents a token to a relay through `RelayConfig::token`, a
+`TokenSource`. `TokenSource::fixed(token)` presents one token.
+`TokenSource::new(f)` calls `f` each time the link asks:
 
 ```rust
-use iroh_live::{RelayConfig, TokenFn};
+use iroh_live::{RelayConfig, TokenSource};
 
 let link = node.attach_relay(RelayConfig {
-    token: Some(TokenFn::fixed(token)),
+    token: Some(TokenSource::fixed(token)),
     ..RelayConfig::iroh(relay)
 })?;
 ```
@@ -507,7 +507,7 @@ that embeds the relay sets another policy in `Config::iroh_policy`.
 
 The relay decides an iroh client once, when it connects. When the
 authorization expires, the relay closes the session, and the client's relay
-link redials with a fresh token from its `TokenFn`.
+link redials with a fresh token from its `TokenSource`.
 
 ## The trust model
 

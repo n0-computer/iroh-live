@@ -573,7 +573,7 @@ The relay sees every `Granted` publication and no `Peers` one. The node
 accepts the relay's announcements for any path, since a relay is trusted with
 the paths it forwards. Attach only relays that keep each publisher to its own
 paths. The node presents a token to the relay through `RelayConfig::token`,
-a `TokenFn`. An `iroh://` link asks it for a fresh token on every dial.
+a `TokenSource`. An `iroh://` link asks it for a fresh token on every dial.
 
 **`iroh-live-relay` itself.** It has two doors.
 

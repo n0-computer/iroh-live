@@ -57,7 +57,7 @@ pub struct RelayConfig {
     /// token. Other links ask it once, when they attach, since moq-tokio's
     /// connection redials on its own: detach and attach again for a new
     /// token there.
-    pub token: Option<TokenFn>,
+    pub token: Option<TokenSource>,
     /// Whether the relay's routes enter the node's route table.
     ///
     /// A node that only publishes through the relay should turn this off.
@@ -91,7 +91,7 @@ impl RelayConfig {
     /// Returns the URL to dial, with a token from [`token`](Self::token) in its query.
     fn dial_url(&self) -> Url {
         let mut url = self.url.clone();
-        if let Some(token) = self.token.as_ref().and_then(TokenFn::token) {
+        if let Some(token) = self.token.as_ref().and_then(TokenSource::token) {
             url.query_pairs_mut().append_pair("jwt", &token);
         }
         url
@@ -103,20 +103,20 @@ impl RelayConfig {
 /// # Examples
 ///
 /// ```
-/// use iroh_live_node::TokenFn;
+/// use iroh_live_node::TokenSource;
 ///
-/// let fixed = TokenFn::fixed("secret");
+/// let fixed = TokenSource::fixed("secret");
 /// assert_eq!(fixed.token().as_deref(), Some("secret"));
 ///
 /// // A token from a store the application refreshes.
 /// let store = std::sync::Arc::new(std::sync::Mutex::new(String::from("first")));
-/// let current = TokenFn::new(move || Some(store.lock().expect("poisoned").clone()));
+/// let current = TokenSource::new(move || Some(store.lock().expect("poisoned").clone()));
 /// assert_eq!(current.token().as_deref(), Some("first"));
 /// ```
 #[derive(Clone)]
-pub struct TokenFn(Arc<dyn Fn() -> Option<String> + Send + Sync>);
+pub struct TokenSource(Arc<dyn Fn() -> Option<String> + Send + Sync>);
 
-impl TokenFn {
+impl TokenSource {
     /// Creates a token source that calls `f` each time a token is asked for.
     ///
     /// `None` presents no token.
@@ -139,9 +139,9 @@ impl TokenFn {
     }
 }
 
-impl fmt::Debug for TokenFn {
+impl fmt::Debug for TokenSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("TokenFn(..)")
+        f.write_str("TokenSource(..)")
     }
 }
 
@@ -577,7 +577,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
         options.token = config
             .token
             .as_ref()
-            .and_then(TokenFn::token)
+            .and_then(TokenSource::token)
             .or_else(|| url_token.clone());
         let dialed = tokio::select! {
             _ = stop.cancelled() => break,
@@ -697,7 +697,7 @@ mod tests {
     fn dial_url_carries_the_token_as_jwt() {
         let mut config = RelayConfig::new("https://relay.example/room".parse().expect("url"));
         assert_eq!(config.dial_url().as_str(), "https://relay.example/room");
-        config.token = Some(TokenFn::fixed("a+b"));
+        config.token = Some(TokenSource::fixed("a+b"));
         assert_eq!(
             config.dial_url().as_str(),
             "https://relay.example/room?jwt=a%2Bb"
@@ -748,11 +748,11 @@ mod tests {
     }
 
     #[test]
-    fn a_token_fn_is_asked_each_time_a_url_is_built() {
+    fn a_token_source_is_asked_each_time_a_url_is_built() {
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = asked.clone();
         let mut config = RelayConfig::new("https://relay.example/".parse().expect("url"));
-        config.token = Some(TokenFn::new(move || {
+        config.token = Some(TokenSource::new(move || {
             let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Some(format!("t{n}"))
         }));
@@ -762,10 +762,13 @@ mod tests {
     }
 
     #[test]
-    fn a_token_fn_without_a_token_leaves_the_url_alone() {
+    fn a_token_source_without_a_token_leaves_the_url_alone() {
         let mut config = RelayConfig::new("https://relay.example/room?x=1".parse().expect("url"));
-        config.token = Some(TokenFn::new(|| None));
+        config.token = Some(TokenSource::new(|| None));
         assert_eq!(config.dial_url().as_str(), "https://relay.example/room?x=1");
-        assert_eq!(format!("{:?}", TokenFn::fixed("secret")), "TokenFn(..)");
+        assert_eq!(
+            format!("{:?}", TokenSource::fixed("secret")),
+            "TokenSource(..)"
+        );
     }
 }

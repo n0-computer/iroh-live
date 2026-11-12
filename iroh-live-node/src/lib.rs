@@ -119,7 +119,7 @@ pub use self::{
     link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     publish::{Audience, Publication, UnpublishOnDrop},
-    relay::{RelayConfig, RelayLink, RelayStatus, TokenFn},
+    relay::{RelayConfig, RelayLink, RelayStatus, TokenSource},
     route::Subscription,
     session::Session,
     ticket::BroadcastTicket,

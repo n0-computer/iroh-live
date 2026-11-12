@@ -1757,7 +1757,7 @@ fn attach_with_token(
     token: Option<String>,
 ) -> iroh_live_node::RelayLink {
     node.attach_relay(RelayConfig {
-        token: token.map(iroh_live_node::TokenFn::fixed),
+        token: token.map(iroh_live_node::TokenSource::fixed),
         ..RelayConfig::iroh(relay.iroh_id)
     })
     .expect("attach")
@@ -1959,7 +1959,7 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
     let fresh = token_for(&keys, "tokens");
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = calls.clone();
-    let token = iroh_live_node::TokenFn::new(move || {
+    let token = iroh_live_node::TokenSource::new(move || {
         let call = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Some(if call == 0 {
             first.clone()

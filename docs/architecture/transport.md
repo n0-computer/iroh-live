@@ -158,7 +158,7 @@ as `link sample`. The node keeps no list of paths of its own:
 `iroh://` links dial through the node's own endpoint, since moq-tokio has no
 iroh transport. The link redials with
 backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
-the `Granted` audience go to the relay. `RelayConfig::token` is a `TokenFn`
+the `Granted` audience go to the relay. `RelayConfig::token` is a `TokenSource`
 that the link asks for a token: an `iroh://` link before every dial, and an
 `https://` link once, when it attaches. The relay's routes join the route table
 at a cost of 10 against a direct link's cost of one, so a direct route wins
