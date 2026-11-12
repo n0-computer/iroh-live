@@ -238,7 +238,7 @@ mod tests {
 
     use super::*;
 
-    /// Mounting the service, or taking its handler, is what stops the unmounted warning.
+    /// Mounting the service marks it mounted, which stops the unmounted warning.
     #[tokio::test]
     async fn mounting_marks_the_rooms_mounted() {
         let endpoint = Endpoint::bind(presets::Minimal).await.expect("binds");

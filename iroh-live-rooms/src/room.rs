@@ -60,7 +60,7 @@ pub(crate) struct Inner {
     pub(crate) leave: mpsc::Sender<oneshot::Sender<()>>,
     /// This member's publications, by name.
     #[debug(skip)]
-    pub(crate) local: Mutex<BTreeMap<String, Local>>,
+    pub(crate) local: Mutex<BTreeMap<String, LocalPublication>>,
     /// Bumped whenever [`Inner::local`] changes, so the actor re-announces.
     pub(crate) local_changed: Watchable<u64>,
     /// The name this member announces.
@@ -74,7 +74,7 @@ pub(crate) struct Inner {
 }
 
 /// One of this member's publications.
-pub(crate) struct Local {
+pub(crate) struct LocalPublication {
     pub(crate) publication: Publication,
     /// Forgets the entry once the publication is withdrawn, however it goes.
     _withdrawn: AbortOnDropHandle<()>,
@@ -126,9 +126,49 @@ impl Room {
     where
         B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
     {
-        // Built before the broadcast is announced, so no member finds it
-        // without the tracks `B` creates, such as a catalog.
-        self.publish_with(name, |producer| B::try_from(producer.clone()))
+        if name.is_empty() || name.contains('/') {
+            return Err(e!(Error::InvalidName {
+                name: name.to_owned()
+            }));
+        }
+        if self.inner.done.get() {
+            return Err(e!(Error::Left));
+        }
+        let topic = self.inner.ticket.topic_id();
+        // `B` is built before the broadcast is announced, so no member finds
+        // it without the tracks `B` creates, such as a catalog.
+        let (publication, filled) = self.inner.node.publish_with(
+            room_path(topic, self.inner.me, name),
+            Audience::Peers(self.inner.members.clone()),
+            |producer| B::try_from(producer.clone()),
+        )?;
+        info!(%name, path = %publication.path(), "published into the room");
+        {
+            let mut local = self.inner.local.lock().expect("poisoned");
+            // Spawned under the lock, so the task cannot run before the entry
+            // exists.
+            let withdrawn = {
+                let inner = Arc::downgrade(&self.inner);
+                let name = name.to_owned();
+                let publication = publication.clone();
+                AbortOnDropHandle::new(tokio::spawn(async move {
+                    publication.withdrawn().await;
+                    if let Some(inner) = inner.upgrade() {
+                        debug!(%name, "room broadcast withdrawn");
+                        inner.remove_local(&name, &publication);
+                    }
+                }))
+            };
+            local.insert(
+                name.to_owned(),
+                LocalPublication {
+                    publication: publication.clone(),
+                    _withdrawn: withdrawn,
+                },
+            );
+        }
+        self.inner.bump_local();
+        Ok(filled)
     }
 
     /// Takes `name` out of the room, if this member publishes it.
@@ -152,58 +192,6 @@ impl Room {
             }
             None => false,
         }
-    }
-
-    /// Publishes `name` into the room, filled by `fill` before it is announced.
-    fn publish_with<T, E>(
-        &self,
-        name: &str,
-        fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
-    ) -> Result<T, Error>
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        if name.is_empty() || name.contains('/') {
-            return Err(e!(Error::InvalidName {
-                name: name.to_owned()
-            }));
-        }
-        if self.inner.done.get() {
-            return Err(e!(Error::Left));
-        }
-        let topic = self.inner.ticket.topic_id();
-        let (publication, filled) = self.inner.node.publish_with(
-            room_path(topic, self.inner.me, name),
-            Audience::Peers(self.inner.members.clone()),
-            fill,
-        )?;
-        info!(%name, path = %publication.path(), "published into the room");
-        {
-            let mut local = self.inner.local.lock().expect("poisoned");
-            // Spawned under the lock, so the task cannot run before the entry
-            // exists.
-            let withdrawn = {
-                let inner = Arc::downgrade(&self.inner);
-                let name = name.to_owned();
-                let publication = publication.clone();
-                AbortOnDropHandle::new(tokio::spawn(async move {
-                    publication.withdrawn().await;
-                    if let Some(inner) = inner.upgrade() {
-                        debug!(%name, "room broadcast withdrawn");
-                        inner.remove_local(&name, &publication);
-                    }
-                }))
-            };
-            local.insert(
-                name.to_owned(),
-                Local {
-                    publication: publication.clone(),
-                    _withdrawn: withdrawn,
-                },
-            );
-        }
-        self.inner.bump_local();
-        Ok(filled)
     }
 
     /// Resolves `peer`'s broadcast `name` over the session with that member.

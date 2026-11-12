@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, debug, info, trace, warn};
 
-use crate::room::{Inner, Local, RoomMember, RoomState};
+use crate::room::{Inner, LocalPublication, RoomMember, RoomState};
 
 /// The key a member's announcement is stored under in the room's gossip map.
-pub(crate) const PEER_STATE_KEY: &[u8] = b"s";
+pub(crate) const ANNOUNCEMENT_KEY: &[u8] = b"s";
 
 /// How long a member's announcement lives in the gossip map without renewal.
 ///
@@ -118,7 +118,7 @@ impl Actor {
                     Some(Err(err)) => warn!(error = %err, "gossip map update failed"),
                     Some(Ok(item)) => {
                         resubscribes = 0;
-                        self.handle_item(item);
+                        self.apply_item(item);
                     }
                 },
                 changed = local_changed.updated() => {
@@ -208,9 +208,10 @@ impl Actor {
                 );
             }
         }
-        let local: Vec<Local> = std::mem::take(&mut *self.inner.local.lock().expect("poisoned"))
-            .into_values()
-            .collect();
+        let local: Vec<LocalPublication> =
+            std::mem::take(&mut *self.inner.local.lock().expect("poisoned"))
+                .into_values()
+                .collect();
         for entry in local {
             entry.publication.unpublish();
         }
@@ -241,12 +242,12 @@ impl Actor {
     }
 
     /// Applies one change of the gossip map to the membership.
-    fn handle_item(&mut self, item: SubscribeItem) {
+    fn apply_item(&mut self, item: SubscribeItem) {
         match item {
-            SubscribeItem::Entry(entry) => self.handle_entry(entry),
+            SubscribeItem::Entry(entry) => self.apply_entry(entry),
             SubscribeItem::Expired((peer, key, _timestamp)) => {
                 if peer != self.inner.me
-                    && key == PEER_STATE_KEY
+                    && key == ANNOUNCEMENT_KEY
                     && self.members.remove(&peer).is_some()
                 {
                     info!(
@@ -276,8 +277,8 @@ impl Actor {
     }
 
     /// Applies a member's announcement to the membership.
-    fn handle_entry(&mut self, (peer, key, value): (EndpointId, Bytes, SignedValue)) {
-        if peer == self.inner.me || key != PEER_STATE_KEY {
+    fn apply_entry(&mut self, (peer, key, value): (EndpointId, Bytes, SignedValue)) {
+        if peer == self.inner.me || key != ANNOUNCEMENT_KEY {
             return;
         }
         let Ok(announcement) = postcard::from_bytes::<Announcement>(&value.value) else {
@@ -355,12 +356,12 @@ async fn announce(
     }
 }
 
-/// Writes `announcement` under [`PEER_STATE_KEY`].
+/// Writes `announcement` under [`ANNOUNCEMENT_KEY`].
 ///
 /// A failure while the rooms shut down is expected, and logs at DEBUG only.
 async fn put(writer: &WriteScope, announcement: &Announcement, rooms_closing: &AtomicBool) {
     let bytes = postcard::to_stdvec(announcement).expect("an announcement serializes");
-    if let Err(err) = writer.put(PEER_STATE_KEY, bytes).await {
+    if let Err(err) = writer.put(ANNOUNCEMENT_KEY, bytes).await {
         if rooms_closing.load(Ordering::Relaxed) {
             debug!(error = %err, "could not write the announcement while the rooms shut down");
         } else {
