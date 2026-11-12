@@ -730,36 +730,6 @@ async fn a_redecide_that_times_out_keeps_the_session() {
     bob.shutdown().await;
 }
 
-/// A union with a queue nobody answers admits on its other half once the queue times out.
-#[tokio::test]
-#[traced_test]
-async fn a_union_admits_on_its_fast_half_when_the_queue_times_out() {
-    let queue = policy::Queue::new(4);
-    let policy = Policy::<EndpointId>::union(
-        policy::Open(Grant::subscribe_only()),
-        queue.clone().timeout(Duration::from_millis(200)),
-    );
-    let alice = Peer::bare(NodeConfig {
-        decide_timeout: Duration::from_secs(2),
-        ..NodeConfig::default().with_policy(policy)
-    })
-    .await;
-    let bob = Peer::spawn().await;
-
-    step("bob dials", bob.node.connect(alice.endpoint.addr()))
-        .await
-        .expect("bob's side of the handshake completes");
-    eventually("alice admits bob on the open half", || {
-        alice.node.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
-    })
-    .await;
-    assert!(has_session_with(&alice.node, bob.id()));
-
-    drop(queue);
-    alice.shutdown().await;
-    bob.shutdown().await;
-}
-
 /// An expiry beyond the clock's range means never, and the node keeps running.
 #[tokio::test]
 #[traced_test]

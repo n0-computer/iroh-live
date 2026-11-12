@@ -81,9 +81,7 @@ pub struct NodeConfig {
     ///
     /// A decision that takes longer is a rejection with
     /// [`moq_net::Error::Timeout`]. The default is [`DECIDE_TIMEOUT`]. Raise it
-    /// when a person answers, as with a [`policy::Queue`]. It covers the
-    /// whole policy, so a [`union`](Policy::union) with a slow half is
-    /// rejected as a whole: wrap that half with [`Policy::timeout`].
+    /// when a person answers, as with a [`policy::Queue`].
     ///
     /// When the node asks again about a live peer, a timeout or a full
     /// queue ([`moq_net::Error::TooManyRequests`]) is no rejection: the peer

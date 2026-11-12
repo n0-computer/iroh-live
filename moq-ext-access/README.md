@@ -16,7 +16,7 @@ add token verifiers.
 - `visible_paths`: the paths a link may see, for the node to hand to moq as the
   subscribe half of the link's grant.
 - `policy`: who may hold a session, and with which grant. `Open`, `Closed`,
-  `from_fn`, `union`, `filter` and `timeout` compose policies. `Queue` hands
+  `from_fn` and `filter` compose policies. `Queue` hands
   each decision to the application, and `Verify` decides with a token
   verifier.
 - `Layout`: a path convention, which says where each peer publishes and who

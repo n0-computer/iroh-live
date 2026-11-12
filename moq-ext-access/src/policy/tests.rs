@@ -74,60 +74,6 @@ fn from_fn_sees_the_request() {
 }
 
 #[test]
-fn a_union_of_an_admit_and_a_reject_admits_with_the_admitting_grant() {
-    let decision = decide(
-        &Policy::<Peer>::union(Open(under("a")), Closed),
-        &request("bob"),
-    );
-    assert_eq!(decision.expect("admitted").grant, under("a"));
-    let decision = decide(
-        &Policy::<Peer>::union(Closed, Open(under("b"))),
-        &request("bob"),
-    );
-    assert_eq!(decision.expect("admitted").grant, under("b"));
-}
-
-#[test]
-fn a_union_of_two_rejects_keeps_the_first_rejection() {
-    let first = from_fn(|_: &PeerRequest<Peer>| Err(Rejection::new("first")));
-    let rejection = decide(&first.union(Closed), &request("bob")).expect_err("rejected");
-    assert_eq!(rejection.reason(), "first");
-}
-
-#[test]
-fn a_union_of_two_admits_joins_patterns_and_takes_the_earliest_expiry() {
-    let soon = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-    let later = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
-    let a = from_fn(move |_: &PeerRequest<Peer>| {
-        Ok(Authorization {
-            grant: under("a"),
-            transit: Transit {
-                forward_to: Pattern::all().into(),
-                ..Default::default()
-            },
-            expires: Some(later),
-        })
-    });
-    let b = from_fn(move |_: &PeerRequest<Peer>| {
-        Ok(Authorization {
-            grant: under("b"),
-            transit: Transit {
-                peer_forwards: true,
-                ..Default::default()
-            },
-            expires: Some(soon),
-        })
-    });
-    let joined = decide(&a.union(b), &request("bob")).expect("admitted");
-    assert!(joined.grant.allows_publish("a/cam"));
-    assert!(joined.grant.allows_publish("b/cam"));
-    assert!(!joined.grant.allows_publish("c/cam"));
-    assert!(joined.transit.forward_to.matches("any/path"));
-    assert!(joined.transit.peer_forwards);
-    assert_eq!(joined.expires, Some(soon));
-}
-
-#[test]
 fn a_filter_rejects_what_its_predicate_refuses() {
     let policy = Open(Grant::everything()).filter(|request| request.peer() != "mallory");
     assert!(decide(&policy, &request("bob")).is_ok());
@@ -384,43 +330,6 @@ impl Policy<Peer> for Never {
     async fn decide(&self, _request: &PeerRequest<Peer>) -> Decision {
         future::pending().await
     }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_timeout_rejects_a_slow_policy_with_the_timeout_code() {
-    let policy = Never.timeout(Duration::from_secs(5));
-    let rejection = Policy::decide(&policy, &request("bob"))
-        .await
-        .expect_err("timed out");
-    assert!(
-        matches!(rejection.code(), moq_net::Error::Timeout),
-        "{rejection}"
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_timeout_passes_a_fast_decision_through() {
-    let admitted = Policy::decide(
-        &Policy::<Peer>::timeout(Open(under("a")), Duration::from_secs(5)),
-        &request("bob"),
-    )
-    .await
-    .expect("admitted");
-    assert_eq!(admitted.grant, under("a"));
-    let closed = Policy::<Peer>::timeout(Closed, Duration::from_secs(5));
-    let rejection = Policy::decide(&closed, &request("bob"))
-        .await
-        .expect_err("rejected");
-    assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_union_admits_on_its_fast_half_when_the_slow_half_times_out() {
-    let policy = Open(under("a")).union(Never.timeout(Duration::from_secs(5)));
-    let admitted = Policy::decide(&policy, &request("bob"))
-        .await
-        .expect("admitted");
-    assert_eq!(admitted.grant, under("a"));
 }
 
 #[tokio::test(start_paused = true)]

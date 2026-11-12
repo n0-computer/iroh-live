@@ -55,10 +55,9 @@ out of an audience loses the path at once, and what it read there ends with
 route the node learned from another peer or a relay.
 
 The policy decides each peer when a session opens, in either direction, and
-again when an authorization expires, when the policy reports a change, and on
-`Node::reauthorize`. A new decision applies to every session with the peer at
-once, and a rejection closes them. `policy::Open`, `Closed`, `from_fn`,
-`union`, `filter` and `timeout` compose policies:
+again when an authorization expires and on `Node::reauthorize`. A new decision applies to every session with the peer at
+once, and a rejection closes them. `policy::Open`, `Closed`, `from_fn`
+and `filter` compose policies:
 
 ```rust
 use iroh_live_node::{Grant, NodeConfig, policy};

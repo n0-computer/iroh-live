@@ -6,7 +6,7 @@
 //!
 //! - [`Open`] and [`Closed`] admit or reject everyone.
 //! - [`from_fn`] decides with a synchronous closure.
-//! - [`Policy::union`] and [`Policy::filter`] combine policies.
+//! - [`Policy::filter`] narrows a policy by a predicate.
 //! - [`Queue`] hands each decision to the application.
 //! - [`Verify`] decides with a [`TokenVerifier`] when the peer presents a
 //!   token, and with a fallback policy when it does not.
@@ -144,35 +144,12 @@ pub struct Authorization {
     pub expires: Option<SystemTime>,
 }
 
-impl Authorization {
-    /// Returns an authorization that allows what either this one or `other` allows.
-    ///
-    /// The earlier expiry wins, so the node decides again as soon as either
-    /// half could change.
-    #[must_use]
-    pub fn union(&self, other: &Self) -> Self {
-        Self {
-            grant: self.grant.union(&other.grant),
-            transit: self.transit.union(&other.transit),
-            expires: earliest(self.expires, other.expires),
-        }
-    }
-}
-
 impl From<Grant> for Authorization {
     fn from(grant: Grant) -> Self {
         Self {
             grant,
             ..Default::default()
         }
-    }
-}
-
-/// Returns the smaller of two optional values, where `None` is no bound.
-fn earliest<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
     }
 }
 
@@ -267,21 +244,6 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     /// so an implementation must tolerate cancellation at any await.
     fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send;
 
-    /// Returns a policy that admits what this one or `other` admits.
-    ///
-    /// When both admit, the authorizations are joined with
-    /// [`Authorization::union`].
-    ///
-    /// [`Open`] and [`Closed`] are policies for every peer type, so a union
-    /// of two of them names the peer type:
-    /// `Policy::<EndpointId>::union(Open(grant), Closed)`.
-    fn union<B: Policy<P>>(self, other: B) -> Union<Self, B>
-    where
-        Self: Sized,
-    {
-        Union { a: self, b: other }
-    }
-
     /// Returns a policy that rejects the peers `admit` refuses, and asks this one otherwise.
     ///
     /// The predicate is not watched: when the state it reads changes, tell
@@ -292,22 +254,6 @@ pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
         F: Fn(&PeerRequest<P>) -> bool + Send + Sync + 'static,
     {
         Filter { inner: self, admit }
-    }
-
-    /// Returns a policy that rejects with [`moq_net::Error::Timeout`] when this one takes longer than `after`.
-    ///
-    /// A [`union`](Self::union) waits for both halves, so a half that never
-    /// answers, such as a [`Queue`] nobody reads, holds the union until the
-    /// node's own decide timeout rejects it as a whole. Wrap that half with
-    /// a shorter timeout, and the union admits on the other half:
-    /// `Open(grant).union(queue.timeout(Duration::from_secs(5)))`.
-    ///
-    /// Needs a tokio runtime with time enabled, as the node runs on.
-    fn timeout(self, after: Duration) -> Timeout<Self>
-    where
-        Self: Sized,
-    {
-        Timeout { inner: self, after }
     }
 }
 
@@ -408,27 +354,6 @@ where
     }
 }
 
-/// A policy that admits what either of two policies admits, built by [`Policy::union`].
-///
-/// It waits for both halves. Wrap a half that may not answer in time with
-/// [`Policy::timeout`].
-#[derive(Debug, Clone)]
-pub struct Union<A, B> {
-    a: A,
-    b: B,
-}
-
-impl<P: PeerId, A: Policy<P>, B: Policy<P>> Policy<P> for Union<A, B> {
-    async fn decide(&self, request: &PeerRequest<P>) -> Decision {
-        let (a, b) = future::zip(self.a.decide(request), self.b.decide(request)).await;
-        match (a, b) {
-            (Ok(a), Ok(b)) => Ok(a.union(&b)),
-            (Ok(admitted), Err(_)) | (Err(_), Ok(admitted)) => Ok(admitted),
-            (Err(rejection), Err(_)) => Err(rejection),
-        }
-    }
-}
-
 /// A policy that rejects the peers a predicate refuses, built by [`Policy::filter`].
 #[derive(Clone)]
 pub struct Filter<T, F> {
@@ -455,21 +380,6 @@ where
             return Err(Rejection::new("filtered"));
         }
         self.inner.decide(request).await
-    }
-}
-
-/// A policy that gives up after a while, built by [`Policy::timeout`].
-#[derive(Debug, Clone)]
-pub struct Timeout<T> {
-    inner: T,
-    after: Duration,
-}
-
-impl<P: PeerId, T: Policy<P>> Policy<P> for Timeout<T> {
-    async fn decide(&self, request: &PeerRequest<P>) -> Decision {
-        n0_future::time::timeout(self.after, self.inner.decide(request))
-            .await
-            .unwrap_or_else(|_| Err(too_slow()))
     }
 }
 

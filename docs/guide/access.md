@@ -87,16 +87,12 @@ These building blocks cover most applications:
 | `Open(grant)` | Admits every peer with `grant` |
 | `Closed` | Rejects every peer |
 | `from_fn(f)` | Calls the synchronous closure `f` |
-| `a.union(b)` | Admits what either admits, with the union of both grants and the earliest expiry |
 | `inner.filter(predicate)` | Rejects the peers `predicate` refuses, and asks `inner` about the rest |
-| `inner.timeout(after)` | Rejects with `Timeout` when `inner` takes longer than `after` |
 | `Queue::new(capacity)` | Hands each decision to the application |
 | `Verify::new(verifier)` | Lets a token decide, see [tokens](#tokens) |
 
-`Open` and `Closed` work for every peer type. When you combine two of them,
-name the peer type: `Policy::<EndpointId>::union(Open(a), Open(b))`. A policy
-with a typed peer, such as a `from_fn` with an annotated closure or a layout's
-policy, fixes the type for the whole expression.
+To combine policies in other ways, such as admitting what either of two
+admits, write a policy of your own (see below) that asks both.
 
 ### An open LAN node
 
@@ -276,13 +272,26 @@ while let Some(pending) = queue.next().await {
 A full queue rejects at once with `TooManyRequests`.
 
 `decide_timeout` covers the whole policy. Some nodes admit every peer with a
-small grant and ask the application for more. Give the slow half its own
-timeout, so that the union still admits on the fast half:
+small grant and ask the application for more. Such a policy waits for the
+queue with a timeout of its own, and falls back to the small grant:
 
 ```rust
-use iroh_live::node::{Grant, policy::{Open, Policy}};
+use iroh_live::node::{
+    Grant,
+    policy::{Decision, PeerRequest, Policy, Queue},
+};
 
-let policy = Open(Grant::subscribe_only()).union(queue.clone().timeout(Duration::from_secs(30)));
+#[derive(Debug)]
+struct AskForMore(Queue);
+
+impl Policy<iroh::EndpointId> for AskForMore {
+    async fn decide(&self, request: &PeerRequest) -> Decision {
+        match tokio::time::timeout(Duration::from_secs(30), self.0.decide(request)).await {
+            Ok(Ok(authorization)) => Ok(authorization),
+            _ => Ok(Grant::subscribe_only().into()),
+        }
+    }
+}
 ```
 
 ## When the node asks
