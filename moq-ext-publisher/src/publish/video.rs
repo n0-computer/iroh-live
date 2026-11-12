@@ -546,6 +546,7 @@ impl Encoder {
                         self.restamp(&mut tail);
                         for unit in &tail {
                             self.producer.publish(unit).map_err(Error::broadcast)?;
+                            self.clock.encoded(unit.timestamp);
                         }
                         return self.stopped();
                     }
@@ -631,6 +632,7 @@ impl Encoder {
                 });
                 for unit in &encoded {
                     self.producer.publish(unit).map_err(Error::broadcast)?;
+                    self.clock.encoded(unit.timestamp);
                 }
                 // A keyframe with another decoder identity, such as a new
                 // level after a switch to a larger source, moves the rendition
@@ -851,13 +853,29 @@ mod tests {
         assert_eq!(log.source(at(1)), None, "nothing was published at 1 us");
     }
 
-    /// An entry is the three timestamps the docs promise, and nothing more.
+    /// An entry is the two timestamps and two instants the docs promise, and nothing more.
     #[test]
-    fn a_timestamp_log_entry_is_48_bytes() {
+    fn a_timestamp_log_entry_is_64_bytes() {
         assert_eq!(
             std::mem::size_of::<(moq_net::Timestamp, crate::publish::Logged)>(),
-            48
+            64
         );
+    }
+
+    /// The first rendition to publish a frame records when it left the encoder.
+    #[test]
+    fn the_timestamp_log_keeps_the_first_encoded_instant() {
+        let log = TimestampLog::default();
+        let mut source_clock = SourceClock::new(moq_mux::Clock::new()).recording(log.clone());
+        let published = source_clock.map(at(20_000), None);
+        assert_eq!(log.get(published).and_then(|l| l.encoded_at), None);
+        let first = Instant::now();
+        log.encoded(published, first);
+        log.encoded(published, first + Duration::from_millis(5));
+        assert_eq!(log.get(published).and_then(|l| l.encoded_at), Some(first));
+        // A frame the log never mapped is not added.
+        log.encoded(at(1), first);
+        assert_eq!(log.get(at(1)).map(|l| l.source), None);
     }
 
     /// A frame a slower rendition publishes after a newer one lands in order, once.

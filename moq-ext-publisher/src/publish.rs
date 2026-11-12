@@ -159,9 +159,9 @@ const MAX_AHEAD: Duration = Duration::from_secs(1);
 /// How many published video frames a broadcast keeps the timestamps of, with [`VideoEncoding::record_timestamps`].
 ///
 /// About 17 s at 30 fps and 8 s at 60 fps, several times what a subscriber
-/// needs to echo a timestamp back. An entry is three timestamps, 48 bytes, so
-/// a full log takes 24 KiB per broadcast. No pixels and no encoded data are
-/// kept.
+/// needs to echo a timestamp back. An entry is two timestamps and two
+/// instants, 64 bytes, so a full log takes 32 KiB per broadcast. No pixels
+/// and no encoded data are kept.
 ///
 /// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
 const TIMESTAMP_HISTORY: usize = 512;
@@ -173,6 +173,8 @@ struct Logged {
     source: moq_net::Timestamp,
     /// When the frame entered the source, if known.
     captured_at: Option<Instant>,
+    /// When the first rendition published the frame's encoded data.
+    encoded_at: Option<Instant>,
 }
 
 /// The source timestamp and capture instant of recently published video frames.
@@ -209,11 +211,22 @@ impl TimestampLog {
                 Logged {
                     source,
                     captured_at,
+                    encoded_at: None,
                 },
             ),
         );
         if log.len() > TIMESTAMP_HISTORY {
             log.pop_front();
+        }
+    }
+
+    /// Records that the frame published at `published` left an encoder at `at`.
+    ///
+    /// The first rendition to publish the frame records it.
+    fn encoded(&self, published: moq_net::Timestamp, at: Instant) {
+        let mut log = self.0.lock().expect("poisoned");
+        if let Ok(index) = log.binary_search_by_key(&published, |(logged, _)| *logged) {
+            log[index].1.encoded_at.get_or_insert(at);
         }
     }
 
@@ -296,6 +309,13 @@ impl SourceClock {
         self
     }
 
+    /// Records in the log, if any, that the frame published at `published` left the encoder now.
+    fn encoded(&self, published: moq_net::Timestamp) {
+        if let Some(log) = &self.log {
+            log.encoded(published, Instant::now());
+        }
+    }
+
     /// Returns the last timestamp this clone mapped.
     fn last(&self) -> Option<moq_net::Timestamp> {
         self.last
@@ -362,7 +382,8 @@ struct Shared {
     /// The source timestamps and capture instants of the published video.
     ///
     /// [`LocalBroadcast::video_source_timestamp`] and
-    /// [`LocalBroadcast::video_captured_at`] read it.
+    /// [`LocalBroadcast::video_captured_at`] and
+    /// [`LocalBroadcast::video_encoded_at`] read it.
     video_timestamps: TimestampLog,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
@@ -721,6 +742,38 @@ impl LocalBroadcast {
             .video_timestamps
             .get(published)
             .and_then(|logged| logged.captured_at)
+    }
+
+    /// Returns when the video frame this broadcast published at `published` left its encoder.
+    ///
+    /// That is when the first rendition to encode the frame handed its
+    /// encoded data to the track. Less [`video_captured_at`](Self::video_captured_at),
+    /// it is the time the frame spent in the publisher: the wait for the
+    /// encoder, any scaling, and the encoding itself.
+    ///
+    /// It needs [`VideoEncoding::record_timestamps`] too, and returns `None` in
+    /// the same cases as [`video_source_timestamp`](Self::video_source_timestamp),
+    /// and for a frame still in the encoder.
+    ///
+    /// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(broadcast: &moq_ext_publisher::LocalBroadcast, echoed: moq_net::Timestamp) {
+    /// let captured = broadcast.video_captured_at(echoed);
+    /// let encoded = broadcast.video_encoded_at(echoed);
+    /// if let (Some(captured), Some(encoded)) = (captured, encoded) {
+    ///     println!("{:?} from capture to the track", encoded - captured);
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn video_encoded_at(&self, published: moq_net::Timestamp) -> Option<Instant> {
+        self.shared
+            .video_timestamps
+            .get(published)
+            .and_then(|logged| logged.encoded_at)
     }
 
     /// Returns what the broadcast is sending, per rendition.

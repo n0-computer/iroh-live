@@ -1029,7 +1029,7 @@ async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
     feeder.abort();
 }
 
-/// A decoded timestamp leads the publisher back to when its source frame was pushed.
+/// A decoded timestamp leads the publisher back to when its source frame was pushed and encoded.
 #[tokio::test]
 async fn a_decoded_timestamp_maps_back_to_when_its_frame_was_pushed() {
     let format = VideoFormat {
@@ -1092,6 +1092,13 @@ async fn a_decoded_timestamp_maps_back_to_when_its_frame_was_pushed() {
             before <= captured && captured <= after,
             "{captured:?} is outside the push of {source:?}"
         );
+        let encoded = broadcast
+            .video_encoded_at(frame.timestamp)
+            .expect("a decoded frame has left the encoder");
+        assert!(
+            captured <= encoded && encoded <= std::time::Instant::now(),
+            "{source:?} left the encoder at {encoded:?}, before its push at {captured:?}"
+        );
     }
     assert_eq!(
         broadcast.video_captured_at(moq_net::Timestamp::from_micros(1).expect("1")),
@@ -1127,6 +1134,7 @@ async fn timestamps_are_not_recorded_by_default() {
         .expect("the video plays");
     assert_eq!(broadcast.video_source_timestamp(frame.timestamp), None);
     assert_eq!(broadcast.video_captured_at(frame.timestamp), None);
+    assert_eq!(broadcast.video_encoded_at(frame.timestamp), None);
     drop(player);
     feeder.abort();
 }
