@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Alice's node admitted the device with the chain's capability. It may
     // take a moment for the session to register on alice's side.
     let authorization = loop {
-        if let Some(authorization) = alice.grant_for(device.id()) {
+        if let Some(authorization) = alice.authorization_for(device.id()) {
             break authorization;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

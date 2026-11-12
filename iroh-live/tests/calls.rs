@@ -349,7 +349,7 @@ async fn a_contacts_only_callee_refuses_strangers_and_drops_removed_contacts() {
         step("the call ends", call_alice.ended()).await,
         HangUpReason::Lost
     );
-    assert!(bob.node.grant_for(alice.id()).is_none());
+    assert!(bob.node.authorization_for(alice.id()).is_none());
 
     for peer in [alice, bob, carol] {
         peer.shutdown().await;

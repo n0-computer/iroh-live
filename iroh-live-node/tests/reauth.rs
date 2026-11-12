@@ -60,7 +60,7 @@ async fn an_expiring_authorization_narrows_the_live_session() {
 
     ends("the lapsed grant ends the read", &mut track).await;
     eventually("the grant narrows", || {
-        alice.node.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
+        alice.node.authorization_for(bob.id()) == Some(Grant::subscribe_only().into())
     })
     .await;
     assert_eq!(
@@ -122,7 +122,7 @@ async fn a_rejection_at_expiry_closes_the_sessions_with_its_code() {
         "bob sees the rejection's code: {err:#}"
     );
     eventually("alice forgets bob", || {
-        !has_session_with(&alice.node, bob.id()) && alice.node.grant_for(bob.id()).is_none()
+        !has_session_with(&alice.node, bob.id()) && alice.node.authorization_for(bob.id()).is_none()
     })
     .await;
 
@@ -146,7 +146,7 @@ async fn reauthorize_all_decides_every_peer_again() {
             .await
             .expect("admitted");
         eventually("alice registers the peer", || {
-            alice.node.grant_for(peer.id()).is_some()
+            alice.node.authorization_for(peer.id()).is_some()
         })
         .await;
     }
@@ -155,7 +155,8 @@ async fn reauthorize_all_decides_every_peer_again() {
     alice.node.reauthorize_all();
     let narrowed = Some(Authorization::from(Grant::subscribe_only()));
     eventually("both peers narrow", || {
-        alice.node.grant_for(bob.id()) == narrowed && alice.node.grant_for(carol.id()) == narrowed
+        alice.node.authorization_for(bob.id()) == narrowed
+            && alice.node.authorization_for(carol.id()) == narrowed
     })
     .await;
     assert!(has_session_with(&alice.node, bob.id()));
@@ -201,7 +202,7 @@ async fn reauthorize_decides_one_peer_again() {
                 .expect("a contact is admitted"),
         );
         eventually("alice registers the peer", || {
-            alice.node.grant_for(peer.id()).is_some()
+            alice.node.authorization_for(peer.id()).is_some()
         })
         .await;
     }
@@ -213,7 +214,7 @@ async fn reauthorize_decides_one_peer_again() {
     alice.node.reauthorize(carol.id());
     step("carol's session closes", sessions[1].closed()).await;
     eventually("alice forgets carol", || {
-        alice.node.grant_for(carol.id()).is_none()
+        alice.node.authorization_for(carol.id()).is_none()
     })
     .await;
     assert_eq!(
@@ -222,7 +223,7 @@ async fn reauthorize_decides_one_peer_again() {
         "bob is not asked again"
     );
     assert_eq!(
-        alice.node.grant_for(bob.id()),
+        alice.node.authorization_for(bob.id()),
         Some(Grant::everything().into())
     );
     assert!(
@@ -239,7 +240,7 @@ async fn reauthorize_decides_one_peer_again() {
     if let Ok(session) = again {
         step("the new session closes", session.closed()).await;
     }
-    assert!(alice.node.grant_for(carol.id()).is_none());
+    assert!(alice.node.authorization_for(carol.id()).is_none());
     assert_eq!(decisions.lock().expect("poisoned")[&carol.id()], 3);
 
     alice.shutdown().await;
@@ -270,12 +271,12 @@ async fn a_queue_asks_the_application_to_reauthorize() {
         .await
         .expect("admitted");
     eventually("alice registers bob", || {
-        alice.node.grant_for(bob.id()).is_some()
+        alice.node.authorization_for(bob.id()).is_some()
     })
     .await;
     alice.node.reauthorize(bob.id());
     eventually("the application narrows bob", || {
-        alice.node.grant_for(bob.id()) == Some(Grant::subscribe_only().into())
+        alice.node.authorization_for(bob.id()) == Some(Grant::subscribe_only().into())
     })
     .await;
     assert_eq!(
@@ -363,7 +364,7 @@ async fn a_session_decided_before_a_rejection_does_not_undo_it() {
         .await
         .expect("admitted");
     eventually("alice registers bob", || {
-        alice.node.grant_for(bob).is_some()
+        alice.node.authorization_for(bob).is_some()
     })
     .await;
 
@@ -371,7 +372,7 @@ async fn a_session_decided_before_a_rejection_does_not_undo_it() {
     alice.node.reauthorize(bob);
     step("the fast session closes", fast_session.closed()).await;
     eventually("alice forgets bob's rights", || {
-        alice.node.grant_for(bob).is_none()
+        alice.node.authorization_for(bob).is_none()
     })
     .await;
 
@@ -384,13 +385,13 @@ async fn a_session_decided_before_a_rejection_does_not_undo_it() {
     eventually("alice registers the slow session or refuses it", || {
         alice
             .node
-            .grant_for(bob)
+            .authorization_for(bob)
             .is_none_or(|current| current.grant != Grant::everything())
     })
     .await;
     step("the slow session closes", slow_session.closed()).await;
     eventually("alice holds nothing for bob", || {
-        !has_session_with(&alice.node, bob) && alice.node.grant_for(bob).is_none()
+        !has_session_with(&alice.node, bob) && alice.node.authorization_for(bob).is_none()
     })
     .await;
 
@@ -435,7 +436,7 @@ async fn a_peer_removed_during_a_dial_never_gets_its_old_grant() {
     );
     step("the re-decide closes the session", session.closed()).await;
     eventually("alice holds nothing for bob", || {
-        alice.node.grant_for(bob.id()).is_none()
+        alice.node.authorization_for(bob.id()).is_none()
     })
     .await;
 
@@ -592,7 +593,7 @@ async fn a_full_queue_keeps_the_sessions_and_asks_again() {
         );
         let id = peer.id();
         eventually("alice registers the peer", || {
-            alice.node.grant_for(id).is_some()
+            alice.node.authorization_for(id).is_some()
         })
         .await;
         peers.push(peer);
@@ -650,7 +651,7 @@ async fn a_redecide_that_times_out_keeps_the_session() {
         .expect("admitted");
 
     eventually("alice registers bob", || {
-        alice.node.grant_for(bob.id()).is_some()
+        alice.node.authorization_for(bob.id()).is_some()
     })
     .await;
     alice.node.reauthorize(bob.id());
@@ -663,7 +664,10 @@ async fn a_redecide_that_times_out_keeps_the_session() {
         "the timeout closed the session"
     );
     assert_eq!(
-        alice.node.grant_for(bob.id()).map(|current| current.grant),
+        alice
+            .node
+            .authorization_for(bob.id())
+            .map(|current| current.grant),
         Some(Grant::everything())
     );
 
@@ -689,7 +693,7 @@ async fn an_expiry_beyond_the_clock_is_never() {
         .await
         .expect("admitted");
     eventually("alice registers bob", || {
-        alice.node.grant_for(bob.id()).is_some()
+        alice.node.authorization_for(bob.id()).is_some()
     })
     .await;
 
@@ -699,7 +703,7 @@ async fn an_expiry_beyond_the_clock_is_never() {
         .await
         .expect("admitted");
     eventually("alice registers carol", || {
-        alice.node.grant_for(carol.id()).is_some()
+        alice.node.authorization_for(carol.id()).is_some()
     })
     .await;
 
@@ -725,7 +729,7 @@ async fn reauthorizing_a_peer_without_a_session_asks_nothing() {
     .await;
     let stranger = iroh::SecretKey::generate().public();
     alice.node.reauthorize(stranger);
-    assert_eq!(alice.node.grant_for(stranger), None);
+    assert_eq!(alice.node.authorization_for(stranger), None);
 
     // The node still decides a new session once, at its connect.
     let bob = Peer::spawn().await;
@@ -733,14 +737,14 @@ async fn reauthorizing_a_peer_without_a_session_asks_nothing() {
         .await
         .expect("admitted");
     eventually("alice registers bob", || {
-        alice.node.grant_for(bob.id()).is_some()
+        alice.node.authorization_for(bob.id()).is_some()
     })
     .await;
     assert_eq!(
         *events.lock().expect("poisoned"),
         [(bob.id(), Event::Connect)]
     );
-    assert_eq!(alice.node.grant_for(stranger), None);
+    assert_eq!(alice.node.authorization_for(stranger), None);
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -773,7 +777,7 @@ async fn a_shutdown_during_a_held_reauthorize_finishes() {
         .await
         .expect("admitted");
     eventually("alice registers bob", || {
-        alice.node.grant_for(bob.id()).is_some()
+        alice.node.authorization_for(bob.id()).is_some()
     })
     .await;
     alice.node.reauthorize(bob.id());

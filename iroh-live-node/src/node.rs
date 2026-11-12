@@ -298,7 +298,7 @@ impl Node {
     /// nothing. `None` once the peer has no session, or none that holds an
     /// authorization.
     #[must_use]
-    pub fn grant_for(&self, peer: EndpointId) -> Option<Authorization> {
+    pub fn authorization_for(&self, peer: EndpointId) -> Option<Authorization> {
         self.shared
             .state
             .lock()

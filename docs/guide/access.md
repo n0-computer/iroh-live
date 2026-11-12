@@ -333,8 +333,8 @@ the remote node shows in one of two ways. The dial fails with
 `Error::Refused`, or the dial succeeds and the session then closes with the
 remote's code.
 
-`Node::grant_for(peer)` returns the authorization of the peer's newest session
-that holds one, and `Session::grant()` the grant of one session.
+`Node::authorization_for(peer)` returns the authorization of the peer's newest
+session that holds one, and `Session::grant()` the grant of one session.
 
 ## Ticket claims
 

@@ -78,10 +78,12 @@ async fn connect_with_token(from: &Peer, to: &Peer, token: String) -> Result<(),
 /// Waits until `node` stores an authorization for `peer`, and returns it.
 async fn admitted(node: &Peer, peer: &Peer) -> Authorization {
     eventually("the session registers", || {
-        node.node.grant_for(peer.id()).is_some()
+        node.node.authorization_for(peer.id()).is_some()
     })
     .await;
-    node.node.grant_for(peer.id()).expect("an authorization")
+    node.node
+        .authorization_for(peer.id())
+        .expect("an authorization")
 }
 
 #[tokio::test]
@@ -130,7 +132,7 @@ async fn a_chain_presented_by_another_device_is_refused() {
         Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
         Ok(()) => {
             eventually("alice drops mallory", || {
-                alice.node.grant_for(mallory.id()).is_none()
+                alice.node.authorization_for(mallory.id()).is_none()
                     && alice
                         .node
                         .sessions()
@@ -162,7 +164,7 @@ async fn an_expired_delegation_narrows_the_device_to_the_fallback() {
     );
 
     eventually("the grant narrows to the fallback", || {
-        alice.node.grant_for(bob.id()) == Some(Authorization::from(Grant::subscribe_only()))
+        alice.node.authorization_for(bob.id()) == Some(Authorization::from(Grant::subscribe_only()))
     })
     .await;
     assert!(

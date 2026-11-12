@@ -39,7 +39,7 @@ async fn switchable(current: Arc<Mutex<Option<Grant>>>) -> Peer {
 /// Returns the grant `node`'s policy gave the peer of `session`, without its claims.
 fn policy_grant(node: &Peer, session: &Session) -> Grant {
     node.node
-        .grant_for(session.peer())
+        .authorization_for(session.peer())
         .map_or_else(Grant::nothing, |authorization| authorization.grant)
 }
 
@@ -47,7 +47,7 @@ fn policy_grant(node: &Peer, session: &Session) -> Grant {
 async fn until_granted(node: &Peer, peer: EndpointId, grant: &Grant) {
     eventually("the policy grant changes", || {
         node.node
-            .grant_for(peer)
+            .authorization_for(peer)
             .map(|current| current.grant)
             .as_ref()
             == Some(grant)

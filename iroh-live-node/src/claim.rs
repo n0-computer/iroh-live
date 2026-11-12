@@ -85,9 +85,9 @@ impl Node {
     ///
     /// A claim on a path of this node's own id is a no-op. A claim on a
     /// path the peer owns is recorded even while the peer's authorization
-    /// (see [`grant_for`](Self::grant_for)) already lets it publish there:
-    /// it widens nothing then, and keeps the path if a re-decide narrows
-    /// the authorization. A path the peer does not own but its authorization
+    /// (see [`authorization_for`](Self::authorization_for)) already lets it
+    /// publish there: it widens nothing then, and keeps the path if a
+    /// re-decide narrows the authorization. A path the peer does not own but its authorization
     /// covers is a no-op claim.
     ///
     /// Otherwise the peer has to own the path: the
@@ -112,7 +112,7 @@ impl Node {
         // Only the authorization the peer already holds counts here: the
         // policy is async, and a claim must not wait for it.
         let granted = || {
-            self.grant_for(peer)
+            self.authorization_for(peer)
                 .is_some_and(|authorization| authorization.grant.allows_publish(path.as_str()))
         };
         let unrecorded = || PathClaim {

@@ -1,4 +1,4 @@
-//! Node identity and lifecycle: `id`, `grant_for` and `closed`.
+//! Node identity and lifecycle: `id`, `authorization_for` and `closed`.
 
 mod common;
 
@@ -46,19 +46,23 @@ async fn grant_for_reports_the_policy_authorization_of_a_live_peer() {
         Peer::bare(NodeConfig::default().with_policy(policy::Open(Grant::everything()))).await;
     assert_eq!(alice.node.id(), alice.id());
     let bob = Peer::bare(NodeConfig::default()).await;
-    assert_eq!(alice.node.grant_for(bob.id()), None, "no session yet");
+    assert_eq!(
+        alice.node.authorization_for(bob.id()),
+        None,
+        "no session yet"
+    );
 
     let session = step("alice dials bob", alice.node.connect(bob.endpoint.addr()))
         .await
         .expect("connect");
     assert_eq!(
-        alice.node.grant_for(bob.id()),
+        alice.node.authorization_for(bob.id()),
         Some(Authorization::from(Grant::everything()))
     );
     // Bob's default policy lets alice subscribe and publish nothing.
     let at_bob = step("bob registers alice", async {
         loop {
-            if let Some(authorization) = bob.node.grant_for(alice.id()) {
+            if let Some(authorization) = bob.node.authorization_for(alice.id()) {
                 return authorization;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -69,7 +73,7 @@ async fn grant_for_reports_the_policy_authorization_of_a_live_peer() {
 
     session.close(moq_net::Error::Cancel);
     step("the authorization goes with the session", async {
-        while alice.node.grant_for(bob.id()).is_some() {
+        while alice.node.authorization_for(bob.id()).is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
