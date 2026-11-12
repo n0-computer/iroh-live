@@ -18,7 +18,7 @@ use std::time::Duration;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live_node::{
     Audience, ConnectOptions, Grant, MoqPreset, Node, NodeConfig, Reach,
-    net::Pattern,
+    moq_net::Pattern,
     policy::{MoqCapability, Open, RcanVerifier, Verify, encode_chain},
 };
 use rcan::{Expires, Rcan};

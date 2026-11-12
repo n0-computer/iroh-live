@@ -2,7 +2,7 @@
 //!
 //! A [`Node`] publishes and subscribes to broadcasts at paths, over a direct
 //! session with a peer or an attached relay. [`node`] re-exports the
-//! transport and [`net`] the moq-net under it. `media` and `rooms` gather the
+//! transport and [`moq_net`] the moq-net under it. `media` and `rooms` gather the
 //! media and rooms crates, each behind its feature.
 //!
 //! The moq crates are pinned to a git rev of moq-dev/moq `main`, so this crate
@@ -133,8 +133,8 @@ pub mod media {
     pub use crate::network::remote_broadcast;
 }
 pub use iroh_live_node as node;
-/// The moq-net this crate builds against, as [`node::net`].
-pub use iroh_live_node::net;
+/// The moq-net this crate builds against.
+pub use iroh_live_node::moq_net;
 pub use iroh_live_node::{
     Audience, BroadcastTicket, Congestion, ConnectOptions, MoqPreset, Node, NodeConfig,
     Publication, Reach, RelayConfig, Session, Subscription, TokenFn,
@@ -153,7 +153,7 @@ pub use iroh_live_rooms as rooms;
 /// This publishes a latency in milliseconds and reads it back:
 ///
 /// ```no_run
-/// use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, net::track};
+/// use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, moq_net::track};
 ///
 /// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
 /// let path = LiveLayout::default().path(node.id(), "control")?;

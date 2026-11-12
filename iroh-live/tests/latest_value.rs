@@ -1,7 +1,7 @@
 //! A latest-value JSON track between two nodes, over a real QUIC connection.
 
 use iroh::protocol::Router;
-use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, net::track};
+use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, moq_net::track};
 use iroh_live_node::test_util::{endpoint, step};
 use n0_tracing_test::traced_test;
 

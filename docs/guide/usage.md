@@ -303,7 +303,7 @@ use iroh_live::{
         LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
         video,
     },
-    net::{Pattern, Patterns},
+    moq_net::{Pattern, Patterns},
 };
 
 /// Puts a peer's broadcasts at `stage/<peer>/<name>`.
@@ -440,7 +440,7 @@ use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     Audience, EndpointConfig, Node, Reach,
     layout::LiveLayout,
-    net::{Timescale, Timestamp, track},
+    moq_net::{Timescale, Timestamp, track},
 };
 
 #[tokio::main]
@@ -503,7 +503,7 @@ serves `demo/hello`.
 
 ```rust
 use iroh::EndpointId;
-use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, net::Pattern, policy};
+use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, moq_net::Pattern, policy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

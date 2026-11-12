@@ -32,7 +32,7 @@ use iroh_live::{
         RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition, VideoSource, audio,
         audio::playback::Engine, audio_encoding, remote_broadcast,
     },
-    net::Timestamp,
+    moq_net::Timestamp,
 };
 use jni::{
     JNIEnv, JavaVM,

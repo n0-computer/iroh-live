@@ -103,7 +103,7 @@ mod ticket;
 
 pub use moq_ext_access::{Layout, LinkKind};
 /// The moq-net this crate builds against.
-pub use moq_net as net;
+pub use moq_net;
 use moq_transport_iroh as transport;
 pub use moq_transport_iroh::{
     ALPN, Congestion, HANDSHAKE_TIMEOUT, MoqPreset, NetworkSample, alpns,

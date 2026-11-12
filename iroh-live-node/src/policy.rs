@@ -29,7 +29,7 @@
 //! use iroh::EndpointId;
 //! use iroh_live_node::{
 //!     Grant, NodeConfig,
-//!     net::Pattern,
+//!     moq_net::Pattern,
 //!     policy::{self, PeerRequest, Rejection},
 //! };
 //!

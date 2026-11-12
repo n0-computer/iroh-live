@@ -3,7 +3,7 @@
 //! Capture sources are encoded into the renditions `--renditions` lists. A
 //! `file:` source is republished without re-encoding.
 
-use iroh_live::{Node, layout::LiveLayout, media::LocalBroadcast, net::broadcast};
+use iroh_live::{Node, layout::LiveLayout, media::LocalBroadcast, moq_net::broadcast};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 

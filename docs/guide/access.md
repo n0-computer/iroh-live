@@ -139,7 +139,7 @@ path. The two must agree: the owner of any path in `scope(peer)` is `peer`.
 use iroh::EndpointId;
 use iroh_live::{
     layout::{self, Layout, LiveLayout},
-    net::{Pattern, Patterns},
+    moq_net::{Pattern, Patterns},
 };
 
 /// Puts a peer's broadcasts at `stage/<peer>/<name>`.
@@ -413,7 +413,7 @@ use std::time::Duration;
 
 use iroh_live::{
     ConnectOptions,
-    net::Pattern,
+    moq_net::Pattern,
     node::policy::{MoqCapability, encode_chain},
 };
 use rcan::{Expires, Rcan};

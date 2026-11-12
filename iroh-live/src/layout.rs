@@ -10,7 +10,7 @@ use iroh::EndpointId;
 pub use iroh_live_node::Layout;
 use iroh_live_node::{
     Audience, BroadcastTicket, Error, Grant, Node, NodeConfig,
-    net::{Path, Pattern, Patterns},
+    moq_net::{Path, Pattern, Patterns},
     policy::{self, PeerRequest, Policy},
 };
 use moq_net::broadcast;
