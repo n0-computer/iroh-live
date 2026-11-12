@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use moq_ext_sources::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
+use moq_ext_sources::{ByPtr, Error, SlotState, send_if_changed, stats::SharedCell};
 use moq_net::track::Delay;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -179,8 +179,8 @@ impl PlayerStatus {
 /// The writers behind [`PlaybackStats`].
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlaybackRecorder {
-    pub(crate) video: Cell<Option<VideoPlaybackStats>>,
-    pub(crate) audio: Cell<Option<AudioPlaybackStats>>,
+    pub(crate) video: SharedCell<Option<VideoPlaybackStats>>,
+    pub(crate) audio: SharedCell<Option<AudioPlaybackStats>>,
     /// Written by the video task as it presents pictures.
     pub(crate) video_log: FrameLog,
     /// Written by the audio task as it writes to the output.

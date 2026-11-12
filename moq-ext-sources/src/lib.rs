@@ -12,7 +12,7 @@
 //! media slot on a broadcast and on a player, so a UI reports both the same
 //! way, and [`stats`] counts rates the same way on both sides.
 //!
-//! # What is in it
+//! The sources, their constructors and the features they need:
 //!
 //! | Source | Constructor | Feature |
 //! |---|---|---|
@@ -29,19 +29,15 @@
 //! The crate README lists every feature flag. [`local_task::spawn`] runs a
 //! future on a thread of its own for capture streams that are not `Send`.
 //!
-//! # Upstreaming candidates
-//!
-//! The pattern and tone generators belong in `moq-video`, the audio file
-//! source in `moq-audio`, and the rpicam source as a `moq-video` capture
-//! backend.
-//!
-//! # Cancellation safety
+//! Most of this belongs upstream. The pattern and tone generators fit in
+//! `moq-video`, the audio file source in `moq-audio`, and the rpicam source
+//! as a `moq-video` capture backend.
 //!
 //! Every constructor that is `async` is cancellation safe. Dropping the
 //! future stops the thread or subprocess it started and releases the device.
 //! [`VideoFrames::next`] and [`FrameSender::closed`] lose nothing when dropped.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! # #[cfg(feature = "pattern")]
@@ -79,7 +75,7 @@ pub use self::{
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{
-        AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FrameSender, PcmFanout,
+        AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FileEnd, FrameSender, PcmFanout,
         VideoFormat, VideoSource, VideoSwitch, WeakPcmFanout,
     },
     status::{ByPtr, SlotState, send_if_changed},

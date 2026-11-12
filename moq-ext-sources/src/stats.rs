@@ -6,10 +6,12 @@ use std::{
 };
 
 /// A value one task writes and anyone snapshots.
+///
+/// Clones share the value.
 #[derive(Debug, Clone, Default)]
-pub struct Cell<T>(Arc<Mutex<T>>);
+pub struct SharedCell<T>(Arc<Mutex<T>>);
 
-impl<T: Clone> Cell<T> {
+impl<T: Clone> SharedCell<T> {
     /// Changes the value in place.
     pub fn update(&self, f: impl FnOnce(&mut T)) {
         f(&mut self.0.lock().expect("poisoned"));
@@ -28,7 +30,7 @@ impl<T: Clone> Cell<T> {
 /// arrives, so a stream that stops keeps its last rate.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
-/// Counts events and reports their rate once per window.
+/// A counter of events that reports their rate once per window.
 ///
 /// Owned by the one task that sees the events, so it needs no lock.
 #[derive(Debug)]
@@ -64,15 +66,15 @@ impl RateMeter {
 
     /// Counts one event carrying `amount`, such as bytes.
     ///
-    /// Returns `(events, amount)` per second when this event closes the
-    /// window, and `None` before that.
+    /// Returns the rates when this event closes the window, and `None` before
+    /// that.
     #[must_use]
-    pub fn tick(&mut self, amount: u64) -> Option<(f64, f64)> {
+    pub fn tick(&mut self, amount: u64) -> Option<Rates> {
         self.tick_at(amount, Instant::now())
     }
 
     /// Counts one event at `now`, as [`tick`](Self::tick) does.
-    fn tick_at(&mut self, amount: u64, now: Instant) -> Option<(f64, f64)> {
+    fn tick_at(&mut self, amount: u64, now: Instant) -> Option<Rates> {
         self.events += 1;
         self.amount += amount;
         let elapsed = now.duration_since(self.started);
@@ -80,15 +82,24 @@ impl RateMeter {
             return None;
         }
         let seconds = elapsed.as_secs_f64();
-        let rates = (
-            f64::from(self.events) / seconds,
-            self.amount as f64 / seconds,
-        );
+        let rates = Rates {
+            events: f64::from(self.events) / seconds,
+            amount: self.amount as f64 / seconds,
+        };
         // The window restarts at the reading, so time spent computing does not
         // add up across windows.
         *self = Self::starting(self.window, now);
         Some(rates)
     }
+}
+
+/// What a [`RateMeter`] counted over one window, per second.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rates {
+    /// Events per second.
+    pub events: f64,
+    /// The amount the events carried, per second.
+    pub amount: f64,
 }
 
 /// An exponentially smoothed duration, for timings that jitter per call.
@@ -122,7 +133,7 @@ mod tests {
         (0..40)
             .find_map(|event| meter.tick_at(0, start + offset(event)))
             .expect("the offsets span the window")
-            .0
+            .events
     }
 
     /// Bursty delivery reads the same rate as even delivery.
@@ -144,9 +155,10 @@ mod tests {
             assert_eq!(rate, None, "the window closed early at event {tick}");
         }
         // 31 events of 2500 bytes over one second.
-        let (_, bytes) = meter
+        let bytes = meter
             .tick_at(2_500, start + Duration::from_secs(1))
-            .expect("a second has passed");
+            .expect("a second has passed")
+            .amount;
         assert!((77_000.0..78_000.0).contains(&bytes), "{bytes}");
     }
 

@@ -186,7 +186,7 @@ pub(super) async fn run_raw(
             _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
             reporter: reporter.clone(),
-            stats: stats.rendition(&rendition.name, &rendition.name),
+            stats: stats.rendition(&rendition.name),
             stop: stop.clone(),
         };
         encoders.spawn(
@@ -279,8 +279,8 @@ async fn supervise(
         tokio::select! {
             frame = frames.next() => match frame {
                 Some(_) => {
-                    if let Some((fps, _)) = meter.tick(0) {
-                        source_fps.update(|value| *value = Some(fps as f32));
+                    if let Some(rates) = meter.tick(0) {
+                        source_fps.update(|value| *value = Some(rates.events as f32));
                     }
                 }
                 None => break,
@@ -413,7 +413,7 @@ struct Encoder {
     /// The gap between kept frames, for a rendition slower than its source.
     interval: Option<Duration>,
     reporter: Reporter,
-    stats: moq_ext_sources::stats::Cell<EncodeStats>,
+    stats: moq_ext_sources::stats::SharedCell<EncodeStats>,
     stop: CancellationToken,
 }
 
@@ -710,7 +710,7 @@ pub(super) async fn run_encoded(
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
                 .map_err(Error::catalog)?;
         let mut split = moq_mux::codec::h264::Split::new();
-        let entry = stats.rendition(ENCODED_RENDITION, ENCODED_RENDITION);
+        let entry = stats.rendition(ENCODED_RENDITION);
         info!("publishing pre-encoded video");
 
         let mut units = 0u64;

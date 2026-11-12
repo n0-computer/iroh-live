@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use moq_ext_sources::stats::Cell;
+use moq_ext_sources::stats::SharedCell;
 
 use crate::NetworkSample;
 
@@ -141,7 +141,7 @@ const TIMELINE_LEN: usize = 512;
 
 /// The last frames of one medium, oldest first, written by the presenting task.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct FrameLog(Cell<VecDeque<FrameTiming>>);
+pub(crate) struct FrameLog(SharedCell<VecDeque<FrameTiming>>);
 
 impl FrameLog {
     /// Records one frame, dropping the oldest once full.

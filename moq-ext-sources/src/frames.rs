@@ -79,7 +79,7 @@ impl FrameSlot {
     }
 }
 
-/// Reads a slot without holding it open.
+/// A reader of a slot that does not hold it open.
 ///
 /// A source keeps this, so its stream ends when the frames stop even while
 /// handles to the source remain.
@@ -165,10 +165,10 @@ impl VideoFrames {
         Some(frame)
     }
 
-    /// Returns when the frame that [`next`](Self::next) or
-    /// [`try_next`](Self::try_next) last returned entered the stream.
+    /// Returns when the last frame this handle returned entered the stream.
     ///
-    /// For a source, that is when the application pushed the frame or the
+    /// That frame is the one [`next`](Self::next) or
+    /// [`try_next`](Self::try_next) returned last. For a source, that is when the application pushed the frame or the
     /// capture thread handed it over, before any encoder saw it. For a player,
     /// it is when the picture was presented. Returns `None` before the first
     /// frame.

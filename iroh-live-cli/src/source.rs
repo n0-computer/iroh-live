@@ -4,7 +4,7 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioFormat, AudioSource, LocalBroadcast, Rate, VideoSource, audio, audio_encoding,
+    AudioFormat, AudioSource, FileEnd, LocalBroadcast, Rate, VideoSource, audio, audio_encoding,
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -347,7 +347,14 @@ async fn audio_source(
         }
         AudioSourceSpec::Test(TestTone::Beeps) => AudioSource::test_pattern(TEST_TONE_LAYOUT)?,
         AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT)?,
-        AudioSourceSpec::File { path, looping } => AudioSource::file(path, *looping).await?,
+        AudioSourceSpec::File { path, looping } => {
+            let at_end = if *looping {
+                FileEnd::Restart
+            } else {
+                FileEnd::Stop
+            };
+            AudioSource::file(path, at_end).await?
+        }
     };
     Ok(Some(source))
 }

@@ -180,8 +180,8 @@ impl From<std::io::Error> for Error {
 
 /// The source a `FrameSender` feeds has gone.
 ///
-/// Returned by `moq_ext_sources::FrameSender::push`, so a producing loop knows
-/// to stop.
+/// Returned by [`FrameSender::push`](crate::FrameSender::push), so a producing
+/// loop knows to stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
 #[display("the source has closed")]
 pub struct SourceClosed;

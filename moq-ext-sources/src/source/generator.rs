@@ -82,7 +82,7 @@ const AMPLITUDE: f32 = 0.5;
 /// 30 fps, too short to shift when the beep appears to start.
 const RAMP: Duration = Duration::from_millis(2);
 
-/// The timeline both generators draw their phase from.
+/// Returns the timeline both generators draw their phase from.
 ///
 /// One per process, so the flash and the beep agree whenever each was started.
 fn test_clock() -> Clock {

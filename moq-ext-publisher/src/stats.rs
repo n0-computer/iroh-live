@@ -9,7 +9,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use moq_ext_sources::stats::Cell;
+use moq_ext_sources::stats::{Rates, SharedCell};
 use moq_net::bandwidth::Rate;
 
 /// What a [`LocalBroadcast`](crate::LocalBroadcast) is sending.
@@ -49,11 +49,11 @@ pub struct EncodeStats {
 }
 
 impl EncodeStats {
-    /// Stores the rates of a `RateMeter`, which holds frames and bytes per second.
-    pub(crate) fn record(&mut self, rates: Option<(f64, f64)>) {
-        if let Some((fps, bytes_per_second)) = rates {
-            self.fps = Some(fps as f32);
-            self.bitrate = Some(Rate::from_bps((bytes_per_second * 8.0) as u64));
+    /// Stores the rates of a meter that counts frames and their bytes.
+    pub(crate) fn record(&mut self, rates: Option<Rates>) {
+        if let Some(rates) = rates {
+            self.fps = Some(rates.events as f32);
+            self.bitrate = Some(Rate::from_bps((rates.amount * 8.0) as u64));
         }
     }
 }
@@ -72,9 +72,9 @@ pub struct AudioEncodeStats {
 /// The writers behind [`PublishStats`], one per figure.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PublishRecorder {
-    source_fps: Cell<Option<f32>>,
-    renditions: Cell<BTreeMap<String, Cell<EncodeStats>>>,
-    audio: Cell<Option<Cell<AudioEncodeStats>>>,
+    source_fps: SharedCell<Option<f32>>,
+    renditions: SharedCell<BTreeMap<String, SharedCell<EncodeStats>>>,
+    audio: SharedCell<Option<SharedCell<AudioEncodeStats>>>,
 }
 
 impl PublishRecorder {
@@ -94,14 +94,16 @@ impl PublishRecorder {
     }
 
     /// Returns the writer of the source frame rate.
-    pub(crate) fn source_fps(&self) -> Cell<Option<f32>> {
+    pub(crate) fn source_fps(&self) -> SharedCell<Option<f32>> {
         self.source_fps.clone()
     }
 
-    /// Starts an entry for rendition `name`, written to track `track`, and returns its writer.
-    pub(crate) fn rendition(&self, name: &str, track: &str) -> Cell<EncodeStats> {
-        let writer = Cell::<EncodeStats>::default();
-        writer.update(|stats| stats.track = track.to_string());
+    /// Starts an entry for rendition `name` and returns its writer.
+    ///
+    /// The entry names the track `name` until the encoder reports another.
+    pub(crate) fn rendition(&self, name: &str) -> SharedCell<EncodeStats> {
+        let writer = SharedCell::<EncodeStats>::default();
+        writer.update(|stats| stats.track = name.to_string());
         self.renditions
             .update(|renditions| drop(renditions.insert(name.to_string(), writer.clone())));
         writer
@@ -114,8 +116,8 @@ impl PublishRecorder {
     }
 
     /// Starts the audio entry and returns its writer.
-    pub(crate) fn audio(&self) -> Cell<AudioEncodeStats> {
-        let cell = Cell::default();
+    pub(crate) fn audio(&self) -> SharedCell<AudioEncodeStats> {
+        let cell = SharedCell::default();
         self.audio.update(|audio| *audio = Some(cell.clone()));
         cell
     }
@@ -134,8 +136,8 @@ mod tests {
     #[test]
     fn a_rendition_names_its_track() {
         let recorder = PublishRecorder::default();
-        let high = recorder.rendition("high", "high");
-        let _low = recorder.rendition("low", "low");
+        let high = recorder.rendition("high");
+        let _low = recorder.rendition("low");
         let snapshot = recorder.snapshot(BTreeMap::new());
         assert_eq!(snapshot.renditions["high"].track, "high");
         assert_eq!(snapshot.renditions["low"].track, "low");

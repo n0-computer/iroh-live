@@ -399,6 +399,15 @@ pub fn rpicam_h264(
     rpicam::open_encoded(config)
 }
 
+/// What an audio file source does when it reaches the end of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileEnd {
+    /// Ends the source.
+    Stop,
+    /// Starts the file again from the beginning.
+    Restart,
+}
+
 /// What an audio source produces.
 #[derive(Debug)]
 pub enum AudioKind {
@@ -518,8 +527,8 @@ impl AudioSource {
 
     /// Decodes an audio file in real time.
     ///
-    /// Restarts at the beginning when `looping`, and ends with the file
-    /// otherwise. Reads WAV and MP3. The file is probed before this returns,
+    /// `at_end` says whether the source ends with the file or starts it again.
+    /// Reads WAV and MP3. The file is probed before this returns,
     /// and decoding starts on its own thread.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
@@ -529,7 +538,7 @@ impl AudioSource {
     /// Fails if the file cannot be read, holds no audio track, or uses a codec
     /// this build cannot decode.
     #[cfg(feature = "file")]
-    pub async fn file(path: impl AsRef<Path>, looping: bool) -> Result<Self, Error> {
+    pub async fn file(path: impl AsRef<Path>, at_end: FileEnd) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let weak = fanout.downgrade();
@@ -539,7 +548,7 @@ impl AudioSource {
         let abandoned = stop.clone().drop_guard();
         let format = {
             let stop = stop.clone();
-            tokio::task::spawn_blocking(move || file::spawn(path, looping, fanout, stop))
+            tokio::task::spawn_blocking(move || file::spawn(path, at_end, fanout, stop))
                 .await
                 .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
         };

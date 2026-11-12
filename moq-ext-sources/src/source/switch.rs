@@ -25,8 +25,10 @@ use crate::{ByPtr, Error, SlotState, frames::FrameSlot};
 struct Current {
     /// Bumped by every install, so a superseded task leaves the slot alone.
     generation: u64,
-    /// The source frames come from. Held here, not by the task, so a switch
-    /// drops it at once and its device is free for the next open.
+    /// The source frames come from.
+    ///
+    /// Held here, not by the task, so a switch drops it at once and its device
+    /// is free for the next open.
     source: Option<VideoSource>,
 }
 

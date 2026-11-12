@@ -343,7 +343,7 @@ struct Raw {
     clock: moq_mux::Clock,
 }
 
-/// Splits `rpicam-vid`'s raw output into tightly-packed I420 pictures.
+/// A splitter of `rpicam-vid`'s raw output into tightly-packed I420 pictures.
 ///
 /// Nothing frames the pictures, so only the geometry says where one ends, and
 /// a wrong geometry goes unnoticed while reading. Leftover bytes at the end,
@@ -596,7 +596,7 @@ mod tests {
         assert!(Pictures::new(Size::new(0, 360)).is_err());
     }
 
-    /// The command line of a 640x360 capture at 30 fps writing H.264.
+    /// Returns the command line of a 640x360 capture at 30 fps writing H.264.
     fn h264(bitrate: u32, keyframe_interval: u32) -> String {
         let output = Output::H264 {
             bitrate,

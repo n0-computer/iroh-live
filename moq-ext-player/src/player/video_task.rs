@@ -574,8 +574,8 @@ fn pace(
         let video = video.get_or_insert_with(VideoPlaybackStats::default);
         video.frames += 1;
         video.size = Some(size);
-        if let Some((fps, _)) = rate {
-            video.fps = Some(fps.round() as u32);
+        if let Some(rate) = rate {
+            video.fps = Some(rate.events.round() as u32);
         }
     });
     let paced = super::paced(&controls.latency.borrow());
@@ -669,7 +669,8 @@ async fn spawn_reader(
                             info!(skipped = failures, "video decoding recovered");
                             failures = 0;
                         }
-                        if let Some((fps, _)) = cadence.tick(0) {
+                        if let Some(rates) = cadence.tick(0) {
+                            let fps = rates.events;
                             debug!(fps = format_args!("{fps:.1}"), "video decoding cadence");
                         }
                         // Includes the transport read, since both happen

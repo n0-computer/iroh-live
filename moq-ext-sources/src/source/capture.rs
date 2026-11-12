@@ -122,7 +122,7 @@ impl Cameras {
     }
 }
 
-/// The rate assumed for a device that reports none.
+/// Returns the rate assumed for a device that reports none.
 fn default_rate() -> video::FrameRate {
     video::FrameRate::new(30, 1).expect("30/1 is a valid rate")
 }

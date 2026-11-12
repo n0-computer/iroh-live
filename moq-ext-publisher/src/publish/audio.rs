@@ -1,6 +1,8 @@
 //! The audio publish task: a microphone, or PCM from any other source.
 
-use moq_ext_sources::{AudioFormat, AudioKind, AudioSource, ByPtr, Error, SlotState, stats::Cell};
+use moq_ext_sources::{
+    AudioFormat, AudioKind, AudioSource, ByPtr, Error, SlotState, stats::SharedCell,
+};
 use tokio::sync::broadcast;
 #[cfg(feature = "capture")]
 use tokio::sync::oneshot;
@@ -70,7 +72,7 @@ pub(super) async fn run(
 /// Encodes PCM from a fan-out receiver.
 async fn pcm(
     job: &Job,
-    stats: &Cell<AudioEncodeStats>,
+    stats: &SharedCell<AudioEncodeStats>,
     format: AudioFormat,
     mut frames: broadcast::Receiver<moq_audio::Frame>,
     encoding: &moq_audio::encode::Config,

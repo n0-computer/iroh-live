@@ -63,7 +63,7 @@ encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
 
 `AudioSource` has `microphone(config)` for moq-audio's `capture::Config`,
-`file(path, looping)` for a WAV or MP3 decoded in real time,
+`file(path, at_end)` for a WAV or MP3 decoded in real time,
 `tone(hz, layout)`, `test_pattern(layout)`, and `push(format)` for PCM the
 application produces. For echo cancellation, the config's `aec` holds the
 canceller of the speaker's `playback::Engine`, from `Engine::canceller`

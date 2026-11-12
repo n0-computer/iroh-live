@@ -25,7 +25,7 @@ use symphonia::core::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::{AudioFormat, sender::PcmFanout};
+use super::{AudioFormat, FileEnd, sender::PcmFanout};
 use crate::Error;
 
 /// Opens `path` and decodes it into `fanout` on its own thread.
@@ -39,7 +39,7 @@ use crate::Error;
 /// this build cannot decode.
 pub(crate) fn spawn(
     path: PathBuf,
-    looping: bool,
+    at_end: FileEnd,
     fanout: PcmFanout,
     stop: CancellationToken,
 ) -> Result<AudioFormat, Error> {
@@ -51,7 +51,7 @@ pub(crate) fn spawn(
     std::thread::Builder::new()
         .name("audio-file".into())
         .spawn(move || {
-            if let Err(err) = decode_loop(&path, looping, &fanout, &stop) {
+            if let Err(err) = decode_loop(&path, at_end, &fanout, &stop) {
                 warn!(path = %path.display(), error = format_args!("{err:#}"), "audio file decode stopped");
             }
         })?;
@@ -151,12 +151,13 @@ fn probe(path: &Path) -> Result<Probe, Error> {
 
 /// Decodes `path` into `fanout` until the file ends or `stop` is cancelled.
 ///
-/// Restarts at the beginning when `looping`. Decoding is paced to the wall
-/// clock, because timestamps come from the sample count. A decoder that raced
-/// ahead would publish a minute of audio in a second and then starve.
+/// Restarts at the beginning for [`FileEnd::Restart`]. Decoding is paced to
+/// the wall clock, because timestamps come from the sample count. A decoder
+/// that raced ahead would publish a minute of audio in a second and then
+/// starve.
 fn decode_loop(
     path: &Path,
-    looping: bool,
+    at_end: FileEnd,
     fanout: &PcmFanout,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
@@ -165,7 +166,7 @@ fn decode_loop(
 
     loop {
         let frames = decode_once(path, fanout, stop, started, &mut published)?;
-        if !looping || stop.is_cancelled() {
+        if at_end == FileEnd::Stop || stop.is_cancelled() {
             debug!(path = %path.display(), "audio file ended");
             return Ok(());
         }
@@ -261,12 +262,12 @@ mod tests {
 
     use super::*;
 
-    /// A valid PCM WAV header describing zero samples of audio.
+    /// Returns a valid PCM WAV header that describes zero samples of audio.
     fn empty_wav() -> Vec<u8> {
         wav(&[], 1)
     }
 
-    /// A 16-bit 48 kHz PCM WAV of `samples` interleaved across `channels`.
+    /// Returns a 16-bit 48 kHz PCM WAV of `samples` interleaved across `channels`.
     fn wav(samples: &[i16], channels: u16) -> Vec<u8> {
         let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
         let block_align = channels * 2;
@@ -315,7 +316,7 @@ mod tests {
         let (fanout, mut rx) = tokio::sync::broadcast::channel(1024);
         let decoded = std::thread::spawn({
             let path = path.clone();
-            move || decode_loop(&path, false, &fanout, &CancellationToken::new())
+            move || decode_loop(&path, FileEnd::Stop, &fanout, &CancellationToken::new())
         });
 
         let mut samples: Vec<f32> = Vec::new();
@@ -393,7 +394,12 @@ mod tests {
         let looping = path.clone();
         std::thread::spawn(move || {
             let (fanout, rx) = tokio::sync::broadcast::channel(16);
-            let result = decode_loop(&looping, true, &fanout, &CancellationToken::new());
+            let result = decode_loop(
+                &looping,
+                FileEnd::Restart,
+                &fanout,
+                &CancellationToken::new(),
+            );
             let _ = done.send((result.is_ok(), rx.is_empty()));
         });
 
