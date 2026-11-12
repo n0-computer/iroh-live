@@ -7,8 +7,10 @@
 //! reads it.
 //!
 //! The crate has no dependency on iroh and none on a transport. Its [`Error`]
-//! is the one `moq-ext-media-core` defines, which the player and the publisher
-//! return too.
+//! is the one the player and the publisher return too, so an error passes
+//! from a source to a broadcast unchanged. [`SlotState`] is the state of a
+//! media slot on a broadcast and on a player, so a UI reports both the same
+//! way, and [`stats`] counts rates the same way on both sides.
 //!
 //! # What is in it
 //!
@@ -59,21 +61,25 @@
 //! # }
 //! ```
 
+mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
 pub mod local_task;
 mod source;
+pub mod stats;
+mod status;
 
 use moq_audio as audio;
-pub use moq_ext_media_core::{Error, SourceClosed};
 use moq_video as video;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{
+    error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{
         AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FrameSender, PcmFanout,
         VideoFormat, VideoSource, WeakPcmFanout,
     },
+    status::{ByPtr, SlotState, send_if_changed},
 };

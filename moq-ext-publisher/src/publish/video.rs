@@ -22,11 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use moq_ext_media_core::{
-    ByPtr, Error, SlotState,
+use moq_ext_sources::{
+    ByPtr, Error, SlotState, VideoFrames, VideoSource,
     stats::{RateMeter, Smoothed},
 };
-use moq_ext_sources::{VideoFrames, VideoSource};
 use moq_video::encode;
 use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -401,7 +400,7 @@ struct Encoder {
     /// The gap between kept frames, for a rendition slower than its source.
     interval: Option<Duration>,
     reporter: Reporter,
-    stats: moq_ext_media_core::stats::Cell<EncodeStats>,
+    stats: moq_ext_sources::stats::Cell<EncodeStats>,
     stop: CancellationToken,
 }
 

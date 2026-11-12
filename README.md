@@ -97,7 +97,6 @@ these APIs, crates.io versions will replace the git pins.
 | [`moq-ext-player`](moq-ext-player) | A player over moq-video and moq-audio: rendition choice, audio/video sync, the input of a moq-mux recording. No iroh dependency |
 | [`moq-ext-publisher`](moq-ext-publisher) | A broadcast that encodes sources into renditions. No iroh dependency |
 | [`moq-ext-sources`](moq-ext-sources) | Video and audio sources: test pattern, files, capture, push senders |
-| [`moq-ext-media-core`](moq-ext-media-core) | The error, slot state and stats helpers the player and publisher share |
 | [`moq-ext-egui`](moq-ext-egui) | egui video views and the debug overlay. No iroh dependency |
 | [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
 | [`iroh-live-relay`](iroh-live-relay) | Relay server that serves iroh-live broadcasts to browsers |

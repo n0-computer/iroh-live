@@ -1,7 +1,6 @@
 //! The audio publish task: a microphone, or PCM from any other source.
 
-use moq_ext_media_core::{ByPtr, Error, SlotState, stats::Cell};
-use moq_ext_sources::{AudioFormat, AudioKind, AudioSource};
+use moq_ext_sources::{AudioFormat, AudioKind, AudioSource, ByPtr, Error, SlotState, stats::Cell};
 use tokio::sync::broadcast;
 #[cfg(feature = "capture")]
 use tokio::sync::oneshot;

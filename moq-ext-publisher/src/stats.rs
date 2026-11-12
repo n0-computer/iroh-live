@@ -9,7 +9,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use moq_ext_media_core::stats::Cell;
+use moq_ext_sources::stats::Cell;
 use moq_net::bandwidth::Rate;
 
 /// What a [`LocalBroadcast`](crate::LocalBroadcast) is sending.

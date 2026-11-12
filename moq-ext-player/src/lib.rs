@@ -60,9 +60,8 @@ mod stats;
 pub mod test_util;
 
 pub use hang::catalog::Catalog;
-pub use moq_ext_media_core::{Error, SlotState, SourceClosed};
-pub use moq_ext_sources::VideoFrames;
 use moq_ext_sources::frames;
+pub use moq_ext_sources::{Error, SlotState, SourceClosed, VideoFrames};
 pub use moq_net::track::Delay;
 
 pub use self::{

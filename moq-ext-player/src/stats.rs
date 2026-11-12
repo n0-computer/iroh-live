@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use moq_ext_media_core::stats::Cell;
+use moq_ext_sources::stats::Cell;
 
 use crate::NetworkSample;
 

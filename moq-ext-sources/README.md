@@ -31,7 +31,7 @@ which other applications can share, and V4L2 is the fallback. A microphone
 opens when a broadcast starts to publish it. If it fails, it is not opened
 again.
 
-Errors are `moq_ext_media_core::Error`, the type the player and the publisher
+Errors are `moq_ext_sources::Error`, the type the player and the publisher
 return too.
 
 ## Features

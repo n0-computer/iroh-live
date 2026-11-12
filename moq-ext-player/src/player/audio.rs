@@ -7,8 +7,7 @@ use std::{
 
 #[cfg(feature = "playback")]
 use moq_audio::playback;
-use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
-use moq_ext_sources::AudioFormat;
+use moq_ext_sources::{AudioFormat, ByPtr, Error, SlotState, send_if_changed};
 use moq_net::track::Delay;
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::{broadcast, watch};

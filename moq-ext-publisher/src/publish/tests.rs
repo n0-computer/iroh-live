@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use moq_ext_media_core::SlotState;
+use moq_ext_sources::SlotState;
 
 use super::*;
 use crate::audio_encoding;

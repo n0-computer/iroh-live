@@ -6,7 +6,7 @@ use std::{
 };
 
 use hang::catalog::Catalog;
-use moq_ext_media_core::Error;
+use moq_ext_sources::Error;
 use moq_mux::catalog::Stream as _;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;

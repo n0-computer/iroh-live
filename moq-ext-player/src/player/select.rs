@@ -9,7 +9,7 @@ use std::{sync::Arc, time::Duration};
 use moq_ext_adaptive::{
     Adaptation, Backoffs, Bound, Constraints, PinProblem, RenditionMode, Target,
 };
-use moq_ext_media_core::{Error, SlotState, send_if_changed};
+use moq_ext_sources::{Error, SlotState, send_if_changed};
 use moq_net::track::Delay;
 use tokio::{
     sync::{mpsc, watch},

@@ -12,7 +12,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
+use moq_ext_sources::{ByPtr, Error, SlotState, send_if_changed, stats::Cell};
 use moq_net::track::Delay;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};

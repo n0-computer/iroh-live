@@ -12,8 +12,7 @@ use std::{
     time::Duration,
 };
 
-use moq_ext_media_core::Error;
-use moq_ext_sources::{AudioSource, VideoSource};
+use moq_ext_sources::{AudioSource, Error, VideoSource};
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;

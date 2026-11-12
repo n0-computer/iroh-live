@@ -5538,15 +5538,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-ext-media-core"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "n0-error",
- "tokio",
-]
-
-[[package]]
 name = "moq-ext-player"
 version = "0.1.0"
 dependencies = [
@@ -5555,7 +5546,6 @@ dependencies = [
  "hang",
  "moq-audio",
  "moq-ext-adaptive",
- "moq-ext-media-core",
  "moq-ext-player",
  "moq-ext-publisher",
  "moq-ext-sources",
@@ -5577,7 +5567,6 @@ dependencies = [
  "derive_more",
  "hang",
  "moq-audio",
- "moq-ext-media-core",
  "moq-ext-sources",
  "moq-mux",
  "moq-net",
@@ -5596,7 +5585,6 @@ dependencies = [
  "bytes",
  "derive_more",
  "moq-audio",
- "moq-ext-media-core",
  "moq-mux",
  "moq-net",
  "moq-video",

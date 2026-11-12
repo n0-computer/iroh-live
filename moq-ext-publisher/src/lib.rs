@@ -45,7 +45,7 @@ pub mod audio_encoding {
     pub use crate::publish::{music, pcm, voice};
 }
 
-pub use moq_ext_media_core::{Error, SlotState, SourceClosed};
+pub use moq_ext_sources::{Error, SlotState, SourceClosed};
 
 pub use self::{
     publish::{LocalBroadcast, PublishStatus, RenditionState, VideoEncoding, VideoRendition},

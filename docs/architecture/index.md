@@ -17,7 +17,6 @@ This repository holds the layer that joins them.
 | `moq-ext-publisher` | A broadcast that encodes sources into renditions |
 | `moq-ext-adaptive` | Rendition choice and decoder handover as pure state machines |
 | `moq-ext-sources` | Video and audio sources: test pattern, files, capture, push senders |
-| `moq-ext-media-core` | The error, slot state and stats helpers the two above share |
 | `moq-ext-egui` | Video views for egui over the texture `moq_video::render` returns, and the debug overlay |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
