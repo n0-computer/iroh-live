@@ -93,7 +93,7 @@ A subscriber resolves the ticket, starts a player, and reads decoded frames:
 ```rust
 use iroh_live::{
     EndpointConfig, Node, NodeConfig,
-    media::{PlayerConfig, audio::playback::Engine, remote_broadcast},
+    media::{AudioMode, PlayerConfig, audio::playback::Engine, remote_broadcast},
 };
 
 // Only dials, so it needs no router and no layout.
@@ -101,8 +101,7 @@ let node = Node::new(EndpointConfig::default().bind().await?, NodeConfig::defaul
 let subscription = node.subscribe_ticket(&ticket).await?;
 let engine = Engine::open(Default::default()).await?;
 let player = remote_broadcast(&subscription).play(PlayerConfig {
-    audio: true,
-    speaker: Some(engine),
+    audio: AudioMode::Play(engine),
     ..Default::default()
 })?;
 
@@ -112,9 +111,9 @@ while let Some(frame) = frames.next().await {
 }
 ```
 
-`Engine::open` and `PlayerConfig::speaker` need the `playback` feature.
-Without a speaker the audio is decoded and discarded, for headless use. A
-player with `audio: false`, the default, does not subscribe to the audio
+`Engine::open` and `AudioMode::Play` need the `playback` feature.
+`AudioMode::Decode` decodes the audio and discards it, for headless use. A
+player with `AudioMode::Off`, the default, does not subscribe to the audio
 track.
 
 `VideoSource::capture` fails if the camera cannot be opened.

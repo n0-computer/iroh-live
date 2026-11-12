@@ -3,7 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use iroh_live::media::{
-    Catalog, Error, Player, PlayerConfig, RemoteBroadcast, RenditionMode, video_rendition,
+    AudioMode, Catalog, Error, Player, PlayerConfig, RemoteBroadcast, RenditionMode,
+    video_rendition,
 };
 use n0_error::{Result, anyerr};
 use tracing::info;
@@ -37,13 +38,15 @@ pub(crate) fn player_config(args: &PlaybackArgs, speaker: Option<&Speaker>) -> P
 ///
 /// Without a speaker, the audio is decoded and discarded.
 pub(crate) fn audio_on(mut config: PlayerConfig, speaker: Option<&Speaker>) -> PlayerConfig {
-    config.audio = true;
     #[cfg(feature = "playback")]
     {
-        config.speaker = speaker.cloned();
+        config.audio = speaker.cloned().map_or(AudioMode::Decode, AudioMode::Play);
     }
     #[cfg(not(feature = "playback"))]
-    let _ = speaker;
+    {
+        let _ = speaker;
+        config.audio = AudioMode::Decode;
+    }
     config
 }
 

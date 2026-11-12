@@ -22,11 +22,10 @@ while let Some(frame) = frames.next().await {
 }
 ```
 
-`PlayerConfig::rendition` takes a `RenditionMode`:
-automatic, pinned to one rendition, or off. `PlayerConfig::audio` turns the
-audio on, and `PlayerConfig::speaker` (feature `playback`) names the
-`moq_audio::playback::Engine` it plays on. Without a speaker the audio is only
-decoded, for `Player::audio_frames`. Dropping the `Player` aborts its tasks and returns at
+`PlayerConfig::rendition` takes a `RenditionMode`: automatic, pinned to one
+rendition, or off. `PlayerConfig::audio` takes an `AudioMode`: off, decoded
+only for `Player::audio_frames`, or played on a `moq_audio::playback::Engine`
+(feature `playback`). Dropping the `Player` aborts its tasks and returns at
 once. A session that closes ends playback quietly: a cancel from the peer is
 not a failed decoder.
 

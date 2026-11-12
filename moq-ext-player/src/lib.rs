@@ -68,7 +68,7 @@ pub use self::{
     catalog::video_rendition,
     network::NetworkSample,
     player::{
-        Adaptation, AudioFrame, AudioFrames, DEFAULT_LATENCY, IMMEDIATE_LATENCY, Player,
+        Adaptation, AudioFrame, AudioFrames, AudioMode, DEFAULT_LATENCY, IMMEDIATE_LATENCY, Player,
         PlayerConfig, PlayerStatus, RenditionMode,
     },
     remote::RemoteBroadcast,

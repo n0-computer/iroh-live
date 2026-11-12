@@ -10,8 +10,8 @@ use std::{
 };
 
 use moq_ext_player::{
-    DEFAULT_LATENCY, Delay, Error, IMMEDIATE_LATENCY, NetworkSample, Player, PlayerConfig,
-    RemoteBroadcast, RenditionMode, SlotState,
+    AudioMode, DEFAULT_LATENCY, Delay, Error, IMMEDIATE_LATENCY, NetworkSample, Player,
+    PlayerConfig, RemoteBroadcast, RenditionMode, SlotState,
 };
 use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
 use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
@@ -702,7 +702,7 @@ async fn audio_decodes_without_a_speaker() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: true,
+            audio: AudioMode::Decode,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -731,7 +731,7 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: true,
+            audio: AudioMode::Decode,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -787,7 +787,7 @@ async fn closing_the_broadcast_ends_the_audio() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: true,
+            audio: AudioMode::Decode,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -808,7 +808,7 @@ async fn an_audio_only_broadcast_ends_the_video() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: true,
+            audio: AudioMode::Decode,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -827,7 +827,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: true,
+            audio: AudioMode::Decode,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -1279,7 +1279,7 @@ async fn the_audio_frames_of_a_player_without_audio_end_with_it() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: false,
+            audio: AudioMode::Off,
             ..PlayerConfig::default()
         })
         .expect("valid");

@@ -108,14 +108,14 @@ the decoder.
 
 ## Audio playback
 
-`PlayerConfig::audio` turns audio on, and `PlayerConfig::speaker` (the
-`playback` feature) names the `moq_audio::playback::Engine` it plays on. The
+`PlayerConfig::audio` takes an `AudioMode`. `AudioMode::Play(engine)` (the
+`playback` feature) plays on a `moq_audio::playback::Engine`. The
 application opens the engine with `Engine::open(config)` and passes a clone
 to every `PlayerConfig` that should play there, so several players share one
-device stream. The engine lists and switches devices. Without a speaker, the
-player still decodes, for `Player::audio_frames`, headless use and tests, but
-nothing paces the audio. A `PlayerConfig` with `audio: false`, the default,
-does not subscribe to audio at all.
+device stream. The engine lists and switches devices. `AudioMode::Decode`
+still decodes, for `Player::audio_frames`, headless use and tests, but
+nothing paces the audio. `AudioMode::Off`, the default, does not subscribe to
+audio at all.
 
 The audio task plays the first audio rendition. It writes frames straight to
 its sink and reports how much audio is queued ahead of the speaker to the
@@ -131,12 +131,12 @@ seconds.
 
 ```rust
 let config = PlayerConfig {
-    audio: Some(output),
+    audio: AudioMode::Play(output),
     ..Default::default()
 };
 ```
 
-It carries the `rendition` mode, the `latency`, the `audio` output, the
+It carries the `rendition` mode, the `latency`, the `audio` mode, the
 `decoder` backend, and the `adaptation` thresholds and timers.
 `latency` is moq-net's subscription `Delay { min, max }` and sets how far
 behind live to run. The playout clock holds each picture for `min`, and the

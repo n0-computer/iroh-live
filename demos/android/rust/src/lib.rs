@@ -28,9 +28,9 @@ use iroh_live::{
     calls::{CALL, Call, Calls},
     layout::LiveLayout,
     media::{
-        AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
-        RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition, VideoSource, audio,
-        audio::playback::Engine, audio_encoding, remote_broadcast,
+        AudioMode, AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig,
+        RemoteBroadcast, RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition,
+        VideoSource, audio, audio::playback::Engine, audio_encoding, remote_broadcast,
     },
     moq_net::Timestamp,
 };
@@ -308,8 +308,7 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&Engine>) {
 /// Starts playing `remote`, with its audio through `output`, or decoded without one.
 fn play(remote: &RemoteBroadcast, output: Option<&Engine>) -> Result<Player> {
     Ok(remote.play(PlayerConfig {
-        audio: true,
-        speaker: output.cloned(),
+        audio: output.cloned().map_or(AudioMode::Decode, AudioMode::Play),
         ..PlayerConfig::default()
     })?)
 }

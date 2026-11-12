@@ -91,8 +91,27 @@ fn validate(latency: &Delay) -> Result<(), Error> {
     }
 }
 
+/// What a player does with the broadcast's audio.
+#[derive(derive_more::Debug, Clone, Default)]
+pub enum AudioMode {
+    /// Leaves the audio alone, without subscribing to it.
+    #[default]
+    Off,
+    /// Decodes the audio for [`Player::audio_frames`] without playing it.
+    ///
+    /// Nothing is queued ahead of a device, so the audio is not paced, and
+    /// video is held for the jitter allowance alone.
+    Decode,
+    /// Decodes the audio and plays it on this speaker engine.
+    ///
+    /// Every player writing to one engine is mixed into one device stream.
+    /// The decoded audio also goes to [`Player::audio_frames`].
+    #[cfg(feature = "playback")]
+    Play(#[debug(skip)] moq_audio::playback::Engine),
+}
+
 /// How a player plays.
-#[derive(derive_more::Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
@@ -105,19 +124,8 @@ pub struct PlayerConfig {
     /// them too. Setting `min == max` gives a fixed latency, and an unset
     /// `min` counts as zero. [`DEFAULT_LATENCY`] by default.
     pub latency: Delay,
-    /// Whether to subscribe to the audio and decode it.
-    ///
-    /// Decoded audio goes to [`Player::audio_frames`], and to the
-    /// [`speaker`](Self::speaker) if one is set. Off by default.
-    pub audio: bool,
-    /// The speaker the audio plays on. `None` decodes it without playing it.
-    ///
-    /// Every player writing to one engine is mixed into one device stream.
-    /// Without a speaker, nothing is queued ahead of a device, so audio is not
-    /// paced and video is held for the jitter allowance alone.
-    #[cfg(feature = "playback")]
-    #[debug(skip)]
-    pub speaker: Option<moq_audio::playback::Engine>,
+    /// What to do with the audio, [`AudioMode::Off`] by default.
+    pub audio: AudioMode,
     /// The decoder backend to open, `Auto` by default.
     pub decoder: moq_video::decode::Kind,
     /// How automatic selection follows the link.
@@ -137,9 +145,7 @@ impl Default for PlayerConfig {
         Self {
             rendition: RenditionMode::default(),
             latency: DEFAULT_LATENCY,
-            audio: false,
-            #[cfg(feature = "playback")]
-            speaker: None,
+            audio: AudioMode::Off,
             decoder: moq_video::decode::Kind::default(),
             adaptation: Adaptation::default(),
             record_arrivals: false,
@@ -233,8 +239,8 @@ impl Player {
                 _ => SlotState::Starting,
             },
             audio: match config.audio {
-                true => SlotState::Starting,
-                false => SlotState::Off,
+                AudioMode::Off => SlotState::Off,
+                _ => SlotState::Starting,
             },
             ..PlayerStatus::default()
         });
@@ -286,12 +292,17 @@ impl Player {
             })
             .instrument(info_span!(parent: &span, "video")),
         )));
-        if config.audio {
+        if !matches!(config.audio, AudioMode::Off) {
+            #[cfg(feature = "playback")]
+            let speaker = match config.audio {
+                AudioMode::Play(engine) => Some(engine),
+                _ => None,
+            };
             tasks.push(AbortOnDropHandle::new(n0_future::task::spawn(
                 audio::run(audio::Inputs {
                     broadcast: broadcast.clone(),
                     #[cfg(feature = "playback")]
-                    speaker: config.speaker,
+                    speaker,
                     frames: audio_frames.clone(),
                     controls: controls.clone(),
                     status: status.clone(),
@@ -328,19 +339,19 @@ impl Player {
 
     /// Returns the decoded audio, as PCM with its timestamps.
     ///
-    /// The frames flow only while [`PlayerConfig::audio`] is on, with or
-    /// without a speaker. Without one, the audio is decoded without playing
-    /// it, for analysis. Each call returns a new handle that starts at the
+    /// The frames flow only while [`PlayerConfig::audio`] is not
+    /// [`AudioMode::Off`], with or without a speaker. Without one, the audio
+    /// is decoded without playing it, for analysis. Each call returns a new handle that starts at the
     /// next decoded frame and ends when the player is dropped.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # async fn example(broadcast: moq_ext_player::RemoteBroadcast) -> Result<(), moq_ext_player::Error> {
-    /// use moq_ext_player::PlayerConfig;
+    /// use moq_ext_player::{AudioMode, PlayerConfig};
     ///
     /// let player = broadcast.play(PlayerConfig {
-    ///     audio: true,
+    ///     audio: AudioMode::Decode,
     ///     ..PlayerConfig::default()
     /// })?;
     /// let mut audio = player.audio_frames();

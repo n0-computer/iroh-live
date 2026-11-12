@@ -16,8 +16,9 @@ use iroh_live::{
     calls::{Calls, HangUpReason},
     layout::LiveLayout,
     media::{
-        AudioSource, LocalBroadcast, NetworkSample, Player, PlayerConfig, Rate, RemoteBroadcast,
-        VideoEncoding, VideoRendition, VideoSource, audio, audio_encoding, remote_broadcast,
+        AudioMode, AudioSource, LocalBroadcast, NetworkSample, Player, PlayerConfig, Rate,
+        RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio, audio_encoding,
+        remote_broadcast,
         video::{FrameRate, Size, decode},
     },
 };
@@ -244,7 +245,7 @@ async fn opus_audio_crosses_the_transport_and_decodes() {
     let remote = subscribe(&subscriber, &publisher, "av-stream").await;
     let player = remote
         .play(PlayerConfig {
-            audio: true,
+            audio: AudioMode::Decode,
             ..PlayerConfig::default()
         })
         .expect("failed to play");
