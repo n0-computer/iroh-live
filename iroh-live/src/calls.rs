@@ -39,8 +39,6 @@
 //! # }
 //! ```
 //!
-//! # Cancellation safety
-//!
 //! [`Calls::call`] and [`Calls::answer`] are cancellation safe: dropping the
 //! future hangs up. [`Call::ended`] and [`Calls::closed`] lose nothing when
 //! dropped.
@@ -138,7 +136,7 @@ struct Inner {
 
 impl Inner {
     /// Updates the ringing set from `state`.
-    fn recompute(&self, state: &CallState) {
+    fn update_ringing(&self, state: &CallState) {
         let now = state.ringing();
         let before = self.ringing.get();
         if now == before {
@@ -161,7 +159,7 @@ impl Inner {
     }
 
     /// Returns why the call with `peer` ended, once its side is gone.
-    fn hung_up(&self, peer: EndpointId) -> HangUpReason {
+    fn hang_up_reason(&self, peer: EndpointId) -> HangUpReason {
         match self.session_with(peer) {
             Some(_) => HangUpReason::Withdrawn,
             None => HangUpReason::Lost,
@@ -357,7 +355,7 @@ impl Calls {
             return Err(e!(Error::NotRinging { peer }));
         }
         state.pending.insert(peer);
-        self.inner.recompute(&state);
+        self.inner.update_ringing(&state);
         Ok(Pending {
             inner: self.inner.clone(),
             peer,
@@ -380,7 +378,7 @@ impl Calls {
         let mut state = self.inner.lock();
         state.pending.remove(&peer);
         state.active.insert(peer);
-        self.inner.recompute(&state);
+        self.inner.update_ringing(&state);
         pending.connected = true;
         info!(peer = %peer.fmt_short(), "call connected");
         Ok(Call {
@@ -408,7 +406,7 @@ impl Drop for Pending {
         }
         let mut state = self.inner.lock();
         self.inner.withdraw(self.peer, &mut state);
-        self.inner.recompute(&state);
+        self.inner.update_ringing(&state);
         debug!(peer = %self.peer.fmt_short(), "call attempt dropped");
     }
 }
@@ -455,7 +453,7 @@ impl Call {
                 Some(session) => {
                     return select! {
                         _ = session.closed() => HangUpReason::Lost,
-                        _ = broadcast.closed() => self.inner.hung_up(self.peer),
+                        _ = broadcast.closed() => self.inner.hang_up_reason(self.peer),
                     };
                 }
                 None => select! {
@@ -477,7 +475,7 @@ impl Drop for Call {
         if state.visible.contains(&self.peer) {
             state.ended.insert(self.peer);
         }
-        self.inner.recompute(&state);
+        self.inner.update_ringing(&state);
         info!(peer = %self.peer.fmt_short(), "call ended");
     }
 }
@@ -530,7 +528,7 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
             state.visible.remove(&peer);
             state.ended.remove(&peer);
         }
-        inner.recompute(&state);
+        inner.update_ringing(&state);
     }
     if let Some(inner) = inner.upgrade() {
         debug!(id = %local_id.fmt_short(), "calls closed");

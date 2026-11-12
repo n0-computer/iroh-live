@@ -28,20 +28,18 @@ pub fn remote_broadcast(subscription: &Subscription) -> RemoteBroadcast {
 /// Each sample reads whichever link serves the subscription at that moment.
 /// The path generation also counts changes of the serving link, so
 /// adaptation never compares one link's history with another's.
-pub(crate) fn signals(
-    subscription: Subscription,
-) -> impl Fn() -> NetworkSample + Send + Sync + 'static {
+fn signals(subscription: Subscription) -> impl Fn() -> NetworkSample + Send + Sync + 'static {
     // The serving link and path generation at the last sample, and how often
     // that pair changed.
     let last = Mutex::new((None::<(LinkId, u64)>, 0));
     move || {
         let link = subscription.serving_link();
         let mut last = last.lock().expect("poisoned");
-        let path = link
+        let serving = link
             .as_ref()
             .map(|link| (link.id, link.sample.path_generation));
-        if last.0 != path {
-            *last = (path, last.1 + 1);
+        if last.0 != serving {
+            *last = (serving, last.1 + 1);
         }
         let mut sample = link.map(|link| link.sample).unwrap_or_default();
         sample.path_generation = last.1;

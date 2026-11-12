@@ -8,8 +8,6 @@
 //! The moq crates are pinned to a git rev of moq-dev/moq `main`, so this crate
 //! is not on crates.io yet.
 //!
-//! # Paths and layouts
-//!
 //! The node takes any path. iroh-live ships one convention,
 //! [`layout::LiveLayout`], which publishes a peer's broadcasts at
 //! `<root>/<peer>/<name>` (the root is `live` by default) and lets each peer
@@ -85,9 +83,9 @@ router.shutdown().await?;
     doc = "- [`LocalBroadcast`](media::LocalBroadcast) and [`RemoteBroadcast`](media::RemoteBroadcast), from [`media`]."
 )]
 //!
-//! # Cancellation safety
+//! The futures differ in what dropping them leaves behind:
 //!
-//! | Future | Safe | Dropping it |
+//! | Future | Cancellation safe | Dropping it |
 //! |---|---|---|
 //! | [`EndpointConfig::bind`] | yes | nothing is bound |
 //! | [`Node::subscribe`], [`Node::subscribe_ticket`] | yes | abandons the wait, and a dial it started continues for other callers |
@@ -100,8 +98,6 @@ router.shutdown().await?;
 //!
 //! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
-//!
-//! # Features
 //!
 //! No feature is on by default. `full` turns on `media`, `capture`, `render`,
 //! `record` and `sound-server`. `media` adds the `media` module. Without it
