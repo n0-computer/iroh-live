@@ -135,29 +135,29 @@ pub(crate) async fn run(inputs: Inputs) {
             Some((name, config, consumer)) => {
                 send_if_changed(&status, |status| status.audio = SlotState::Starting);
                 let delay = *controls.latency.borrow();
-                let opened = open(&name, &config, &consumer, delay)
-                    .await
-                    .and_then(|decoder| {
-                        let format = AudioFormat {
-                            sample_rate: decoder.sample_rate(),
-                            layout: decoder.layout(),
-                        };
+                let opened: Result<Job, Error> = async {
+                    let decoder = open(&name, &config, &consumer, delay).await?;
+                    let format = AudioFormat {
+                        sample_rate: decoder.sample_rate(),
+                        layout: decoder.layout(),
+                    };
+                    #[cfg(feature = "playback")]
+                    let sink = speaker
+                        .as_ref()
+                        .map(|engine| sink(engine, format))
+                        .transpose()?;
+                    Ok(Job {
+                        name: name.clone(),
+                        format,
+                        frames: frames.clone(),
+                        decoder,
                         #[cfg(feature = "playback")]
-                        let sink = speaker
-                            .as_ref()
-                            .map(|engine| sink(engine, format))
-                            .transpose()?;
-                        Ok(Job {
-                            name: name.clone(),
-                            format,
-                            frames: frames.clone(),
-                            decoder,
-                            #[cfg(feature = "playback")]
-                            sink,
-                            latency: clock.register_audio(),
-                            stats: stats.clone(),
-                        })
-                    });
+                        sink,
+                        latency: clock.register_audio(),
+                        stats: stats.clone(),
+                    })
+                }
+                .await;
                 match opened {
                     Ok(job) => {
                         let control = job.control();
