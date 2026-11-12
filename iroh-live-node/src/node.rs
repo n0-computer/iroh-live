@@ -713,6 +713,6 @@ impl Shared {
             })
             .await
             .map_err(|_| e!(Error::ShutDown))?;
-        reply_rx.await.map_err(|_| e!(Error::ShutDown))?
+        reply_rx.await.map_err(|_| e!(Error::ShutDown))
     }
 }

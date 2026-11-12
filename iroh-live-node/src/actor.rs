@@ -19,7 +19,7 @@ use crate::{
     ConnectOptions, Error, LinkId, Session,
     admission::decide,
     handshake::{Hop, SessionParts, dial_session},
-    link::{self, LinkState},
+    link::{self, LatestSample},
     node::Shared,
     policy::{Authorization, Event, PeerRequest, Rejection},
     reauth::Reauth,
@@ -42,7 +42,7 @@ pub(crate) enum ActorMessage {
     },
     Register {
         parts: Box<SessionParts>,
-        reply: oneshot::Sender<Result<Session, Error>>,
+        reply: oneshot::Sender<Session>,
     },
 }
 
@@ -188,8 +188,7 @@ impl Actor {
                 reply,
             } => self.connect(peer, options, reply),
             ActorMessage::Register { parts, reply } => {
-                let session = self.register(*parts);
-                reply.send(Ok(session)).ok();
+                reply.send(self.register(*parts)).ok();
             }
         }
     }
@@ -424,7 +423,7 @@ impl Actor {
             driver,
             auth,
         } = parts;
-        let link_state = LinkState::default();
+        let latest_sample = LatestSample::default();
         let hop = Hop::of(&peer);
         let mut state = self.shared.state.lock().expect("poisoned");
         let link = LinkId(state.next_id());
@@ -437,7 +436,7 @@ impl Actor {
                 connection,
                 moq,
                 hop,
-                link_state: link_state.clone(),
+                latest_sample: latest_sample.clone(),
                 shared: Arc::downgrade(&self.shared),
                 closing: Default::default(),
             }),
@@ -455,7 +454,7 @@ impl Actor {
                 },
                 hop,
                 auth,
-                link_state,
+                latest_sample,
             },
         );
         drop(state);
@@ -500,13 +499,13 @@ impl Actor {
             peer,
             ref connection,
             ref moq,
-            ref link_state,
+            ref latest_sample,
             ..
         } = *session.inner;
         let monitor = link::monitor_direct(
             moq.clone(),
             connection.clone(),
-            link_state.clone(),
+            latest_sample.clone(),
             link::SharedSampler::default(),
         );
         let moq = moq.clone();

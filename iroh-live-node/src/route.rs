@@ -243,7 +243,7 @@ impl Subscription {
         Some(ServingLink {
             id: link,
             kind: entry.kind(),
-            sample: entry.link_state.get(),
+            sample: entry.latest_sample.get(),
         })
     }
 

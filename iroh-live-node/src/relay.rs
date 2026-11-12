@@ -26,7 +26,7 @@ use url::Url;
 use crate::{
     ConnectOptions, Error, LinkId, Node, SessionRequest,
     handshake::{Hop, client_handshake},
-    link::{self, LinkState},
+    link::{self, LatestSample},
     node::{Shared, Tasks},
     state::{LinkEntry, LinkRole, served},
     transport,
@@ -224,7 +224,7 @@ impl RelayLink {
                 // An error only says the session was already gone.
                 connection.closed().await.ok();
             }
-            Uplink::Iroh(stop) => stop.cancel(),
+            Uplink::Iroh { stop, .. } => stop.cancel(),
         }
         if let Some(tasks) = self.inner.tasks.upgrade()
             && let Some(relay) = tasks.remove_relay(self.inner.link)
@@ -312,7 +312,7 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
         .consume
         .then(|| shared.table.clone().with_link(Link::Upstream));
     let (uplink, auth) = uplink(shared, &config, iroh_relay, &hop, subscriber.clone())?;
-    let link_state = LinkState::default();
+    let latest_sample = LatestSample::default();
     let link = register(
         shared,
         &uplink,
@@ -322,7 +322,7 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
             },
             hop,
             auth: auth.clone(),
-            link_state: link_state.clone(),
+            latest_sample: latest_sample.clone(),
         },
     )?;
     let url = config.url.clone();
@@ -330,14 +330,13 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
     let status = Watchable::new(RelayStatus::Connecting);
     let task = spawn_uplink(
         &uplink,
-        iroh_relay,
         LinkParts {
             shared: shared.clone(),
             config,
             auth,
             subscriber,
             link,
-            link_state,
+            latest_sample,
             status: status.clone(),
         },
     );
@@ -398,8 +397,12 @@ fn uplink(
     hop: &Hop,
     subscriber: Option<origin::Producer>,
 ) -> Result<(Uplink, auth::Handle), Error> {
-    if iroh_relay.is_some() {
-        return Ok((Uplink::Iroh(CancellationToken::new()), auth::Handle::new()));
+    if let Some(relay) = iroh_relay {
+        let uplink = Uplink::Iroh {
+            relay,
+            stop: CancellationToken::new(),
+        };
+        return Ok((uplink, auth::Handle::new()));
     }
     let mut client = moq_tokio::client::Config::default()
         .init()
@@ -444,32 +447,27 @@ struct LinkParts {
     /// Where the relay's announcements go, if the link consumes them.
     subscriber: Option<origin::Producer>,
     link: LinkId,
-    link_state: LinkState,
+    latest_sample: LatestSample,
     status: Watchable<RelayStatus>,
 }
 
 /// Spawns the task that runs a relay link's uplink.
-fn spawn_uplink(
-    uplink: &Uplink,
-    iroh_relay: Option<EndpointId>,
-    parts: LinkParts,
-) -> tokio::task::JoinHandle<()> {
+fn spawn_uplink(uplink: &Uplink, parts: LinkParts) -> tokio::task::JoinHandle<()> {
     let span = info_span!("relay", url = %parts.config.url, link = %parts.link);
-    match (uplink, iroh_relay) {
-        (Uplink::Iroh(stop), Some(relay)) => {
-            tokio::spawn(iroh_uplink(parts, relay, stop.clone()).instrument(span))
+    match uplink {
+        Uplink::Iroh { relay, stop } => {
+            tokio::spawn(iroh_uplink(parts, *relay, stop.clone()).instrument(span))
         }
-        (Uplink::Tokio(connection), _) => {
+        Uplink::Tokio(connection) => {
             let run = tokio_uplink(
                 parts.shared,
                 moq_tokio::Connection::clone(connection),
                 parts.link,
-                parts.link_state,
+                parts.latest_sample,
                 parts.status,
             );
             tokio::spawn(run.instrument(span))
         }
-        (Uplink::Iroh(_), None) => unreachable!("an iroh uplink names its relay"),
     }
 }
 
@@ -477,8 +475,11 @@ fn spawn_uplink(
 enum Uplink {
     /// A moq-tokio client connection, which redials itself.
     Tokio(Box<moq_tokio::Connection>),
-    /// An iroh dial loop, stopped by cancelling the token.
-    Iroh(CancellationToken),
+    /// An iroh dial loop to the relay with endpoint id `relay`, stopped by cancelling `stop`.
+    Iroh {
+        relay: EndpointId,
+        stop: CancellationToken,
+    },
 }
 
 /// The first pause before redialing a relay.
@@ -495,10 +496,10 @@ async fn tokio_uplink(
     shared: Arc<Shared>,
     connection: moq_tokio::Connection,
     link: LinkId,
-    link_state: LinkState,
+    latest_sample: LatestSample,
     status: Watchable<RelayStatus>,
 ) {
-    let monitor = link::monitor_relay(connection.monitor(), link_state);
+    let monitor = link::monitor_relay(connection.monitor(), latest_sample);
     let mut watch = connection.clone();
     // Aborts the connection for every clone when the task ends, so a
     // `RelayLink` handle held past shutdown does not keep redialing.
@@ -543,7 +544,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
         auth,
         subscriber,
         link,
-        link_state,
+        latest_sample,
         status,
     } = parts;
     let publish = served(&shared.table);
@@ -595,7 +596,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
                 let monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor_direct(
                     moq.clone(),
                     connection,
-                    link_state.clone(),
+                    latest_sample.clone(),
                     sampler.clone(),
                 )));
                 let closing = tokio::select! {
@@ -608,7 +609,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
                 };
                 // The monitor must not overwrite the cleared reading.
                 drop(monitor);
-                link_state.clear(sampler.lock().expect("poisoned").path_generation());
+                latest_sample.clear(sampler.lock().expect("poisoned").path_generation());
                 if closing {
                     moq.close().await.ok();
                     break;
@@ -624,7 +625,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
         status.set(RelayStatus::Reconnecting).ok();
         // Equal jitter, half the pause plus a random half, so relays that
         // dropped together do not redial together.
-        let jittered = pause.mul_f64(rand_unit());
+        let jittered = pause.mul_f64(jitter_factor());
         tokio::select! {
             _ = stop.cancelled() => break,
             _ = shared.shutdown.cancelled() => break,
@@ -668,7 +669,7 @@ async fn dial_relay(
 }
 
 /// Returns a factor in `[0.5, 1)` from the clock, random enough to spread redials.
-fn rand_unit() -> f64 {
+fn jitter_factor() -> f64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.subsec_nanos())

@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    Grant, LinkId, LinkKind, handshake::Hop, link::LinkState, policy::Authorization,
+    Grant, LinkId, LinkKind, handshake::Hop, link::LatestSample, policy::Authorization,
     publish::AudienceKind,
 };
 
@@ -142,7 +142,7 @@ pub(crate) struct LinkEntry {
     pub(crate) auth: auth::Handle,
     /// The latest reading of the link's connection monitor.
     #[debug(skip)]
-    pub(crate) link_state: LinkState,
+    pub(crate) latest_sample: LatestSample,
 }
 
 /// What a link is: a session with a peer, or a relay.
@@ -561,7 +561,7 @@ mod tests {
             role,
             hop: Hop::of(&SecretKey::generate().public()),
             auth: auth::Handle::new(),
-            link_state: LinkState::default(),
+            latest_sample: LatestSample::default(),
         }
     }
 

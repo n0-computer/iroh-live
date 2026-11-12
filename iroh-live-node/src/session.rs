@@ -11,8 +11,8 @@ use n0_error::e;
 use tracing::info;
 
 use crate::{
-    Direction, Error, Grant, LinkId, SessionRequest, Subscription, handshake::Hop, link::LinkState,
-    node::Shared, route,
+    Direction, Error, Grant, LinkId, SessionRequest, Subscription, handshake::Hop,
+    link::LatestSample, node::Shared, route,
 };
 
 /// A direct session with a peer.
@@ -50,7 +50,7 @@ pub(crate) struct SessionInner {
     pub(crate) moq: moq_net::Session,
     /// The identity the peer's routes are attributed to in the route table.
     pub(crate) hop: Hop,
-    pub(crate) link_state: LinkState,
+    pub(crate) latest_sample: LatestSample,
     pub(crate) shared: Weak<Shared>,
     /// Set by [`Session::close`], so a connect right after it dials anew.
     pub(crate) closing: AtomicBool,

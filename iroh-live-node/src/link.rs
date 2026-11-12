@@ -1,4 +1,4 @@
-//! Link identity and measurement: the node's shared sample cell and the relay monitor.
+//! Link identity and measurement: the latest sample of each link, and its monitors.
 //!
 //! The sampler itself lives in `moq-transport-iroh`.
 
@@ -29,9 +29,9 @@ pub struct ServingLink {
 
 /// The latest sample of a link, shared with every handle on it.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct LinkState(Arc<Mutex<NetworkSample>>);
+pub(crate) struct LatestSample(Arc<Mutex<NetworkSample>>);
 
-impl LinkState {
+impl LatestSample {
     /// Returns the latest reading.
     pub(crate) fn get(&self) -> NetworkSample {
         *self.0.lock().expect("poisoned")
@@ -45,6 +45,7 @@ impl LinkState {
         });
     }
 
+    /// Replaces the reading with `sample`.
     pub(crate) fn set(&self, sample: NetworkSample) {
         trace!(
             path_generation = sample.path_generation,
@@ -63,21 +64,21 @@ impl LinkState {
 /// A sampler shared by the monitors of one link's successive sessions.
 pub(crate) type SharedSampler = Arc<Mutex<LinkSampler>>;
 
-/// Reads a direct session into `state` until its connection closes.
+/// Reads a direct session into `latest` until its connection closes.
 pub(crate) async fn monitor_direct(
     session: moq_net::Session,
     connection: iroh::endpoint::Connection,
-    state: LinkState,
+    latest: LatestSample,
     sampler: SharedSampler,
 ) {
     moq_transport_iroh::sample_link(session, connection, sampler, move |sample| {
-        state.set(sample);
+        latest.set(sample);
     })
     .await;
 }
 
-/// Reads a relay link into `state` across its reconnects.
-pub(crate) async fn monitor_relay(monitor: moq_tokio::connection::Monitor, state: LinkState) {
+/// Reads a relay link into `latest` across its reconnects.
+pub(crate) async fn monitor_relay(monitor: moq_tokio::connection::Monitor, latest: LatestSample) {
     let mut sampler = LinkSampler::default();
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -94,6 +95,6 @@ pub(crate) async fn monitor_relay(monitor: moq_tokio::connection::Monitor, state
                 ..NetworkSample::default()
             },
         };
-        state.set(sample);
+        latest.set(sample);
     }
 }
