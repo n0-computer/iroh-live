@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 use crate::{
     args::{CaptureArgs, RunArgs},
+    playback::Speaker,
     record::{RecordOptions, Recording},
     source,
     transport::{self, Subscribed},
@@ -161,12 +162,12 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
     let mut receivers: Vec<Receiver> = Vec::new();
     let mut recordings: JoinSet<Result<()>> = JoinSet::new();
     let stop_recording = CancellationToken::new();
-    let output = if config
+    let speaker = if config
         .recv
         .iter()
         .any(|recv| recv.audio_output == AudioOutput::Default)
     {
-        Some(crate::playback::output(None).await?)
+        crate::playback::output(None).await?
     } else {
         None
     };
@@ -188,8 +189,8 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
     // Concurrent, because each waits for its peer's catalog and a peer that
     // has not started would hold up the rest.
     let setups = config.recv.iter().map(|recv| {
-        let output = output.as_ref();
-        async move { (recv, setup_recv(node, recv, output).await) }
+        let speaker = speaker.as_ref();
+        async move { (recv, setup_recv(node, recv, speaker).await) }
     });
     for (recv, result) in n0_future::join_all(setups).await {
         match result {
@@ -269,7 +270,7 @@ async fn setup_send(node: &Node, config: &SendConfig) -> Result<(LocalBroadcast,
 async fn setup_recv(
     node: &Node,
     config: &RecvConfig,
-    output: Option<&media::AudioTarget>,
+    speaker: Option<&Speaker>,
 ) -> Result<(Receiver, Option<(Recording, std::path::PathBuf)>)> {
     let ticket: BroadcastTicket = config.ticket.parse().map_err(|err| {
         anyerr!(
@@ -290,9 +291,9 @@ async fn setup_recv(
         }
     };
 
-    let player = match (config.audio_output, output) {
-        (AudioOutput::Default, Some(output)) => play_audio(&sub, &catalog, &config.name, output),
-        _ => None,
+    let player = match config.audio_output {
+        AudioOutput::Default => play_audio(&sub, &catalog, &config.name, speaker),
+        AudioOutput::None => None,
     };
     Ok((
         Receiver {
@@ -303,12 +304,12 @@ async fn setup_recv(
     ))
 }
 
-/// Plays the broadcast's audio through `output`, with no video.
+/// Plays the broadcast's audio on `speaker`, with no video.
 fn play_audio(
     sub: &Subscribed,
     catalog: &media::Catalog,
     name: &str,
-    output: &media::AudioTarget,
+    speaker: Option<&Speaker>,
 ) -> Option<Player> {
     if catalog.audio.renditions.is_empty() {
         info!(name, "the broadcast carries no audio");
@@ -316,9 +317,9 @@ fn play_audio(
     }
     let config = PlayerConfig {
         rendition: RenditionMode::Off,
-        audio: Some(output.clone()),
         ..PlayerConfig::default()
     };
+    let config = crate::playback::audio_on(config, speaker);
     sub.broadcast()
         .play(config)
         .inspect_err(|err| warn!(name, error = %err, "audio failed to play"))

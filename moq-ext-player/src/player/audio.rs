@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "playback")]
+use moq_audio::playback;
 use moq_ext_media_core::{ByPtr, Error, SlotState, send_if_changed};
 use moq_ext_sources::AudioFormat;
 use moq_net::track::Delay;
@@ -12,11 +14,7 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::{broadcast, watch};
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::{
-    Controls, PlaybackRecorder, PlayerStatus, PlayoutClock,
-    clock::AudioLatency,
-    output::{AudioTarget, OutputControl, OutputSink},
-};
+use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, clock::AudioLatency};
 use crate::{
     RemoteBroadcast,
     clean_close::CleanClose as _,
@@ -94,7 +92,9 @@ impl AudioFrames {
 /// The audio task's inputs.
 pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
-    pub output: AudioTarget,
+    /// The speaker, or `None` to decode without playing.
+    #[cfg(feature = "playback")]
+    pub speaker: Option<playback::Engine>,
     /// Where each decoded frame goes, for [`AudioFrames`] readers.
     pub frames: broadcast::Sender<AudioFrame>,
     pub controls: Arc<Controls>,
@@ -110,7 +110,8 @@ pub(crate) struct Inputs {
 pub(crate) async fn run(inputs: Inputs) {
     let Inputs {
         broadcast,
-        output,
+        #[cfg(feature = "playback")]
+        speaker,
         frames,
         controls,
         status,
@@ -135,24 +136,35 @@ pub(crate) async fn run(inputs: Inputs) {
             Some((name, config, consumer)) => {
                 send_if_changed(&status, |status| status.audio = SlotState::Starting);
                 let delay = Delay::from(*controls.latency.borrow());
-                match open(&name, &config, &consumer, delay, &output).await {
-                    Ok((decoder, sink, control)) => {
-                        control.set_volume(*volume.borrow());
-                        info!(rendition = %name, "audio playing");
-                        send_if_changed(&status, |status| status.audio = SlotState::Running);
-                        let job = Job {
+                let opened = open(&name, &config, &consumer, delay)
+                    .await
+                    .and_then(|decoder| {
+                        let format = AudioFormat {
+                            sample_rate: decoder.sample_rate(),
+                            layout: decoder.layout(),
+                        };
+                        #[cfg(feature = "playback")]
+                        let sink = speaker
+                            .as_ref()
+                            .map(|engine| sink(engine, format))
+                            .transpose()?;
+                        Ok(Job {
                             name: name.clone(),
-                            format: AudioFormat {
-                                sample_rate: decoder.sample_rate(),
-                                layout: decoder.layout(),
-                            },
+                            format,
                             frames: frames.clone(),
                             decoder,
+                            #[cfg(feature = "playback")]
                             sink,
-                            control: control.clone(),
                             latency: clock.register_audio(),
                             stats: stats.clone(),
-                        };
+                        })
+                    });
+                match opened {
+                    Ok(job) => {
+                        let control = job.control();
+                        set_volume(control.as_ref(), *volume.borrow());
+                        info!(rendition = %name, "audio playing");
+                        send_if_changed(&status, |status| status.audio = SlotState::Running);
                         Some((
                             AbortOnDropHandle::new(spawn(
                                 job.run()
@@ -238,7 +250,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         return;
                     }
                     if let Some((_, control)) = &reader {
-                        control.set_volume(*volume.borrow());
+                        set_volume(control.as_ref(), *volume.borrow());
                     }
                 }
             }
@@ -246,14 +258,13 @@ pub(crate) async fn run(inputs: Inputs) {
     }
 }
 
-/// Opens the decoder and the output sink for one rendition.
+/// Opens the decoder for one rendition.
 async fn open(
     name: &str,
     config: &hang::catalog::AudioConfig,
     consumer: &moq_net::broadcast::Consumer,
     delay: Delay,
-    output: &AudioTarget,
-) -> Result<(moq_audio::decode::Consumer, OutputSink, OutputControl), Error> {
+) -> Result<moq_audio::decode::Consumer, Error> {
     let mut options = moq_audio::decode::Options::new();
     options.output.format = moq_audio::Format::F32;
     options.delay = delay;
@@ -268,13 +279,35 @@ async fn open(
                 Error::decoder(err)
             }
         })?;
-    let sink = output.sink(AudioFormat {
-        sample_rate: decoder.sample_rate(),
-        layout: decoder.layout(),
-    })?;
-    let control = sink.control();
-    Ok((decoder, sink, control))
+    Ok(decoder)
 }
+
+/// Adds a stream to the speaker's mix, taking PCM in `format`.
+#[cfg(feature = "playback")]
+fn sink(engine: &playback::Engine, format: AudioFormat) -> Result<playback::Sink, Error> {
+    let mut input = playback::Input::default();
+    input.format = moq_audio::Format::F32;
+    input.sample_rate = format.sample_rate;
+    input.layout = format.layout;
+    engine.sink(input).map_err(Error::device)
+}
+
+/// Sets the gain of a speaker stream, where 1.0 is unattenuated.
+fn set_volume(control: Option<&Control>, volume: f32) {
+    #[cfg(feature = "playback")]
+    if let Some(control) = control {
+        control.set_volume(volume);
+    }
+    #[cfg(not(feature = "playback"))]
+    let _ = (control, volume);
+}
+
+/// The gain and level handle of a speaker stream.
+#[cfg(feature = "playback")]
+type Control = playback::Control;
+/// No speaker stream exists without the `playback` feature.
+#[cfg(not(feature = "playback"))]
+type Control = std::convert::Infallible;
 
 /// One rendition being decoded into the output.
 struct Job {
@@ -284,8 +317,9 @@ struct Job {
     /// Where each decoded frame goes, for [`AudioFrames`] readers.
     frames: broadcast::Sender<AudioFrame>,
     decoder: moq_audio::decode::Consumer,
-    sink: OutputSink,
-    control: OutputControl,
+    /// The stream into the speaker, `None` when the audio is only decoded.
+    #[cfg(feature = "playback")]
+    sink: Option<playback::Sink>,
     /// Hands the clock's anchor back to video when dropped.
     latency: AudioLatency,
     stats: PlaybackRecorder,
@@ -319,11 +353,14 @@ impl Job {
                 continue;
             };
             let decoded = Instant::now();
-            let buffered = self.sink.buffered();
-            self.sink.write(&frame.data)?;
+            let buffered = self.buffered();
+            #[cfg(feature = "playback")]
+            if let Some(sink) = &mut self.sink {
+                sink.write(&frame.data).map(drop).map_err(Error::device)?;
+            }
             // The speaker owns the playout clock: video shows each picture
             // when the sound of its time plays.
-            self.latency.set(self.end_of(&frame), self.sink.buffered());
+            self.latency.set(self.end_of(&frame), self.buffered());
             self.share(&frame);
             self.stats.audio_log.push(FrameTiming {
                 kind: MediaKind::Audio,
@@ -332,7 +369,7 @@ impl Job {
                 decoded,
                 presented: Instant::now() + buffered,
             });
-            let peak = self.control.peak();
+            let peak = self.peak();
             self.stats.audio.update(|audio| {
                 if let Some(audio) = audio.as_mut() {
                     audio.frames += 1;
@@ -343,6 +380,32 @@ impl Job {
         }
         debug!("audio track ended");
         Ok(())
+    }
+
+    /// Returns the handle that sets the speaker stream's gain, if there is one.
+    fn control(&self) -> Option<Control> {
+        #[cfg(feature = "playback")]
+        return self.sink.as_ref().map(playback::Sink::control);
+        #[cfg(not(feature = "playback"))]
+        None
+    }
+
+    /// Returns how much audio is queued ahead of the speaker.
+    fn buffered(&self) -> Duration {
+        #[cfg(feature = "playback")]
+        if let Some(sink) = &self.sink {
+            return sink.buffered();
+        }
+        Duration::ZERO
+    }
+
+    /// Returns the speaker stream's most recent peak level, for a meter.
+    fn peak(&self) -> f32 {
+        #[cfg(feature = "playback")]
+        if let Some(sink) = &self.sink {
+            return sink.control().peak();
+        }
+        0.0
     }
 
     /// Returns the media time at the end of `frame`'s samples.

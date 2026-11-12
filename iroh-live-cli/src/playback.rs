@@ -3,22 +3,44 @@
 use std::{sync::Arc, time::Duration};
 
 use iroh_live::media::{
-    AudioTarget, Catalog, Error, Player, PlayerConfig, RemoteBroadcast, RenditionMode,
-    video_rendition,
+    Catalog, Error, Player, PlayerConfig, RemoteBroadcast, RenditionMode, video_rendition,
 };
 use n0_error::{Result, anyerr};
 use tracing::info;
+#[cfg(feature = "playback")]
+use tracing::warn;
 
 use crate::{args::PlaybackArgs, transport::Subscribed};
 
-/// Returns a player config from `--decoder` and `--latency`, with audio to `output`.
-pub(crate) fn player_config(args: &PlaybackArgs, output: Option<&AudioTarget>) -> PlayerConfig {
-    PlayerConfig {
+/// The speaker engine audio plays on.
+#[cfg(feature = "playback")]
+pub(crate) type Speaker = iroh_live::media::audio::playback::Engine;
+/// The speaker of a build without playback, which never has one.
+#[cfg(not(feature = "playback"))]
+pub(crate) type Speaker = std::convert::Infallible;
+
+/// Returns a player config from `--decoder` and `--latency`, with audio on `speaker`.
+pub(crate) fn player_config(args: &PlaybackArgs, speaker: Option<&Speaker>) -> PlayerConfig {
+    let config = PlayerConfig {
         decoder: args.decoder.into(),
         latency: args.latency.latency(),
-        audio: output.cloned(),
         ..PlayerConfig::default()
+    };
+    audio_on(config, speaker)
+}
+
+/// Turns the audio of `config` on, playing on `speaker`.
+///
+/// Without a speaker, the audio is decoded and discarded.
+pub(crate) fn audio_on(mut config: PlayerConfig, speaker: Option<&Speaker>) -> PlayerConfig {
+    config.audio = true;
+    #[cfg(feature = "playback")]
+    {
+        config.speaker = speaker.cloned();
     }
+    #[cfg(not(feature = "playback"))]
+    let _ = speaker;
+    config
 }
 
 /// Waits for the catalog of `sub`'s broadcast and plays it with `config`.
@@ -52,10 +74,10 @@ pub(crate) async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>>
         })
 }
 
-/// Opens the audio output for playback.
+/// Opens the speaker for playback.
 ///
-/// Without `device`, a machine with no speaker gets an output that discards
-/// audio, so video still plays.
+/// Without `device`, a machine with no speaker gets none, and its audio is
+/// discarded, so video still plays.
 ///
 /// # Errors
 ///
@@ -64,7 +86,7 @@ pub(crate) async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>>
     clippy::unused_async,
     reason = "a build without playback opens nothing, which is not async"
 )]
-pub(crate) async fn output(device: Option<String>) -> Result<AudioTarget> {
+pub(crate) async fn output(device: Option<String>) -> Result<Option<Speaker>> {
     #[cfg(feature = "playback")]
     {
         if let Some(device) = device {
@@ -75,15 +97,25 @@ pub(crate) async fn output(device: Option<String>) -> Result<AudioTarget> {
                 )
             })?;
             info!(%device, "audio output selected");
-            return Ok(output.into());
+            return Ok(Some(output));
         }
-        Ok(AudioTarget::default_or_null().await)
+        let config = iroh_live::media::audio::playback::Config::default();
+        match iroh_live::media::audio::playback::Engine::open(config).await {
+            Ok(engine) => Ok(Some(engine)),
+            Err(err) => {
+                warn!(
+                    error = format_args!("{err:#}"),
+                    "no audio output, playing audio nowhere"
+                );
+                Ok(None)
+            }
+        }
     }
     #[cfg(not(feature = "playback"))]
     {
         let _ = device;
         info!("this build has no playback support, so audio is decoded and discarded");
-        Ok(AudioTarget::null())
+        Ok(None)
     }
 }
 

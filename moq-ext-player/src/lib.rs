@@ -29,8 +29,6 @@
 //! - [`Player`]: decodes the chosen rendition and keeps audio and video in step.
 //! - [`VideoFrames`]: the frame stream every renderer reads.
 //! - [`AudioFrames`]: the decoded audio, for analysis or a custom output.
-//! - [`AudioTarget`]: where a player's audio goes, a `moq_audio::playback::Engine`
-//!   or nowhere. A microphone can cancel the echo of an engine's mix.
 //! - [`RenditionMode`]: how the video rendition is chosen, re-exported from
 //!   `moq_ext_adaptive`.
 //!
@@ -48,7 +46,6 @@
 //! |---|---|---|
 //! | [`VideoFrames::next`], [`AudioFrames::next`], [`RemoteBroadcast::closed`] | yes | loses nothing |
 //! | [`RemoteBroadcast::catalog_within`] | yes | stops waiting |
-//! | `AudioTarget::default_or_null` (feature `playback`) | yes | abandons opening the speaker |
 //! | `RemoteBroadcast::mux_source` (feature `record`) | yes | stops waiting |
 
 mod catalog;
@@ -71,8 +68,8 @@ pub use self::{
     catalog::video_rendition,
     network::NetworkSample,
     player::{
-        Adaptation, AudioFrame, AudioFrames, AudioTarget, Latency, Player, PlayerConfig,
-        PlayerStatus, RenditionMode,
+        Adaptation, AudioFrame, AudioFrames, Latency, Player, PlayerConfig, PlayerStatus,
+        RenditionMode,
     },
     remote::RemoteBroadcast,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind, PlaybackStats, VideoPlaybackStats},

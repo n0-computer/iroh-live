@@ -10,8 +10,7 @@ use std::{
 };
 
 use moq_ext_player::{
-    AudioTarget, Error, Latency, NetworkSample, Player, PlayerConfig, RemoteBroadcast,
-    RenditionMode, SlotState,
+    Error, Latency, NetworkSample, Player, PlayerConfig, RemoteBroadcast, RenditionMode, SlotState,
 };
 use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
 use moq_ext_sources::{AudioSource, FrameSender, VideoFormat, VideoSource};
@@ -689,11 +688,11 @@ async fn a_running_player_changes_its_latency() {
     encode.abort();
 }
 
-/// Audio plays through a null output.
+/// Audio decodes without a speaker.
 ///
-/// A null output still runs the audio path and its clock.
+/// It still runs the audio path and its clock.
 #[tokio::test]
-async fn audio_plays_through_a_null_output() {
+async fn audio_decodes_without_a_speaker() {
     let broadcast = LocalBroadcast::new();
     broadcast
         .set_audio(
@@ -703,7 +702,7 @@ async fn audio_plays_through_a_null_output() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioTarget::null()),
+            audio: true,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -732,7 +731,7 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioTarget::null()),
+            audio: true,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -788,7 +787,7 @@ async fn closing_the_broadcast_ends_the_audio() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioTarget::null()),
+            audio: true,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -809,7 +808,7 @@ async fn an_audio_only_broadcast_ends_the_video() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioTarget::null()),
+            audio: true,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -828,7 +827,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
         .expect("a valid encoding");
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: Some(AudioTarget::null()),
+            audio: true,
             ..PlayerConfig::default()
         })
         .expect("valid");
@@ -1123,7 +1122,7 @@ async fn the_audio_frames_of_a_player_without_audio_end_with_it() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
         .play(PlayerConfig {
-            audio: None,
+            audio: false,
             ..PlayerConfig::default()
         })
         .expect("valid");

@@ -7,7 +7,7 @@ use iroh::EndpointId;
 use iroh_live::{
     BroadcastTicket,
     calls::{Call, Calls},
-    media::{AudioTarget, LocalBroadcast, Player, VideoSource},
+    media::{LocalBroadcast, Player, VideoSource},
 };
 use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
 use n0_error::Result;
@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     args::{CallArgs, PlaybackArgs},
+    playback::Speaker,
     transport::{PEER_TIMEOUT, SharedNode, Subscribed},
     ui::{CursorIdle, Pending, RemoteView, TicketQr},
 };
@@ -98,7 +99,7 @@ pub(super) struct CallApp {
     /// The local audio, kept alive with the window.
     pub(super) _local_audio: Option<iroh_live::media::AudioSource>,
     /// Where the peer's voice plays, and what the microphone cancels.
-    pub(super) output: AudioTarget,
+    pub(super) output: Option<Speaker>,
     pub(super) camera: Camera,
     /// The capture flags, kept to reopen the camera after a scan.
     pub(super) capture: crate::args::CaptureArgs,
@@ -399,7 +400,7 @@ pub(super) async fn reach(
     calls: Calls,
     direction: Direction,
     playback: PlaybackArgs,
-    output: AudioTarget,
+    output: Option<Speaker>,
 ) -> Answer {
     let peer = direction.peer();
     let placing = async {
@@ -419,7 +420,7 @@ pub(super) async fn reach(
         }
     };
     let sub = Subscribed::open(call.subscription().clone());
-    let config = crate::playback::player_config(&playback, Some(&output));
+    let config = crate::playback::player_config(&playback, output.as_ref());
     match crate::playback::open(sub, config).await {
         Ok((sub, player)) => Answer::Connected(Box::new(Connected { call, sub, player })),
         Err(err) => Answer::Failed(format!("{err:#}")),

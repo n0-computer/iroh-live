@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, Node,
-    media::{AudioTarget, Player, PlayerConfig, RenditionMode},
+    media::{Player, PlayerConfig, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 
 use crate::{
     args::WatchArgs,
+    playback::Speaker,
     transport::{self, SharedNode, Subscribed},
 };
 
@@ -29,7 +30,7 @@ enum Start {
 }
 
 /// The parts of [`WatchArgs`] a subscription needs, owned so a task can hold them.
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 struct Options {
     /// The rendition `--rendition` pinned.
     rendition: Option<String>,
@@ -40,7 +41,8 @@ struct Options {
     /// How the video is decoded.
     playback: crate::args::PlaybackArgs,
     /// Where the audio plays.
-    output: AudioTarget,
+    #[debug(skip)]
+    output: Option<Speaker>,
 }
 
 impl From<&WatchArgs> for Options {
@@ -53,7 +55,7 @@ impl From<&WatchArgs> for Options {
             no_video: args.no_video,
             playback: args.playback,
             // Opened by the async `setup`.
-            output: AudioTarget::null(),
+            output: None,
         }
     }
 }
@@ -129,7 +131,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
 ///
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
-async fn setup(args: &WatchArgs) -> Result<(SharedNode, AudioTarget)> {
+async fn setup(args: &WatchArgs) -> Result<(SharedNode, Option<Speaker>)> {
     #[cfg(feature = "playback")]
     let device = args.audio_output.clone();
     #[cfg(not(feature = "playback"))]
@@ -168,7 +170,7 @@ async fn connect(
             })??,
         None => subscribing.await?,
     };
-    let config = crate::playback::player_config(&options.playback, Some(&options.output));
+    let config = crate::playback::player_config(&options.playback, options.output.as_ref());
     let rendition = match (options.no_video, &options.rendition) {
         // An unused video decoder would still cost a core.
         (true, _) => RenditionMode::Off,

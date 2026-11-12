@@ -12,13 +12,14 @@
 use iroh_live::{
     calls::{CALL, Calls},
     layout::LiveLayout,
-    media::{AudioTarget, LocalBroadcast},
+    media::LocalBroadcast,
 };
 use n0_error::Result;
 use tracing::info;
 
 use crate::{
     args::CallArgs,
+    playback::Speaker,
     source,
     transport::{self, SharedNode},
 };
@@ -40,7 +41,7 @@ struct Local {
     /// Who this node's side is offered to.
     calls: Calls,
     sources: source::Opened,
-    output: AudioTarget,
+    output: Option<Speaker>,
     ticket: String,
 }
 
@@ -52,7 +53,7 @@ async fn setup(args: &CallArgs) -> Result<Local> {
     let (node, (broadcast, calls, sources, ticket)) = transport::with_node(node, async |node| {
         // Published once, to nobody: each call offers it to its peer.
         let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(node, &LiveLayout::default())?;
-        let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
+        let sources = source::configure(&broadcast, &args.capture, output.as_ref()).await?;
         let ticket = LiveLayout::default().ticket(node.id(), CALL)?.to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);

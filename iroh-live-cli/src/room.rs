@@ -10,7 +10,7 @@ use iroh::protocol::Router;
 use iroh_live::{
     BoundNode, EndpointConfig, Node,
     layout::LiveLayout,
-    media::{AudioTarget, LocalBroadcast},
+    media::LocalBroadcast,
     rooms::{Room, RoomTicket, Rooms},
 };
 use n0_error::Result;
@@ -18,6 +18,7 @@ use tracing::info;
 
 use crate::{
     args::RoomArgs,
+    playback::Speaker,
     source,
     transport::{self, SharedNode},
 };
@@ -45,7 +46,7 @@ struct Joined {
     broadcast: LocalBroadcast,
     sources: source::Opened,
     /// The speaker every participant plays on, and what the microphone cancels.
-    output: AudioTarget,
+    output: Option<Speaker>,
     room: Room,
     chat: chat::Writer,
     ticket: String,
@@ -76,7 +77,7 @@ async fn join(
     node: &SharedNode,
     rooms: &Rooms,
     args: &RoomArgs,
-    output: AudioTarget,
+    output: Option<Speaker>,
 ) -> Result<Joined> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
     let display_name = args
@@ -86,7 +87,7 @@ async fn join(
     let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
     let broadcast: LocalBroadcast = room.publish(BROADCAST_NAME)?;
-    let sources = source::configure(&broadcast, &args.capture, Some(&output)).await?;
+    let sources = source::configure(&broadcast, &args.capture, output.as_ref()).await?;
     let chat = chat::Writer::new(room.publish(chat::NAME)?)?;
 
     let ticket = room.ticket().to_string();
@@ -117,7 +118,7 @@ mod window {
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        media::{AudioTarget, LocalBroadcast, Player, VideoSource},
+        media::{LocalBroadcast, Player, VideoSource},
         rooms::{Room, RoomState},
     };
     use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
@@ -130,6 +131,7 @@ mod window {
     use super::{Joined, chat};
     use crate::{
         args::PlaybackArgs,
+        playback::Speaker,
         transport::{PEER_TIMEOUT, SharedNode, Subscribed},
         ui::RemoteView,
     };
@@ -242,7 +244,7 @@ mod window {
         /// The sources this node publishes, held for the window's life.
         _sources: crate::source::Opened,
         /// The speaker every peer plays on.
-        output: AudioTarget,
+        output: Option<Speaker>,
         render_state: Option<RenderState>,
         /// The playback flags for every peer's broadcast.
         playback: PlaybackArgs,
@@ -626,7 +628,7 @@ mod window {
         remote: EndpointId,
         name: String,
         playback: PlaybackArgs,
-        output: AudioTarget,
+        output: Option<Speaker>,
     ) -> (EndpointId, String, Option<Opened>) {
         let opened = open_inner(room, remote, &name, playback, output).await;
         (remote, name, opened)
@@ -638,9 +640,9 @@ mod window {
         remote: EndpointId,
         name: &str,
         playback: PlaybackArgs,
-        output: AudioTarget,
+        output: Option<Speaker>,
     ) -> Option<Opened> {
-        let config = crate::playback::player_config(&playback, Some(&output));
+        let config = crate::playback::player_config(&playback, output.as_ref());
         // A member may announce a name it never publishes.
         let opened = tokio::time::timeout(PEER_TIMEOUT, async {
             let subscription = room.subscribe(remote, name).await?;

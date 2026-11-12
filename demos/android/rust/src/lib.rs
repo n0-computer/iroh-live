@@ -27,9 +27,9 @@ use iroh_live::{
     calls::{CALL, Call, CallEvent, Calls},
     layout::LiveLayout,
     media::{
-        AudioSource, AudioTarget, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig,
-        RemoteBroadcast, RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition,
-        VideoSource, audio, audio_encoding, remote_broadcast,
+        AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig, RemoteBroadcast,
+        RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition, VideoSource, audio,
+        audio::playback::Engine, audio_encoding, remote_broadcast,
     },
     net::Timestamp,
 };
@@ -119,7 +119,7 @@ async fn bind_node() -> Result<BoundNode> {
 }
 
 /// Plays the side of the peer that `call` reached.
-fn play_call(call: &Call, output: &AudioTarget) -> Result<Player> {
+fn play_call(call: &Call, output: Option<&Engine>) -> Result<Player> {
     play(&remote_broadcast(call.subscription()), output)
 }
 
@@ -140,7 +140,7 @@ struct SessionHandle {
     ///
     /// `None` in the offline pipelines and in a publish-only session.
     /// Held only so that dropping it closes the speaker.
-    _output: Option<AudioTarget>,
+    _output: Option<Engine>,
     /// The broadcast this node publishes, for a subscriber or a call.
     broadcast: Option<LocalBroadcast>,
     /// Where the camera frames Kotlin pushes go.
@@ -281,9 +281,9 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(FrameSender<Fra
 /// A call passes its speaker here, or a phone on speaker sends the peer's
 /// voice straight back. If the microphone does not open, the session goes on
 /// with video only.
-async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) {
+async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&Engine>) {
     let mut config = audio::capture::Config::default();
-    if let Some(engine) = echo.and_then(AudioTarget::engine) {
+    if let Some(engine) = echo {
         match engine.canceller(audio::aec::Config::default()) {
             Ok(canceller) => config.aec = Some(canceller),
             Err(err) => warn!(error = %err, "publishing the microphone without echo cancellation"),
@@ -298,12 +298,27 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioTarget>) 
     }
 }
 
-/// Starts playing `remote`, with its audio through `output`.
-fn play(remote: &RemoteBroadcast, output: &AudioTarget) -> Result<Player> {
+/// Starts playing `remote`, with its audio through `output`, or decoded without one.
+fn play(remote: &RemoteBroadcast, output: Option<&Engine>) -> Result<Player> {
     Ok(remote.play(PlayerConfig {
-        audio: Some(output.clone()),
+        audio: true,
+        speaker: output.cloned(),
         ..PlayerConfig::default()
     })?)
+}
+
+/// Opens the default speaker, or returns `None` so audio plays nowhere.
+async fn speaker() -> Option<Engine> {
+    match Engine::open(audio::playback::Config::default()).await {
+        Ok(engine) => Some(engine),
+        Err(err) => {
+            warn!(
+                error = format_args!("{err:#}"),
+                "no audio output, playing audio nowhere"
+            );
+            None
+        }
+    }
 }
 
 // JNI: connect (subscribe only)
@@ -339,14 +354,14 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
 
     // The player waits for the catalog on its own, so the handle is usable
     // right away.
-    let output = AudioTarget::default_or_null().await;
+    let output = speaker().await;
     let remote = remote_broadcast(&subscription);
-    let player = play(&remote, &output)?;
+    let player = play(&remote, output.as_ref())?;
 
     let mut session = SessionHandle::new();
     session.frames = Some(player.video_frames());
     session.player = Some(player);
-    session._output = Some(output);
+    session._output = output;
     session.node = Some(bound);
     Ok(register(session.into_shared()))
 }
@@ -385,25 +400,25 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     let bound = bind_node().await?;
     info!(id = %bound.node().endpoint().id().fmt_short(), "endpoint ready");
 
-    let output = AudioTarget::default_or_null().await;
+    let output = speaker().await;
     // Published to nobody, then offered to the peer.
     let (calls, broadcast): (Calls, LocalBroadcast) =
         Calls::new(bound.node(), &LiveLayout::default())?;
     let (camera, _preview) = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast, Some(&output)).await;
+    set_microphone(&broadcast, output.as_ref()).await;
 
     // A busy callee answers only once its call ends, so give up as `irl call`
     // does.
     let call = tokio::time::timeout(PEER_TIMEOUT, calls.call(ticket.peer()))
         .await
         .std_context("the peer did not answer")??;
-    let player = play_call(&call, &output)?;
+    let player = play_call(&call, output.as_ref())?;
     info!(peer = %ticket.peer().fmt_short(), "call connected");
 
     let mut session = SessionHandle::new();
     session.frames = Some(player.video_frames());
     session.player = Some(player);
-    session._output = Some(output);
+    session._output = output;
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
     session.call = Some(call);
@@ -443,15 +458,15 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 
     // Start the camera now, so the preview runs while the ticket is on screen
     // and the peer's first frame does not wait for the device to open.
-    let output = AudioTarget::default_or_null().await;
+    let output = speaker().await;
     let (calls, broadcast): (Calls, LocalBroadcast) =
         Calls::new(bound.node(), &LiveLayout::default())?;
     let (camera, preview) = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast, Some(&output)).await;
+    set_microphone(&broadcast, output.as_ref()).await;
 
     let mut session = SessionHandle::new();
     session.frames = Some(preview);
-    session._output = Some(output.clone());
+    session._output = output.clone();
     session.camera = Some(camera);
     session.ticket = Some(
         LiveLayout::default()
@@ -482,7 +497,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 /// ring.
 async fn accept_one(
     calls: Calls,
-    output: AudioTarget,
+    output: Option<Engine>,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
     let mut events = calls.events();
@@ -495,7 +510,7 @@ async fn accept_one(
     };
     info!(peer = %peer.fmt_short(), "answering");
     let call = calls.answer(peer).await?;
-    let player = play_call(&call, &output)?;
+    let player = play_call(&call, output.as_ref())?;
     info!(peer = %peer.fmt_short(), "call answered");
 
     let Some(session) = session.upgrade() else {
