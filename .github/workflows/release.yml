@@ -48,7 +48,7 @@ jobs:
           # Apple silicon only. An Intel Mac is not a target we support, and a
           # second build of it costs a runner on every release for nobody.
           - name: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             bin: irl
             asset: irl-macos-aarch64
