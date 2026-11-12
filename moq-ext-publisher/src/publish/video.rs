@@ -37,7 +37,7 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
-use crate::stats::{PublishRecorder, RenditionWriter};
+use crate::stats::{EncodeStats, PublishRecorder};
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
@@ -401,7 +401,7 @@ struct Encoder {
     /// The gap between kept frames, for a rendition slower than its source.
     interval: Option<Duration>,
     reporter: Reporter,
-    stats: RenditionWriter,
+    stats: moq_ext_media_core::stats::Cell<EncodeStats>,
     stop: CancellationToken,
 }
 
@@ -471,7 +471,7 @@ impl Encoder {
     /// Returns how the encoder stopped without failing.
     async fn encode(&mut self) -> Result<Stopped, Error> {
         let target = self.config.size();
-        self.stats.stats.update(|stats| stats.size = Some(target));
+        self.stats.update(|stats| stats.size = Some(target));
 
         loop {
             let mut demand = self.producer.demand();
@@ -604,7 +604,7 @@ impl Encoder {
                 let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
                 let rates = meter.tick(bytes as u64);
                 let smoothed = timing.record(took);
-                self.stats.stats.update(|stats| {
+                self.stats.update(|stats| {
                     stats.record(rates);
                     stats.encode_time = Some(smoothed);
                 });
@@ -614,10 +614,12 @@ impl Encoder {
                 // to a newly named track and finishes the old one. Follow the
                 // demand of the track the producer writes now.
                 demand = self.producer.demand();
-                if self.stats.track.get() != demand.name() {
-                    let track = demand.name().to_string();
-                    self.stats.track.update(|name| *name = track);
-                }
+                let track = demand.name();
+                self.stats.update(|stats| {
+                    if stats.track != track {
+                        stats.track = track.to_string();
+                    }
+                });
             }
         }
     }
@@ -710,14 +712,16 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
             }
             for frame in &frames {
                 let rates = meter.tick(frame.payload.len() as u64);
-                entry.stats.update(|stats| stats.record(rates));
+                entry.update(|stats| stats.record(rates));
             }
             units += frames.len() as u64;
             import.decode(frames).map_err(Error::decoder)?;
-            if entry.track.get() != import.track().name() {
-                let track = import.track().name().to_string();
-                entry.track.update(|name| *name = track);
-            }
+            let track = import.track().name();
+            entry.update(|stats| {
+                if stats.track != track {
+                    stats.track = track.to_string();
+                }
+            });
         }
         // The splitter holds the final access unit until the next start code,
         // so the end of the stream has to flush it explicitly.

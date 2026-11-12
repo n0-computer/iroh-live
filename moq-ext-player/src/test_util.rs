@@ -189,8 +189,9 @@ pub fn fed(with: Feed) -> (VideoSource, AbortOnDropHandle<()>) {
 /// Returns the frames and bytes `broadcast` has published on its `video` rendition.
 fn published(broadcast: &LocalBroadcast) -> Option<(u64, u64)> {
     let stats = broadcast.stats();
-    let video = stats.renditions.get("video")?;
-    Some((video.frames, video.bytes))
+    let track = &stats.renditions.get("video")?.track;
+    let sent = stats.sent.get(track).cloned().unwrap_or_default();
+    Some((sent.frames, sent.bytes))
 }
 
 /// Returns a future that resolves when the source set last publishes its first frame.

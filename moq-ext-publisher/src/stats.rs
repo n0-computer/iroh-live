@@ -4,7 +4,7 @@
 //! [`LocalBroadcast::stats`](crate::LocalBroadcast::stats) as often as it
 //! draws. Every figure has exactly one writer. Each rendition's encoder writes
 //! its own entry, and the task that reads the source writes the source frame
-//! rate. The frame and byte counters come from the catalog's own counters
+//! rate. What each track has sent is the catalog's own count
 //! ([`hang::stats::Rendition`]), read when the snapshot is taken.
 
 use std::{collections::BTreeMap, time::Duration};
@@ -17,8 +17,12 @@ use moq_net::bandwidth::Rate;
 pub struct PublishStats {
     /// Frames per second arriving from the video source, shared by every rendition.
     pub source_fps: Option<f32>,
-    /// Each video rendition, by name.
+    /// Each video rendition's encoder, by rendition name.
     pub renditions: BTreeMap<String, EncodeStats>,
+    /// What each track has sent, by track name, as the catalog counts it.
+    ///
+    /// A rendition's [`EncodeStats::track`] names its entry.
+    pub sent: BTreeMap<String, hang::stats::Rendition>,
     /// The audio publication, if there is one.
     pub audio: Option<AudioEncodeStats>,
 }
@@ -37,10 +41,11 @@ pub struct EncodeStats {
     pub bitrate: Option<Rate>,
     /// How long one encode takes, smoothed.
     pub encode_time: Option<Duration>,
-    /// Frames published on the rendition's track since the broadcast started.
-    pub frames: u64,
-    /// Media bytes published on the rendition's track since the broadcast started.
-    pub bytes: u64,
+    /// The track the rendition writes now, its key in [`PublishStats::sent`].
+    ///
+    /// A keyframe with another decoder identity, such as a new level after a
+    /// switch to a larger source, moves the rendition to a newly named track.
+    pub track: String,
 }
 
 impl EncodeStats {
@@ -64,44 +69,26 @@ pub struct AudioEncodeStats {
     pub dropped: u64,
 }
 
-/// The writers of one rendition's entry.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RenditionWriter {
-    /// The encoder's own figures.
-    pub(crate) stats: Cell<EncodeStats>,
-    /// The name of the track the rendition writes now, its key in the catalog's counters.
-    ///
-    /// A frame that changes the decoder identity moves the rendition to a new track.
-    pub(crate) track: Cell<String>,
-}
-
 /// The writers behind [`PublishStats`], one per figure.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PublishRecorder {
     source_fps: Cell<Option<f32>>,
-    renditions: Cell<BTreeMap<String, RenditionWriter>>,
+    renditions: Cell<BTreeMap<String, Cell<EncodeStats>>>,
     audio: Cell<Option<Cell<AudioEncodeStats>>>,
 }
 
 impl PublishRecorder {
-    /// Returns the snapshot, with the counters of each rendition's track from `sent`.
-    pub(crate) fn snapshot(&self, sent: &BTreeMap<String, hang::stats::Rendition>) -> PublishStats {
-        let rendition = |writer: RenditionWriter| {
-            let mut stats = writer.stats.get();
-            if let Some(sent) = sent.get(&writer.track.get()) {
-                stats.frames = sent.frames;
-                stats.bytes = sent.bytes;
-            }
-            stats
-        };
+    /// Returns the snapshot, with `sent` from the catalog.
+    pub(crate) fn snapshot(&self, sent: BTreeMap<String, hang::stats::Rendition>) -> PublishStats {
         PublishStats {
             source_fps: self.source_fps.get(),
             renditions: self
                 .renditions
                 .get()
                 .into_iter()
-                .map(|(name, writer)| (name, rendition(writer)))
+                .map(|(name, writer)| (name, writer.get()))
                 .collect(),
+            sent,
             audio: self.audio.get().map(|cell| cell.get()),
         }
     }
@@ -112,9 +99,9 @@ impl PublishRecorder {
     }
 
     /// Starts an entry for rendition `name`, written to track `track`, and returns its writer.
-    pub(crate) fn rendition(&self, name: &str, track: &str) -> RenditionWriter {
-        let writer = RenditionWriter::default();
-        writer.track.update(|name| *name = track.to_string());
+    pub(crate) fn rendition(&self, name: &str, track: &str) -> Cell<EncodeStats> {
+        let writer = Cell::<EncodeStats>::default();
+        writer.update(|stats| stats.track = track.to_string());
         self.renditions
             .update(|renditions| drop(renditions.insert(name.to_string(), writer.clone())));
         writer
@@ -143,30 +130,22 @@ impl PublishRecorder {
 mod tests {
     use super::*;
 
-    fn sent(frames: u64) -> hang::stats::Rendition {
-        let mut sent = hang::stats::Rendition::default();
-        sent.frames = frames;
-        sent
-    }
-
-    /// Each rendition reads the counters of its own track, so two renditions never mix.
+    /// Each rendition names the track it writes, and a cleared video drops the entries.
     #[test]
-    fn two_renditions_keep_separate_entries() {
+    fn a_rendition_names_its_track() {
         let recorder = PublishRecorder::default();
         let high = recorder.rendition("high", "high");
         let _low = recorder.rendition("low", "low");
-        let mut counters = BTreeMap::from([
-            ("high".to_string(), sent(30)),
-            ("low".to_string(), sent(15)),
-        ]);
-        let snapshot = recorder.snapshot(&counters);
-        assert_eq!(snapshot.renditions["high"].frames, 30);
-        assert_eq!(snapshot.renditions["low"].frames, 15);
-        // A rendition moved to a new track reads that track's counters.
-        high.track.update(|track| *track = "high.1".to_string());
-        counters.insert("high.1".to_string(), sent(2));
-        assert_eq!(recorder.snapshot(&counters).renditions["high"].frames, 2);
+        let snapshot = recorder.snapshot(BTreeMap::new());
+        assert_eq!(snapshot.renditions["high"].track, "high");
+        assert_eq!(snapshot.renditions["low"].track, "low");
+        // A rendition moved to a new track names that track.
+        high.update(|stats| stats.track = "high.1".to_string());
+        assert_eq!(
+            recorder.snapshot(BTreeMap::new()).renditions["high"].track,
+            "high.1"
+        );
         recorder.clear_video();
-        assert!(recorder.snapshot(&counters).renditions.is_empty());
+        assert!(recorder.snapshot(BTreeMap::new()).renditions.is_empty());
     }
 }

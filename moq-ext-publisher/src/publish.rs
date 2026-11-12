@@ -581,7 +581,7 @@ impl LocalBroadcast {
     #[must_use]
     pub fn stats(&self) -> PublishStats {
         let sent = self.shared.catalog.lock().expect("poisoned").stats();
-        self.shared.stats.snapshot(&sent)
+        self.shared.stats.snapshot(sent)
     }
 
     /// Returns a reader of the broadcast, for playing it in-process.

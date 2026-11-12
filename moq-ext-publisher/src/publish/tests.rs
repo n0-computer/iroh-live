@@ -178,12 +178,21 @@ async fn a_watched_rendition_counts_its_frames() {
     .expect("the rendition starts");
     let track = broadcast.consume().track(&name).expect("the track exists");
     let _subscribing = track.subscribe(None);
+    // The counters are the catalog's, under the track the rendition names.
+    let sent = || {
+        let stats = broadcast.stats();
+        stats
+            .sent
+            .get(&stats.renditions[&name].track)
+            .cloned()
+            .unwrap_or_default()
+    };
     tokio::time::timeout(TIMEOUT, async {
-        while broadcast.stats().renditions[&name].frames == 0 {
+        while sent().frames == 0 {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("the rendition counts its frames");
-    assert!(broadcast.stats().renditions[&name].bytes > 0);
+    assert!(sent().bytes > 0);
 }

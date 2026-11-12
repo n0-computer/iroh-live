@@ -355,7 +355,8 @@ pub(super) fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> S
                 .encode_time
                 .map(|time| format!("enc:{:.1}ms", millis(time))),
         );
-        fields.push(format!("{} frames", encode.frames));
+        let sent = stats.sent.get(&encode.track).map_or(0, |sent| sent.frames);
+        fields.push(format!("{sent} frames"));
         for field in fields {
             text.push(' ');
             text.push_str(&field);
@@ -402,7 +403,12 @@ pub(super) fn net_publish(stats: &PublishStats) -> Section {
         .values()
         .filter_map(|encode| encode.bitrate.map(|bitrate| bitrate.as_bps()))
         .collect();
-    let bytes: u64 = stats.renditions.values().map(|encode| encode.bytes).sum();
+    let bytes: u64 = stats
+        .renditions
+        .values()
+        .filter_map(|encode| stats.sent.get(&encode.track))
+        .map(|sent| sent.bytes)
+        .sum();
     if rates.is_empty() {
         return Section::new(
             StatCategory::Net,
@@ -547,10 +553,11 @@ mod tests {
         stats.renditions.insert(
             "low".to_string(),
             EncodeStats {
-                frames: 12,
+                track: "low".to_string(),
                 ..Default::default()
             },
         );
+        stats.sent.entry("low".to_string()).or_default().frames = 12;
         let mut status = PublishStatus::default();
         status.renditions.insert(
             "low".to_string(),
