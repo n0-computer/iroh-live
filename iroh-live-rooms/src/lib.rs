@@ -56,8 +56,6 @@
 //! subscription for its end, and subscribe again while the state still lists
 //! the broadcast.
 //!
-//! # Cancellation safety
-//!
 //! [`Rooms::join`] and [`Room::subscribe`] are cancellation safe: a dropped
 //! `join` leaves the topic, and a dropped `subscribe` leaves its dial running.
 //! [`Room::leave`] and [`Rooms::shutdown`] are not. Both are idempotent: call
