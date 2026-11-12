@@ -15,8 +15,8 @@ use std::{
 use moq_ext_player::{
     PlayerConfig, RemoteBroadcast, VideoFrames,
     test_util::{
-        CAMERA, CAMERA_OPENS, Clock, FIRST_PICTURE_TIMEOUT, HD, Look, PATTERN, SD, SWITCH_TIMEOUT,
-        alternate_feeds, fed, feed, first_published, fps, shows, single,
+        CAMERA, CAMERA_OPENS, Clock, FIRST_PICTURE_TIMEOUT, Feed, HD, Look, PATTERN, SD,
+        SWITCH_TIMEOUT, alternate_feeds, fed, feed, first_published, fps, shows, single,
     },
 };
 use moq_ext_publisher::{LocalBroadcast, SlotState};
@@ -50,7 +50,7 @@ async fn switching_what_feeds_a_pushed_source_keeps_playing() {
     let feeder = feed(sender.clone(), PATTERN);
     shows(
         &mut frames,
-        PATTERN.0,
+        PATTERN.look,
         ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
@@ -77,7 +77,7 @@ async fn a_pushed_source_plays_on_after_a_pause() {
     let feeder = feed(sender.clone(), PATTERN);
     shows(
         &mut frames,
-        PATTERN.0,
+        PATTERN.look,
         ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
@@ -88,7 +88,14 @@ async fn a_pushed_source_plays_on_after_a_pause() {
     // than a keyframe interval while its clock runs on.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let start = first_published(&broadcast);
-    let _feeder = feed(sender.clone(), (Look::flat(SD, 120), 30, Clock::Pattern));
+    let _feeder = feed(
+        sender.clone(),
+        Feed {
+            look: Look::flat(SD, 120),
+            fps: 30,
+            clock: Clock::Pattern,
+        },
+    );
     shows(
         &mut frames,
         Look::flat(SD, 120),
@@ -141,7 +148,7 @@ async fn replacing_the_video_source_keeps_playing() {
             .expect("a valid encoding");
         shows(
             &mut frames,
-            CAMERA.0,
+            CAMERA.look,
             first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("camera in round {round}"),
@@ -155,20 +162,24 @@ async fn replacing_the_video_source_keeps_playing() {
             .expect("a valid encoding");
         shows(
             &mut frames,
-            PATTERN.0,
+            PATTERN.look,
             first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("dark SD in round {round}"),
         )
         .await;
-        let bright = (Look::flat(SD, 200), 30, Clock::Pattern);
+        let bright = Feed {
+            look: Look::flat(SD, 200),
+            fps: 30,
+            clock: Clock::Pattern,
+        };
         let (source, _bright) = fed(bright);
         broadcast
             .set_video(source, single(None))
             .expect("a valid encoding");
         shows(
             &mut frames,
-            bright.0,
+            bright.look,
             first_published(&broadcast),
             SWITCH_TIMEOUT,
             &format!("bright SD in round {round}"),
@@ -269,7 +280,7 @@ async fn prints_the_switch_latency() {
     let mut feeder = feed(sender.clone(), PATTERN);
     shows(
         &mut frames,
-        PATTERN.0,
+        PATTERN.look,
         ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
@@ -283,7 +294,7 @@ async fn prints_the_switch_latency() {
             feeder = feed(sender.clone(), source);
             let look = Look {
                 size: SD,
-                ..source.0
+                ..source.look
             };
             let latency = shows(
                 &mut frames,
@@ -322,7 +333,7 @@ async fn a_switchable_source_plays_each_source_it_switches_to() {
     switch.replace(pattern_source);
     shows(
         &mut frames,
-        PATTERN.0,
+        PATTERN.look,
         ready(Instant::now()),
         FIRST_PICTURE_TIMEOUT,
         "first pattern",
@@ -344,7 +355,7 @@ async fn a_switchable_source_plays_each_source_it_switches_to() {
     // The rendition scales the camera's larger frames to its own size.
     let scaled = Look {
         size: SD,
-        ..CAMERA.0
+        ..CAMERA.look
     };
     shows(&mut frames, scaled, start, SWITCH_TIMEOUT, "the camera").await;
     assert_eq!(*switch.status().borrow(), SlotState::Running);

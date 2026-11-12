@@ -168,8 +168,9 @@ struct Selector {
     restart: u64,
     /// The target whose track ended with nothing to follow it.
     ended: Option<Target>,
-    /// When to ask for `ended` again, if neither the catalog nor the route
-    /// changes first.
+    /// When to ask for `ended` again.
+    ///
+    /// The catalog or the route changing first makes this moot.
     revive_at: Option<Instant>,
     /// Since when the catalog has had nothing to play while something was asked for.
     vanished_since: Option<Instant>,
@@ -177,7 +178,7 @@ struct Selector {
     ///
     /// The selector replaces only its own errors, and leaves a failed
     /// switch's alone.
-    last_why: Option<Arc<Error>>,
+    last_pin_error: Option<Arc<Error>>,
     /// The last target the supervisor gave up on.
     ///
     /// Choosing the same target again leaves the desired value unchanged, so
@@ -225,7 +226,7 @@ impl Selector {
             ended: None,
             revive_at: None,
             vanished_since: None,
-            last_why: None,
+            last_pin_error: None,
             failed: None,
         }
     }
@@ -358,11 +359,11 @@ impl Selector {
             std_now,
         );
         let choice = chosen.rendition;
-        let why = chosen.pin.map(|problem| pin_error(problem, &catalog));
-        let why_changed = !same_error(&self.last_why, &why);
+        let pin_error = chosen.pin.map(|problem| explain_pin(problem, &catalog));
+        let pin_error_changed = !same_error(&self.last_pin_error, &pin_error);
         send_if_changed(&self.status, |status| {
-            if why_changed {
-                status.switch_error = why.clone().map(Into::into);
+            if pin_error_changed {
+                status.switch_error = pin_error.clone().map(Into::into);
             }
             match (&mode, &status.video) {
                 (RenditionMode::Off, _) => status.video = SlotState::Off,
@@ -372,8 +373,8 @@ impl Selector {
                 _ => {}
             }
         });
-        if why_changed {
-            self.last_why = why;
+        if pin_error_changed {
+            self.last_pin_error = pin_error;
         }
         let step_down =
             moq_ext_adaptive::step_down(&mode, &rungs, choice.as_deref(), on_screen.as_deref());
@@ -443,7 +444,7 @@ impl Selector {
             .filter_map(|config| config.jitter)
             .max();
         let playout = super::playout_delay(&latency, jitter);
-        if playout != self.clock.latency() {
+        if playout != self.clock.delay() {
             debug!(?playout, ?jitter, "playout delay changed");
             self.clock.set_delay(playout);
         }
@@ -485,8 +486,8 @@ fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
     }
 }
 
-/// Explains a pin that could not be honoured.
-fn pin_error(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error> {
+/// Returns the error that explains a pin that could not be honoured.
+fn explain_pin(problem: PinProblem, catalog: &hang::catalog::Catalog) -> Arc<Error> {
     Arc::new(match problem {
         PinProblem::Excluded(name) => Error::decoder_msg(format!(
             "the decoder for {name} failed, so another rendition plays until it is retried"
@@ -627,6 +628,6 @@ mod tests {
             desired.borrow().as_ref().expect("a target").settings.delay,
             latency
         );
-        assert_eq!(running.clock.latency(), Duration::from_millis(300));
+        assert_eq!(running.clock.delay(), Duration::from_millis(300));
     }
 }

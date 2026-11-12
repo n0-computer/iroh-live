@@ -6,7 +6,7 @@
 //! link with [`RemoteBroadcast::set_network`]. A broadcast that lives in the
 //! same process is read with [`RemoteBroadcast::from_consumer`].
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! # async fn example(consumer: moq_net::broadcast::Consumer) -> Result<(), moq_ext_player::Error> {
@@ -40,7 +40,7 @@
 //! Dropping a [`Player`] aborts its tasks and returns at once. Dropping the
 //! last clone of a [`RemoteBroadcast`] aborts the task that follows it.
 //!
-//! # Cancellation safety
+//! The futures of the crate and what dropping them does:
 //!
 //! | Future | Safe | Dropping it |
 //! |---|---|---|

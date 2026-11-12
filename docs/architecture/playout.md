@@ -21,7 +21,7 @@ sound is due instead.
 ## Who calls what
 
 The video task records each decoded frame with `received(timestamp)`, holds it
-until `wait_async(timestamp)` returns, and then puts it in the `VideoFrames`
+until `wait(timestamp)` returns, and then puts it in the `VideoFrames`
 slot the renderer reads. The hold is a future the supervisor keeps across loop
 iterations, so a rendition switch requested while a picture is held is acted
 on at once. The wait is recomputed whenever the anchor moves, and returns
@@ -30,7 +30,7 @@ the broadcast moves to a new route, since a publisher behind the new route may
 have restarted its timestamps.
 
 Audio writes decoded frames straight to its output sink, and the sink's buffer
-absorbs jitter. Each decoded frame is recorded through an `AudioLatency`
+absorbs jitter. Each decoded frame is recorded through an `AudioClock`
 guard, taken from `PlayoutClock::register_audio` when the track opens. After
 every write the guard says when the end of the written sound is due, and the
 speaker stretches toward that time, skipping ahead rather than speeding up when

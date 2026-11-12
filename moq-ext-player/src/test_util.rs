@@ -147,16 +147,37 @@ impl Look {
 }
 
 /// What a fed source shows, at how many frames per second, and on which clock.
-pub type Feed = (Look, u32, Clock);
+#[derive(Debug, Clone, Copy)]
+pub struct Feed {
+    /// What every frame shows.
+    pub look: Look,
+    /// Frames per second.
+    pub fps: u32,
+    /// Where the timestamps start.
+    pub clock: Clock,
+}
 
 /// A camera at 25 fps: 1280x720, bright, timestamps from zero.
-pub const CAMERA: Feed = (Look::flat(HD, 200), 25, Clock::Camera);
+pub const CAMERA: Feed = Feed {
+    look: Look::flat(HD, 200),
+    fps: 25,
+    clock: Clock::Camera,
+};
 
 /// The test pattern as a GPU application sends it: 640x360 at 30 fps, dark.
-pub const PATTERN: Feed = (Look::flat(SD, 40), 30, Clock::Pattern);
+pub const PATTERN: Feed = Feed {
+    look: Look::flat(SD, 40),
+    fps: 30,
+    clock: Clock::Pattern,
+};
 
 /// Pushes the flat frames `feed` describes into `sender` until aborted.
-pub fn feed(sender: FrameSender<Frame>, (look, rate, clock): Feed) -> AbortOnDropHandle<()> {
+pub fn feed(sender: FrameSender<Frame>, feed: Feed) -> AbortOnDropHandle<()> {
+    let Feed {
+        look,
+        fps: rate,
+        clock,
+    } = feed;
     let task = tokio::spawn(async move {
         let luma = look.luma.expect("a flat look");
         let pixels = look.size.pixels() as usize;
@@ -178,10 +199,9 @@ pub fn feed(sender: FrameSender<Frame>, (look, rate, clock): Feed) -> AbortOnDro
 
 /// Returns a source that shows what `with` describes, and the task that feeds it.
 pub fn fed(with: Feed) -> (VideoSource, AbortOnDropHandle<()>) {
-    let (look, rate, _) = with;
     let (sender, source) = VideoSource::push(VideoFormat {
-        size: look.size,
-        rate: fps(rate),
+        size: with.look.size,
+        rate: fps(with.fps),
     });
     (source, feed(sender, with))
 }
@@ -325,7 +345,7 @@ pub async fn alternate_feeds(
             feeder = feed(sender.clone(), source);
             let look = Look {
                 size: SD,
-                ..source.0
+                ..source.look
             };
             let what = format!("{name} in round {round}");
             shows(frames, look, start, SWITCH_TIMEOUT, &what).await;

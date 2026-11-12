@@ -582,7 +582,7 @@ fn pace(
     let due = if paced {
         clock.received(timestamp);
         let clock = clock.clone();
-        async move { clock.wait_async(timestamp).await }.boxed()
+        async move { clock.wait(timestamp).await }.boxed()
     } else {
         std::future::ready(true).boxed()
     };

@@ -384,9 +384,9 @@ impl Player {
     /// The playout clock starts over at the new delay, so the schedule moves
     /// once: the next video frame or audio write anchors it again. The
     /// latency is the subscription's [`Delay`], so a changed one also rebuilds
-    /// the video decoder is rebuilt behind the picture with the new range, and it takes
-    /// over once it has caught up, as in a switch. The current picture stays up
-    /// until then. Audio keeps its old range until it next opens, because a
+    /// the video decoder behind the picture with the new range. The new
+    /// decoder takes over once it has caught up, as in a switch, and the
+    /// current picture stays up until then. Audio keeps its old range until it next opens, because a
     /// rebuild would be audible.
     ///
     /// This does not block or await, so there is nothing to cancel: the change
@@ -438,7 +438,7 @@ impl Player {
         PlaybackStats {
             video: self.stats.video.get(),
             audio: self.stats.audio.get(),
-            latency: self.clock.latency(),
+            latency: self.clock.delay(),
             network: self.broadcast.network().map(|signals| signals()),
         }
     }
@@ -494,7 +494,7 @@ impl Player {
     /// [`video_frames`](Self::video_frames). Pictures presented between two
     /// calls are skipped. Returns `None` if nothing was presented since the
     /// last call. The player keeps one cursor for this method, so two callers
-    /// take turns at the same pictures; give each reader its own
+    /// take turns at the same pictures. Give each reader its own
     /// [`VideoFrames`] handle instead.
     ///
     /// [`FrameTiming::arrived`] is set only with

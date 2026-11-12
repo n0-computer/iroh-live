@@ -521,7 +521,6 @@ mod tests {
 
     use super::*;
 
-    /// A broadcast that never describes itself fails the wait, and one that closes fails it at once.
     /// A broadcast that closes before it has a catalog ends the wait for a moq-mux source.
     #[cfg(feature = "record")]
     #[tokio::test]

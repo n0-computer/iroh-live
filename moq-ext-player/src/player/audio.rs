@@ -13,7 +13,7 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::{broadcast, watch};
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, clock::AudioLatency};
+use super::{Controls, PlaybackRecorder, PlayerStatus, PlayoutClock, clock::AudioClock};
 use crate::{
     RemoteBroadcast,
     clean_close::CleanClose as _,
@@ -23,8 +23,10 @@ use crate::{
 /// How long after audio ended or failed the catalog is read again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 
-/// How far the speaker may fall behind the playout clock while it slows down
-/// for a short buffer, before it skips the audio that trails.
+/// How far the speaker may fall behind the playout clock before it skips.
+///
+/// Within this, the speaker slows down for a short buffer. Past it, the
+/// speaker skips the audio that trails.
 #[cfg(feature = "playback")]
 const STRETCH: Duration = Duration::from_secs(2);
 
@@ -158,7 +160,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         decoder,
                         #[cfg(feature = "playback")]
                         sink,
-                        latency: clock.register_audio(),
+                        clock: clock.register_audio(),
                         stats: stats.clone(),
                     })
                 }
@@ -325,7 +327,7 @@ struct Job {
     #[cfg(feature = "playback")]
     sink: Option<playback::Sink>,
     /// The audio path's hold on the playout clock.
-    latency: AudioLatency,
+    clock: AudioClock,
     stats: PlaybackRecorder,
 }
 
@@ -357,7 +359,7 @@ impl Job {
                 continue;
             };
             let decoded = Instant::now();
-            self.latency.received(frame.timestamp);
+            self.clock.received(frame.timestamp);
             let buffered = self.buffered();
             #[cfg(feature = "playback")]
             {
@@ -366,7 +368,7 @@ impl Job {
                     sink.write(&frame.data).map(drop).map_err(Error::device)?;
                     // The speaker follows the shared clock: it stretches toward
                     // the time the sound of `end` is due, as the pictures do.
-                    if let Some(anchor) = self.latency.anchor(end) {
+                    if let Some(anchor) = self.clock.anchor(end) {
                         sink.due(anchor.at, STRETCH, anchor.jumped);
                     }
                 }

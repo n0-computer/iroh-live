@@ -1,11 +1,11 @@
 //! A player's playout clock: a `moq_mux::sync` clock shared by its tasks.
 //!
 //! Each media path folds its frames into the clock: video through
-//! [`PlayoutClock::received`], audio through [`AudioLatency::received`]. The
+//! [`PlayoutClock::received`], audio through [`AudioClock::received`]. The
 //! clock's reference is the earliest arrival either has seen, and playback runs
 //! the clock's delay behind it. Video waits for each picture with
-//! [`PlayoutClock::wait_async`]. Audio does not own the clock: the speaker
-//! stretches toward the time [`AudioLatency::anchor`] says its sound is due, so
+//! [`PlayoutClock::wait`]. Audio does not own the clock: the speaker
+//! stretches toward the time [`AudioClock::anchor`] says its sound is due, so
 //! a late audio path never holds the pictures back.
 
 use std::{
@@ -33,6 +33,7 @@ pub(crate) struct PlayoutClock {
     inner: Arc<Inner>,
 }
 
+/// The state the clones of a [`PlayoutClock`] share.
 struct Inner {
     /// Hands out the audio paths' tracks on the shared clock.
     producer: Producer,
@@ -42,7 +43,7 @@ struct Inner {
     video: Track,
     /// How far behind the live edge playback runs, as last set.
     delay: Mutex<Duration>,
-    /// Wakes [`PlayoutClock::wait_async`] when the schedule moves or the clock closes.
+    /// Wakes [`PlayoutClock::wait`] when the schedule moves or the clock closes.
     changed: Notify,
     /// Set by [`PlayoutClock::close`] to make every wait return at once.
     closed: AtomicBool,
@@ -89,7 +90,7 @@ impl PlayoutClock {
     /// is closed.
     ///
     /// Cancellation safe: the wait keeps no state outside the future.
-    pub(crate) async fn wait_async(&self, timestamp: Timestamp) -> bool {
+    pub(crate) async fn wait(&self, timestamp: Timestamp) -> bool {
         loop {
             // Register before reading the deadline, so a `close` or a move
             // between the two is not missed.
@@ -118,7 +119,7 @@ impl PlayoutClock {
     }
 
     /// Returns how far behind the live edge playback runs.
-    pub(crate) fn latency(&self) -> Duration {
+    pub(crate) fn delay(&self) -> Duration {
         *self.inner.delay.lock().expect("poisoned")
     }
 
@@ -132,8 +133,8 @@ impl PlayoutClock {
     /// Registers an audio path, which folds its frames into the clock.
     ///
     /// Dropping the returned guard releases the audio path's hold on the clock.
-    pub(crate) fn register_audio(&self) -> AudioLatency {
-        AudioLatency {
+    pub(crate) fn register_audio(&self) -> AudioClock {
+        AudioClock {
             clock: self.clone(),
             track: self.inner.producer.track(Kind::Audio),
             #[cfg(feature = "playback")]
@@ -153,8 +154,8 @@ impl PlayoutClock {
 /// Created by [`PlayoutClock::register_audio`]. Dropping it releases the audio
 /// path's arrivals, so video alone holds the clock.
 #[derive(derive_more::Debug)]
-#[debug("AudioLatency")]
-pub(crate) struct AudioLatency {
+#[debug("AudioClock")]
+pub(crate) struct AudioClock {
     clock: PlayoutClock,
     track: Track,
     /// The last anchor handed out: when its end was due, the end, and the delay.
@@ -162,18 +163,19 @@ pub(crate) struct AudioLatency {
     anchored: Option<(Instant, Duration, Duration)>,
 }
 
-/// Where the speaker's written audio should sound, from [`AudioLatency::anchor`].
+/// Where the speaker's written audio should sound, from [`AudioClock::anchor`].
 #[cfg(feature = "playback")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Anchor {
     /// When the end of the audio written so far is due.
     pub(crate) at: Instant,
-    /// How far the clock's reference moved earlier since the last anchor, which
-    /// the speaker skips rather than speeds through.
+    /// How far the clock's reference moved earlier since the last anchor.
+    ///
+    /// The speaker skips this much audio rather than speed through it.
     pub(crate) jumped: Duration,
 }
 
-impl AudioLatency {
+impl AudioClock {
     /// Records the arrival of an audio frame stamped `timestamp`.
     pub(crate) fn received(&self, timestamp: Timestamp) {
         if self.track.received(timestamp, Instant::now()) {
@@ -181,8 +183,9 @@ impl AudioLatency {
         }
     }
 
-    /// Returns when the audio written up to media time `end` is due to sound,
-    /// or `None` before the clock has an anchor.
+    /// Returns when the audio written up to media time `end` is due to sound.
+    ///
+    /// Returns `None` before the clock has an anchor.
     #[cfg(feature = "playback")]
     pub(crate) fn anchor(&mut self, end: Duration) -> Option<Anchor> {
         let timestamp = Timestamp::try_from(end).ok()?;

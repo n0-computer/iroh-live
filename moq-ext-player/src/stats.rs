@@ -107,9 +107,10 @@ pub enum MediaKind {
 /// Read with [`Player::timeline`](crate::Player::timeline) for a timeline view
 /// of playback, [`Player::video_timing`](crate::Player::video_timing) for one
 /// picture, or [`Player::take_latest_video`](crate::Player::take_latest_video)
-/// with the newest picture. From `arrived` to `decoded` is the time in the decoder, and from
-/// `decoded` to `presented` the time the playout clock held the frame. Pictures
-/// and audio with the same timestamp should be presented together.
+/// with the newest picture. From `arrived` to `decoded` is the time in the
+/// decoder, and from `decoded` to `presented` the time the playout clock held
+/// the frame. Pictures and audio with the same timestamp should be presented
+/// together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameTiming {
     /// The medium.
@@ -177,8 +178,6 @@ impl FrameLog {
 mod tests {
     use super::*;
 
-    /// Each medium playing becomes one feedback entry under its rendition.
-    ///
     /// The summary names what it knows and marks the rest.
     #[test]
     fn the_summary_marks_figures_not_known_yet() {

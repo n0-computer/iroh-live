@@ -353,7 +353,7 @@ async fn a_failed_first_decoder_is_tried_again() {
     .await;
 }
 
-/// One rendition of the test pattern at `size`, called `video`.
+/// Returns a broadcast of one rendition of the test pattern at `size`, called `video`.
 fn single(size: moq_video::Size) -> LocalBroadcast {
     let broadcast = LocalBroadcast::new();
     broadcast
