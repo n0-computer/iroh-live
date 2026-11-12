@@ -16,8 +16,12 @@ use crate::{args::PlaybackArgs, transport::Subscribed};
 #[cfg(feature = "playback")]
 pub(crate) type Speaker = iroh_live::media::audio::playback::Engine;
 /// The speaker of a build without playback, which never has one.
+///
+/// Not `Copy`, unlike `Infallible`, so the `.clone()` the playback build needs
+/// reads the same in both.
 #[cfg(not(feature = "playback"))]
-pub(crate) type Speaker = std::convert::Infallible;
+#[derive(Debug, Clone)]
+pub(crate) enum Speaker {}
 
 /// Returns a player config from `--decoder` and `--latency`, with audio on `speaker`.
 pub(crate) fn player_config(args: &PlaybackArgs, speaker: Option<&Speaker>) -> PlayerConfig {
