@@ -289,7 +289,7 @@ impl VideoSource {
     ///
     /// The width is rounded up to one libcamera writes without row padding, so
     /// [`format`](Self::format) may be a few columns wider than asked for. For
-    /// the camera's hardware H.264, use [`EncodedVideoSource::rpicam`].
+    /// the camera's hardware H.264, use [`rpicam_h264`].
     ///
     /// Cancellation safe: dropping the future kills the subprocess.
     ///
@@ -366,75 +366,20 @@ impl VideoSource {
     }
 }
 
-/// A source of pre-encoded H.264 that skips the encoders.
+/// Starts the Raspberry Pi camera's hardware H.264 through `rpicam-vid`.
 ///
-/// The catalog rendition is derived from the stream's first SPS. Not `Clone`,
-/// because a byte stream has one reader.
-#[derive(derive_more::Debug)]
-pub struct EncodedVideoSource {
-    #[debug(skip)]
-    bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
-    /// Keeps whatever produces the bytes alive, such as a subprocess.
-    #[debug(skip)]
-    guard: Option<Box<dyn std::any::Any + Send>>,
-}
-
-/// The byte stream and the guard of an [`EncodedVideoSource`].
+/// This is the cheapest thing a Pi Zero can publish: no raw pipe and no second
+/// encode. The returned Annex-B stream goes to
+/// `LocalBroadcast::set_encoded_video`, and dropping it kills the subprocess.
 ///
-/// [`EncodedVideoSource::into_parts`] returns them.
-#[derive(derive_more::Debug)]
-pub struct EncodedParts {
-    /// The encoded bytes.
-    #[debug(skip)]
-    pub bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
-    /// Stops the producer of the bytes when dropped.
-    #[debug(skip)]
-    pub guard: Option<Box<dyn std::any::Any + Send>>,
-}
-
-impl EncodedVideoSource {
-    /// Wraps an Annex-B H.264 byte stream.
-    ///
-    /// The stream may split anywhere, since access units are found by their
-    /// start codes. It should repeat its parameter sets before every keyframe,
-    /// or a late subscriber cannot start decoding.
-    #[must_use]
-    pub fn annex_b(bytes: impl n0_future::Stream<Item = bytes::Bytes> + Send + 'static) -> Self {
-        Self {
-            bytes: Box::pin(bytes),
-            guard: None,
-        }
-    }
-
-    /// Splits the source into its byte stream and a guard.
-    ///
-    /// Drop the guard to stop the producer of the bytes.
-    #[must_use]
-    pub fn into_parts(self) -> EncodedParts {
-        EncodedParts {
-            bytes: self.bytes,
-            guard: self.guard,
-        }
-    }
-
-    /// Starts the Raspberry Pi camera's hardware H.264 through `rpicam-vid`.
-    ///
-    /// This is the cheapest thing a Pi Zero can publish: no raw pipe and no
-    /// second encode. Dropping the source kills the subprocess.
-    ///
-    /// Cancellation safe: the future resolves at its first poll.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `rpicam-vid` is not installed or cannot be started.
-    #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    #[allow(
-        clippy::unused_async,
-        reason = "starting a camera is async in every other source"
-    )]
-    pub async fn rpicam(config: RpicamConfig) -> Result<Self, Error> {
-        Ok(Self::annex_b(rpicam::open_encoded(config)?))
-    }
+/// # Errors
+///
+/// Fails if `rpicam-vid` is not installed or cannot be started.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+pub fn rpicam_h264(
+    config: RpicamConfig,
+) -> Result<n0_future::boxed::BoxStream<bytes::Bytes>, Error> {
+    rpicam::open_encoded(config)
 }
 
 /// What an audio source produces.

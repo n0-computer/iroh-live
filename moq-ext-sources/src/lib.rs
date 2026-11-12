@@ -4,7 +4,7 @@
 //! on a thread of its own, for a publisher to encode. A [`VideoSource`] can
 //! feed several encoders at once and offers a latest-wins preview through
 //! [`VideoFrames`]. An [`AudioSource`] fans PCM out to every broadcast that
-//! reads it. An [`EncodedVideoSource`] carries H.264 that needs no encoder.
+//! reads it.
 //!
 //! The crate has no dependency on iroh and none on a transport. Its [`Error`]
 //! is the one `moq-ext-media-core` defines, which the player and the publisher
@@ -20,9 +20,8 @@
 //! | WAV and MP3 file | [`AudioSource::file`] | `file` |
 //! | Camera, display, window | [`VideoSource::capture`] | `capture` |
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
-//! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], [`EncodedVideoSource::rpicam`] | `rpicam` (Linux) |
+//! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
-//! | Pre-encoded Annex-B H.264 | [`EncodedVideoSource::annex_b`] | always |
 //!
 //! The crate README lists every feature flag. [`local_task::spawn`] runs a
 //! future on a thread of its own for capture streams that are not `Send`.
@@ -70,11 +69,11 @@ pub use moq_ext_media_core::{Error, SourceClosed};
 use moq_video as video;
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-pub use self::source::RpicamConfig;
+pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{
     frames::VideoFrames,
     source::{
-        AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, EncodedParts, EncodedVideoSource,
-        FrameSender, PcmFanout, VideoFormat, VideoSource, WeakPcmFanout,
+        AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FrameSender, PcmFanout,
+        VideoFormat, VideoSource, WeakPcmFanout,
     },
 };

@@ -46,8 +46,8 @@ previews can read it.
 application camera can idle while nobody watches. `push` returns `SourceClosed`
 once the source is gone, and the producing loop should stop then.
 
-`EncodedVideoSource` takes an H.264 Annex-B stream that is already encoded,
-through `annex_b(stream)` or `rpicam(config)`. On a Raspberry Pi,
+`set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
+encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
 
 `AudioSource` has `microphone(config)` for moq-audio's `capture::Config`,
@@ -124,7 +124,7 @@ a `PublishStats` snapshot with one entry per rendition.
 `VideoSource::frames()` returns a `VideoFrames` handle onto the source's raw
 frames. These are the frames the encoders receive, so a preview costs no
 decode, and reading it does not count as demand. The preview belongs to the
-source, so it works before any broadcast exists. An `EncodedVideoSource` has no
+source, so it works before any broadcast exists. Pre-encoded video has no
 preview.
 
 ## Pre-encoded video
@@ -136,7 +136,7 @@ first SPS. The splitter holds the last access unit until the next start code,
 so the end of the stream flushes it explicitly. A stream that ends before its
 first access unit shows as a failed video slot.
 
-See [Raspberry Pi](../guide/raspberry-pi.md) for `EncodedVideoSource::rpicam`.
+See [Raspberry Pi](../guide/raspberry-pi.md) for `rpicam_h264`.
 
 ## Catalog and clock
 

@@ -26,7 +26,7 @@ use moq_ext_media_core::{
     ByPtr, Error, SlotState,
     stats::{RateMeter, Smoothed},
 };
-use moq_ext_sources::{EncodedParts, EncodedVideoSource, VideoFrames, VideoSource};
+use moq_ext_sources::{VideoFrames, VideoSource};
 use moq_video::encode;
 use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -660,7 +660,11 @@ impl Encoder {
 /// `Split` cuts the byte stream into access units. `Import` publishes them and
 /// fills in the catalog rendition from the first SPS, so the caller does not
 /// describe the stream.
-pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: CancellationToken) {
+pub(super) async fn run_encoded(
+    mut job: Job,
+    mut bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
+    stop: CancellationToken,
+) {
     let Some(_tracks) = job.take_over(&stop).await else {
         return;
     };
@@ -674,10 +678,6 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideoSource, stop: 
         ..
     } = job;
     stats.clear_video();
-    let EncodedParts {
-        mut bytes,
-        guard: _guard,
-    } = source.into_parts();
     let result = async {
         let track = producer
             .create_track(

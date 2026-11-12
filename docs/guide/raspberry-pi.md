@@ -13,10 +13,10 @@ On Raspberry Pi OS, the CSI camera is only reachable through libcamera.
 the ISP. `rpicam-vid` drives the ISP and the Pi's hardware H.264 encoder and
 writes Annex-B H.264 to stdout. A Pi Zero can publish those bytes as they are.
 
-`EncodedVideoSource::rpicam(config)` starts `rpicam-vid` and reads its output.
-`LocalBroadcast::set_encoded_video` publishes it as the one rendition `video`,
-with the catalog entry taken from the stream's SPS. The process is killed when
-the source is dropped. The Pi does no software encoding, and no raw pictures
+`rpicam_h264(config)` starts `rpicam-vid` and returns its output as a byte
+stream. `LocalBroadcast::set_encoded_video` publishes it as the one rendition
+`video`, with the catalog entry taken from the stream's SPS. The process is
+killed when the stream is dropped. The Pi does no software encoding, and no raw pictures
 cross the pipe.
 
 `VideoSource::rpicam(config)` reads raw pictures from `rpicam-vid` instead, for

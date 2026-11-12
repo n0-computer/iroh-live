@@ -123,10 +123,8 @@ pub mod media {
     pub use moq_ext_player::*;
     pub use moq_ext_publisher::*;
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    pub use moq_ext_sources::RpicamConfig;
-    pub use moq_ext_sources::{
-        AudioFormat, AudioSource, EncodedVideoSource, FrameSender, VideoFormat, VideoSource,
-    };
+    pub use moq_ext_sources::{RpicamConfig, rpicam_h264};
+    pub use moq_ext_sources::{AudioFormat, AudioSource, FrameSender, VideoFormat, VideoSource};
     pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
 

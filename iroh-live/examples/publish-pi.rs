@@ -28,7 +28,7 @@ use iroh::protocol::Router;
 use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
-    media::{EncodedVideoSource, LocalBroadcast, RpicamConfig, video::Size},
+    media::{LocalBroadcast, RpicamConfig, rpicam_h264, video::Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use n0_error::StdResultExt;
@@ -53,7 +53,7 @@ async fn main() -> n0_error::Result {
     // The default keyframe interval is one second, so a new viewer waits up
     // to a second for a picture.
     let config = RpicamConfig::new(Size::new(640, 360), 30);
-    broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
+    broadcast.set_encoded_video(rpicam_h264(config)?)?;
     println!("{}", layout.ticket(node.id(), BROADCAST)?);
 
     info!("publishing, press Ctrl-C to stop");

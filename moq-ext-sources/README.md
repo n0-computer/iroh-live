@@ -21,8 +21,8 @@ let audio = AudioSource::test_pattern(layout)?;
 ```
 
 Also available: `VideoSource::push` and `AudioSource::push` for frames the
-application makes, and `EncodedVideoSource::annex_b` for H.264 that needs no
-encoder. The crate docs list every constructor.
+application makes. `LocalBroadcast::set_encoded_video` takes a stream of
+Annex-B H.264 that needs no encoder, such as the one `rpicam_h264` returns. The crate docs list every constructor.
 
 A dropped camera source closes its device on its own thread, a moment later.
 Await `VideoSource::released` of the old source before opening the same

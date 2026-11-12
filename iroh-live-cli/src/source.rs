@@ -8,7 +8,7 @@ use iroh_live::media::{
     video::{self, Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::media::{EncodedVideoSource, RpicamConfig};
+use iroh_live::media::{RpicamConfig, rpicam_h264};
 use n0_error::{Result, anyerr};
 use tokio_util::sync::WaitForCancellationFutureOwned;
 use tracing::warn;
@@ -80,13 +80,13 @@ pub(crate) struct Opened {
 }
 
 /// An opened video source.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 enum Video {
     /// Raw pictures, encoded into the ladder.
     Raw(VideoSource),
     /// Pre-encoded H.264, published as it is.
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    Encoded(EncodedVideoSource),
+    Encoded(#[debug(skip)] n0_future::boxed::BoxStream<bytes::Bytes>),
 }
 
 /// Opens the video and audio `args` asks for, and sets them on `broadcast`.
@@ -239,7 +239,7 @@ async fn rpicam_source(
             if let Some(bitrate) = args.bitrate {
                 config.bitrate = Rate::from_bps(bitrate);
             }
-            Ok(Video::Encoded(EncodedVideoSource::rpicam(config).await?))
+            Ok(Video::Encoded(rpicam_h264(config)?))
         }
     }
 }

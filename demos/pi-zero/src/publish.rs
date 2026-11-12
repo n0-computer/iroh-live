@@ -9,7 +9,7 @@ use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     EndpointConfig, Node, RelayConfig,
     layout::LiveLayout,
-    media::{EncodedVideoSource, LocalBroadcast, Rate, RpicamConfig, video::Size},
+    media::{LocalBroadcast, Rate, RpicamConfig, rpicam_h264, video::Size},
 };
 use n0_error::StdResultExt;
 use n0_future::task::AbortOnDropHandle;
@@ -78,7 +78,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         bitrate = opts.bitrate,
         "using pre-encoded H.264 from rpicam-vid"
     );
-    broadcast.set_encoded_video(EncodedVideoSource::rpicam(config).await?)?;
+    broadcast.set_encoded_video(rpicam_h264(config)?)?;
 
     // The link redials the relay if the session drops. It only pushes: the
     // relay's routes stay out of the Pi's route table.

@@ -13,7 +13,7 @@ use std::{
 };
 
 use moq_ext_media_core::Error;
-use moq_ext_sources::{AudioSource, EncodedVideoSource, VideoSource};
+use moq_ext_sources::{AudioSource, VideoSource};
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
@@ -477,11 +477,14 @@ impl LocalBroadcast {
         Ok(())
     }
 
-    /// Publishes a pre-encoded stream as the one video rendition, `video`.
+    /// Publishes a pre-encoded Annex-B H.264 stream as the one video rendition, `video`.
     ///
-    /// The stream's own parameter sets describe the rendition. A source that
-    /// ends before its first access unit shows as failed in
-    /// [`status`](Self::status).
+    /// The stream may split anywhere, since access units are found by their
+    /// start codes. It should repeat its parameter sets before every keyframe,
+    /// or a late subscriber cannot start decoding. The stream's own parameter
+    /// sets describe the rendition. A stream that ends before its first access
+    /// unit shows as failed in [`status`](Self::status). Whatever produces the
+    /// bytes stops when the broadcast drops the stream.
     ///
     /// # Errors
     ///
@@ -490,8 +493,12 @@ impl LocalBroadcast {
     /// # Panics
     ///
     /// Panics when called outside a Tokio runtime.
-    pub fn set_encoded_video(&self, source: EncodedVideoSource) -> Result<(), Error> {
+    pub fn set_encoded_video(
+        &self,
+        source: impl n0_future::Stream<Item = bytes::Bytes> + Send + 'static,
+    ) -> Result<(), Error> {
         self.check_open()?;
+        let source = Box::pin(source);
         info!(parent: &self.shared.span, "pre-encoded video set");
         self.replace(
             Medium::Video,

@@ -5,9 +5,9 @@
 //! unusable without the ISP. This module runs `rpicam-vid` as a subprocess and
 //! reads its stdout, which carries one of two [`Output`]s:
 //!
-//! - [`Output::H264`] is Annex-B from the Pi's hardware encoder. It becomes an
-//!   [`EncodedVideoSource`](crate::EncodedVideoSource), and it avoids both the
-//!   raw pipe (about 10 MB/s at 640x360) and a second encode.
+//! - [`Output::H264`] is Annex-B from the Pi's hardware encoder, returned by
+//!   [`rpicam_h264`](crate::rpicam_h264). It avoids both the raw pipe (about
+//!   10 MB/s at 640x360) and a second encode.
 //! - [`Output::I420`] is raw pictures, which become a
 //!   [`VideoSource`](crate::VideoSource) of [`Surface::I420`]. It costs the
 //!   pipe and an encode. It is the only path for anything that needs pixels,

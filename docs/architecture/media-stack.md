@@ -33,7 +33,7 @@ H.265 needs a hardware encoder.
 
 ## What we add
 
-`EncodedVideoSource::rpicam` runs `rpicam-vid` and publishes the Annex-B H.264
+`rpicam_h264` runs `rpicam-vid` and hands over the Annex-B H.264
 it already encoded. `VideoSource::rpicam` reads raw pictures from the same
 program. See [Raspberry Pi](../guide/raspberry-pi.md).
 
