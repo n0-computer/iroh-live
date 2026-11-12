@@ -53,9 +53,18 @@ type Handed = Arc<Mutex<HashMap<u64, Instant>>>;
 
 /// Returns the stagger added to frame `index`'s timestamp.
 ///
-/// It stays under a third of a frame and has no short repeating pattern.
+/// It stays under a third of a frame, in steps of 100µs. A hash keeps the
+/// steps of two frames independent, so a shift of whole frames lines up only
+/// about one frame in a hundred. A linear pattern aliases: with
+/// `index * 7_919 % 97`, shifts of 36, 61 and 97 frames lined up nearly every
+/// frame, and [`offset`] then picked a shift seconds off at random.
 fn stagger(index: u64) -> u64 {
-    (index * 7_919 % 97) * 100
+    // The finalizer of splitmix64.
+    let mut x = index.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^= x >> 31;
+    (x % 100) * 100
 }
 
 /// Returns a moving gradient at 30 fps that records when each frame is handed over.
