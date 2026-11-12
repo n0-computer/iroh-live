@@ -15,6 +15,7 @@ use n0_error::{Result, anyerr};
 use crate::{
     args::WatchArgs,
     playback::Speaker,
+    shutdown::Teardown,
     transport::{self, SharedNode, Subscribed},
 };
 
@@ -193,10 +194,10 @@ fn wait_for_ctrl_c(
 ) -> Result {
     println!("playing, press Ctrl+C to stop");
     rt.block_on(async move {
-        tokio::signal::ctrl_c().await?;
+        crate::shutdown::ctrl_c().await?;
         drop(player);
         sub.close();
-        node.shutdown().await;
+        Teardown::new(node).run().await;
         Ok(())
     })
 }
@@ -222,6 +223,7 @@ mod window {
     use super::{Options, connect};
     use crate::{
         scan::{ScanView, Skip},
+        shutdown::Teardown,
         transport::{SharedNode, Subscribed},
         ui::{BUTTON, CursorIdle, Pending, RemoteView},
     };
@@ -249,7 +251,8 @@ mod window {
         options: Options,
         fullscreen: bool,
     ) -> Result {
-        crate::ui::run_window("irl watch", fullscreen, move |cc| {
+        let teardown = Teardown::new(node.clone());
+        crate::ui::run_window("irl watch", fullscreen, teardown, move |cc| {
             let ctx = &cc.egui_ctx;
             let render_state = cc.wgpu_render_state.clone();
             let mode = match opening {
@@ -536,7 +539,7 @@ mod window {
         fn on_exit(&mut self) {
             info!("exit");
             self.close_mode();
-            crate::ui::shutdown_node_blocking(&self.node);
+            Teardown::new(self.node.clone()).run_blocking();
         }
     }
 

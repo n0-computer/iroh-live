@@ -147,7 +147,7 @@ async fn run_session(config: RunConfig) -> Result {
     };
     let node = transport::bind_node_with(options, serve).await?;
     let result = run_streams(&node, &config).await;
-    node.shutdown().await;
+    crate::shutdown::Teardown::new(node).run().await;
     println!("done");
     result
 }
@@ -227,10 +227,10 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
         broadcasts.len(),
         receivers.len()
     );
-    tokio::signal::ctrl_c().await?;
-    println!("stopping ...");
+    crate::shutdown::ctrl_c().await?;
 
     // Finish recordings first, while their broadcasts are still open.
+    crate::shutdown::step("finishing the recordings");
     stop_recording.cancel();
     while let Some(finished) = recordings.join_next().await {
         match finished {
@@ -240,6 +240,7 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
         }
     }
 
+    crate::shutdown::step("closing the broadcasts");
     for (broadcast, _sources) in broadcasts {
         broadcast.close();
         broadcast.closed().await;

@@ -14,6 +14,7 @@ mod rendition;
 mod room;
 mod run;
 mod scan;
+mod shutdown;
 mod source;
 mod source_spec;
 mod transport;
@@ -59,7 +60,7 @@ fn main() -> n0_error::Result {
         .enable_all()
         .build()?;
 
-    match cli.command {
+    let result = match cli.command {
         Command::Call(args) => call::run(*args, &rt),
         Command::Devices => devices::run(&rt),
         Command::Publish(args) => publish::run(*args, &rt),
@@ -67,7 +68,12 @@ fn main() -> n0_error::Result {
         Command::Room(args) => room::run(*args, &rt),
         Command::Run(args) => run::run(args, &rt),
         Command::Watch(args) => watch::run(*args, &rt),
-    }
+    };
+    // Waits for the runtime's blocking tasks. After a Ctrl+C, the shutdown
+    // watchdog bounds the wait.
+    shutdown::step("stopping the runtime");
+    drop(rt);
+    result
 }
 
 #[cfg(test)]

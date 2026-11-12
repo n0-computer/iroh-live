@@ -21,6 +21,15 @@ use crate::args::TransportArgs;
 /// stop waiting.
 pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long a shutdown waits for the endpoint to close.
+///
+/// Closing the endpoint waits until every peer has acknowledged that its
+/// connection closed. A live peer does so within a round trip. A peer that
+/// vanished never does, and the endpoint then waits out the drain period,
+/// which took up to five seconds in tests against a killed peer. Such a peer
+/// learns nothing from the wait.
+const ENDPOINT_CLOSE: Duration = Duration::from_secs(2);
+
 /// How long a subscription waits before saying nothing arrived yet.
 ///
 /// It keeps waiting afterwards, since starting a subscriber before its
@@ -44,14 +53,23 @@ pub(crate) struct Bound {
 
 impl Bound {
     /// Shuts the node down, then the router and the endpoint.
+    ///
+    /// Waits at most [`ENDPOINT_CLOSE`] for the endpoint to close.
     pub(crate) async fn shutdown(&self) {
         // The router shuts down only the handlers mounted on it.
+        crate::shutdown::step("shutting the node down");
         self.node.shutdown().await;
-        if let Err(err) = self.router.shutdown().await {
-            warn!(
+        crate::shutdown::step("closing the endpoint");
+        match tokio::time::timeout(ENDPOINT_CLOSE, self.router.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(
                 error = format_args!("{err:#}"),
                 "the router failed to shut down"
-            );
+            ),
+            Err(_) => info!(
+                waited = ?ENDPOINT_CLOSE,
+                "stopped waiting for peers to acknowledge the closed connections"
+            ),
         }
     }
 }

@@ -118,7 +118,7 @@ mod window {
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        media::{LocalBroadcast, Player, VideoSource},
+        media::{Player, VideoSource},
         rooms::{Room, RoomState},
     };
     use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
@@ -132,7 +132,8 @@ mod window {
     use crate::{
         args::PlaybackArgs,
         playback::Speaker,
-        transport::{PEER_TIMEOUT, SharedNode, Subscribed},
+        shutdown::Teardown,
+        transport::{PEER_TIMEOUT, Subscribed},
         ui::RemoteView,
     };
 
@@ -172,10 +173,13 @@ mod window {
             ticket,
             display_name,
         } = joined;
-        crate::ui::run_window("irl room", fullscreen, move |cc| {
+        let teardown = Teardown::new(node.clone())
+            .with_room(room.clone())
+            .with_broadcast(broadcast.clone());
+        crate::ui::run_window("irl room", fullscreen, teardown.clone(), move |cc| {
             let (chat_tx, chat_rx) = mpsc::channel(CHAT_QUEUE);
             RoomApp {
-                node,
+                teardown,
                 state: room.state(),
                 known: RoomState::default(),
                 _wake: wake_on_room(&cc.egui_ctx, &room),
@@ -202,16 +206,14 @@ mod window {
                 output,
                 render_state: cc.wgpu_render_state.clone(),
                 playback,
-                broadcast,
             }
         })
     }
 
     /// The room window.
     struct RoomApp {
-        node: SharedNode,
-        /// This node's own broadcast.
-        broadcast: LocalBroadcast,
+        /// Leaves the room and closes the node when the window closes.
+        teardown: Teardown,
         room: Room,
         /// The room's membership, read every pass.
         state: n0_watcher::Direct<RoomState>,
@@ -290,9 +292,7 @@ mod window {
         fn on_exit(&mut self) {
             info!("exit");
             self.peers.clear();
-            let room = self.room.clone();
-            tokio::runtime::Handle::current().block_on(room.leave());
-            crate::ui::shutdown_publish_blocking(&self.node, &self.broadcast);
+            self.teardown.run_blocking();
         }
     }
 

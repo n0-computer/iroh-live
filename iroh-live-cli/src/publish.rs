@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use crate::{
     args::PublishArgs,
     import::{FileImport, FileSource},
+    shutdown::Teardown,
     source,
     source_spec::VideoSourceSpec,
     transport::{self, SharedNode, bind_node},
@@ -92,7 +93,7 @@ fn publish_file(source: FileSource, args: &PublishArgs, rt: &tokio::runtime::Run
 async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
     let node = bind_node(!args.transport.no_serve).await?;
     let result = publish_import(&node, source, args).await;
-    node.shutdown().await;
+    Teardown::new(node).run().await;
     result
 }
 
@@ -118,7 +119,7 @@ async fn publish_import(node: &Node, source: FileSource, args: &PublishArgs) -> 
     println!("press Ctrl+C to stop");
     let result = tokio::select! {
         result = import.run() => result,
-        _ = tokio::signal::ctrl_c() => Ok(()),
+        result = crate::shutdown::ctrl_c() => result.map_err(Into::into),
     };
     // The node holds the broadcast open while it is published, so end it here.
     producer.close();
@@ -135,11 +136,9 @@ fn wait_for_ctrl_c(
 ) -> Result {
     println!("press Ctrl+C to stop");
     rt.block_on(async move {
-        tokio::signal::ctrl_c().await?;
-        broadcast.close();
-        broadcast.closed().await;
+        crate::shutdown::ctrl_c().await?;
+        Teardown::new(node).with_broadcast(broadcast).run().await;
         drop(sources);
-        node.shutdown().await;
         Ok(())
     })
 }
@@ -160,6 +159,7 @@ mod preview {
 
     use crate::{
         args::{CaptureArgs, PublishArgs},
+        shutdown::Teardown,
         source::{self, Opened},
         source_spec::{TestPattern, VideoSourceSpec},
         transport::SharedNode,
@@ -175,7 +175,8 @@ mod preview {
         args: &PublishArgs,
     ) -> Result {
         let capture = args.capture.clone();
-        crate::ui::run_window("irl publish", args.fullscreen, move |cc| {
+        let teardown = Teardown::new(node).with_broadcast(broadcast.clone());
+        crate::ui::run_window("irl publish", args.fullscreen, teardown.clone(), move |cc| {
             let view = VideoView::new(
                 &cc.egui_ctx,
                 "preview",
@@ -183,7 +184,7 @@ mod preview {
                 cc.wgpu_render_state.as_ref(),
             );
             PreviewApp {
-                node,
+                teardown,
                 broadcast,
                 ticket,
                 view,
@@ -195,7 +196,8 @@ mod preview {
 
     /// The `irl publish --preview` window.
     struct PreviewApp {
-        node: SharedNode,
+        /// Closes the broadcast and the node when the window closes.
+        teardown: Teardown,
         broadcast: LocalBroadcast,
         ticket: String,
         view: VideoView,
@@ -230,7 +232,7 @@ mod preview {
 
         fn on_exit(&mut self) {
             info!("exit");
-            crate::ui::shutdown_publish_blocking(&self.node, &self.broadcast);
+            self.teardown.run_blocking();
         }
     }
 

@@ -49,7 +49,7 @@ async fn record(args: RecordArgs) -> Result {
 
     let node = transport::bind_node(false).await?;
     let result = record_on(&node, &ticket, &options).await;
-    node.shutdown().await;
+    crate::shutdown::Teardown::new(node).run().await;
     result
 }
 
@@ -282,12 +282,15 @@ async fn stop_after(duration: Option<Duration>) {
     };
     // A failed Ctrl+C listener never resolves, so the deadline still applies.
     let interrupted = async {
-        if let Err(err) = tokio::signal::ctrl_c().await {
-            warn!(
-                error = %err,
-                "cannot listen for Ctrl+C, recording until the duration or the broadcast ends"
-            );
-            std::future::pending::<()>().await;
+        match crate::shutdown::ctrl_c().await {
+            Ok(()) => crate::shutdown::step("finishing the recording"),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "cannot listen for Ctrl+C, recording until the duration or the broadcast ends"
+                );
+                std::future::pending::<()>().await;
+            }
         }
     };
     tokio::select! {

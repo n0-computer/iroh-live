@@ -23,6 +23,7 @@ use super::{
 use crate::{
     args::{CallArgs, PlaybackArgs},
     playback::Speaker,
+    shutdown::Teardown,
     transport::{PEER_TIMEOUT, SharedNode, Subscribed},
     ui::{CursorIdle, Pending, RemoteView, TicketQr},
 };
@@ -40,7 +41,8 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
     // Parsed before the window opens, so a bad specifier fails in the
     // terminal.
     let scan_camera = args.scan_camera.clone();
-    crate::ui::run_window("irl call", args.fullscreen, move |cc| {
+    let teardown = Teardown::new(node.clone()).with_broadcast(broadcast.clone());
+    crate::ui::run_window("irl call", args.fullscreen, teardown, move |cc| {
         let ctx = &cc.egui_ctx;
         let ringing = calls.ringing();
         let preview = VideoView::new(
@@ -221,7 +223,9 @@ impl eframe::App for CallApp {
         info!("exit");
         self.screen = Screen::waiting();
         self.pending = None;
-        crate::ui::shutdown_publish_blocking(&self.node, &self.broadcast);
+        Teardown::new(self.node.clone())
+            .with_broadcast(self.broadcast.clone())
+            .run_blocking();
     }
 }
 

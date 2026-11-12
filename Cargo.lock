@@ -4439,6 +4439,7 @@ dependencies = [
  "hang",
  "iroh",
  "iroh-live",
+ "libc",
  "moq-ext-egui",
  "moq-json",
  "moq-mux",

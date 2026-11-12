@@ -6,7 +6,7 @@ use std::{
 };
 
 use eframe::egui;
-use iroh_live::media::{LocalBroadcast, Player, RenditionMode};
+use iroh_live::media::{Player, RenditionMode};
 use moq_ext_egui::{
     VideoView,
     overlay::{DebugOverlay, StatCategory},
@@ -16,7 +16,10 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::{backend::Backend, transport::SharedNode};
+use crate::{backend::Backend, shutdown::Teardown};
+
+/// How long a window may take to close after a Ctrl+C teardown.
+const WINDOW_CLOSE: Duration = Duration::from_secs(1);
 
 /// How often a window's state machine runs while nothing draws the window.
 const HEARTBEAT: Duration = Duration::from_millis(100);
@@ -29,17 +32,20 @@ pub(crate) const BUTTON: egui::Vec2 = egui::vec2(200.0, 40.0);
 /// Opens a media window titled `title` and runs it until it closes.
 ///
 /// `build` makes the app from eframe's creation context. Ctrl+C in the
-/// terminal closes the window.
+/// terminal runs `teardown` and closes the window, see
+/// [`spawn_ctrl_c_handler`]. The app runs the same teardown from its
+/// `on_exit` when the window is closed.
 pub(crate) fn run_window<A: eframe::App + 'static>(
     title: &str,
     fullscreen: bool,
+    teardown: Teardown,
     build: impl FnOnce(&eframe::CreationContext<'_>) -> A + 'static,
 ) -> Result {
     eframe::run_native(
         title,
         native_options(fullscreen),
         Box::new(move |cc| {
-            spawn_ctrl_c_handler(&cc.egui_ctx);
+            spawn_ctrl_c_handler(&cc.egui_ctx, teardown);
             Ok(Box::new(build(cc)))
         }),
     )
@@ -250,15 +256,40 @@ pub(crate) fn escape_leaves_fullscreen(ctx: &egui::Context) {
     }
 }
 
-/// Closes the egui viewport on Ctrl-C.
+/// Runs `teardown` on Ctrl+C, then closes the window.
 ///
-/// Called from the eframe creation closure. The task handle is dropped on
-/// purpose: an abort-on-drop guard would cancel it when the closure returns.
-fn spawn_ctrl_c_handler(ctx: &egui::Context) {
+/// The teardown runs here rather than in the window. eframe handles a close
+/// request only in a pass, and on Wayland a window that is covered, minimized
+/// or on another workspace gets no frame callbacks and runs no passes. A
+/// shutdown that waited for the window would wait until it is shown again.
+///
+/// A window that runs passes starts to close within [`WINDOW_CLOSE`], its
+/// `on_exit` finds the teardown done, and `main` returns. One that runs no
+/// pass is left behind: the process exits, since everything the peers need to
+/// know has been sent.
+///
+/// The task is detached on purpose: an abort-on-drop guard would cancel it
+/// when the creation closure returns.
+fn spawn_ctrl_c_handler(ctx: &egui::Context, teardown: Teardown) {
     let ctx = ctx.clone();
     tokio::runtime::Handle::current().spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        if let Err(err) = crate::shutdown::ctrl_c().await {
+            warn!(error = %err, "cannot listen for Ctrl+C, so it ends the process without a shutdown");
+            return;
+        }
+        teardown.run().await;
+        crate::shutdown::step("closing the window");
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        tokio::time::sleep(WINDOW_CLOSE).await;
+        if crate::shutdown::window_closing() {
+            // The watchdog bounds the rest of the way out of `main`.
+            return;
+        }
+        info!(
+            waited = ?WINDOW_CLOSE,
+            "the window ran no pass to close, it is probably hidden; exiting"
+        );
+        crate::shutdown::exit_at_once(0);
     });
 }
 
@@ -278,25 +309,6 @@ pub(crate) fn spawn_heartbeat(ctx: &egui::Context) -> AbortOnDropHandle<()> {
             ctx.request_repaint();
         }
     }))
-}
-
-/// Shuts the endpoint down from eframe's `on_exit`, outside any async context.
-pub(crate) fn shutdown_node_blocking(node: &SharedNode) {
-    let node = node.clone();
-    tokio::runtime::Handle::current().block_on(async move {
-        node.shutdown().await;
-    });
-}
-
-/// Closes `broadcast`, then shuts the endpoint down, from outside async context.
-pub(crate) fn shutdown_publish_blocking(node: &SharedNode, broadcast: &LocalBroadcast) {
-    let node = node.clone();
-    let broadcast = broadcast.clone();
-    tokio::runtime::Handle::current().block_on(async move {
-        broadcast.close();
-        broadcast.closed().await;
-        node.shutdown().await;
-    });
 }
 
 /// Returns the window options for a media window.
