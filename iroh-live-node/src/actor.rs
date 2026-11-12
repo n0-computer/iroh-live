@@ -51,8 +51,9 @@ pub(crate) struct Actor {
     shared: Arc<Shared>,
     /// Every live session per peer, oldest first.
     ///
-    /// A simultaneous dial leaves two. `connect` hands out the first, and the
-    /// second takes over when the first ends.
+    /// A simultaneous dial leaves two. `connect` hands out the first, and only
+    /// the first announces into the route table. The second takes over both
+    /// when the first ends.
     peers: HashMap<EndpointId, Vec<Session>>,
     sessions: JoinSet<moq_net::Error>,
     /// What each session task runs, so a task that panics is still cleaned up.
@@ -479,6 +480,8 @@ impl Actor {
         // Two peers that dial each other at once end up with two sessions
         // each. Both stay: the two sides see the collision at different
         // instants, so either may already have handed out the other's second.
+        // Only the first announces into the route table, as the state grants
+        // the second nothing to announce until the first is removed.
         let sessions = self.peers.entry(peer).or_default();
         if !sessions.is_empty() {
             debug!(peer = %peer.fmt_short(), "simultaneous connect, serving the first session");

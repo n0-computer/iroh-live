@@ -8,6 +8,9 @@
 //! links announce goes straight into the table, so the state only maps a
 //! route's source back to its link (see [`State::link_for`]). The lock order
 //! is on `Shared::state`.
+//!
+//! Of several sessions with one peer, only the oldest may announce into the
+//! table (see [`State::is_standby`]).
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -209,8 +212,51 @@ impl State {
     }
 
     /// Removes a link.
+    ///
+    /// The next session with the same peer, if any, may announce from now on.
     pub(crate) fn remove_link(&mut self, id: LinkId) {
-        self.links.remove(&id);
+        let Some(link) = self.links.remove(&id) else {
+            return;
+        };
+        let Some(peer) = link.peer() else {
+            return;
+        };
+        // Removing a standby leaves the oldest session as it is.
+        if let Some(next) = self.first_session_with(peer)
+            && next > id
+        {
+            debug!(
+                peer = %peer.fmt_short(),
+                removed = %id,
+                %next,
+                "the next session with the peer takes over its routes",
+            );
+            self.authorize(next);
+        }
+    }
+
+    /// Returns the oldest session with `peer`.
+    fn first_session_with(&self, peer: &EndpointId) -> Option<LinkId> {
+        self.links
+            .iter()
+            .find(|(_, link)| link.peer() == Some(peer))
+            .map(|(id, _)| *id)
+    }
+
+    /// Reports whether link `id` is a session with a peer that an older session also serves.
+    ///
+    /// A simultaneous dial, or a dial racing an accept, leaves two sessions
+    /// with one peer, and both would announce the peer's broadcasts.
+    /// moq-lite-06 announcements name no instance, so each session mints its
+    /// own, and when the second session's route ranks first moq takes it for
+    /// the peer replacing the broadcast: track requests in flight on the first
+    /// session fail as unroutable, and the broadcast its readers hold takes no
+    /// new tracks. A standby therefore may announce nothing. Link ids grow, so
+    /// the oldest session has the lowest id. It is the one `connect` hands
+    /// out, and the next one takes over once it is removed.
+    fn is_standby(&self, id: LinkId, peer: &EndpointId) -> bool {
+        self.first_session_with(peer)
+            .is_some_and(|first| first != id)
     }
 
     /// Adds a publication and re-authorizes every link for it.
@@ -387,16 +433,17 @@ impl State {
         let Some(link) = self.links.get(&id) else {
             return;
         };
-        let grant = self.link_grant(link);
+        let grant = self.link_grant(id, link);
         link.auth.authorize(&grant);
     }
 
-    /// Returns the moq grant of `link`, from a session's authorization.
+    /// Returns the moq grant of link `id`, from a session's authorization.
     ///
     /// A relay may do everything before audiences. A session without an
-    /// authorization, or with a lapsed one, may do nothing. The grant carries
-    /// the authorization's expiry.
-    fn link_grant(&self, link: &LinkEntry) -> auth::Grant {
+    /// authorization, or with a lapsed one, may do nothing. A standby session
+    /// may announce nothing (see [`Self::is_standby`]). The grant carries the
+    /// authorization's expiry.
+    fn link_grant(&self, id: LinkId, link: &LinkEntry) -> auth::Grant {
         match &link.role {
             LinkRole::Relay { .. } => self.link_view(Viewer::Relay, &Grant::everything()),
             LinkRole::Direct { peer, authorized } => {
@@ -404,6 +451,9 @@ impl State {
                     .as_ref()
                     .map_or_else(Grant::nothing, Authorized::grant);
                 let mut grant = self.link_view(Viewer::Direct(peer), &base);
+                if self.is_standby(id, peer) {
+                    grant.publish = Default::default();
+                }
                 grant.expires = authorized
                     .as_ref()
                     .and_then(|authorized| authorized.expires);
@@ -541,7 +591,7 @@ mod tests {
 
     /// Returns the moq grant `state` gives link `id` now.
     fn grant_of(state: &State, id: LinkId) -> auth::Grant {
-        state.link_grant(&state.links[&id])
+        state.link_grant(id, &state.links[&id])
     }
 
     /// Adds `link` as link `id`.
@@ -631,6 +681,35 @@ mod tests {
             Some(LinkId(1))
         );
         assert_eq!(state.link_for(Source::Local), None);
+    }
+
+    #[test]
+    fn only_the_oldest_session_with_a_peer_may_announce() {
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        let own = format!("live/{peer}/cam");
+        add(&mut state, LinkId(1), direct_with(peer, own_paths(peer)));
+        add(&mut state, LinkId(2), direct_with(peer, own_paths(peer)));
+        add(&mut state, LinkId(3), direct());
+        assert!(grant_of(&state, LinkId(1)).publish.matches(&own));
+        let standby = grant_of(&state, LinkId(2));
+        assert!(!standby.publish.matches(&own), "the standby may announce");
+        assert_eq!(
+            standby.subscribe,
+            grant_of(&state, LinkId(1)).subscribe,
+            "the standby serves what the first serves"
+        );
+        assert!(
+            grant_of(&state, LinkId(3)).publish.matches("anything"),
+            "another peer's session is no standby"
+        );
+        assert_eq!(state.session_grant(LinkId(2)), own_paths(peer));
+
+        state.remove_link(LinkId(1));
+        assert!(
+            grant_of(&state, LinkId(2)).publish.matches(&own),
+            "the standby did not take over"
+        );
     }
 
     #[tokio::test]

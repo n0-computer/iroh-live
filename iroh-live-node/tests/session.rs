@@ -2,8 +2,14 @@
 
 mod common;
 
-use common::{Peer, TIMEOUT, publish, read_counter, step};
-use iroh_live_node::{Audience, Direction, Error, Reach};
+use std::{num::NonZeroU64, time::Duration};
+
+use common::{Peer, TIMEOUT, TestBroadcast, eventually, publish, read_counter, step, subscription};
+use iroh_live_node::{Audience, ConnectOptions, Direction, Error, Reach};
+use moq_net::{
+    broadcast,
+    origin::{self, RouteOptions},
+};
 use n0_future::StreamExt;
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
@@ -333,4 +339,180 @@ async fn a_simultaneous_dial_leaves_both_sides_a_usable_session() {
         bob.shutdown().await;
     }
     eprintln!("{collided} of {} sides saw two sessions", PAIRS * 2);
+}
+
+/// A second session with a peer serves the peer's broadcasts only once the first ends.
+///
+/// Both sessions of a simultaneous dial announce the peer's broadcasts, and
+/// moq-lite-06 tells the two announcements of one path apart as two
+/// instances. Had the second route ranked first, moq would take it for the
+/// peer replacing the broadcast and fail the track requests in flight on the
+/// first session as unroutable, which is how the simultaneous dial test
+/// failed. The second session here is dialed by hand, costs less than the
+/// first, and publishes a broadcast of its own, so a reader can tell which
+/// session serves it.
+#[tokio::test]
+#[traced_test]
+async fn a_second_session_with_a_peer_takes_over_its_routes_only_once_the_first_ends() {
+    const SECOND_FIRST: u64 = 1_000_000;
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let path = alice.path("cam");
+    let _alice_cam = publish(&alice.node, &path, Audience::Granted).expect("publish");
+    let _bob_cam = publish(&bob.node, bob.path("cam"), Audience::Granted).expect("publish");
+
+    let expensive = ConnectOptions {
+        cost: Some(100),
+        ..Default::default()
+    };
+    let first = step(
+        "dial",
+        alice.node.connect_with(bob.endpoint.addr(), expensive),
+    )
+    .await
+    .expect("alice's dial failed");
+    // Bob subscribing before he lists the session would dial a second one.
+    eventually("bob lists the session", || sessions_with(&bob, &alice) == 1).await;
+    let subscribed = step(
+        "bob subscribes to alice",
+        bob.node.subscribe(path.clone(), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("bob's subscribe failed");
+    let held = subscribed.broadcast();
+    let counter = read_counter(&held).await;
+    assert!(
+        counter < SECOND_FIRST,
+        "read {counter} from the first session"
+    );
+
+    // A second session from alice's endpoint, announcing a broadcast of its
+    // own at the same path, which tells the two sessions' broadcasts apart.
+    let second_origin = origin(7);
+    let second_route = second_origin
+        .route(path.as_str(), RouteOptions::default())
+        .expect("route");
+    let _second_cam = TestBroadcast::writing(second_route.broadcast().clone(), SECOND_FIRST);
+    let seen_by_second = origin(8);
+    let _second = step(
+        "second session",
+        dial(
+            &alice.endpoint,
+            bob.endpoint.addr(),
+            second_origin.consume(),
+            seen_by_second.clone(),
+        ),
+    )
+    .await;
+    // Bob's announcement over the second session shows that bob runs it.
+    step(
+        "bob announces over the second session",
+        seen_by_second
+            .consume()
+            .request(bob.path("cam").as_str(), None),
+    )
+    .await
+    .expect("bob's broadcast never came over the second session");
+    // Long enough for bob to take in alice's announcement too, many times over.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let with_alice = sessions_with(&bob, &alice);
+    assert_eq!(with_alice, 2, "bob has {with_alice} sessions with alice");
+
+    let counter = read_counter(&held).await;
+    assert!(
+        counter < SECOND_FIRST,
+        "the held broadcast read {counter} from the second session"
+    );
+    let counter = read_counter(&subscribed.broadcast()).await;
+    assert!(
+        counter < SECOND_FIRST,
+        "the subscription read {counter} from the second session"
+    );
+
+    first.close(moq_net::Error::Cancel);
+    step("the second session takes over", async {
+        loop {
+            if let Some(counter) = try_read_counter(&subscribed.broadcast()).await
+                && counter >= SECOND_FIRST
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Returns how many sessions `node` lists with `peer`.
+fn sessions_with(node: &Peer, peer: &Peer) -> usize {
+    node.node
+        .sessions()
+        .get()
+        .into_iter()
+        .filter(|session| session.peer() == peer.id())
+        .count()
+}
+
+/// Returns an origin that runs on its own, with routes attributed to `hop`.
+fn origin(hop: u64) -> origin::Producer {
+    moq_tokio::origin::spawn_config(origin::Config::new(
+        NonZeroU64::new(hop).expect("a non-zero hop"),
+    ))
+}
+
+/// A MoQ session and the task that drives it.
+struct RawSession {
+    _session: moq_net::Session,
+    _driver: n0_future::task::AbortOnDropHandle<()>,
+}
+
+/// Dials `peer` from `endpoint` outside any node, publishing `publisher` and
+/// writing what the peer announces to `subscriber`.
+async fn dial(
+    endpoint: &iroh::Endpoint,
+    peer: iroh::EndpointAddr,
+    publisher: origin::Consumer,
+    subscriber: origin::Producer,
+) -> RawSession {
+    let transport = moq_transport_iroh::Transport::connect(endpoint, peer)
+        .await
+        .expect("dial failed");
+    let (session, driver) = moq_net::Client::new()
+        .with_publisher(publisher)
+        .with_subscriber(subscriber)
+        .connect(moq_net::time::Instant::now(), transport)
+        .await
+        .expect("handshake failed");
+    let driver = tokio::spawn(async move {
+        moq_net::time::run(driver).await;
+    });
+    RawSession {
+        _session: session,
+        _driver: n0_future::task::AbortOnDropHandle::new(driver),
+    }
+}
+
+/// Reads one frame of the test track, or returns `None` if that fails.
+async fn try_read_counter(broadcast: &broadcast::Consumer) -> Option<u64> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        let mut subscriber = broadcast
+            .track("video")
+            .ok()?
+            .subscribe(subscription())
+            .await
+            .ok()?;
+        loop {
+            let mut group = subscriber.recv_group().await.ok()??;
+            if let Some(frame) = group.read_frame().await.ok()? {
+                let bytes: [u8; 8] = frame.payload[..].try_into().ok()?;
+                return Some(u64::from_be_bytes(bytes));
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
