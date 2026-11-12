@@ -352,7 +352,6 @@ impl VideoSource {
     /// read returns, which takes up to a second on V4L2 and has no limit for
     /// Media Foundation on Windows. Resolves at once for a source without a
     /// device.
-    #[must_use]
     pub fn released(&self) -> WaitForCancellationFutureOwned {
         match &self.inner.driver {
             #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]

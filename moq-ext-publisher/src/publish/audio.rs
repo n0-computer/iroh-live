@@ -78,16 +78,16 @@ async fn pcm(
 ) -> Result<(), Error> {
     let input = moq_audio::encode::Input::new(format.sample_rate, format.layout);
     let mut options = moq_audio::encode::Options::default();
-    options.track = Some(audio_track_name(&encoding));
+    options.track = Some(audio_track_name(encoding));
     options.config = encoding.clone();
     let mut broadcast = job.producer.clone();
     let mut encoder =
         moq_audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
             .map_err(Error::encoder)?;
-    info!(track = %audio_track_name(&encoding), rate = format.sample_rate, "publishing audio");
+    info!(track = %audio_track_name(encoding), rate = format.sample_rate, "publishing audio");
     job.reporter.slot(SlotState::Running);
     job.reporter.rendition(
-        &audio_track_name(&encoding),
+        &audio_track_name(encoding),
         RenditionState::Encoding {
             encoder: encoding.codec.to_string(),
         },
@@ -127,7 +127,7 @@ async fn microphone(
     encoding: &moq_audio::encode::Config,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
-    let track = audio_track_name(&encoding);
+    let track = audio_track_name(encoding);
     let encode_track = track.clone();
     let encode_config = encoding.clone();
 

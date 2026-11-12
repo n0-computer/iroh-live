@@ -214,10 +214,10 @@ fn run_frames(
 /// would look the same as a working one. Every channel wraps on purpose.
 fn paint_gradient(rgba: &mut [u8], size: Size, count: u64) {
     let phase = (count as u8).wrapping_mul(3);
-    for (offset, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+    for (offset, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = (offset as u32 % size.width) as u8;
         let y = (offset as u32 / size.width) as u8;
-        pixel.copy_from_slice(&[x.wrapping_add(phase), y.wrapping_add(phase), phase, 0xff]);
+        *pixel = [x.wrapping_add(phase), y.wrapping_add(phase), phase, 0xff];
     }
 }
 
@@ -662,7 +662,13 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(pixel(&first, 10, 20), [10, 20, 0]);
         assert_eq!(pixel(&second, 10, 20), [13, 23, 3]);
-        assert!(first.chunks_exact(4).all(|pixel| pixel[3] == 0xff));
+        assert!(
+            first
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel[3] == 0xff)
+        );
     }
 
     /// A quarter of the sweep period moves the bar a quarter of the way across.
