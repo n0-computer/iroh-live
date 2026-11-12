@@ -14,7 +14,7 @@ use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use serial_test::serial;
 
-/// A cluster with a running driver, and nothing else.
+/// Returns a cluster with a running driver, and nothing else.
 fn cluster() -> (Cluster, AbortOnDropHandle<()>) {
     let (cluster, driver) =
         Cluster::new(moq_relay::cluster::Options::new(Default::default())).expect("init cluster");

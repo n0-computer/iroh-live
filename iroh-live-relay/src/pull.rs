@@ -167,7 +167,7 @@ impl Pull {
     }
 }
 
-/// Keeps a pull alive while the local session that asked for it runs.
+/// A hold on a pull, which keeps it alive while the session that asked for it runs.
 ///
 /// Dropping it releases the session's hold on the pull.
 #[derive(Debug)]
@@ -443,7 +443,7 @@ impl Shared {
 
     /// Waits until no session has held the pull for the linger window.
     ///
-    /// The final check runs under the lock that [`Self::pull`] takes a hold
+    /// The final check runs under the lock that [`Pulls::pull`] takes a hold
     /// under, so a pull held during the linger keeps running.
     async fn wait_idle(&self, local_name: &str, pull: &Arc<Pull>) {
         loop {

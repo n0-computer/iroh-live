@@ -203,7 +203,7 @@ fn free_port() -> u16 {
     panic!("no port free for both UDP and TCP");
 }
 
-/// Admits every iroh client to publish and subscribe anywhere in the cluster.
+/// A protocol handler that lets every iroh client publish and subscribe anywhere.
 ///
 /// The relay the forgery tests use as one a node must not trust.
 #[derive(derive_more::Debug, Clone)]

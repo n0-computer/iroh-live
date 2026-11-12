@@ -31,8 +31,6 @@
 //! # }
 //! ```
 //!
-//! # Cancellation safety
-//!
 //! [`run`] returns once a drain started by SIGINT or SIGTERM ends, after
 //! closing its listeners. Dropping its future stops the listeners and the
 //! accepted connections. The tasks that dial and hold a pull end with the

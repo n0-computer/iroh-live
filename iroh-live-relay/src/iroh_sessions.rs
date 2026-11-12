@@ -30,7 +30,7 @@ use crate::pull::Pulls;
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
-/// Accepts iroh clients' MoQ sessions into the cluster.
+/// The protocol handler that accepts iroh clients' MoQ sessions into the cluster.
 ///
 /// Mount it on a router with [`mount`](Self::mount).
 #[derive(Clone, derive_more::Debug)]
