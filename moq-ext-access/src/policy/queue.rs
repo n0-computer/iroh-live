@@ -152,6 +152,7 @@ impl<P: PeerId> Pending<P> {
         self.answer(Err(rejection));
     }
 
+    /// Sends `decision` to the node, if it still waits.
     fn answer(self, decision: Decision) {
         // The channel holds one answer, so it is never full. A closed one
         // means nobody waits anymore.

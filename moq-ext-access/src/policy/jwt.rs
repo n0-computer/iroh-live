@@ -7,7 +7,7 @@ use moq_auth::KeySet;
 use super::{Authorization, Decision, PeerRequest, Rejection, TokenVerifier};
 use crate::{Grant, PeerId};
 
-/// Verifies JWTs with a moq-auth [`KeySet`], as moq-relay does.
+/// A [`TokenVerifier`] of JWTs, which checks them with a moq-auth [`KeySet`] as moq-relay does.
 ///
 /// A valid token admits the peer with the publish and subscribe patterns its
 /// claims grant at the requested path, and its `exp` claim becomes the

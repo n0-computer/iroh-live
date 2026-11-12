@@ -21,14 +21,17 @@ impl Borrow<[u8; 32]> for Device {
     }
 }
 
+/// Returns the signing key made from 32 bytes of `seed`.
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
+/// Returns the peer id of the holder of `key`.
 fn device(key: &SigningKey) -> Device {
     Device(key.verifying_key().to_bytes())
 }
 
+/// Parses `pattern`, which must be valid.
 fn pattern(pattern: &str) -> Pattern {
     pattern.parse().expect("a pattern")
 }
@@ -38,15 +41,18 @@ fn publish_under(prefix: &str) -> MoqCapability {
     MoqCapability::new("spaces/alice").with_publish(pattern(&format!("{prefix}/**")))
 }
 
+/// Returns an expiry `hours` from now.
 fn hours(hours: u64) -> Expires {
     Expires::valid_for(Duration::from_secs(hours * 3600))
 }
 
+/// Verifies `token` as presented by the holder of `peer` at its connect.
 fn verify(verifier: &RcanVerifier, peer: &SigningKey, token: &str) -> Decision {
     let request = PeerRequest::new(device(peer), SessionRequest::default(), Event::Connect);
     verifier.verify(token, &request)
 }
 
+/// Returns a verifier rooted at alice's key and `spaces/alice`.
 fn alice_verifier() -> RcanVerifier {
     RcanVerifier::new(key(1).verifying_key(), "spaces/alice")
 }

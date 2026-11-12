@@ -197,7 +197,7 @@ impl fmt::Display for Rejection {
 
 impl std::error::Error for Rejection {}
 
-/// Decides whether a peer may hold a session, and with which rights.
+/// A rule that decides whether a peer may hold a session, and with which rights.
 ///
 /// Implement it with `async fn decide`.
 pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {

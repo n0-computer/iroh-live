@@ -3,6 +3,7 @@ use n0_future::future::block_on;
 
 use super::*;
 
+/// The peer id of these tests.
 type Peer = String;
 
 /// Returns a connect request of `peer` for the root, with no token.
@@ -16,6 +17,7 @@ fn under(prefix: &str) -> Grant {
     Grant::publish_under(pattern)
 }
 
+/// Runs `policy` on `request` to its decision.
 fn decide(policy: &impl Policy<Peer>, request: &PeerRequest<Peer>) -> Decision {
     block_on(policy.decide(request))
 }
@@ -181,7 +183,7 @@ fn a_queue_asks_the_application_to_reauthorize() {
     assert_eq!(decision.expect("admitted").grant, Grant::subscribe_only());
 }
 
-/// Admits the token `good` with a grant under the peer's name, and rejects any other.
+/// A verifier that admits the token `good` under the peer's name, and rejects any other.
 #[derive(Debug)]
 struct Stub;
 
@@ -244,7 +246,7 @@ fn a_token_query_is_read_too() {
     assert!(decide(&policy, &request_for("bob", "/?token=good")).is_ok());
 }
 
-/// Rejects every token as expired.
+/// A verifier that rejects every token as expired.
 #[derive(Debug)]
 struct Lapsed;
 

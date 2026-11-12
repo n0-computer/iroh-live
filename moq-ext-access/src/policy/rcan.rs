@@ -132,7 +132,7 @@ impl TryFrom<Wire> for MoqCapability {
     }
 }
 
-/// Verifies rcan capability chains that a principal issued, as the peer presents them.
+/// A [`TokenVerifier`] of rcan capability chains that a principal issued.
 ///
 /// The principal is the key whose space the verifier shares, such as a
 /// node's own key or an app's account key. A chain starts with a

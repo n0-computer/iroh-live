@@ -5,7 +5,7 @@ use std::fmt;
 use super::{Closed, Decision, Event, PeerRequest, Policy};
 use crate::PeerId;
 
-/// Checks a token a peer presents, and returns what it authorizes.
+/// A check of the token a peer presents, which returns what the token authorizes.
 ///
 /// A verifier is synchronous, since checking a signature is CPU work. Wrap
 /// it in [`Verify`] to use it as a [`Policy`].
