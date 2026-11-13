@@ -191,10 +191,10 @@ impl VideoFrames {
     /// Returns when the last frame this handle returned entered the stream.
     ///
     /// That frame is the one [`next`](Self::next) or
-    /// [`try_next`](Self::try_next) returned last. For a source, that is when the application pushed the frame or the
-    /// capture thread handed it over, before any encoder saw it. For a player,
-    /// it is when the picture was presented. Returns `None` before the first
-    /// frame.
+    /// [`try_next`](Self::try_next) returned last. For a source, that is when
+    /// the application pushed the frame or the capture thread handed it over,
+    /// before any encoder saw it. For a player, it is when the picture was
+    /// presented. Returns `None` before the first frame.
     #[must_use]
     pub fn sent_at(&self) -> Option<Instant> {
         self.sent_at

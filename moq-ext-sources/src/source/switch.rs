@@ -207,7 +207,9 @@ impl VideoSwitch {
         self.shared.status.subscribe()
     }
 
-    /// Starts a new install with `source` and `state`, and returns its generation and the source it dropped.
+    /// Starts a new install with `source` and `state`.
+    ///
+    /// Returns the new install's generation and the source it dropped.
     ///
     /// The slot is cleared under the same lock the forwarding tasks write
     /// through, so a superseded task cannot send a frame after it.
