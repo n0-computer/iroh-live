@@ -927,16 +927,16 @@ async fn connected(node: &iroh_live::Node, config: RelayConfig) -> iroh_live_nod
     link
 }
 
-/// Writes a counter every few milliseconds into a track `name` of `broadcast`.
-fn counter(broadcast: &moq_net::broadcast::Producer, name: &str) -> AbortOnDropHandle<()> {
+/// Writes a counter from `first` every few milliseconds into the track `data` of `broadcast`.
+fn counter(broadcast: &moq_net::broadcast::Producer, first: u64) -> AbortOnDropHandle<()> {
     let mut track = broadcast
         .create_track(
-            name,
+            "data",
             moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
         )
         .expect("track");
     AbortOnDropHandle::new(tokio::spawn(async move {
-        for n in 0u64.. {
+        for n in first.. {
             if track.write_frame(None, n.to_be_bytes().to_vec()).is_err() {
                 return;
             }
@@ -1051,14 +1051,14 @@ async fn a_relay_gets_public_publications_only() {
     let public = node
         .publish(live_path(node.id(), "public"), Audience::Granted)
         .expect("publish");
-    let _public = counter(public.broadcast(), "data");
+    let _public = counter(public.broadcast(), 0);
     let peers = node
         .publish(
             live_path(node.id(), "peers"),
             Audience::Peers(members.clone()),
         )
         .expect("publish");
-    let _peers = counter(peers.broadcast(), "data");
+    let _peers = counter(peers.broadcast(), 0);
 
     let sub_origin = moq_tokio::origin::spawn();
     let _browser = established(
@@ -1128,7 +1128,7 @@ async fn losing_the_direct_session_moves_a_subscription_to_the_relay() {
     let publication = alice
         .publish(live_path(alice.id(), "cam"), Audience::Granted)
         .expect("publish");
-    let _writer = counter(publication.broadcast(), "data");
+    let _writer = counter(publication.broadcast(), 0);
     let _alice_link = attached(&alice, &relay).await;
 
     let (_bob_endpoint, bob) = relay_node().await;
@@ -1210,7 +1210,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let publication = alice
         .publish(live_path(alice.id(), "cam"), Audience::Granted)
         .expect("publish");
-    let _writer = counter(publication.broadcast(), "data");
+    let _writer = counter(publication.broadcast(), 0);
 
     // Mallory, a browser-like client, publishes at Alice's path, declaring
     // Alice's hop.
@@ -1222,24 +1222,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     let forged = mallory
         .route(publication.path().as_str(), origin::RouteOptions::default())
         .expect("forged broadcast");
-    let mut forged_track = forged
-        .broadcast()
-        .create_track(
-            "data",
-            moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
-        )
-        .expect("track");
-    let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
-        for n in FORGED.. {
-            if forged_track
-                .write_frame(None, n.to_be_bytes().to_vec())
-                .is_err()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }));
+    let _forger = counter(forged.broadcast(), FORGED);
     let _mallory_session = established(
         noq_client()
             .with_publisher(mallory.consume())
@@ -1306,17 +1289,17 @@ async fn the_shipped_relay_refuses_forged_paths() {
             Audience::Granted,
         )
         .expect("publish");
-    let _own = counter(own.broadcast(), "data");
+    let _own = counter(own.broadcast(), 0);
     let forged_path = format!("live/{alice}/cam");
     let room_path = format!("rooms/topic/{alice}/cam");
     let forged = mallory
         .publish(forged_path.as_str(), Audience::Granted)
         .expect("publish at alice's path");
-    let _forged = counter(forged.broadcast(), "data");
+    let _forged = counter(forged.broadcast(), 0);
     let room_forged = mallory
         .publish(room_path.as_str(), Audience::Granted)
         .expect("publish at alice's room path");
-    let _room_forged = counter(room_forged.broadcast(), "data");
+    let _room_forged = counter(room_forged.broadcast(), 0);
     let _link = attached(&mallory, &relay).await;
 
     // A browser tries the same, and publishes a name of its own.
@@ -1623,7 +1606,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         .await
         .expect("join");
     let cam: moq_net::broadcast::Producer = room_b.publish("cam").expect("publish");
-    let _writer = counter(&cam, "data");
+    let _writer = counter(&cam, 0);
     let subscription = step(
         "subscribe timeout",
         room_a.subscribe(bob_endpoint.id(), "cam"),
@@ -1736,7 +1719,7 @@ async fn an_iroh_url_presents_the_token_in_its_query() {
     let granted = holder
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
-    let _granted = counter(granted.broadcast(), "data");
+    let _granted = counter(granted.broadcast(), 0);
     let url = format!(
         "iroh://{}/?jwt={}",
         relay.iroh_id,
@@ -1763,7 +1746,7 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
     let granted = holder
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
-    let _granted = counter(granted.broadcast(), "data");
+    let _granted = counter(granted.broadcast(), 0);
     let own = holder
         .publish(
             LiveLayout::default()
@@ -1772,7 +1755,7 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
             Audience::Granted,
         )
         .expect("publish");
-    let _own = counter(own.broadcast(), "data");
+    let _own = counter(own.broadcast(), 0);
     let _link = attach_with_token(&holder, &relay, Some(token_for(&keys, "tokens")));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     assert!(
@@ -1790,11 +1773,11 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
             Audience::Granted,
         )
         .expect("publish");
-    let _plain_own = counter(plain_own.broadcast(), "data");
+    let _plain_own = counter(plain_own.broadcast(), 0);
     let plain_tokens = plain
         .publish("tokens/screen", Audience::Granted)
         .expect("publish");
-    let _plain_tokens = counter(plain_tokens.broadcast(), "data");
+    let _plain_tokens = counter(plain_tokens.broadcast(), 0);
     let _plain_link = attach_with_token(&plain, &relay, None);
     routed(&relay.cluster.origin.consume(), plain_own.path().as_str()).await;
     assert!(!routed_soon(&relay.cluster.origin, "tokens/screen").await);
@@ -1817,7 +1800,7 @@ async fn an_iroh_client_with_a_bad_token_is_refused() {
             Audience::Granted,
         )
         .expect("publish");
-    let _own = counter(own.broadcast(), "data");
+    let _own = counter(own.broadcast(), 0);
     // Signed by a key the relay does not hold.
     let _link = attach_with_token(&forger, &relay, Some(token_for(&signing_keys(), "tokens")));
     assert!(
@@ -1922,7 +1905,7 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     let cam = holder
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
-    let _cam = counter(cam.broadcast(), "data");
+    let _cam = counter(cam.broadcast(), 0);
     let mut updates = relay.cluster.origin.consume().announced();
     let _link = attach_with_token(&holder, &relay, Some(token));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
@@ -1946,7 +1929,7 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
     let cam = holder
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
-    let _cam = counter(cam.broadcast(), "data");
+    let _cam = counter(cam.broadcast(), 0);
     let mut updates = relay.cluster.origin.consume().announced();
     // The first token expires, so the relay closes the session.
     let first = expiring_token(&keys, Duration::from_secs(2));
@@ -1972,7 +1955,7 @@ async fn an_https_relay_link_presents_a_fresh_token() {
     let cam = holder
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
-    let _cam = counter(cam.broadcast(), "data");
+    let _cam = counter(cam.broadcast(), 0);
     let first = expiring_token(&keys, Duration::from_secs(2));
     let link = connected(
         &holder,
@@ -2004,7 +1987,7 @@ async fn a_relay_link_waits_for_a_relay_that_is_down_at_attach() {
             Audience::Granted,
         )
         .expect("publish");
-    let _cam = counter(cam.broadcast(), "data");
+    let _cam = counter(cam.broadcast(), 0);
     let link = holder
         .attach_relay(RelayConfig::iroh(secret_key.public()))
         .expect("attach");

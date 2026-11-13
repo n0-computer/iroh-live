@@ -11,7 +11,6 @@ use iroh::{
     endpoint::presets,
     protocol::{Router, RouterBuilder},
 };
-
 use moq_net::announce;
 
 use crate::{Node, NodeConfig};
