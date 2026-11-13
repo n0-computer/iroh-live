@@ -13,7 +13,7 @@ the dial to the close. On the way it shows where each piece of the
 `Audience` comes into play. The last part weighs whether `Audience` still earns
 its place, or whether a policy could do its job.
 
-The [access guide](../guide/access.md) is the reference for the same
+The [access guide](../how-to/control-access.md) is the reference for the same
 material. It lists every policy, flag and default. This page explains why
 the pieces have the shape they have.
 

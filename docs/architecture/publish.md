@@ -219,13 +219,13 @@ first SPS. The splitter holds the last access unit until the next start code,
 so the end of the stream flushes it explicitly. A stream that ends before its
 first access unit shows as a failed video slot.
 
-See [Raspberry Pi](../guide/raspberry-pi.md) for `rpicam_h264`.
+See [Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
 
 ## Catalog and clock
 
 The catalog is hang's, written by `moq_mux::catalog::Producer` with no
 extension, so any hang player reads it. Rooms carry display names in their own
-announcements (see [rooms](../guide/rooms.md)).
+announcements (see [rooms](../how-to/rooms.md)).
 
 A `LocalBroadcast` holds one `moq_mux::Clock`. Both slots stamp their media
 from it, and the catalog advertises its wall-clock mapping. Each source's

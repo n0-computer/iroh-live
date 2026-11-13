@@ -129,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Hand each frame to a renderer instead of counting it: see
-[Desktop rendering](desktop.md). Without a router the node only dials, which is
+[Desktop rendering](../how-to/watch.md). Without a router the node only dials, which is
 enough for a viewer. It then closes the endpoint itself.
 
 ## A one-to-one call
@@ -276,7 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Room broadcasts are private to the members, and a member that leaves loses its
 paths. Anyone with the room ticket can join, so treat it as a secret. A real
-application also resubscribes when a broadcast ends: see [Rooms](rooms.md).
+application also resubscribes when a broadcast ends: see [Rooms](../how-to/rooms.md).
 
 ## Publish at your own path
 
@@ -367,7 +367,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 A third node that dials the publisher cannot resolve the path, since the
-audience leaves it out. [Access control](access.md) covers layouts and
+audience leaves it out. [Access control](../how-to/control-access.md) covers layouts and
 policies in full.
 
 ## Attach a relay
@@ -421,7 +421,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 A viewer that has the relay attached with `consume: true` and no direct route
 reaches the broadcast through it, with `Reach::Relays` or a ticket. The
-[browser relay guide](browser-relay.md) covers running the relay and watching
+[browser relay guide](../how-to/browsers.md) covers running the relay and watching
 from a browser, and
 [`iroh-live/examples/subscribe_test.rs`](../../iroh-live/examples/subscribe_test.rs)
 is the viewing side in Rust.
@@ -552,5 +552,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `Session::connection` is the iroh connection, whose `paths()` lists the
 network paths to the peer. See
 [the transport page](../architecture/transport.md). A `policy::Queue` lets the
-application admit each peer itself, and [Access control](access.md) shows it
+application admit each peer itself, and [Access control](../how-to/control-access.md) shows it
 with the other policies.

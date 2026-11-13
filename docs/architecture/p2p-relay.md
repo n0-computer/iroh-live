@@ -35,7 +35,7 @@ read the whole cluster and publish only at paths that name it. With
 instead. The relay decides a client once, and closes its session when the
 authorization expires, so the client redials with a fresh token. Browsers go
 through moq-relay's admissions, which the relay answers with
-`browser_grant` or the browser's JWT. [Access control](../guide/access.md#the-relays-auth-flags)
+`browser_grant` or the browser's JWT. [Access control](../how-to/control-access.md#the-relays-auth-flags)
 lists the flags, and the [relay README](../../iroh-live-relay/README.md) covers
 the rest of running it: the certificate, the key and the web client.
 
@@ -73,5 +73,5 @@ backoff, and every publication with the `Granted` audience is visible to it.
 `irl publish --relay <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` this
 way. A relay link consumes by default: it feeds every route the relay knows
 into the node's route table. `irl publish` only publishes, so it attaches with
-`consume: false`. The [browser relay guide](../guide/browser-relay.md) has the
+`consume: false`. The [browser relay guide](../how-to/browsers.md) has the
 workflow.

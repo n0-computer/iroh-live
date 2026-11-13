@@ -35,21 +35,21 @@ Without a camera, `irl publish --test-source` publishes a generated pattern and
 a beeping tone.
 
 To reach browsers, attach to a relay. The
-[relay guide](docs/guide/browser-relay.md) explains how.
+[relay guide](docs/how-to/browsers.md) explains how.
 
 ```sh
 irl publish --relay <RELAY_ENDPOINT_ID>
 ```
 
-All commands and flags are in [docs/cli.md](docs/cli.md).
+All commands and flags are in [docs/cli.md](docs/reference/cli.md).
 
 ## Using iroh-live in Rust
 
 The [`iroh-live`](iroh-live) crate is the library: a `Node` publishes
 broadcasts and plays other nodes' broadcasts, and its player picks a rendition
-from the ladder as the link allows. [Using iroh-live](docs/guide/usage.md)
+from the ladder as the link allows. [Using iroh-live](docs/getting-started/library-quickstart.md)
 has complete examples: publish, watch, calls, rooms, your own paths, relays and
-raw MoQ tracks. [Getting started](docs/guide/index.md) covers the setup, and
+raw MoQ tracks. [Getting started](docs/getting-started/install.md) covers the setup, and
 [`iroh-live/examples/publish.rs`](iroh-live/examples/publish.rs) is a complete
 publisher.
 
@@ -61,7 +61,7 @@ read. The default lets every peer read and publish nothing, and the
 `live/<id>/` layout lets each peer publish under its own id only. Filters,
 application prompts and tokens (JWT, or rcan capability chains bound to the
 peer's key) build on that. The relay takes JWT keys with `--auth-key`.
-[Access control](docs/guide/access.md) covers the policies and the trust
+[Access control](docs/how-to/control-access.md) covers the policies and the trust
 model.
 
 ## The moq dependency
@@ -122,7 +122,7 @@ these APIs, crates.io versions will replace the git pins.
 | Windows | The release workflow builds an x86-64 binary. Never run here |
 | iOS | Upstream has the backends. Never built here |
 
-Details are in [docs/platforms.md](docs/platforms.md).
+Details are in [docs/platforms.md](docs/reference/platforms.md).
 
 ## Building
 
@@ -131,7 +131,7 @@ cargo build --workspace
 ```
 
 Codecs need no system libraries. Device access and graphics do, and
-[Getting started](docs/guide/index.md#system-dependencies) lists them.
+[Getting started](docs/getting-started/install.md#system-dependencies) lists them.
 
 The software codecs always compile. Features gate the hardware codecs, the
 devices and the graphics. `moq-ext-publisher` and `moq-ext-player` define

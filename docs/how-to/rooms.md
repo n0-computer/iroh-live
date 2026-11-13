@@ -112,4 +112,4 @@ If every bootstrap endpoint in a ticket is offline, joining succeeds but the
 room stays empty until another member reaches this one.
 
 `irl room` is the quickest way to try a room. See [the CLI
-reference](../cli.md#irl-room).
+reference](../reference/cli.md#irl-room).

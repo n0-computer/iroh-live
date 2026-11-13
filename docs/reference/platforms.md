@@ -57,7 +57,7 @@ encodes and decodes, and the renderer imports decoded pictures through
 MediaCodec encode and decode are in moq-video. The app pushes CameraX frames
 through `VideoSource::push`, and
 the demo crate's `renderer` module draws decoded `AHardwareBuffer` frames as
-an EGL external texture without a copy. See [Android](guide/android.md).
+an EGL external texture without a copy. See [Android](../how-to/android.md).
 
 ## Raspberry Pi
 
@@ -71,7 +71,7 @@ Both run on a Pi 4. When probing picks the wrong device node, the `v4l2`
 field of moq-video's encoder and decoder configs names one explicitly.
 
 The Pi Zero has no Vulkan, so the Pi demo draws with its own GLES2 renderer.
-See [Raspberry Pi](guide/raspberry-pi.md).
+See [Raspberry Pi](../how-to/raspberry-pi.md).
 
 ## Codecs without software fallback
 

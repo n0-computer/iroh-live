@@ -45,7 +45,7 @@ accepts at most 64 claimed paths and 16 KiB of paths per peer. It also checks
 that the ticket's publisher owns the path: exactly one segment is the peer's
 64-character hex id, and no other segment parses as an endpoint id. A
 `NodeConfig::layout` replaces that rule with the layout's `owner`. A path that
-fails it returns `NotOwner`. [Access control](access.md#ticket-claims) says
+fails it returns `NotOwner`. [Access control](../how-to/control-access.md#ticket-claims) says
 how claims fit with the node's policy.
 
 A broadcast ticket is not a secret. It names a publisher and a path, and the
@@ -81,4 +81,4 @@ let parsed: RoomTicket = ticket.to_string().parse()?;
 `Room::ticket()` returns the room's ticket with this member as its bootstrap
 endpoint. Share that one with people who join. A room ticket is a bearer
 secret: anyone who has it can join the room and read its broadcasts. See
-[Rooms](rooms.md).
+[Rooms](../how-to/rooms.md).

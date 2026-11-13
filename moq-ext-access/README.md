@@ -32,7 +32,7 @@ let policy = policy::Open(Grant::subscribe_only())
 
 [`iroh-live-node`](../iroh-live-node) asks a node's policy on every session and
 enforces the grants on every live session. [Access
-control](../docs/guide/access.md) covers the model.
+control](../docs/how-to/control-access.md) covers the model.
 
 ## Features
 

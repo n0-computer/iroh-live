@@ -48,7 +48,7 @@ irl watch <TICKET>       # on another machine
 ```
 
 Without a camera, `irl publish --test-source` publishes a test pattern and a
-tone. [The CLI reference](../cli.md) lists every flag.
+tone. [The CLI reference](../reference/cli.md) lists every flag.
 
 ## Using the library
 
@@ -133,7 +133,7 @@ replaced:
 - `NodeConfig::with_policy` sets who may connect and what each peer may
   publish and read. `LiveLayout::config()` builds the config for the layout,
   and `NodeConfig::default()` lets every peer read and publish nothing.
-  [Access control](access.md) covers the policies.
+  [Access control](../how-to/control-access.md) covers the policies.
 - `Node::publish_with(path, audience, fill)`, with a path from
   `LiveLayout::path(id, name)`, publishes under the layout to an audience other
   than `Granted`, such as `Audience::peers([peer])`.
@@ -154,12 +154,12 @@ ladder behind `--simulcast`.
 
 ## Where to go next
 
-- [Using iroh-live](usage.md) for complete examples: a call, rooms, your own
+- [Using iroh-live](library-quickstart.md) for complete examples: a call, rooms, your own
   paths, a relay, and raw MoQ tracks.
-- [The CLI](../cli.md) for every `irl` command.
-- [Desktop rendering](desktop.md) for drawing frames in your own application.
-- [Tickets](tickets.md) for how a broadcast is named and shared.
-- [Access control](access.md) for who may connect, publish and read.
+- [The CLI](../reference/cli.md) for every `irl` command.
+- [Desktop rendering](../how-to/watch.md) for drawing frames in your own application.
+- [Tickets](../concepts/tickets.md) for how a broadcast is named and shared.
+- [Access control](../how-to/control-access.md) for who may connect, publish and read.
 - [Architecture](../architecture/index.md) for how the crates fit together.
-- [Raspberry Pi](raspberry-pi.md), [Android](android.md), and [the browser
-  relay](browser-relay.md) for other platforms.
+- [Raspberry Pi](../how-to/raspberry-pi.md), [Android](../how-to/android.md), and [the browser
+  relay](../how-to/browsers.md) for other platforms.

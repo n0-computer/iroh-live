@@ -88,7 +88,7 @@ The facade's error is `iroh_live::Error`: `Node` wraps an
 `iroh_live_rooms::Error` and `Calls` an `iroh_live::calls::Error`. `SecretKey`
 and `Bind` come from `EndpointConfig`. Audiences, admission, relays and routes
 belong to [`iroh-live-node`](transport.md), and [Access
-control](../guide/access.md) describes the policies.
+control](../how-to/control-access.md) describes the policies.
 
 `irl call` and the Android demo share a one-to-one call convention, in
 `iroh_live::calls`. `Calls::new(&node, &layout)` publishes this side as one

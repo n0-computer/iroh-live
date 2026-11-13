@@ -35,7 +35,7 @@ H.265 needs a hardware encoder.
 
 `rpicam_h264` runs `rpicam-vid` and hands over the Annex-B H.264
 it already encoded. `VideoSource::rpicam` reads raw pictures from the same
-program. See [Raspberry Pi](../guide/raspberry-pi.md).
+program. See [Raspberry Pi](../how-to/raspberry-pi.md).
 
 `AudioSource::file` decodes a WAV or MP3 file with symphonia on its own thread,
 in real time, and fans the PCM out to every broadcast that reads it. Its

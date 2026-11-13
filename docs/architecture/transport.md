@@ -138,7 +138,7 @@ once. A trigger that arrives while a decision runs makes the actor ask once
 more afterwards, so no change is lost. A session whose first decision started
 before a `reauthorize` call registers with nothing and is decided again: the
 state counts the calls, and the session compares the count from before its
-decision. [Access control](../guide/access.md) describes the policies
+decision. [Access control](../how-to/control-access.md) describes the policies
 from the application's side.
 
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session

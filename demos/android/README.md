@@ -86,6 +86,6 @@ sending the peer's audio back to it.
 ## Status
 
 Tested on a device, with two-way video and audio between Android and a Linux
-desktop. See [docs/guide/android.md](../../docs/guide/android.md) for how the
-pieces fit together, and [docs/platforms.md](../../docs/platforms.md) for the
+desktop. See [docs/guide/android.md](../../docs/how-to/android.md) for how the
+pieces fit together, and [docs/platforms.md](../../docs/reference/platforms.md) for the
 support matrix.

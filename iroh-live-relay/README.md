@@ -104,7 +104,7 @@ browsers. They conflict with `--auth-key`. iroh clients keep the default
 policy. A binary that embeds the relay sets another one in
 `Config::iroh_policy`.
 
-[Access control](../docs/guide/access.md) describes policies and tokens in
+[Access control](../docs/how-to/control-access.md) describes policies and tokens in
 full.
 
 The relay stores its iroh secret key in `$IROH_LIVE_RELAY_DATA`, or else in the

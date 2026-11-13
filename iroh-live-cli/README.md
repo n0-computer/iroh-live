@@ -23,7 +23,7 @@ irl watch <ticket>
 - `devices`: list cameras, displays and audio devices.
 
 `irl <command> --help` lists the options, and
-[docs/cli.md](../docs/cli.md) describes them all.
+[docs/cli.md](../docs/reference/cli.md) describes them all.
 
 The first Ctrl+C shuts down gracefully: it leaves rooms, closes broadcasts and
 then the endpoint, so peers learn at once that the node is gone. A second

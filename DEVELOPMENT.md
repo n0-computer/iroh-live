@@ -1,7 +1,7 @@
 # Development guide
 
 [README.md](README.md) lists the crates and has the quick start.
-[docs/](docs/index.md) has the architecture and the guides, and the crate docs
+[docs/](docs/SUMMARY.md) has the architecture and the guides, and the crate docs
 describe the main types.
 
 Codecs, capture, decoding, and the wgpu renderer live upstream in `moq-video`

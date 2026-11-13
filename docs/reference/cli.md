@@ -4,7 +4,7 @@ The `irl` binary is in the `iroh-live-cli` crate. It has seven commands:
 `devices`, `publish`, `watch`, `call`, `room`, `record`, and `run`.
 
 Every feature is on by default, and the Linux-only ones compile to nothing on
-macOS and Windows. The [crate README](../iroh-live-cli/README.md#features)
+macOS and Windows. The [crate README](../../iroh-live-cli/README.md#features)
 lists them. `record` and `run` never open a window.
 
 Every command stops on Ctrl+C, also with its window hidden. The first Ctrl+C
@@ -188,7 +188,7 @@ to switch between adaptive and fixed renditions.
 A backend passed to `--decoder` is the only one tried. The window's decoder
 combo box changes the decoder during playback, in the same way as a rendition
 switch. On a Raspberry Pi 4, `auto` picks the V4L2 hardware decoder, which adds
-latency. See [Raspberry Pi](guide/raspberry-pi.md#watching-on-a-pi-4-name-the-decoder).
+latency. See [Raspberry Pi](../how-to/raspberry-pi.md#watching-on-a-pi-4-name-the-decoder).
 
 `--latency` sets how long the player holds each frame before it shows it, and
 how far behind it may fall before it skips ahead:
@@ -253,7 +253,7 @@ time.
 
 A tile disappears when its broadcast closes or its session drops. It comes
 back if the participant still lists the broadcast. A participant who publishes
-nothing gets no tile. See [Rooms](guide/rooms.md).
+nothing gets no tile. See [Rooms](../how-to/rooms.md).
 
 ## `irl record`
 
@@ -389,4 +389,4 @@ irl record <TICKET> -o clip.mp4 --duration 10
 ```
 
 The relay is its own binary: `cargo run -p iroh-live-relay`. See
-[Browser relay](guide/browser-relay.md).
+[Browser relay](../how-to/browsers.md).

@@ -127,7 +127,7 @@ own id. Narrow it with a filter, such as a contact list, and call
 `Node::reauthorize(peer)` when the list changes. Tokens let a peer prove more
 rights: the `jwt` feature verifies moq-relay's JWTs, and the `rcan` feature
 verifies capability chains bound to the peer's key.
-[Access control](../docs/guide/access.md) covers the policies and the trust
+[Access control](../docs/how-to/control-access.md) covers the policies and the trust
 model.
 
 ## Features
@@ -163,5 +163,5 @@ camera and needs `rpicam`. `examples/moq_only.rs` serves a broadcast with
 node's contacts and drops one on `Node::reauthorize`.
 `examples/subscribe_test.rs` is the helper the browser test suite runs.
 
-[Using iroh-live](../docs/guide/usage.md) has complete programs for the common
+[Using iroh-live](../docs/getting-started/library-quickstart.md) has complete programs for the common
 cases: calls, rooms, custom paths, relays and raw MoQ tracks.

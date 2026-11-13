@@ -76,7 +76,7 @@ request waits in the queue until the application admits or rejects the
 answers. `policy::Verify` lets a token decide, with JWT and rcan verifiers
 behind features.
 
-[Access control](../docs/guide/access.md) covers the policies, tokens and the
+[Access control](../docs/how-to/control-access.md) covers the policies, tokens and the
 trust model.
 
 ## Relays
