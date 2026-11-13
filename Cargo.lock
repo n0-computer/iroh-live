@@ -3351,7 +3351,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.21.11"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "derive_more",
@@ -4877,7 +4877,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "kio"
 version = "0.6.2"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "crossbeam-epoch",
  "kio-macros",
@@ -4891,7 +4891,7 @@ dependencies = [
 [[package]]
 name = "kio-macros"
 version = "0.1.0"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5385,7 +5385,7 @@ dependencies = [
 [[package]]
 name = "moq-audio"
 version = "0.1.10"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bitstream-io",
  "block2 0.6.2",
@@ -5417,7 +5417,7 @@ dependencies = [
 [[package]]
 name = "moq-auth"
 version = "0.2.1"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -5445,7 +5445,7 @@ dependencies = [
 [[package]]
 name = "moq-congestion"
 version = "0.1.0"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "kio",
  "rand",
@@ -5456,7 +5456,7 @@ dependencies = [
 [[package]]
 name = "moq-crypto"
 version = "0.0.11"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "data-encoding",
@@ -5582,7 +5582,7 @@ dependencies = [
 [[package]]
 name = "moq-json"
 version = "0.5.8"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "kio",
@@ -5597,7 +5597,7 @@ dependencies = [
 [[package]]
 name = "moq-loc"
 version = "0.2.19"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5607,7 +5607,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.5.1"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "serde",
  "serde_json",
@@ -5617,7 +5617,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.10.11"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -5652,7 +5652,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.3.10"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -5677,7 +5677,7 @@ dependencies = [
 [[package]]
 name = "moq-nvenc"
 version = "0.1.2"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "cudarc",
  "libloading 0.9.0",
@@ -5687,7 +5687,7 @@ dependencies = [
 [[package]]
 name = "moq-pattern"
 version = "0.1.2"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "serde",
 ]
@@ -5695,7 +5695,7 @@ dependencies = [
 [[package]]
 name = "moq-quic"
 version = "0.1.0"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "fastbloom",
@@ -5717,7 +5717,7 @@ dependencies = [
 [[package]]
 name = "moq-relay"
 version = "0.17.2"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "anyhow",
  "axum",
@@ -5763,7 +5763,7 @@ dependencies = [
 [[package]]
 name = "moq-sock"
 version = "0.2.0"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -5778,7 +5778,7 @@ dependencies = [
 [[package]]
 name = "moq-stats"
 version = "0.2.12"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "kio",
  "moq-json",
@@ -5795,7 +5795,7 @@ dependencies = [
 [[package]]
 name = "moq-tokio"
 version = "0.19.23"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -5859,7 +5859,7 @@ dependencies = [
 [[package]]
 name = "moq-v4l"
 version = "0.1.0"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -5868,7 +5868,7 @@ dependencies = [
 [[package]]
 name = "moq-vaapi"
 version = "0.2.1"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -5880,7 +5880,7 @@ dependencies = [
 [[package]]
 name = "moq-video"
 version = "0.1.10"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "anyhow",
  "ash",
@@ -7945,7 +7945,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 [[package]]
 name = "qmux"
 version = "0.7.0"
-source = "git+file:///home/bit/Code/rust/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-rate-control#71e98fc4e1edfc61f1b878ac17b0b363e16f65d2"
 dependencies = [
  "bytes",
  "futures",

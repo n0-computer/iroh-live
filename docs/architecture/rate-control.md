@@ -140,8 +140,8 @@ that link's.
 The node shares one allocator registry with every session, dialed and
 accepted, so each takes the sum of the node's reservations as its probe target.
 Sharing it with accepted sessions needs moq-net's `Server::with_allocator`,
-which upstream does not have yet: the workspace points moq at a local branch
-that adds it.
+which upstream does not have yet: the workspace takes moq from a branch of
+the Frando/moq fork that adds it.
 
 ## Encoders
 
