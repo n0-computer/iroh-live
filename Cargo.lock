@@ -77,6 +77,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "archery"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33ca55ee147b1926dbea904f50fe4902494e97bc742205abbbf10c709e43815f"
+dependencies = [
+ "triomphe",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -327,6 +336,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cc"
@@ -1059,6 +1071,19 @@ checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
  "futures-sink",
+]
+
+[[package]]
+name = "futures-concurrency"
+version = "7.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175cd8cca9e1d45b87f18ffa75088f2099e3c4fe5e2f83e42de112560bea8ea6"
+dependencies = [
+ "fixedbitset",
+ "futures-core",
+ "futures-lite",
+ "pin-project",
+ "smallvec",
 ]
 
 [[package]]
@@ -1826,6 +1851,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-gossip"
+version = "0.101.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515"
+dependencies = [
+ "blake3",
+ "bytes",
+ "data-encoding",
+ "derive_more",
+ "futures-concurrency",
+ "hex",
+ "indexmap 2.14.2",
+ "iroh",
+ "iroh-base",
+ "iroh-metrics",
+ "irpc",
+ "n0-error",
+ "n0-future",
+ "postcard",
+ "rand",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "iroh-live-node"
 version = "0.1.0"
 dependencies = [
@@ -1854,6 +1906,30 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "iroh-live-rooms"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "derive_more",
+ "iroh",
+ "iroh-gossip",
+ "iroh-live-node",
+ "iroh-live-rooms",
+ "iroh-smol-kv",
+ "iroh-tickets",
+ "moq-net",
+ "n0-error",
+ "n0-future",
+ "n0-tracing-test",
+ "n0-watcher",
+ "postcard",
+ "rand",
+ "serde",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1926,6 +2002,74 @@ dependencies = [
  "url",
  "webpki-roots",
  "ws_stream_wasm",
+]
+
+[[package]]
+name = "iroh-smol-kv"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "611e9eb3b2037e247304eb0a78527aa2cfd62b9d14c4a23b06e020697ab8f4df"
+dependencies = [
+ "bytes",
+ "ed25519-dalek",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "irpc",
+ "n0-error",
+ "n0-future",
+ "postcard",
+ "rand",
+ "rpds",
+ "serde",
+ "serde-big-array",
+ "sync_wrapper",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "iroh-tickets"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da53233419ca36bf521ed45683b7748366f9b233032891eefc2d70567a84ac54"
+dependencies = [
+ "data-encoding",
+ "derive_more",
+ "iroh-base",
+ "n0-error",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "irpc"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3623d6ff582b415904b29bbe6ebcb4a4f9a262ccdee05a45fdd003ef0950c386"
+dependencies = [
+ "futures-util",
+ "irpc-derive",
+ "n0-error",
+ "n0-future",
+ "noq",
+ "postcard",
+ "serde",
+ "smallvec",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "irpc-derive"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35c254013736de16472140d26904e6ac98e8f3887284dcf4af40f88c77411b56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2605,6 +2749,7 @@ version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96c2215d16de3a55894583a539e6b151fb45236c3a6da45a18a40af73dc00636"
 dependencies = [
+ "anyhow",
  "n0-error-macros",
  "spez",
 ]
@@ -3715,6 +3860,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpds"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e025feb26210bc196b908e72deb063b1b4000754304341cbc168a1e72c857ebc"
+dependencies = [
+ "archery",
+ "serde",
+ "smallvec",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3929,6 +4085,15 @@ checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4705,6 +4870,12 @@ dependencies = [
  "tracing-core",
  "tracing-log",
 ]
+
+[[package]]
+name = "triomphe"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc"
 
 [[package]]
 name = "try-lock"
