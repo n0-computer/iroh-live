@@ -56,6 +56,10 @@ pub const HD: Size = Size {
 };
 
 /// Returns a frame rate of `frames_per_second`.
+///
+/// # Panics
+///
+/// Panics if `frames_per_second` is zero.
 #[must_use]
 pub fn fps(frames_per_second: u32) -> FrameRate {
     FrameRate::new(frames_per_second, 1).expect("a valid rate")

@@ -10,7 +10,8 @@ that keeps them aligned at playout time. It wraps upstream's
 Each media path folds its arrivals into the clock as a track. The clock's
 reference is the earliest arrival either track has seen, measured against its
 timestamp, so it sits on the wall clock and follows the live edge. Playback
-trails that reference by a delay, the player's latency, 100 ms by default.
+trails that reference by the clock's delay, at least the latency's `min`
+(100 ms by default), as [Latency](#latency) describes.
 Until the first frame anchors the clock, every frame is due at once.
 
 Neither path owns the clock. A path that falls behind, such as audio stalled
@@ -48,8 +49,8 @@ unset `min` counts as zero, and an unset `max` waits as long as the publisher
 keeps media.
 
 The clock's delay follows upstream's rule, the one `moq play` applies
-(`quest/m1/audio-jitter-target` in moq-dev/moq). Each track asks the clock
-for a target, and the clock runs at the largest one. A track's target is its
+(`rs/moq-cli/src/play` at the pinned rev). Each track asks the clock for a
+target, and the clock runs at the largest one. A track's target is its
 catalog `delay` plus a jitter allowance, which hang's catalog says a player
 must hold:
 
@@ -65,8 +66,7 @@ must hold:
 
 No target goes below `min` or above one 30 fps frame (33 ms) below `max`, and
 an unpaced latency (`min` of zero) holds nothing. The delay therefore rises
-on a jittery link and returns to `min` on a clean one. Before this rule the
-delay was `min`, raised only by the catalog `jitter`. A change of the delay
+on a jittery link and returns to `min` on a clean one. A change of the delay
 moves the schedule once, by the difference. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
@@ -77,8 +77,9 @@ The whole `Delay` goes on `moq_video::decode::Options` and
 `moq_audio::decode::Options`, so relays and the publisher see the range too.
 Upstream skips media older than `max` to return to the live edge. The default
 is 150 ms. Raise it when continuity through congestion matters more than
-staying live, and lower it to skip stalls instead of playing them out. `play` and `set_latency` refuse a `min` above `max`, since a skip
-threshold below the hold would drop the frames the hold waits for.
+staying live, and lower it to skip stalls instead of playing them out. `play`
+and `set_latency` refuse a `min` above `max`, since a skip threshold below the
+hold would drop the frames the hold waits for.
 
 A `min` of zero turns pacing off, and frames go to the renderer as they decode.
 `IMMEDIATE_LATENCY` is that, with a `max` of 150 ms so the player still skips
@@ -114,7 +115,8 @@ follows the new latency from its next frame.
 ## Timing metrics
 
 `Player::stats()` returns a `PlaybackStats` snapshot. `latency` is the clock's
-delay, the largest target of its tracks, and `audio.buffered` is the sink's fill level alone. `video.decode_time` is one transport read and
-decode together, smoothed. `video.fps` counts frames over a window instead of
+delay, the largest target of its tracks, and `audio.buffered` is the sink's
+fill level alone. `video.decode_time` is one transport read and decode
+together, smoothed. `video.fps` counts frames over a window instead of
 deriving a rate from the gap between two frames. See [developer
 tools](devtools.md) for the overlay that draws them.

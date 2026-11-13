@@ -312,7 +312,9 @@ async fn prints_the_switch_latency() {
     }
 }
 
-/// A switchable source swaps its input behind one `set_video`, opening the next source in the background.
+/// A switchable source swaps its input behind one `set_video`.
+///
+/// It opens the next source in the background.
 #[tokio::test]
 async fn a_switchable_source_plays_each_source_it_switches_to() {
     let (switch, source) = VideoSource::switchable(VideoFormat {

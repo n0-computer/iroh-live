@@ -38,7 +38,7 @@ pub use moq_ext_adaptive::{Adaptation, RenditionMode};
 pub use self::audio::{AudioFrame, AudioFrames};
 pub(crate) use self::clock::PlayoutClock;
 
-/// The latency of [`PlayerConfig::default`]: held for 100 ms, and skipped past 150 ms.
+/// The latency of [`PlayerConfig::default`]: held for at least 100 ms, and skipped past 150 ms.
 pub const DEFAULT_LATENCY: Delay = Delay {
     min: Some(Duration::from_millis(100)),
     max: Some(Duration::from_millis(150)),
@@ -133,9 +133,10 @@ pub struct PlayerConfig {
     /// decoder measures as packets arrive. The clock follows the largest ask,
     /// up to a frame below `max`, so the delay rises on a jittery link and
     /// returns to `min` on a clean one. While audio plays, pictures show when
-    /// their sound does. Media later than `max` is skipped. Both reach the transport, so relays and the publisher see
-    /// them too. Setting `min == max` gives a fixed latency, and an unset
-    /// `min` counts as zero. [`DEFAULT_LATENCY`] by default.
+    /// their sound does. Media later than `max` is skipped. Both reach the
+    /// transport, so relays and the publisher see them too. Setting
+    /// `min == max` gives a fixed latency, and an unset `min` counts as zero.
+    /// [`DEFAULT_LATENCY`] by default.
     pub latency: Delay,
     /// What to do with the audio, [`AudioMode::Off`] by default.
     pub audio: AudioMode,
@@ -353,9 +354,10 @@ impl Player {
     /// Returns the decoded audio, as PCM with its timestamps.
     ///
     /// The frames flow only while [`PlayerConfig::audio`] is not
-    /// [`AudioMode::Off`], with or without a speaker. Without one, the audio
-    /// is decoded without playing it, for analysis. Each call returns a new handle that starts at the
-    /// next decoded frame and ends when the player is dropped.
+    /// [`AudioMode::Off`], with or without a speaker. Without one, the audio is
+    /// decoded without playing it, for analysis. Each call returns a new handle
+    /// that starts at the next decoded frame and ends when the player is
+    /// dropped.
     ///
     /// # Examples
     ///
@@ -395,12 +397,12 @@ impl Player {
     /// Changes how far behind live the player runs, without a gap in the picture.
     ///
     /// The playout clock starts over at the new delay, so the schedule moves
-    /// once: the next video frame or audio write anchors it again. The
-    /// latency is the subscription's [`Delay`], so a changed one also rebuilds
-    /// the video decoder behind the picture with the new range. The new
-    /// decoder takes over once it has caught up, as in a switch, and the
-    /// current picture stays up until then. Audio keeps its old range until it next opens, because a
-    /// rebuild would be audible.
+    /// once: the next video frame or audio write anchors it again. The latency
+    /// is the subscription's [`Delay`], so a changed one also rebuilds the
+    /// video decoder behind the picture with the new range. The new decoder
+    /// takes over once it has caught up, as in a switch, and the current
+    /// picture stays up until then. Audio keeps its old range until it next
+    /// opens, because a rebuild would be audible.
     ///
     /// This does not block or await, so there is nothing to cancel: the change
     /// is recorded before it returns, and the player's tasks apply it on their
