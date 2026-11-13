@@ -31,10 +31,10 @@ use crate::{
     state::{LinkEntry, State},
 };
 
-/// A broadcast that lived shorter than this counts as ending at once.
-const REASK_WINDOW: Duration = Duration::from_secs(1);
-
-/// The pause before asking the table again after a quick end.
+/// The pause before asking the table again once a broadcast ended.
+///
+/// A successor, such as a second session with the publisher that may
+/// announce only once the first ends, needs a moment to enter the table.
 const REASK_PAUSE: Duration = Duration::from_millis(100);
 
 /// A path resolved in a route table.
@@ -262,8 +262,8 @@ impl Subscription {
 
     /// Waits until nothing serves the path.
     ///
-    /// A pinned subscription ends when another instance takes its path over.
-    /// Cancellation safe.
+    /// A pinned subscription never moves to another instance, and ends once
+    /// its own no longer serves the path. Cancellation safe.
     pub async fn closed(&self) {
         self.inner.ended.cancelled().await;
     }
@@ -271,10 +271,10 @@ impl Subscription {
 
 /// Follows `path` in `origin` and keeps `current` on what serves it, until nothing does.
 ///
-/// moq moves between routes of one instance by itself. This switches when
-/// another instance takes the path over, and asks the table again when the
-/// broadcast ends while another route remains. With `instance` set, it
-/// follows only that instance.
+/// moq moves between routes of one instance by itself, and hands out each
+/// instance that takes the path over. Once the broadcast ends, this asks the
+/// table again after [`REASK_PAUSE`], and ends if no route serves the path.
+/// With `instance` set, it follows only that instance.
 async fn follow(
     path: Path,
     origin: origin::Consumer,
@@ -286,32 +286,36 @@ async fn follow(
     let mut following = origin.follow(&path, instance.clone()).ok();
     loop {
         let serving = current.lock().expect("poisoned").clone();
-        let since = tokio::time::Instant::now();
         let taken = async {
             match following.as_mut() {
-                Some(following) => following.available().await.ok().flatten(),
+                Some(following) => following.available().await,
                 None => std::future::pending().await,
             }
         };
         tokio::select! {
-            Some(next) = taken => {
-                if !next.is_closed() {
+            taken = taken => match taken {
+                Ok(Some(next)) if !next.is_closed() => {
                     debug!(%path, "another instance serves the path");
                     *current.lock().expect("poisoned") = next;
+                    continue;
                 }
-                continue;
-            }
+                // The path went offline, or a takeover ended before it was
+                // read. moq hands out what serves the path next.
+                Ok(_) => continue,
+                Err(moq_net::Error::Closed) => return,
+                // A refusal: moq waits for the route to change.
+                Err(_) => continue,
+            },
             _ = serving.closed() => {}
         }
-        if since.elapsed() < REASK_WINDOW {
-            tokio::time::sleep(REASK_PAUSE).await;
-        }
-        let next = match origin.request(&path, instance.clone()).await {
-            Ok(next) if !next.is_closed() => next,
+        tokio::time::sleep(REASK_PAUSE).await;
+        match origin.request(&path, instance.clone()).await {
+            Ok(next) if !next.is_closed() => {
+                debug!(%path, "broadcast ended, a route still serves it");
+                *current.lock().expect("poisoned") = next;
+            }
             _ => return,
-        };
-        debug!(%path, "broadcast ended, a route still serves it");
-        *current.lock().expect("poisoned") = next;
+        }
     }
 }
 
@@ -466,4 +470,158 @@ fn subscription(
     broadcast: broadcast::Consumer,
 ) -> Subscription {
     Subscription::new(path, table, broadcast, None, Arc::downgrade(shared))
+}
+
+#[cfg(test)]
+mod tests {
+    use moq_net::origin::RouteOptions;
+
+    use super::*;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// A follow task over a local route table, and the broadcast it keeps current.
+    struct Followed {
+        current: Arc<Mutex<broadcast::Consumer>>,
+        ended: CancellationToken,
+        _task: AbortOnDropHandle<()>,
+    }
+
+    impl Followed {
+        /// Resolves `path` in `table` and follows it, pinned to `instance` if given.
+        async fn start(table: &origin::Producer, path: &str, instance: Option<Instance>) -> Self {
+            let path = Path::new(path).expect("a path");
+            let consumer = table.consume();
+            let broadcast =
+                tokio::time::timeout(TIMEOUT, consumer.request(&path, instance.clone()))
+                    .await
+                    .expect("resolved in time")
+                    .expect("a route serves the path");
+            let current = Arc::new(Mutex::new(broadcast));
+            let ended = CancellationToken::new();
+            let task = tokio::spawn(follow(
+                path,
+                consumer,
+                instance,
+                current.clone(),
+                ended.clone(),
+            ));
+            Self {
+                current,
+                ended,
+                _task: AbortOnDropHandle::new(task),
+            }
+        }
+
+        /// Returns the instance of the broadcast the follow task keeps current.
+        fn instance(&self) -> Option<Instance> {
+            self.current
+                .lock()
+                .expect("poisoned")
+                .info()
+                .instance
+                .clone()
+        }
+
+        /// Waits until the current broadcast is one of `instance`.
+        async fn moves_to(&self, instance: &Instance) {
+            tokio::time::timeout(TIMEOUT, async {
+                while self.instance().as_ref() != Some(instance) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the subscription moved in time");
+        }
+
+        /// Waits until the follow task reports that nothing serves the path.
+        async fn ends(&self) {
+            tokio::time::timeout(TIMEOUT, self.ended.cancelled())
+                .await
+                .expect("the subscription ended in time");
+        }
+    }
+
+    /// Publishes a broadcast at `path` with `cost`, until the route drops.
+    fn route(table: &origin::Producer, path: &str, cost: u64) -> origin::Route {
+        table
+            .route(path, RouteOptions::default().with_cost(cost))
+            .expect("a route")
+    }
+
+    #[tokio::test]
+    async fn a_cheaper_instance_taking_over_moves_the_subscription() {
+        let table = moq_tokio::origin::spawn();
+        let first = route(&table, "cam", 5);
+        let followed = Followed::start(&table, "cam", None).await;
+        assert_eq!(followed.instance(), Some(first.instance()));
+
+        let second = route(&table, "cam", 1);
+        followed.moves_to(&second.instance()).await;
+        assert!(!followed.ended.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn an_ending_instance_hands_over_to_one_that_remains() {
+        let table = moq_tokio::origin::spawn();
+        let first = route(&table, "cam", 1);
+        let second = route(&table, "cam", 5);
+        let followed = Followed::start(&table, "cam", None).await;
+        assert_eq!(followed.instance(), Some(first.instance()));
+
+        drop(first);
+        followed.moves_to(&second.instance()).await;
+        assert!(!followed.ended.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_successor_that_routes_just_after_the_end_takes_over() {
+        let table = moq_tokio::origin::spawn();
+        let first = route(&table, "cam", 1);
+        let followed = Followed::start(&table, "cam", None).await;
+        // Long enough that the end is not a quick one.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        drop(first);
+        tokio::time::sleep(REASK_PAUSE / 4).await;
+        let second = route(&table, "cam", 1);
+        followed.moves_to(&second.instance()).await;
+        assert!(!followed.ended.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn the_subscription_ends_once_nothing_serves_the_path() {
+        let table = moq_tokio::origin::spawn();
+        let only = route(&table, "cam", 1);
+        let followed = Followed::start(&table, "cam", None).await;
+
+        drop(only);
+        followed.ends().await;
+    }
+
+    #[tokio::test]
+    async fn a_pinned_subscription_never_moves_to_another_instance() {
+        let table = moq_tokio::origin::spawn();
+        let first = route(&table, "cam", 5);
+        let followed = Followed::start(&table, "cam", Some(first.instance())).await;
+
+        let _second = route(&table, "cam", 1);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(followed.instance(), Some(first.instance()));
+        drop(first);
+        followed.ends().await;
+    }
+
+    #[tokio::test]
+    async fn a_pinned_subscription_stays_while_its_instance_serves() {
+        let table = moq_tokio::origin::spawn();
+        let first = route(&table, "cam", 1);
+        let followed = Followed::start(&table, "cam", Some(first.instance())).await;
+
+        let other = route(&table, "other", 1);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!followed.ended.is_cancelled());
+        drop((first, other));
+        followed.ends().await;
+    }
 }

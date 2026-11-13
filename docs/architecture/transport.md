@@ -31,8 +31,12 @@ another: the node carries no traffic between its links. The peer's hop and the
 link's cost travel with each route (`route.rs`). moq serves the cheapest route.
 When it dies, moq moves to another route of the same instance, which is the
 stream the publisher announced. A move between a direct and a relay route of
-one instance does not end the broadcast. When the instance's last route goes,
-the broadcast ends, and `Subscription::closed` asks the table again.
+one instance does not end the broadcast. When another instance takes the path
+over, moq's `origin::Consumer::follow` hands it out and the subscription moves
+to it. When the instance's last route goes, the broadcast ends. The
+subscription then waits 100 ms, so a successor such as a second session with
+the publisher can announce, and asks the table again. It ends if no route
+serves the path.
 
 The node can still say which link serves a path (`Subscription::session`,
 `Subscription::serving_link`), from the hop of the route that serves it.
