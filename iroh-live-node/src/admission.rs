@@ -85,10 +85,23 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         return Err(e!(Error::ShutDown));
     }
     let peer = connection.remote_id();
-    let transport = transport::Transport::new(connection.clone())?;
+    let (transport, server) = match &shared.rate {
+        Some(rate) => {
+            let transport = transport::Transport::with_rate(connection.clone(), rate.transport())?;
+            rate.register(transport.rate());
+            (
+                transport,
+                moq_net::Server::new().with_allocator(rate.allocator()),
+            )
+        }
+        None => (
+            transport::Transport::new(connection.clone())?,
+            moq_net::Server::new(),
+        ),
+    };
     let opened = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        moq_net::Server::new().accept_request(moq_net::time::Instant::now(), transport),
+        server.accept_request(moq_net::time::Instant::now(), transport),
     )
     .await;
     let handshake = match opened {

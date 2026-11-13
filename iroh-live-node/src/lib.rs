@@ -38,6 +38,9 @@
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //! - [`MoqPreset`]: iroh's N0 preset with BBR3, to bind the node's endpoint
 //!   with. [`Congestion`] names the controllers to compare it against.
+//! - [`RateControl`]: off by default. With it in [`NodeConfig::rate_control`],
+//!   the links estimate their send rate in the application, and
+//!   [`Node::bandwidth`] hands out the allocator encoders follow.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
 //! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
@@ -97,6 +100,7 @@ mod node;
 pub mod policy;
 mod preset;
 mod publish;
+mod rate;
 mod reauth;
 mod relay;
 mod route;
@@ -125,6 +129,7 @@ pub use self::{
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     publish::{Audience, Publication, UnpublishOnDrop},
+    rate::{FanOut, RateControl, RateSample, SendEstimate, UnknownSendEstimate},
     relay::{RelayConfig, RelayLink, RelayStatus},
     route::Subscription,
     session::Session,
