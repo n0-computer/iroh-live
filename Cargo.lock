@@ -4358,7 +4358,6 @@ dependencies = [
  "n0-tracing-test",
  "n0-watcher",
  "patchbay",
- "serde",
  "tokio",
  "tokio-util",
  "tracing",
@@ -5519,7 +5518,6 @@ dependencies = [
 name = "moq-ext-player"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "derive_more",
  "hang",
  "kio",
