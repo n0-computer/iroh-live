@@ -58,13 +58,20 @@ With rate control the transport runs an estimator over the selected path's
   lost. It falls again two seconds on only if the queue has not shrunk and it
   grows, or the sender has not backed off, or the estimate is above what the
   path delivers.
-- Loss above 10% over two seconds lowers it by half the loss rate. It never
-  falls under 50 kbit/s.
-- While the path stays clean and the hold after a fall has passed, it climbs:
-  10% a second up to 1.5 times the rate the path last congested at, 25% a
-  second beyond, up to 1.5 times the session's probe target. The hold starts at
-  one second and doubles for each fall within ten seconds of the last, up to
-  four.
+- A queue drains once the sender backs off, and a longer path does not. Take
+  a round trip that stays flat for a second while the sender sends 10% less
+  than at the fall, with loss under 2%. It is a longer path: it becomes the
+  baseline, and the fall is undone.
+- Loss above 10% lowers it by half the loss rate. The rate spans two seconds,
+  or the time since the last fall if that is shorter, so one burst lowers it
+  once. It never falls under 50 kbit/s.
+- While the path stays clean and the hold after a fall is over, it climbs up
+  to 1.5 times the session's probe target. Between the rate the path last
+  congested at and 1.25 times that rate, it climbs 10% a second. Below and
+  above that band it climbs 25% a second. Above the band the climb speeds up by 25 points for
+  each second it goes on, up to 70% a second. That about doubles the estimate
+  each second. The hold starts at one second. A fall that ends a climb within
+  ten seconds of the last fall doubles it, up to four.
 - A change of the selected path starts the baseline over, and the estimate
   holds for a settle window, two seconds by default.
 
@@ -132,12 +139,15 @@ that adds it.
 - Relay links over `moq_tokio` keep their own estimate and do not count toward
   the node's. iroh-live-relay does not run the estimator toward its viewers.
 - The round trip is the smoothed one, so the estimator cannot tell a route that
-  got longer on the same QUIC path from a queue at first. It falls once, holds,
-  and climbs again once the longer round trip is the minimum, ten seconds on. A
-  player on its default timers steps down a rendition meanwhile.
-  `a_risen_baseline_round_trip_does_not_downgrade` fails with rate control on
-  for this reason. An iroh path change, such as a fall back to a relay, is a
-  new path and holds through the settle window instead.
+  got longer on the same QUIC path from a queue at first. It falls once, and
+  undoes the fall about two seconds later. A rendition whose share falls under
+  its boundary in that time pauses, and a player leaves it. In the patchbay
+  suite the top rung sends enough that the fall stays above its boundary. An
+  iroh path change, such as a fall back to a relay, is a new path and holds
+  through the settle window instead.
+- A queue that the backed-off sender holds exactly flat looks like a longer
+  path too. The estimate climbs back into it, and the next fall takes the
+  queue out of the baseline again.
 - The subscriber's fit test still asks for 1.25 times a rendition's bitrate.
   The climb's ceiling, 1.5 times the probe target, leaves room for it, but a
   player does not yet read the publisher's band boundary.
