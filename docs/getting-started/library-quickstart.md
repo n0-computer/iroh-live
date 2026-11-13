@@ -1,41 +1,31 @@
-# Using iroh-live
+# Quickstart: library
 
-iroh-live gives you a node that publishes live audio and video to other iroh
-nodes and plays theirs. Broadcasts are named by path, found through a route
-table, and carried over [Media over QUIC](https://moq.dev/). Direct sessions
-and relays both feed the table, so a viewer does not care which one serves it.
+This page builds two programs: a publisher that prints a ticket, and a viewer
+that plays it. They are the canonical examples, and the other pages build on
+them. Both use generated test media, so they need no camera.
 
-Most programs need one crate, `iroh-live`, with the features you want. It
-builds against moq's unreleased `main` branch, so it comes from git, not
-crates.io (see [the moq dependency](../../README.md#the-moq-dependency)):
+## Add the dependency
+
+iroh-live is not on crates.io yet, so it comes from git (see
+[Install](install.md#use-the-library)):
 
 ```toml
-# Add "rooms" for rooms.
+[dependencies]
+iroh = "1.4"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 ```
 
-| You want | Use | Crate |
-|---|---|---|
-| Publish, watch, call, rooms | `Node`, `LiveLayout`, `Calls`, `LocalBroadcast`, `RemoteBroadcast` | `iroh-live` |
-| Your own paths, audiences or access rules | `Node`, `NodeConfig::with_policy`, `Layout` | `iroh-live-node` |
-| Several participants | `Rooms`, `Room` | `iroh-live-rooms` |
-| Encode sources, decode and play | `LocalBroadcast`, `Player` | `moq-ext-publisher`, `moq-ext-player` |
-| Browsers, or peers behind a relay | `Node::attach_relay`, the relay binary | `iroh-live-relay` |
+`full` turns on the media stack with capture, rendering and recording. The
+[features reference](../reference/features.md) lists the others.
 
-`iroh-live` re-exports the rest: `iroh_live::media` has the media crates,
-`iroh_live::node` is `iroh-live-node`, and `iroh_live::rooms` is `iroh-live-rooms`
-behind the `rooms` feature. The examples below are complete programs. Each one
-needs `tokio` with the `full` feature.
+## Publish
 
-## Publish a test pattern
+The publisher binds an endpoint, creates a node, and mounts the node on a
+router so that viewers can connect. It then publishes a broadcast named
+`hello` with two video renditions and a test tone, and prints its ticket.
 
-A node binds an endpoint, mounts the transport on a router, and publishes a
-broadcast under a name. `LiveLayout::publish` creates the broadcast in the
-node's route table and hands it back to fill, so peers read it without a copy. The ticket
-names that broadcast for viewers. The generated sources need no camera or
-microphone.
-
-```rust
+```rust,no_run
 use iroh::protocol::Router;
 use iroh_live::{
     EndpointConfig, Node,
@@ -48,14 +38,15 @@ use iroh_live::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Reads the key from `IROH_SECRET`, so the ticket survives a restart.
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
     let layout = LiveLayout::default();
-    let endpoint = EndpointConfig::default().bind().await?;
     let node = Node::new(endpoint.clone(), layout.config());
     // Accepts the viewers. Dropping the router stops accepting.
     let router = node.mount(Router::builder(endpoint)).spawn();
 
     // Published while `broadcast` lives.
-    let broadcast: LocalBroadcast = layout.publish(&node, "pattern")?;
+    let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
     let size = video::Size::new(1280, 720);
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
@@ -66,36 +57,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AudioSource::test_pattern(Layout::Mono)?,
         audio_encoding::voice(),
     )?;
-    println!("{}", layout.ticket(node.id(), "pattern")?);
+    println!("{}", layout.ticket(node.id(), "hello")?);
 
     tokio::signal::ctrl_c().await?;
-    // Shuts down the node and closes the endpoint.
+    // Shuts down the node, then closes the endpoint.
     router.shutdown().await?;
     Ok(())
 }
 ```
 
-The router belongs to the program, and `mount` only adds the transport's
-ALPNs to it. Add your own protocols with `accept` before `spawn`. Whoever binds
-the endpoint also closes it: `router.shutdown()` shuts down the node and every
-mounted service, then closes the endpoint. The endpoint of a node that is
-never mounted refuses every incoming connection. Such a node logs a warning
-when it publishes with no relay attached.
+The broadcast is at the path `live/<endpoint id>/hello`, and the ticket names
+that path. A rendition encodes only while someone watches it.
 
-The broadcast is at `live/<endpoint id>/pattern`, and a rendition encodes only
-while someone watches it. For a camera and microphone, see
-[`iroh-live/examples/publish.rs`](../../iroh-live/examples/publish.rs).
+## Watch
 
-## Watch a ticket
+The viewer resolves the ticket, dials the publisher, and starts a player. The
+player picks a rendition as the link allows. This one prints the size of
+each decoded frame:
 
-`subscribe_ticket` resolves the ticket's path and dials the publisher if
-needed. The default `NodeConfig` is enough: the node claims that one path for
-the publisher while the subscription lives. `remote_broadcast` reads the
-media, and `play` starts a player that picks a rendition as the link allows.
-`PlayerConfig::audio` defaults to `AudioMode::Off`, so this player does not
-subscribe to audio.
-
-```rust
+```rust,no_run
 use std::time::Duration;
 
 use iroh_live::{
@@ -109,7 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: watch <ticket>")?
         .parse()?;
-    let endpoint = EndpointConfig::default().bind().await?;
+    let endpoint = EndpointConfig::from_env()?.bind().await?;
+    // A viewer only dials, so it needs no router and no layout.
     let node = Node::new(endpoint.clone(), NodeConfig::default());
 
     let subscription = node.subscribe_ticket(&ticket).await?;
@@ -128,429 +109,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Hand each frame to a renderer instead of counting it: see
-[Desktop rendering](../how-to/watch.md). Without a router the node only dials, which is
-enough for a viewer. It then closes the endpoint itself.
+Run the publisher, then pass its ticket to the viewer, on the same machine or
+another one. `irl watch <TICKET>` plays the same ticket in a window.
 
-## A one-to-one call
+`PlayerConfig::default()` does not subscribe to audio. To hear it, use
+`with_audio(AudioMode::Play(engine))` with a `playback::Engine`, as
+[Watch a broadcast](../how-to/watch.md) shows.
 
-Each side publishes its own broadcast to the other peer only, and subscribes to
-the other's. `Calls::new` publishes at `<root>/<id>/call` to nobody, and `ring`
-lets one peer and no one else see it. `call` rings the peer and waits until the
-peer answers, with no time limit, so bound it with a timeout. `answer` takes a
-call that rings. Both programs run the same code with the other's
-endpoint id, which each prints on start. Two peers that ring each other at once
-resolve into one `Call` on each side.
+## Keep the same ticket across restarts
 
-```rust
-use std::time::Duration;
+A ticket names the publisher's endpoint id, which is the public half of its
+secret key. Without a key, `EndpointConfig::from_env()` makes a new one on
+every start, so every run prints a new ticket. Set `IROH_SECRET` to a fixed
+key to keep it:
 
-use iroh::{EndpointId, protocol::Router};
-use iroh_live::{
-    EndpointConfig, Node,
-    calls::Calls,
-    layout::LiveLayout,
-    media::{
-        AudioSource, LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
-        audio::Layout, audio_encoding, remote_broadcast, video,
-    },
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let peer: EndpointId = std::env::args()
-        .nth(1)
-        .ok_or("usage: call <peer id>")?
-        .parse()?;
-    let layout = LiveLayout::default();
-    let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config());
-    // The peer dials in to read our side.
-    let router = node.mount(Router::builder(endpoint)).spawn();
-    println!("our id: {}", node.id());
-
-    let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(&node, &layout)?;
-    let rate = video::FrameRate::new(30, 1).expect("a valid rate");
-    broadcast.set_video(
-        VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
-        VideoEncoding::single(VideoRendition::p360()),
-    )?;
-    broadcast.set_audio(
-        AudioSource::test_pattern(Layout::Mono)?,
-        audio_encoding::voice(),
-    )?;
-
-    let call = tokio::time::timeout(Duration::from_secs(60), calls.call(peer)).await??;
-    let player = remote_broadcast(call.subscription()).play(PlayerConfig::default())?;
-    let mut frames = player.video_frames();
-    while let Some(frame) = frames.next().await {
-        println!("peer frame {}", frame.size());
-    }
-
-    // Dropping the call hangs up too.
-    call.hang_up();
-    router.shutdown().await?;
-    Ok(())
-}
+```sh
+export IROH_SECRET=$(openssl rand -hex 32)   # once, then keep the value
 ```
 
-A node learns it is being called when the peer's `call` path appears in its
-route table. `Calls::ringing` is a watcher of the peers that ring now, and
-`Calls::answer(peer)` takes one of their calls. `Call::ended` resolves with a
-`HangUpReason` that says why the call ended. Hanging up takes the path
-away again, which ends the peer's read. The broadcast keeps running, so the
-next `ring` reuses it. `irl call` and the Android demo use the same
-convention, so they call each other.
+`irl` reads the same variable. The key is a secret: whoever has it can act as
+this endpoint. An application that stores its own key sets
+`EndpointConfig::with_secret_key`, and `iroh_live::load_or_create_secret_key(path)`
+keeps one in a file.
 
-## Rooms
+## Next steps
 
-A room is a gossip topic. The node's config takes `rooms::RoomsLayout`, so
-members can publish under their room paths, and `Rooms::mount` adds the gossip
-protocol to the router next to the transport. `join` returns a `Room` with a
-watched membership. This program creates a room, prints its ticket, publishes a
-test pattern, and plays the first broadcast another member announces. Pass a
-ticket to join instead of creating.
-
-```rust
-use iroh::{Watcher, protocol::Router};
-use iroh_live::{
-    EndpointConfig, Node,
-    layout::LiveLayout,
-    media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
-        video,
-    },
-    rooms::{RoomTicket, Rooms},
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let layout = LiveLayout::default();
-    let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(
-        endpoint.clone(),
-        iroh_live::layout::config((layout, iroh_live::rooms::RoomsLayout)),
-    );
-    let rooms = Rooms::new(&node);
-    // Members dial in over gossip and moq.
-    let _router = rooms
-        .mount(node.mount(Router::builder(endpoint)))
-        .spawn();
-    let ticket = match std::env::args().nth(1) {
-        Some(ticket) => ticket.parse()?,
-        None => RoomTicket::generate(),
-    };
-    let room = rooms.join(&ticket, Some("ada".into())).await?;
-    println!("room ticket: {}", room.ticket());
-
-    let broadcast: LocalBroadcast = room.publish("cam")?;
-    let rate = video::FrameRate::new(30, 1).expect("a valid rate");
-    broadcast.set_video(
-        VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
-        VideoEncoding::single(VideoRendition::p360()),
-    )?;
-
-    let mut state = room.state();
-    let (peer, name) = loop {
-        let found = state.get().members.iter().find_map(|(peer, member)| {
-            member
-                .broadcasts
-                .iter()
-                .next()
-                .map(|name| (*peer, name.clone()))
-        });
-        if let Some(found) = found {
-            break found;
-        }
-        state.updated().await?;
-    };
-    let subscription = room.subscribe(peer, &name).await?;
-    let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-    let mut frames = player.video_frames();
-    while let Some(frame) = frames.next().await {
-        println!("{peer} {name}: {}", frame.size());
-    }
-    Ok(())
-}
-```
-
-Room broadcasts are private to the members, and a member that leaves loses its
-paths. Anyone with the room ticket can join, so treat it as a secret. A real
-application also resubscribes when a broadcast ends: see [Rooms](../how-to/rooms.md).
-
-## Publish at your own path
-
-`LiveLayout::publish` and `Node::subscribe_ticket` use the `live/<id>/<name>`
-layout and a ticket, and `LiveLayout::publish` always publishes to the
-`Granted` audience. `Node::publish` takes any path and any audience, and
-`Node::subscribe` any path. `Audience::peers` limits who sees the broadcast,
-and moq enforces it on each live session, so a peer taken out of the set loses
-the path at once. To change the set later, publish with `Audience::Peers(set)`
-and keep a clone of the `n0_watcher::Watchable` set. Nothing here is a ticket:
-the subscriber needs the publisher's id and the path.
-
-The subscriber's node also has to let the publisher announce that path. The
-layout's grant allows only `live/<id>/`, so this program adds a second layout,
-`stage/<id>/`, and gives the node the union of both. Run `publish <viewer id>`
-on one machine and `watch <publisher id>` on the other. Each prints its own id
-on start.
-
-```rust
-use iroh::{EndpointId, protocol::Router};
-use iroh_live::{
-    Audience, EndpointConfig, Node, Reach,
-    layout::{self, Layout, LiveLayout},
-    media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
-        video,
-    },
-    moq_net::{Pattern, Patterns},
-};
-
-/// Puts a peer's broadcasts at `stage/<peer>/<name>`.
-#[derive(Debug, Clone)]
-struct Stage;
-
-impl Layout<EndpointId> for Stage {
-    fn scope(&self, peer: &EndpointId) -> Patterns {
-        let pattern: Pattern = format!("stage/{peer}/**").parse().expect("a valid pattern");
-        Patterns::from(pattern)
-    }
-
-    fn owner(&self, path: &str) -> Option<EndpointId> {
-        let (peer, name) = path.strip_prefix("stage/")?.split_once('/')?;
-        let id: EndpointId = peer.parse().ok()?;
-        (id.to_string() == peer && !name.is_empty()).then_some(id)
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let endpoint = EndpointConfig::default().bind().await?;
-    let config = layout::config((LiveLayout::default(), Stage));
-    let node = Node::new(endpoint.clone(), config);
-    let router = node.mount(Router::builder(endpoint)).spawn();
-    let me = node.id();
-    println!("our id: {me}");
-
-    let mut args = std::env::args().skip(1);
-    let (mode, other) = (args.next(), args.next());
-    let other: EndpointId = other
-        .ok_or("usage: stage <publish|watch> <other id>")?
-        .parse()?;
-    match mode.as_deref() {
-        Some("publish") => {
-            // Visible to `other` only.
-            let audience = Audience::peers([other]);
-            let publication = node.publish(&format!("stage/{me}/main"), audience)?;
-            let broadcast = LocalBroadcast::new_in(publication.broadcast().clone())?;
-            let rate = video::FrameRate::new(30, 1).expect("a valid rate");
-            broadcast.set_video(
-                VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
-                VideoEncoding::single(VideoRendition::p360()),
-            )?;
-            tokio::signal::ctrl_c().await?;
-        }
-        _ => {
-            let path = format!("stage/{other}/main");
-            let subscription = node.subscribe(&path, Reach::Direct(other)).await?;
-            let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
-            let mut frames = player.video_frames();
-            while let Some(frame) = frames.next().await {
-                println!("frame {}", frame.size());
-            }
-        }
-    }
-    router.shutdown().await?;
-    Ok(())
-}
-```
-
-A third node that dials the publisher cannot resolve the path, since the
-audience leaves it out. [Access control](../how-to/control-access.md) covers layouts and
-policies in full.
-
-## Attach a relay
-
-A relay carries broadcasts to peers that cannot connect directly, and to
-browsers. `attach_relay` stays attached and redials with backoff. Every
-publication with the `Granted` audience, which `LiveLayout::publish` uses, is
-then visible to the relay as well, and a `Peers` one never is. A publisher that
-does not need the relay's other routes sets `consume: false`.
-
-```rust
-use iroh::{EndpointId, protocol::Router};
-use iroh_live::{
-    EndpointConfig, Node, RelayConfig,
-    layout::LiveLayout,
-    media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let relay: EndpointId = std::env::args()
-        .nth(1)
-        .ok_or("usage: relay <relay id>")?
-        .parse()?;
-    let layout = LiveLayout::default();
-    let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config());
-    // Direct viewers still dial in. A relay-only publisher can skip the router
-    // and close the endpoint itself.
-    let router = node.mount(Router::builder(endpoint)).spawn();
-
-    let link = node.attach_relay(RelayConfig {
-        consume: false,
-        ..RelayConfig::iroh(relay)
-    })?;
-
-    let broadcast: LocalBroadcast = layout.publish(&node, "pattern")?;
-    let rate = video::FrameRate::new(30, 1).expect("a valid rate");
-    broadcast.set_video(
-        VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
-        VideoEncoding::single(VideoRendition::p360()),
-    )?;
-    println!("{}", layout.ticket(node.id(), "pattern")?);
-
-    tokio::signal::ctrl_c().await?;
-    link.detach().await;
-    router.shutdown().await?;
-    Ok(())
-}
-```
-
-A viewer that has the relay attached with `consume: true` and no direct route
-reaches the broadcast through it, with `Reach::Relays` or a ticket. The
-[browser relay guide](../how-to/browsers.md) covers running the relay and watching
-from a browser, and
-[`iroh-live/examples/subscribe_test.rs`](../../iroh-live/examples/subscribe_test.rs)
-is the viewing side in Rust.
-
-## Data without media
-
-A broadcast is a set of tracks, and a track is a stream of groups of frames.
-Nothing requires them to be video. The `Node` is the transport, and a
-`moq_net` broadcast is the unit it publishes, so a control channel is a
-broadcast with one track. Run it with no argument to serve, and with the printed
-id to read.
-
-```rust
-use std::time::Duration;
-
-use iroh::{EndpointId, protocol::Router};
-use iroh_live::{
-    Audience, EndpointConfig, Node, Reach,
-    layout::LiveLayout,
-    moq_net::{Timescale, Timestamp, track},
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let layout = LiveLayout::default();
-    let endpoint = EndpointConfig::default().bind().await?;
-    let node = Node::new(endpoint.clone(), layout.config());
-    let router = node.mount(Router::builder(endpoint)).spawn();
-
-    match std::env::args().nth(1) {
-        None => {
-            let me = node.id();
-            println!("read with: {me}");
-            let path = layout.path(me, "control")?;
-            let publication = node.publish(path, Audience::Granted)?;
-            let mut control = publication.broadcast().create_track(
-                "control",
-                track::Info::default().with_timescale(Timescale::MILLI),
-            )?;
-            for n in 0u32.. {
-                control.write_frame(Timestamp::now(), format!("tick {n}").into_bytes())?;
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        }
-        Some(id) => {
-            let peer: EndpointId = id.parse()?;
-            let path = layout.path(peer, "control")?;
-            let subscription = node.subscribe(path, Reach::Direct(peer)).await?;
-            let mut control = subscription
-                .broadcast()
-                .track("control")?
-                .subscribe(None)
-                .await?
-                .ordered();
-            while let Some(mut group) = control.next_group().await? {
-                while let Some(frame) = group.read_frame().await? {
-                    println!("{}", String::from_utf8_lossy(&frame.payload));
-                }
-            }
-        }
-    }
-    router.shutdown().await?;
-    Ok(())
-}
-```
-
-Frames are bytes, so the format is yours. The route table, the audiences and the
-grants apply as they do for media.
-
-For state where a reader wants only the newest value, such as a setting or a
-status, `Node::publish_value::<T>(path, audience, name)` publishes a
-latest-value JSON track, and `Subscription::value_track::<T>(name)` reads it:
-`latest()` skips to the newest value, and a late reader gets the current one at
-once. `LocalBroadcast::value_track` puts such a track next to the video and
-audio. Create it in the fill of `Node::publish_with`, so it exists before
-anyone can ask for it.
-
-## Without a layout
-
-`LiveLayout` is a convenience over `Node`. A program with its own path layout
-or its own access rules uses `Node` itself and gets the same sessions, route
-table and relays, with no media dependency. `Node::mount` adds it to a router
-as in the programs above. The default `NodeConfig` lets peers read anything
-and publish nothing, so the reader below grants the publisher `demo/**`. The publishing side is
-[`iroh-live/examples/moq_only.rs`](../../iroh-live/examples/moq_only.rs), which
-serves `demo/hello`.
-
-```rust
-use iroh::EndpointId;
-use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, moq_net::Pattern, policy};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let publisher: EndpointId = std::env::args()
-        .nth(1)
-        .ok_or("usage: reader <id>")?
-        .parse()?;
-    let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-    let demo: Pattern = "demo/**".parse()?;
-    let moq = Node::new(
-        endpoint.clone(),
-        NodeConfig::default().with_policy(policy::Open(Grant::publish_under(demo))),
-    );
-    // Mount your own protocols on the same router.
-    let router = moq
-        .mount(iroh::protocol::Router::builder(endpoint.clone()))
-        .spawn();
-
-    let subscription = moq
-        .subscribe("demo/hello", Reach::Direct(publisher))
-        .await?;
-    println!("subscribed to {}", subscription.path());
-    if let Some(link) = subscription.serving_link() {
-        println!(
-            "served by a {:?} link, rtt {:?}",
-            link.kind, link.sample.rtt
-        );
-    }
-
-    moq.shutdown().await;
-    router.shutdown().await?;
-    endpoint.close().await;
-    Ok(())
-}
-```
-
-`Node::sessions` and `Session::moq` cover the rest of the node, and
-`Session::connection` is the iroh connection, whose `paths()` lists the
-network paths to the peer. See
-[the transport page](../architecture/transport.md). A `policy::Queue` lets the
-application admit each peer itself, and [Access control](../how-to/control-access.md) shows it
-with the other policies.
+- To publish a camera, a screen or a file, see
+  [Publish](../how-to/publish.md).
+- To draw the frames, see [Watch a broadcast](../how-to/watch.md).
+- For calls and rooms, see [Make a call](../how-to/call.md) and
+  [Run a room](../how-to/rooms.md).
+- To reach browsers, see [Serve browsers](../how-to/browsers.md).
+- To learn what a node, a path and a route are, start at
+  [How it fits together](../concepts/overview.md).
