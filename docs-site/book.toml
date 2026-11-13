@@ -1,0 +1,43 @@
+# mdBook configuration for the iroh-live documentation site.
+#
+# The Markdown lives in `../docs` and stays the single source: this directory
+# only adds the theme, the landing page and the build glue. `build.sh` builds
+# the book into `build/book/` and puts the landing page at `build/`.
+
+[book]
+title = "iroh-live"
+description = "Live audio and video between devices over iroh, peer to peer."
+authors = ["n0 contributors"]
+language = "en"
+src = "../docs"
+
+[build]
+build-dir = "build/book"
+create-missing = false
+
+[preprocessor.repo-links]
+# Points links that leave `docs/` (examples, crate directories) at GitHub.
+command = "python3 preprocessors/repo-links.py"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "coal"
+git-repository-url = "https://github.com/n0-computer/iroh-live"
+git-repository-icon = "fab-github"
+# `{path}` is relative to this directory (`../docs/...`); URLs resolve the
+# `..`, so the link opens `docs/<page>.md`.
+edit-url-template = "https://github.com/n0-computer/iroh-live/edit/main/docs-site/{path}"
+site-url = "/iroh-live/book/"
+additional-css = ["theme/iroh-live.css"]
+additional-js = ["theme/iroh-live.js"]
+no-section-label = true
+smart-punctuation = true
+
+[output.html.search]
+enable = true
+limit-results = 20
+boost-title = 2
+boost-hierarchy = 2
+
+[output.html.playground]
+runnable = false
