@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "moq-transport-iroh",
+    "moq-ext-access",
 ]
 resolver = "2"
 
@@ -43,6 +44,7 @@ egui-wgpu = "0.37.0"
 
 # In-repo crates
 moq-transport-iroh = { path = "moq-transport-iroh" }
+moq-ext-access = { path = "moq-ext-access" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
