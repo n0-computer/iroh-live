@@ -30,6 +30,8 @@
 //! # }
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod error;
 mod stream;
 mod transport;

@@ -37,6 +37,8 @@
 //! [`LocalBroadcast::status`]. A failed microphone is not opened again: the
 //! audio slot stays failed until the audio is set again.
 
+#![forbid(unsafe_code)]
+
 mod publish;
 mod stats;
 

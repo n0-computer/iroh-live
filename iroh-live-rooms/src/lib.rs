@@ -62,6 +62,8 @@
 //! again to finish. Concurrent calls of [`Rooms::shutdown`] wait for the same
 //! shutdown.
 
+#![forbid(unsafe_code)]
+
 mod actor;
 mod room;
 mod rooms;

@@ -58,6 +58,8 @@
 //! # }
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]

@@ -16,6 +16,8 @@
 //! [`Grant`] and `moq_auth::Grant` is left out on purpose: expiry lives on
 //! [`policy::Authorization`], not on the grant.
 
+#![forbid(unsafe_code)]
+
 use std::{
     collections::BTreeSet,
     fmt::{self, Debug, Display},

@@ -50,6 +50,8 @@
 //! the last session that named the ticket, or later while a dial or a resolve
 //! is in flight.
 
+#![forbid(unsafe_code)]
+
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{extract::Path, response::IntoResponse, routing::get};

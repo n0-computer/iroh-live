@@ -106,6 +106,8 @@ router.shutdown().await?;
 //! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
 //! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
 
+#![forbid(unsafe_code)]
+
 pub mod calls;
 mod endpoint;
 mod error;

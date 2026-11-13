@@ -22,6 +22,8 @@
 //! The async loops that feed these machines, with their channels and timers,
 //! live in the player.
 
+#![forbid(unsafe_code)]
+
 mod bound;
 mod network;
 mod select;

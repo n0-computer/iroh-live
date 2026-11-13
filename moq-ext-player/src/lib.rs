@@ -48,6 +48,8 @@
 //! | [`RemoteBroadcast::catalog_within`] | yes | stops waiting |
 //! | `RemoteBroadcast::mux_source` (feature `record`) | yes | stops waiting |
 
+#![forbid(unsafe_code)]
+
 mod catalog;
 mod clean_close;
 mod network;

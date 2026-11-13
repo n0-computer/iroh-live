@@ -25,6 +25,8 @@
 //! you hand it. [`egui_wgpu_config`] builds the `wgpu` setup for eframe,
 //! and [`overlay::DebugOverlay`] paints stats over a video.
 
+#![forbid(unsafe_code)]
+
 pub mod overlay;
 
 use std::sync::Arc;

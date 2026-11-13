@@ -85,6 +85,8 @@
 //! | `next()` on [`Node::accepted`] | yes | loses nothing |
 //! | [`Node::shutdown`] | no | call it again to finish |
 
+#![forbid(unsafe_code)]
+
 mod actor;
 mod admission;
 mod claim;
