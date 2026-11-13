@@ -16,17 +16,19 @@
 //! - It lowers the estimate to 0.85 times the delivered rate once the round
 //!   trip shows a queue on two readings in a row, and by half the loss rate
 //!   once loss passes 10%, never under 50 kbit/s.
-//! - While the path stays clean it lets the estimate climb by 10% a second
-//!   near the rate at which the path last queued, and by 25% a second once it
-//!   is well past it, up to 1.5 times the session's probe target, which is
-//!   what the session's senders reserved. The climb is the probe: a sender that follows the
-//!   estimate up finds out whether the path carries it, and the next queue
-//!   brings the estimate back. No padding is sent.
+//! - While the path stays clean it lets the estimate climb up to 1.5 times
+//!   the session's probe target, which is what the session's senders
+//!   reserved. It climbs 10% a second just above the rate at which the path
+//!   last queued, and 25% a second below and well past it. A long climb
+//!   speeds up. The climb is the probe. A sender that follows the estimate up
+//!   finds out whether the path carries it, and the next queue brings the
+//!   estimate back. No padding is sent.
 //! - A change of the selected path starts the round trip baseline over, and
 //!   the estimate holds through a settle window. A round trip that rises and
-//!   stays up on the same path reads as a queue at first: the estimate falls
-//!   once, holds while the round trip stays flat, and climbs again once the
-//!   longer round trip is the minimum, ten seconds on.
+//!   stays up on the same path reads as a queue at first, and the estimate
+//!   falls. A queue drains once the sender backs off, and a longer path does
+//!   not. So a round trip that stays flat for a second after the sender backed
+//!   off, with no loss, becomes the baseline, and the fall is undone.
 //!
 //! Until the path first shows congestion, the estimate is the window estimate
 //! ([`SendEstimate::App`]) or the controller's ([`SendEstimate::Controller`]),
@@ -356,17 +358,26 @@ const LOSS_CLEAN: f64 = 0.02;
 /// A little over GCC's 8%, since the climb is also the only probe.
 const CLIMB_NEAR: f64 = 0.10;
 
-/// How fast the estimate climbs once it is well past where the path last queued, per second.
+/// How fast the estimate climbs away from where the path last queued, per second.
 ///
 /// The ramp of upstream's rate policy, so a sender recovers from a lifted cap
 /// as fast as it may raise its bitrate.
 const CLIMB_FAR: f64 = 0.25;
 
+/// The fastest the far climb gets, per second.
+///
+/// The far climb speeds up by [`CLIMB_FAR`] for each second it goes on, up to
+/// this, which about doubles the estimate each second. A sender follows the
+/// estimate up no faster than its own ramp. So a faster climb only shortens
+/// how long a paused rendition waits to resume.
+const CLIMB_FAR_MAX: f64 = 0.7;
+
 /// How far past the rate the path last congested at the near climb reaches.
 ///
 /// GCC climbs additively near its last decrease and multiplicatively away
-/// from it. This is the same split.
-const NEAR: f64 = 1.5;
+/// from it. This is the same split. Below that rate the estimate climbs at
+/// [`CLIMB_FAR`]: the path carried it before it queued.
+const NEAR: f64 = 1.25;
 
 /// How far above the session's probe target the estimate may climb.
 ///
@@ -383,8 +394,10 @@ const GOODPUT_SLACK: u64 = 10_000;
 
 /// How long the estimate holds after a fall before it climbs again.
 ///
-/// It doubles for each fall within [`HOLD_RESET`] of the last, up to
-/// [`HOLD_MAX`], so a sender that keeps overshooting tries less often.
+/// It doubles for each fall within [`HOLD_RESET`] of the last that ends a
+/// climb, up to [`HOLD_MAX`], so a sender that keeps overshooting tries less
+/// often. Further falls on one congestion, with no climb between them, keep
+/// the hold as it is.
 const HOLD_MIN: Duration = Duration::from_secs(1);
 const HOLD_MAX: Duration = Duration::from_secs(4);
 const HOLD_RESET: Duration = Duration::from_secs(10);
@@ -409,13 +422,11 @@ const FLAT: Duration = Duration::from_secs(1);
 
 /// The share of the delivered rate at the last queue a sender has to fall under to count as backed off.
 ///
-/// A queue that stays flat, neither shrinking nor growing, while the sender
-/// sends less than this, and less than the estimate, does not lower the
-/// estimate again. It may be a
-/// longer path, as when a route changes on the same QUIC path, or a backlog
-/// the sender still drains. Either way a further fall would only cut the
-/// estimate under the path, and the round trip minimum moves to a longer
-/// path within [`MIN_RTT_WINDOW`].
+/// A queue drains once the sender sends less than the path carries. A round
+/// trip that stays flat for [`FLAT`] while the sender sends less than this,
+/// with no loss, is a longer path. A route change on the same QUIC path looks
+/// like that. The longer round trip becomes the baseline, and the fall it
+/// caused is undone.
 const BACKED_OFF: f64 = 0.9;
 
 /// The counters of one reading, and when it was taken.
@@ -441,8 +452,16 @@ pub(crate) struct Estimator {
     settled_at: Option<Instant>,
     /// This path's readings over the last [`MIN_RTT_WINDOW`], oldest first.
     readings: VecDeque<Reading>,
+    /// Readings before this are left out of the round trip minimum.
+    ///
+    /// Set when a round trip that rose and stayed flat turned out to be a
+    /// longer path.
+    baseline_since: Option<Instant>,
     /// The estimate once the path showed congestion, `None` before.
     cap: Option<u64>,
+    /// The state before the first fall on the current queue, restored if the
+    /// queue turns out to be a longer path.
+    before_queue: Option<Fallen>,
     /// Readings in a row that showed a queue.
     overused: u32,
     /// Whether the queue of the last fall has yet to drain.
@@ -458,8 +477,12 @@ pub(crate) struct Estimator {
     congested_at: Option<u64>,
     /// When the estimate last fell.
     fell_at: Option<Instant>,
+    /// Since when the estimate has climbed at the far rate without a break.
+    climbing_since: Option<Instant>,
     /// How long after [`fell_at`](Self::fell_at) the estimate holds.
     hold: Duration,
+    /// Whether the estimate climbed since it last fell.
+    climbed: bool,
 }
 
 impl Estimator {
@@ -472,7 +495,9 @@ impl Estimator {
             path_generation: 0,
             settled_at: None,
             readings: VecDeque::new(),
+            baseline_since: None,
             cap: None,
+            before_queue: None,
             overused: 0,
             draining: false,
             peak_queue: Duration::ZERO,
@@ -481,7 +506,9 @@ impl Estimator {
             queued_at: None,
             congested_at: None,
             fell_at: None,
+            climbing_since: None,
             hold: HOLD_MIN,
+            climbed: false,
         }
     }
 
@@ -503,6 +530,8 @@ impl Estimator {
             }
             self.path = Some(sample.path);
             self.readings.clear();
+            self.baseline_since = None;
+            self.before_queue = None;
             self.overused = 0;
             self.draining = false;
         }
@@ -528,15 +557,20 @@ impl Estimator {
         let min_rtt = self
             .readings
             .iter()
+            .filter(|reading| self.baseline_since.is_none_or(|since| reading.at >= since))
             .map(|reading| reading.rtt)
             .filter(|rtt| !rtt.is_zero())
             .min();
         let queue = min_rtt.map(|min| sample.rtt.saturating_sub(min));
         let goodput = min_rtt.and_then(|min| self.goodput(now, GOODPUT_WINDOW.max(min * 4)));
-        let loss = self.loss(now);
+        let loss = self.loss(now, None);
+        // Loss counted once: what the last fall already answered for does
+        // not lower the estimate again.
+        let fresh_loss = self.loss(now, self.fell_at);
         let window = (sample.cwnd > 0 && !sample.rtt.is_zero())
             .then(|| (sample.cwnd as f64 * 8.0 / sample.rtt.as_secs_f64()) as u64);
         let before = self.estimate(window, sample.controller);
+        let climbing_since = self.climbing_since.take();
 
         let settling = self.settled_at.is_some_and(|until| now < until);
         let threshold = min_rtt
@@ -565,13 +599,36 @@ impl Estimator {
         let backed_off = goodput
             .zip(self.queued_at)
             .is_some_and(|(goodput, queued)| (goodput as f64) < queued as f64 * BACKED_OFF);
-        if self.overused >= OVERUSE_READINGS
+        let longer_path = self.draining
+            && queued
+            && !shrinking
+            && !growing
+            && backed_off
+            && loss < LOSS_CLEAN
+            && self.before_queue.is_some();
+        if longer_path {
+            // A queue would have drained by now. This one is a longer path.
+            self.baseline_since = Some(now);
+            self.draining = false;
+            self.overused = 0;
+            if let Some(fallen) = self.before_queue.take() {
+                fallen.restore(self);
+            }
+            debug!(
+                rtt_ms = sample.rtt.as_millis() as u64,
+                estimate_kbps = self.cap.map(|cap| cap / 1000),
+                "the round trip rose and stayed flat, taking it as the new baseline"
+            );
+        } else if self.overused >= OVERUSE_READINGS
             && let Some(goodput) = goodput
             && (!self.draining
                 || (since_fall.is_none_or(|since| since >= REDECREASE)
                     && !shrinking
                     && (growing || !backed_off || self.cap.is_some_and(|cap| cap > goodput))))
         {
+            if !self.draining {
+                self.before_queue = Some(Fallen::of(self));
+            }
             let lowered = (goodput as f64 * BACKOFF) as u64;
             self.fall(
                 self.cap.unwrap_or(u64::MAX).min(lowered),
@@ -585,7 +642,7 @@ impl Estimator {
                 queue_ms = queue.unwrap_or_default().as_millis() as u64,
                 "a queue built, lowering the estimate"
             );
-        } else if loss > LOSS_DECREASE && since_fall.is_none_or(|since| since >= HOLD_MIN) {
+        } else if fresh_loss > LOSS_DECREASE && since_fall.is_none_or(|since| since >= HOLD_MIN) {
             // GCC lowers its own estimate, which it paces to. This one can
             // sit far above what the path delivers, before the first
             // congestion or while the sender lags it, so the climb's cap
@@ -593,19 +650,26 @@ impl Estimator {
             let ceiling = goodput.map_or(u64::MAX, headroom);
             let base = self.cap.or(before).unwrap_or(u64::MAX).min(ceiling);
             if base != u64::MAX {
+                // A longer path loses nothing, so no fall here is undone.
+                self.before_queue = None;
                 self.fall(
-                    (base as f64 * (1.0 - loss / 2.0)) as u64,
+                    (base as f64 * (1.0 - fresh_loss / 2.0)) as u64,
                     now,
                     queue_now,
                     goodput,
                 );
                 debug!(
                     estimate_kbps = self.cap.unwrap_or(0) / 1000,
-                    loss, "loss is high, lowering the estimate"
+                    loss = fresh_loss,
+                    "loss is high, lowering the estimate"
                 );
             }
         } else if self.draining {
             self.draining = !drained;
+            if drained {
+                // It drained, so it was a queue.
+                self.before_queue = None;
+            }
         } else if let Some(cap) = self.cap
             && drained
             && !settling
@@ -619,13 +683,21 @@ impl Estimator {
                 }
             };
             if cap < ceiling {
-                let near = self
-                    .congested_at
-                    .is_some_and(|congested| (cap as f64) < congested as f64 * NEAR);
-                let climb = if near { CLIMB_NEAR } else { CLIMB_FAR };
+                let near = self.congested_at.is_some_and(|congested| {
+                    (congested..((congested as f64 * NEAR) as u64)).contains(&cap)
+                });
+                let climb = match near {
+                    true => CLIMB_NEAR,
+                    false => {
+                        let since = *self.climbing_since.insert(climbing_since.unwrap_or(now));
+                        let speedup = now.saturating_duration_since(since).as_secs_f64();
+                        (CLIMB_FAR * (1.0 + speedup)).min(CLIMB_FAR_MAX)
+                    }
+                };
                 let step = elapsed.unwrap_or_default().min(Duration::from_secs(1));
                 let grown = (cap as f64 * (1.0 + climb * step.as_secs_f64())).ceil() as u64;
                 self.cap = Some(grown.min(ceiling));
+                self.climbed = true;
             }
         }
 
@@ -655,11 +727,13 @@ impl Estimator {
     /// when it fell, which later readings compare against.
     fn fall(&mut self, cap: u64, now: Instant, queue: Duration, goodput: Option<u64>) {
         self.hold = match self.fell_at {
-            Some(at) if now.saturating_duration_since(at) < HOLD_RESET => {
-                (self.hold * 2).min(HOLD_MAX)
-            }
+            Some(at) if now.saturating_duration_since(at) < HOLD_RESET => match self.climbed {
+                true => (self.hold * 2).min(HOLD_MAX),
+                false => self.hold,
+            },
             _ => HOLD_MIN,
         };
+        self.climbed = false;
         let cap = cap.max(FLOOR);
         self.cap = Some(cap);
         self.congested_at = Some((cap as f64 / BACKOFF) as u64);
@@ -700,14 +774,21 @@ impl Estimator {
         (span > 0.0).then(|| (bytes as f64 * 8.0 / span) as u64)
     }
 
-    /// Returns the loss rate over [`LOSS_WINDOW`], zero before enough packets.
-    fn loss(&self, now: Instant) -> f64 {
+    /// Returns the loss rate over [`LOSS_WINDOW`], or since `since` if that is later.
+    ///
+    /// Zero before enough packets.
+    fn loss(&self, now: Instant, since: Option<Instant>) -> f64 {
+        let start = now.checked_sub(LOSS_WINDOW);
+        let start = match (start, since) {
+            (Some(start), Some(since)) => Some(start.max(since)),
+            (start, since) => start.or(since),
+        };
         let (Some(latest), Some(base)) = (
             self.readings.back(),
             self.readings
                 .iter()
                 .rev()
-                .find(|reading| now.saturating_duration_since(reading.at) >= LOSS_WINDOW)
+                .find(|reading| start.is_some_and(|start| reading.at <= start))
                 .or_else(|| self.readings.front()),
         ) else {
             return 0.0;
@@ -718,6 +799,38 @@ impl Estimator {
             sent if sent < MIN_PACKETS => 0.0,
             sent => (lost as f64 / sent as f64).min(1.0),
         }
+    }
+}
+
+/// What a fall changed, so a fall on a longer path can be undone.
+#[derive(Debug, Clone, Copy)]
+struct Fallen {
+    cap: Option<u64>,
+    congested_at: Option<u64>,
+    fell_at: Option<Instant>,
+    hold: Duration,
+    climbed: bool,
+}
+
+impl Fallen {
+    /// Records the state `estimator` is in before a fall.
+    fn of(estimator: &Estimator) -> Self {
+        Self {
+            cap: estimator.cap,
+            congested_at: estimator.congested_at,
+            fell_at: estimator.fell_at,
+            hold: estimator.hold,
+            climbed: estimator.climbed,
+        }
+    }
+
+    /// Puts `estimator` back as it was before the fall.
+    fn restore(self, estimator: &mut Estimator) {
+        estimator.cap = self.cap;
+        estimator.congested_at = self.congested_at;
+        estimator.fell_at = self.fell_at;
+        estimator.hold = self.hold;
+        estimator.climbed = self.climbed;
     }
 }
 
@@ -885,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn a_longer_path_lowers_the_estimate_once_and_then_becomes_the_baseline() {
+    fn a_longer_path_becomes_the_baseline_and_undoes_its_fall() {
         let mut path = Path::new(SendEstimate::App);
         path.target = Rate::from_bps(2_000_000);
         path.run(Duration::from_secs(3));
@@ -893,19 +1006,61 @@ mod tests {
         path.rtt = BASE_RTT + Duration::from_millis(60);
         let fell = path.run(TICK * 2);
         assert!(fell.capped, "a step reads as a queue at first");
-        // The sender follows the fall.
+        assert_eq!(kbps(fell), 850);
+        // The sender follows the fall, and the round trip stays where it is.
         path.rate = 850_000;
-        let held = path.run(MIN_RTT_WINDOW - Duration::from_secs(1));
-        assert_eq!(
-            kbps(held),
-            kbps(fell),
-            "a flat round trip lowers it only once"
-        );
-        let climbed = path.run(Duration::from_secs(5));
+        let undone = path.run(Duration::from_secs(2));
+        assert!(!undone.capped, "the fall was undone: {undone:?}");
+        assert_eq!(kbps(undone), 8_000, "back to the window estimate");
+        assert_eq!(undone.queue_delay, Some(Duration::ZERO));
+        // A queue on top of the longer path still reads as one.
+        path.rtt += BASE_RTT * 4;
+        let queued = path.run(TICK * 2);
+        assert!(queued.capped);
+        assert_eq!(kbps(queued), 722, "0.85 times the 850 kbit/s delivered");
+    }
+
+    /// A step after the path congested once restores the estimate it had before the step.
+    #[test]
+    fn a_longer_path_restores_the_estimate_before_it() {
+        let mut path = Path::new(SendEstimate::App);
+        path.target = Rate::from_bps(2_000_000);
+        path.run(Duration::from_secs(3));
+        path.rtt = BASE_RTT * 5;
+        path.run(TICK * 2);
+        path.rtt = BASE_RTT;
+        let before = kbps(path.run(Duration::from_secs(12)));
+        assert!(before > 850, "climbed after the queue: {before}");
+        path.rtt = BASE_RTT + Duration::from_millis(60);
+        let fell = kbps(path.run(TICK * 2));
+        assert!(fell < before, "{fell} from {before}");
+        path.rate = 800_000;
+        let undone = path.run(Duration::from_secs(2));
+        assert!(undone.capped);
         assert!(
-            kbps(climbed) > kbps(fell),
-            "the longer round trip is the new minimum"
+            kbps(undone) >= before,
+            "{} from {before} before the step",
+            kbps(undone)
         );
+    }
+
+    /// A flat queue the sender has not backed off from is a queue, not a longer path.
+    #[test]
+    fn a_flat_queue_without_a_back_off_is_no_longer_path() {
+        let mut path = Path::new(SendEstimate::App);
+        path.run(Duration::from_secs(3));
+        path.rtt = BASE_RTT + Duration::from_millis(60);
+        let fell = path.run(TICK * 2);
+        // The sender ignores the fall, and the queue holds.
+        let held = path.run(Duration::from_secs(3));
+        assert!(held.capped);
+        assert!(
+            kbps(held) <= kbps(fell),
+            "{} from {}",
+            kbps(held),
+            kbps(fell)
+        );
+        assert!(held.queue_delay > Some(Duration::from_millis(50)));
     }
 
     #[test]
@@ -928,17 +1083,44 @@ mod tests {
         path.rtt = BASE_RTT * 5;
         path.run(TICK * 2);
         path.rtt = BASE_RTT;
-        path.run(Duration::from_secs(1));
-        // Near the 1 Mbit/s the path queued at, 10% a second.
+        let held = kbps(path.run(Duration::from_secs(1)));
+        // Back to the 1 Mbit/s the path queued at, at 25% a second.
+        let back = kbps(path.run(Duration::from_millis(800)));
+        assert!(back >= 1_000 && held < 1_000, "{back} from {held}");
+        // Near it, 10% a second.
         let near = kbps(path.tick());
         let near_next = kbps(path.run(Duration::from_secs(1)));
         assert!(near_next < near * 112 / 100, "{near_next} from {near}");
-        // Past 1.5 times that, 25% a second.
-        path.run(Duration::from_secs(8));
+        // Past 1.25 times it, 25% a second again.
+        path.run(Duration::from_secs(3));
         let far = kbps(path.tick());
         let far_next = kbps(path.run(Duration::from_secs(1)));
-        assert!(far > 1_500, "{far}");
+        assert!(far > 1_250, "{far}");
         assert!(far_next > far * 120 / 100, "{far_next} from {far}");
+    }
+
+    /// The far climb speeds up while it goes on, to about doubling each second.
+    #[test]
+    fn a_long_climb_speeds_up() {
+        let mut path = Path::new(SendEstimate::App);
+        path.target = Rate::from_bps(1_000_000_000);
+        path.rate = 100_000;
+        path.run(Duration::from_secs(3));
+        path.rtt = BASE_RTT * 5;
+        path.run(TICK * 2);
+        path.rtt = BASE_RTT;
+        // Past the hold and the near band.
+        path.run(Duration::from_secs(4));
+        let mut last = kbps(path.tick());
+        let mut gains = Vec::new();
+        for _ in 0..6 {
+            let next = kbps(path.run(Duration::from_secs(1)));
+            gains.push(next as f64 / last as f64);
+            last = next;
+        }
+        assert!(gains[1] > gains[0] * 1.1, "{gains:?}");
+        assert!(gains.iter().all(|gain| *gain <= 2.0), "{gains:?}");
+        assert!(gains[5] > 1.9, "{gains:?}");
     }
 
     #[test]
@@ -952,9 +1134,9 @@ mod tests {
         let held = kbps(path.run(Duration::from_millis(900)));
         assert_eq!(held, fell, "the estimate holds for a second after a fall");
         let climbed = kbps(path.run(Duration::from_secs(2)));
-        // 10% a second over about two seconds.
-        assert!(climbed > fell * 115 / 100, "{climbed} from {fell}");
-        assert!(climbed < fell * 125 / 100, "{climbed} from {fell}");
+        // 25% a second back to the 1 Mbit/s it queued at, then 10% a second.
+        assert!(climbed > 1_100, "{climbed} from {fell}");
+        assert!(climbed < 1_200, "{climbed} from {fell}");
         let top = kbps(path.run(Duration::from_secs(60)));
         assert_eq!(top, 3_000, "1.5 times the target");
     }
@@ -1004,6 +1186,35 @@ mod tests {
         assert!(holds[3] <= HOLD_MAX, "{holds:?}");
     }
 
+    /// Falls on one congestion keep the hold at a second. Only a climb that ends in a fall doubles it.
+    #[test]
+    fn falls_without_a_climb_between_keep_the_hold() {
+        let mut path = Path::new(SendEstimate::App);
+        path.target = Rate::from_bps(2_000_000);
+        path.run(Duration::from_secs(3));
+        path.rtt = BASE_RTT * 5;
+        let first = kbps(path.run(TICK * 2));
+        // The queue keeps growing past the sender's fall, so it falls again.
+        path.rate = 600_000;
+        let mut again = first;
+        for _ in 0..30 {
+            path.rtt += Duration::from_millis(15);
+            again = kbps(path.tick());
+        }
+        assert!(again < first, "fell only once");
+        assert_eq!(
+            path.estimator.hold, HOLD_MIN,
+            "no climb came between the falls"
+        );
+        path.rtt = BASE_RTT;
+        let fell = kbps(path.tick());
+        let mut held = TICK;
+        while kbps(path.tick()) == fell {
+            held += TICK;
+        }
+        assert!(held <= HOLD_MIN + TICK * 2, "held for {held:?}");
+    }
+
     #[test]
     fn high_loss_lowers_the_estimate_and_moderate_loss_holds_it() {
         let mut path = Path::new(SendEstimate::App);
@@ -1027,6 +1238,36 @@ mod tests {
         path.loss_percent = 60;
         let floor = path.run(Duration::from_secs(20));
         assert_eq!(kbps(floor), FLOOR / 1000, "a long burst stops at the floor");
+    }
+
+    /// Loss that stops with the fall it caused does not lower the estimate again.
+    ///
+    /// The loss rate spans two seconds, so it still reads high a second after
+    /// the fall.
+    #[test]
+    fn a_burst_of_loss_lowers_the_estimate_once() {
+        let mut path = Path::new(SendEstimate::App);
+        path.target = Rate::from_bps(2_000_000);
+        path.run(Duration::from_secs(3));
+        path.rtt = BASE_RTT * 5;
+        path.run(TICK * 2);
+        path.rtt = BASE_RTT;
+        let mut last = kbps(path.run(Duration::from_secs(3)));
+        path.loss_percent = 60;
+        let fell = loop {
+            let now = kbps(path.tick());
+            if now < last {
+                break now;
+            }
+            last = now;
+        };
+        path.loss_percent = 0;
+        let after = path.run(HOLD_MIN + TICK);
+        assert!(
+            after.loss > LOSS_DECREASE,
+            "the window still holds the burst"
+        );
+        assert_eq!(kbps(after), fell, "the burst lowered it twice");
     }
 
     #[test]
