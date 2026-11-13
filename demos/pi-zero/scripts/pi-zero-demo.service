@@ -32,7 +32,7 @@ Restart=always
 # startup, and its datasheet asks for 180 s between refreshes.
 RestartSec=10
 # A camera that is not ready yet, or WiFi that has not associated, should not
-# make the unit give up for good.
+# make the unit stop restarting.
 StartLimitIntervalSec=0
 
 [Install]

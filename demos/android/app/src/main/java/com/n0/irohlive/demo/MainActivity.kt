@@ -17,7 +17,7 @@ import com.n0.irohlive.demo.ui.DemoApp
  * The demo's only activity.
  *
  * It owns the [SessionController], keeps the window in step with the screen the
- * controller is showing, and turns `iroh-live:` links into a watch session.
+ * controller is showing, and turns `ilv1:` links into a watch session.
  */
 class MainActivity : ComponentActivity() {
     private lateinit var controller: SessionController
@@ -67,10 +67,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Starts watching when the app was opened from an `iroh-live:` link. */
+    /** Starts watching when the app was opened from an `ilv1:` link. */
     private fun handleTicketLink(intent: Intent?) {
         val uri: Uri = intent?.data ?: return
-        if (uri.scheme != "iroh-live") return
+        if (uri.scheme != "ilv1") return
         val ticket = uri.toString()
         controller.ticketDraft = ticket
         controller.openWatchSetup()
