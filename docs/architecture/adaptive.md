@@ -54,6 +54,8 @@ CUBIC, iroh's default, an application-limited sender's window grows until
 something is lost, so the estimate overstates the link. `MoqPreset`, which
 `EndpointConfig` binds with, uses BBR3 instead, whose window follows the
 delivery rate it measures.
+A publisher with [rate control](rate-control.md) reports its own estimate
+instead, which follows the path's queueing and loss.
 
 Loss is the other figure the selector reads. A subscriber sends little but
 acknowledgements, so its loss rate is loss among acknowledgements. It stands in

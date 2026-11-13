@@ -150,6 +150,10 @@ impl LiveLayout {
     /// `LocalBroadcast`, or the producer itself. The audience is
     /// [`Audience::Granted`], which includes attached relays.
     ///
+    /// On a node with [`rate_control`](NodeConfig::rate_control), a
+    /// `LocalBroadcast` follows the node's allocator, as
+    /// [`Node::bandwidth`] hands it out.
+    ///
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes only
     /// when it is closed, since the node holds the broadcast open while it is
@@ -177,12 +181,13 @@ impl LiveLayout {
     /// ```
     pub fn publish<B>(&self, node: &Node, name: &str) -> Result<B, Error>
     where
-        B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
+        B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static> + 'static,
     {
         let path = self.path(node.id(), name)?;
         let (_publication, broadcast) = node.publish_with(path, Audience::Granted, |producer| {
             B::try_from(producer.clone())
         })?;
+        follow_rate(node, &broadcast);
         Ok(broadcast)
     }
 
@@ -213,6 +218,22 @@ impl Layout<EndpointId> for LiveLayout {
         let (peer, name) = self.parse(&path)?;
         (self.path(peer, name).ok()? == path).then_some(peer)
     }
+}
+
+/// Hands `node`'s allocator to `broadcast` if it is a `LocalBroadcast` and the node has rate control.
+///
+/// Any other broadcast type is left alone: a bare producer has no encoder to
+/// follow a grant.
+pub(crate) fn follow_rate<B: 'static>(node: &Node, broadcast: &B) {
+    #[cfg(feature = "media")]
+    if let (Some(allocator), Some(local)) = (
+        node.bandwidth(),
+        (broadcast as &dyn std::any::Any).downcast_ref::<moq_ext_publisher::LocalBroadcast>(),
+    ) {
+        local.set_bandwidth(allocator);
+    }
+    #[cfg(not(feature = "media"))]
+    let _ = (node, broadcast);
 }
 
 /// Returns the grant a node gives `peer` under `layout`.
