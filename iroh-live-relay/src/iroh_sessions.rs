@@ -255,7 +255,9 @@ pub fn browser_grant(path: &str) -> Result<moq_auth::Grant, moq_auth::Error> {
     ))
 }
 
-/// Returns what a browser may do without a token, rooted at `/`: subscribe anywhere, publish one segment.
+/// Returns what a browser may do without a token, rooted at `/`.
+///
+/// It may subscribe anywhere and publish at names of one segment.
 pub(crate) fn browser_rules() -> moq_auth::Permissions {
     moq_auth::Permissions::new(
         "*".parse::<Pattern>().expect("a valid pattern"),

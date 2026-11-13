@@ -116,7 +116,8 @@ pub struct Config {
 ///
 /// The first SIGINT or SIGTERM drains the browser sessions, and a second one
 /// ends the relay at once. Install a rustls crypto provider first, as the
-/// crate example does.
+/// crate example does. The relay prints its endpoint id and the addresses it
+/// listens at to stdout, for an operator and for the browser tests.
 ///
 /// # Errors
 ///

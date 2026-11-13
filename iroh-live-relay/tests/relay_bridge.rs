@@ -87,7 +87,9 @@ impl TestRelay {
         Self::start_with(true, false, None, Some(keys), iroh::SecretKey::generate()).await
     }
 
-    /// Starts a relay as [`start_keyed`](Self::start_keyed) does, reachable through [`http_url`](Self::http_url).
+    /// Starts a relay as [`start_keyed`](Self::start_keyed) does, with HTTP.
+    ///
+    /// The relay is reachable through [`http_url`](Self::http_url).
     async fn start_keyed_http(keys: KeySet) -> Self {
         Self::start_with(
             true,
@@ -1855,7 +1857,9 @@ async fn an_iroh_url_presents_the_token_in_its_query() {
     holder.shutdown().await;
 }
 
-/// With a key, an iroh client's valid token decides what it publishes, and one without a token keeps the relay's rule.
+/// With a key, an iroh client's valid token decides what it publishes.
+///
+/// A client without a token keeps the relay's rule.
 #[tokio::test]
 async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -2036,7 +2040,9 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     holder.shutdown().await;
 }
 
-/// An iroh relay link presents the tokens set on it, so the redial after the first expired gets back in.
+/// An iroh relay link presents the tokens set on it.
+///
+/// The redial after the first token expired therefore gets back in.
 #[tokio::test]
 async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
     let _ = tracing_subscriber::fmt::try_init();

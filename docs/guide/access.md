@@ -509,8 +509,8 @@ without a restart. A browser presents its JWT as `?jwt=` or as a SETUP token,
 and a session that presents two different JWTs is refused. The relay decides
 iroh clients with
 `Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())`, which
-reads the keys once, at start. A binary
-that embeds the relay sets another policy in `Config::iroh_policy`.
+reads the keys once, at start. A binary that embeds the relay sets another
+policy in `Config::iroh_policy`.
 
 The relay decides an iroh client once, when it connects. When the
 authorization expires, the relay closes the session, and the client's relay
