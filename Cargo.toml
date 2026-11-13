@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "iroh-live",
     "iroh-live-node",
     "moq-transport-iroh",
     "moq-ext-access",
@@ -50,6 +51,7 @@ egui = "0.37.0"
 egui-wgpu = "0.37.0"
 
 # In-repo crates
+iroh-live = { path = "iroh-live", default-features = false }
 iroh-live-node = { path = "iroh-live-node" }
 moq-transport-iroh = { path = "moq-transport-iroh" }
 moq-ext-access = { path = "moq-ext-access" }

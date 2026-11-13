@@ -2,53 +2,62 @@
 
 Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 
-`Live` binds an iroh `Endpoint` to a MoQ transport. `Live::publish` hands back a
-broadcast every connected peer can subscribe to, `Live::subscribe` reaches one a
-peer publishes, and `Call` is 1:1 sugar over the two. The media comes from
-[`moq-media`](../moq-media), re-exported here as `iroh_live::media`.
+A `Node` publishes broadcasts at paths and subscribes to paths, over a direct
+session with a peer or an attached relay. `LiveLayout` puts each peer's
+broadcasts at `live/<endpoint id>/<name>`, and a `BroadcastTicket` names one
+for a viewer. The crate re-exports the node as `iroh_live::node`, moq-net as
+`iroh_live::moq_net`, the media crates as `iroh_live::media`, and the rooms
+crate as `iroh_live::rooms`.
 
-## Publishing
+The crate builds against moq's unreleased `main` branch, pinned by git rev, so
+it is not on crates.io. Depend on it through git:
 
-```rust
-use iroh_live::{Live, media::{audio, video}, ticket::LiveTicket};
-
-let live = Live::from_env().await?.with_router().spawn();
-let broadcast = live.publish("hello")?;
-
-broadcast.video().set(video::capture::Config::default())?;
-broadcast.audio().set(audio::capture::Config::default());
-
-println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
+```toml
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
 ```
 
-Publishing is node-wide. A broadcast is created on the endpoint's origin and
-announced to every peer with a session, so connecting to a relay later is enough
-to reach it there.
+## Example
 
-## Subscribing
+Publish a camera, and share the ticket:
 
-```rust
-let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
-let tracks = sub.media().await;
+```rust,ignore
+let layout = LiveLayout::default();
+let endpoint = EndpointConfig::from_env()?.bind().await?;
+let node = Node::new(endpoint.clone(), layout.config());
+// Accepts the viewers. Keep it: dropping it stops accepting.
+let router = node.mount(Router::builder(endpoint)).spawn();
+let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
+let camera = VideoSource::capture(video::capture::Config::default()).await?;
+broadcast.set_video(camera, VideoEncoding::single(VideoRendition::new("video")))?;
+println!("{}", layout.ticket(node.id(), "hello")?);
 ```
 
-`Subscription` bundles the MoQ session, the `RemoteBroadcast`, and a receiver of
-transport signals, with the stats recorder and the signal producer already wired
-up. Hand the signals to `VideoTrack::enable_adaptation` to follow the downlink.
+On the other side, subscribe and play:
 
-## Rooms
+```rust,ignore
+let subscription = node.subscribe_ticket(&ticket).await?;
+let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+let mut frames = player.video_frames();
+```
 
-Rooms live in [`iroh-rooms`](../iroh-rooms). What they need from here is the
-gossip instance, which `LiveBuilder::with_gossip()` creates and
-`Live::gossip()` returns.
-
-## Feature flags
-
-All pass through to `moq-media`: `capture` and `render` by default, plus
-`playback`, `aec`, `pipewire`, `vaapi`, and `nvidia`.
+The [library quickstart](../docs/getting-started/library-quickstart.md) has
+both sides as complete programs, with their imports.
 
 ## Examples
 
-`examples/publish.rs` publishes a camera and a microphone, with a simulcast
-ladder behind `--simulcast`. `examples/subscribe_test.rs` is the test helper the
-browser end-to-end suite uses.
+- `examples/publish.rs` publishes a camera and a microphone, with a simulcast
+  ladder behind `--simulcast`. Needs `capture`.
+- `examples/publish-pi.rs` publishes a Raspberry Pi camera. Needs `rpicam`.
+- `examples/moq_only.rs` serves a broadcast with `Node` alone, without a
+  layout.
+- `examples/contacts_only.rs` admits only a node's contacts, and drops one on
+  `Node::reauthorize`.
+- `examples/subscribe_test.rs` is the helper the browser test suite runs.
+
+## More
+
+- The [how-to guides](../docs/SUMMARY.md) cover calls, rooms, custom paths,
+  relays, recording, access control and data tracks.
+- [Cargo features](../docs/reference/features.md) lists this crate's
+  features. None is on by default.
+- The crate docs list the main types and which futures are cancellation safe.
