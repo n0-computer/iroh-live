@@ -12,9 +12,11 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
-derive_more = { version = "2.1.1", features = ["display", "debug"] }
+derive_more = { version = "2.1.1", features = ["display", "debug", "from"] }
 data-encoding = "2.11.1"
 iroh = { workspace = true }
+# The clock and poll helpers that drive moq's connect policy for iroh relay links.
+kio = { workspace = true }
 moq-net = { workspace = true }
 # Latest-value JSON tracks, for `Node::publish_value` and `Subscription::value_track`.
 moq-json = { workspace = true }

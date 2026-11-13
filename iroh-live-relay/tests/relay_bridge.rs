@@ -44,26 +44,38 @@ impl TestRelay {
     ///
     /// The forgery tests use it as the relay a node must not trust.
     async fn start() -> Self {
-        Self::start_with(false, false, None, None).await
+        Self::start_with(false, false, None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay with the admission `iroh_live_relay::run` uses.
     async fn start_shipped() -> Self {
-        Self::start_with(true, false, None, None).await
+        Self::start_with(true, false, None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay as [`start_shipped`](Self::start_shipped) does, which verifies JWTs with `keys`.
     ///
     /// As `iroh_live_relay::run` does with `--auth-key`.
     async fn start_keyed(keys: KeySet) -> Self {
-        Self::start_with(true, false, None, Some(keys)).await
+        Self::start_with(true, false, None, Some(keys), iroh::SecretKey::generate()).await
+    }
+
+    /// Starts a relay as [`start_keyed`](Self::start_keyed) does, reachable through [`http_url`](Self::http_url).
+    async fn start_keyed_http(keys: KeySet) -> Self {
+        Self::start_with(
+            true,
+            false,
+            Some(free_port()),
+            Some(keys),
+            iroh::SecretKey::generate(),
+        )
+        .await
     }
 
     /// Starts a relay as [`start_shipped`](Self::start_shipped) does, which also pulls tickets.
     ///
     /// An iroh session that names a ticket in its path pulls the ticket's broadcast.
     async fn start_pulling() -> Self {
-        Self::start_with(true, true, None, None).await
+        Self::start_with(true, true, None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay with the admission of the shipped relay if `shipped`, else an open one.
@@ -74,7 +86,14 @@ impl TestRelay {
     /// A client dials it as `http://localhost:<port>`: moq-tokio fetches the
     /// fingerprint there and pins the self-signed certificate.
     async fn start_http() -> Self {
-        Self::start_with(false, false, Some(free_port()), None).await
+        Self::start_with(
+            false,
+            false,
+            Some(free_port()),
+            None,
+            iroh::SecretKey::generate(),
+        )
+        .await
     }
 
     /// Starts a relay with the given options.
@@ -82,11 +101,13 @@ impl TestRelay {
     /// With `pull`, the shipped admission pulls the tickets iroh sessions name.
     /// With `port`, QUIC and the web listener bind that port, else QUIC binds any.
     /// With `keys`, the shipped admission and the iroh sessions verify JWTs.
+    /// The relay's iroh endpoint id is the one of `secret_key`.
     async fn start_with(
         shipped: bool,
         pull: bool,
         port: Option<u16>,
         keys: Option<KeySet>,
+        secret_key: iroh::SecretKey,
     ) -> Self {
         let alpns = moq_transport_iroh::alpns()
             .into_iter()
@@ -95,7 +116,7 @@ impl TestRelay {
 
         let iroh = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .address_lookup(lookup().clone())
-            .secret_key(iroh::SecretKey::generate())
+            .secret_key(secret_key)
             .alpns(alpns)
             .bind()
             .await
@@ -1756,11 +1777,24 @@ fn attach_with_token(
     relay: &TestRelay,
     token: Option<String>,
 ) -> iroh_live_node::RelayLink {
-    node.attach_relay(RelayConfig {
-        token: token.map(iroh_live_node::TokenSource::fixed),
-        ..RelayConfig::iroh(relay.iroh_id)
-    })
-    .expect("attach")
+    let mut config = RelayConfig::iroh(relay.iroh_id);
+    if let Some(token) = token {
+        config = config.with_token(token.parse().expect("not empty"));
+    }
+    node.attach_relay(config).expect("attach")
+}
+
+/// Signs a token for `tokens/**` that expires `after` from now.
+fn expiring_token(keys: &KeySet, after: Duration) -> String {
+    let mut claims = Claims::default()
+        .with_publish(["tokens/**".parse().expect("a pattern")])
+        .with_subscribe([moq_net::Pattern::all()]);
+    claims.expires = Some(
+        (std::time::SystemTime::now() + after)
+            .try_into()
+            .expect("after 1970"),
+    );
+    keys.sign(&claims).expect("signed")
 }
 
 /// A token in an `iroh://` URL's query is presented, as it is on an https link.
@@ -1915,15 +1949,7 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     let _ = tracing_subscriber::fmt::try_init();
     let keys = signing_keys();
     let relay = TestRelay::start_keyed(keys.clone()).await;
-    let mut claims = Claims::default()
-        .with_publish(["tokens/**".parse().expect("a pattern")])
-        .with_subscribe([moq_net::Pattern::all()]);
-    claims.expires = Some(
-        (std::time::SystemTime::now() + Duration::from_secs(2))
-            .try_into()
-            .expect("after 1970"),
-    );
-    let token = keys.sign(&claims).expect("signed");
+    let token = expiring_token(&keys, Duration::from_secs(2));
 
     let (_endpoint, holder) = relay_node().await;
     let cam = holder
@@ -1940,33 +1966,12 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     holder.shutdown().await;
 }
 
-/// An iroh relay link asks its token function on every dial, so a redial presents a fresh token.
+/// An iroh relay link presents the tokens set on it, so the redial after the first expired gets back in.
 #[tokio::test]
 async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
     let _ = tracing_subscriber::fmt::try_init();
     let keys = signing_keys();
     let relay = TestRelay::start_keyed(keys.clone()).await;
-    // The first token expires, so the relay closes the session, and every later one lasts.
-    let mut expiring = Claims::default()
-        .with_publish(["tokens/**".parse().expect("a pattern")])
-        .with_subscribe([moq_net::Pattern::all()]);
-    expiring.expires = Some(
-        (std::time::SystemTime::now() + Duration::from_secs(2))
-            .try_into()
-            .expect("after 1970"),
-    );
-    let first = keys.sign(&expiring).expect("signed");
-    let fresh = token_for(&keys, "tokens");
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = calls.clone();
-    let token = iroh_live_node::TokenSource::new(move || {
-        let call = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Some(if call == 0 {
-            first.clone()
-        } else {
-            fresh.clone()
-        })
-    });
 
     let (_endpoint, holder) = relay_node().await;
     let cam = holder
@@ -1974,20 +1979,82 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
         .expect("publish");
     let _cam = counter(cam.broadcast(), "data");
     let mut updates = relay.cluster.origin.consume().announced();
-    let _link = holder
-        .attach_relay(RelayConfig {
-            token: Some(token),
-            ..RelayConfig::iroh(relay.iroh_id)
-        })
-        .expect("attach");
+    // The first token expires, so the relay closes the session.
+    let first = expiring_token(&keys, Duration::from_secs(2));
+    let link = attach_with_token(&holder, &relay, Some(first));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    let fresh = token_for(&keys, "tokens").parse().expect("not empty");
+    link.tokens().set(vec![fresh]);
     retracted(&mut updates, "tokens/cam").await;
     // Back with the fresh token, which the relay verified on the redial.
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
-    assert!(
-        calls.load(std::sync::atomic::Ordering::SeqCst) >= 2,
-        "the link asked for a token once only"
-    );
+
+    holder.shutdown().await;
+}
+
+/// An https relay link presents the tokens set on it, so its route outlives the first token.
+#[tokio::test]
+async fn an_https_relay_link_presents_a_fresh_token() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay = TestRelay::start_keyed_http(keys.clone()).await;
+
+    let (_endpoint, holder) = relay_node().await;
+    let cam = holder
+        .publish("tokens/cam", Audience::Granted)
+        .expect("publish");
+    let _cam = counter(cam.broadcast(), "data");
+    let first = expiring_token(&keys, Duration::from_secs(2));
+    let link = connected(
+        &holder,
+        RelayConfig::new(relay.http_url()).with_token(first.parse().expect("not empty")),
+    )
+    .await;
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    let fresh = token_for(&keys, "tokens").parse().expect("not empty");
+    link.tokens().set(vec![fresh]);
+    // Past the first token's expiry, the relay still routes the broadcast.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    assert_eq!(link.status().get(), RelayStatus::Connected);
+
+    holder.shutdown().await;
+}
+
+/// An iroh relay link to a relay that is down at attach keeps redialing until the relay is up.
+#[tokio::test]
+async fn a_relay_link_waits_for_a_relay_that_is_down_at_attach() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let secret_key = iroh::SecretKey::generate();
+    let (_endpoint, holder) = relay_node().await;
+    let cam = holder
+        .publish(
+            LiveLayout::default()
+                .path(holder.id(), "cam")
+                .expect("a path"),
+            Audience::Granted,
+        )
+        .expect("publish");
+    let _cam = counter(cam.broadcast(), "data");
+    let link = holder
+        .attach_relay(RelayConfig::iroh(secret_key.public()))
+        .expect("attach");
+    let mut status = link.status();
+    step("the first dial fails", async {
+        while status.get() != RelayStatus::Reconnecting {
+            status.updated().await.expect("link gone");
+        }
+    })
+    .await;
+
+    let relay = TestRelay::start_with(true, false, None, None, secret_key).await;
+    step("the relay link connects once the relay is up", async {
+        while status.get() != RelayStatus::Connected {
+            status.updated().await.expect("link gone");
+        }
+    })
+    .await;
+    routed(&relay.cluster.origin.consume(), cam.path().as_str()).await;
 
     holder.shutdown().await;
 }

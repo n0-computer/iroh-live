@@ -580,8 +580,9 @@ A relay appears in two roles.
 The relay sees every `Granted` publication and no `Peers` one. The node
 accepts the relay's announcements for any path, since a relay is trusted with
 the paths it forwards. Attach only relays that keep each publisher to its own
-paths. The node presents a token to the relay through `RelayConfig::token`,
-a `TokenSource`. An `iroh://` link asks it for a fresh token on every dial.
+paths. The node presents tokens to the relay through `RelayConfig::tokens`
+on every dial. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, whose
+`set` replaces them on the live link before the old ones expire.
 
 **`iroh-live-relay` itself.** It has two doors.
 
@@ -591,7 +592,7 @@ a `TokenSource`. An `iroh://` link asks it for a fresh token on every dial.
   `rooms/*/<id>/`. With `--auth-key`, the policy becomes
   `Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())`. The
   relay decides a client once. When the authorization expires, it closes the
-  session, and the client's relay link redials with a fresh token.
+  session, and the client's relay link redials with the tokens set on it last.
 - *Browsers* come in through moq-relay's server. Without auth flags, the relay
   answers each admission with `browser_grant(path)`: read anything, and
   publish a name of one segment below the dialed path. One segment keeps a
@@ -639,4 +640,4 @@ changes. Short-lived links bound the damage meanwhile.
 | show a broadcast to a few peers, and never to a relay | `Audience::Peers(watchable)` |
 | change who sees a broadcast | update the `Peers` set, or `Publication::set_audience` |
 | play a ticket under any policy | `Node::subscribe_ticket` |
-| present a token when dialing | `ConnectOptions::token`, or `RelayConfig::token` for a relay |
+| present a token when dialing | `ConnectOptions::token`, or `RelayConfig::tokens` for a relay |

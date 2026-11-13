@@ -457,22 +457,21 @@ runs both sides in one process.
 
 ### Tokens for a relay link
 
-A node presents a token to a relay through `RelayConfig::token`, a
-`TokenSource`. `TokenSource::fixed(token)` presents one token.
-`TokenSource::new(f)` calls `f` each time the link asks:
+A node presents tokens to a relay through `RelayConfig::tokens`, moq-net's
+`auth::Token`. `RelayConfig::with_token` presents one:
 
 ```rust
-use iroh_live::{RelayConfig, TokenSource};
+use iroh_live::RelayConfig;
 
-let link = node.attach_relay(RelayConfig {
-    token: Some(TokenSource::fixed(token)),
-    ..RelayConfig::iroh(relay)
-})?;
+let link = node.attach_relay(RelayConfig::iroh(relay).with_token(token.parse()?))?;
+// Later, before the token expires:
+link.tokens().set(vec![fresh.parse()?]);
 ```
 
-An `iroh://` link asks before every dial, so a link that redials after its
-token expired presents a fresh one. An `https://` link asks once, when it
-attaches.
+The link presents its tokens on every dial, over `iroh://` and `https://`
+alike. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, and
+`Tokens::set` replaces them. A relay that closes the session when the old
+token expires gets the new one on the redial.
 
 ## The relay's auth flags
 
@@ -502,14 +501,14 @@ cargo run -p iroh-live-relay -- --auth-key relay.jwk
 ```
 
 An iroh client presents a token signed with the same key through
-`RelayConfig::token`, and a browser puts it in the URL as `?jwt=<token>`. With
+`RelayConfig::tokens`, and a browser puts it in the URL as `?jwt=<token>`. With
 `--auth-key`, the relay decides iroh clients with
 `Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())`. A binary
 that embeds the relay sets another policy in `Config::iroh_policy`.
 
 The relay decides an iroh client once, when it connects. When the
 authorization expires, the relay closes the session, and the client's relay
-link redials with a fresh token from its `TokenSource`.
+link redials with the tokens set on it last.
 
 ## The trust model
 

@@ -90,10 +90,10 @@ no such identity and may publish only at names of one segment.
 
 `--auth-key` makes the relay verify JWTs, signed with a key in the file, from
 both sides. A browser presents its token as `?jwt=` in the URL, and an iroh
-client through `RelayConfig::token`. A valid token grants what its claims
+client through `RelayConfig::tokens`. A valid token grants what its claims
 say, an invalid one is refused, and a session without a token keeps the rules
 above. The relay closes an iroh client's session when its token expires, and
-the client's relay link redials with a fresh one.
+the client's relay link redials with the tokens set on it last.
 
 `--auth-url` and the `--auth-public` flags hand browser sessions to
 moq-relay's own auth instead, and the relay then pulls no tickets for

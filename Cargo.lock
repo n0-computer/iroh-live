@@ -4421,6 +4421,7 @@ dependencies = [
  "ed25519-dalek",
  "iroh",
  "iroh-live-node",
+ "kio",
  "moq-ext-access",
  "moq-ext-adaptive",
  "moq-json",

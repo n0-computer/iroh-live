@@ -82,9 +82,11 @@ trust model.
 ## Relays
 
 `Node::attach_relay(RelayConfig::new(url))` stays attached to a moq relay at an
-`iroh://` or `https://` URL, and redials it with backoff. `RelayConfig::iroh(id)`
-builds the `iroh://` URL from an endpoint id. `RelayConfig::token` is a
-`TokenSource` the link asks for a token to present. Publications with the
+`iroh://` or `https://` URL, and redials it with backoff. Both kinds run
+moq-net's connect policy (`moq_net::Reconnect`), which also follows a relay's
+GOAWAY. `RelayConfig::iroh(id)` builds the `iroh://` URL from an endpoint id.
+`RelayConfig::tokens` are the tokens the link presents on every dial, and
+`RelayLink::tokens()` replaces them on a live link. Publications with the
 `Granted` audience go to the relay, and the relay's routes join the route
 table at a higher cost than a direct route. A node that only publishes through
 the relay sets `RelayConfig::consume` to false.

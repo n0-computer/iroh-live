@@ -159,12 +159,23 @@ the serving link too. The monitor logs every sample at TRACE as `link sample`. T
 `Node::attach_relay(RelayConfig::new(url))` attaches to a moq relay at an
 `iroh://` or `https://` URL. `https://` links use moq-tokio's client, and
 `iroh://` links dial through the node's own endpoint, since moq-tokio has no
-iroh transport. The link redials with backoff, and `RelayLink::status()` watches its `RelayStatus`. Publications with
-the `Granted` audience go to the relay. `RelayConfig::token` is a `TokenSource`
-that the link asks for a token: an `iroh://` link before every dial, and an
-`https://` link once, when it attaches. The relay's routes join the route table
-at a cost of 10 against a direct link's cost of one, so a direct route wins
-while it exists.
+iroh transport. Both run moq-net's connect policy, `moq_net::Reconnect`: it
+redials with jittered backoff, and on a GOAWAY it dials the replacement while
+the old session drains. moq-tokio drives it for `https://` links, and
+`relay.rs` drives it for `iroh://` links. The policy ends when its first walk
+reaches no session, or when the relay refuses tokens that did not change since.
+An `iroh://` link then starts it again after a pause that doubles from 1 s to
+30 s, so the link stays attached to a relay that is down when it attaches.
+`RelayLink::status()` watches its `RelayStatus`. Publications with the `Granted`
+audience go to the relay.
+
+`RelayConfig::tokens` (moq-net's `auth::Token`) are presented on every dial:
+the first in the MoQ SETUP and, since moq-lite-06 has no token field there, as
+`?jwt=` in the URL. A `jwt` already in the URL wins. `RelayLink::tokens()`
+returns the link's `moq_net::auth::Tokens`, and `Tokens::set` replaces them for
+the live session and every later dial. A relay that refused the old tokens is
+dialed again at once. The relay's routes join the route table at a cost of 10
+against a direct link's cost of one, so a direct route wins while it exists.
 
 `RelayConfig::consume` defaults to true, which feeds every route the relay
 knows into the node's route table. A node that only publishes through the

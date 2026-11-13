@@ -50,7 +50,7 @@ appears on the relay at `live/<publisher endpoint id>/<name>`, and
 `irl publish` prints that path. Without a token, an iroh client may publish
 only at paths that contain its own endpoint id, so nobody can publish under
 another node's name. A relay started with `--auth-key` accepts a JWT from the
-client, which a Rust node sets with `RelayConfig::token`.
+client, which a Rust node sets with `RelayConfig::with_token`.
 
 The relay also serves a publish page, which publishes the browser's camera and
 microphone. A Rust node reads such a broadcast by attaching to the relay and
