@@ -872,14 +872,17 @@ async fn a_switch_does_not_blank_the_picture() {
 
 /// A pinned switch lands while the link stays capped.
 ///
-/// Ignored because of a moq-net defect. Its send queue is session-wide, keyed
-/// `(track_priority, group_sequence)`, and ties go to the higher sequence. The
-/// replacement's first group, its keyframe, starts at sequence 0 and waits
-/// behind every group the incumbent still has queued. On a saturated link that
-/// queue never empties. The fix is to rank groups by age within their track.
+/// Ignored because the replacement's groups starve. The iroh transport has no
+/// send groups, so moq-net ranks every group stream of the session in one
+/// queue, and between two subscriptions at the same priority the older one
+/// goes first. The replacement's first group, its keyframe, waits behind every
+/// group the incumbent still has queued, and on a saturated link that queue
+/// never empties. Send groups in `moq-transport-iroh`, which share bytes
+/// between subscriptions of equal priority, or a replacement subscribed above
+/// the incumbent's priority until it takes over, would let the switch land.
 #[tokio::test]
 #[traced_test]
-#[ignore = "the replacement track's first group is starved behind the incumbent's higher-numbered ones. It passes about five runs in six"]
+#[ignore = "the replacement track's first group is starved behind the incumbent's groups. It passed 1 run in 6 at a commit from 2026-11-12 and none of 18 at three later ones"]
 async fn a_switch_lands_while_the_link_stays_capped() {
     let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
     let mut viewer = fixture.play(2, "high").await;
