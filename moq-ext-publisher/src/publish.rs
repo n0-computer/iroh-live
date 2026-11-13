@@ -27,6 +27,7 @@ pub use self::{
 use crate::stats::{PublishRecorder, PublishStats};
 
 mod audio;
+mod cuts;
 mod encoding;
 pub(crate) mod status;
 mod video;

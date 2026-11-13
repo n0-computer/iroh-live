@@ -158,6 +158,26 @@ reports. When the last viewer leaves, the encoder closes and the producer
 records a discontinuity, so the next timestamp does not stretch a frame across
 the gap. The track and its catalog entry stay advertised throughout.
 
+A subscriber that joins mid-group reads the newest group from its keyframe.
+Each rendition's track sets `track::Info::refresh` to 2, as moq-video's
+capture does: once a group's deltas outweigh twice its keyframe, a join asks
+for a group past the largest through `Demand::wanted`, and the encoder cuts a
+keyframe on its next frame. The joiner then starts near a keyframe instead of
+downloading the rest of a long group, and a later joiner benefits too.
+moq-video measured the cost at 10 to 13% more bitrate for one join a second
+and about 1% for one every ten seconds. A player that switches renditions
+joins too. The decision copies moq-video's private `encode::cuts`: requests
+that arrive while the keyframe is still in the encoder coalesce, and a fresh
+encoder's opening keyframe serves every earlier request. moq-video advertises
+the refresh only when every backend it may open honours a cut. We advertise
+it unless the rendition names the V4L2 encoder, since an encoder that cannot
+cut answers the request with its next scheduled keyframe, which is what a
+joiner gets without a refresh.
+
+The catalog reservation carries `encode::Config::effective_join()`, so
+moq-mux declares `media.join.interval` from the encoder's keyframe interval
+rather than measuring it from the first group.
+
 The encoders and the publisher's frame-rate meter read the source through
 `VideoSource::observe()`, which does not count as demand, so an idle broadcast
 does not keep an application camera running. A preview's handle does count, so

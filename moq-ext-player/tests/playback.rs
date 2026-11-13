@@ -699,6 +699,65 @@ async fn a_running_player_changes_its_latency() {
     encode.abort();
 }
 
+/// A viewer that joins a watched rendition starts on a fresh keyframe, not on the cached group.
+///
+/// The keyframe interval is ten seconds. After a second of deltas the cached
+/// group outweighs the track's refresh ratio, so the join asks for a new group
+/// and the publisher cuts one within a frame. Without that, the joiner would read the whole
+/// cached group first, and the next keyframe would come ten seconds after the
+/// first.
+#[tokio::test]
+async fn a_late_joiner_gets_a_fresh_keyframe() {
+    let size = moq_video::Size::new(320, 180);
+    let source = VideoSource::test_pattern(size, fps(30)).expect("the pattern thread starts");
+    let mut rendition = VideoRendition {
+        size: Some(size),
+        ..VideoRendition::new("video")
+    };
+    rendition.config.join = Duration::from_secs(10);
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(source, software(VideoEncoding::single(rendition)))
+        .expect("a valid encoding");
+
+    let first = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = first.video_frames();
+    wait_for_size(&mut frames, size).await;
+    // Let the group grow well past the refresh ratio.
+    more_frames(&mut frames, 30).await;
+    let keyframe_interval = || broadcast.stats().renditions["video"].keyframe_interval;
+    assert_eq!(keyframe_interval(), None, "one keyframe so far");
+
+    let joined = tokio::time::Instant::now();
+    let late = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut late_frames = late.video_frames();
+    wait_for_size(&mut late_frames, size).await;
+    let cut = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(interval) = keyframe_interval() {
+                return interval;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the publisher cut a keyframe for the joiner");
+    assert!(
+        cut < Duration::from_secs(5),
+        "the second keyframe came {cut:?} after the first, on the schedule"
+    );
+    eprintln!(
+        "the joiner's keyframe came {cut:?} after the first, {:?} after the join",
+        joined.elapsed()
+    );
+    // The first viewer keeps playing through the cut.
+    more_frames(&mut frames, 5).await;
+}
+
 /// A rendition's catalog `delay` adds to the playout delay, as hang asks a player to.
 ///
 /// The clock runs the latency's minimum plus the advertised delay behind live.

@@ -8,6 +8,11 @@
 //! when nobody watches, because a preview reads the same frames and a
 //! publisher expects to see itself before anyone tunes in.
 //!
+//! Each rendition's track sets `track::Info::refresh`, so a subscriber that
+//! joins a long group asks for a new one, and the encoder cuts a keyframe for
+//! it, as moq-video's capture does. The catalog declares each encoder's
+//! keyframe interval.
+//!
 //! A task that `set_video` replaces hands its rendition tracks to the
 //! successor, which encodes the new source into the renditions of the same
 //! name. A subscriber keeps its track and sees the new source from the next
@@ -33,6 +38,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
     Job, SourceClock,
+    cuts::Cuts,
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
@@ -46,6 +52,14 @@ pub(super) const ENCODED_RENDITION: &str = "video";
 /// A realtime encoder returns a frame's packets with that frame or a few
 /// frames later, so this is far more than one ever holds.
 const MAX_PENDING: usize = 64;
+
+/// The `track::Info::refresh` ratio a rendition advertises, as moq-video's capture does.
+///
+/// A joiner asks for a new group once a group's deltas outweigh twice its
+/// keyframe, so later joiners start near one. moq-video measured one join a
+/// second to cost 10 to 13% more bitrate on realtime encodes, and one every
+/// ten seconds about 1%.
+const REFRESH: u32 = 2;
 
 /// A rendition's track, left open by a replaced video task for its successor.
 pub(super) struct HandedOver {
@@ -165,7 +179,7 @@ pub(super) async fn run_raw(
                 info!(rendition = %rendition.name, "taking over the rendition's track");
                 (producer, last)
             }
-            None => match open_track(&producer, &catalog, &rendition.name, published) {
+            None => match open_track(&producer, &catalog, &rendition.name, &config, published) {
                 Ok(producer) => (producer, None),
                 Err(err) => {
                     fail(&rendition.name, err);
@@ -243,18 +257,36 @@ async fn probe_ladder<'a>(
 }
 
 /// Creates the track `name` and its catalog entry, described by `published`.
+///
+/// The catalog declares the encoder's keyframe interval from the start, and
+/// the track asks a joining subscriber's relays to request a fresh group
+/// unless `config` names an encoder that cannot cut one.
 fn open_track(
     producer: &moq_net::broadcast::Producer,
     catalog: &moq_mux::catalog::Producer,
     name: &str,
+    config: &encode::Config,
     published: hang::catalog::VideoConfig,
 ) -> Result<encode::Producer, Error> {
-    let reserved = catalog.reserve();
-    let track_info = reserved.track_info(hang::catalog::PRIORITY.video);
+    let reserved = catalog.reserve().with_interval(config.effective_join());
+    let track_info = reserved
+        .track_info(hang::catalog::PRIORITY.video)
+        .with_refresh(refresh(&config.kind));
     let track = producer
         .create_track(name, Some(track_info))
         .map_err(Error::broadcast)?;
     encode::Producer::new(track, reserved, published).map_err(Error::catalog)
+}
+
+/// Returns the refresh ratio a rendition encoded by `kind` advertises.
+///
+/// moq-video advertises one only when every backend the encoder may open
+/// honours a cut, which rules out every automatic choice in a build with the
+/// V4L2 encoder. We advertise one unless V4L2 is named: an encoder that
+/// cannot cut answers a request with its next scheduled keyframe, which is
+/// what a subscriber gets without a refresh.
+fn refresh(kind: &encode::Kind) -> Option<u32> {
+    (!matches!(kind, encode::Kind::Named(name) if name == "v4l2")).then_some(REFRESH)
 }
 
 /// Reads the source for its frame rate while the encoders run, and reports how the slot ends.
@@ -515,6 +547,10 @@ impl Encoder {
                 Err(err) => return Err(encode_error(err)),
             };
             self.report_encoder(encoder.name());
+            // Per encoder, since a fresh one opens with a keyframe that serves
+            // every earlier request.
+            let mut cuts = Cuts::default();
+            let mut can_cut = encoder.applied().cut;
 
             let mut due: Option<moq_net::Timestamp> = None;
             let mut meter = RateMeter::default();
@@ -594,6 +630,19 @@ impl Encoder {
                         .await
                         .map_err(encode_error)?;
                     self.report_encoder(encoder.name());
+                    cuts = Cuts::default();
+                    can_cut = encoder.applied().cut;
+                }
+
+                // A subscriber that joined over the track's refresh ratio asks
+                // for a group past the largest. Opening one here gives it a
+                // picture within a frame instead of after the rest of the
+                // group. A backend that cannot cut leaves every group to its
+                // keyframe interval.
+                if cuts.due(can_cut.then(|| demand.wanted()).flatten())
+                    && let Err(err) = encoder.cut().await
+                {
+                    debug!(error = %err, "no keyframe for a joining subscriber");
                 }
 
                 if self.pending.len() == MAX_PENDING {
@@ -612,6 +661,8 @@ impl Encoder {
                             .await
                             .map_err(encode_error)?;
                         self.report_encoder(encoder.name());
+                        cuts = Cuts::default();
+                        can_cut = encoder.applied().cut;
                         continue;
                     }
                     Err(err) => return Err(encode_error(err)),
@@ -636,7 +687,14 @@ impl Encoder {
                 // level after a switch to a larger source, moves the rendition
                 // to a newly named track and finishes the old one. Follow the
                 // demand of the track the producer writes now.
-                demand = self.producer.demand();
+                let moved = self.producer.demand();
+                if moved.name() != demand.name() {
+                    // The new track's first frame was a keyframe.
+                    cuts = Cuts::default();
+                } else if encoded.iter().any(|unit| unit.keyframe) {
+                    cuts.served(moved.wanted());
+                }
+                demand = moved;
                 let track = demand.name();
                 self.stats.update(|stats| {
                     if stats.track != track {
@@ -900,6 +958,15 @@ mod tests {
         assert_eq!(log.source(at(10)), None);
         assert_eq!(log.source(at(11)), Some(at(18)), "the oldest kept");
         assert_eq!(log.source(at(count)), Some(at(count + 7)));
+    }
+
+    /// Every rendition asks joiners' relays for a fresh group, unless it names the V4L2 encoder.
+    #[test]
+    fn a_rendition_advertises_a_refresh_unless_its_encoder_cannot_cut() {
+        assert_eq!(refresh(&encode::Kind::Auto), Some(REFRESH));
+        assert_eq!(refresh(&encode::Kind::Software), Some(REFRESH));
+        assert_eq!(refresh(&encode::Kind::Named("vaapi".into())), Some(REFRESH));
+        assert_eq!(refresh(&encode::Kind::Named("v4l2".into())), None);
     }
 
     #[test]
