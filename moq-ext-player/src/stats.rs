@@ -27,7 +27,8 @@ pub struct PlaybackStats {
     pub audio: Option<AudioPlaybackStats>,
     /// How far behind the live edge playback runs.
     ///
-    /// This is the latency's minimum, the playout clock's delay.
+    /// This is the playout clock's delay: the latency's minimum, raised by the
+    /// catalog `delay` and `jitter` and by the jitter the audio decoder measures.
     pub latency: Duration,
     /// A reading of the link, if the broadcast has network signals.
     pub network: Option<NetworkSample>,

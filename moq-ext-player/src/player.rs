@@ -53,7 +53,7 @@ pub const IMMEDIATE_LATENCY: Delay = Delay {
     max: Some(Duration::from_millis(150)),
 };
 
-/// How far below the latency's maximum a publisher's jitter may raise the playout delay: a frame at 30 fps.
+/// How far below the latency's maximum a track's target may raise the playout delay: a frame at 30 fps.
 const JITTER_HEADROOM: Duration = Duration::from_millis(33);
 
 /// Reports whether a player at `latency` holds frames for the clock.
@@ -61,24 +61,33 @@ pub(crate) fn paced(latency: &Delay) -> bool {
     latency.min.is_some_and(|min| !min.is_zero())
 }
 
-/// Returns the playout clock's delay at `latency`, given the publisher's `jitter`.
+/// Returns how far behind the live edge one track asks the playout clock to run, at `latency`.
 ///
-/// A publisher that flushes frames up to `jitter` late needs a buffer that
-/// deep. The jitter raises the delay to at most [`JITTER_HEADROOM`] below the
-/// maximum, the age at which the transport skips media, so a frame that
-/// arrives a little late is not past it before it is due. It never lowers the
-/// delay below the minimum. An unpaced latency ignores `jitter`.
-pub(crate) fn playout_delay(latency: &Delay, jitter: Option<Duration>) -> Duration {
-    let min = latency.min.unwrap_or_default();
-    match jitter {
-        Some(jitter) if paced(latency) => {
-            let ceiling = latency
-                .max
-                .map_or(Duration::MAX, |max| max.saturating_sub(JITTER_HEADROOM));
-            min.max(jitter.min(ceiling))
-        }
-        _ => min,
+/// This is hang's rule: a track holds its catalog `delay` plus its jitter
+/// allowance. The allowance is `jitter`, the catalog's figure for video and
+/// the audio decoder's measured target for audio, and never less than the
+/// latency's minimum. The clock runs at the largest target of its tracks.
+///
+/// A target stays [`JITTER_HEADROOM`] below the latency's maximum, the age at
+/// which the transport skips media, so a frame that arrives a little late is
+/// not past it before it is due. It never drops below the minimum. An unpaced
+/// latency holds nothing.
+pub(crate) fn track_target(
+    latency: &Delay,
+    delay: Option<Duration>,
+    jitter: Option<Duration>,
+) -> Duration {
+    if !paced(latency) {
+        return Duration::ZERO;
     }
+    let min = latency.min.unwrap_or_default();
+    let ceiling = latency
+        .max
+        .map_or(Duration::MAX, |max| max.saturating_sub(JITTER_HEADROOM));
+    let wanted = delay
+        .unwrap_or_default()
+        .saturating_add(min.max(jitter.unwrap_or_default()));
+    min.max(wanted.min(ceiling))
 }
 
 /// Returns an [`Error::InvalidConfig`] if the latency's minimum is above its maximum.
@@ -100,12 +109,13 @@ pub enum AudioMode {
     /// Decodes the audio for [`Player::audio_frames`] without playing it.
     ///
     /// Nothing is queued ahead of a device, so the audio is not paced, and
-    /// video is held for the jitter allowance alone.
+    /// its measured jitter does not hold the video back.
     Decode,
     /// Decodes the audio and plays it on this speaker engine.
     ///
     /// Every player writing to one engine is mixed into one device stream.
-    /// The decoded audio also goes to [`Player::audio_frames`].
+    /// The decoded audio also goes to [`Player::audio_frames`]. The jitter
+    /// the audio decoder measures raises the playout delay of the video too.
     #[cfg(feature = "playback")]
     Play(#[debug(skip)] moq_audio::playback::Engine),
 }
@@ -117,10 +127,13 @@ pub struct PlayerConfig {
     pub rendition: RenditionMode,
     /// How far behind live to run, as the moq subscription's [`Delay`].
     ///
-    /// The playout clock runs `min` behind the live edge, or the publisher's
-    /// advertised jitter if that is larger, up to `max`. While audio plays,
-    /// pictures show when their sound does. Media later than `max` is
-    /// skipped. Both reach the transport, so relays and the publisher see
+    /// The playout clock runs at least `min` behind the live edge. Each track
+    /// asks for more when it needs it: video for its catalog `delay` plus its
+    /// catalog `jitter`, and audio for its catalog `delay` plus the jitter its
+    /// decoder measures as packets arrive. The clock follows the largest ask,
+    /// up to a frame below `max`, so the delay rises on a jittery link and
+    /// returns to `min` on a clean one. While audio plays, pictures show when
+    /// their sound does. Media later than `max` is skipped. Both reach the transport, so relays and the publisher see
     /// them too. Setting `min == max` gives a fixed latency, and an unset
     /// `min` counts as zero. [`DEFAULT_LATENCY`] by default.
     pub latency: Delay,
@@ -535,31 +548,48 @@ mod tests {
     }
 
     #[test]
-    fn the_playout_delay_follows_a_larger_jitter_up_to_the_maximum() {
+    fn a_track_target_follows_a_larger_jitter_up_to_the_maximum() {
         let latency = Delay {
             min: Some(ms(100)),
             max: Some(ms(400)),
         };
-        assert_eq!(playout_delay(&latency, None), ms(100));
-        assert_eq!(playout_delay(&latency, Some(ms(40))), ms(100));
-        assert_eq!(playout_delay(&latency, Some(ms(250))), ms(250));
+        assert_eq!(track_target(&latency, None, None), ms(100));
+        assert_eq!(track_target(&latency, None, Some(ms(40))), ms(100));
+        assert_eq!(track_target(&latency, None, Some(ms(250))), ms(250));
         assert_eq!(
-            playout_delay(&latency, Some(ms(2000))),
+            track_target(&latency, None, Some(ms(2000))),
             ms(400) - JITTER_HEADROOM,
             "a frame's worth of headroom stays below the skip threshold"
         );
         // The default keeps headroom at its maximum, and stays at or above its minimum.
-        let delay = playout_delay(&DEFAULT_LATENCY, Some(ms(150)));
+        let delay = track_target(&DEFAULT_LATENCY, None, Some(ms(150)));
         assert!(delay < ms(150) && delay >= ms(100), "{delay:?}");
         let tight = Delay {
             min: Some(ms(150)),
             max: Some(ms(150)),
         };
-        assert_eq!(playout_delay(&tight, Some(ms(400))), ms(150));
+        assert_eq!(track_target(&tight, None, Some(ms(400))), ms(150));
         assert_eq!(
-            playout_delay(&IMMEDIATE_LATENCY, Some(ms(250))),
+            track_target(&IMMEDIATE_LATENCY, Some(ms(50)), Some(ms(250))),
             Duration::ZERO
         );
+    }
+
+    /// The catalog `delay` adds to the jitter allowance, as hang asks a consumer to.
+    #[test]
+    fn a_track_target_adds_the_catalog_delay() {
+        let latency = Delay {
+            min: Some(ms(100)),
+            max: Some(ms(400)),
+        };
+        assert_eq!(track_target(&latency, Some(ms(50)), None), ms(150));
+        assert_eq!(track_target(&latency, Some(ms(50)), Some(ms(200))), ms(250));
+        assert_eq!(
+            track_target(&latency, Some(ms(300)), Some(ms(200))),
+            ms(400) - JITTER_HEADROOM,
+            "the sum is capped like the jitter alone"
+        );
+        assert_eq!(track_target(&latency, Some(Duration::ZERO), None), ms(100));
     }
 
     #[test]
@@ -569,12 +599,12 @@ mod tests {
             max: None,
         };
         assert!(!paced(&open));
-        assert_eq!(playout_delay(&open, Some(ms(250))), Duration::ZERO);
+        assert_eq!(track_target(&open, None, Some(ms(250))), Duration::ZERO);
         let unbounded = Delay {
             min: Some(ms(100)),
             max: None,
         };
-        assert_eq!(playout_delay(&unbounded, Some(ms(2000))), ms(2000));
+        assert_eq!(track_target(&unbounded, None, Some(ms(2000))), ms(2000));
         assert!(validate(&unbounded).is_ok());
         assert!(
             validate(&Delay {

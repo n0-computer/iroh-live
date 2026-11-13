@@ -426,9 +426,10 @@ impl Selector {
 
     /// Returns the decoder settings for this pass, and follows the latency and the configuration.
     ///
-    /// Sets the playout delay from the latency and the ladder's jitter. A new
-    /// decoder configuration starts a new target generation, and gives every
-    /// rendition that failed under the old one another try.
+    /// Sets the video's playout target from the latency and the ladder's
+    /// catalog `delay` and `jitter`. A new decoder configuration starts a new
+    /// target generation, and gives every rendition that failed under the old
+    /// one another try.
     fn settings(
         &mut self,
         catalog: &hang::catalog::Catalog,
@@ -436,17 +437,16 @@ impl Selector {
         consumer: moq_net::broadcast::Consumer,
     ) -> DecodeSettings {
         let latency = *self.latency.borrow_and_update();
-        // The ladder's largest jitter, so a switch never moves the schedule.
-        let jitter = catalog
+        // The ladder's largest target, so a switch never moves the schedule.
+        let target = catalog
             .video
             .renditions
             .values()
-            .filter_map(|config| config.jitter)
-            .max();
-        let playout = super::playout_delay(&latency, jitter);
-        if playout != self.clock.delay() {
-            debug!(?playout, ?jitter, "playout delay changed");
-            self.clock.set_delay(playout);
+            .map(|config| super::track_target(&latency, config.delay, config.jitter))
+            .max()
+            .unwrap_or_else(|| super::track_target(&latency, None, None));
+        if self.clock.set_video_target(target) {
+            debug!(?target, delay = ?self.clock.delay(), "playout delay changed");
         }
         let config = Config {
             decoder: self.decoder.borrow().clone(),

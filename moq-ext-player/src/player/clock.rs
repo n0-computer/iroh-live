@@ -10,7 +10,7 @@
 
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -39,10 +39,8 @@ struct Inner {
     producer: Producer,
     /// Reads the schedule.
     consumer: Consumer,
-    /// The video path's hold on the clock, which also holds the delay.
+    /// The video path's hold on the clock and its target.
     video: Track,
-    /// How far behind the live edge playback runs, as last set.
-    delay: Mutex<Duration>,
     /// Wakes [`PlayoutClock::wait`] when the schedule moves or the clock closes.
     changed: Notify,
     /// Set by [`PlayoutClock::close`] to make every wait return at once.
@@ -50,7 +48,7 @@ struct Inner {
 }
 
 impl PlayoutClock {
-    /// Creates a playout clock that runs `delay` behind the live edge.
+    /// Creates a playout clock that runs `delay` behind the live edge until a track asks for more.
     pub(crate) fn new(delay: Duration) -> Self {
         let producer = Producer::new(delay);
         let video = producer.track(Kind::Video);
@@ -60,7 +58,6 @@ impl PlayoutClock {
                 consumer: producer.consume(),
                 producer,
                 video,
-                delay: Mutex::new(delay),
                 changed: Notify::new(),
                 closed: AtomicBool::new(false),
             }),
@@ -118,16 +115,20 @@ impl PlayoutClock {
         }
     }
 
-    /// Returns how far behind the live edge playback runs.
+    /// Returns how far behind the live edge playback runs: the largest target of its tracks.
     pub(crate) fn delay(&self) -> Duration {
-        *self.inner.delay.lock().expect("poisoned")
+        self.inner.consumer.delay()
     }
 
-    /// Runs playback `delay` behind the live edge from now on.
-    pub(crate) fn set_delay(&self, delay: Duration) {
-        *self.inner.delay.lock().expect("poisoned") = delay;
-        self.inner.video.set_target(delay);
-        self.inner.changed.notify_waiters();
+    /// Asks the clock to run at least `target` behind the live edge for the video.
+    ///
+    /// Returns whether that moved the schedule.
+    pub(crate) fn set_video_target(&self, target: Duration) -> bool {
+        let moved = self.inner.video.set_target(target);
+        if moved {
+            self.inner.changed.notify_waiters();
+        }
+        moved
     }
 
     /// Registers an audio path, which folds its frames into the clock.
@@ -181,6 +182,19 @@ impl AudioClock {
         if self.track.received(timestamp, Instant::now()) {
             self.clock.inner.changed.notify_waiters();
         }
+    }
+
+    /// Asks the clock to run at least `target` behind the live edge for the audio.
+    ///
+    /// Returns whether that moved the schedule. The ask ends when this
+    /// registration is dropped.
+    #[cfg(feature = "playback")]
+    pub(crate) fn set_target(&self, target: Duration) -> bool {
+        let moved = self.track.set_target(target);
+        if moved {
+            self.clock.inner.changed.notify_waiters();
+        }
+        moved
     }
 
     /// Returns when the audio written up to media time `end` is due to sound.

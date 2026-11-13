@@ -161,6 +161,12 @@ pub(crate) async fn run(inputs: Inputs) {
                         #[cfg(feature = "playback")]
                         sink,
                         clock: clock.register_audio(),
+                        #[cfg(feature = "playback")]
+                        target: Target {
+                            latency: controls.latency.subscribe(),
+                            floor: delay.min.unwrap_or_default(),
+                            catalog: broadcast.catalog(),
+                        },
                         stats: stats.clone(),
                     })
                 }
@@ -328,7 +334,39 @@ struct Job {
     sink: Option<playback::Sink>,
     /// The audio path's hold on the playout clock.
     clock: AudioClock,
+    /// What the audio's playout target follows.
+    #[cfg(feature = "playback")]
+    target: Target,
     stats: PlaybackRecorder,
+}
+
+/// What the audio's playout target follows besides the decoder.
+#[cfg(feature = "playback")]
+struct Target {
+    /// The latency asked for now, which may differ from the one the decoder opened with.
+    latency: watch::Receiver<Delay>,
+    /// The latency minimum the decoder opened with, which floors its measured target.
+    floor: Duration,
+    /// The catalog, for the rendition's `delay`.
+    catalog: watch::Receiver<Option<Arc<hang::catalog::Catalog>>>,
+}
+
+#[cfg(feature = "playback")]
+impl Target {
+    /// Returns the playout delay the audio asks the clock for, given the decoder's measured `target`.
+    ///
+    /// A measured target at the decoder's floor says only that the jitter is
+    /// no larger, so it does not hold a lower latency asked for since.
+    fn get(&self, rendition: &str, measured: Duration) -> Duration {
+        let delay = self
+            .catalog
+            .borrow()
+            .as_ref()
+            .and_then(|catalog| catalog.audio.renditions.get(rendition))
+            .and_then(|config| config.delay);
+        let measured = Some(measured).filter(|measured| *measured > self.floor);
+        super::track_target(&self.latency.borrow(), delay, measured)
+    }
 }
 
 impl Job {
@@ -365,6 +403,13 @@ impl Job {
             {
                 let end = self.end_of(&frame);
                 if let Some(sink) = &mut self.sink {
+                    // Played audio holds the clock back by its measured jitter,
+                    // as upstream's `moq play` does, so the pictures wait for
+                    // the sound.
+                    let target = self.target.get(&self.name, self.decoder.delay());
+                    if self.clock.set_target(target) {
+                        debug!(?target, "audio moved the playout delay");
+                    }
                     sink.write(&frame.data).map(drop).map_err(Error::device)?;
                     // The speaker follows the shared clock: it stretches toward
                     // the time the sound of `end` is due, as the pictures do.
@@ -443,5 +488,63 @@ impl Job {
             }
             Err(err) => debug!(error = %err, "a decoded audio frame is not whole f32 samples"),
         }
+    }
+}
+
+#[cfg(all(test, feature = "playback"))]
+mod tests {
+    use super::*;
+
+    const fn ms(millis: u64) -> Duration {
+        Duration::from_millis(millis)
+    }
+
+    /// Returns a catalog with one audio rendition `name` that advertises `delay`.
+    fn catalog(name: &str, delay: Option<Duration>) -> Arc<hang::catalog::Catalog> {
+        let mut config =
+            hang::catalog::AudioConfig::new(hang::catalog::AudioCodec::Opus, 48_000, 1);
+        config.delay = delay;
+        let mut catalog = hang::catalog::Catalog::default();
+        catalog.audio.renditions.insert(name.to_string(), config);
+        Arc::new(catalog)
+    }
+
+    /// The audio asks for its catalog `delay` plus the jitter its decoder measured.
+    ///
+    /// A measured target at the decoder's floor does not hold a lower latency
+    /// asked for after the decoder opened.
+    #[test]
+    fn the_audio_target_adds_the_catalog_delay_to_the_measured_jitter() {
+        let opened = Delay {
+            min: Some(ms(100)),
+            max: Some(ms(400)),
+        };
+        let (latency, latency_rx) = watch::channel(opened);
+        let (_catalog, catalog_rx) = watch::channel(Some(catalog("opus", Some(ms(20)))));
+        let target = Target {
+            latency: latency_rx,
+            floor: ms(100),
+            catalog: catalog_rx,
+        };
+        assert_eq!(target.get("opus", ms(100)), ms(120));
+        assert_eq!(target.get("opus", ms(180)), ms(200), "the jitter raises it");
+        assert_eq!(
+            target.get("other", ms(180)),
+            ms(180),
+            "no delay for another rendition"
+        );
+
+        latency.send_replace(Delay {
+            min: Some(ms(50)),
+            max: Some(ms(400)),
+        });
+        assert_eq!(target.get("opus", ms(100)), ms(70), "the old floor lets go");
+        assert_eq!(target.get("opus", ms(180)), ms(200));
+        latency.send_replace(crate::IMMEDIATE_LATENCY);
+        assert_eq!(
+            target.get("opus", ms(180)),
+            Duration::ZERO,
+            "unpaced holds nothing"
+        );
     }
 }

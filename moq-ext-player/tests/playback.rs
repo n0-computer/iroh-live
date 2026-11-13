@@ -421,8 +421,20 @@ fn serve(origin: &moq_net::origin::Producer, cost: u64, size: moq_video::Size) -
 /// Returns the track, whose aggregate subscription shows what the readers ask
 /// for, and the future that encodes until dropped.
 fn pattern(
+    broadcast: moq_net::broadcast::Producer,
+    size: moq_video::Size,
+) -> (
+    moq_net::track::Producer,
+    impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    pattern_with(broadcast, size, Default::default())
+}
+
+/// Encodes a moving test pattern as [`pattern`] does, with `hint` for its catalog entry.
+fn pattern_with(
     mut broadcast: moq_net::broadcast::Producer,
     size: moq_video::Size,
+    hint: moq_mux::catalog::VideoHint,
 ) -> (
     moq_net::track::Producer,
     impl std::future::Future<Output = ()> + Send + 'static,
@@ -438,9 +450,8 @@ fn pattern(
             Some(catalog.track_info(hang::catalog::PRIORITY.video)),
         )
         .expect("a new track");
-    let mut import =
-        moq_mux::codec::h264::Import::new(track.clone(), catalog.reserve(), Default::default())
-            .expect("an importer");
+    let mut import = moq_mux::codec::h264::Import::new(track.clone(), catalog.reserve(), hint)
+        .expect("an importer");
     let encode = async move {
         // Held until the encoding stops, so the catalog and the broadcast stay up.
         let _catalog = catalog;
@@ -685,6 +696,40 @@ async fn a_running_player_changes_its_latency() {
     assert_eq!(player.status().borrow().video, SlotState::Running);
     recorder.abort();
     never_over(&states);
+    encode.abort();
+}
+
+/// A rendition's catalog `delay` adds to the playout delay, as hang asks a player to.
+///
+/// The clock runs the latency's minimum plus the advertised delay behind live.
+#[tokio::test]
+async fn the_catalog_delay_adds_to_the_playout_delay() {
+    let size = moq_video::Size::new(320, 180);
+    let broadcast = moq_net::broadcast::Info::new().produce();
+    let consumer = broadcast.consume();
+    let mut hint = moq_mux::catalog::VideoHint::default();
+    hint.delay = Some(Duration::from_millis(50));
+    let (_track, encode) = pattern_with(broadcast, size, hint);
+    let encode = tokio::spawn(encode);
+    let remote = RemoteBroadcast::from_consumer(consumer);
+    let player = remote
+        .play(PlayerConfig {
+            latency: Delay {
+                min: Some(Duration::from_millis(100)),
+                max: Some(Duration::from_millis(400)),
+            },
+            ..PlayerConfig::default()
+        })
+        .expect("valid");
+    let mut frames = player.video_frames();
+    wait_for_size(&mut frames, size).await;
+    let advertised = remote
+        .catalog()
+        .borrow()
+        .as_ref()
+        .and_then(|catalog| catalog.video.renditions.values().next()?.delay);
+    assert_eq!(advertised, Some(Duration::from_millis(50)));
+    clock_at(&player, Duration::from_millis(150)).await;
     encode.abort();
 }
 

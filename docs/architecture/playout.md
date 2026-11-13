@@ -47,11 +47,27 @@ player closes its clock and wakes everything waiting on it.
 unset `min` counts as zero, and an unset `max` waits as long as the publisher
 keeps media.
 
-`min` sets the clock's delay above. A publisher that advertises a larger
-`jitter` in its catalog, the most it flushes a frame late, raises the delay to
-the ladder's largest jitter. The raised delay stays one 30 fps frame (33 ms)
-below `max`. A change of the delay moves
-the schedule once, by the difference. `irl watch --latency` offers
+The clock's delay follows upstream's rule, the one `moq play` applies
+(`quest/m1/audio-jitter-target` in moq-dev/moq). Each track asks the clock
+for a target, and the clock runs at the largest one. A track's target is its
+catalog `delay` plus a jitter allowance, which hang's catalog says a player
+must hold:
+
+- Video asks for the ladder's largest `delay + max(min, jitter)`, from the
+  catalog, so a rendition switch never moves the schedule.
+- Played audio asks for its catalog `delay` plus the target its decoder
+  measures from packet arrivals (`moq_audio::decode::Consumer::delay`), which
+  already covers the catalog `jitter` and one frame. The decoder floors that
+  measurement at the `min` it opened with. A measurement at that floor does
+  not hold a lower `min` set since.
+- Audio that is only decoded, `AudioMode::Decode`, asks for nothing, since
+  no speaker paces it.
+
+No target goes below `min` or above one 30 fps frame (33 ms) below `max`, and
+an unpaced latency (`min` of zero) holds nothing. The delay therefore rises
+on a jittery link and returns to `min` on a clean one. Before this rule the
+delay was `min`, raised only by the catalog `jitter`. A change of the delay
+moves the schedule once, by the difference. `irl watch --latency` offers
 `realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, once with `IMMEDIATE_LATENCY` and once with the
@@ -92,12 +108,13 @@ A changed latency or decoder applies to a running player without a gap:
 `set_latency` and `set_decoder` build a replacement video decoder behind the
 picture, which takes over once it has caught up. A changed latency also moves
 the playout clock to the new delay, so the schedule moves once. An audio
-track keeps its range until it next reopens.
+track keeps its subscription range until it next reopens, but its target
+follows the new latency from its next frame.
 
 ## Timing metrics
 
 `Player::stats()` returns a `PlaybackStats` snapshot. `latency` is the clock's
-delay, and `audio.buffered` is the sink's fill level alone. `video.decode_time` is one transport read and
+delay, the largest target of its tracks, and `audio.buffered` is the sink's fill level alone. `video.decode_time` is one transport read and
 decode together, smoothed. `video.fps` counts frames over a window instead of
 deriving a rate from the gap between two frames. See [developer
 tools](devtools.md) for the overlay that draws them.
