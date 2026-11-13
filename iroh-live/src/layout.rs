@@ -148,10 +148,11 @@ impl LiveLayout {
     /// [`Audience::Granted`], which includes attached relays.
     ///
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
-    /// closes when it is closed or its last clone drops. A producer closes
-    /// only when it is closed, since the node holds the broadcast open while
-    /// it is published. To keep the [`Publication`](iroh_live_node::Publication), or to publish to another
-    /// audience, use [`Node::publish_with`] with [`path`](Self::path).
+    /// closes when it is closed or its last clone drops. A producer closes only
+    /// when it is closed, since the node holds the broadcast open while it is
+    /// published. To keep the [`Publication`](iroh_live_node::Publication), or
+    /// to publish to another audience, use [`Node::publish_with`] with
+    /// [`path`](Self::path).
     ///
     /// # Errors
     ///

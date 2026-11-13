@@ -53,7 +53,7 @@ type Handed = Arc<Mutex<HashMap<u64, Instant>>>;
 
 /// Returns the stagger added to frame `index`'s timestamp.
 ///
-/// It stays under a third of a frame, in steps of 100µs. A hash keeps the
+/// It stays under a third of a frame, in steps of 100 us. A hash keeps the
 /// steps of two frames independent, so a shift of whole frames lines up only
 /// about one frame in a hundred. A linear pattern aliases: with
 /// `index * 7_919 % 97`, shifts of 36, 61 and 97 frames lined up nearly every

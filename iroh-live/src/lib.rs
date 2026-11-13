@@ -1,9 +1,10 @@
 //! Live audio and video over iroh.
 //!
 //! A [`Node`] publishes and subscribes to broadcasts at paths, over a direct
-//! session with a peer or an attached relay. [`node`] re-exports the
-//! transport and [`moq_net`] the moq-net under it. `media` and `rooms` gather the
-//! media and rooms crates, each behind its feature.
+//! session with a peer or an attached relay. [`node`] re-exports
+//! iroh-live-node, the layer under the facade, and [`moq_net`] the moq-net it
+//! builds on. `media` and `rooms` gather the media and rooms crates, each behind
+//! its feature.
 //!
 //! The moq crates are pinned to a git rev of moq-dev/moq `main`, so this crate
 //! is not on crates.io yet.

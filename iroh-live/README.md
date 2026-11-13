@@ -3,8 +3,9 @@
 Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 
 A `Node` publishes broadcasts at paths and subscribes to paths, over a direct
-session with a peer or an attached relay. The transport is re-exported as
-`iroh_live::node`, and the moq-net it builds on as `iroh_live::moq_net`. The
+session with a peer or an attached relay. iroh-live-node, the layer under the
+facade, is re-exported as `iroh_live::node`, and the moq-net it builds on as
+`iroh_live::moq_net`. The
 media crates are gathered in `iroh_live::media`.
 
 The crate builds against the unreleased `main` branch of

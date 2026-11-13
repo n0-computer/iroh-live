@@ -283,11 +283,11 @@ application also resubscribes when a broadcast ends: see [Rooms](rooms.md).
 `LiveLayout::publish` and `Node::subscribe_ticket` use the `live/<id>/<name>`
 layout and a ticket, and `LiveLayout::publish` always publishes to the
 `Granted` audience. `Node::publish` takes any path and any audience, and
-`Node::subscribe` any path. `Audience::peers` limits who sees the broadcast, and moq enforces it on each
-live session, so a peer taken out of the set loses the path at once. To change
-the set later, publish with `Audience::Peers(set)` and keep a clone of the
-`n0_watcher::Watchable` set. Nothing here is a ticket: the subscriber needs the
-publisher's id and the path.
+`Node::subscribe` any path. `Audience::peers` limits who sees the broadcast,
+and moq enforces it on each live session, so a peer taken out of the set loses
+the path at once. To change the set later, publish with `Audience::Peers(set)`
+and keep a clone of the `n0_watcher::Watchable` set. Nothing here is a ticket:
+the subscriber needs the publisher's id and the path.
 
 The subscriber's node also has to let the publisher announce that path. The
 layout's grant allows only `live/<id>/`, so this program adds a second layout,
