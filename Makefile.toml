@@ -175,3 +175,22 @@ script = '''
 if [ "$1" = "--" ]; then shift; fi
 "${CARGO_MAKE_WORKING_DIRECTORY}/cross/docker-zigbuild.sh" "$@"
 '''
+
+# -- Documentation site ------------------------------------------------
+
+[tasks.docs-site]
+description = "Build the documentation site into docs-site/build and check its links."
+workspace = false
+script_runner = "@shell"
+script = '''
+"${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/build.sh"
+python3 "${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/check-links.py"
+'''
+
+[tasks.docs-site-serve]
+description = "Build the documentation site and serve it on http://127.0.0.1:3000/."
+workspace = false
+script_runner = "@shell"
+script = '''
+"${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/build.sh" --serve 3000
+'''

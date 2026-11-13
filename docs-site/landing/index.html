@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iroh-live: live audio and video, peer to peer</title>
+<meta name="description" content="iroh-live sends live audio and video between devices over iroh, peer to peer, with no media server in the middle.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="logo.svg">
+<script>
+  // Shares the theme choice with the book, which stores it under the same key.
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("mdbook-theme"); } catch (e) {}
+    var dark = saved ? saved !== "light" && saved !== "rust"
+                     : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  })();
+</script>
+<style>
+  :root {
+    --sans: "Inter", "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: "JetBrains Mono", "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --live: #f0443a;
+    --radius: 14px;
+    --bg: #fcfbf9; --fg: #1d2027; --muted: #5d6372; --border: #e7e3dc;
+    --surface: #ffffff; --surface-2: #f4f1ec; --accent: #5a3ee6; --accent-fg: #ffffff;
+    --glow: rgba(90, 62, 230, 0.16); --glow-2: rgba(240, 68, 58, 0.10);
+    --code-bg: #15171d; --code-fg: #e3e6ee; --code-border: #15171d;
+    --c-comment: #737a8c; --c-key: #ff7ab8; --c-str: #8ee0a8; --c-fn: #82aaff; --c-prompt: #a898ff;
+    color-scheme: light;
+  }
+  [data-theme="dark"] {
+    --bg: #0e1014; --fg: #eceef3; --muted: #9aa1b0; --border: #232731;
+    --surface: #13161d; --surface-2: #181c24; --accent: #8f7bff; --accent-fg: #0e1014;
+    --glow: rgba(143, 123, 255, 0.18); --glow-2: rgba(240, 68, 58, 0.10);
+    --code-bg: #13161d; --code-border: #232731;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body { margin: 0; font-family: var(--sans); background: var(--bg); color: var(--fg); line-height: 1.6; font-size: 16px; }
+  a { color: inherit; }
+  code, pre { font-family: var(--mono); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* Navigation */
+  header.nav { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(160%) blur(10px); -webkit-backdrop-filter: saturate(160%) blur(10px);
+    background: color-mix(in srgb, var(--bg) 80%, transparent); border-bottom: 1px solid var(--border); }
+  .nav .wrap { display: flex; align-items: center; height: 60px; gap: 28px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 700; font-size: 19px; letter-spacing: -0.03em; }
+  .brand b { font-weight: inherit; }
+  .brand span { color: var(--live); }
+  .nav-links { display: flex; gap: 22px; margin-left: auto; align-items: center; font-size: 15px; }
+  .nav-links a { text-decoration: none; color: var(--muted); }
+  .nav-links a:hover { color: var(--fg); }
+  .theme-btn { background: none; border: 1px solid var(--border); border-radius: 8px; width: 34px; height: 34px; display: grid; place-items: center;
+    color: var(--muted); cursor: pointer; }
+  .theme-btn:hover { color: var(--fg); }
+  .theme-btn .sun { display: none; }
+  [data-theme="dark"] .theme-btn .sun { display: block; }
+  [data-theme="dark"] .theme-btn .moon { display: none; }
+
+  /* Hero */
+  .hero { position: relative; overflow: hidden; padding: 88px 0 72px; }
+  .hero::before { content: ""; position: absolute; inset: -40% -10% auto -10%; height: 140%; pointer-events: none;
+    background: radial-gradient(600px 340px at 18% 30%, var(--glow), transparent 70%),
+                radial-gradient(520px 320px at 85% 20%, var(--glow-2), transparent 70%); }
+  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); border-radius: 999px;
+    padding: 4px 12px 4px 10px; font-size: 13px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 0 rgba(240, 68, 58, 0.5); animation: pulse 2s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(240, 68, 58, 0.45); } 70% { box-shadow: 0 0 0 8px rgba(240, 68, 58, 0); } 100% { box-shadow: 0 0 0 0 rgba(240, 68, 58, 0); } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+  h1 { font-size: clamp(38px, 5.4vw, 60px); line-height: 1.04; letter-spacing: -0.04em; margin: 20px 0 20px; font-weight: 760; }
+  h1 em { font-style: normal; background: linear-gradient(90deg, var(--accent), var(--live)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { font-size: 19px; color: var(--muted); max-width: 33em; margin: 0 0 32px; }
+  .lede strong { color: var(--fg); font-weight: 600; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 15px;
+    border: 1px solid var(--border); background: var(--surface); transition: transform 0.12s ease, border-color 0.12s ease; }
+  .btn:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+  /* Terminal */
+  .term { background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--radius); color: var(--code-fg);
+    box-shadow: 0 30px 60px -20px rgba(20, 16, 50, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.02) inset; overflow: hidden; }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+  .term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a3f4c; display: block; }
+  .term-bar b { margin-left: 10px; font-weight: 500; font-size: 12.5px; color: #8a91a2; font-family: var(--mono); }
+  .term pre { margin: 0; padding: 18px 20px 22px; font-size: 13.5px; line-height: 1.75; overflow-x: auto; }
+  .c { color: var(--c-comment); } .k { color: var(--c-key); } .s { color: var(--c-str); } .f { color: var(--c-fn); } .p { color: var(--c-prompt); user-select: none; }
+  .out { color: #8a91a2; }
+
+  /* Sections */
+  section { padding: 72px 0; }
+  .eyebrow { font-size: 13px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); font-weight: 650; margin: 0 0 10px; }
+  h2 { font-size: clamp(28px, 3.4vw, 38px); letter-spacing: -0.03em; line-height: 1.15; margin: 0 0 14px; font-weight: 720; }
+  .sub { color: var(--muted); font-size: 17px; max-width: 40em; margin: 0 0 40px; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px 22px 22px; text-decoration: none;
+    display: flex; flex-direction: column; transition: border-color 0.15s ease, transform 0.15s ease; }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-2px); }
+  .icon { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; margin-bottom: 18px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+  .card h3 { margin: 0 0 8px; font-size: 17px; letter-spacing: -0.01em; }
+  .card p { margin: 0 0 18px; color: var(--muted); font-size: 14.5px; line-height: 1.6; flex: 1; }
+  .card .more { font-size: 14px; font-weight: 600; color: var(--accent); }
+
+  .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .quick h3 { font-size: 16px; margin: 0 0 4px; }
+  .quick p { color: var(--muted); margin: 0 0 14px; font-size: 14.5px; }
+  .quick .term { box-shadow: none; }
+
+  .docs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .doc { display: block; padding: 18px 20px; border: 1px solid var(--border); border-radius: 12px; text-decoration: none; background: var(--surface);
+    transition: border-color 0.15s ease; }
+  .doc:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .doc strong { display: block; font-size: 15.5px; margin-bottom: 2px; }
+  .doc strong::after { content: " \2192"; color: var(--accent); }
+  .doc span { color: var(--muted); font-size: 14px; }
+
+  .note { margin-top: 40px; padding: 16px 20px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); font-size: 14.5px; }
+  .note strong { color: var(--fg); }
+
+  footer.site { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+  footer.site .wrap { display: flex; gap: 24px; flex-wrap: wrap; justify-content: space-between; }
+  footer.site a { color: var(--muted); text-decoration: none; }
+  footer.site a:hover { color: var(--fg); }
+
+  @media (max-width: 960px) {
+    .hero .wrap { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .quick, .docs { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 600px) {
+    .nav-links a.hide-sm { display: none; }
+    .cards { grid-template-columns: 1fr; }
+    .hero { padding-top: 56px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="logo.svg" alt="" width="28" height="28"><b>iroh-<span>live</span></b></a>
+    <nav class="nav-links">
+      <a href="book/introduction.html">Docs</a>
+      <a class="hide-sm" href="book/getting-started/cli-quickstart.html">Quickstart</a>
+      <a class="hide-sm" href="book/concepts/overview.html">Concepts</a>
+      <a href="https://github.com/n0-computer/iroh-live">GitHub</a>
+      <button class="theme-btn" id="theme" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+        <svg class="moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <div>
+        <span class="pill"><span class="dot"></span>Tech preview, written in Rust</span>
+        <h1>Live video between devices, <em>peer to peer</em>.</h1>
+        <p class="lede">iroh-live sends live audio and video between devices over
+          <strong>iroh</strong> and <strong>Media over QUIC</strong>. Peers dial each other by key,
+          connect directly through NATs, and need no media server in the middle.</p>
+        <div class="cta">
+          <a class="btn primary" href="book/getting-started/cli-quickstart.html">Get started</a>
+          <a class="btn" href="book/introduction.html">Read the docs</a>
+          <a class="btn" href="https://github.com/n0-computer/iroh-live">GitHub</a>
+        </div>
+      </div>
+      <div class="term" aria-label="Terminal example">
+        <div class="term-bar"><i></i><i></i><i></i><b>irl</b></div>
+<pre><span class="c"># machine A: publish the camera and microphone</span>
+<span class="p">$ </span>irl publish
+<span class="out">ilv1:6ad4…q3va/live/~/cam   (and as a QR code)</span>
+
+<span class="c"># machine B: play it, from anywhere</span>
+<span class="p">$ </span>irl watch <span class="s">&lt;TICKET&gt;</span>
+
+<span class="c"># no camera? a test pattern and tone</span>
+<span class="p">$ </span>irl publish <span class="k">--test-source</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <p class="eyebrow">What it does</p>
+      <h2>One stack, from a single camera to a room</h2>
+      <p class="sub">A publisher encodes each source into a ladder of renditions. Every viewer's player picks the one its link can carry
+        and switches without a blank frame, while a playout clock keeps audio and video in step.</p>
+      <div class="cards">
+        <a class="card" href="book/concepts/overview.html">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/></svg></div>
+          <h3>Peer-to-peer live video</h3>
+          <p>Each node is an iroh endpoint, addressed by its key. iroh punches through NATs and falls back to a relay that only
+            forwards encrypted packets. Every track rides its own QUIC streams, so lost video never stalls audio.</p>
+          <span class="more">How it fits together</span>
+        </a>
+        <a class="card" href="book/concepts/calls-and-rooms.html">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.2A5 5 0 0 1 21 19"/></svg></div>
+          <h3>Calls and rooms</h3>
+          <p>One-to-one calls that ring, answer and hang up, and gossip rooms where members announce what they publish.
+            Both are conventions over plain broadcasts, so <code>irl call</code> and your app interoperate.</p>
+          <span class="more">Calls and rooms</span>
+        </a>
+        <a class="card" href="book/how-to/browsers.html">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20M6 6.5h.01M9 6.5h.01"/></svg></div>
+          <h3>Browser viewers via relay</h3>
+          <p>Browsers cannot dial an iroh endpoint. The iroh-live relay reads a broadcast once over iroh and serves it to many
+            viewers over WebTransport, which also spares a small publisher's uplink.</p>
+          <span class="more">Serve browsers</span>
+        </a>
+        <a class="card" href="book/concepts/access.html">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4 5.5v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10v-6z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/></svg></div>
+          <h3>Access control</h3>
+          <p>A policy admits each peer by its endpoint id and grants what it may read and publish, by path. Audiences scope a
+            broadcast to some peers, and tokens delegate rights to others.</p>
+          <span class="more">Access control</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section id="quickstart" style="padding-top: 24px;">
+    <div class="wrap">
+      <p class="eyebrow">Quickstart</p>
+      <h2>Stream in a minute, embed in an afternoon</h2>
+      <p class="sub">Try it with the <code>irl</code> command line tool, or add the library and publish a broadcast from your own program.</p>
+      <div class="quick">
+        <div>
+          <h3>Add the library</h3>
+          <p>iroh-live is not on crates.io yet, so it comes from git.</p>
+          <div class="term">
+            <div class="term-bar"><i></i><i></i><i></i><b>Cargo.toml</b></div>
+<pre><span class="k">[dependencies]</span>
+iroh = <span class="s">"1.4"</span>
+iroh-live = { git = <span class="s">"https://github.com/n0-computer/iroh-live"</span>,
+              features = [<span class="s">"full"</span>] }
+tokio = { version = <span class="s">"1"</span>, features = [<span class="s">"full"</span>] }</pre>
+          </div>
+        </div>
+        <div>
+          <h3>Publish a broadcast</h3>
+          <p>Bind an endpoint, start a node, publish, and print a ticket.</p>
+          <div class="term">
+            <div class="term-bar"><i></i><i></i><i></i><b>src/main.rs</b></div>
+<pre><span class="k">let</span> endpoint = EndpointConfig::<span class="f">from_env</span>()?.<span class="f">bind</span>().<span class="k">await</span>?;
+<span class="k">let</span> layout = LiveLayout::<span class="f">default</span>();
+<span class="k">let</span> node = Node::<span class="f">new</span>(endpoint.<span class="f">clone</span>(), layout.<span class="f">config</span>());
+<span class="k">let</span> router = node.<span class="f">mount</span>(Router::<span class="f">builder</span>(endpoint)).<span class="f">spawn</span>();
+
+<span class="k">let</span> broadcast = layout.<span class="f">publish</span>(&amp;node, <span class="s">"hello"</span>)?;
+broadcast.<span class="f">set_video</span>(source, VideoEncoding::<span class="f">ladder</span>([
+    VideoRendition::<span class="f">p360</span>(), VideoRendition::<span class="f">p720</span>(),
+]))?;
+<span class="f">println!</span>(<span class="s">"{}"</span>, layout.<span class="f">ticket</span>(node.<span class="f">id</span>(), <span class="s">"hello"</span>)?);</pre>
+          </div>
+        </div>
+      </div>
+      <p style="margin-top: 22px;"><a class="btn" href="book/getting-started/library-quickstart.html">The full library quickstart &rarr;</a></p>
+    </div>
+  </section>
+
+  <section id="docs" style="padding-top: 24px;">
+    <div class="wrap">
+      <p class="eyebrow">Documentation</p>
+      <h2>Find your way around</h2>
+      <p class="sub">The book covers the model, task-by-task guides, and the reference for the CLI, the relay and the library.</p>
+      <div class="docs">
+        <a class="doc" href="book/getting-started/install.html"><strong>Getting started</strong><span>Install <code>irl</code>, then the CLI and library quickstarts.</span></a>
+        <a class="doc" href="book/concepts/overview.html"><strong>Concepts</strong><span>Nodes, broadcasts, paths, routes, access, relays and tickets.</span></a>
+        <a class="doc" href="book/how-to/publish.html"><strong>How-to guides</strong><span>Publish, watch, call, run rooms and relays, record and tune.</span></a>
+        <a class="doc" href="book/reference/cli.html"><strong>Reference</strong><span>The CLI, relay flags, Cargo features, ticket formats and platforms.</span></a>
+        <a class="doc" href="book/architecture/index.html"><strong>Architecture</strong><span>The media stack, transport, adaptive switching and playout.</span></a>
+        <a class="doc" href="book/troubleshooting.html"><strong>Troubleshooting</strong><span>Common failures, the FAQ, a glossary and the migration guide.</span></a>
+      </div>
+      <p class="note"><strong>Early tech preview.</strong> The API changes often, the library depends on the unreleased <code>main</code>
+        branch of moq, and Linux is the main target. See <a href="book/reference/platforms.html">platform support</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span>iroh-live, by <a href="https://n0.computer">n0</a>. Licensed under MIT or Apache-2.0.</span>
+    <span><a href="https://github.com/n0-computer/iroh">iroh</a> &middot; <a href="https://moq.dev/">Media over QUIC</a> &middot; <a href="https://github.com/n0-computer/iroh-live">Source</a></span>
+  </div>
+</footer>
+
+<script>
+  document.getElementById("theme").addEventListener("click", function () {
+    var dark = document.documentElement.dataset.theme !== "dark";
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    try { localStorage.setItem("mdbook-theme", dark ? "coal" : "light"); } catch (e) {}
+  });
+</script>
+</body>
+</html>
