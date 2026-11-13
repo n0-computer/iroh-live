@@ -34,7 +34,9 @@ use crate::{
     json,
     layout::Layout,
     policy::{self, Authorization, DynPolicy, Policy},
-    publish, reauth, relay, route,
+    publish,
+    rate::{self, NodeRate, RateControl},
+    reauth, relay, route,
     state::State,
 };
 
@@ -106,6 +108,16 @@ pub struct NodeConfig {
     /// its segments is the peer's endpoint id.
     #[debug("{}", layout.is_some())]
     pub layout: Option<Arc<dyn Layout<EndpointId>>>,
+    /// Rate control for the node's publications and links, or `None` for none.
+    ///
+    /// `None` is the default: every link reports the congestion window over
+    /// the round trip as its send-rate estimate, and every encoder runs at its
+    /// configured bitrate. With rate control, every direct session and iroh
+    /// relay link estimates its send rate as [`RateControl::estimate`] says,
+    /// and [`Node::bandwidth`] hands out the allocator the publications' encoders
+    /// follow. Relay links over `moq_tokio` keep their own estimate, and no
+    /// encoder follows them.
+    pub rate_control: Option<RateControl>,
 }
 
 impl Default for NodeConfig {
@@ -115,6 +127,7 @@ impl Default for NodeConfig {
             decide_timeout: DECIDE_TIMEOUT,
             table: None,
             layout: None,
+            rate_control: None,
         }
     }
 }
@@ -151,6 +164,15 @@ impl NodeConfig {
     #[must_use]
     pub fn with_layout(mut self, layout: impl Layout<EndpointId>) -> Self {
         self.layout = Some(Arc::new(layout));
+        self
+    }
+
+    /// Returns this configuration with rate control as `rate_control` says.
+    ///
+    /// See [`rate_control`](Self::rate_control).
+    #[must_use]
+    pub fn with_rate_control(mut self, rate_control: RateControl) -> Self {
+        self.rate_control = Some(rate_control);
         self
     }
 }
@@ -212,6 +234,8 @@ pub(crate) struct Shared {
     mounted: AtomicBool,
     /// Set once a publish has warned that no peer can connect.
     warned_unreachable: AtomicBool,
+    /// The node's rate control, `None` while it is off.
+    pub(crate) rate: Option<Arc<NodeRate>>,
 }
 
 /// The node's tasks, kept apart from [`Shared`] so the tasks can hold it.
@@ -223,6 +247,8 @@ pub(crate) struct Tasks {
     _table: Option<AbortOnDropHandle<()>>,
     /// Relay links, by link id.
     pub(crate) relays: Mutex<HashMap<LinkId, crate::relay::RelayTask>>,
+    /// Reads the links' estimates, while rate control is on.
+    _rate: Option<AbortOnDropHandle<()>>,
 }
 
 impl Drop for Tasks {
@@ -258,6 +284,10 @@ impl Node {
             .policy
             .unwrap_or_else(|| Arc::new(policy::Open(Grant::subscribe_only())));
         let (actor_tx, actor_rx) = mpsc::channel(ACTOR_INBOX);
+        let rate = config.rate_control.map(|config| {
+            info!(estimate = %config.estimate, fan_out = ?config.fan_out, "rate control on");
+            Arc::new(NodeRate::new(config))
+        });
         let shared = Arc::new(Shared {
             endpoint,
             id,
@@ -274,6 +304,7 @@ impl Node {
             done: Watchable::new(false),
             mounted: AtomicBool::new(false),
             warned_unreachable: AtomicBool::new(false),
+            rate: rate.clone(),
         });
         info!(id = %id.fmt_short(), node = %shared.table.node(), "moq node started");
         let shutdown = shared.shutdown.clone();
@@ -283,6 +314,13 @@ impl Node {
                 .run(actor_rx)
                 .instrument(info_span!("moq", id = %id.fmt_short())),
         );
+        let rate_task = rate.map(|rate| {
+            let task = tokio::spawn(
+                rate::run(rate, shutdown.clone())
+                    .instrument(info_span!("rate", id = %id.fmt_short())),
+            );
+            AbortOnDropHandle::new(task)
+        });
         Self {
             shared,
             tasks: Arc::new(Tasks {
@@ -290,6 +328,7 @@ impl Node {
                 _actor: AbortOnDropHandle::new(actor_task),
                 _table: table_task,
                 relays: Mutex::new(HashMap::new()),
+                _rate: rate_task,
             }),
         }
     }
@@ -316,6 +355,18 @@ impl Node {
     #[must_use]
     pub fn id(&self) -> EndpointId {
         self.shared.id
+    }
+
+    /// Returns the allocator a publication's encoders follow, or `None` without rate control.
+    ///
+    /// It divides the node's send-rate estimate among the tracks reserved on
+    /// it, as [`NodeConfig::rate_control`] configures it. Every session the
+    /// node holds shares it, so each probes for what the reservations add up
+    /// to. Hand it to a `LocalBroadcast` with `set_bandwidth`, which
+    /// `iroh_live::layout::LiveLayout::publish` does on its own.
+    #[must_use]
+    pub fn bandwidth(&self) -> Option<moq_net::bandwidth::Allocator> {
+        self.shared.rate.as_ref().map(|rate| rate.allocator())
     }
 
     /// Returns the authorization the policy gave the newest session with `peer` that holds one.

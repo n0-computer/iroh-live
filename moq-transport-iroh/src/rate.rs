@@ -140,6 +140,15 @@ impl RateConfig {
             ..Self::default()
         }
     }
+
+    /// Returns this config with the estimate holding for `settle` after a path change.
+    ///
+    /// See [`settle`](Self::settle).
+    #[must_use]
+    pub fn with_settle(mut self, settle: Duration) -> Self {
+        self.settle = settle;
+        self
+    }
 }
 
 /// The default [`RateConfig::settle`].
