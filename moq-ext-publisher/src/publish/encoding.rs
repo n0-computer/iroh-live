@@ -25,7 +25,7 @@ pub struct VideoEncoding {
     /// and
     /// [`LocalBroadcast::video_captured_at`](crate::LocalBroadcast::video_captured_at):
     /// a round-trip measurement such as capture-to-result latency. It keeps
-    /// 48 bytes for each of the last 512 frames, no pixels. Off by default.
+    /// 64 bytes for each of the last 512 frames, no pixels. Off by default.
     pub record_timestamps: bool,
 }
 

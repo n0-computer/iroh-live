@@ -70,7 +70,9 @@ impl EncodeStats {
     }
 }
 
-/// Follows the size and spacing of one rendition's encoded frames, for its [`EncodeStats`].
+/// The tracker of one rendition's encoded frame sizes and keyframe spacing.
+///
+/// It fills the frame figures of the rendition's [`EncodeStats`].
 #[derive(Debug, Default)]
 pub(crate) struct FrameSizes {
     /// The timestamp of the last keyframe.

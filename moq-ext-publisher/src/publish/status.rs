@@ -158,7 +158,7 @@ impl StatusCell {
     }
 }
 
-/// Writes one slot task's state into a [`StatusCell`].
+/// A slot task's writer of its own state into a [`StatusCell`].
 #[derive(Debug, Clone)]
 pub(crate) struct Reporter {
     cell: StatusCell,

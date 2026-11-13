@@ -157,11 +157,12 @@ impl Job {
 /// another timeline.
 const MAX_AHEAD: Duration = Duration::from_secs(1);
 
-/// How many published video frames a broadcast keeps the timestamps of, with [`VideoEncoding::record_timestamps`].
+/// The number of published video frames whose timestamps a broadcast keeps.
 ///
-/// About 17 s at 30 fps and 8 s at 60 fps, several times what a subscriber
-/// needs to echo a timestamp back. An entry is two timestamps and two
-/// instants, 64 bytes, so a full log takes 32 KiB per broadcast. No pixels
+/// A broadcast keeps them only with [`VideoEncoding::record_timestamps`] on.
+/// The frames cover about 17 s at 30 fps and 8 s at 60 fps, several times what
+/// a subscriber needs to echo a timestamp back. An entry is two timestamps and
+/// two instants, 64 bytes, so a full log takes 32 KiB per broadcast. No pixels
 /// and no encoded data are kept.
 ///
 /// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
@@ -685,7 +686,7 @@ impl LocalBroadcast {
     /// was published with. Returns `None` without it, for a timestamp this
     /// broadcast did not publish, for one older than the last 512 frames, and
     /// for a pre-encoded source, whose timestamps are published as they are.
-    /// The record keeps only timestamps, about 24 KiB at most, and no pixels
+    /// The record keeps only timestamps, 32 KiB at most, and no pixels
     /// or encoded data.
     ///
     /// [`VideoEncoding::record_timestamps`]: crate::VideoEncoding::record_timestamps
