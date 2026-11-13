@@ -97,6 +97,14 @@ rung fits while the maximum covers about 1.5 times what it actually sends. A
 rendition without an advertised bitrate, or a publisher that sends no estimate,
 always fits.
 
+A publisher with [rate control](rate-control.md#one-threshold-for-publisher-and-player)
+reports an estimate that follows the path, and pauses a rendition whose share
+of it falls below the band boundary `(max + 2 * lower) / 3`. Its catalog says
+so in a root `rate` section. For such a broadcast, the player computes each
+boundary from the catalog's bitrates. A rung above the cheapest fits while the
+maximum covers its boundary. A step up to it needs 5% more, as the publisher
+needs to resume it. Player and publisher then agree on one threshold.
+
 **Sustained loss lowers a ceiling.** Loss of 10% or more for 500 ms moves the
 ceiling one rung below the rendition playing, and loss that lasts walks down
 one rung per 500 ms. Loss of 20% or more is an emergency and drops the ceiling
@@ -104,13 +112,14 @@ to the lowest eligible rendition at once. Once loss falls below 10%, every 4 s
 of it raises the ceiling one rung.
 
 The same fit ratio applies to staying on a rendition and to stepping up to one.
-Timers provide the asymmetry:
+Timers provide the asymmetry, along with the 5% a boundary asks for a step up:
 
 - A lower target has to hold for 500 ms before the switch. An emergency
   switches at once.
 - A higher target has to hold for 4 s. Each step down from a rung multiplies
-  the next hold before stepping up to it by four, up to 120 s. A step up that
-  plays for 20 s clears the count.
+  the next hold before stepping up to it by four, up to 120 s. Leaving a rung
+  the publisher paused counts as a step down from it. A step up that plays for
+  20 s clears the count.
 - No step up is taken within 4 s of a step down.
 
 The growing hold keeps a marginal link from oscillating. On a lower rung the
@@ -118,6 +127,9 @@ estimate is read while the link carries only that rung, so it says the upper
 one fits even when the link just showed it does not. With the backoff, the rung
 the link cannot carry is tried after 16 s, then after 64 s, then every two
 minutes. Such a step up is in effect the probe, so there is no separate one.
+A publisher with rate control resumes a paused rung whenever its estimate
+climbs past the boundary. The estimate climbs freely while only the lower rung
+plays, so the backoff is what spaces out the player's tries.
 `adaptation_follows_a_real_link` in the patchbay suite checks that the ladder
 climbs back on a clear link. `a_risen_baseline_round_trip_does_not_downgrade`
 checks that a longer path, such as a relay fallback, is not taken as a smaller
@@ -145,7 +157,7 @@ value. Tests shorten the timers there.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `fit_ratio` | 1.25 | Multiple of a rung's advertised bitrate the estimate has to cover |
+| `fit_ratio` | 1.25 | Multiple of a rung's advertised bitrate the estimate has to cover, unless the catalog's `rate` section gives the rung a boundary |
 | `estimate_window` | 1 s | Span of the sliding maximum over the estimate |
 | `loss_step_down` | 0.10 | Loss that lowers the ceiling one rung, once held |
 | `loss_emergency` | 0.20 | Loss that drops the ceiling to the lowest rung at once |

@@ -36,7 +36,8 @@ What iroh-live adds:
 | The estimator | `moq-transport-iroh` | Reads the selected path's statistics and turns queueing and loss into an estimate |
 | `RateControl`, `FanOut` | `iroh-live-node` | The node's switch, and how one encoder follows several links |
 | `Node::bandwidth` | `iroh-live-node` | The allocator every publication of the node reserves on |
-| `LocalBroadcast::set_bandwidth` | `moq-ext-publisher` | Reserves each rendition and follows its grant |
+| `LocalBroadcast::set_bandwidth` | `moq-ext-publisher` | Reserves each rendition, follows its grant, and adds the catalog's `rate` section |
+| `set_boundaries` | `moq-ext-adaptive` | Places each rung's threshold at the band boundary the publisher pauses it at |
 
 `LiveLayout::publish` and `Calls::new` hand the node's allocator to a
 `LocalBroadcast` on their own. A broadcast built through `Node::publish_with`
@@ -66,9 +67,9 @@ With rate control the transport runs an estimator over the selected path's
   or the time since the last fall if that is shorter, so one burst lowers it
   once. It never falls under 50 kbit/s.
 - While the path stays clean and the hold after a fall is over, it climbs up
-  to 1.5 times the session's probe target. Between the rate the path last
-  congested at and 1.25 times that rate, it climbs 10% a second. Below and
-  above that band it climbs 25% a second. Above the band the climb speeds up by 25 points for
+  to the session's probe target. Between the rate the path last congested at
+  and 1.25 times that rate, it climbs 10% a second. Below and above that band
+  it climbs 25% a second. Above the band the climb speeds up by 25 points for
   each second it goes on, up to 70% a second. That about doubles the estimate
   each second. The hold starts at one second. A fall that ends a climb within
   ten seconds of the last fall doubles it, up to four.
@@ -86,6 +87,36 @@ The estimate reaches the encoders and the peer alike: the session divides it
 among the reservations, and sends it to the peer as its PROBE report, which the
 peer's players read as `delivery`.
 
+## One threshold for publisher and player
+
+The publisher pauses a rendition above a cheaper one when its grant falls
+below the band boundary `(max + 2 * lower) / 3`, and resumes it 5% above. A
+player picks the rendition it reads by the same estimate. If the two used
+different thresholds, they would work against each other. Take 720p at
+1.8 Mbit/s above 360p at 500 kbit/s. A player that asks for 1.25 times the
+bitrate leaves 720p once the estimate falls under 2.25 Mbit/s. The publisher
+would fund it down to 933 kbit/s.
+
+So a broadcast with an allocator adds a root section to its catalog, through
+hang's application sections:
+
+```json
+{ "rate": { "probe": true } }
+```
+
+A player that reads it gives each rung the boundary the publisher pauses it
+at, computed from the catalog's bitrates by `moq_ext_adaptive::set_boundaries`.
+The rung then fits while the estimate covers its boundary, and a step up to it
+needs the 5% on top. A player whose broadcast has no such section keeps
+`Adaptation::fit_ratio`, since an estimate from the congestion window reads up
+to 1.6 times what the link carries.
+
+Leaving a rung the publisher paused counts as a step down, and lengthens the
+hold before the player tries that rung again. Without that, a marginal link
+lets the estimate climb while only the lower rung plays. The publisher resumes
+the upper rung, and the player steps up into the same queue every few
+seconds.
+
 ## Probing
 
 There is no padding. A transport with an estimator returns a probe target from
@@ -93,6 +124,7 @@ There is no padding. A transport with an estimator returns a probe target from
 and the reservations count as probed. The estimator's climb is the probe: the
 encoders follow the estimate up, and the next queue brings it back. That is
 what lets a paused rendition resume, and a player see room for a higher one.
+The climb stops at the probe target, since no rendition can use more.
 
 The cost is that each resume of a rendition the path cannot carry builds a
 short queue before the estimate falls again, at most once per hold.
@@ -131,9 +163,11 @@ that adds it.
 
 ## Limitations
 
-- No padding probes. Recovery after a drop takes the climb's time: about 12 to
-  14 s from a 250 kbit/s cap back to a 1.5 Mbit/s ceiling in the patchbay
-  suite.
+- No padding probes. Recovery after a drop takes the hold and the climb. In
+  the patchbay suite a player is back on the upper rung about 10 s after a
+  100 kbit/s cap lifts. Without rate control it takes about 3 s. Most of it is
+  the estimate climbing from the floor the cap left it at to what the paused
+  rung needs beside the lower one.
 - `FanOut::Shared` only. A peer behind a slow downlink pulls the mean down only
   in part, and its own player has to step down a rendition for it.
 - Relay links over `moq_tokio` keep their own estimate and do not count toward
@@ -148,9 +182,14 @@ that adds it.
 - A queue that the backed-off sender holds exactly flat looks like a longer
   path too. The estimate climbs back into it, and the next fall takes the
   queue out of the baseline again.
-- The subscriber's fit test still asks for 1.25 times a rendition's bitrate.
-  The climb's ceiling, 1.5 times the probe target, leaves room for it, but a
-  player does not yet read the publisher's band boundary.
+- A player compares the whole estimate with a rung's boundary, while the
+  publisher compares the rung's grant, which other reservations of the session
+  share. The publisher pauses first, and the catalog moves the player.
+- The `rate` section travels with the broadcast, but the estimate is per hop.
+  A player that reads the broadcast from an iroh-live-relay gets the relay's
+  estimate, which is the window estimate, under the publisher's section. The
+  player then holds a rung down to its boundary of an estimate that reads
+  high. It leaves the rung only when the publisher pauses it or loss rises.
 
 The patchbay scenarios `the_encoder_follows_a_cap_without_stalling`,
 `the_encoder_recovers_when_the_cap_lifts` and

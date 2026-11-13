@@ -16,13 +16,13 @@
 //! - It lowers the estimate to 0.85 times the delivered rate once the round
 //!   trip shows a queue on two readings in a row, and by half the loss rate
 //!   once loss passes 10%, never under 50 kbit/s.
-//! - While the path stays clean it lets the estimate climb up to 1.5 times
-//!   the session's probe target, which is what the session's senders
-//!   reserved. It climbs 10% a second just above the rate at which the path
-//!   last queued, and 25% a second below and well past it. A long climb
-//!   speeds up. The climb is the probe. A sender that follows the estimate up
-//!   finds out whether the path carries it, and the next queue brings the
-//!   estimate back. No padding is sent.
+//! - While the path stays clean it lets the estimate climb up to the session's
+//!   probe target, which is what the session's senders reserved. It climbs
+//!   10% a second just above the rate at which the path last queued, and 25%
+//!   a second below and well past it. A long climb speeds up. The climb is
+//!   the probe. A sender that follows the estimate up finds out whether the
+//!   path carries it, and the next queue brings the estimate back. No padding
+//!   is sent.
 //! - A change of the selected path starts the round trip baseline over, and
 //!   the estimate holds through a settle window. A round trip that rises and
 //!   stays up on the same path reads as a queue at first, and the estimate
@@ -379,13 +379,6 @@ const CLIMB_FAR_MAX: f64 = 0.7;
 /// [`CLIMB_FAR`]: the path carried it before it queued.
 const NEAR: f64 = 1.25;
 
-/// How far above the session's probe target the estimate may climb.
-///
-/// A player keeps a rendition while the estimate covers 1.25 times its
-/// bitrate, so an estimate that stopped at the target would never let it
-/// climb to the top rendition.
-const TARGET_HEADROOM: f64 = 1.5;
-
 /// How far above the delivered rate the estimate may climb when the session has no target.
 ///
 /// The cap of GCC's increase, plus a little so a quiet path can start.
@@ -678,9 +671,7 @@ impl Estimator {
         {
             let ceiling = match target.as_bps() {
                 0 => goodput.map_or(cap, headroom),
-                target => {
-                    ((target as f64 * TARGET_HEADROOM) as u64).max(goodput.map_or(0, headroom))
-                }
+                target => target.max(goodput.map_or(0, headroom)),
             };
             if cap < ceiling {
                 let near = self.congested_at.is_some_and(|congested| {
@@ -1138,7 +1129,7 @@ mod tests {
         assert!(climbed > 1_100, "{climbed} from {fell}");
         assert!(climbed < 1_200, "{climbed} from {fell}");
         let top = kbps(path.run(Duration::from_secs(60)));
-        assert_eq!(top, 3_000, "1.5 times the target");
+        assert_eq!(top, 2_000, "the target");
     }
 
     #[test]

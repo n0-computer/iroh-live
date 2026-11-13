@@ -890,6 +890,10 @@ async fn a_switch_does_not_blank_the_picture() {
 
 /// A pinned switch lands while the link stays capped.
 ///
+/// Runs without rate control whatever `IROH_LIVE_PATCHBAY_RATE` says. Its
+/// premise is a link that stays saturated, and an encoder that follows the
+/// cap drains the queue instead.
+///
 /// Ignored because the replacement's groups starve. The iroh transport has no
 /// send groups, so moq-net ranks every group stream of the session in one
 /// queue, and between two subscriptions at the same priority the older one
@@ -902,7 +906,7 @@ async fn a_switch_does_not_blank_the_picture() {
 #[traced_test]
 #[ignore = "the replacement track's first group is starved behind the incumbent's groups. It passed 1 run in 6 at a commit from 2026-11-12 and none of 18 at three later ones"]
 async fn a_switch_lands_while_the_link_stays_capped() {
-    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let fixture = Fixture::start_with(Size::new(640, 480), ladder(), None).await;
     let mut viewer = fixture.play(2, "high").await;
     let signals = fixture.link();
 

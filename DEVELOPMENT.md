@@ -106,6 +106,8 @@ and prose:
 Adaptation compares the delivery estimate against each rung's advertised
 bitrate, which is a ceiling for the encoder rather than what it sends.
 `Adaptation::fit_ratio` (1.25) covers that gap. It was measured with openh264,
-VA-API, and one patchbay lab only. Loss on a subscriber is measured over its
-own packets, which are mostly acknowledgements. See
+VA-API, and one patchbay lab only. A publisher with rate control says so in its
+catalog, and players fit its rungs at the band boundary it pauses them at
+instead. Loss on a subscriber is measured over its own packets, which are
+mostly acknowledgements. See
 [docs/architecture/adaptive.md](docs/architecture/adaptive.md).

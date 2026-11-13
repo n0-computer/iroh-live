@@ -5,13 +5,83 @@
 //! renditions by the publisher's preference, the adaptation ladder orders
 //! them by cost, and [`video_rendition`] looks one up with an error that
 //! names the renditions the catalog has.
+//!
+//! The player also reads one root section of its own, `rate`, which a
+//! publisher with rate control adds. [`split`] takes it off the catalog.
 
 use std::cmp::Reverse;
 
 use hang::catalog::{Catalog, VideoConfig};
 use moq_ext_adaptive::Rung;
+use serde::{Deserialize, Serialize};
 
 use crate::Error;
+
+/// The root sections of a catalog the player reads beyond hang's.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Sections {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rate: Option<RateSection>,
+}
+
+impl moq_mux::catalog::hang::CatalogExt for Sections {}
+
+/// The `rate` section, `{"probe": true}` from a publisher with rate control.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct RateSection {
+    #[serde(default)]
+    probe: bool,
+}
+
+/// Whether a broadcast's publisher pauses renditions it cannot fund.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Pausing {
+    /// Every rendition runs at its configured bitrate, and the estimate the
+    /// publisher reports may read well above the link.
+    #[default]
+    Never,
+    /// The publisher probes its estimate, and pauses a rendition whose share
+    /// falls below its band boundary.
+    AtBoundary,
+}
+
+/// Splits the sections the player reads off `catalog`.
+///
+/// Moves each section hang defines into a catalog without application
+/// sections. hang marks the catalog non-exhaustive, so a section it adds
+/// later is dropped here until it is listed.
+pub(crate) fn split(catalog: Catalog<Sections>) -> (Catalog, Pausing) {
+    let hang::catalog::Catalog {
+        video,
+        audio,
+        media,
+        text,
+        json,
+        binary,
+        m2ts,
+        stats,
+        echo,
+        include,
+        ext,
+        ..
+    } = catalog;
+    let mut base = Catalog::default();
+    base.video = video;
+    base.audio = audio;
+    base.media = media;
+    base.text = text;
+    base.json = json;
+    base.binary = binary;
+    base.m2ts = m2ts;
+    base.stats = stats;
+    base.echo = echo;
+    base.include = include;
+    let pausing = match ext.rate {
+        Some(RateSection { probe: true }) => Pausing::AtBoundary,
+        _ => Pausing::Never,
+    };
+    (base, pausing)
+}
 
 /// Returns the video rendition of `catalog` named `name`.
 ///
@@ -38,8 +108,9 @@ pub fn video_rendition<'a>(catalog: &'a Catalog, name: &str) -> Result<&'a Video
 /// bitrate, then by picture size. hang's ranking puts a publisher's
 /// preference first, and a preferred rendition can cost more than a less
 /// preferred one, so here it only breaks ties. A rendition without a bitrate
-/// sorts below those with one.
-pub(crate) fn rungs(catalog: &Catalog) -> Vec<Rung> {
+/// sorts below those with one. When the publisher pauses renditions, each rung
+/// carries the boundary it pauses at.
+pub(crate) fn rungs(catalog: &Catalog, pausing: Pausing) -> Vec<Rung> {
     let mut ladder: Vec<_> = catalog.video.ranked().collect();
     // Stable, so hang's ranking keeps the order among equals.
     ladder.sort_by_key(|(_, config)| {
@@ -47,14 +118,19 @@ pub(crate) fn rungs(catalog: &Catalog) -> Vec<Rung> {
             * u64::from(config.coded_height.unwrap_or(0));
         Reverse((config.bitrate, area))
     });
-    ladder
+    let mut rungs: Vec<Rung> = ladder
         .into_iter()
         .map(|(name, config)| Rung {
             name: name.clone(),
             bitrate: config.bitrate,
+            boundary: None,
             stalled: !config.enabled,
         })
-        .collect()
+        .collect();
+    if pausing == Pausing::AtBoundary {
+        moq_ext_adaptive::set_boundaries(&mut rungs);
+    }
+    rungs
 }
 
 #[cfg(test)]
@@ -82,7 +158,10 @@ mod tests {
     }
 
     fn names(catalog: &Catalog) -> Vec<String> {
-        rungs(catalog).into_iter().map(|rung| rung.name).collect()
+        rungs(catalog, Pausing::Never)
+            .into_iter()
+            .map(|rung| rung.name)
+            .collect()
     }
 
     #[test]
@@ -137,7 +216,7 @@ mod tests {
             ["source", "fallback"],
             "hang ranks the source first"
         );
-        let ladder = rungs(&catalog);
+        let ladder = rungs(&catalog, Pausing::Never);
         assert_eq!(names(&catalog), ["fallback", "source"]);
 
         let now = Instant::now();
@@ -208,7 +287,7 @@ mod tests {
         renditions.insert("unknown".into(), unknown);
         renditions.insert("low".into(), rendition(640, 360, 500_000));
         assert_eq!(names(&catalog), ["low", "unknown"]);
-        assert_eq!(rungs(&catalog)[1].bitrate, None);
+        assert_eq!(rungs(&catalog, Pausing::Never)[1].bitrate, None);
     }
 
     #[test]
@@ -219,7 +298,7 @@ mod tests {
         off.enabled = false;
         renditions.insert("off".into(), off);
         renditions.insert("on".into(), rendition(640, 360, 500_000));
-        let ladder = rungs(&catalog);
+        let ladder = rungs(&catalog, Pausing::Never);
         assert_eq!(names(&catalog), ["off", "on"]);
         assert!(ladder[0].stalled);
         assert!(!ladder[1].stalled);
@@ -227,5 +306,51 @@ mod tests {
             moq_ext_adaptive::best(&ladder, &Constraints::default()).as_deref(),
             Some("on")
         );
+    }
+
+    /// Reads `json` as a catalog with the player's sections.
+    fn parse(json: &str) -> (Catalog, Pausing) {
+        split(json.parse::<Catalog<Sections>>().expect("a valid catalog"))
+    }
+
+    /// The wire form the publisher writes, which `moq-ext-publisher` pins too.
+    #[test]
+    fn the_rate_section_turns_on_the_boundaries() {
+        let (catalog, pausing) = parse(r#"{"rate":{"probe":true}}"#);
+        assert_eq!(pausing, Pausing::AtBoundary);
+        assert_eq!(catalog, Catalog::default());
+        assert_eq!(parse("{}").1, Pausing::Never);
+        assert_eq!(parse(r#"{"rate":{}}"#).1, Pausing::Never);
+        assert_eq!(parse(r#"{"rate":{"probe":false}}"#).1, Pausing::Never);
+    }
+
+    /// Splitting keeps every section hang defines.
+    #[test]
+    fn splitting_keeps_the_hang_sections() {
+        let mut catalog = Catalog::<Sections>::default();
+        catalog
+            .video
+            .renditions
+            .insert("high".into(), rendition(1280, 720, 1_800_000));
+        catalog.stats = Some(hang::catalog::Stats::new("stats"));
+        let json = catalog.to_json().expect("serializes");
+        let (split, _) = parse(&json);
+        assert_eq!(split.to_json().expect("serializes"), json);
+    }
+
+    #[test]
+    fn a_publisher_that_pauses_gives_each_rung_its_boundary() {
+        let mut catalog = Catalog::default();
+        let renditions = &mut catalog.video.renditions;
+        renditions.insert("720p".into(), rendition(1280, 720, 1_800_000));
+        renditions.insert("360p".into(), rendition(640, 360, 500_000));
+        let boundaries = |pausing| -> Vec<_> {
+            rungs(&catalog, pausing)
+                .iter()
+                .map(|rung| rung.boundary)
+                .collect()
+        };
+        assert_eq!(boundaries(Pausing::Never), [None, None]);
+        assert_eq!(boundaries(Pausing::AtBoundary), [Some(933_333), None]);
     }
 }
