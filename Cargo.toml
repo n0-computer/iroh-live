@@ -1,7 +1,9 @@
 [workspace]
 members = [
+    "iroh-live-node",
     "moq-transport-iroh",
     "moq-ext-access",
+    "moq-ext-adaptive",
 ]
 resolver = "2"
 
@@ -43,8 +45,10 @@ egui = "0.37.0"
 egui-wgpu = "0.37.0"
 
 # In-repo crates
+iroh-live-node = { path = "iroh-live-node" }
 moq-transport-iroh = { path = "moq-transport-iroh" }
 moq-ext-access = { path = "moq-ext-access" }
+moq-ext-adaptive = { path = "moq-ext-adaptive" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
