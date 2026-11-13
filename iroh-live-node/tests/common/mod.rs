@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use iroh::EndpointId;
-pub(crate) use iroh_live_node::test_util::{TIMEOUT, TestNode, endpoint, eventually, step};
+pub(crate) use iroh_live_node::test_util::{
+    TIMEOUT, TestNode, announced, endpoint, eventually, retracted, step,
+};
 use iroh_live_node::{
     Audience, Error, Grant, Node, NodeConfig, Publication, Session,
     policy::{self, PeerRequest, Policy},
@@ -209,39 +211,6 @@ pub(crate) async fn stays_pending<T: std::fmt::Debug>(
     if let Ok(done) = tokio::time::timeout(window, future).await {
         panic!("{what}: {done:?}");
     }
-}
-
-/// Waits until `updates` announces `path`.
-///
-/// A cursor coalesces an announcement it has not handed out with its
-/// retraction, so wait for this before [`retracted`].
-pub(crate) async fn announced(updates: &mut announce::Consumer, path: &str) {
-    wait_for(updates, path, true).await
-}
-
-/// Waits until `updates` retracts `path`.
-pub(crate) async fn retracted(updates: &mut announce::Consumer, path: &str) {
-    wait_for(updates, path, false).await
-}
-
-async fn wait_for(updates: &mut announce::Consumer, path: &str, active: bool) {
-    step(&format!("{path} announced: {active}"), async {
-        loop {
-            let event = updates.next().await.expect("origin closed");
-            let (announce, now_active) = match event {
-                announce::Event::Absent(announce) | announce::Event::Offline(announce) => {
-                    (announce, false)
-                }
-                announce::Event::Present(announce)
-                | announce::Event::Unavailable(announce)
-                | announce::Event::Available(announce) => (announce, true),
-            };
-            if announce.prefix.as_str() == path && now_active == active {
-                return;
-            }
-        }
-    })
-    .await
 }
 
 /// Waits until `node` holds a session with `peer`, and returns it.

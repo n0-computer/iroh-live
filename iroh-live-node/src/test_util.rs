@@ -12,6 +12,8 @@ use iroh::{
     protocol::{Router, RouterBuilder},
 };
 
+use moq_net::announce;
+
 use crate::{Node, NodeConfig};
 
 /// The default bound of [`step`] and [`eventually`].
@@ -63,6 +65,52 @@ pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         }
     })
     .await
+}
+
+/// Returns the announcement `event` carries, and whether it says the path is active.
+#[must_use]
+pub fn announcement(event: &announce::Event) -> (&announce::Announce, bool) {
+    match event {
+        announce::Event::Absent(announce) | announce::Event::Offline(announce) => (announce, false),
+        announce::Event::Present(announce)
+        | announce::Event::Unavailable(announce)
+        | announce::Event::Available(announce) => (announce, true),
+    }
+}
+
+/// Waits until `updates` announces `path`, and fails after [`TIMEOUT`].
+///
+/// A cursor coalesces an announcement it has not handed out with its
+/// retraction, so wait for this before [`retracted`].
+///
+/// # Panics
+///
+/// Panics if `updates` ends, or `path` is not announced within [`TIMEOUT`].
+pub async fn announced(updates: &mut announce::Consumer, path: &str) {
+    wait_for_announcement(updates, path, true).await;
+}
+
+/// Waits until `updates` retracts `path`, and fails after [`TIMEOUT`].
+///
+/// # Panics
+///
+/// Panics if `updates` ends, or `path` is not retracted within [`TIMEOUT`].
+pub async fn retracted(updates: &mut announce::Consumer, path: &str) {
+    wait_for_announcement(updates, path, false).await;
+}
+
+/// Waits until `updates` says `path` is `active`, or is not.
+async fn wait_for_announcement(updates: &mut announce::Consumer, path: &str, active: bool) {
+    step(&format!("{path} announced: {active}"), async {
+        loop {
+            let event = updates.next().await.expect("origin closed");
+            let (announce, now_active) = announcement(&event);
+            if announce.prefix.as_str() == path && now_active == active {
+                return;
+            }
+        }
+    })
+    .await;
 }
 
 /// A node mounted on a router, on an [`endpoint`].
