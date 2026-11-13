@@ -22,14 +22,14 @@ moq-ext-access = { workspace = true }
 moq-transport-iroh = { workspace = true }
 # Relay links over QUIC and WebTransport (`https://`, `moqt://`, `moql://`).
 moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
-n0-error = "1"
+n0-error = "1.0.3"
 n0-future = "0.3.2"
-n0-watcher = "1"
+n0-watcher = "1.0.1"
 percent-encoding = "2.3.2"
 serde = "1.0.229"
 # `time` seeds each session driver's clock, `macros` is for `select!`.
-tokio = { version = "1.53.1", features = ["sync", "time", "macros", "rt"] }
-tokio-util = "0.7.19"
+tokio = { version = "1.54.1", features = ["sync", "time", "macros", "rt"] }
+tokio-util = "0.7.20"
 tracing = "0.1.44"
 url = "2.5.8"
 
@@ -55,7 +55,7 @@ n0-tracing-test = "0.3.0"
 # Tells the congestion controller of a connection by its type.
 noq-proto = { workspace = true }
 rcan = "0.4.1"
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 
 [[example]]
 name = "delegated_publisher"

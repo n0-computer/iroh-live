@@ -18,14 +18,14 @@ kio = { workspace = true }
 # `NetworkSample`, the reading a link sample carries for adaptation.
 moq-ext-adaptive = { workspace = true }
 moq-net = { workspace = true }
-n0-error = "1"
+n0-error = "1.0.3"
 # The congestion controllers: BBR3, which every endpoint binds with, and the
 # CUBIC and NewReno a `Congestion` names.
 noq-proto = { workspace = true }
 # `time` drives the link sampler's interval.
-tokio = { version = "1.53.1", features = ["time"] }
+tokio = { version = "1.54.1", features = ["time"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
 url = "2.5.8"

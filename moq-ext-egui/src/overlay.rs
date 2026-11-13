@@ -138,7 +138,7 @@ impl DebugOverlay {
             link: Vec::new(),
             timeline_scroll: 0.0,
             timeline_paused: None,
-            salt: egui::Id::new((
+            salt: egui::Id::unique((
                 "moq-ext-egui overlay",
                 OVERLAY_SALT.fetch_add(1, Ordering::Relaxed),
             )),

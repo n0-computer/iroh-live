@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 bytes = "1.12.1"
 bytesize = "2.7"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 derive_more = { version = "2.1.1", features = ["debug", "display"] }
 dirs = "7"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
@@ -25,9 +25,9 @@ moq-ext-egui = { workspace = true }
 moq-mux = { workspace = true }
 # The room chat track: a JSON window, which `@moq/room` reads too.
 moq-json = { workspace = true }
-n0-error = "1"
+n0-error = "1.0.3"
 n0-future = "0.3.2"
-n0-watcher = "1"
+n0-watcher = "1.0.1"
 qr2term = "0.3"
 # QR encoding for the ticket a call window shows its peer, and for the codes the
 # scan tests decode. Only the encoder itself is wanted: the default features
@@ -38,9 +38,9 @@ qrcode = { version = "0.14", default-features = false }
 # the default feature set pulls in image formats, serde and a URI parser for
 # pixels we already hold in a buffer.
 rxing = { version = "0.9.2", default-features = false, features = ["qrcode", "decoders", "encoding_rs"] }
-serde = { version = "1", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["full"] }
-tokio-util = "0.7.19"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = "0.7.20"
 toml = "1"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"

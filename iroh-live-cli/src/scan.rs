@@ -181,7 +181,7 @@ impl ScanView {
             ScanState::Failed(err) => Some(err.clone()),
         };
 
-        egui::Area::new(egui::Id::new("scan-banner"))
+        egui::Area::new(egui::Id::unique("scan-banner"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -32.0])
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {

@@ -126,7 +126,7 @@ pub(crate) fn top_bar(ui: &mut egui::Ui, ctx: &egui::Context, text: &str) {
     );
     painter.galley(bar.min + egui::vec2(8.0, 4.0), galley, egui::Color32::WHITE);
 
-    let response = ui.interact(bar, egui::Id::new("top-bar"), egui::Sense::click());
+    let response = ui.interact(bar, egui::Id::unique("top-bar"), egui::Sense::click());
     if response.clicked() {
         ctx.copy_text(text.to_string());
     }
@@ -144,7 +144,7 @@ fn fullscreen_button(ui: &mut egui::Ui, ctx: &egui::Context, bar: egui::Rect) {
         egui::pos2(bar.right() - size.x - 8.0, bar.min.y + 4.0),
         size,
     );
-    let response = ui.interact(rect, egui::Id::new("fullscreen"), egui::Sense::click());
+    let response = ui.interact(rect, egui::Id::unique("fullscreen"), egui::Sense::click());
     let color = if response.hovered() {
         egui::Color32::from_white_alpha(200)
     } else {
@@ -165,7 +165,7 @@ fn fullscreen_button(ui: &mut egui::Ui, ctx: &egui::Context, bar: egui::Rect) {
 
 /// Draws `contents` in a translucent panel pinned under the top bar.
 pub(crate) fn control_panel(ctx: &egui::Context, id: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::unique(id))
         .anchor(egui::Align2::LEFT_TOP, [8.0, TOP_BAR_HEIGHT + 4.0])
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -195,7 +195,7 @@ pub(crate) fn dialog(
     width: f32,
     contents: impl FnOnce(&mut egui::Ui),
 ) {
-    egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::unique(id))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {

@@ -222,7 +222,7 @@ impl CallApp {
         call.remote.draw(ui, available);
 
         let pip = egui::vec2(PIP_WIDTH, PIP_WIDTH / ASPECT);
-        egui::Area::new(egui::Id::new("call-pip"))
+        egui::Area::new(egui::Id::unique("call-pip"))
             .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0])
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
