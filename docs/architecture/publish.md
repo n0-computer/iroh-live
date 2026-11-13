@@ -99,7 +99,9 @@ and `rate`, and moq-video's own `encode::Config` for the rest: bitrate,
 keyframe interval (`join`, two seconds by default), codec, backend (`kind`)
 and preset. The config's size, rate and color are filled in when the rendition
 opens. `VideoRendition::new(name)` encodes at the source's size.
-`p360` and `p720` are 16:9 presets at 500 kbit/s and 1.8 Mbit/s.
+`p360` and `p720` are 16:9 presets at 500 kbit/s and 1.8 Mbit/s. Both are
+close to the 0.07 bit per pixel moq-video derives without a bitrate (484
+kbit/s and 1.94 Mbit/s at 30 fps).
 
 `set_video` fails at once for an empty ladder, an empty or duplicate name, an
 odd or zero size, a rate above the source's, a zero keyframe interval, or H.265

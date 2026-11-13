@@ -164,9 +164,12 @@ impl VideoRendition {
 
     /// Creates a 16:9 preset with a bitrate chosen for 30 fps camera content.
     ///
-    /// The bitrate is a little above what the encoder derives on its own. A
-    /// rendition that starves at its ceiling looks worse than one that spends a
-    /// bit more.
+    /// The bitrate is close to the 0.07 bit per pixel that moq-video derives
+    /// on its own. At 30 fps that is 484 kbit/s for 360p, a little below the
+    /// preset, and 1.94 Mbit/s for 720p, a little above it. moq-transcode's
+    /// default ladder spends more, 2.5 Mbit/s at 720p. Set
+    /// [`Config::bitrate`](moq_video::encode::Config::bitrate) for another
+    /// trade between quality and the links a rendition fits.
     fn preset(name: &str, width: u32, height: u32, kbps: u64) -> Self {
         let mut rendition = Self::new(name);
         rendition.size = Some(moq_video::Size::new(width, height));
