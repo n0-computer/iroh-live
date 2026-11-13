@@ -1,0 +1,58 @@
+[package]
+name = "moq-ext-publisher"
+version = "0.1.0"
+edition = "2024"
+description = "A broadcast that encodes sources into renditions, over moq-video and moq-audio"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1.12.1"
+derive_more = { version = "2.1.1", features = ["display", "debug", "eq", "deref"] }
+hang = { workspace = true }
+moq-audio = { workspace = true }
+moq-ext-sources = { workspace = true, features = ["pattern"] }
+# Latest-value JSON tracks next to the media, for `LocalBroadcast::value_track`.
+moq-json = { workspace = true }
+moq-mux = { workspace = true }
+moq-net = { workspace = true }
+# The software H.264 fallback. The workspace takes moq-video without defaults,
+# which would drop it.
+moq-video = { workspace = true, features = ["openh264"] }
+n0-error = "1.0.3"
+n0-future = "0.3.2"
+serde = "1.0.229"
+tokio = { version = "1.54.1", features = ["sync", "time"] }
+tokio-util = "0.7.20"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["full"] }
+
+[features]
+default = []
+# Camera, screen and microphone capture. Off for a build that only publishes
+# frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
+capture = ["moq-ext-sources/capture", "moq-video/capture", "moq-audio/capture"]
+# Audio devices through PipeWire or PulseAudio instead of ALSA. Checked at
+# runtime, so a build with it still runs without either. Does nothing off
+# Linux and the BSDs.
+sound-server = ["moq-ext-sources/sound-server", "moq-audio/pipewire", "moq-audio/pulseaudio"]
+# Echo cancellation: removes the output mix from the microphone.
+aec = ["capture", "moq-ext-sources/aec", "moq-audio/aec"]
+# Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.
+pipewire = ["capture", "moq-ext-sources/pipewire", "moq-video/pipewire"]
+# The Raspberry Pi camera through `rpicam-vid`, which must be on PATH. Linux
+# only.
+rpicam = ["moq-ext-sources/rpicam"]
+# Intel and AMD hardware H.264 encoding.
+vaapi = ["moq-video/vaapi"]
+# NVIDIA hardware encoding. Off by default to keep CUDA out.
+nvidia = ["moq-video/nvidia"]
+# The V4L2 H.264 encoder of ARM SoCs such as the Raspberry Pi.
+v4l2 = ["moq-video/v4l2"]

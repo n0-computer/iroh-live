@@ -5,6 +5,8 @@ members = [
     "moq-ext-access",
     "moq-ext-adaptive",
     "iroh-live-rooms",
+    "moq-ext-publisher",
+    "moq-ext-sources",
 ]
 resolver = "2"
 
@@ -51,6 +53,8 @@ moq-transport-iroh = { path = "moq-transport-iroh" }
 moq-ext-access = { path = "moq-ext-access" }
 moq-ext-adaptive = { path = "moq-ext-adaptive" }
 iroh-live-rooms = { path = "iroh-live-rooms" }
+moq-ext-publisher = { path = "moq-ext-publisher", default-features = false }
+moq-ext-sources = { path = "moq-ext-sources", default-features = false }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
