@@ -1,15 +1,6 @@
 [workspace]
 members = [
-    "iroh-live",
-    "iroh-live-cli",
-    "iroh-live-relay",
-    "iroh-moq",
-    "iroh-rooms",
-    "moq-media",
-    "moq-media-android",
-    "moq-media-egui",
-    "demos/android/rust",
-    "demos/pi-zero",
+    "moq-transport-iroh",
 ]
 resolver = "2"
 
@@ -24,38 +15,34 @@ lto = "thin"
 
 [workspace.dependencies]
 # External
-iroh = { version = "1.2.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
+iroh = { version = "1.4.1", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 iroh-gossip = "0.101.0"
-noq-proto = { version = "1", default-features = false }
+noq-proto = { version = "1.4", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = "0.21.3"
-moq-net = "0.3.2"
-moq-mux = "0.10.3"
+hang = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c" }
+moq-net = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", features = ["async"] }
+moq-mux = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c" }
+moq-json = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", features = ["async"] }
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
-moq-audio = { version = "0.1.2", default-features = false, features = ["aac"] }
-moq-video = { version = "0.1.2", default-features = false }
-moq-relay = { version = "0.15.3", default-features = false }
-moq-tokio = { version = "0.19.14", default-features = false }
-web-transport-iroh = "0.7.0"
+moq-audio = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false, features = ["aac"] }
+moq-video = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+moq-auth = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+moq-relay = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+# moq-net's poll primitives (`Waiter`, `Bridge`, `wait`), no longer re-exported.
+kio = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c" }
 
-# UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
-# `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
-# major is a different type, so these two versions have to move together.
-eframe = { version = "0.36.2", default-features = false }
-egui = "0.36.2"
-egui-wgpu = "0.36.2"
-wgpu = "30"
+# UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back
+# a `wgpu::Texture` from its own build of wgpu 30. A texture from a different
+# wgpu major is a different type, so egui and moq-video have to move together.
+eframe = { version = "0.37.0", default-features = false }
+egui = "0.37.0"
+egui-wgpu = "0.37.0"
 
 # In-repo crates
-iroh-live = { path = "iroh-live", default-features = false }
-iroh-live-relay = { path = "iroh-live-relay" }
-iroh-moq = { path = "iroh-moq" }
-iroh-rooms = { path = "iroh-rooms" }
-moq-media = { path = "moq-media", default-features = false }
-moq-media-android = { path = "moq-media-android" }
-moq-media-egui = { path = "moq-media-egui" }
+moq-transport-iroh = { path = "moq-transport-iroh" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }

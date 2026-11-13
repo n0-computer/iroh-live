@@ -1,0 +1,24 @@
+[package]
+name = "moq-transport-iroh"
+version = "0.1.0"
+edition = "2024"
+description = "MoQ sessions over iroh connections: dial, accept and moq-net's poll transport"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1"
+iroh = { workspace = true }
+kio = { workspace = true }
+moq-net = { workspace = true }
+n0-error = "1.0.3"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+url = "2.5.8"
