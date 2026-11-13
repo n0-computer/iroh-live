@@ -567,27 +567,21 @@ impl Encoder {
                     let next = mapped.as_micros() as u64 + interval.as_micros() as u64;
                     due = moq_net::Timestamp::from_micros(next).ok();
                 }
-                // A frame of another size than the track advertises is scaled
-                // to it, for example after a phone camera turns to portrait.
-                let frame = if frame.size() == target {
-                    frame
-                } else {
-                    Arc::new(
-                        frame
-                            .resize(target, &Default::default())
-                            .map_err(Error::encoder)?,
-                    )
-                };
-
                 // The encoder labels the stream with one color space and
                 // refuses frames in another. A source that idled until watched
                 // had no frame to take it from when the track opened, so adopt
-                // the first frame's and reopen.
+                // the first frame's and reopen. A frame of another size, such
+                // as one from a phone camera turned to portrait, is scaled on
+                // the encoder's thread, which labels an unlabelled frame with
+                // the space its own size implies.
                 let labelled = self
                     .config
                     .color
                     .unwrap_or_else(|| moq_video::Color::infer(target));
-                if let Some(color) = frame.surface.color()
+                let color = frame.surface.color().or_else(|| {
+                    (frame.size() != target).then(|| moq_video::Color::infer(frame.size()))
+                });
+                if let Some(color) = color
                     && color != labelled
                 {
                     debug!(

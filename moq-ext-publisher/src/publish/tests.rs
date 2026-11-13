@@ -151,20 +151,16 @@ async fn a_pushed_audio_source_ends_when_its_senders_go() {
     audio_becomes(&broadcast, SlotState::Ended).await;
 }
 
-/// A watched rendition's frame counter comes from the catalog's counters of its track.
-#[tokio::test]
-async fn a_watched_rendition_counts_its_frames() {
-    let source = VideoSource::test_pattern(
-        moq_video::Size::new(320, 180),
-        moq_video::FrameRate::new(30, 1).expect("a valid rate"),
-    )
-    .expect("the pattern thread starts");
+/// Publishes `source` as the one rendition `rendition`, watches it, and waits until it sent frames.
+///
+/// Returns the broadcast, the rendition's track name, and the subscription that watches it.
+async fn watch_until_sent(
+    source: VideoSource,
+    rendition: crate::VideoRendition,
+) -> (LocalBroadcast, String, impl Sized) {
     let broadcast = LocalBroadcast::new();
     broadcast
-        .set_video(
-            source,
-            crate::VideoEncoding::single(crate::VideoRendition::new("180p")),
-        )
+        .set_video(source, crate::VideoEncoding::single(rendition))
         .expect("a valid encoding");
     let name = tokio::time::timeout(TIMEOUT, async {
         loop {
@@ -177,24 +173,79 @@ async fn a_watched_rendition_counts_its_frames() {
     .await
     .expect("the rendition starts");
     let track = broadcast.consume().track(&name).expect("the track exists");
-    let _subscribing = track.subscribe(None);
-    // The counters are the catalog's, under the track the rendition names.
-    let sent = || {
-        let stats = broadcast.stats();
-        stats
-            .sent
-            .get(&stats.renditions[&name].track)
-            .cloned()
-            .unwrap_or_default()
-    };
+    let subscribing = track.subscribe(None);
     tokio::time::timeout(TIMEOUT, async {
-        while sent().frames == 0 {
+        while sent(&broadcast, &name).frames == 0 {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("the rendition counts its frames");
-    assert!(sent().bytes > 0);
+    (broadcast, name, subscribing)
+}
+
+/// Returns the catalog's counters of the track rendition `name` publishes.
+fn sent(broadcast: &LocalBroadcast, name: &str) -> hang::stats::Rendition {
+    let stats = broadcast.stats();
+    stats
+        .sent
+        .get(&stats.renditions[name].track)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A watched rendition's frame counter comes from the catalog's counters of its track.
+#[tokio::test]
+async fn a_watched_rendition_counts_its_frames() {
+    let source = VideoSource::test_pattern(
+        moq_video::Size::new(320, 180),
+        moq_video::FrameRate::new(30, 1).expect("a valid rate"),
+    )
+    .expect("the pattern thread starts");
+    let (broadcast, name, _subscribing) =
+        watch_until_sent(source, crate::VideoRendition::new("180p")).await;
+    assert!(sent(&broadcast, &name).bytes > 0);
+}
+
+/// A rendition smaller than its source encodes frames the encoder scales across the SD boundary.
+///
+/// The encoder's thread scales the unlabelled 720p frames to 180p and labels
+/// them with the space 720p implies, which differs from the one 180p implies.
+/// The rendition takes that label instead of failing on a color mismatch.
+#[tokio::test]
+async fn a_rendition_smaller_than_its_source_encodes_scaled_frames() {
+    let size = moq_video::Size::new(1280, 720);
+    let rate = moq_video::FrameRate::new(30, 1).expect("a valid rate");
+    let (sender, source) = VideoSource::push(moq_ext_sources::VideoFormat { size, rate });
+    let pushing = tokio::spawn(async move {
+        let clock = moq_mux::Clock::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(33));
+        loop {
+            tick.tick().await;
+            let pixels = vec![0x80; moq_video::I420::len(size).expect("a valid size")];
+            let picture = moq_video::I420::new(size, pixels).expect("a whole picture");
+            assert_eq!(picture.color(), None, "the frame names no space");
+            let frame = moq_video::Frame::new(moq_video::Surface::I420(picture), clock.now());
+            if sender.push(frame).is_err() {
+                return;
+            }
+        }
+    });
+    let mut rendition = crate::VideoRendition::new("180p");
+    rendition.size = Some(moq_video::Size::new(320, 180));
+    let (broadcast, name, _subscribing) = watch_until_sent(source, rendition).await;
+    assert_eq!(
+        broadcast.stats().renditions[&name].size,
+        Some(moq_video::Size::new(320, 180))
+    );
+    assert!(
+        matches!(
+            broadcast.status().borrow().renditions.get(&name),
+            Some(crate::RenditionState::Encoding { .. })
+        ),
+        "the rendition encodes"
+    );
+    pushing.abort();
 }
 
 /// A value track carries its newest value to a reader, and refuses a taken name and a closed broadcast.

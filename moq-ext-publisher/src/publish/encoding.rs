@@ -114,6 +114,8 @@ impl VideoEncoding {
 /// The encoder settings are moq-video's own [`Config`]. Its `width`, `height`
 /// and `framerate` are filled in from [`size`](Self::size), [`rate`](Self::rate)
 /// and the source when the rendition opens, and so is its `color` unless set.
+/// Its `resize` is filled in with moq-video's defaults unless set, so a frame
+/// of another size is scaled on the encoder's thread.
 /// Its `join` is the keyframe interval: a subscriber cannot draw anything
 /// before a keyframe, so it sets how long a new viewer waits for a picture and
 /// how long a rendition switch takes.
@@ -185,6 +187,10 @@ impl VideoRendition {
         config.height = size.height;
         config.framerate = self.rate.unwrap_or(rate);
         config.color = config.color.or(color);
+        // A frame of another size than the track advertises is scaled on the
+        // encoder's own thread, so the source's thread and the encode task
+        // never do the pixel work.
+        config.resize.get_or_insert_with(Default::default);
         config
     }
 }

@@ -109,7 +109,10 @@ H.264.
 The source opens once, and each rendition's encoder reads its frames through a
 latest-wins handle of its own. Frames are `Arc`s, so the preview and every rung
 share one allocation. A rendition that falls behind drops frames without
-stalling the others. The first frame any rendition encodes anchors the mapping
+stalling the others. A frame of another size than its rendition, such as a
+phone camera turned to portrait, is scaled by moq-video's `encode::Config::resize`
+on that rendition's encoder thread, not on the source's thread or in the
+encode task. The first frame any rendition encodes anchors the mapping
 from source timestamps to the broadcast clock (`Rebase`). Every rung carries
 the same timestamp for the same picture, so a subscriber that switches sees no
 jump.
