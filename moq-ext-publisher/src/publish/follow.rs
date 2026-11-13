@@ -11,11 +11,47 @@
 
 use moq_mux::rate::{self, Policy, Target};
 use moq_net::bandwidth::{Allocator, Rate, Reservation};
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::debug;
 
 /// The allocator a broadcast's renditions reserve on, `None` while rate control is off.
 pub(super) type Bandwidth = watch::Receiver<Option<Allocator>>;
+
+/// The catalog producer of a broadcast, with the sections this crate adds.
+pub(super) type CatalogProducer = moq_mux::catalog::Producer<Sections>;
+
+/// The root sections this crate adds to a broadcast's catalog.
+///
+/// A catalog reader that does not know them ignores them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(super) struct Sections {
+    /// Present once the broadcast follows an allocator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rate: Option<RateSection>,
+}
+
+impl moq_mux::catalog::hang::CatalogExt for Sections {}
+
+/// The catalog's `rate` section: `{"probe": true}`.
+///
+/// It tells a player that the publisher's estimate is probed, and that it
+/// pauses a rendition whose grant falls below its band boundary. The player
+/// then keeps a rendition down to that boundary, computed from the catalog's
+/// bitrates, instead of at its usual margin over the estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct RateSection {
+    probe: bool,
+}
+
+/// Adds the `rate` section to `catalog`.
+pub(super) fn advertise(catalog: &mut CatalogProducer) -> Result<(), moq_mux::Error> {
+    let section = Some(RateSection { probe: true });
+    if catalog.snapshot().ext.rate != section {
+        catalog.modify()?.ext.rate = section;
+    }
+    Ok(())
+}
 
 /// Returns each ceiling's policy, with the next lower ceiling of the ladder as its `lower`.
 ///
@@ -212,6 +248,23 @@ mod tests {
 
     fn kbps(kbps: u64) -> Rate {
         Rate::from_kbps(kbps)
+    }
+
+    /// The wire form a player reads, which `moq-ext-player` pins too.
+    #[test]
+    fn the_rate_section_reads_probe_true() {
+        let sections = Sections {
+            rate: Some(RateSection { probe: true }),
+        };
+        assert_eq!(
+            serde_json::to_string(&sections).expect("serializes"),
+            r#"{"rate":{"probe":true}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Sections::default()).expect("serializes"),
+            "{}",
+            "a broadcast without rate control adds nothing"
+        );
     }
 
     #[test]

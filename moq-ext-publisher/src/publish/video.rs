@@ -278,7 +278,7 @@ async fn probe_ladder<'a>(
 /// unless `config` names an encoder that cannot cut one.
 fn open_track(
     producer: &moq_net::broadcast::Producer,
-    catalog: &moq_mux::catalog::Producer,
+    catalog: &follow::CatalogProducer,
     name: &str,
     config: &encode::Config,
     published: hang::catalog::VideoConfig,

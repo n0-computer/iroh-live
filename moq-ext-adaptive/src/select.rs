@@ -187,6 +187,7 @@ mod tests {
         Rung {
             name: name.into(),
             bitrate: Some(bitrate),
+            boundary: None,
             stalled: false,
         }
     }

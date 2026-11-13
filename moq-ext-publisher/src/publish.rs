@@ -117,7 +117,7 @@ const FINISH_PATIENCE: Duration = Duration::from_secs(2);
 /// Everything a slot task needs.
 struct Job {
     producer: moq_net::broadcast::Producer,
-    catalog: moq_mux::catalog::Producer,
+    catalog: follow::CatalogProducer,
     clock: moq_mux::Clock,
     /// Where the video task records the source timestamp of each frame it publishes.
     timestamps: TimestampLog,
@@ -403,7 +403,7 @@ enum SlotSource {
 #[debug("Shared {{ status: {status:?} }}")]
 struct Shared {
     producer: moq_net::broadcast::Producer,
-    catalog: Mutex<moq_mux::catalog::Producer>,
+    catalog: Mutex<follow::CatalogProducer>,
     clock: moq_mux::Clock,
     /// The source timestamps and capture instants of the published video.
     ///
@@ -515,7 +515,7 @@ impl LocalBroadcast {
         // the clock that stamps the media.
         let clock = moq_mux::Clock::new();
         let config = moq_mux::catalog::Config::default()
-            .with_catalog(hang::catalog::Catalog::default())
+            .with_catalog(hang::catalog::Catalog::<follow::Sections>::default())
             .with_clock(clock.clone());
         let catalog =
             moq_mux::catalog::Producer::new(&mut producer, config).map_err(Error::broadcast)?;
@@ -737,6 +737,11 @@ impl LocalBroadcast {
     pub fn set_bandwidth(&self, allocator: moq_net::bandwidth::Allocator) {
         debug!(parent: &self.shared.span, ?allocator, "following an allocator");
         self.shared.bandwidth.send_replace(Some(allocator));
+        // Players then fit each rendition at the boundary it pauses at.
+        let mut catalog = self.shared.catalog.lock().expect("poisoned");
+        if let Err(err) = follow::advertise(&mut catalog) {
+            debug!(parent: &self.shared.span, error = %err, "could not advertise rate control in the catalog");
+        }
     }
 
     /// Stops publishing video.

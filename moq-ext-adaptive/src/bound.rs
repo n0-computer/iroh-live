@@ -4,7 +4,9 @@
 //! wins:
 //!
 //! - The publisher's delivery estimate caps the bitrate. A rung fits while the
-//!   estimate covers [`Adaptation::fit_ratio`] of its advertised bitrate.
+//!   estimate covers [`Adaptation::fit_ratio`] of its advertised bitrate, or,
+//!   for a publisher that pauses rungs, while it covers the rung's
+//!   [`boundary`](Rung::boundary).
 //! - Sustained loss lowers a ceiling one rung at a time, and emergency loss
 //!   drops it to the bottom. A clean stretch raises it one rung at a time.
 //! - The caller's [`Constraints`] exclude stalled and failed renditions.
@@ -14,7 +16,8 @@
 //! cooldown timers of [`Adaptation`].
 //!
 //! One ratio serves both directions. A publisher parked on a low rung has an
-//! estimate limited by what it sends, and it can still climb back.
+//! estimate limited by what it sends, and it can still climb back. A boundary
+//! needs 5% more to step up than to stay, as the publisher needs to resume.
 //!
 //! A change of network path resets everything learned on the old one.
 
@@ -35,8 +38,62 @@ pub struct Rung {
     pub name: String,
     /// The advertised bitrate in bits per second, if the catalog gives one.
     pub bitrate: Option<u64>,
+    /// The estimate in bits per second below which the publisher pauses the rendition.
+    ///
+    /// `None` for a publisher that never pauses one. A publisher with rate
+    /// control pauses a rung when its share of the estimate falls below the
+    /// band boundary with the next cheaper rung. It resumes the rung 5% above.
+    /// With a boundary, the rung fits while the estimate covers the boundary,
+    /// and a step up to it needs the 5% on top. [`set_boundaries`] computes
+    /// them.
+    pub boundary: Option<u64>,
     /// Whether the publisher flagged the rendition to be avoided.
     pub stalled: bool,
+}
+
+impl Rung {
+    /// Reports whether `estimate` carries this rung.
+    ///
+    /// `stepping_up` asks for the margin a step up needs over staying.
+    fn fits(&self, estimate: u64, stepping_up: bool, fit_ratio: f64) -> bool {
+        match (self.boundary, self.bitrate) {
+            (Some(boundary), Some(bitrate)) if stepping_up => {
+                // As the publisher resumes it: clear of the boundary by the
+                // deadband, but never above the rung's own bitrate.
+                estimate >= (boundary + boundary / DEADBAND).min(bitrate)
+            }
+            (Some(boundary), _) => estimate >= boundary,
+            (None, Some(bitrate)) => bitrate as f64 * fit_ratio <= estimate as f64,
+            (None, None) => true,
+        }
+    }
+}
+
+/// The share of the boundary a paused rung's estimate has to clear to resume, as `1 / DEADBAND`.
+///
+/// The hysteresis of moq-mux's rate policy, which pauses and resumes the rung.
+const DEADBAND: u64 = 20;
+
+/// Sets each rung's [`boundary`](Rung::boundary) as a publisher with rate control places it.
+///
+/// The boundary of a rung at bitrate `max` is `(max + 2 * lower) / 3`, where
+/// `lower` is the highest bitrate of the ladder below `max`. It matches
+/// moq-mux's `rate::Policy`, which the publisher pauses its rungs by. The
+/// cheapest rung, and a rung without a bitrate, have none.
+pub fn set_boundaries(ladder: &mut [Rung]) {
+    let bitrates: Vec<u64> = ladder.iter().filter_map(|rung| rung.bitrate).collect();
+    for rung in ladder {
+        rung.boundary = rung.bitrate.and_then(|max| {
+            let lower = bitrates
+                .iter()
+                .copied()
+                .filter(|other| *other < max)
+                .max()?;
+            let boundary = (u128::from(max) + 2 * u128::from(lower)) / 3;
+            // Below `max`, so it fits.
+            Some(boundary as u64)
+        });
+    }
 }
 
 /// What the caller rules out, whatever the network says.
@@ -73,7 +130,8 @@ pub struct Adaptation {
     ///
     /// The estimate reads up to 1.6 times a capped link's rate, and encoders
     /// send about 82% of what they advertise. At 1.25, a rung fits while the
-    /// estimate covers 1.5 times what it sends.
+    /// estimate covers 1.5 times what it sends. A rung with a
+    /// [`boundary`](Rung::boundary) fits by that instead.
     pub fit_ratio: f64,
     /// How long the estimate is remembered, as a sliding maximum.
     ///
@@ -183,6 +241,24 @@ impl Bound {
             .upgrade_hold
             .saturating_mul(4u32.pow(tries))
             .min(self.adaptation.upgrade_hold_max)
+    }
+
+    /// Records a step down from `rung` at `now`.
+    ///
+    /// The rung counts a failed try, and its trial ends.
+    fn stepped_down(&mut self, rung: &str, now: Instant) {
+        self.last_downgrade = Some(now);
+        self.downgrading = true;
+        if self.trial.as_ref().is_some_and(|(trial, _)| trial == rung) {
+            self.trial = None;
+        }
+        let tries = self.failed_tries.entry(rung.to_string()).or_default();
+        *tries += 1;
+        debug!(
+            rung,
+            tries = *tries,
+            "stepped down, so the next step up to this rung waits longer"
+        );
     }
 
     /// Records the sample's estimate and returns the sliding maximum, if any.
@@ -329,17 +405,17 @@ impl Bound {
         }
         self.in_flight = in_flight;
 
-        let fits = |rung: &Rung| match (estimate, rung.bitrate) {
-            (Some(estimate), Some(bitrate)) => {
-                bitrate as f64 * self.adaptation.fit_ratio <= estimate as f64
-            }
-            _ => true,
+        let fits = |index: usize| {
+            let stepping_up = current_index.is_none_or(|current| index < current);
+            estimate.is_none_or(|estimate| {
+                rungs[index].fits(estimate, stepping_up, self.adaptation.fit_ratio)
+            })
         };
         let target_index = eligible
             .iter()
             .copied()
             .filter(|&index| self.loss_ceiling.is_none_or(|ceiling| index >= ceiling))
-            .find(|&index| fits(&rungs[index]))
+            .find(|&index| fits(index))
             .unwrap_or(lowest);
         let target = &rungs[target_index].name;
 
@@ -347,6 +423,15 @@ impl Bound {
         let Some(current_index) = current_index.filter(|index| eligible.contains(index)) else {
             self.lower_since = None;
             self.higher_since = None;
+            // A rung the publisher paused could not be carried, which makes
+            // leaving it a step down like one on the estimate. A rendition
+            // whose decoder failed says nothing about the link.
+            if let Some(index) = current_index
+                && rungs[index].stalled
+                && target_index > index
+            {
+                self.stepped_down(&rungs[index].name, now);
+            }
             return Some(target.clone());
         };
 
@@ -362,21 +447,7 @@ impl Bound {
                 let since = *self.lower_since.get_or_insert(now);
                 if emergency || now.duration_since(since) >= self.adaptation.downgrade_hold {
                     self.lower_since = None;
-                    self.last_downgrade = Some(now);
-                    self.downgrading = true;
-                    // The rung stepped down from counts as a failed try, and its
-                    // trial ends.
-                    let rung = rungs[current_index].name.clone();
-                    if self.trial.as_ref().is_some_and(|(trial, _)| *trial == rung) {
-                        self.trial = None;
-                    }
-                    let tries = self.failed_tries.entry(rung).or_default();
-                    *tries += 1;
-                    debug!(
-                        rung = %rungs[current_index].name,
-                        tries = *tries,
-                        "stepped down, so the next step up to this rung waits longer"
-                    );
+                    self.stepped_down(&rungs[current_index].name, now);
                     return Some(target.clone());
                 }
                 Some(rungs[current_index].name.clone())
@@ -406,6 +477,7 @@ mod tests {
         Rung {
             name: name.into(),
             bitrate: Some(bitrate),
+            boundary: None,
             stalled: false,
         }
     }
@@ -857,6 +929,170 @@ mod tests {
         };
         let chosen = first(&mut bound, &Constraints::default(), &fresh);
         assert_eq!(chosen.as_deref(), Some("1080p"));
+    }
+
+    /// Returns [`ladder`] with each rung's boundary set, as a rate-controlled publisher has it.
+    fn paused_ladder() -> Vec<Rung> {
+        let mut ranked = ladder();
+        set_boundaries(&mut ranked);
+        ranked
+    }
+
+    #[test]
+    fn boundaries_sit_a_third_of_the_way_up_to_each_rung() {
+        let boundaries: Vec<_> = paused_ladder().iter().map(|rung| rung.boundary).collect();
+        assert_eq!(boundaries, [Some(2_666_666), Some(1_000_000), None]);
+        let mut odd = vec![
+            rung("a", 900_000),
+            Rung {
+                bitrate: None,
+                ..rung("unknown", 0)
+            },
+            rung("b", 900_000),
+            rung("c", 300_000),
+        ];
+        set_boundaries(&mut odd);
+        let boundaries: Vec<_> = odd.iter().map(|rung| rung.boundary).collect();
+        assert_eq!(
+            boundaries,
+            [Some(500_000), None, Some(500_000), None],
+            "a rung at the same bitrate is no lower rung"
+        );
+    }
+
+    /// A publisher that pauses at the boundary keeps funding the rung above it, so the player stays.
+    #[test]
+    fn a_rung_plays_down_to_its_boundary() {
+        let ranked = paused_ladder();
+        let mut bound = Bound::default();
+        let mut now = Instant::now();
+        let mut playing = "720p".to_string();
+        // Well under the 2.5 Mbit/s the fit ratio asks of 720p, above its boundary.
+        for _ in 0..100 {
+            playing = step(
+                &mut bound,
+                &ranked,
+                &playing,
+                &playing,
+                &estimate(1_020_000),
+                now,
+            );
+            now += ms(100);
+        }
+        assert_eq!(playing, "720p");
+        // Below the boundary it steps down once the sliding maximum and the
+        // hold have passed.
+        let window = Adaptation::default().estimate_window + Adaptation::default().downgrade_hold;
+        for _ in 0..=window.as_millis() / 100 + 1 {
+            playing = step(
+                &mut bound,
+                &ranked,
+                &playing,
+                &playing,
+                &estimate(950_000),
+                now,
+            );
+            now += ms(100);
+        }
+        assert_eq!(playing, "360p");
+    }
+
+    /// A step up needs the estimate clear of the boundary by the deadband the publisher resumes at.
+    #[test]
+    fn a_step_up_to_a_paused_rung_needs_the_deadband() {
+        let ranked = paused_ladder();
+        let mut bound = Bound::default();
+        let start = Instant::now();
+        let mut now = start;
+        let mut playing = "360p".to_string();
+        while now < start + Duration::from_secs(10) {
+            playing = step(
+                &mut bound,
+                &ranked,
+                &playing,
+                &playing,
+                &estimate(1_040_000),
+                now,
+            );
+            now += ms(100);
+        }
+        assert_eq!(playing, "360p", "within the deadband of 720p's boundary");
+        let clear = now;
+        while now < clear + Adaptation::default().upgrade_hold + ms(200) {
+            playing = step(
+                &mut bound,
+                &ranked,
+                &playing,
+                &playing,
+                &estimate(1_050_000),
+                now,
+            );
+            now += ms(100);
+        }
+        assert_eq!(playing, "720p");
+    }
+
+    /// Leaving a rung the publisher paused counts against it like a step down on the estimate.
+    #[test]
+    fn a_paused_rung_counts_as_a_failed_try() {
+        let mut ranked = paused_ladder();
+        let mut bound = Bound::default();
+        let now = Instant::now();
+        let plenty = estimate(100_000_000);
+        assert_eq!(
+            step(&mut bound, &ranked, "1080p", "1080p", &plenty, now),
+            "1080p"
+        );
+        ranked[0].stalled = true;
+        let left = step(
+            &mut bound,
+            &ranked,
+            "1080p",
+            "1080p",
+            &plenty,
+            now + ms(100),
+        );
+        assert_eq!(left, "720p", "a paused rung is left at once");
+        assert_eq!(bound.failed_tries.get("1080p"), Some(&1));
+        assert!(bound.upgrade_hold("1080p") > Adaptation::default().upgrade_hold);
+        // The same pause seen again while the switch lands is not a second try.
+        step(&mut bound, &ranked, &left, "1080p", &plenty, now + ms(200));
+        assert_eq!(bound.failed_tries.get("1080p"), Some(&1));
+    }
+
+    /// A marginal link that pauses the top rung whenever it plays tries it ever less often.
+    ///
+    /// The publisher resumes the rung while the player sits below it, since
+    /// the estimate then climbs unchallenged. Once the rung plays, the link
+    /// queues and the publisher pauses it again.
+    #[test]
+    fn a_rung_paused_on_every_try_backs_off() {
+        let mut ranked = vec![rung("high", 800_000), rung("low", 200_000)];
+        set_boundaries(&mut ranked);
+        let mut bound = Bound::default();
+        let start = Instant::now();
+        let mut now = start;
+        let mut playing = "high".to_string();
+        let mut switches = 0;
+        let mut played_high = Duration::ZERO;
+        while now < start + Duration::from_secs(60) {
+            // A second on `high` builds the queue that pauses it.
+            ranked[0].stalled = playing == "high" && played_high >= Duration::from_secs(1);
+            let reading = match playing.as_str() {
+                "high" => estimate(250_000),
+                _ => estimate(1_000_000),
+            };
+            let next = step(&mut bound, &ranked, &playing, &playing, &reading, now);
+            if next != playing {
+                switches += 1;
+                played_high = Duration::ZERO;
+            } else if playing == "high" {
+                played_high += ms(100);
+            }
+            playing = next;
+            now += ms(100);
+        }
+        assert!(switches <= 3, "{switches} switches in a minute");
     }
 
     fn ms(millis: u64) -> Duration {

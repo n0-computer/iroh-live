@@ -894,6 +894,10 @@ async fn a_switch_does_not_blank_the_picture() {
 
 /// A pinned switch lands while the link stays capped.
 ///
+/// Runs without rate control whatever `IROH_LIVE_PATCHBAY_RATE` says. Its
+/// premise is a link that stays saturated, and an encoder that follows the
+/// cap drains the queue instead.
+///
 /// The incumbent's groups never stop queueing on the saturated link, so the
 /// replacement's first group, its keyframe, lands only if the two
 /// subscriptions share the bytes. Each subscription is a send group in
@@ -903,7 +907,7 @@ async fn a_switch_does_not_blank_the_picture() {
 #[tokio::test]
 #[traced_test]
 async fn a_switch_lands_while_the_link_stays_capped() {
-    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let fixture = Fixture::start_with(Size::new(640, 480), ladder(), None).await;
     let mut viewer = fixture.play(2, "high").await;
     let signals = fixture.link();
 
