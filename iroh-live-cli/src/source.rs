@@ -223,7 +223,7 @@ async fn portal(
             framerate,
         )
         .await;
-        crate::portal_grant::watch(kind, selection);
+        crate::portal_grant::watch(kind, &selection);
         opened
     }
     #[cfg(not(all(target_os = "linux", feature = "pipewire")))]

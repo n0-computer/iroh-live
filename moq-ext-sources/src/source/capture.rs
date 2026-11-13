@@ -159,6 +159,25 @@ pub(super) fn falls_back(source: &video::capture::Source, err: &Error) -> bool {
     }
 }
 
+/// Returns the source to open after the PipeWire default of `source` failed.
+///
+/// moq-video opens PipeWire's camera for the default camera whenever PipeWire
+/// lists one, so retrying the default would ask PipeWire again. The fallback
+/// names the first V4L2 device, which is what the default means without
+/// PipeWire.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub(super) fn fallback(source: video::capture::Source) -> video::capture::Source {
+    use video::capture::Source;
+    match source {
+        Source::Camera(None) => Source::Camera(Some(V4L2_DEFAULT.to_string())),
+        source => source,
+    }
+}
+
+/// The V4L2 device moq-video opens for the default camera without PipeWire.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+const V4L2_DEFAULT: &str = "/dev/video0";
+
 /// Returns whether this process runs in a Wayland session.
 ///
 /// Uses the test moq-video's X11 backend applies before it refuses a display.

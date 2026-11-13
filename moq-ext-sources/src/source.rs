@@ -159,6 +159,8 @@ impl VideoSource {
             capture::settle().await;
         }
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        let mut config = config;
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if let Some(preferred) = capture::pipewire_default(&config.source) {
             let mut pipewire = config.clone();
             pipewire.source = preferred;
@@ -171,6 +173,7 @@ impl VideoSource {
                     "PipeWire did not open the default source, trying the fallback"
                 ),
             }
+            config.source = capture::fallback(config.source);
         }
         Self::capture_device(config).await
     }

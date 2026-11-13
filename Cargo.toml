@@ -33,19 +33,19 @@ iroh-gossip = "0.101.0"
 noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire" }
-moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", features = ["async"] }
-moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire" }
-moq-json = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", features = ["async"] }
+hang = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c" }
+moq-net = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", features = ["async"] }
+moq-mux = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c" }
+moq-json = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", features = ["async"] }
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
-moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", default-features = false, features = ["aac"] }
-moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", default-features = false }
-moq-auth = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", default-features = false }
-moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", default-features = false }
-moq-tokio = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire", default-features = false }
+moq-audio = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false, features = ["aac"] }
+moq-video = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+moq-auth = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+moq-relay = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
+moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c", default-features = false }
 # moq-net's poll primitives (`Waiter`, `Bridge`, `wait`), no longer re-exported.
-kio = { git = "https://github.com/Frando/moq", branch = "iroh-live-pipewire" }
+kio = { git = "https://github.com/moq-dev/moq", rev = "6aa4f9c1c" }
 
 # UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back
 # a `wgpu::Texture` from its own build of wgpu 30. A texture from a different

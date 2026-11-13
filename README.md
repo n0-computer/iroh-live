@@ -67,13 +67,8 @@ model.
 ## The moq dependency
 
 iroh-live depends on the unreleased `main` branch of
-[moq-dev/moq](https://github.com/moq-dev/moq) through git, set in the root
-`Cargo.toml`. For now it uses the `iroh-live-pipewire` branch of the
-[Frando/moq](https://github.com/Frando/moq) fork. That branch is moq's `main`
-with the PipeWire camera fixes
-([moq#8561](https://github.com/moq-dev/moq/pull/8561)) and the portal restore
-token ([moq#8562](https://github.com/moq-dev/moq/pull/8562)). It moves back to
-a rev of moq's `main` once both land. The moq crates on
+[moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
+`Cargo.toml`. The pinned rev is `6aa4f9c1c` (2026-11-13). The moq crates on
 crates.io come from moq's `release` branch, which lags `main` by weeks.
 iroh-live uses APIs that exist only on `main`. Examples are the waiter-based
 `moq_net::transport::poll` traits that `moq-transport-iroh` implements, and the

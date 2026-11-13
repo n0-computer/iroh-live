@@ -14,15 +14,11 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
-    time::Duration,
 };
 
-use iroh_live::media::video::capture::portal::{Kind, Selection};
+use iroh_live::media::video::capture::portal::{Kind, RestoreToken, Selection};
 use n0_future::task::AbortOnDropHandle;
 use tracing::{debug, warn};
-
-/// How often a watcher compares a selection's token with its file.
-const POLL: Duration = Duration::from_secs(1);
 
 /// The watcher of each source kind's last selection, by [`name`].
 static WATCHERS: LazyLock<Mutex<HashMap<&'static str, AbortOnDropHandle<()>>>> =
@@ -37,7 +33,7 @@ pub(crate) fn selection(kind: Kind) -> Selection {
     match std::fs::read_to_string(&path) {
         Ok(token) if !token.trim().is_empty() => {
             debug!(path = %path.display(), "seeding the portal with a stored grant");
-            selection.with_restore_token(token.trim())
+            selection.with_restore_token(RestoreToken::new(token.trim()))
         }
         Ok(_) => selection,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => selection,
@@ -50,21 +46,19 @@ pub(crate) fn selection(kind: Kind) -> Selection {
 
 /// Stores `selection`'s token now, and again whenever it changes.
 ///
-/// Replaces the watcher of the previous selection of the same kind, so the
-/// file follows the selection opened last.
-pub(crate) fn watch(kind: Kind, selection: Selection) {
+/// The watcher does not keep the selection alive. It stores the last token
+/// and stops once every clone is gone, which happens when the open failed or
+/// the stream has ended. It is also replaced by the watcher of the next
+/// selection of the same kind, so the file follows the selection opened last.
+pub(crate) fn watch(kind: Kind, selection: &Selection) {
     let Some(path) = path(kind) else {
         return;
     };
+    let mut tokens = selection.restore_token();
     let task = tokio::spawn(async move {
-        let mut stored: Option<Option<String>> = None;
-        loop {
-            let token = selection.restore_token();
-            if stored.as_ref() != Some(&token) {
-                store(&path, token.as_deref());
-                stored = Some(token);
-            }
-            tokio::time::sleep(POLL).await;
+        store(&path, tokens.token().as_ref());
+        while let Some(token) = tokens.changed().await {
+            store(&path, token.as_ref());
         }
     });
     WATCHERS
@@ -75,9 +69,9 @@ pub(crate) fn watch(kind: Kind, selection: Selection) {
 
 /// Writes `token` to `path`, readable only by this user, or deletes the file
 /// for no token.
-fn store(path: &Path, token: Option<&str>) {
+fn store(path: &Path, token: Option<&RestoreToken>) {
     let result = match token {
-        Some(token) => write_private(path, token),
+        Some(token) => write_private(path, token.as_str()),
         None => match std::fs::remove_file(path) {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             result => result,
@@ -134,7 +128,7 @@ mod tests {
     fn store_writes_a_private_file_and_deletes_it_for_no_token() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("portal").join("screen.token");
-        store(&path, Some("grant"));
+        store(&path, Some(&RestoreToken::new("grant")));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "grant");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
