@@ -58,14 +58,25 @@ struct Entry {
     deadline: Option<Instant>,
     /// When the session's authorization lapses.
     expires: Option<Instant>,
-    /// Whether a decision for the session runs.
-    running: bool,
-    /// Whether the session waits in the queue.
-    queued: bool,
-    /// Whether a trigger arrived while a decision ran, so it runs again.
-    wanted: bool,
+    /// Where the session's next decision stands.
+    phase: Phase,
     /// How many decisions in a row ended without a decision.
     failures: u32,
+}
+
+/// Where a session's next decision stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    /// No decision runs or waits.
+    #[default]
+    Idle,
+    /// The session waits in the queue for a free slot.
+    Queued,
+    /// A decision runs.
+    Running {
+        /// Whether a trigger arrived meanwhile, so another decision follows.
+        again: bool,
+    },
 }
 
 /// Returns when `authorization` needs a new decision, if ever.
@@ -131,13 +142,13 @@ impl Reauth {
         let Some(entry) = self.sessions.get_mut(link) else {
             return false;
         };
-        if entry.running {
-            entry.wanted = true;
-            return true;
-        }
-        if !entry.queued {
-            entry.queued = true;
-            self.queue.push_back(*link);
+        match &mut entry.phase {
+            Phase::Running { again } => *again = true,
+            Phase::Queued => {}
+            Phase::Idle => {
+                entry.phase = Phase::Queued;
+                self.queue.push_back(*link);
+            }
         }
         true
     }
@@ -192,9 +203,7 @@ impl Reauth {
             let Some(entry) = self.sessions.get_mut(&link) else {
                 continue;
             };
-            entry.queued = false;
-            entry.wanted = false;
-            entry.running = true;
+            entry.phase = Phase::Running { again: false };
             self.running += 1;
             return Some(link);
         }
@@ -209,10 +218,13 @@ impl Reauth {
         let Some(entry) = self.sessions.get_mut(link) else {
             return false;
         };
-        entry.running = false;
-        if std::mem::take(&mut entry.wanted) && !entry.queued {
-            entry.queued = true;
-            self.queue.push_back(*link);
+        match entry.phase {
+            Phase::Running { again: true } => {
+                entry.phase = Phase::Queued;
+                self.queue.push_back(*link);
+            }
+            Phase::Running { again: false } => entry.phase = Phase::Idle,
+            Phase::Idle | Phase::Queued => {}
         }
         true
     }

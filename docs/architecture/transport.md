@@ -75,14 +75,15 @@ table, and returns a `Publication` whose `broadcast()` is the
 `broadcast::Producer` to fill. moq-net creates every broadcast inside an
 origin, and the route table is the only one: peers read the broadcast itself,
 with nothing copied in between. `Node::publish_with` fills the broadcast before
-it is announced, so no reader finds it without its first tracks. The fill
-runs before the node takes its lock, so it may fail or call back into the
-node without harm. `LiveLayout::publish` builds a `LocalBroadcast` in it this
-way. `Node::publish_value` uses it to publish one latest-value JSON track, and
-`Subscription::value_track` reads such a track. A publication stays until `unpublish`, until its broadcast closes, or until the
-node shuts down. Dropping its handles does not withdraw it, so a publication
-that belongs to a task goes through `Publication::unpublish_on_drop`, whose
-guard unpublishes it when the task ends or is aborted.
+it is announced, so no reader finds it without its first tracks. The fill runs
+before the node takes its lock, so it may fail or call back into the node
+without harm. `LiveLayout::publish` builds a `LocalBroadcast` in it this way.
+`Node::publish_value` uses it to publish one latest-value JSON track, and
+`Subscription::value_track` reads such a track. A publication stays until
+`unpublish`, until its broadcast closes, or until the node shuts down. Dropping
+its handles does not withdraw it, so a publication that belongs to a task goes
+through `Publication::unpublish_on_drop`, whose guard unpublishes it when the
+task ends or is aborted.
 
 Who sees a publication is moq's per-session authorization
 (`moq_net::auth::Handle::authorize`), which every session enforces locally, on
@@ -150,9 +151,10 @@ switch to another QUIC path bumps `path_generation` and starts the history
 over. `Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
 `sample`) of whichever link serves the subscription. `iroh-live/src/network.rs`
 hands the sample to the player and makes its path generation count changes of
-the serving link too. The monitor logs every sample at TRACE as `link sample`. The node keeps no list of paths of its own:
-`Session::connection()` is the iroh connection, and its `paths()` and
-`paths_stream()` give each path's remote address, selection and RTT.
+the serving link too. The monitor logs every sample at TRACE as `link sample`.
+The node keeps no list of paths of its own: `Session::connection()` is the iroh
+connection, and its `paths()` and `paths_stream()` give each path's remote
+address, selection and RTT.
 
 ## Relay links
 

@@ -51,10 +51,11 @@
 //! an audience loses the path at once, and what it read there ends with
 //! [`moq_net::Error::Unauthorized`].
 //!
-//! A [`policy`] decides who may hold a session and with which grant, on
-//! accept and on dial (see [`NodeConfig::policy`]). The node asks it again
-//! when an authorization expires, and on [`Node::reauthorize`]. [`Grant::publish_under`] lets a peer publish only
-//! at paths that name it, so it cannot stand in for another peer.
+//! A [`policy`] decides who may hold a session and with which grant, on accept
+//! and on dial (see [`NodeConfig::policy`]). The node asks it again when an
+//! authorization expires, and on [`Node::reauthorize`].
+//! [`Grant::publish_under`] lets a peer publish only at paths that name it, so
+//! it cannot stand in for another peer.
 //!
 //! [`Node::subscribe_ticket`] claims a [`BroadcastTicket`]'s path for its peer
 //! with [`Node::claim_path`], which widens the peer's grant to exactly that

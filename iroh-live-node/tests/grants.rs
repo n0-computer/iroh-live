@@ -25,7 +25,9 @@ async fn viewer() -> Peer {
     Peer::bare(NodeConfig::default()).await
 }
 
-/// Returns a node whose policy grants what `current` holds, or [`common::own_paths`] while it holds `None`.
+/// Returns a node whose policy grants what `current` holds.
+///
+/// While `current` holds `None`, the policy grants [`common::own_paths`].
 async fn switchable(current: Arc<Mutex<Option<Grant>>>) -> Peer {
     let policy = policy::from_fn(move |request: &PeerRequest| {
         let grant = current.lock().expect("poisoned").clone();

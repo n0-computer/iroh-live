@@ -40,10 +40,11 @@ pub struct ConnectOptions {
     /// iroh's options for the QUIC dial.
     ///
     /// Set a transport config here to dial with another
-    /// [`Congestion`](crate::Congestion) controller. The default keeps the endpoint's transport config, which runs BBR3
-    /// under [`MoqPreset`](crate::MoqPreset). It applies to a direct dial
-    /// only: a session that already exists keeps its connection, so close it
-    /// first to dial again with other options. A relay link ignores it.
+    /// [`Congestion`](crate::Congestion) controller. The default keeps the
+    /// endpoint's transport config, which runs BBR3 under
+    /// [`MoqPreset`](crate::MoqPreset). It applies to a direct dial only: a
+    /// session that already exists keeps its connection, so close it first to
+    /// dial again with other options. A relay link ignores it.
     pub quic: iroh::endpoint::ConnectOptions,
 }
 

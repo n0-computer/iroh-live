@@ -187,7 +187,10 @@ async fn a_path_holds_one_publication_until_its_broadcast_ends() {
     alice.shutdown().await;
 }
 
-/// A fill runs outside the node's lock: it may call back into the node, and a failed or refused one leaves nothing behind.
+/// A fill runs outside the node's lock.
+///
+/// It may call back into the node, and a failed or refused one leaves nothing
+/// behind.
 #[tokio::test]
 #[traced_test]
 async fn a_fill_runs_outside_the_nodes_lock() {

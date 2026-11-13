@@ -327,7 +327,9 @@ impl Node {
         self.shared.reauth_notify.notify_one();
     }
 
-    /// Asks the policy again about every live session, as [`reauthorize`](Self::reauthorize) does for one peer.
+    /// Asks the policy again about every live session.
+    ///
+    /// It does for every peer what [`reauthorize`](Self::reauthorize) does for one.
     pub fn reauthorize_all(&self) {
         self.shared.state.lock().expect("poisoned").reauthorized += 1;
         self.shared.reauth_requests.lock().expect("poisoned").all = true;

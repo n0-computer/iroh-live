@@ -41,7 +41,7 @@ async fn closed_resolves_when_the_last_handle_drops() {
 
 #[tokio::test]
 #[traced_test]
-async fn grant_for_reports_the_policy_authorization_of_a_live_peer() {
+async fn authorization_for_reports_the_policy_authorization_of_a_live_peer() {
     let alice =
         Peer::bare(NodeConfig::default().with_policy(policy::Open(Grant::everything()))).await;
     assert_eq!(alice.node.id(), alice.id());

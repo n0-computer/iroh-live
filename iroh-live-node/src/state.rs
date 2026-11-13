@@ -301,7 +301,9 @@ impl State {
         }
     }
 
-    /// Takes the rights of the session on link `id`, whose authorization expired, until a new decision applies.
+    /// Takes the rights of the session on link `id`, whose authorization expired.
+    ///
+    /// The session has no rights until a new decision applies.
     pub(crate) fn lapse(&mut self, id: LinkId) {
         if let Some(LinkEntry {
             role:
@@ -328,7 +330,9 @@ impl State {
             .map(|authorized| &authorized.authorization)
     }
 
-    /// Returns what the session on link `id` may do: its authorization's grant and its peer's claimed paths.
+    /// Returns what the session on link `id` may do.
+    ///
+    /// That is its authorization's grant and its peer's claimed paths.
     ///
     /// A lapsed or missing authorization grants nothing.
     pub(crate) fn session_grant(&self, id: LinkId) -> Grant {

@@ -469,8 +469,10 @@ struct RawSession {
     _driver: n0_future::task::AbortOnDropHandle<()>,
 }
 
-/// Dials `peer` from `endpoint` outside any node, publishing `publisher` and
-/// writing what the peer announces to `subscriber`.
+/// Dials `peer` from `endpoint` outside any node.
+///
+/// The session publishes `publisher` and writes what the peer announces to
+/// `subscriber`.
 async fn dial(
     endpoint: &iroh::Endpoint,
     peer: iroh::EndpointAddr,
