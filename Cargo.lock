@@ -3127,6 +3127,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gles-yuv"
+version = "0.1.0"
+dependencies = [
+ "glow 0.18.0",
+ "n0-error",
+]
+
+[[package]]
 name = "glifo"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4362,6 +4370,7 @@ name = "iroh-live-android"
 version = "0.1.0"
 dependencies = [
  "derive_more",
+ "gles-yuv",
  "glow 0.18.0",
  "iroh",
  "iroh-live",
@@ -7525,6 +7534,7 @@ dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
  "gbm",
+ "gles-yuv",
  "glow 0.18.0",
  "glutin",
  "glutin-winit",

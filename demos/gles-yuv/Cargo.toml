@@ -1,0 +1,16 @@
+[package]
+name = "gles-yuv"
+version = "0.1.0"
+edition = "2024"
+description = "GLES2 shader, texture and draw helpers shared by the Pi Zero and Android players"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+glow = "0.18"
+n0-error = "1.0.3"
+
+[lints]
+workspace = true

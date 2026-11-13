@@ -4,9 +4,10 @@
 
 use std::ffi::c_void;
 
+use gles_yuv::Program;
 use glow::HasContext;
 use khronos_egl as egl_api;
-use n0_error::{Result, StdResultExt, anyerr, bail_any};
+use n0_error::{Result, StdResultExt};
 use tracing::{debug, info, warn};
 
 use crate::egl::{self, Egl, Extensions};
@@ -19,23 +20,10 @@ const EGL_IMAGE_PRESERVED_KHR: i32 = 0x30D2;
 const EGL_TRUE: i32 = 1;
 const EGL_NONE: i32 = 0x3038;
 
-/// Vertex shader for both programs: a fullscreen triangle with flipped texture rows.
-const VERT_SRC: &str = "\
-#version 100
-attribute vec2 a_pos;
-varying vec2 v_uv;
-void main() {
-    gl_Position = vec4(a_pos * 2.0 - 1.0, 0.0, 1.0);
-    v_uv = vec2(a_pos.x, 1.0 - a_pos.y);
-}";
-
-/// Fragment shader for `AHardwareBuffer` frames, rotated by `u_rotation` degrees clockwise.
-const OES_FRAG_SRC: &str = "\
-#extension GL_OES_EGL_image_external : require
-precision mediump float;
-varying vec2 v_uv;
-uniform samplerExternalOES u_tex;
-uniform int u_rotation;
+/// The start of `main` in both fragment shaders, which rotates `v_uv` into `uv`.
+///
+/// The rotation is `u_rotation` degrees clockwise.
+const ROTATE: &str = "\
 void main() {
     vec2 uv = v_uv;
     if (u_rotation == 90) {
@@ -45,37 +33,36 @@ void main() {
     } else if (u_rotation == 270) {
         uv = vec2(1.0 - v_uv.y, v_uv.x);
     }
-    gl_FragColor = texture2D(u_tex, uv);
+";
+
+/// Declarations of the fragment shader for `AHardwareBuffer` frames.
+const OES_FRAG_HEAD: &str = "\
+#extension GL_OES_EGL_image_external : require
+precision mediump float;
+varying vec2 v_uv;
+uniform samplerExternalOES u_tex;
+uniform int u_rotation;
+";
+
+/// The end of the fragment shader for `AHardwareBuffer` frames.
+const OES_FRAG_TAIL: &str = "    gl_FragColor = texture2D(u_tex, uv);
 }";
 
-/// Fragment shader that converts BT.601 limited-range NV12 to RGB, rotated like the OES one.
-const NV12_FRAG_SRC: &str = "\
+/// Declarations of the fragment shader that converts NV12 to RGB.
+const NV12_FRAG_HEAD: &str = "\
 #version 100
 precision mediump float;
 varying vec2 v_uv;
 uniform sampler2D u_y_tex;
 uniform sampler2D u_uv_tex;
 uniform int u_rotation;
-void main() {
-    vec2 uv = v_uv;
-    if (u_rotation == 90) {
-        uv = vec2(v_uv.y, 1.0 - v_uv.x);
-    } else if (u_rotation == 180) {
-        uv = vec2(1.0 - v_uv.x, 1.0 - v_uv.y);
-    } else if (u_rotation == 270) {
-        uv = vec2(1.0 - v_uv.y, v_uv.x);
-    }
-    float y_raw = texture2D(u_y_tex, uv).r;
+";
+
+/// The plane reads of the NV12 fragment shader.
+const NV12_READS: &str = "    float y_raw = texture2D(u_y_tex, uv).r;
     float u_raw = texture2D(u_uv_tex, uv).r;
     float v_raw = texture2D(u_uv_tex, uv).a;
-    float y = (y_raw - 16.0 / 255.0) * (255.0 / 219.0);
-    float u = (u_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
-    float v = (v_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
-    float r = y + 1.402 * v;
-    float g = y - 0.344136 * u - 0.714136 * v;
-    float b = y + 1.772 * u;
-    gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
-}";
+";
 
 /// Video renderer for one Android window.
 ///
@@ -92,14 +79,12 @@ pub(crate) struct AndroidRenderer {
     egl_display: egl_api::Display,
     egl_context: egl_api::Context,
     egl_surface: egl_api::Surface,
-    oes_program: glow::Program,
+    oes_program: Program,
     oes_texture: glow::Texture,
-    oes_a_pos_loc: u32,
     oes_rotation_loc: Option<glow::UniformLocation>,
-    nv12_program: glow::Program,
+    nv12_program: Program,
     nv12_y_texture: glow::Texture,
     nv12_uv_texture: glow::Texture,
-    nv12_a_pos_loc: u32,
     nv12_rotation_loc: Option<glow::UniformLocation>,
     vbo: glow::Buffer,
 }
@@ -190,53 +175,28 @@ impl AndroidRenderer {
         let gl = unsafe { egl::create_glow_context(&egl) };
         let extensions = Extensions::load(&egl);
 
-        // Both programs share the vertex shader.
-        let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
-
-        let oes_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, OES_FRAG_SRC)?;
-        let oes_program = link_program(&gl, vs, oes_fs)?;
-        unsafe { gl.delete_shader(oes_fs) };
-        let oes_a_pos_loc = unsafe { gl.get_attrib_location(oes_program, "a_pos") }
-            .std_context("a_pos not found in OES program")?;
-        let oes_rotation_loc = unsafe { gl.get_uniform_location(oes_program, "u_rotation") };
-
-        let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, NV12_FRAG_SRC)?;
-        let nv12_program = link_program(&gl, vs, nv12_fs)?;
-        unsafe {
-            gl.delete_shader(nv12_fs);
-            gl.delete_shader(vs);
-        }
-        let nv12_a_pos_loc = unsafe { gl.get_attrib_location(nv12_program, "a_pos") }
-            .std_context("a_pos not found in NV12 program")?;
-        let nv12_rotation_loc = unsafe { gl.get_uniform_location(nv12_program, "u_rotation") };
+        let oes = [OES_FRAG_HEAD, ROTATE, OES_FRAG_TAIL].concat();
+        let nv12 = [NV12_FRAG_HEAD, ROTATE, NV12_READS, gles_yuv::YUV_TO_RGB].concat();
+        // SAFETY: As above, for every GL call in the rest of this function.
+        let [oes_program, nv12_program] =
+            unsafe { gles_yuv::programs(&gl, [oes.as_str(), nv12.as_str()])? };
+        let oes_rotation_loc =
+            unsafe { gl.get_uniform_location(oes_program.program, "u_rotation") };
+        let nv12_rotation_loc =
+            unsafe { gl.get_uniform_location(nv12_program.program, "u_rotation") };
         // The Y plane goes on texture unit 0 and the UV plane on unit 1.
-        unsafe { gl.use_program(Some(nv12_program)) };
-        if let Some(loc) = unsafe { gl.get_uniform_location(nv12_program, "u_y_tex") } {
-            unsafe { gl.uniform_1_i32(Some(&loc), 0) };
-        }
-        if let Some(loc) = unsafe { gl.get_uniform_location(nv12_program, "u_uv_tex") } {
-            unsafe { gl.uniform_1_i32(Some(&loc), 1) };
-        }
-
-        let oes_texture = create_tex(&gl, GL_TEXTURE_EXTERNAL_OES)?;
-        let nv12_y_texture = create_tex(&gl, glow::TEXTURE_2D)?;
-        let nv12_uv_texture = create_tex(&gl, glow::TEXTURE_2D)?;
-
-        // One oversized triangle covers the whole viewport.
-        let vertices: [f32; 6] = [0.0, 0.0, 2.0, 0.0, 0.0, 2.0];
-        // SAFETY: The slice covers exactly the bytes of `vertices`, which
-        // outlives it, and `u8` has no alignment requirement.
-        let vert_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                vertices.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let vbo = unsafe { gl.create_buffer() }.map_err(|e| anyerr!(e))?;
         unsafe {
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vert_bytes, glow::STATIC_DRAW);
+            gles_yuv::bind_samplers(
+                &gl,
+                nv12_program.program,
+                &[("u_y_tex", 0), ("u_uv_tex", 1)],
+            );
         }
+
+        let oes_texture = unsafe { gles_yuv::texture(&gl, GL_TEXTURE_EXTERNAL_OES)? };
+        let nv12_y_texture = unsafe { gles_yuv::texture(&gl, glow::TEXTURE_2D)? };
+        let nv12_uv_texture = unsafe { gles_yuv::texture(&gl, glow::TEXTURE_2D)? };
+        let vbo = unsafe { gles_yuv::triangle(&gl)? };
 
         unsafe {
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
@@ -259,12 +219,10 @@ impl AndroidRenderer {
             egl_surface,
             oes_program,
             oes_texture,
-            oes_a_pos_loc,
             oes_rotation_loc,
             nv12_program,
             nv12_y_texture,
             nv12_uv_texture,
-            nv12_a_pos_loc,
             nv12_rotation_loc,
             vbo,
         })
@@ -323,7 +281,6 @@ impl AndroidRenderer {
             extensions.image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
             self.draw(
                 self.oes_program,
-                self.oes_a_pos_loc,
                 self.oes_rotation_loc.as_ref(),
                 (surface_w, surface_h),
                 (video_w, video_h),
@@ -439,7 +396,6 @@ impl AndroidRenderer {
         unsafe {
             self.draw(
                 self.nv12_program,
-                self.nv12_a_pos_loc,
                 self.nv12_rotation_loc.as_ref(),
                 (surface_w, surface_h),
                 (width, height),
@@ -455,8 +411,7 @@ impl AndroidRenderer {
     /// The EGL context must be current on the calling thread.
     unsafe fn draw(
         &self,
-        program: glow::Program,
-        a_pos_loc: u32,
+        program: Program,
         rotation_loc: Option<&glow::UniformLocation>,
         (surface_w, surface_h): (i32, i32),
         (video_w, video_h): (u32, u32),
@@ -473,16 +428,11 @@ impl AndroidRenderer {
             self.gl.viewport(0, 0, surface_w, surface_h);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
             self.gl.viewport(vp_x, vp_y, vp_w, vp_h);
-            self.gl.use_program(Some(program));
+            self.gl.use_program(Some(program.program));
             if let Some(loc) = rotation_loc {
                 self.gl.uniform_1_i32(Some(loc), rotation_degrees as i32);
             }
-            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            self.gl
-                .vertex_attrib_pointer_f32(a_pos_loc, 2, glow::FLOAT, false, 0, 0);
-            self.gl.enable_vertex_attrib_array(a_pos_loc);
-            self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            self.gl.disable_vertex_attrib_array(a_pos_loc);
+            gles_yuv::draw(&self.gl, self.vbo, program.a_pos);
         }
     }
 
@@ -529,23 +479,6 @@ impl AndroidRenderer {
     }
 }
 
-/// Creates a texture with linear filtering and edge clamping.
-///
-/// The EGL context behind `gl` must be current on the calling thread.
-fn create_tex(gl: &glow::Context, target: u32) -> Result<glow::Texture> {
-    // SAFETY: Only `AndroidRenderer::new` calls this, with its context current.
-    let texture = unsafe { gl.create_texture() }.map_err(|e| anyerr!(e))?;
-    // SAFETY: As above.
-    unsafe {
-        gl.bind_texture(target, Some(texture));
-        gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(target, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(target, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(target, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
-    }
-    Ok(texture)
-}
-
 /// Returns the centered `(x, y, w, h)` viewport that keeps the video's aspect ratio.
 fn letterbox_viewport(
     surface_width: i32,
@@ -584,41 +517,4 @@ fn strip_stride(data: &[u8], row_bytes: usize, stride: usize, rows: usize) -> Ve
         }
     }
     out
-}
-
-/// Compiles one shader of `kind` from `source`.
-///
-/// The EGL context behind `gl` must be current on the calling thread. The GL
-/// calls below rely on that, since only `AndroidRenderer::new` calls this.
-fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
-    // SAFETY: A current context, as above, for every call in this function.
-    let shader = unsafe { gl.create_shader(kind) }.map_err(|e| anyerr!(e))?;
-    unsafe { gl.shader_source(shader, source) };
-    unsafe { gl.compile_shader(shader) };
-    if !unsafe { gl.get_shader_compile_status(shader) } {
-        let log = unsafe { gl.get_shader_info_log(shader) };
-        unsafe { gl.delete_shader(shader) };
-        bail_any!("shader compile: {log}");
-    }
-    Ok(shader)
-}
-
-/// Links a program from the vertex shader `vs` and the fragment shader `fs`.
-///
-/// The EGL context behind `gl` must be current on the calling thread, as for
-/// [`compile_shader`].
-fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> Result<glow::Program> {
-    // SAFETY: A current context, as above, for every call in this function.
-    let program = unsafe { gl.create_program() }.map_err(|e| anyerr!(e))?;
-    unsafe {
-        gl.attach_shader(program, vs);
-        gl.attach_shader(program, fs);
-        gl.link_program(program);
-    }
-    if !unsafe { gl.get_program_link_status(program) } {
-        let log = unsafe { gl.get_program_info_log(program) };
-        unsafe { gl.delete_program(program) };
-        bail_any!("shader link: {log}");
-    }
-    Ok(program)
 }

@@ -6,19 +6,11 @@
 //! decoding. Other surfaces go up as one RGBA texture. The renderer works with
 //! any EGL/GLES2 context.
 
+use gles_yuv::Program;
 use glow::HasContext;
 use iroh_live::media::video::{Frame, Surface};
-use n0_error::{Result, StdResultExt as _, anyerr, bail_any};
+use n0_error::Result;
 use tracing::warn;
-
-const VERT_SRC: &str = "\
-#version 100
-attribute vec2 a_pos;
-varying vec2 v_uv;
-void main() {
-    gl_Position = vec4(a_pos * 2.0 - 1.0, 0.0, 1.0);
-    v_uv = vec2(a_pos.x, 1.0 - a_pos.y);
-}";
 
 const RGBA_FRAG_SRC: &str = "\
 #version 100
@@ -29,11 +21,11 @@ void main() {
     gl_FragColor = texture2D(u_tex, v_uv);
 }";
 
-/// BT.601 limited-range I420 to RGBA conversion.
+/// The reads of an I420 fragment shader, which [`gles_yuv::YUV_TO_RGB`] completes.
 ///
 /// Each plane is a `LUMINANCE` texture, so every read uses `.r`. Bilinear
 /// filtering upsamples the half-size chroma planes.
-const I420_FRAG_SRC: &str = "\
+const I420_FRAG_HEAD: &str = "\
 #version 100
 precision mediump float;
 varying vec2 v_uv;
@@ -44,14 +36,7 @@ void main() {
     float y_raw = texture2D(u_y_tex, v_uv).r;
     float u_raw = texture2D(u_u_tex, v_uv).r;
     float v_raw = texture2D(u_v_tex, v_uv).r;
-    float y = (y_raw - 16.0 / 255.0) * (255.0 / 219.0);
-    float u = (u_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
-    float v = (v_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
-    float r = y + 1.402 * v;
-    float g = y - 0.344136 * u - 0.714136 * v;
-    float b = y + 1.772 * u;
-    gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
-}";
+";
 
 /// The upload path of the last frame, which decides the program `draw` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,21 +60,11 @@ impl PlaneTexture {
     ///
     /// The GL context of `gl` must be current on the calling thread.
     unsafe fn new(gl: &glow::Context) -> Result<Self> {
-        // SAFETY: the caller keeps the context current.
-        unsafe {
-            let texture = gl.create_texture().map_err(|e| anyerr!(e))?;
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            for param in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::LINEAR as i32);
-            }
-            for param in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, param, glow::CLAMP_TO_EDGE as i32);
-            }
-            Ok(Self {
-                texture,
-                size: (0, 0),
-            })
-        }
+        Ok(Self {
+            // SAFETY: the caller keeps the context current.
+            texture: unsafe { gles_yuv::texture(gl, glow::TEXTURE_2D)? },
+            size: (0, 0),
+        })
     }
 
     /// Uploads `data` of `format`, reallocating the texture only when its size changes.
@@ -142,60 +117,13 @@ pub(crate) struct GlesRenderer {
     gl: glow::Context,
     /// The fullscreen triangle both programs draw.
     vbo: glow::Buffer,
-    rgba_program: glow::Program,
-    rgba_a_pos: u32,
+    rgba_program: Program,
     rgba: PlaneTexture,
-    i420_program: glow::Program,
-    i420_a_pos: u32,
+    i420_program: Program,
     y: PlaneTexture,
     u: PlaneTexture,
     v: PlaneTexture,
     active: ActiveMode,
-}
-
-/// Compiles a shader of `kind` from `source`.
-///
-/// # Safety
-///
-/// The GL context of `gl` must be current on the calling thread.
-unsafe fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
-    // SAFETY: the caller keeps the context current.
-    unsafe {
-        let shader = gl.create_shader(kind).map_err(|e| anyerr!(e))?;
-        gl.shader_source(shader, source);
-        gl.compile_shader(shader);
-        if !gl.get_shader_compile_status(shader) {
-            let log = gl.get_shader_info_log(shader);
-            gl.delete_shader(shader);
-            bail_any!("shader compile: {log}");
-        }
-        Ok(shader)
-    }
-}
-
-/// Links the vertex shader `vs` and the fragment shader `fs` into a program.
-///
-/// # Safety
-///
-/// The GL context of `gl` must be current on the calling thread.
-unsafe fn link_program(
-    gl: &glow::Context,
-    vs: glow::Shader,
-    fs: glow::Shader,
-) -> Result<glow::Program> {
-    // SAFETY: the caller keeps the context current.
-    unsafe {
-        let program = gl.create_program().map_err(|e| anyerr!(e))?;
-        gl.attach_shader(program, vs);
-        gl.attach_shader(program, fs);
-        gl.link_program(program);
-        if !gl.get_program_link_status(program) {
-            let log = gl.get_program_info_log(program);
-            gl.delete_program(program);
-            bail_any!("shader link: {log}");
-        }
-        Ok(program)
-    }
 }
 
 impl GlesRenderer {
@@ -205,41 +133,18 @@ impl GlesRenderer {
     ///
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn new(gl: glow::Context) -> Result<Self> {
-        // The fullscreen triangle, in the [0, 2] square the vertex shader maps
-        // to clip space.
-        let vertices: Vec<u8> = [0.0f32, 0.0, 2.0, 0.0, 0.0, 2.0]
-            .iter()
-            .flat_map(|coordinate| coordinate.to_ne_bytes())
-            .collect();
+        let i420 = [I420_FRAG_HEAD, gles_yuv::YUV_TO_RGB].concat();
         // SAFETY: the caller keeps the context current.
         unsafe {
-            let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
-            let rgba_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, RGBA_FRAG_SRC)?;
-            let rgba_program = link_program(&gl, vs, rgba_fs)?;
-            gl.delete_shader(rgba_fs);
-            let rgba_a_pos = gl
-                .get_attrib_location(rgba_program, "a_pos")
-                .std_context("a_pos not found in RGBA program")?;
-
-            let i420_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, I420_FRAG_SRC)?;
-            let i420_program = link_program(&gl, vs, i420_fs)?;
-            gl.delete_shader(i420_fs);
-            gl.delete_shader(vs);
-            let i420_a_pos = gl
-                .get_attrib_location(i420_program, "a_pos")
-                .std_context("a_pos not found in I420 program")?;
-
+            let [rgba_program, i420_program] =
+                gles_yuv::programs(&gl, [RGBA_FRAG_SRC, i420.as_str()])?;
             // The Y, U and V samplers read texture units 0, 1 and 2.
-            gl.use_program(Some(i420_program));
-            for (name, unit) in [("u_y_tex", 0), ("u_u_tex", 1), ("u_v_tex", 2)] {
-                if let Some(location) = gl.get_uniform_location(i420_program, name) {
-                    gl.uniform_1_i32(Some(&location), unit);
-                }
-            }
-
-            let vbo = gl.create_buffer().map_err(|e| anyerr!(e))?;
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &vertices, glow::STATIC_DRAW);
+            gles_yuv::bind_samplers(
+                &gl,
+                i420_program.program,
+                &[("u_y_tex", 0), ("u_u_tex", 1), ("u_v_tex", 2)],
+            );
+            let vbo = gles_yuv::triangle(&gl)?;
 
             // The I420 planes are packed rows. GL's default alignment of 4 would
             // read past a row whose length is not a multiple of 4.
@@ -253,9 +158,7 @@ impl GlesRenderer {
                 gl,
                 vbo,
                 rgba_program,
-                rgba_a_pos,
                 i420_program,
-                i420_a_pos,
                 active: ActiveMode::Rgba,
             })
         }
@@ -330,25 +233,19 @@ impl GlesRenderer {
     /// The GL context must be current on the calling thread.
     pub(crate) unsafe fn draw(&self, vp_w: i32, vp_h: i32) {
         let gl = &self.gl;
-        let a_pos = match self.active {
-            ActiveMode::Rgba => self.rgba_a_pos,
-            ActiveMode::I420 => self.i420_a_pos,
-        };
         // SAFETY: the caller keeps the context current, and every object bound
         // here was created on it in `new`.
         unsafe {
             gl.viewport(0, 0, vp_w, vp_h);
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            match self.active {
+            let program = match self.active {
                 ActiveMode::Rgba => {
-                    gl.use_program(Some(self.rgba_program));
                     gl.active_texture(glow::TEXTURE0);
                     gl.bind_texture(glow::TEXTURE_2D, Some(self.rgba.texture));
+                    self.rgba_program
                 }
                 ActiveMode::I420 => {
-                    gl.use_program(Some(self.i420_program));
                     for (unit, plane) in [
                         (glow::TEXTURE0, &self.y),
                         (glow::TEXTURE1, &self.u),
@@ -357,12 +254,11 @@ impl GlesRenderer {
                         gl.active_texture(unit);
                         gl.bind_texture(glow::TEXTURE_2D, Some(plane.texture));
                     }
+                    self.i420_program
                 }
-            }
-            gl.vertex_attrib_pointer_f32(a_pos, 2, glow::FLOAT, false, 0, 0);
-            gl.enable_vertex_attrib_array(a_pos);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            gl.disable_vertex_attrib_array(a_pos);
+            };
+            gl.use_program(Some(program.program));
+            gles_yuv::draw(gl, self.vbo, program.a_pos);
         }
     }
 }
@@ -375,8 +271,8 @@ impl Drop for GlesRenderer {
             for plane in [&self.rgba, &self.y, &self.u, &self.v] {
                 self.gl.delete_texture(plane.texture);
             }
-            self.gl.delete_program(self.rgba_program);
-            self.gl.delete_program(self.i420_program);
+            self.gl.delete_program(self.rgba_program.program);
+            self.gl.delete_program(self.i420_program.program);
             self.gl.delete_buffer(self.vbo);
         }
     }

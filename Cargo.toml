@@ -13,6 +13,7 @@ members = [
     "moq-ext-sources",
     "moq-ext-egui",
     "demos/android/rust",
+    "demos/gles-yuv",
     "demos/pi-zero",
 ]
 resolver = "2"
