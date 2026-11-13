@@ -58,13 +58,12 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / FRAMERATE as u64);
 ///
 /// The thresholds stay at their defaults, because they are what the tests check.
 fn quick() -> Adaptation {
-    Adaptation {
-        downgrade_hold: Duration::from_millis(300),
-        upgrade_hold: Duration::from_millis(500),
-        post_downgrade_cooldown: Duration::from_secs(1),
-        tick: Duration::from_millis(100),
-        ..Adaptation::default()
-    }
+    let mut adaptation = Adaptation::default();
+    adaptation.downgrade_hold = Duration::from_millis(300);
+    adaptation.upgrade_hold = Duration::from_millis(500);
+    adaptation.post_downgrade_cooldown = Duration::from_secs(1);
+    adaptation.tick = Duration::from_millis(100);
+    adaptation
 }
 
 /// Distinct round trip readings a queue has to show before a test counts it.
@@ -249,11 +248,11 @@ impl Fixture {
         .expect("the broadcast is alive");
 
         let player = broadcast
-            .play(PlayerConfig {
-                rendition: mode,
-                adaptation,
-                ..PlayerConfig::default()
-            })
+            .play(
+                PlayerConfig::default()
+                    .with_rendition(mode)
+                    .with_adaptation(adaptation),
+            )
             .expect("failed to play");
         let frames = player.video_frames();
         Viewer { player, frames }
@@ -454,10 +453,8 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
 
 /// Returns a rendition named `name` at `size`, or the source's, and `bitrate`.
 fn rendition(name: &str, size: Option<Size>, bitrate: Rate) -> VideoRendition {
-    let mut rendition = VideoRendition {
-        size,
-        ..VideoRendition::new(name)
-    };
+    let mut rendition = VideoRendition::new(name);
+    rendition.size = size;
     rendition.config.bitrate = Some(bitrate);
     rendition
 }

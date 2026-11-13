@@ -55,10 +55,7 @@ async fn main() -> n0_error::Result {
     let encoding = if args.simulcast {
         VideoEncoding::ladder([
             VideoRendition::new("high"),
-            VideoRendition {
-                size: Some(video::Size::new(320, 180)),
-                ..VideoRendition::new("low")
-            },
+            VideoRendition::new("low").with_size(video::Size::new(320, 180)),
         ])
     } else {
         VideoEncoding::single(VideoRendition::new("video"))

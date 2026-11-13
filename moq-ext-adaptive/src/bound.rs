@@ -41,12 +41,21 @@ pub struct Rung {
 
 /// What the caller rules out, whatever the network says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Constraints {
     /// Renditions whose decoders recently failed.
     pub excluded: BTreeSet<String>,
 }
 
 impl Constraints {
+    /// Returns the constraints that rule out the renditions named in `excluded`.
+    #[must_use]
+    pub fn excluding(excluded: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            excluded: excluded.into_iter().collect(),
+        }
+    }
+
     /// Reports whether `rung` is neither stalled nor excluded.
     #[must_use]
     pub fn allows(&self, rung: &Rung) -> bool {
@@ -58,6 +67,7 @@ impl Constraints {
 ///
 /// The defaults are tuned together on real and simulated links.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Adaptation {
     /// The multiple of a rung's advertised bitrate the estimate has to cover.
     ///

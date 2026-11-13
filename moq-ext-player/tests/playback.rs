@@ -45,10 +45,7 @@ fn software(mut encoding: VideoEncoding) -> VideoEncoding {
 
 /// Returns a rendition named `name` at `size` and `bitrate`.
 fn rung(name: &str, size: moq_video::Size, bitrate: Rate) -> VideoRendition {
-    let mut rendition = VideoRendition {
-        size: Some(size),
-        ..VideoRendition::new(name)
-    };
+    let mut rendition = VideoRendition::new(name).with_size(size);
     rendition.config.bitrate = Some(bitrate);
     rendition
 }
@@ -96,14 +93,8 @@ fn ladder() -> (LocalBroadcast, VideoSource) {
         .set_video(
             source.clone(),
             software(VideoEncoding::ladder([
-                VideoRendition {
-                    size: Some(moq_video::Size::new(640, 360)),
-                    ..VideoRendition::new("high")
-                },
-                VideoRendition {
-                    size: Some(moq_video::Size::new(320, 180)),
-                    ..VideoRendition::new("low")
-                },
+                VideoRendition::new("high").with_size(moq_video::Size::new(640, 360)),
+                VideoRendition::new("low").with_size(moq_video::Size::new(320, 180)),
             ])),
         )
         .expect("a valid ladder");
@@ -128,10 +119,7 @@ async fn wait_for_size(frames: &mut moq_ext_player::VideoFrames, size: moq_video
 async fn a_local_broadcast_plays_in_process() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            rendition: RenditionMode::pinned("low"),
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
         .expect("a valid config");
     on_screen(&player, "low").await;
     let mut frames = player.video_frames();
@@ -170,10 +158,7 @@ async fn a_player_started_after_the_catalog_plays() {
     })
     .await;
     let player = remote
-        .play(PlayerConfig {
-            rendition: RenditionMode::pinned("low"),
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
         .expect("valid");
     tokio::time::timeout(TIMEOUT, player.video_frames().next())
         .await
@@ -229,16 +214,10 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
     let (broadcast, _source) = ladder();
     let remote = local(&broadcast);
     let high = remote
-        .play(PlayerConfig {
-            rendition: RenditionMode::pinned("high"),
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("high")))
         .expect("valid");
     let low = remote
-        .play(PlayerConfig {
-            rendition: RenditionMode::pinned("low"),
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("low")))
         .expect("valid");
     let mut high_frames = high.video_frames();
     let mut low_frames = low.video_frames();
@@ -252,10 +231,7 @@ async fn two_players_of_one_broadcast_do_not_interfere() {
 async fn a_pin_switches_without_ending_the_frames() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            rendition: RenditionMode::pinned("high"),
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("high")))
         .expect("valid");
     let mut frames = player.video_frames();
     wait_for_size(&mut frames, moq_video::Size::new(640, 360)).await;
@@ -290,10 +266,7 @@ async fn a_rendition_the_catalog_lacks_is_unknown() {
 async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            rendition: RenditionMode::pinned("4k"),
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_rendition(RenditionMode::pinned("4k")))
         .expect("valid");
     let fell_back = until(player.status(), |status| {
         status.rendition.is_some() && status.switch_error.is_some()
@@ -307,10 +280,11 @@ async fn a_pin_that_cannot_be_honoured_falls_back_and_says_why() {
 async fn a_decoder_that_will_not_open_fails_the_video() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            decoder: moq_video::decode::Kind::Named("no-such-decoder".to_string()),
-            ..PlayerConfig::default()
-        })
+        .play(
+            PlayerConfig::default().with_decoder(moq_video::decode::Kind::Named(
+                "no-such-decoder".to_string(),
+            )),
+        )
         .expect("valid");
     let failed = until(player.status(), |status| {
         matches!(status.video, SlotState::Failed(_))
@@ -335,10 +309,11 @@ async fn a_failed_first_decoder_is_tried_again() {
         )
         .expect("valid");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            decoder: moq_video::decode::Kind::Named("no-such-decoder".to_string()),
-            ..PlayerConfig::default()
-        })
+        .play(
+            PlayerConfig::default().with_decoder(moq_video::decode::Kind::Named(
+                "no-such-decoder".to_string(),
+            )),
+        )
         .expect("valid");
     let first = until(player.status(), |status| status.switch_error.is_some())
         .await
@@ -359,10 +334,9 @@ fn single(size: moq_video::Size) -> LocalBroadcast {
     broadcast
         .set_video(
             VideoSource::test_pattern(size, fps(30)).expect("the pattern thread starts"),
-            software(VideoEncoding::single(VideoRendition {
-                size: Some(size),
-                ..VideoRendition::new("video")
-            })),
+            software(VideoEncoding::single(
+                VideoRendition::new("video").with_size(size),
+            )),
         )
         .expect("a valid encoding");
     broadcast
@@ -554,10 +528,9 @@ async fn video_comes_back_after_the_publisher_replaces_it() {
     broadcast
         .set_video(
             VideoSource::test_pattern(size, fps(30)).expect("the pattern thread starts"),
-            software(VideoEncoding::single(VideoRendition {
-                size: Some(size),
-                ..VideoRendition::new("video")
-            })),
+            software(VideoEncoding::single(
+                VideoRendition::new("video").with_size(size),
+            )),
         )
         .expect("a valid encoding");
     wait_for_size(&mut frames, size).await;
@@ -586,13 +559,10 @@ async fn turning_video_off_leaves_nothing_decoding() {
 #[tokio::test]
 async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
     let (broadcast, _source) = ladder();
-    let config = PlayerConfig {
-        latency: Delay {
-            min: Some(Duration::from_millis(500)),
-            max: Some(Duration::from_millis(100)),
-        },
-        ..PlayerConfig::default()
-    };
+    let config = PlayerConfig::default().with_latency(Delay {
+        min: Some(Duration::from_millis(500)),
+        max: Some(Duration::from_millis(100)),
+    });
     let result = local(&broadcast).play(config);
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
 }
@@ -710,10 +680,7 @@ async fn a_running_player_changes_its_latency() {
 async fn a_late_joiner_gets_a_fresh_keyframe() {
     let size = moq_video::Size::new(320, 180);
     let source = VideoSource::test_pattern(size, fps(30)).expect("the pattern thread starts");
-    let mut rendition = VideoRendition {
-        size: Some(size),
-        ..VideoRendition::new("video")
-    };
+    let mut rendition = VideoRendition::new("video").with_size(size);
     rendition.config.join = Duration::from_secs(10);
     let broadcast = LocalBroadcast::new();
     broadcast
@@ -772,13 +739,10 @@ async fn the_catalog_delay_adds_to_the_playout_delay() {
     let encode = tokio::spawn(encode);
     let remote = RemoteBroadcast::from_consumer(consumer);
     let player = remote
-        .play(PlayerConfig {
-            latency: Delay {
-                min: Some(Duration::from_millis(100)),
-                max: Some(Duration::from_millis(400)),
-            },
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_latency(Delay {
+            min: Some(Duration::from_millis(100)),
+            max: Some(Duration::from_millis(400)),
+        }))
         .expect("valid");
     let mut frames = player.video_frames();
     wait_for_size(&mut frames, size).await;
@@ -805,10 +769,7 @@ async fn audio_decodes_without_a_speaker() {
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            audio: AudioMode::Decode,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Decode))
         .expect("valid");
     tokio::time::timeout(TIMEOUT, async {
         loop {
@@ -834,10 +795,7 @@ async fn the_decoded_audio_reaches_an_audio_frames_reader() {
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            audio: AudioMode::Decode,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Decode))
         .expect("valid");
     let mut audio = player.audio_frames();
     let mut previous = None;
@@ -890,10 +848,7 @@ async fn closing_the_broadcast_ends_the_audio() {
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            audio: AudioMode::Decode,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Decode))
         .expect("valid");
     until(player.status(), |status| status.audio == SlotState::Running).await;
     broadcast.close();
@@ -911,10 +866,7 @@ async fn an_audio_only_broadcast_ends_the_video() {
         )
         .expect("a valid encoding");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            audio: AudioMode::Decode,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Decode))
         .expect("valid");
     let status = until(player.status(), |status| status.video == SlotState::Ended).await;
     assert_eq!(status.audio, SlotState::Running);
@@ -930,10 +882,7 @@ async fn audio_comes_back_after_the_publisher_replaces_it() {
         .set_audio(tone(), audio_encoding::voice())
         .expect("a valid encoding");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            audio: AudioMode::Decode,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Decode))
         .expect("valid");
     let frames_past = |count: u64| {
         let player = &player;
@@ -1260,10 +1209,7 @@ async fn take_latest_video_hands_out_the_newest_picture_once() {
         )
         .expect("valid");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            record_arrivals: true,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_recorded_arrivals())
         .expect("valid");
     let take = || async {
         tokio::time::timeout(TIMEOUT, async {
@@ -1313,10 +1259,7 @@ async fn a_presented_frame_knows_when_its_data_arrived() {
         )
         .expect("valid");
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            record_arrivals: true,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_recorded_arrivals())
         .expect("valid");
     let mut frames = player.video_frames();
     let mut arrived = 0;
@@ -1390,10 +1333,7 @@ async fn the_frames_end_when_the_player_is_dropped() {
 async fn the_audio_frames_of_a_player_without_audio_end_with_it() {
     let (broadcast, _source) = ladder();
     let player = local(&broadcast)
-        .play(PlayerConfig {
-            audio: AudioMode::Off,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Off))
         .expect("valid");
     let mut audio = player.audio_frames();
     drop(player);

@@ -22,12 +22,10 @@ async fn main() -> n0_error::Result {
     let cli = Cli::parse();
 
     // The relay is the only peer, so skip mDNS.
-    let endpoint = EndpointConfig {
-        mdns: Mdns::Off,
-        ..Default::default()
-    }
-    .bind()
-    .await?;
+    let endpoint = EndpointConfig::default()
+        .with_mdns(Mdns::Off)
+        .bind()
+        .await?;
     // Only dials, so it needs no router.
     let node = Node::new(endpoint.clone(), LiveLayout::default().config());
 

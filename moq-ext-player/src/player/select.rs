@@ -349,9 +349,7 @@ impl Selector {
         let chosen = moq_ext_adaptive::choose(
             &mode,
             &rungs,
-            &Constraints {
-                excluded: self.backoffs.excluded(std_now),
-            },
+            &Constraints::excluding(self.backoffs.excluded(std_now)),
             current.as_deref(),
             on_screen.as_deref(),
             sample.as_ref(),

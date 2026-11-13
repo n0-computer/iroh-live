@@ -47,6 +47,7 @@ const RELAY_COST: u64 = 10;
 
 /// How to attach to a relay.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
     ///
@@ -79,6 +80,15 @@ impl RelayConfig {
             tokens: Vec::new(),
             consume: true,
         }
+    }
+
+    /// Returns this config with `consume` saying whether the relay's routes enter the route table.
+    ///
+    /// See [`consume`](Self::consume).
+    #[must_use]
+    pub fn with_consume(mut self, consume: bool) -> Self {
+        self.consume = consume;
+        self
     }
 
     /// Creates a config for the relay with endpoint id `relay`, dialed over iroh.

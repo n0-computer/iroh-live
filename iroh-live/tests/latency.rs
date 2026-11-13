@@ -152,11 +152,9 @@ async fn measure(latency: Delay) -> (Duration, Vec<Duration>) {
         .await
         .expect("failed to subscribe");
     let remote = remote_broadcast(&subscription);
-    let config = PlayerConfig {
-        latency,
-        decoder: decode::Kind::Software,
-        ..PlayerConfig::default()
-    };
+    let config = PlayerConfig::default()
+        .with_latency(latency)
+        .with_decoder(decode::Kind::Software);
     let player = remote.play(config).expect("failed to play");
     let mut frames = player.video_frames();
 

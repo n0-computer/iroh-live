@@ -350,10 +350,7 @@ async fn a_session_decided_before_a_rejection_does_not_undo_it() {
         let slow = slow.clone();
         let addr = alice.endpoint.addr();
         async move {
-            let options = ConnectOptions {
-                path: Some("slow".into()),
-                ..Default::default()
-            };
+            let options = ConnectOptions::default().with_path("slow");
             slow.connect_with(addr, options).await
         }
     });
@@ -640,10 +637,11 @@ impl Policy<EndpointId> for SlowOnce {
 #[traced_test]
 async fn a_redecide_that_times_out_keeps_the_session() {
     let policy = SlowOnce::default();
-    let alice = Peer::bare(NodeConfig {
-        decide_timeout: Duration::from_millis(300),
-        ..NodeConfig::default().with_policy(policy.clone())
-    })
+    let alice = Peer::bare(
+        NodeConfig::default()
+            .with_policy(policy.clone())
+            .with_decide_timeout(Duration::from_millis(300)),
+    )
     .await;
     let bob = Peer::spawn().await;
     let session = step("bob dials", bob.node.connect(alice.endpoint.addr()))
@@ -755,10 +753,11 @@ async fn reauthorizing_a_peer_without_a_session_asks_nothing() {
 #[traced_test]
 async fn a_shutdown_during_a_held_reauthorize_finishes() {
     let queue = policy::Queue::new(16);
-    let alice = Peer::bare(NodeConfig {
-        decide_timeout: Duration::from_secs(600),
-        ..NodeConfig::default().with_policy(queue.clone())
-    })
+    let alice = Peer::bare(
+        NodeConfig::default()
+            .with_policy(queue.clone())
+            .with_decide_timeout(Duration::from_secs(600)),
+    )
     .await;
     let bob = Peer::spawn().await;
     let held = Arc::new(Mutex::new(Vec::new()));

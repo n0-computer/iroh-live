@@ -26,11 +26,9 @@ pub(crate) enum Speaker {}
 
 /// Returns a player config from `--decoder` and `--latency`, with audio on `speaker`.
 pub(crate) fn player_config(args: &PlaybackArgs, speaker: Option<&Speaker>) -> PlayerConfig {
-    let config = PlayerConfig {
-        decoder: args.decoder.into(),
-        latency: args.latency.latency(),
-        ..PlayerConfig::default()
-    };
+    let config = PlayerConfig::default()
+        .with_decoder(args.decoder.into())
+        .with_latency(args.latency.latency());
     audio_on(config, speaker)
 }
 

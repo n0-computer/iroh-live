@@ -25,6 +25,7 @@ pub enum Mdns {
 
 /// An endpoint with [`MoqPreset`], a key and mDNS.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct EndpointConfig {
     /// The endpoint's identity. `None` generates an ephemeral one.
     pub secret_key: Option<SecretKey>,
@@ -33,6 +34,20 @@ pub struct EndpointConfig {
 }
 
 impl EndpointConfig {
+    /// Returns this config with `secret_key` as the endpoint's identity.
+    #[must_use]
+    pub fn with_secret_key(mut self, secret_key: SecretKey) -> Self {
+        self.secret_key = Some(secret_key);
+        self
+    }
+
+    /// Returns this config with `mdns` as how the endpoint uses mDNS.
+    #[must_use]
+    pub fn with_mdns(mut self, mdns: Mdns) -> Self {
+        self.mdns = mdns;
+        self
+    }
+
     /// Returns the default config with the secret key in `IROH_SECRET`, if set.
     ///
     /// Set `IROH_SECRET` to keep one endpoint id, and so the same tickets,

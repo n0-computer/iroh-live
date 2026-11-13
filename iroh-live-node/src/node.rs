@@ -61,6 +61,7 @@ const ACTOR_INBOX: usize = 16;
 
 /// The configuration of a [`Node`].
 #[derive(Clone, derive_more::Debug)]
+#[non_exhaustive]
 pub struct NodeConfig {
     /// Decides who may hold a session with the node, and with which rights.
     ///
@@ -121,6 +122,24 @@ impl NodeConfig {
     #[must_use]
     pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// Returns this configuration with `timeout` bounding each decision of the policy.
+    ///
+    /// See [`decide_timeout`](Self::decide_timeout).
+    #[must_use]
+    pub fn with_decide_timeout(mut self, timeout: Duration) -> Self {
+        self.decide_timeout = timeout;
+        self
+    }
+
+    /// Returns this configuration with `table` as the node's route table.
+    ///
+    /// See [`table`](Self::table).
+    #[must_use]
+    pub fn with_table(mut self, table: origin::Producer) -> Self {
+        self.table = Some(table);
         self
     }
 

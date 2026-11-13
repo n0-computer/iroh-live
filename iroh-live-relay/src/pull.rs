@@ -390,11 +390,10 @@ impl Pulls {
     /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
-        let config = NodeConfig {
-            table: Some(cluster.origin.clone()),
-            layout: Some(Arc::new(pull_layout())),
-            ..NodeConfig::default().with_policy(policy::Open(Grant::nothing()))
-        };
+        let config = NodeConfig::default()
+            .with_policy(policy::Open(Grant::nothing()))
+            .with_table(cluster.origin.clone())
+            .with_layout(pull_layout());
         Self {
             shared: Shared {
                 node: Node::new(endpoint, config),

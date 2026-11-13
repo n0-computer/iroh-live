@@ -122,6 +122,7 @@ pub enum AudioMode {
 
 /// How a player plays.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
@@ -164,6 +165,52 @@ impl Default for PlayerConfig {
             adaptation: Adaptation::default(),
             record_arrivals: false,
         }
+    }
+}
+
+impl PlayerConfig {
+    /// Returns this config with `rendition` choosing the video rendition.
+    #[must_use]
+    pub fn with_rendition(mut self, rendition: RenditionMode) -> Self {
+        self.rendition = rendition;
+        self
+    }
+
+    /// Returns this config with `latency` as how far behind live to run.
+    #[must_use]
+    pub fn with_latency(mut self, latency: Delay) -> Self {
+        self.latency = latency;
+        self
+    }
+
+    /// Returns this config with `audio` as what to do with the audio.
+    #[must_use]
+    pub fn with_audio(mut self, audio: AudioMode) -> Self {
+        self.audio = audio;
+        self
+    }
+
+    /// Returns this config with `decoder` as the decoder backend to open.
+    #[must_use]
+    pub fn with_decoder(mut self, decoder: moq_video::decode::Kind) -> Self {
+        self.decoder = decoder;
+        self
+    }
+
+    /// Returns this config with `adaptation` as how automatic selection follows the link.
+    #[must_use]
+    pub fn with_adaptation(mut self, adaptation: Adaptation) -> Self {
+        self.adaptation = adaptation;
+        self
+    }
+
+    /// Returns this config recording when each video frame arrives.
+    ///
+    /// See [`record_arrivals`](Self::record_arrivals).
+    #[must_use]
+    pub fn with_recorded_arrivals(mut self) -> Self {
+        self.record_arrivals = true;
+        self
     }
 }
 
@@ -365,10 +412,7 @@ impl Player {
     /// # async fn example(broadcast: moq_ext_player::RemoteBroadcast) -> Result<(), moq_ext_player::Error> {
     /// use moq_ext_player::{AudioMode, PlayerConfig};
     ///
-    /// let player = broadcast.play(PlayerConfig {
-    ///     audio: AudioMode::Decode,
-    ///     ..PlayerConfig::default()
-    /// })?;
+    /// let player = broadcast.play(PlayerConfig::default().with_audio(AudioMode::Decode))?;
     /// let mut audio = player.audio_frames();
     /// while let Some(frame) = audio.next().await {
     ///     let peak = frame.samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));

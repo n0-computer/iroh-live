@@ -23,6 +23,7 @@ use crate::{
 
 /// How to dial a peer with [`Node::connect_with`](crate::Node::connect_with).
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ConnectOptions {
     /// A token to present, sent in the MoQ SETUP and as `?jwt=` in the setup path.
     ///
@@ -46,6 +47,36 @@ pub struct ConnectOptions {
     /// session that already exists keeps its connection, so close it first to
     /// dial again with other options. A relay link ignores it.
     pub quic: iroh::endpoint::ConnectOptions,
+}
+
+impl ConnectOptions {
+    /// Returns these options with `token` presented to the peer.
+    #[must_use]
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
+    /// Returns these options with `path` requested in the SETUP.
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// Returns these options with `cost` added to every route learned over the link.
+    #[must_use]
+    pub fn with_cost(mut self, cost: u64) -> Self {
+        self.cost = Some(cost);
+        self
+    }
+
+    /// Returns these options with iroh's `quic` options for the dial.
+    #[must_use]
+    pub fn with_quic(mut self, quic: iroh::endpoint::ConnectOptions) -> Self {
+        self.quic = quic;
+        self
+    }
 }
 
 /// Admits one incoming connection if the policy does, for the protocol handler.

@@ -1127,10 +1127,7 @@ async fn shutdown_detaches_relay_links() {
     let (_endpoint, node) = relay_node().await;
     let link = attached(&node, &relay).await;
     let consume_only = node
-        .attach_relay(RelayConfig {
-            consume: false,
-            ..RelayConfig::iroh(relay.iroh_id)
-        })
+        .attach_relay(RelayConfig::iroh(relay.iroh_id).with_consume(false))
         .expect("attach");
 
     link.detach().await;
@@ -1691,10 +1688,7 @@ async fn a_relay_link_over_quic_carries_a_broadcast() {
     let (_publisher_endpoint, publisher) = relay_node().await;
     let _publisher_link = connected(
         &publisher,
-        RelayConfig {
-            consume: false,
-            ..RelayConfig::new(relay.http_url())
-        },
+        RelayConfig::new(relay.http_url()).with_consume(false),
     )
     .await;
     let _broadcast = publish_video(&publisher, "studio");

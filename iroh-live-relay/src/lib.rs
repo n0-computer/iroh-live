@@ -168,17 +168,16 @@ pub async fn run(config: Config) -> Result<(), Error> {
     // mDNS finds a ticket's publisher on this machine or LAN at once, where
     // pkarr and DNS take seconds and need internet. `Announce`, since clients
     // reach the relay by endpoint id.
-    let iroh_endpoint = EndpointConfig {
-        secret_key: Some(secret_key()?),
-        mdns: Mdns::Announce,
-    }
-    .bind()
-    .await
-    .map_err(|source| {
-        e!(Error::Bind {
-            source: Arc::new(source)
-        })
-    })?;
+    let iroh_endpoint = EndpointConfig::default()
+        .with_secret_key(secret_key()?)
+        .with_mdns(Mdns::Announce)
+        .bind()
+        .await
+        .map_err(|source| {
+            e!(Error::Bind {
+                source: Arc::new(source)
+            })
+        })?;
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 

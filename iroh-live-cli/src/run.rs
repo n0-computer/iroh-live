@@ -144,10 +144,7 @@ async fn run_session(config: RunConfig) -> Result {
         Inbound::Accept
     };
     let endpoint_config = match &config.secret_key_name {
-        Some(name) => EndpointConfig {
-            secret_key: Some(stored_secret_key(name)?),
-            ..EndpointConfig::default()
-        },
+        Some(name) => EndpointConfig::default().with_secret_key(stored_secret_key(name)?),
         None => EndpointConfig::from_env()?,
     };
     let node = transport::bind_node_with(endpoint_config, inbound).await?;
@@ -320,10 +317,7 @@ fn play_audio(
         info!(name, "the broadcast carries no audio");
         return None;
     }
-    let config = PlayerConfig {
-        rendition: RenditionMode::Off,
-        ..PlayerConfig::default()
-    };
+    let config = PlayerConfig::default().with_rendition(RenditionMode::Off);
     let config = crate::playback::audio_on(config, speaker);
     sub.broadcast
         .play(config)

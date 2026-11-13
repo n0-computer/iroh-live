@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, Node,
-    media::{Player, PlayerConfig, RenditionMode},
+    media::{Player, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 
@@ -171,10 +171,8 @@ async fn connect(
             })??,
         None => subscribing.await?,
     };
-    let config = PlayerConfig {
-        rendition: options.rendition.clone(),
-        ..crate::playback::player_config(&options.playback, options.speaker.as_ref())
-    };
+    let config = crate::playback::player_config(&options.playback, options.speaker.as_ref())
+        .with_rendition(options.rendition.clone());
     crate::playback::open(sub, config).await
 }
 

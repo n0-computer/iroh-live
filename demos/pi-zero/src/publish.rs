@@ -67,10 +67,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let broadcast: LocalBroadcast = LiveLayout::default().publish(node, opts.name.as_str())?;
 
     // Keeps the default of one keyframe per second.
-    let config = RpicamConfig {
-        bitrate: Rate::from_bps(u64::from(opts.bitrate)),
-        ..RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
-    };
+    let config = RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)
+        .with_bitrate(Rate::from_bps(u64::from(opts.bitrate)));
     info!(
         width = opts.width,
         height = opts.height,
@@ -85,10 +83,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let _relay = match opts.relay {
         Some(relay) => {
             info!(%relay, "pushing to relay");
-            Some(node.attach_relay(RelayConfig {
-                consume: false,
-                ..RelayConfig::iroh(relay)
-            })?)
+            Some(node.attach_relay(RelayConfig::iroh(relay).with_consume(false))?)
         }
         None => None,
     };

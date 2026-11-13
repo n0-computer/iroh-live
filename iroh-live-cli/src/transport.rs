@@ -105,7 +105,7 @@ pub(crate) async fn bind_node_with(config: EndpointConfig, inbound: Inbound) -> 
         Inbound::Accept => Mdns::Announce,
         Inbound::Refuse => Mdns::Lookup,
     };
-    let endpoint = EndpointConfig { mdns, ..config }.bind().await?;
+    let endpoint = config.with_mdns(mdns).bind().await?;
     let node = Node::new(endpoint.clone(), LiveLayout::default().config());
     let router = Router::builder(endpoint);
     let router = match inbound {
@@ -235,10 +235,7 @@ pub(crate) fn advertise(node: &Node, args: &TransportArgs) -> Result<String> {
 /// The relay receives every public broadcast of this node. The link does not
 /// consume, or it would mirror the relay's whole namespace into the route table.
 fn attach_relay(node: &Node, relay: EndpointId, name: &str) -> Result<RelayLink> {
-    let link = node.attach_relay(RelayConfig {
-        consume: false,
-        ..RelayConfig::iroh(relay)
-    })?;
+    let link = node.attach_relay(RelayConfig::iroh(relay).with_consume(false))?;
     let path = LiveLayout::default()
         .ticket(node.id(), name)?
         .path()

@@ -13,6 +13,7 @@ const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_
 
 /// How a video source is encoded: one or more renditions of the same picture.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct VideoEncoding {
     /// The renditions, which a subscriber chooses among.
     pub renditions: Vec<VideoRendition>,
@@ -122,6 +123,7 @@ impl VideoEncoding {
 ///
 /// [`Config`]: moq_video::encode::Config
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct VideoRendition {
     /// The track name, which a subscriber picks the rendition by.
     pub name: String,
@@ -148,6 +150,20 @@ impl VideoRendition {
             // The size and rate are placeholders until the rendition opens.
             config: moq_video::encode::Config::new(0, 0, rate),
         }
+    }
+
+    /// Returns this rendition encoded at `size` instead of the source's size.
+    #[must_use]
+    pub fn with_size(mut self, size: moq_video::Size) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Returns this rendition at `rate` instead of the source's frame rate.
+    #[must_use]
+    pub fn with_rate(mut self, rate: moq_video::FrameRate) -> Self {
+        self.rate = Some(rate);
+        self
     }
 
     /// Returns `360p`: 640x360 at 500 kbit/s.

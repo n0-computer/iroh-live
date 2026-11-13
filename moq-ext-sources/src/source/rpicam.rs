@@ -151,6 +151,7 @@ fn args(size: Size, framerate: u32, output: Output) -> Vec<String> {
 
 /// How to run the Raspberry Pi camera.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RpicamConfig {
     /// The capture size.
     ///
@@ -180,6 +181,20 @@ impl RpicamConfig {
             bitrate: moq_net::bandwidth::Rate::from_bps(u64::from(DEFAULT_BITRATE)),
             keyframe_interval: framerate.max(1),
         }
+    }
+
+    /// Returns this config with `bitrate` as the hardware encoder's target.
+    #[must_use]
+    pub fn with_bitrate(mut self, bitrate: moq_net::bandwidth::Rate) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+
+    /// Returns this config with a keyframe every `frames` frames.
+    #[must_use]
+    pub fn with_keyframe_interval(mut self, frames: u32) -> Self {
+        self.keyframe_interval = frames;
+        self
     }
 }
 

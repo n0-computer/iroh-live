@@ -63,10 +63,8 @@ async fn subscribe(node: &Node, publisher: &Node, name: &str) -> RemoteBroadcast
 
 /// Returns a rendition named `name` at `size`, or the source's, and `bitrate`.
 fn rendition(name: &str, size: Option<Size>, bitrate: Rate) -> VideoRendition {
-    let mut rendition = VideoRendition {
-        size,
-        ..VideoRendition::new(name)
-    };
+    let mut rendition = VideoRendition::new(name);
+    rendition.size = size;
     rendition.config.bitrate = Some(bitrate);
     rendition
 }
@@ -243,10 +241,7 @@ async fn opus_audio_crosses_the_transport_and_decodes() {
     let subscriber = node().await;
     let remote = subscribe(&subscriber, &publisher, "av-stream").await;
     let player = remote
-        .play(PlayerConfig {
-            audio: AudioMode::Decode,
-            ..PlayerConfig::default()
-        })
+        .play(PlayerConfig::default().with_audio(AudioMode::Decode))
         .expect("failed to play");
 
     tokio::time::timeout(TIMEOUT, async {

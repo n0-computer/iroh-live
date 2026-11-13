@@ -66,11 +66,10 @@ async fn a_dial_can_choose_its_congestion_controller() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
     let carol = Peer::spawn().await;
-    let options = ConnectOptions {
-        quic: iroh::endpoint::ConnectOptions::new()
+    let options = ConnectOptions::default().with_quic(
+        iroh::endpoint::ConnectOptions::new()
             .with_transport_config(Congestion::NewReno.transport_config()),
-        ..Default::default()
-    };
+    );
     let chosen = step(
         "bob dials with NewReno",
         bob.node.connect_with(alice.endpoint.addr(), options),
@@ -494,10 +493,7 @@ async fn a_queue_admits_a_token_within_the_grant_it_answers() {
         "bob connects with the token",
         bob.node.connect_with(
             alice.endpoint.addr(),
-            ConnectOptions {
-                token: Some("letmein".into()),
-                ..Default::default()
-            },
+            ConnectOptions::default().with_token("letmein"),
         ),
     )
     .await
@@ -732,11 +728,8 @@ async fn an_undecided_session_is_refused() {
 #[traced_test]
 async fn a_session_waiting_in_the_queue_does_not_hold_up_shutdown() {
     let queue = Queue::new(16);
-    let alice = Peer::with_config(NodeConfig {
-        decide_timeout: Duration::from_secs(600),
-        ..queued(&queue)
-    })
-    .await;
+    let alice =
+        Peer::with_config(queued(&queue).with_decide_timeout(Duration::from_secs(600))).await;
     let bob = Peer::spawn().await;
     let dialing = {
         let bob = bob.node.clone();
@@ -768,11 +761,8 @@ async fn a_session_waiting_in_the_queue_does_not_hold_up_shutdown() {
 #[traced_test]
 async fn a_slow_decision_times_out() {
     let queue = Queue::new(16);
-    let alice = Peer::with_config(NodeConfig {
-        decide_timeout: Duration::from_millis(200),
-        ..queued(&queue)
-    })
-    .await;
+    let alice =
+        Peer::with_config(queued(&queue).with_decide_timeout(Duration::from_millis(200))).await;
     let bob = Peer::spawn().await;
     // Held and never answered, so only the timeout decides.
     let _held = AbortOnDropHandle::new(tokio::spawn(async move {

@@ -63,10 +63,7 @@ fn chain_to(device: &Peer, valid: Duration) -> String {
 
 /// Connects `from` to `to` presenting `token`.
 async fn connect_with_token(from: &Peer, to: &Peer, token: String) -> Result<(), Error> {
-    let options = ConnectOptions {
-        token: Some(token),
-        ..Default::default()
-    };
+    let options = ConnectOptions::default().with_token(token);
     step(
         "connect",
         from.node.connect_with(to.endpoint.addr(), options),
@@ -219,10 +216,7 @@ async fn a_token_widens_only_its_own_session_and_survives_a_reauthorize() {
 
     // Bob's device opens a session of its own with the chain.
     let tokened = Node::new(bob.endpoint.clone(), NodeConfig::default());
-    let options = ConnectOptions {
-        token: Some(chain_to(&bob, Duration::from_secs(3600))),
-        ..Default::default()
-    };
+    let options = ConnectOptions::default().with_token(chain_to(&bob, Duration::from_secs(3600)));
     step(
         "bob presents the chain",
         tokened.connect_with(alice.endpoint.addr(), options),

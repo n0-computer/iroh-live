@@ -316,10 +316,10 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&Engine>) {
 
 /// Starts playing `remote`, with its audio through `output`, or decoded without one.
 fn play(remote: &RemoteBroadcast, output: Option<&Engine>) -> Result<Player> {
-    Ok(remote.play(PlayerConfig {
-        audio: output.cloned().map_or(AudioMode::Decode, AudioMode::Play),
-        ..PlayerConfig::default()
-    })?)
+    Ok(remote.play(
+        PlayerConfig::default()
+            .with_audio(output.cloned().map_or(AudioMode::Decode, AudioMode::Play)),
+    )?)
 }
 
 /// Opens the default speaker, or returns `None` so audio plays nowhere.

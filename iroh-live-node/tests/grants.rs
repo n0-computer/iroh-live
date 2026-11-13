@@ -438,10 +438,11 @@ impl Layout<EndpointId> for Fleet {
 #[traced_test]
 async fn a_layout_replaces_the_generic_owner_rule() {
     let alice = Peer::spawn().await;
-    let bob = Peer::bare(NodeConfig {
-        layout: Some(Arc::new(Fleet(alice.id()))),
-        ..NodeConfig::default().with_policy(policy::Open(Grant::nothing()))
-    })
+    let bob = Peer::bare(
+        NodeConfig::default()
+            .with_policy(policy::Open(Grant::nothing()))
+            .with_layout(Fleet(alice.id())),
+    )
     .await;
 
     bob.node

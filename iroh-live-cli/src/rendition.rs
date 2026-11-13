@@ -307,10 +307,8 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
     rungs
         .iter()
         .map(|rung| {
-            let mut rendition = VideoRendition {
-                size: rung.size,
-                ..VideoRendition::new(rung.name.clone())
-            };
+            let mut rendition = VideoRendition::new(rung.name.clone());
+            rendition.size = rung.size;
             rendition.config.codec = codec;
             rendition.config.kind = kind.clone();
             if args.keyframe_interval > 0.0 {

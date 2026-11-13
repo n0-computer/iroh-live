@@ -361,10 +361,7 @@ async fn a_second_session_with_a_peer_takes_over_its_routes_only_once_the_first_
     let _alice_cam = publish(&alice.node, &path, Audience::Granted).expect("publish");
     let _bob_cam = publish(&bob.node, bob.path("cam"), Audience::Granted).expect("publish");
 
-    let expensive = ConnectOptions {
-        cost: Some(100),
-        ..Default::default()
-    };
+    let expensive = ConnectOptions::default().with_cost(100);
     let first = step(
         "dial",
         alice.node.connect_with(bob.endpoint.addr(), expensive),

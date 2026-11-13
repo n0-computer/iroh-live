@@ -68,10 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session = device
         .connect_with(
             alice_endpoint.addr(),
-            ConnectOptions {
-                token: Some(token),
-                ..Default::default()
-            },
+            ConnectOptions::default().with_token(token),
         )
         .await?;
     println!("device connected to {}", session.peer().fmt_short());
