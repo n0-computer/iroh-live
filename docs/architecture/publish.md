@@ -31,7 +31,9 @@ previews can read it.
 - `capture(moq_video::capture::Config)` opens a camera, a display or a window,
   and returns once it produced a frame. It needs the `capture` feature. A
   camera that produces no frame within 10 seconds fails, and a display or a
-  window within 30 seconds.
+  window within 30 seconds. A camera open first waits up to three seconds
+  for the cameras dropped before it to close their devices, so a switch back
+  to the same camera does not fail as busy (see below).
 - `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock,
   and a marker that flashes in step with `AudioSource::test_pattern`'s beep.
 - `push(format)` returns a `FrameSender` and the source it feeds, for frames
@@ -60,6 +62,16 @@ watches a `SlotState`: `Starting` while an open runs, then
 `Running`, `Failed` or `Ended`. Unlike a second `set_video`, a switch neither
 probes encoders again nor needs the ladder at hand. The broadcast sees one
 source whose timeline breaks, and starts a group there.
+
+moq-video's capture stream closes its device when it drops. A camera source
+drops that stream on its own capture thread, after the last handle is gone,
+so the device can still be held when the application opens the next camera.
+A dropped camera source therefore leaves its thread's release token in a
+small process-wide list, and `capture` waits on the tokens in that list
+before it opens a camera. A capture stuck in a read, such as a Media
+Foundation camera that delivers neither a frame nor an error, is given up on
+after three seconds and does not delay a later open. `VideoSource::released`
+returns the same token, for a device that something else opens next.
 
 `set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
 encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,

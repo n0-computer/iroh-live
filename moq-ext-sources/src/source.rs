@@ -72,6 +72,9 @@ enum Driver {
     /// A task on a thread of its own, for capture objects that cannot move.
     #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
     Local(crate::local_task::LocalTask),
+    /// A camera's capture thread, which the next camera open waits for once dropped.
+    #[cfg(feature = "capture")]
+    Camera(capture::Camera),
     /// Nothing: the application pushes.
     Pushed,
 }
@@ -184,14 +187,8 @@ impl VideoSource {
         let slot = FrameSlot::new();
         let reader = slot.reader();
         let stop = CancellationToken::new();
-        let (format, task) = capture::open(config, slot, stop.clone()).await?;
-        Ok(Self::new(
-            "capture",
-            format,
-            reader,
-            stop,
-            Driver::Local(task),
-        ))
+        let (format, driver) = capture::open(config, slot, stop.clone()).await?;
+        Ok(Self::new("capture", format, reader, stop, driver))
     }
 
     /// Returns a generated test pattern at `size` and `rate`.
@@ -394,6 +391,8 @@ impl VideoSource {
         match &self.inner.driver {
             #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
             Driver::Local(task) => task.released().cancelled_owned(),
+            #[cfg(feature = "capture")]
+            Driver::Camera(camera) => camera.released().cancelled_owned(),
             Driver::Thread | Driver::Pushed => {
                 let released = CancellationToken::new();
                 released.cancel();

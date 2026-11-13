@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::{FIRST_FRAME_PATIENCE, VideoFormat};
+use super::{Driver, FIRST_FRAME_PATIENCE, VideoFormat};
 use crate::{
     Error,
     frames::FrameSlot,
@@ -35,90 +35,88 @@ const CAMERA_FIRST_FRAME_PATIENCE: Duration = Duration::from_secs(10);
 /// stuck in a read, and waiting longer would not help.
 const RELEASE_PATIENCE: Duration = Duration::from_secs(3);
 
-/// The camera captures of this process that may still hold a device.
+/// The camera captures of this process that were dropped but may still hold a device.
 ///
-/// Opening a camera that a dropped capture still holds fails as busy on V4L2,
-/// so a camera open waits here for the captures dropped before it.
-static CAMERAS: Cameras = Cameras::new();
+/// moq-video's capture stream closes its device when it drops, which happens
+/// on the capture thread after the source is gone. Opening a camera that is
+/// still held fails as busy on V4L2, so a camera open waits for these first.
+static DROPPED: Releases = Releases::new();
 
-/// Camera captures from their open until their thread has closed the device.
+/// The release tokens of dropped camera captures.
 ///
-/// A dropped capture of any camera is waited for, not only one of the same
-/// name: the default camera, a device path and a PipeWire node can all name
-/// the same device, and a release takes no more than a frame interval.
+/// Every dropped camera is waited for, not only one of the same name: the
+/// default camera, a device path and a PipeWire node can all name the same
+/// device, and a release takes no more than a frame interval. Each entry is a
+/// child of a capture thread's release token, so cancelling it forgets the
+/// capture without telling anyone else that the device is free.
 #[derive(Debug)]
-struct Cameras {
-    captures: Mutex<Vec<Arc<Capture>>>,
-}
+struct Releases(Mutex<Vec<CancellationToken>>);
 
-/// One camera capture.
-#[derive(Debug)]
-struct Capture {
-    /// Cancelled once the capture's source is dropped.
-    stop: CancellationToken,
-    /// Cancelled once its thread has finished and the device is closed.
-    released: CancellationToken,
-}
-
-impl Cameras {
+impl Releases {
     const fn new() -> Self {
-        Self {
-            captures: Mutex::new(Vec::new()),
-        }
+        Self(Mutex::new(Vec::new()))
     }
 
-    /// Remembers a camera capture until its thread has released the device.
-    fn track(&self, stop: CancellationToken, released: CancellationToken) {
-        let mut captures = self.captures.lock().expect("poisoned");
-        captures.retain(|capture| !capture.released.is_cancelled());
-        captures.push(Arc::new(Capture { stop, released }));
+    /// Remembers a dropped camera capture until its thread has released the device.
+    fn push(&self, released: &CancellationToken) {
+        let mut pending = self.0.lock().expect("poisoned");
+        pending.retain(|token| !token.is_cancelled());
+        pending.push(released.child_token());
     }
 
     /// Waits at most `patience` for every dropped capture to release its device.
     ///
-    /// A capture that still runs is not waited for, since an application may
-    /// use two cameras at once. A dropped capture that does not let go in time
-    /// is stuck in a read: it is forgotten with a warning, so later opens do
-    /// not wait for it again, and its thread may hold the device until the
-    /// read returns.
+    /// A dropped capture that does not let go in time is stuck in a read: it
+    /// is forgotten with a warning, so later opens do not wait for it again,
+    /// and its thread may hold the device until the read returns.
     async fn settle(&self, patience: Duration) {
-        let dropped: Vec<Arc<Capture>> = {
-            let mut captures = self.captures.lock().expect("poisoned");
-            captures.retain(|capture| !capture.released.is_cancelled());
-            captures
-                .iter()
-                .filter(|capture| capture.stop.is_cancelled())
-                .cloned()
-                .collect()
+        let pending: Vec<CancellationToken> = {
+            let mut pending = self.0.lock().expect("poisoned");
+            pending.retain(|token| !token.is_cancelled());
+            pending.clone()
         };
-        if dropped.is_empty() {
+        if pending.is_empty() {
             return;
         }
         debug!(
-            count = dropped.len(),
+            count = pending.len(),
             "waiting for a dropped camera to release its device"
         );
         let deadline = tokio::time::Instant::now() + patience;
-        for capture in dropped {
-            if tokio::time::timeout_at(deadline, capture.released.cancelled())
+        for token in pending {
+            if tokio::time::timeout_at(deadline, token.cancelled())
                 .await
-                .is_ok()
+                .is_err()
             {
-                continue;
+                warn!(
+                    ?patience,
+                    "a dropped camera still holds its device, opening without it"
+                );
+                token.cancel();
             }
-            warn!(
-                ?patience,
-                "a dropped camera still holds its device, opening without it"
-            );
-            self.captures
-                .lock()
-                .expect("poisoned")
-                .retain(|tracked| !Arc::ptr_eq(tracked, &capture));
         }
-        self.captures
-            .lock()
-            .expect("poisoned")
-            .retain(|capture| !capture.released.is_cancelled());
+    }
+}
+
+/// A camera capture's thread, which joins [`DROPPED`] once the source drops it.
+#[derive(Debug)]
+pub(super) struct Camera {
+    task: LocalTask,
+    dropped: &'static Releases,
+}
+
+impl Camera {
+    /// Returns a token that is cancelled once the capture thread has closed the device.
+    pub(super) fn released(&self) -> CancellationToken {
+        self.task.released()
+    }
+}
+
+impl Drop for Camera {
+    fn drop(&mut self) {
+        // Registered before the task's own drop stops the thread, so an open
+        // that follows this drop always finds it.
+        self.dropped.push(&self.task.released());
     }
 }
 
@@ -200,19 +198,19 @@ fn declined(err: &Error) -> bool {
 
 /// Waits at most [`RELEASE_PATIENCE`] for the dropped cameras to release their devices.
 pub(super) async fn settle() {
-    CAMERAS.settle(RELEASE_PATIENCE).await;
+    DROPPED.settle(RELEASE_PATIENCE).await;
 }
 
 /// Opens the device `config` names and starts reading it into `slot`.
 ///
-/// A camera is tracked in [`CAMERAS`] until its thread has closed it. Returns
-/// once the first frame has arrived, with the format the device opened at and
-/// the task that owns it.
+/// Returns once the first frame has arrived, with the format the device
+/// opened at and the driver that owns it. A camera's driver joins [`DROPPED`]
+/// when it drops, also when the open fails or is cancelled.
 pub(super) async fn open(
     config: video::capture::Config,
     slot: FrameSlot,
     stop: CancellationToken,
-) -> Result<(VideoFormat, LocalTask), Error> {
+) -> Result<(VideoFormat, Driver), Error> {
     let camera = matches!(config.source, video::capture::Source::Camera(_));
     let patience = if camera {
         CAMERA_FIRST_FRAME_PATIENCE
@@ -291,12 +289,17 @@ pub(super) async fn open(
         }
         debug!("video capture stopped");
     })?;
-    if camera {
-        CAMERAS.track(stop, task.released());
-    }
+    let driver = if camera {
+        Driver::Camera(Camera {
+            task,
+            dropped: &DROPPED,
+        })
+    } else {
+        Driver::Local(task)
+    };
 
     match opened.await {
-        Ok(Ok(format)) => Ok((format, task)),
+        Ok(Ok(format)) => Ok((format, driver)),
         Ok(Err(err)) => Err(err),
         Err(_) => Err(Error::device_msg(
             "the capture thread stopped before the device opened",
@@ -310,24 +313,32 @@ mod tests {
 
     use tokio_util::sync::CancellationToken;
 
-    use super::Cameras;
+    use super::{Camera, Releases};
     use crate::local_task;
+
+    /// Starts a capture thread that holds its device until the returned sender is used or dropped.
+    fn holding(name: &str) -> (local_task::LocalTask, std::sync::mpsc::SyncSender<()>) {
+        let (release, released) = std::sync::mpsc::sync_channel::<()>(1);
+        let task = local_task::spawn(name, CancellationToken::new(), move |_stop| async move {
+            // Ignores the stop, like a read blocked in `poll(-1)`, until the
+            // test lets go.
+            let _ = released.recv();
+        })
+        .expect("the thread starts");
+        (task, release)
+    }
 
     /// Reopening a camera waits until the dropped capture has closed its device.
     #[tokio::test]
     async fn an_open_waits_for_a_dropped_camera_to_release() {
-        let cameras = Cameras::new();
-        let stop = CancellationToken::new();
-        let (release, released) = std::sync::mpsc::sync_channel::<()>(1);
-        let task = local_task::spawn("test-slow-release", stop.clone(), move |_stop| async move {
-            // Closing the device takes until the test lets go.
-            let _ = released.recv();
-        })
-        .expect("the thread starts");
-        cameras.track(stop, task.released());
-        drop(task);
+        static DROPPED: Releases = Releases::new();
+        let (task, release) = holding("test-slow-release");
+        drop(Camera {
+            task,
+            dropped: &DROPPED,
+        });
 
-        let settle = cameras.settle(Duration::from_secs(10));
+        let settle = DROPPED.settle(Duration::from_secs(10));
         tokio::pin!(settle);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), &mut settle)
@@ -340,7 +351,12 @@ mod tests {
             .await
             .expect("the open goes ahead once the device is released");
         assert!(
-            cameras.captures.lock().expect("poisoned").is_empty(),
+            DROPPED
+                .0
+                .lock()
+                .expect("poisoned")
+                .iter()
+                .all(CancellationToken::is_cancelled),
             "a released capture is forgotten"
         );
     }
@@ -348,11 +364,17 @@ mod tests {
     /// A camera that still runs is not waited for.
     #[tokio::test(start_paused = true)]
     async fn a_running_camera_does_not_delay_another_open() {
-        let cameras = Cameras::new();
-        cameras.track(CancellationToken::new(), CancellationToken::new());
+        static DROPPED: Releases = Releases::new();
+        let (task, release) = holding("test-running");
+        let running = Camera {
+            task,
+            dropped: &DROPPED,
+        };
         let started = tokio::time::Instant::now();
-        cameras.settle(Duration::from_secs(3)).await;
+        DROPPED.settle(Duration::from_secs(3)).await;
         assert_eq!(started.elapsed(), Duration::ZERO);
+        drop(running);
+        let _ = release.send(());
     }
 
     /// A capture thread stuck in a read is given up on, once.
@@ -361,23 +383,17 @@ mod tests {
     /// Foundation camera that delivers neither a frame nor an error.
     #[tokio::test(start_paused = true)]
     async fn a_stuck_camera_delays_the_next_open_once() {
-        let cameras = Cameras::new();
-        let stop = CancellationToken::new();
-        let (unstick, stuck) = std::sync::mpsc::sync_channel::<()>(1);
-        let task = local_task::spawn("test-stuck", stop.clone(), move |_stop| async move {
-            // Ignores the stop, like a read blocked in `poll(-1)`.
-            let _ = stuck.recv();
-        })
-        .expect("the thread starts");
-        cameras.track(stop, task.released());
+        let dropped = Releases::new();
+        let (task, unstick) = holding("test-stuck");
+        dropped.push(&task.released());
         drop(task);
 
         let started = tokio::time::Instant::now();
-        cameras.settle(Duration::from_secs(3)).await;
+        dropped.settle(Duration::from_secs(3)).await;
         assert!(started.elapsed() >= Duration::from_secs(3));
 
         let started = tokio::time::Instant::now();
-        cameras.settle(Duration::from_secs(3)).await;
+        dropped.settle(Duration::from_secs(3)).await;
         assert_eq!(
             started.elapsed(),
             Duration::ZERO,
