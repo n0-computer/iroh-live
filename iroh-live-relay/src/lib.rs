@@ -7,8 +7,10 @@
 //! [`pull`].
 //!
 //! With `--auth-key`, a session that presents a valid JWT gets what the token
-//! grants instead. `--auth-url` and the `--auth-public` flags hand browser
-//! sessions to moq-relay's own auth, which then pulls no tickets.
+//! grants instead. Browsers are decided by moq-auth's reference policy, which
+//! reads the key file again when it changes. `--auth-url` and the
+//! `--auth-public` flags hand browser sessions to moq-relay's own auth, which
+//! then pulls no tickets.
 //!
 //! Another CLI can embed the relay by flattening [`Config`] into its arguments.
 //!
@@ -45,8 +47,8 @@ use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::{EndpointId, SecretKey, protocol::Router};
 use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
-use iroh_live_node::{SessionRequest, policy::DynPolicy};
-use moq_auth::{KeySet, lease};
+use iroh_live_node::policy::DynPolicy;
+use moq_auth::{KeySet, lease, serve};
 use moq_ext_access::policy::{JwtVerifier, Verify};
 use moq_net::Pattern;
 use moq_relay::auth::Admissions;
@@ -141,7 +143,10 @@ pub async fn run(config: Config) -> Result<(), Error> {
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
-    let keys = config.auth_key.as_deref().map(load_keys).transpose()?;
+    let (keys, key_source) = match config.auth_key.as_deref().map(load_keys).transpose()? {
+        Some((keys, source)) => (Some(keys), Some(source)),
+        None => (None, None),
+    };
     let mut relay_config = moq_relay::Config::default();
     relay_config.auth.url = config.auth_url.clone();
     relay_config.auth.public = config.auth_public.clone();
@@ -178,7 +183,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         Some(admissions) => Some(AbortOnDropHandle::new(tokio::spawn(admit(
             admissions,
             Some(pulls.clone()),
-            keys.clone(),
+            key_source,
         )))),
         None => {
             info!("moq-relay's auth decides browser sessions, which pull no tickets");
@@ -260,15 +265,22 @@ fn relay_error(err: anyhow::Error) -> Error {
 
 /// Answers the relay's admissions until the relay drops its auth.
 ///
-/// A session gets [`browser_grant`] for its path, or with `keys` what its JWT grants until
-/// the token expires. A session whose path names a ticket reads the ticket's
-/// broadcast at that name, and with `pulls` set it holds a pull of that
-/// broadcast while it runs.
+/// A session gets [`browser_grant`] for its path. With `keys`, moq-auth's
+/// reference policy decides it instead: a session that presents a JWT gets
+/// what the token grants until it expires, and one without a token gets the
+/// same public rule. The policy reads the key file again when it changes, so
+/// a rotated key takes effect without a restart. A session whose path names a
+/// ticket reads the ticket's broadcast at that name, and with `pulls` set it
+/// holds a pull of that broadcast while it runs.
 ///
 /// [`run`] calls it. It is public for a binary that embeds the relay with a
 /// moq-relay of its own, and for the tests.
-pub async fn admit(mut admissions: Admissions, pulls: Option<pull::Pulls>, keys: Option<KeySet>) {
-    let verifier = keys.map(JwtVerifier::new);
+pub async fn admit(
+    mut admissions: Admissions,
+    pulls: Option<pull::Pulls>,
+    keys: Option<serve::Keys>,
+) {
+    let policy = keys.map(browser_policy);
     let mut held = JoinSet::new();
     loop {
         let admission = tokio::select! {
@@ -282,7 +294,7 @@ pub async fn admit(mut admissions: Admissions, pulls: Option<pull::Pulls>, keys:
         let ticket = name
             .as_deref()
             .and_then(|name| name.parse::<BroadcastTicket>().ok());
-        let mut grant = match browser_session_grant(&admission, verifier.as_ref()) {
+        let mut grant = match browser_session_grant(&admission, policy.as_ref()).await {
             Ok(grant) => grant,
             Err(err) => {
                 info!(path = %admission.request.path, error = %err, "refusing a browser session");
@@ -318,47 +330,51 @@ pub async fn admit(mut admissions: Admissions, pulls: Option<pull::Pulls>, keys:
     }
 }
 
-/// Returns the grant of a browser session: its token's with `verifier`, else [`browser_grant`].
-fn browser_session_grant(
+/// Returns moq-auth's reference policy over `keys`, with the public rule of [`browser_grant`].
+fn browser_policy(keys: serve::Keys) -> serve::Policy {
+    let mut policy = serve::Policy::default();
+    policy.keys = Some(keys);
+    policy.public = iroh_sessions::browser_rules();
+    policy
+}
+
+/// Returns the grant of a browser session: the one `policy` decides, else [`browser_grant`].
+///
+/// An attached admission is decided on the credential it presented in band.
+async fn browser_session_grant(
     admission: &moq_relay::auth::Admission,
-    verifier: Option<&JwtVerifier>,
+    policy: Option<&serve::Policy>,
 ) -> Result<moq_auth::Grant, moq_relay::auth::Error> {
     let request = &admission.request;
-    let public = || {
-        browser_grant(&request.path)
-            .map_err(|err| moq_relay::auth::Error::Forbidden(err.to_string()))
+    let Some(policy) = policy else {
+        return browser_grant(&request.path)
+            .map_err(|err| moq_relay::auth::Error::Forbidden(err.to_string()));
     };
-    let Some(verifier) = verifier else {
-        return public();
+    let mut attached;
+    let request = match &request.auth {
+        Some(token) if admission.attached() => {
+            attached = request.clone();
+            attached.token = Some(moq_auth::Token {
+                kind: moq_auth::Token::OUT_OF_BAND,
+                value: token.clone().into_bytes(),
+            });
+            attached.query = None;
+            &attached
+        }
+        _ => request,
     };
-    let token = if admission.attached() {
-        // The credential presented in band, for a session already held.
-        request.auth.clone()
-    } else {
-        let target = match &request.query {
-            Some(query) => format!("{}?{query}", request.path),
-            None => request.path.clone(),
-        };
-        let setup = request
-            .token
-            .as_ref()
-            .map(|token| (token.kind, token.value.as_slice()));
-        SessionRequest::from_setup(&target, setup)
-            .token()
-            .map(str::to_owned)
-    };
-    let Some(token) = token else {
-        return public();
-    };
-    verifier
-        .verify_grant(&token, &request.path)
-        .map_err(|err| moq_relay::auth::Error::Forbidden(format!("invalid token: {err}")))
+    policy
+        .decide(request)
+        .await
+        .map_err(|denial| moq_relay::auth::Error::Forbidden(denial.to_string()))
 }
 
 /// Loads the JWT keys from a file that holds a JWK set or a single JWK.
-fn load_keys(path: &std::path::Path) -> Result<KeySet, Error> {
+///
+/// Returns the keys, and the file as moq-auth's policy reads it again when it changes.
+fn load_keys(path: &std::path::Path) -> Result<(KeySet, serve::Keys), Error> {
     if let Ok(keys) = KeySet::from_file(path) {
-        return Ok(keys);
+        return Ok((keys, serve::Keys::Set(path.to_owned())));
     }
     let key = moq_auth::Key::from_file(path).map_err(|source| {
         e!(Error::Keys {
@@ -366,9 +382,10 @@ fn load_keys(path: &std::path::Path) -> Result<KeySet, Error> {
             source: Arc::new(source),
         })
     })?;
-    Ok(KeySet {
+    let keys = KeySet {
         keys: vec![Arc::new(key)],
-    })
+    };
+    Ok((keys, serve::Keys::File(path.to_owned())))
 }
 
 /// Pulls the broadcast a session named, if the name is a ticket.
@@ -548,7 +565,11 @@ mod tests {
         set.to_file(&path).expect("writes the set");
         let both = load_keys(&path);
         std::fs::remove_file(&path).expect("removes the scratch file");
-        assert_eq!(single.expect("one key").keys.len(), 1);
-        assert_eq!(both.expect("a set").keys.len(), 2);
+        let (single, source) = single.expect("one key");
+        assert_eq!(single.keys.len(), 1);
+        assert!(matches!(source, serve::Keys::File(named) if named == path));
+        let (both, source) = both.expect("a set");
+        assert_eq!(both.keys.len(), 2);
+        assert!(matches!(source, serve::Keys::Set(named) if named == path));
     }
 }

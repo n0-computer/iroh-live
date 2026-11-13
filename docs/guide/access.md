@@ -502,8 +502,14 @@ cargo run -p iroh-live-relay -- --auth-key relay.jwk
 
 An iroh client presents a token signed with the same key through
 `RelayConfig::tokens`, and a browser puts it in the URL as `?jwt=<token>`. With
-`--auth-key`, the relay decides iroh clients with
-`Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())`. A binary
+`--auth-key`, the relay decides browsers with moq-auth's reference policy,
+`moq_auth::serve::Policy`, the policy `moq auth serve` runs. It reads the key
+file again when the file changes, so a rotated key takes effect for browsers
+without a restart. A browser presents its JWT as `?jwt=` or as a SETUP token,
+and a session that presents two different JWTs is refused. The relay decides
+iroh clients with
+`Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())`, which
+reads the keys once, at start. A binary
 that embeds the relay sets another policy in `Config::iroh_policy`.
 
 The relay decides an iroh client once, when it connects. When the

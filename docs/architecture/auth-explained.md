@@ -597,7 +597,10 @@ on every dial. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, whose
   answers each admission with `browser_grant(path)`: read anything, and
   publish a name of one segment below the dialed path. One segment keeps a
   browser out of `live/` and `rooms/`, whose paths name an iroh publisher.
-  With `--auth-key`, a valid JWT grants what its claims say. With
+  With `--auth-key`, moq-auth's reference policy (`moq_auth::serve::Policy`)
+  decides them, with the same public rule for a session without a token. A
+  valid JWT grants what its claims say, and the policy reads the key file
+  again when it changes, so a rotated key takes effect without a restart. With
   `--auth-url` or `--auth-public`, moq-relay's own auth decides.
 
 When a session names a broadcast ticket, the relay *pulls* the broadcast. Its

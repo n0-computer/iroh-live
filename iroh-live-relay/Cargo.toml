@@ -15,8 +15,9 @@ path = "src/main.rs"
 [dependencies]
 moq-relay = { workspace = true, default-features = false, features = ["quic", "websocket"] }
 moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
-# The grants and leases the relay answers its admissions with.
-moq-auth = { workspace = true, features = ["async"] }
+# The grants and leases the relay answers its admissions with, and with
+# `serve` the reference policy that decides browsers under `--auth-key`.
+moq-auth = { workspace = true, features = ["async", "serve"] }
 moq-net = { workspace = true }
 # The policy types, and the JWT verifier for iroh clients' tokens.
 moq-ext-access = { workspace = true, features = ["jwt"] }

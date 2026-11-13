@@ -244,14 +244,23 @@ impl ProtocolHandler for IrohSessions {
 ///
 /// Returns an error if `path` is not a valid path.
 pub fn browser_grant(path: &str) -> Result<moq_auth::Grant, moq_auth::Error> {
+    let rules = browser_rules();
     let rule = moq_auth::Claims::default()
-        .with_publish(["*".parse::<Pattern>().expect("a valid pattern")])
-        .with_subscribe([Pattern::all()]);
+        .with_publish(rules.publish)
+        .with_subscribe(rules.subscribe);
     let permissions = rule.authorize(path)?;
     Ok(moq_auth::Grant::new(
         permissions.publish,
         permissions.subscribe,
     ))
+}
+
+/// Returns what a browser may do without a token, rooted at `/`: subscribe anywhere, publish one segment.
+pub(crate) fn browser_rules() -> moq_auth::Permissions {
+    moq_auth::Permissions::new(
+        "*".parse::<Pattern>().expect("a valid pattern"),
+        Pattern::all(),
+    )
 }
 
 /// Returns the broadcast name a session asked for in its path, if any.

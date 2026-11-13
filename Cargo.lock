@@ -5410,6 +5410,7 @@ name = "moq-auth"
 version = "0.2.1"
 source = "git+https://github.com/moq-dev/moq?rev=6aa4f9c1c#6aa4f9c1cad482aa86adcf3cf26bd7779697a01a"
 dependencies = [
+ "axum",
  "base64 0.23.1",
  "jsonwebtoken",
  "kio",

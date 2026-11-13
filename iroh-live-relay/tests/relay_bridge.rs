@@ -37,6 +37,34 @@ struct TestRelay {
     cluster: Cluster,
     noq_addr: std::net::SocketAddr,
     iroh_id: iroh::EndpointId,
+    /// The file the browser admission reads its JWT keys from, if it verifies JWTs.
+    keys_file: Option<KeysFile>,
+}
+
+/// A JWT key file in the temp dir, removed on drop.
+struct KeysFile(std::path::PathBuf);
+
+impl KeysFile {
+    /// Writes `keys` to a new file.
+    fn new(keys: &KeySet) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "iroh-live-relay-test-keys-{}.json",
+            iroh::SecretKey::generate().public()
+        ));
+        keys.to_file(&path).expect("writes the keys");
+        Self(path)
+    }
+
+    /// Replaces the keys in the file, as an operator rotating them would.
+    fn rotate(&self, keys: &KeySet) {
+        keys.to_file(&self.0).expect("writes the keys");
+    }
+}
+
+impl Drop for KeysFile {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).ok();
+    }
 }
 
 impl TestRelay {
@@ -135,6 +163,7 @@ impl TestRelay {
         if !shipped {
             config.auth.public = vec![moq_net::Pattern::all()];
         }
+        let keys_file = keys.as_ref().map(KeysFile::new);
         let mut relay = moq_relay::Relay::load(config)
             .await
             .expect("load relay")
@@ -152,10 +181,13 @@ impl TestRelay {
             // As the shipped relay does: a browser session that names a
             // ticket reads the pulled broadcast at that name.
             let admissions = relay.admissions().expect("no auth source configured");
+            let source = keys_file
+                .as_ref()
+                .map(|file| moq_auth::serve::Keys::Set(file.0.clone()));
             let admit_task = AbortOnDropHandle::new(tokio::spawn(iroh_live_relay::admit(
                 admissions,
                 pulls.clone(),
-                keys.clone(),
+                source,
             )));
             let mut sessions = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls);
             if let Some(keys) = keys {
@@ -188,6 +220,7 @@ impl TestRelay {
             cluster,
             noq_addr,
             iroh_id,
+            keys_file,
         }
     }
 
@@ -1941,6 +1974,43 @@ async fn a_browser_with_a_signed_token_publishes_where_it_allows() {
         );
     }
     drop(browser);
+}
+
+/// With a key file, a browser's token verifies against the keys the file holds now.
+#[tokio::test]
+async fn a_rotated_key_file_takes_effect_for_browsers() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let old = signing_keys();
+    let relay = TestRelay::start_keyed(old.clone()).await;
+    let rotated = signing_keys();
+    relay.keys_file.as_ref().expect("keyed").rotate(&rotated);
+
+    // A browser that publishes `studio/<name>` with a token signed by `keys`.
+    let publish = |keys: &KeySet, name: &str| {
+        let browser = moq_tokio::origin::spawn();
+        let route = browser
+            .route(
+                format!("studio/{name}").as_str(),
+                origin::RouteOptions::default(),
+            )
+            .expect("broadcast");
+        let mut url = relay.url();
+        url.query_pairs_mut()
+            .append_pair("jwt", &token_for(keys, "studio"));
+        let connection = noq_client().with_publisher(browser.consume()).connect(url);
+        (browser, route, connection)
+    };
+    let (_browser, _route, connection) = publish(&rotated, "new");
+    let _session = established(connection).await;
+    routed(&relay.cluster.origin.consume(), "studio/new").await;
+
+    let (_browser, _route, connection) = publish(&old, "old");
+    // Held, since dropping the connection would close the session.
+    let _old = tokio::time::timeout(TIMEOUT, connection.established()).await;
+    assert!(
+        !routed_soon(&relay.cluster.origin, "studio/old").await,
+        "a token of the rotated-out key was admitted"
+    );
 }
 
 /// With a key, an iroh client's session closes when its token expires, and its broadcast leaves.
