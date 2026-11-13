@@ -1,106 +1,239 @@
 # Publishing
 
-`moq_media::publish::LocalBroadcast` wraps a `moq_net::broadcast::Producer` and
-owns the catalog that describes it. Video goes through `LocalBroadcast::video()`
-and audio through `LocalBroadcast::audio()`, both of which hand back a borrowed
-publisher handle. In iroh-live the producer comes from `Live::publish(path)`,
-which creates the broadcast on the node's origin.
+`moq_ext_publisher::LocalBroadcast` wraps a `moq_net::broadcast::Producer`. It
+owns the catalog, a media clock, one video slot and one audio slot.
+`set_video`, `set_encoded_video` and `set_audio` fill a slot and replace what it
+held. `clear_video` and `clear_audio` empty it. A transport creates the
+broadcast it publishes, and `LocalBroadcast::new_in(producer)` (or
+`TryFrom<broadcast::Producer>`) fills that one, so readers get it without a
+copy. In iroh-live, `let broadcast: LocalBroadcast = layout.publish(&node,
+name)?` publishes one at `live/<this node's id>/<name>`.
+`LocalBroadcast::new()` creates one of its own, published nowhere, for a local
+preview or a test. Closing a `LocalBroadcast`, or dropping its last clone,
+closes the broadcast, which withdraws the publication.
 
-Encoding itself is upstream. `moq_video::encode` and `moq_audio::encode` own the
-codec, the thread it runs on, and the catalog entry it writes. What this crate
-adds is the layer above: one camera feeding a simulcast ladder, a pre-encoded
-byte stream published without re-encoding, and the iroh-live catalog extension.
+Encoding is upstream. `moq_video::encode` and `moq_audio::encode` own the
+codec, its thread and the catalog entry it writes. This crate adds a simulcast
+ladder over one source, and pre-encoded streams published without re-encoding.
+The code is in `moq-ext-publisher/src/publish/`.
 
 ## Sources
 
-`VideoSource` names the three ways pictures reach a broadcast.
+A source is already open when you get it. Opening a device is async and fails
+if the device does not open, so a missing camera is an error at the call that
+asked for it. Each source runs on a thread of its own, which non-`Send`
+platform capture objects require. A source runs while any clone exists,
+including the clone a broadcast holds, and any number of broadcasts and
+previews can read it.
 
-`Capture(moq_video::capture::Config)` opens a camera, a display, a window, or a
-macOS application through `moq_video::capture::open`. It needs the `capture`
-feature.
+`VideoSource` has these constructors:
 
-`Frames(BoxStream<moq_video::Frame>)` takes frames the application produced. The
-Android demo uses it to hand over Camera2 buffers, and `moq_media::test_source`
-uses it for a generated pattern. The first frame determines the geometry the
-catalog advertises, so the publish task pulls it, reads its size and color, and
-puts it back at the head of the stream before any encoder opens.
+- `capture(moq_video::capture::Config)` opens a camera, a display or a window,
+  and returns once it produced a frame. It needs the `capture` feature. A
+  camera that produces no frame within 10 seconds fails, and a display or a
+  window within 30 seconds. A camera open first waits up to three seconds
+  for the cameras dropped before it to close their devices, so a switch back
+  to the same camera does not fail as busy (see below).
+- `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock,
+  and a marker that flashes in step with `AudioSource::test_pattern`'s beep.
+- `push(format)` returns a `FrameSender` and the source it feeds, for frames
+  the application makes. The Android demo hands over camera buffers this way.
+- `spawn(name, format, run)` runs `run` on a dedicated thread with a
+  current-thread runtime entered, and hands it the sender. It is for
+  thread-bound platform objects.
+- `rpicam(config)` reads raw pictures from `rpicam-vid` on a Raspberry Pi.
 
-`AnnexB(BoxStream<bytes::Bytes>)` takes an H.264 byte stream the source already
-encoded. This is the Raspberry Pi path, where `rpicam-vid` encodes in hardware
-and no raw picture ever reaches us.
+`FrameSender::push` never blocks: a new video frame replaces one not yet taken.
+`FrameSender::demand()` reports whether anything wants the frames: a rendition
+that encodes, or a `VideoFrames` handle from `VideoSource::frames()`. An
+application camera can idle while nothing does. `push` returns `SourceClosed`
+once the source is gone, and the producing loop should stop then.
 
-`AudioSource` is the same shape with two variants: `Device` for a microphone or
-the macOS system mix, and `Frames { input, frames }` for PCM the application
-produced, such as a decoded file.
+`switchable(format)` returns a `VideoSwitch` and the source it feeds, for a
+camera menu. The broadcast encodes the switchable source once. A forwarding
+task per input copies the current input's frames into the source's slot,
+keeps each frame's `sent_at`, and passes the switchable source's demand back
+to the input. `replace(source)` swaps at once, `open(future)` opens the next
+source in the background and drops one still opening, and `clear()` stops feeding.
+The previous source is dropped first, so the same camera opens again.
+`replace` and `open` also drop the previous source's last frame from the slot,
+so no reader gets a frame of the old source after the switch. `status()`
+watches a `SlotState`: `Starting` while an open runs, then
+`Running`, `Failed` or `Ended`. Unlike a second `set_video`, a switch neither
+probes encoders again nor needs the ladder at hand. The broadcast sees one
+source whose timeline breaks, and starts a group there.
+
+moq-video's capture stream closes its device when it drops. A camera source
+drops that stream on its own capture thread, after the last handle is gone,
+so the device can still be held when the application opens the next camera.
+A dropped camera source therefore leaves its thread's release token in a
+small process-wide list, and `capture` waits on the tokens in that list
+before it opens a camera. A capture stuck in a read, such as a Media
+Foundation camera that delivers neither a frame nor an error, is given up on
+after three seconds and does not delay a later open. `VideoSource::released`
+returns the same token, for a device that something else opens next.
+
+`set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
+encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
+`rpicam-vid` encodes in hardware and no raw picture reaches us.
+
+`AudioSource` has these constructors:
+
+- `microphone(config)` opens a microphone from moq-audio's `capture::Config`.
+- `file(path, at_end)` decodes a WAV or MP3 in real time. The `FileEnd` says
+  whether it stops or restarts at the end of the file.
+- `tone(hz, layout)` and `test_pattern(layout)` generate sound.
+- `push(format)` returns a `FrameSender` for PCM the application produces.
+
+For echo cancellation, the config's `aec` holds the canceller of the speaker's
+`playback::Engine`, from `Engine::canceller` (needs the `aec` feature). The
+microphone attaches to it when its publication opens the device, after a
+publication it replaces has let go. A PCM source fans out to every broadcast
+through a buffer of 100 frames. A broadcast that falls further behind loses
+the oldest frames and counts them in its stats.
 
 ## Simulcast
 
-`VideoPublisher::set(source)` publishes one rendition named `video` at the
-source's own resolution. `VideoPublisher::set_renditions(source, renditions)`
-publishes a ladder, where each `VideoRendition` carries a name, an optional
-`Size`, an optional bitrate, a `moq_video::encode::Codec`, and a
-`moq_video::encode::Kind` naming the backend to prefer.
+`set_video(source, encoding)` takes a `VideoEncoding`. `VideoEncoding::single`
+publishes one rendition and `VideoEncoding::ladder` several. A
+`VideoRendition`'s `name` is its track name. It also has an optional `size`
+and `rate`, and moq-video's own `encode::Config` for the rest: bitrate,
+keyframe interval (`join`, two seconds by default), codec, backend (`kind`)
+and preset. The config's size, rate and color are filled in when the rendition
+opens. `VideoRendition::new(name)` encodes at the source's size.
+`p360` and `p720` are 16:9 presets at 500 kbit/s and 1.8 Mbit/s. Both are
+close to the 0.07 bit per pixel moq-video derives without a bitrate (484
+kbit/s and 1.94 Mbit/s at 30 fps).
 
-The ladder is the reason this code exists. Upstream, one
-`moq_video::encode::Producer` publishes one rendition and owns the device it
-captures from, so a second rendition would need a second camera. Here the source
-is opened once and every frame is wrapped in an `Arc` and sent to each
-rendition's encoder through a latest-wins slot. One allocation per frame is
-shared by the preview and every rung, which is what
-`moq_video::encode::Sink::encode` taking an `Arc<Frame>` is for. A rendition that
-falls behind drops frames rather than stalling the ones that have not.
+`set_video` fails at once for an empty ladder, an empty or duplicate name, an
+odd or zero size, a rate above the source's, a zero keyframe interval, or H.265
+asked for in software. openh264, the one encoder every build has, encodes only
+H.264.
 
-Before an encoder opens, `encode::Config::probe()` runs once per rendition. That
-costs one encoder open and buys a catalog entry describing exactly what the track
-will carry, so a subscriber can pick a rendition before a single frame has been
-encoded.
+The source opens once, and each rendition's encoder reads its frames through a
+latest-wins handle of its own. Frames are `Arc`s, so the preview and every rung
+share one allocation. A rendition that falls behind drops frames without
+stalling the others. A frame of another size than its rendition, such as a
+phone camera turned to portrait, is scaled by moq-video's
+`encode::Config::resize` on that rendition's encoder thread, not on the
+source's thread or in the encode task. The first frame any rendition encodes
+anchors the mapping from source timestamps to the broadcast clock (`Rebase`).
+Every rung carries the same timestamp for the same picture, so a subscriber
+that switches sees no jump.
 
-Audio has no ladder. A subscriber under pressure drops video renditions and never
-audio, so `AudioPublisher::set_with` publishes exactly one track.
+The rebase means a subscriber only ever sees broadcast timestamps. A
+round-trip measurement, such as the latency from capture to a result a
+subscriber reports back, echoes one of those timestamps to the publisher, which
+then has to name its own frame. `VideoEncoding::with_recorded_timestamps()`
+turns on a record for that, off by default. For an echoed broadcast timestamp,
+`video_source_timestamp` returns the source timestamp. `video_captured_at`
+returns the instant the frame entered the source, which `VideoFrames::sent_at`
+reports: when the application pushed it, or when a capture thread handed it
+over.
+`video_encoded_at` returns when the first rendition published the frame's
+encoded data, so the two instants measure the encode.
 
-## Demand gating
+The record keeps timestamps and nothing else, no pixels and no encoded data:
+the broadcast and source timestamps and the two instants, 64 bytes for each of
+the last 512 published pictures, at most 32 KiB per broadcast and about 17 s at
+30 fps. It is per frame rather than an offset per timeline, because the
+capture instant is not a function of the source timestamp: a camera stamps
+frames with its device clock, and an application stamps pushed frames however
+it likes. Without the option nothing is recorded and the three methods return
+`None`.
 
-Each rendition's encoder idles on `producer.demand().used()` and opens a
-`moq_video::encode::Sink` only once someone subscribes to that rendition. When
-the last viewer leaves, the encoder closes and the producer records a
-discontinuity so the next timestamp does not stretch a frame across the gap. The
-track and its catalog entry stay advertised throughout.
+Before a rendition is advertised, `encode::Config::probe()` runs once for it,
+so the catalog entry describes exactly what the track will carry. The whole
+ladder is probed before any of it reaches the catalog. With the encoder `Auto`
+or `Hardware`, a hardware encoder that fails to open or fails mid-stream falls
+back to software once. `Kind::Software` asks for software from the start. A
+backend named explicitly is never replaced, so a broken driver shows
+as a failed rendition.
 
-The source is deliberately not gated, which is where we diverge from upstream.
-`moq_video::encode::publish_capture` releases the camera when nobody is watching.
-We cannot do that, because the publisher's own preview draws the frames on their
-way to the encoders and a publisher expects to see itself before anyone tunes in.
+Audio has no ladder. `set_audio(source, encoding)` publishes one track, named
+after its codec. The encoding is moq-audio's `encode::Config`, and the
+`audio_encoding` module has three: `voice()` is Opus mono at 32 kbit/s,
+`music()` Opus stereo at 128 kbit/s, and `pcm(format)` uncompressed PCM in the
+given format, usually the source's (`AudioSource::format`).
+
+## Demand
+
+Each rendition's encoder waits on `producer.demand().used()` and opens a
+`moq_video::encode::Sink` only once someone subscribes to that rendition. While
+it encodes, it counts as demand on the source, which `FrameSender::demand()`
+reports. When the last viewer leaves, the encoder closes and the producer
+records a discontinuity, so the next timestamp does not stretch a frame across
+the gap. The track and its catalog entry stay advertised throughout.
+
+A subscriber that joins mid-group reads the newest group from its keyframe.
+Each rendition's track sets `track::Info::refresh` to 2, as moq-video's
+capture does: once a group's deltas outweigh twice its keyframe, a join asks
+for a group past the largest through `Demand::wanted`, and the encoder cuts a
+keyframe on its next frame. The joiner then starts near a keyframe instead of
+downloading the rest of a long group, and a later joiner benefits too.
+moq-video measured the cost at 10 to 13% more bitrate for one join a second
+and about 1% for one every ten seconds. A player that switches renditions
+joins too. The decision copies moq-video's private `encode::cuts`: requests
+that arrive while the keyframe is still in the encoder coalesce, and a fresh
+encoder's opening keyframe serves every earlier request. moq-video advertises
+the refresh only when every backend it may open honours a cut. We advertise
+it unless the rendition names the V4L2 encoder, since an encoder that cannot
+cut answers the request with its next scheduled keyframe, which is what a
+joiner gets without a refresh.
+
+The catalog reservation carries `encode::Config::effective_join()`, so
+moq-mux declares `media.join.interval` from the encoder's keyframe interval
+rather than measuring it from the first group.
+
+The encoders and the publisher's frame-rate meter read the source through
+`VideoSource::observe()`, which does not count as demand, so an idle broadcast
+does not keep an application camera running. A preview's handle does count, so
+such a camera still feeds the publisher's own preview while nobody watches.
+Capture devices and generators run regardless of demand.
+
+A microphone is not a shared source. The audio slot opens it on a thread of
+its own as soon as `set_audio` runs, as one `moq_audio::capture::Producer` that
+feeds the encoder. A failure, at open or later, shows in `status()` as a
+`Failed` audio slot, and the slot stays failed until the next `set_audio`.
+
+`LocalBroadcast::status()` watches a `PublishStatus`: each slot's `SlotState`
+(`Off`, `Starting`, `Running`, `Failed`, `Ended`), and per rendition a
+`RenditionState` (`Idle`, `Encoding { encoder }`, `Failed`). `stats()` returns
+a `PublishStats` snapshot with one entry per rendition.
 
 ## Preview
 
-`LocalBroadcast::preview()` returns a receiver for the raw frames the source
-produced, before encoding. It costs no extra decode: these are the same frames
-the encoders receive. It returns `None` when no video is publishing and when the
-source is `AnnexB`, since a pre-encoded stream has no raw picture to tap.
+`VideoSource::frames()` returns a `VideoFrames` handle onto the source's raw
+frames. These are the frames the encoders receive, so a preview costs no
+decode, and the handle counts as demand until it and its clones are dropped, so
+a source that idles until wanted produces frames for it. The preview belongs to
+the source, so it works before any broadcast exists. Pre-encoded video has no
+preview.
 
 ## Pre-encoded video
 
-The `AnnexB` path never opens an encoder. `moq_mux::codec::h264::Split` cuts the
-byte stream into access units and `moq_mux::codec::h264::Import` publishes them,
-filling in the catalog rendition from the first SPS it sees. The stream describes
-itself, so nothing here has to state a profile and level it did not choose. The
-splitter holds the final access unit until the next start code, so end of stream
-flushes it explicitly.
+`set_encoded_video` never opens an encoder. `moq_mux::codec::h264::Split` cuts
+the byte stream into access units, and `moq_mux::codec::h264::Import` publishes
+them as the one rendition `video`. `Import` fills in the catalog entry from the
+first SPS. The splitter holds the last access unit until the next start code,
+so the end of the stream flushes it explicitly. A stream that ends before its
+first access unit shows as a failed video slot.
 
-`moq_media::rpicam` produces such a stream by running `rpicam-vid` and reading
-Annex-B off its stdout. See [Raspberry Pi](../guide/raspberry-pi.md).
+See [Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
 
-## Catalog
+## Catalog and clock
 
-The catalog is `moq_mux::catalog::Producer<IrohLiveExt>`, which is hang's catalog
-with an extension flattened alongside the `video` and `audio` sections. The
-extension carries two things iroh-live publishes and hang has no place for:
-`enable_chat` creates a track and advertises it under `chat`, and `set_user`
-advertises the publisher's identity under `user`. A base hang consumer ignores
-both, so the broadcast stays wire-compatible with any hang player.
+The catalog is hang's, written by `moq_mux::catalog::Producer` with no
+extension, so any hang player reads it. Rooms carry display names in their own
+announcements (see [rooms](../how-to/rooms.md)).
 
-## Clock
+A `LocalBroadcast` holds one `moq_mux::Clock`. Both slots stamp their media
+from it, and the catalog advertises its wall-clock mapping. Each source's
+timestamps are rebased onto it at the first frame, so audio and video share a
+timeline even though the devices open at different times.
 
-`LocalBroadcast::clock()` is the `moq_mux::Clock` both media tracks are stamped
-from. Audio and video share it so their timelines stay aligned even though the
-two devices open at different times.
+`close()` ends the broadcast for every clone. It stops the encoders, gives each
+up to two seconds to finish its track, then ends the catalog and the broadcast,
+which withdraws it everywhere it was published. `closed()` waits for that.
+Dropping the last clone without `close` also ends the broadcast, without the
+clean finish.

@@ -179,3 +179,43 @@ pub use self::{
     endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
     error::Error,
 };
+
+/// The Rust programs of the guide in `docs/`, compiled as doctests.
+///
+/// Each page's `rust` blocks build against the current API, so a guide
+/// program cannot drift from the code. A block marked `ignore` is a fragment
+/// and is not compiled.
+#[cfg(all(
+    doctest,
+    feature = "full",
+    feature = "file",
+    feature = "jwt",
+    feature = "playback",
+    feature = "rooms"
+))]
+mod guide {
+    macro_rules! pages {
+        ($($name:ident => $path:literal),* $(,)?) => {
+            $(
+                #[doc = include_str!(concat!("../../docs/", $path))]
+                mod $name {}
+            )*
+        };
+    }
+
+    pages! {
+        library_quickstart => "getting-started/library-quickstart.md",
+        publish => "how-to/publish.md",
+        watch => "how-to/watch.md",
+        call => "how-to/call.md",
+        rooms => "how-to/rooms.md",
+        custom_paths => "how-to/custom-paths.md",
+        publish_through_relay => "how-to/publish-through-relay.md",
+        data => "how-to/data.md",
+        node_only => "how-to/node-only.md",
+        record => "how-to/record.md",
+        tune => "how-to/tune.md",
+        control_access => "how-to/control-access.md",
+        tokens => "how-to/tokens.md",
+    }
+}

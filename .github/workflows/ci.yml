@@ -58,6 +58,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo fmt --check
+      # Every relative link and anchor in the Markdown. The guide's Rust
+      # programs compile in the doctest step above.
+      - run: python3 scripts/check-links.py
 
   check-macos:
     name: macOS

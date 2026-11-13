@@ -1,181 +1,92 @@
 # iroh-live
 
-> **Early tech preview.** Several parts are unfinished. Windows builds in CI
-> but has never been run, on-device testing has been limited, rooms are being
-> redesigned, and the relay has no authentication. Expect frequent API changes.
-
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
-written in Rust. Connections are peer-to-peer by default, with no media server
-in the middle, and an optional relay bridges to browsers over WebTransport. The
-wire protocol is [Media over QUIC](https://moq.dev/), where every video rendition
-and audio track travels as its own set of QUIC streams, so a dropped video packet
-never delays audio.
+written in Rust. Peers connect directly, with no media server in the middle.
+The wire protocol is [Media over QUIC](https://moq.dev/): every video
+rendition and every audio track travels on its own QUIC streams, so a lost
+video packet never delays audio. Each viewer's player picks the rendition its
+link can carry, and keeps audio and video in step.
 
-Capture, encoding, decoding, and GPU rendering come from
-[moq-video and moq-audio](https://doc.moq.dev/lib/rs/) upstream. What this
-repository adds is an iroh transport, simulcast and adaptive rendition switching,
-a shared playout clock, and the application layer over all of it.
+> **Early tech preview.** Expect frequent API changes. Linux is the main
+> target, Windows has never been run, and on-device testing has been
+> limited. iroh-live depends on moq's unreleased `main` branch by git rev, so
+> it is not on crates.io. The iroh-live relay lets anyone read every
+> broadcast on it. `--auth-key` does not change that: it changes only what
+> sessions with a token may do. See
+> [Run the iroh-live relay](docs/how-to/run-relay.md).
 
 ## Quick start
 
-```sh
-cargo install --path iroh-live-cli
+Download `irl` from the
+[rolling release](https://github.com/n0-computer/iroh-live/releases/tag/rolling-release),
+or build it:
 
-# Terminal 1: publish camera and microphone, print a ticket and a QR code
+```sh
+cargo install --locked --path iroh-live-cli
+
+# Publish the camera and microphone. Prints a ticket and a QR code.
 irl publish
 
-# Terminal 2, or another machine
+# On another machine
 irl watch <TICKET>
 ```
 
-No camera? `irl publish --test-source` publishes a generated pattern and a tone.
-
-To reach subscribers that cannot dial this node directly, connect to a relay.
-Everything the node publishes is announced over that session:
-
-```sh
-irl publish --relay <RELAY_ENDPOINT_ID>
-```
-
-Full flag reference: [docs/cli.md](docs/cli.md).
+Without a camera, `irl publish --test-source` publishes a test pattern and a
+beeping tone. To open the stream in a browser, run the iroh-live relay and
+open `http://localhost:4443/?name=<TICKET>`, as the
+[CLI quickstart](docs/getting-started/cli-quickstart.md#open-it-in-a-browser)
+shows.
 
 ## Using iroh-live in Rust
 
-The workspace patches the moq crates to `Frando/moq@iroh-live`, which carries
-the changes behind eleven open pull requests to moq and one to moq-vaapi. Until
-they land in releases, a downstream user needs to copy the `[patch.crates-io]`
-block from [Cargo.toml](Cargo.toml).
-
-Publish a camera and a microphone:
-
-```rust
-use iroh_live::{Live, media::{audio, video}, ticket::LiveTicket};
-
-let live = Live::from_env().await?.with_router().spawn();
-let broadcast = live.publish("hello")?;
-
-broadcast.video().set(video::capture::Config::default())?;
-broadcast.audio().set(audio::capture::Config::default());
-
-println!("{}", LiveTicket::new(live.endpoint().id(), "hello"));
+```toml
+[dependencies]
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
 ```
 
-Subscribe and read decoded frames:
+The [library quickstart](docs/getting-started/library-quickstart.md) has a
+complete publisher and viewer.
 
-```rust
-let live = Live::from_env().await?.spawn();
-let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
-let tracks = sub.media().await;
+## Documentation
 
-if let Some(video) = tracks.video {
-    while let Some(frame) = video.recv().await {
-        // hand `frame` to a renderer
-    }
-}
-```
+The [book in `docs/`](docs/SUMMARY.md) has:
 
-`iroh-live/examples/publish.rs` is the compilable version of the first, including
-a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
+- **Getting started:** [install](docs/getting-started/install.md),
+  [CLI quickstart](docs/getting-started/cli-quickstart.md),
+  [library quickstart](docs/getting-started/library-quickstart.md).
+- **Concepts:** [how it fits together](docs/concepts/overview.md), nodes,
+  paths, routes, access control and relays.
+- **How-to guides:** publish, watch, call, rooms, browsers, recording,
+  access, tuning, Android and Raspberry Pi.
+- **Reference:** the [`irl` CLI](docs/reference/cli.md),
+  [Cargo features](docs/reference/features.md),
+  [environment variables](docs/reference/environment.md),
+  [the relay](docs/reference/relay.md) and
+  [platform support](docs/reference/platforms.md).
+- [Architecture](docs/architecture/index.md),
+  [troubleshooting](docs/troubleshooting.md),
+  [glossary](docs/glossary.md), and
+  [migrating from the previous release](docs/migration.md).
 
-## Workspace
+## Crates
 
-| Crate | Description |
-|---|---|
-| [`iroh-live`](iroh-live) | `Live`, `Call`, `Subscription`, and tickets |
-| [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
-| [`iroh-rooms`](iroh-rooms) | Gossip rooms. Media-free, and being redesigned onto moq's announce bus |
-| [`moq-media`](moq-media) | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
-| [`moq-media-egui`](moq-media-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |
-| [`moq-media-android`](moq-media-android) | The Camera2 push bridge and the EGL renderer for Android |
-| [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
-| [`iroh-live-relay`](iroh-live-relay) | Relay server bridging iroh publishers to browsers. No authentication yet |
+[`iroh-live`](iroh-live) is the library most applications need.
+[`iroh-live-cli`](iroh-live-cli) is the `irl` tool, and
+[`iroh-live-relay`](iroh-live-relay) the relay for browsers. The
+[crates reference](docs/reference/crates.md) lists the rest.
 
 ## Demos
 
-- [`demos/android`](demos/android): a Kotlin and Rust application with two-way
-  calling, hardware H.264, and zero-copy EGL rendering.
-- [`demos/pi-zero`](demos/pi-zero): a Raspberry Pi camera stream with an e-paper
-  QR display and a GLES2 watch mode.
-- [`iroh-live/examples/publish-pi.rs`](iroh-live/examples/publish-pi.rs): the
-  same publisher in 35 lines, with no flags.
-
-## Platform support
-
-| Platform | State |
-|---|---|
-| Linux, Intel and AMD | Primary target. VAAPI decode behind the `vaapi` feature, checked pixel-exact against a software decoder, handing its pictures to the renderer without a copy |
-| Linux, NVIDIA | NVENC and NVDEC behind the `nvidia` feature. Untested here |
-| macOS | Builds in CI. VideoToolbox and ScreenCaptureKit from upstream. Lightly tested |
-| Android | Tested on device, two-way audio and video |
-| Raspberry Pi | Tested on a Pi Zero 2 W and a Pi 4. Publishes pre-encoded H.264 through `rpicam-vid`, or raw pictures with `--video rpicam:raw`. The V4L2 hardware encoder and decoder behind `v4l2` both run on a Pi 4 |
-| Windows | Builds in CI, and the release workflow ships an x86-64 binary. Never run here |
-| iOS | Upstream has the backends. Never built here |
-
-Details, including what was lost when the in-house media stack was replaced:
-[docs/platforms.md](docs/platforms.md).
-
-## Building
-
-```sh
-cargo build --workspace
-```
-
-Codecs need no system libraries. Device access and graphics do:
-
-```sh
-# Debian and Ubuntu
-sudo apt install libasound2-dev libpipewire-0.3-dev libclang-dev \
-                 libegl-dev libgbm-dev libdrm-dev libfontconfig-dev libva-dev nasm
-
-# Arch
-sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
-```
-
-macOS needs `brew install libtool automake`.
-
-### Feature flags
-
-Every codec compiles unconditionally upstream, so there are no per-codec flags.
-What is left gates a build dependency or a graphics stack. `moq-media` defines
-them and the other crates pass them through.
-
-| Flag | Default in `iroh-live` | What it adds |
-|---|---|---|
-| `capture` | yes | Camera, screen, and microphone devices |
-| `render` | yes | The wgpu renderer |
-| `playback` | no | Speaker output |
-| `aec` | no | Echo cancellation. Implies `capture` and `playback` |
-| `pipewire` | no | Linux screen capture. Links `libpipewire-0.3` |
-| `sound-server` | yes | Reaches audio devices through PipeWire or PulseAudio |
-| `vaapi` | no | Intel and AMD hardware H.264 encode and decode, the decoder handing its pictures over without a copy |
-| `nvidia` | no | NVIDIA hardware encode and decode |
-| `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs. Encoder and decoder both exercised on a Raspberry Pi 4 |
-| `rpicam` | no | The Raspberry Pi camera, through `rpicam-vid`. Linux only |
-
-`moq-media` adds one of its own, `test-source`, for generated video and audio.
-`iroh-live-cli` turns on `playback` as well.
-
-### Cross-compiling for aarch64
-
-```sh
-cargo make cross-sysroot-aarch64                              # once
-cargo make cross-build-aarch64 -- -p iroh-live-cli --release
-```
-
-This uses `cargo-zigbuild` against a Debian Bookworm sysroot assembled without
-sudo. A Docker path exists for hosts that cannot install zig. See
-[cross/README.md](cross/README.md).
+- [`demos/android`](demos/android): an Android app that watches, publishes and
+  calls, with hardware H.264 and zero-copy rendering.
+- [`demos/pi-zero`](demos/pi-zero): a Raspberry Pi camera publisher with an
+  e-paper QR display and a GLES2 viewer.
 
 ## Contributing
 
-[DEVELOPMENT.md](DEVELOPMENT.md) covers the workspace layout, the build and test
-workflow, and the conventions. Issues live in the
-[tracker](https://github.com/n0-computer/iroh-live/issues).
-
-```sh
-cargo make check-all   # check and clippy across three feature sets, then fmt
-cargo make test        # cargo nextest across the workspace
-```
+[DEVELOPMENT.md](DEVELOPMENT.md) covers the build, the tests and the
+conventions, and [Contributing](docs/contributing.md) the docs. Issues go in
+the [tracker](https://github.com/n0-computer/iroh-live/issues).
 
 ## License
 
