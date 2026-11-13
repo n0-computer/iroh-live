@@ -104,7 +104,7 @@ Names from development versions between the two releases:
 | `secret_key_file` | `load_or_create_secret_key` |
 | `pull::PullState` | `pull::Pulls` |
 | `dialed()` on a request | `direction()`, a `Direction` |
-| `PlayerConfig { audio: bool, speaker }` | `PlayerConfig { audio: AudioMode }` |
+| `PlayerConfig { audio: bool, speaker }` | `PlayerConfig::audio`, an `AudioMode`, set with `with_audio` |
 | `AudioSource::file(path, bool)` | `AudioSource::file(path, FileEnd)` |
 | `RelayConfig::token`, `TokenFn`, `TokenSource` | `RelayConfig::tokens`, `RelayConfig::with_token`, and `RelayLink::tokens().set(..)` on a live link |
 
@@ -137,3 +137,7 @@ Names from development versions between the two releases:
 - **The relay.** It pulls tickets only for sessions whose token allows it, or
   with `--open-pulls`. Under `--auth-key`, browsers are decided by moq-auth's
   reference policy. See the [relay reference](reference/relay.md).
+- **Config structs.** `EndpointConfig`, `NodeConfig`, `ConnectOptions`,
+  `RelayConfig`, `PlayerConfig`, `VideoEncoding`, `VideoRendition` and
+  `Adaptation` are `#[non_exhaustive]`. Build them from `Default` or a
+  constructor, then use the `with_*` builders or set fields.

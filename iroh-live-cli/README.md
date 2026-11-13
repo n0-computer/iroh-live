@@ -32,17 +32,5 @@ longer than five seconds.
 
 ## Features
 
-Every feature is on by default. The Linux-only ones compile to nothing on
-macOS and Windows, which get their capture and codec frameworks without a
-feature, so `cargo install --path iroh-live-cli` builds every backend the
-platform can reach. On Linux the build needs libpipewire and libclang.
-
-| Feature | Default | Effect |
-|---|---|---|
-| `aec` | yes | echo cancellation for `call` and `room` |
-| `playback` | yes | audio playback |
-| `sound-server` | yes | PipeWire and PulseAudio devices (Linux) |
-| `pipewire` | yes | PipeWire's camera as the default camera, and the desktop portal's picker for the default screen, `screen:portal` and `window:portal` (Linux) |
-| `rpicam` | yes | `--video rpicam`, the Raspberry Pi camera (Linux) |
-| `vaapi`, `nvidia` | yes | hardware encode and decode on Intel and AMD (VA-API) or NVIDIA (Linux) |
-| `v4l2` | yes | the V4L2 memory-to-memory H.264 codecs of ARM SoCs, such as a Pi 4 (Linux) |
+Every feature is on by default, and the Linux-only ones compile to nothing on
+macOS and Windows. [Cargo features](../docs/reference/features.md) lists them.

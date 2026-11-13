@@ -1,7 +1,7 @@
 # The moq crates come from moq-dev/moq `main` by git rev (`6aa4f9c1c`), set in
 # `[workspace.dependencies]` of the root `Cargo.toml`. There is no `[patch]`
 # block. `Cargo.lock` pins the rev, so the `--locked` jobs build what a local
-# checkout builds. See "The moq dependency" in the README.
+# checkout builds. See docs/getting-started/install.md.
 name: CI
 on:
   push:
@@ -58,6 +58,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo fmt --check
+      # Every relative link and anchor in the Markdown. The guide's Rust
+      # programs compile in the doctest step above.
+      - run: python3 scripts/check-links.py
 
   check-macos:
     name: macOS

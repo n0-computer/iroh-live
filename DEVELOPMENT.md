@@ -1,8 +1,8 @@
 # Development guide
 
-[README.md](README.md) lists the crates and has the quick start.
-[docs/](docs/SUMMARY.md) has the architecture and the guides, and the crate docs
-describe the main types.
+[README.md](README.md) has the quick start. The book in
+[docs/](docs/SUMMARY.md) has the guides, the reference and the architecture,
+and the crate docs describe the main types.
 
 Codecs, capture, decoding, and the wgpu renderer live upstream in `moq-video`
 and `moq-audio`. See
@@ -33,6 +33,10 @@ Run `cargo make check-all` before you commit code. The `--no-default-features`
 run is where feature-gated mistakes show up. The browser suite needs
 `npm ci` and `npx playwright install chromium` in `tests/e2e-browser` once.
 
+For docs, run `cargo test --doc -p iroh-live --all-features`, which compiles
+the guide's Rust programs, and `python3 scripts/check-links.py`. See
+[docs/contributing.md](docs/contributing.md).
+
 A test that has to see a rendition switch within its timeout shortens the
 timers in `PlayerConfig::adaptation`, as the patchbay suite does.
 
@@ -57,7 +61,8 @@ pinned in the root `Cargo.toml`. To try a local checkout, add a `[patch]` block
 for the moq repository that points at `../moq/rs/<crate>`. Do not commit it.
 
 To bump the pin, change the rev of every moq crate in the root `Cargo.toml` at
-once, and update the rev and date in the README's moq section.
+once, and update the rev and date in
+[docs/getting-started/install.md](docs/getting-started/install.md#use-the-library).
 
 ## Commits
 

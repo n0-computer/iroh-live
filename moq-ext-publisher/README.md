@@ -39,11 +39,5 @@ Dropping the last clone ends the broadcast at once, without that wait.
 
 ## Feature flags
 
-| Feature | Default | What it adds |
-|---|---|---|
-| `capture` | no | Camera, screen and microphone devices |
-| `sound-server` | no | Audio devices through PipeWire or PulseAudio instead of ALSA |
-| `aec` | no | Echo cancellation. Implies `capture` |
-| `pipewire` | no | Linux screen capture through xdg-desktop-portal, and PipeWire's camera as the default |
-| `vaapi`, `nvidia`, `v4l2` | no | Hardware H.264 encoding |
-| `rpicam` | no | The `rpicam-vid` sources. Linux only |
+No feature is on by default. Without one, the crate encodes, but cannot open
+a device. [Cargo features](../docs/reference/features.md) lists them.

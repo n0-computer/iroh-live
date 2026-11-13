@@ -120,8 +120,4 @@ account's space on an rcan capability chain. Run it with
 
 ## Features
 
-| Feature | Effect |
-|---|---|
-| `jwt` | `policy::JwtVerifier`, which verifies moq-relay's JWTs |
-| `rcan` | `policy::RcanVerifier`, `MoqCapability` and `encode_chain`, for capability chains bound to the peer's key |
-| `test-util` | Helpers for tests that run nodes in one process. Not a public API |
+`jwt` and `rcan` add the token verifiers to `policy`. [Cargo features](../docs/reference/features.md) lists them.

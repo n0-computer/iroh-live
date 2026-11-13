@@ -42,12 +42,4 @@ return too.
 
 ## Features
 
-| Feature | Default | Effect |
-|---|---|---|
-| `pattern` | yes | test pattern and tone generators |
-| `file` | no | WAV and MP3 file source |
-| `capture` | no | camera, screen and microphone |
-| `sound-server` | no | PipeWire and PulseAudio devices (Linux) |
-| `aec` | no | echo cancellation for the microphone |
-| `pipewire` | no | the desktop portal's screen capture and PipeWire's camera as the Linux defaults |
-| `rpicam` | no | the Raspberry Pi camera through `rpicam-vid` (Linux) |
+Only `pattern` is on by default. [Cargo features](../docs/reference/features.md) lists them.

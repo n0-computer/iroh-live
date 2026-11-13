@@ -36,8 +36,4 @@ control](../docs/how-to/control-access.md) covers the model.
 
 ## Features
 
-- `jwt`: `policy::JwtVerifier`, which verifies JWTs with moq-auth, the tokens
-  moq-relay reads.
-- `rcan`: `policy::RcanVerifier`, which verifies rcan capability chains bound
-  to the peer's ed25519 key. A chain is `rcan1:` and the base32 of its links,
-  and `policy::encode_chain` writes one.
+`jwt` and `rcan` add the token verifiers. [Cargo features](../docs/reference/features.md) lists them.

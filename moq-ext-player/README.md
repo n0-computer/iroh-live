@@ -34,10 +34,5 @@ A broadcast published in the same process is read the same way: pass
 
 ## Feature flags
 
-| Feature | Default | What it adds |
-|---|---|---|
-| `record` | no | `RemoteBroadcast::mux_source`, the input of moq-mux's fragmented MP4 and Matroska export |
-| `playback` | no | Speaker output |
-| `aec` | no | The speaker engine's echo canceller, for a microphone. Implies `playback` |
-| `render` | no | The wgpu renderer |
-| `vaapi`, `nvidia`, `v4l2` | no | Hardware H.264 decoding |
+No feature is on by default. Without one, the crate decodes, but cannot play
+sound or draw. [Cargo features](../docs/reference/features.md) lists them.
