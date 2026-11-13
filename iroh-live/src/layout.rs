@@ -136,6 +136,9 @@ impl LiveLayout {
     }
 
     /// Returns the [`NodeConfig`] of a node on this layout, with its [`policy`](Self::policy).
+    ///
+    /// The config's [`layout`](NodeConfig::layout) is this layout, so ticket
+    /// claims follow its [`owner`](Layout::owner) rule.
     #[must_use]
     pub fn config(&self) -> NodeConfig {
         config(self.clone())
@@ -232,9 +235,14 @@ pub fn policy(layout: impl Layout<EndpointId> + Clone) -> impl Policy<EndpointId
 }
 
 /// Returns the [`NodeConfig`] of a node on `layout`, with its [`policy()`].
+///
+/// The config's [`layout`](NodeConfig::layout) is `layout` too, so
+/// [`Node::claim_path`] grants a peer the paths `layout` says it owns.
 #[must_use]
 pub fn config(layout: impl Layout<EndpointId> + Clone) -> NodeConfig {
-    NodeConfig::default().with_policy(policy(layout))
+    NodeConfig::default()
+        .with_policy(policy(layout.clone()))
+        .with_layout(layout)
 }
 
 #[cfg(test)]
@@ -246,6 +254,27 @@ mod tests {
 
     fn id() -> EndpointId {
         SecretKey::generate().public()
+    }
+
+    /// A node configured from a layout claims only the paths that layout says a peer owns.
+    #[tokio::test]
+    async fn a_layouts_config_claims_by_its_own_owner_rule() {
+        let layout = LiveLayout::new("cams");
+        let config = layout.config();
+        assert!(config.layout.is_some(), "the config names no layout");
+        let node = Node::new(iroh_live_node::test_util::endpoint().await, config);
+        let peer = id();
+
+        let inside = layout.path(peer, "cam").expect("a path");
+        node.claim_path(peer, &inside)
+            .expect("the layout's own path");
+        // The generic rule would take this path, since one segment is the peer's id.
+        let outside = Path::new(&format!("live/{peer}/cam")).expect("a path");
+        let err = node
+            .claim_path(peer, &outside)
+            .expect_err("a path outside the layout");
+        assert!(matches!(err, Error::NotOwner { .. }), "{err:#}");
+        node.shutdown().await;
     }
 
     #[test]

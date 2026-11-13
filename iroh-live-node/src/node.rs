@@ -123,6 +123,15 @@ impl NodeConfig {
         self.policy = Some(Arc::new(policy));
         self
     }
+
+    /// Returns this configuration with `layout` naming the peer that owns a path.
+    ///
+    /// See [`layout`](Self::layout).
+    #[must_use]
+    pub fn with_layout(mut self, layout: impl Layout<EndpointId>) -> Self {
+        self.layout = Some(Arc::new(layout));
+        self
+    }
 }
 
 /// A MoQ node on an iroh endpoint.
