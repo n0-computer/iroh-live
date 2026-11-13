@@ -285,14 +285,14 @@ async fn setup_recv(
         )
     })?;
     let sub = transport::subscribe(node, &ticket).await?;
-    let catalog = crate::playback::catalog(sub.broadcast()).await?;
+    let catalog = crate::playback::catalog(&sub.broadcast).await?;
 
     let recording = match &config.record {
         None => None,
         Some(path) => {
             let mut options = RecordOptions::new(path.clone(), None)?;
             options.rendition = config.rendition.clone();
-            Some(crate::record::start(sub.broadcast(), &catalog, &options).await?)
+            Some(crate::record::start(&sub.broadcast, &catalog, &options).await?)
         }
     };
 
@@ -325,7 +325,7 @@ fn play_audio(
         ..PlayerConfig::default()
     };
     let config = crate::playback::audio_on(config, speaker);
-    sub.broadcast()
+    sub.broadcast
         .play(config)
         .inspect_err(|err| warn!(name, error = %err, "audio failed to play"))
         .ok()

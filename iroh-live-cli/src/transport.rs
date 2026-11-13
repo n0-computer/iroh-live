@@ -4,7 +4,7 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BroadcastTicket, EndpointConfig, Mdns, Node, Session, Subscription,
+    BroadcastTicket, EndpointConfig, Mdns, Node, Subscription,
     layout::LiveLayout,
     media::{RemoteBroadcast, remote_broadcast},
     node::{RelayConfig, RelayLink},
@@ -136,8 +136,9 @@ pub(crate) async fn with_node<T>(
 /// A subscription and the media broadcast read through it.
 #[derive(Debug, Clone)]
 pub(crate) struct Subscribed {
-    subscription: Subscription,
-    broadcast: RemoteBroadcast,
+    /// The subscription the broadcast arrives over.
+    pub(crate) subscription: Subscription,
+    pub(crate) broadcast: RemoteBroadcast,
 }
 
 impl Subscribed {
@@ -152,21 +153,6 @@ impl Subscribed {
         }
     }
 
-    /// Returns the media broadcast.
-    pub(crate) fn broadcast(&self) -> &RemoteBroadcast {
-        &self.broadcast
-    }
-
-    /// Returns the subscription the broadcast arrives over.
-    pub(crate) fn subscription(&self) -> &Subscription {
-        &self.subscription
-    }
-
-    /// Returns the session serving the broadcast, if a direct one does.
-    pub(crate) fn session(&self) -> Option<Session> {
-        self.subscription.session()
-    }
-
     /// Closes the session that served the broadcast.
     ///
     /// The session is shared with everything else open to the same peer, so
@@ -174,7 +160,7 @@ impl Subscribed {
     /// tile or a call must not: other tiles, the chat or the next call use the
     /// same session.
     pub(crate) fn close(&self) {
-        if let Some(session) = self.session() {
+        if let Some(session) = self.subscription.session() {
             session.close(moq_net::Error::Cancel);
         }
     }
@@ -212,7 +198,7 @@ pub(crate) async fn subscribe(node: &Node, ticket: &BroadcastTicket) -> Result<S
     info!(
         peer = %ticket.peer().fmt_short(),
         broadcast = %ticket.path(),
-        path = %sub.subscription().path(),
+        path = %sub.subscription.path(),
         "subscribed"
     );
     Ok(sub)

@@ -60,7 +60,7 @@ async fn record(args: RecordArgs) -> Result {
 async fn record_on(node: &Node, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
     let sub = transport::subscribe(node, ticket).await?;
 
-    let catalog = crate::playback::catalog(sub.broadcast()).await?;
+    let catalog = crate::playback::catalog(&sub.broadcast).await?;
     println!(
         "catalog: {} video, {} audio renditions",
         catalog.video.renditions.len(),
@@ -75,7 +75,7 @@ async fn record_on(node: &Node, ticket: &BroadcastTicket, options: &RecordOption
 
     // The subscribed broadcast records through its route table, so a rendition
     // that names a sibling broadcast resolves too.
-    let recording = start(sub.broadcast(), &catalog, options).await?;
+    let recording = start(&sub.broadcast, &catalog, options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
         None => println!("recording, press Ctrl+C to stop"),

@@ -55,11 +55,11 @@ pub(crate) fn audio_on(mut config: PlayerConfig, speaker: Option<&Speaker>) -> P
 /// A broadcast without a catalog fails here instead of opening a black
 /// window, and so does a pinned rendition the catalog does not offer.
 pub(crate) async fn open(sub: Subscribed, config: PlayerConfig) -> Result<(Subscribed, Player)> {
-    let catalog = catalog(sub.broadcast()).await?;
+    let catalog = catalog(&sub.broadcast).await?;
     if let RenditionMode::Pinned(name) = &config.rendition {
         video_rendition(&catalog, name)?;
     }
-    let player = sub.broadcast().play(config)?;
+    let player = sub.broadcast.play(config)?;
     Ok((sub, player))
 }
 

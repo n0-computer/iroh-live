@@ -481,7 +481,7 @@ mod window {
         let title = ticket.path().to_string();
         let mut remote =
             RemoteView::new(ctx, "video", player, options.playback.decoder, render_state)
-                .with_link(sub.subscription().clone());
+                .with_link(sub.subscription.clone());
         if let RenditionMode::Pinned(_) = &options.rendition {
             remote.set_rendition(options.rendition.clone());
         }

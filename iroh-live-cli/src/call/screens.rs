@@ -93,7 +93,7 @@ impl InCall {
     ///
     /// The peer withdrawing its offer ends the broadcast at once.
     pub(super) fn ended(&self) -> bool {
-        self.sub.subscription().broadcast().is_closed() || self.sub.broadcast().is_closed()
+        self.sub.subscription.broadcast().is_closed() || self.sub.broadcast.is_closed()
     }
 }
 

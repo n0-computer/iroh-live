@@ -437,7 +437,7 @@ mod window {
                     self.playback.decoder,
                     self.render_state.as_ref(),
                 )
-                .with_link(sub.subscription().clone());
+                .with_link(sub.subscription.clone());
                 self.tiles.push(PeerTile {
                     remote,
                     name,
@@ -457,9 +457,8 @@ mod window {
         /// The broadcast closes three seconds after no route serves it, which
         /// also covers a failed session.
         fn drop_closed(&mut self, ctx: &egui::Context) {
-            let dropped = self.close_tiles("the broadcast ended", |tile| {
-                tile.sub.broadcast().is_closed()
-            });
+            let dropped =
+                self.close_tiles("the broadcast ended", |tile| tile.sub.broadcast.is_closed());
             if dropped > 0 {
                 self.reconcile_later(ctx);
             }
