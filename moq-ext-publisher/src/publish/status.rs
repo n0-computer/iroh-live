@@ -22,6 +22,12 @@ pub enum RenditionState {
         /// The encoder backend, such as `openh264` or `vaapi`.
         encoder: String,
     },
+    /// The grant cannot fund this rendition beside the lower ones, so it is off.
+    ///
+    /// Only a broadcast that follows an allocator pauses a rendition. The
+    /// catalog marks it disabled, so a player picks a lower one, and it resumes
+    /// once the grant clears its band boundary again.
+    Paused,
     /// The encoder failed, and so did its fallback if there was one.
     Failed(ByPtr<Error>),
 }
