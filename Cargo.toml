@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "iroh-live",
+    "iroh-live-relay",
     "iroh-live-node",
     "moq-transport-iroh",
     "moq-ext-access",
