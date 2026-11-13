@@ -17,16 +17,17 @@ use std::{
 
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_live::{
-    Node, Reach, Subscription,
+    Node, RateControl, Reach, SendEstimate, Subscription,
     layout::LiveLayout,
     media::{
         Adaptation, LocalBroadcast, Player, PlayerConfig, Rate, RemoteBroadcast, RenditionMode,
-        VideoEncoding, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
+        RenditionState, VideoEncoding, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
         video::{Frame, FrameRate, Size},
     },
     node::NetworkSample,
 };
 use n0_tracing_test::traced_test;
+use n0_watcher::Watcher;
 use patchbay::{Lab, LinkCondition, NodeId};
 use tracing::info;
 
@@ -82,8 +83,8 @@ struct Fixture {
     subscriber_node: NodeId,
     router_node: NodeId,
     publisher: Node,
-    /// Held because dropping it stops publishing.
-    _broadcast: LocalBroadcast,
+    /// The published broadcast. Dropping it stops publishing.
+    local: LocalBroadcast,
     subscriber: Node,
     subscription: Subscription,
     broadcast: RemoteBroadcast,
@@ -91,7 +92,25 @@ struct Fixture {
 
 impl Fixture {
     /// Builds the lab, publishes `renditions` of a gradient and subscribes to it.
+    ///
+    /// The publisher runs rate control only if `IROH_LIVE_PATCHBAY_RATE` names
+    /// a send estimate, such as `app` or `controller`, so the whole suite can
+    /// run with it.
     async fn start(size: Size, renditions: Vec<VideoRendition>) -> Self {
+        let rate_control = std::env::var("IROH_LIVE_PATCHBAY_RATE").ok().map(|name| {
+            let estimate: SendEstimate = name.parse().expect("a send estimate");
+            RateControl::new(estimate)
+        });
+        Self::start_with(size, renditions, rate_control).await
+    }
+
+    /// Builds the lab as [`start`](Self::start) does, with the publisher's rate control as given.
+    async fn start_with(
+        size: Size,
+        renditions: Vec<VideoRendition>,
+        rate_control: Option<RateControl>,
+    ) -> Self {
+        info!(?rate_control, "starting the lab");
         let lab = Lab::new().await.expect("failed to build the lab");
         let router = lab
             .add_router("r1")
@@ -131,7 +150,9 @@ impl Fixture {
             .expect("the subscriber bind task failed")
             .expect("failed to bind the subscriber endpoint");
 
-        let publisher = Node::new(publisher_endpoint.clone(), LiveLayout::default().config());
+        let mut config = LiveLayout::default().config();
+        config.rate_control = rate_control;
+        let publisher = Node::new(publisher_endpoint.clone(), config);
         let _router = publisher.mount(Router::builder(publisher_endpoint)).spawn();
         let broadcast: LocalBroadcast = LiveLayout::default()
             .publish(&publisher, "patchbay")
@@ -162,7 +183,7 @@ impl Fixture {
             subscriber_node,
             router_node,
             publisher,
-            _broadcast: broadcast,
+            local: broadcast,
             subscriber,
             subscription,
             broadcast: remote,
@@ -1089,5 +1110,340 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
         millis(after.min_rtt),
     );
 
+    fixture.shutdown().await;
+}
+
+/// Returns the publisher's rate control, with the estimate `IROH_LIVE_PATCHBAY_RATE` names if set.
+fn rate_control() -> RateControl {
+    match std::env::var("IROH_LIVE_PATCHBAY_RATE") {
+        Ok(name) => RateControl::new(name.parse().expect("a send estimate")),
+        Err(_) => RateControl::default(),
+    }
+}
+
+/// One reading of the publisher's rate control and of what reaches the subscriber.
+#[derive(Debug, Clone)]
+struct RateRow {
+    at: Duration,
+    phase: &'static str,
+    rendition: String,
+    state: String,
+    target_kbps: Option<u64>,
+    grant_kbps: Option<u64>,
+    encoded_kbps: Option<u64>,
+    delivery_kbps: Option<u64>,
+    throughput_kbps: Option<u64>,
+    rtt_ms: u64,
+    /// The publisher's own smoothed round trip, which its estimator reads.
+    publisher_rtt_ms: u64,
+}
+
+/// Records [`RateRow`]s of one rendition every half second, while it lives.
+struct RateTrace {
+    rows: Arc<std::sync::Mutex<Vec<RateRow>>>,
+    phase: Arc<std::sync::Mutex<&'static str>>,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl RateTrace {
+    /// Starts recording rendition `rendition` of `fixture`'s broadcast.
+    fn start(fixture: &Fixture, rendition: &str) -> Self {
+        let rows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let phase = Arc::new(std::sync::Mutex::new("clear"));
+        let (local, link, name) = (fixture.local.clone(), fixture.link(), rendition.to_string());
+        let publisher = fixture.publisher.clone();
+        let task = tokio::spawn({
+            let (rows, phase) = (rows.clone(), phase.clone());
+            async move {
+                let start = Instant::now();
+                let kbps = |rate: Option<Rate>| rate.map(|rate| rate.as_bps() / 1000);
+                loop {
+                    let stats = local
+                        .stats()
+                        .renditions
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let state = local.status().borrow().renditions.get(&name).cloned();
+                    let signals = link.read();
+                    let publisher_rtt = publisher.sessions().get().first().and_then(|session| {
+                        let paths = session.connection().paths();
+                        let selected = paths.iter().find(|path| path.is_selected());
+                        selected.map(|path| path.rtt())
+                    });
+                    rows.lock().expect("poisoned").push(RateRow {
+                        at: start.elapsed(),
+                        phase: *phase.lock().expect("poisoned"),
+                        rendition: name.clone(),
+                        state: match state {
+                            Some(RenditionState::Encoding { .. }) => "encoding".into(),
+                            Some(other) => format!("{other:?}").to_lowercase(),
+                            None => "-".into(),
+                        },
+                        target_kbps: kbps(stats.target),
+                        grant_kbps: kbps(stats.grant),
+                        encoded_kbps: kbps(stats.bitrate),
+                        delivery_kbps: signals.delivery.map(|bps| bps / 1000),
+                        throughput_kbps: signals.throughput.map(|bps| bps / 1000),
+                        rtt_ms: millis(signals.rtt),
+                        publisher_rtt_ms: millis(publisher_rtt),
+                    });
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        });
+        Self {
+            rows,
+            phase,
+            _task: task,
+        }
+    }
+
+    /// Marks the readings from now on as `phase`.
+    fn phase(&self, phase: &'static str) {
+        *self.phase.lock().expect("poisoned") = phase;
+    }
+
+    /// Prints the readings as a table, so a run shows the course of the bitrate.
+    fn print(&self, title: &str) {
+        println!("rate trace: {title}");
+        println!(
+            "{:>6} {:<8} {:<6} {:<9} {:>7} {:>7} {:>8} {:>9} {:>8} {:>6} {:>6}",
+            "t_s",
+            "phase",
+            "track",
+            "state",
+            "target",
+            "grant",
+            "encoded",
+            "delivery",
+            "through",
+            "rtt_ms",
+            "p_rtt"
+        );
+        let show =
+            |kbps: Option<u64>| kbps.map_or_else(|| "-".to_string(), |kbps| kbps.to_string());
+        for row in self.rows.lock().expect("poisoned").iter() {
+            println!(
+                "{:>6.1} {:<8} {:<6} {:<9} {:>7} {:>7} {:>8} {:>9} {:>8} {:>6} {:>6}",
+                row.at.as_secs_f64(),
+                row.phase,
+                row.rendition,
+                row.state,
+                show(row.target_kbps),
+                show(row.grant_kbps),
+                show(row.encoded_kbps),
+                show(row.delivery_kbps),
+                show(row.throughput_kbps),
+                row.rtt_ms,
+                row.publisher_rtt_ms,
+            );
+        }
+    }
+}
+
+/// Waits up to `limit` until `check` holds for `fixture`'s rendition `name`, and returns how long it took.
+async fn rate_reaches(
+    fixture: &Fixture,
+    name: &str,
+    limit: Duration,
+    check: impl Fn(&iroh_live::media::EncodeStats, Option<&RenditionState>) -> bool,
+) -> Option<Duration> {
+    let start = Instant::now();
+    tokio::time::timeout(limit, async {
+        loop {
+            let stats = fixture.local.stats().renditions.get(name).cloned();
+            let state = fixture
+                .local
+                .status()
+                .borrow()
+                .renditions
+                .get(name)
+                .cloned();
+            if stats.is_some_and(|stats| check(&stats, state.as_ref())) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .ok()
+    .map(|()| start.elapsed())
+}
+
+/// The cap the rate control scenarios apply, under what the picture encodes to.
+const RATE_CAP_KBIT: u32 = 250;
+
+/// The ceiling of the one rendition the cap scenarios publish.
+const RATE_CEILING: Rate = Rate::from_kbps(1_500);
+
+/// Starts a publisher with rate control and one rendition at [`RATE_CEILING`], and plays it.
+///
+/// Returns once frames flowed over the clear link for a few seconds and the
+/// encoder sits at its ceiling.
+async fn capped_rendition() -> (Fixture, Viewer, RateTrace) {
+    let fixture = Fixture::start_with(
+        Size::new(640, 480),
+        vec![rendition("high", None, RATE_CEILING)],
+        Some(rate_control()),
+    )
+    .await;
+    let mut viewer = fixture.play(1, "high").await;
+    tokio::time::timeout(TIMEOUT, viewer.next())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("the video ended before its first frame");
+    let trace = RateTrace::start(&fixture, "high");
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(5)).await;
+    assert_eq!(
+        fixture.local.stats().renditions["high"].target,
+        Some(RATE_CEILING),
+        "a clear link keeps the encoder at its ceiling"
+    );
+    (fixture, viewer, trace)
+}
+
+/// Caps the link and waits until the encoder's target is under 1.1 times the cap.
+///
+/// Returns how long that took after the cap went on.
+async fn cap_and_follow(fixture: &Fixture, trace: &RateTrace) -> Duration {
+    trace.phase("capped");
+    fixture
+        .impair(LinkCondition::new().rate_kbit(RATE_CAP_KBIT))
+        .await;
+    let under = u64::from(RATE_CAP_KBIT) * 1000 * 11 / 10;
+    let followed = rate_reaches(fixture, "high", Duration::from_secs(20), |stats, _| {
+        stats.target.is_some_and(|target| target.as_bps() <= under)
+    })
+    .await;
+    match followed {
+        Some(after) => {
+            info!(
+                after_ms = after.as_millis() as u64,
+                "the encoder followed the cap"
+            );
+            after
+        }
+        None => {
+            trace.print("cap not followed");
+            panic!(
+                "the encoder's target stayed above {under} bps under a {RATE_CAP_KBIT} kbit/s cap"
+            );
+        }
+    }
+}
+
+/// A capped link lowers the encoder's bitrate, and frames keep coming at the lower rate.
+///
+/// The target falls under 1.1 times the cap. After the queue the drop built
+/// has drained, frames arrive at more than half the frame rate, with no gap
+/// over two seconds.
+#[tokio::test]
+#[traced_test]
+async fn the_encoder_follows_a_cap_without_stalling() {
+    let (fixture, mut viewer, trace) = capped_rendition().await;
+    let followed = cap_and_follow(&fixture, &trace).await;
+    // The queue from before the drop drains first.
+    let _drain = drain(&mut viewer.frames, Duration::from_secs(5)).await;
+    let window = Duration::from_secs(15);
+    let arrivals = drain(&mut viewer.frames, window).await;
+    report("capped", &arrivals, window);
+    trace.print("cap drop");
+    let gaps = gaps(&arrivals);
+    assert!(
+        arrivals.len() as u32 >= half_rate(window),
+        "only {} frames in {window:?} under the cap, {followed:?} after the encoder followed it",
+        arrivals.len()
+    );
+    assert!(
+        longest(&gaps) < Duration::from_secs(2),
+        "a {:?} gap under the cap",
+        longest(&gaps)
+    );
+    fixture.shutdown().await;
+}
+
+/// Lifting the cap lets the encoder climb back to its ceiling.
+///
+/// Without padding probes the estimate climbs by 10% a second once the path
+/// stays clean, from 0.85 times what the capped link delivered.
+#[tokio::test]
+#[traced_test]
+async fn the_encoder_recovers_when_the_cap_lifts() {
+    let (fixture, mut viewer, trace) = capped_rendition().await;
+    cap_and_follow(&fixture, &trace).await;
+    let _capped = drain(&mut viewer.frames, Duration::from_secs(5)).await;
+    trace.phase("lifted");
+    fixture.clear().await;
+    let recovered = rate_reaches(&fixture, "high", Duration::from_secs(60), |stats, _| {
+        stats.target == Some(RATE_CEILING)
+    })
+    .await;
+    trace.print("cap lifted");
+    let recovered = recovered.expect("the encoder did not climb back to its ceiling in 60 s");
+    info!(
+        after_ms = recovered.as_millis() as u64,
+        "the encoder recovered"
+    );
+    let window = Duration::from_secs(5);
+    let arrivals = drain(&mut viewer.frames, window).await;
+    report("recovered", &arrivals, window);
+    assert!(arrivals.len() as u32 >= half_rate(window));
+    fixture.shutdown().await;
+}
+
+/// A cap under a rung's band boundary pauses the rung, and lifting it resumes the rung.
+///
+/// `high` reserves 1.2 Mbit/s above `low` at 200 kbit/s, so it pauses below
+/// 533 kbit/s. The player follows the catalog to `low` while `high` is paused.
+#[tokio::test]
+#[traced_test]
+async fn a_paused_rendition_resumes_when_the_cap_lifts() {
+    let renditions = vec![
+        rendition("high", None, Rate::from_kbps(1_200)),
+        rendition("low", Some(Size::new(320, 240)), Rate::from_kbps(200)),
+    ];
+    let fixture = Fixture::start_with(Size::new(640, 480), renditions, Some(rate_control())).await;
+    let mut viewer = fixture.play_auto_quick(2).await;
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high"))
+        .await
+        .expect("a clear link should start at the top of the ladder");
+    let trace = RateTrace::start(&fixture, "high");
+    let _settle = drain(&mut viewer.frames, Duration::from_secs(5)).await;
+
+    trace.phase("capped");
+    fixture
+        .impair(LinkCondition::new().rate_kbit(RATE_CAP_KBIT))
+        .await;
+    let paused = rate_reaches(&fixture, "high", Duration::from_secs(30), |_, state| {
+        state == Some(&RenditionState::Paused)
+    })
+    .await;
+    let Some(paused) = paused else {
+        trace.print("never paused");
+        panic!("`high` did not pause under a {RATE_CAP_KBIT} kbit/s cap");
+    };
+    info!(after_ms = paused.as_millis() as u64, "`high` paused");
+    tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "low"))
+        .await
+        .expect("the player did not leave the paused rendition");
+    let window = Duration::from_secs(5);
+    let arrivals = drain(&mut viewer.frames, window).await;
+    report("paused", &arrivals, window);
+
+    trace.phase("lifted");
+    fixture.clear().await;
+    let resumed = rate_reaches(&fixture, "high", Duration::from_secs(60), |_, state| {
+        state != Some(&RenditionState::Paused)
+    })
+    .await;
+    let Some(resumed) = resumed else {
+        trace.print("never resumed");
+        panic!("`high` did not resume in 60 s after the cap lifted");
+    };
+    info!(after_ms = resumed.as_millis() as u64, "`high` resumed");
+    let upgraded = tokio::time::timeout(TIMEOUT, switched_to(&viewer.player, "high")).await;
+    trace.print("pause and resume");
+    upgraded.expect("the player did not return to the resumed rendition");
     fixture.shutdown().await;
 }
