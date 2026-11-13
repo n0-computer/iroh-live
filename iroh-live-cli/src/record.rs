@@ -1,295 +1,272 @@
-//! `irl record`: subscribe to a remote broadcast and write it to a file.
+//! `irl record`: subscribes to a remote broadcast and writes it to a file.
 //!
-//! Recording is a remux rather than a transcode: `moq_mux`'s container
-//! exporter reads encoded frames off the wire and writes them into fragmented
-//! MP4 or Matroska with no decoder anywhere in the path. The exporter also
-//! builds the container's decoder configuration from the catalog, turning an
-//! `avc3` track with inline parameter sets into the `avc1` shape a player
-//! expects, so nothing here has to understand H.264 framing.
+//! moq-mux's container exporters remux the encoded frames into fragmented MP4
+//! or Matroska without decoding, and build the container's decoder
+//! configuration from the catalog. [`RemoteBroadcast::mux_source`] is their
+//! input. This module adds the flags and a progress line.
+//!
+//! A recording starts from the oldest group the track still holds instead of
+//! the live edge, and waits longer than a player for a stalled group.
 
 use std::{
     future::Future,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
-use iroh_live::{Live, media::subscribe::RemoteBroadcast, moq::MoqSession, ticket::LiveTicket};
+use bytesize::ByteSize;
+use iroh_live::{
+    BroadcastTicket, Node,
+    media::{Catalog, RemoteBroadcast, video_rendition},
+};
 use moq_mux::{
     catalog::{CatalogFormat, Stream as _},
     container::{fmp4, mkv},
     select,
 };
-use n0_error::{Result, StdResultExt, anyerr};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use n0_error::{Result, anyerr};
+use tokio::{
+    fs::File,
+    io::{AsyncWriteExt, BufWriter},
+};
 use tracing::{info, warn};
 
 use crate::{
-    args::{RecordArgs, RecordFormat},
-    transport,
+    args::RecordArgs,
+    transport::{self, Inbound},
 };
 
 /// How often the progress line is printed while a recording runs.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Runs the `record` command.
-pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
     rt.block_on(record(args))
 }
 
-/// Connects, records until the broadcast ends or the user interrupts, and
-/// closes the session.
+/// Records until the broadcast ends or the user interrupts.
 async fn record(args: RecordArgs) -> Result {
     let ticket = args.remote.ticket()?;
     let options = options(&args)?;
 
-    let live = transport::setup_live(false).await?;
-    let result = record_on(&live, &ticket, &options).await;
-    live.shutdown().await;
+    let node = transport::bind_node(Inbound::Refuse).await?;
+    let result = record_on(&node, &ticket, &options).await;
+    crate::shutdown::Teardown::new(node).run().await;
     result
 }
 
-/// Records one broadcast over `live`, which the caller closes either way.
-///
-/// # Errors
-///
-/// Fails if the broadcast cannot be subscribed to, carries nothing to record,
-/// or the file cannot be written.
-async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) -> Result {
-    let sub = transport::subscribe(live, ticket).await?;
+/// Records one broadcast over `node`. The caller shuts `node` down.
+async fn record_on(node: &Node, ticket: &BroadcastTicket, options: &RecordOptions) -> Result {
+    let sub = transport::subscribe(node, ticket).await?;
 
-    let catalog = sub.broadcast().catalog();
+    let catalog = crate::playback::catalog(&sub.broadcast).await?;
     println!(
         "catalog: {} video, {} audio renditions",
-        catalog.video().len(),
-        catalog.audio().len()
+        catalog.video.renditions.len(),
+        catalog.audio.renditions.len()
     );
-    if catalog.video().is_empty() && catalog.audio().is_empty() {
+    if catalog.video.renditions.is_empty() && catalog.audio.renditions.is_empty() {
         return Err(anyerr!(
             "the broadcast carries no video and no audio, so there is nothing \
              to record"
         ));
     }
 
-    let recorder = Recorder::open(sub.session(), sub.broadcast(), options).await?;
+    // The subscribed broadcast records through its route table, so a rendition
+    // that names a sibling broadcast resolves too.
+    let recording = start(&sub.broadcast, &catalog, options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
         None => println!("recording, press Ctrl+C to stop"),
     }
-    let written = recorder.run(stop_after(options.duration)).await?;
-    println!(
-        "wrote {} to {}",
-        format_bytes(written),
-        options.path.display()
-    );
+    let written = finish(recording, stop_after(options.duration)).await?;
+    println!("wrote {} to {}", ByteSize(written), options.path.display());
 
-    sub.broadcast().shutdown();
-    sub.session().close(moq_net::Error::Cancel);
+    sub.close();
     Ok(())
 }
 
-/// Where a recording goes, and which of the broadcast's tracks it keeps.
-#[derive(Debug, Clone)]
-pub struct RecordOptions {
-    /// The file to write.
-    pub path: PathBuf,
-    /// The container to write it in.
-    pub format: RecordFormat,
-    /// The one video rendition to keep, or every one the catalog offers.
-    pub rendition: Option<String>,
-    /// How long a stalled group is waited for before the exporter skips it.
-    pub latency: Duration,
-    /// How long to record for, or until interrupted.
-    pub duration: Option<Duration>,
+/// A container to record into.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum RecordFormat {
+    /// Fragmented MP4, complete at every fragment boundary.
+    #[default]
+    Fmp4,
+    /// Matroska.
+    Mkv,
 }
 
-/// How long a stalled group is waited for before the exporter skips it, when
-/// no caller says otherwise. Generous next to what a player allows: a recording
-/// would rather buffer a late group than drop it.
-const DEFAULT_LATENCY: Duration = Duration::from_secs(2);
+impl RecordFormat {
+    /// Returns the container a file name's extension names, if it names one.
+    ///
+    /// `.mp4`, `.m4v` and `.m4s` are fragmented MP4. `.mkv` and `.webm` are
+    /// Matroska. Case does not matter.
+    pub(crate) fn from_path(path: impl AsRef<Path>) -> Option<Self> {
+        match path.as_ref().extension()?.to_str()?.to_lowercase().as_str() {
+            "mp4" | "m4v" | "m4s" => Some(Self::Fmp4),
+            "mkv" | "webm" => Some(Self::Mkv),
+            _ => None,
+        }
+    }
+}
+
+/// Where a recording goes, what it keeps, and for how long.
+#[derive(Debug, Clone)]
+pub(crate) struct RecordOptions {
+    /// The file to write.
+    pub(crate) path: PathBuf,
+    /// The container.
+    pub(crate) format: RecordFormat,
+    /// The one video rendition to keep, or every one the catalog offers.
+    pub(crate) rendition: Option<String>,
+    /// How long a stalled group is waited for before it is skipped.
+    ///
+    /// This is longer than a player allows, because a recording would sooner
+    /// buffer a late group than drop it.
+    pub(crate) max_age: Duration,
+    /// How long to record, or `None` to record until interrupted.
+    pub(crate) duration: Option<Duration>,
+}
 
 impl RecordOptions {
-    /// Records `path` in `format`, or in the container `path`'s extension
-    /// names, keeping every rendition until the broadcast ends.
+    /// Creates options that record every rendition to `path` until the end.
     ///
-    /// # Errors
-    ///
-    /// Fails if neither `format` nor the extension names a container.
-    pub fn new(path: impl Into<PathBuf>, format: Option<RecordFormat>) -> Result<Self> {
+    /// Without `format`, the container comes from the extension of `path`.
+    /// Fails if neither names a container.
+    pub(crate) fn new(path: impl Into<PathBuf>, format: Option<RecordFormat>) -> Result<Self> {
         let path = path.into();
         let format = match format {
             Some(format) => format,
-            None => format_from_extension(&path).ok_or_else(|| unknown_extension(&path))?,
+            None => RecordFormat::from_path(&path).ok_or_else(|| unknown_extension(&path))?,
         };
         Ok(Self {
             path,
             format,
             rendition: None,
-            latency: DEFAULT_LATENCY,
+            max_age: Duration::from_secs(2),
             duration: None,
         })
     }
 }
 
-/// The catalog stream that drives an exporter: the broadcast's own catalog,
-/// narrowed to the renditions this recording keeps.
-type CatalogStream = moq_mux::catalog::Select<moq_mux::catalog::Consumer>;
+/// A recording in progress: a container export and the file it writes.
+pub(crate) struct Recording {
+    export: Export,
+    out: BufWriter<File>,
+    written: u64,
+}
 
 /// The container exporter, one variant per [`RecordFormat`].
-///
-/// Both are large enough that clippy objects to an unboxed enum, and both are
-/// built once per recording, so the indirection costs nothing that matters.
 enum Export {
     Fmp4(Box<fmp4::Export<CatalogStream>>),
     Mkv(Box<mkv::Export<CatalogStream>>),
 }
 
+/// The catalog stream that drives an exporter, narrowed to what is recorded.
+type CatalogStream = moq_mux::catalog::Select<moq_mux::catalog::Consumer>;
+
 impl Export {
-    /// Returns the next container chunk, or `None` once every track has ended.
+    /// Returns the next chunk of the file, `None` once the export is complete.
     async fn next(&mut self) -> Result<Option<Bytes>> {
-        match self {
-            Self::Fmp4(export) => export.next().await.anyerr(),
-            Self::Mkv(export) => export.next().await.anyerr(),
-        }
-    }
-}
-
-/// A recording that has subscribed to its tracks and opened its output file.
-pub struct Recorder {
-    export: Export,
-    file: BufWriter<tokio::fs::File>,
-    path: PathBuf,
-}
-
-impl std::fmt::Debug for Recorder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Recorder")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Recorder {
-    /// Subscribes to the tracks `options` keeps and creates the output file.
-    ///
-    /// The exporter takes the session's origin rather than the broadcast we
-    /// already hold, because a catalog rendition may name a sibling broadcast
-    /// and only the origin can resolve that reference.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the requested rendition is not in the catalog, if the catalog
-    /// track cannot be subscribed to, or if the output file cannot be created.
-    pub async fn open(
-        session: &MoqSession,
-        broadcast: &RemoteBroadcast,
-        options: &RecordOptions,
-    ) -> Result<Self> {
-        if let Some(name) = &options.rendition {
-            check_rendition(broadcast, name)?;
-        }
-        let source = moq_mux::Source::new(session.announced().clone(), broadcast.name());
-        // A second subscription to the catalog track: `moq_mux` drives its
-        // exporters from a `catalog::Stream`, and `RemoteBroadcast` publishes
-        // its snapshots through an `n0_watcher` instead, which no adapter
-        // bridges. The track carries only the JSON manifest.
-        let catalog =
-            moq_mux::catalog::Consumer::<()>::new(broadcast.consumer(), CatalogFormat::default())
-                .await
-                .anyerr()?
-                .select(selection(options.rendition.as_deref()));
-
-        let export = match options.format {
-            RecordFormat::Fmp4 => Export::Fmp4(Box::new(
-                fmp4::Export::new(source, catalog).with_max_age(options.latency),
-            )),
-            RecordFormat::Mkv => Export::Mkv(Box::new(
-                mkv::Export::new(source, catalog).with_max_age(options.latency),
-            )),
+        let chunk = match self {
+            Self::Fmp4(export) => export.next().await,
+            Self::Mkv(export) => export.next().await,
         };
+        chunk.map_err(|err| anyerr!("the export failed: {err}"))
+    }
+}
 
-        let file = tokio::fs::File::create(&options.path)
+/// Creates the output file and the export that records `broadcast` into it.
+///
+/// The export keeps every audio rendition, and every video rendition or the
+/// one the options name. Fails if that rendition is not in `catalog`, the
+/// broadcast closes, or the file cannot be created.
+pub(crate) async fn start(
+    broadcast: &RemoteBroadcast,
+    catalog: &Catalog,
+    options: &RecordOptions,
+) -> Result<Recording> {
+    let mut video = select::Video::default();
+    if let Some(name) = &options.rendition {
+        video_rendition(catalog, name)?;
+        video = video.name(name);
+    }
+    let selection = select::Broadcast::default()
+        .video(video)
+        .audio(select::Audio::default());
+    let source = broadcast.mux_source().await?;
+    let catalog =
+        moq_mux::catalog::Consumer::<()>::new(&source.broadcast(), CatalogFormat::default())
             .await
-            .map_err(|err| anyerr!("failed to create {}: {err}", options.path.display()))?;
+            .map_err(|err| anyerr!("the catalog did not read: {err}"))?
+            .select(selection);
+    // How late a group may fall before the export skips it.
+    let delay = moq_net::track::Delay::default().with_max(options.max_age);
+    let export = match options.format {
+        RecordFormat::Fmp4 => Export::Fmp4(Box::new(
+            fmp4::Export::new(source, catalog).with_delay(delay),
+        )),
+        RecordFormat::Mkv => Export::Mkv(Box::new(
+            mkv::Export::new(source, catalog).with_delay(delay),
+        )),
+    };
+    let file = File::create(&options.path)
+        .await
+        .map_err(|err| anyerr!("failed to create {}: {err}", options.path.display()))?;
+    info!(path = %options.path.display(), format = ?options.format, "recording started");
+    Ok(Recording {
+        export,
+        out: BufWriter::new(file),
+        written: 0,
+    })
+}
 
-        Ok(Self {
-            export,
-            file: BufWriter::new(file),
-            path: options.path.clone(),
-        })
-    }
-
-    /// The file this recording writes.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Writes container chunks until the broadcast ends or `stop` resolves,
-    /// and returns the number of bytes written.
-    ///
-    /// The file is flushed either way, so an interrupted recording is still a
-    /// playable file: fragmented containers are complete at every chunk
-    /// boundary.
-    ///
-    /// # Errors
-    ///
-    /// Fails on an export or a write error, having flushed nothing further.
-    pub async fn run(mut self, stop: impl Future<Output = ()>) -> Result<u64> {
-        info!(path = %self.path.display(), "recording started");
-        let started = Instant::now();
-        let mut reported = started;
-        let mut written = 0u64;
-        let mut stop = std::pin::pin!(stop);
-
-        loop {
-            let chunk = tokio::select! {
-                chunk = self.export.next() => chunk?,
-                () = &mut stop => None,
-            };
-            let Some(chunk) = chunk else { break };
-
-            self.file.write_all(&chunk).await?;
-            written += chunk.len() as u64;
-
-            if reported.elapsed() >= REPORT_INTERVAL {
-                reported = Instant::now();
+/// Runs `recording` until the broadcast ends or `stop` resolves, and returns the bytes written.
+///
+/// Prints progress while it runs. The file is flushed either way. A stop
+/// ends the file at the last complete fragment, since the exporter cannot
+/// close one early, and a fragmented container plays up to there.
+pub(crate) async fn finish(
+    mut recording: Recording,
+    stop: impl Future<Output = ()>,
+) -> Result<u64> {
+    let started = tokio::time::Instant::now();
+    let mut report = tokio::time::interval_at(started + REPORT_INTERVAL, REPORT_INTERVAL);
+    let mut stop = std::pin::pin!(stop);
+    loop {
+        let chunk = tokio::select! {
+            chunk = recording.export.next() => chunk?,
+            () = &mut stop => None,
+            _ = report.tick() => {
                 println!(
                     "[{:.0}s] {}",
                     started.elapsed().as_secs_f64(),
-                    format_bytes(written)
+                    ByteSize(recording.written)
                 );
+                continue;
             }
-        }
-
-        self.file.flush().await?;
-        info!(path = %self.path.display(), bytes = written, "recording finished");
-        Ok(written)
+        };
+        let Some(chunk) = chunk else { break };
+        recording.out.write_all(&chunk).await?;
+        recording.written += chunk.len() as u64;
     }
+    recording.out.flush().await?;
+    recording.out.shutdown().await?;
+    info!(bytes = recording.written, "recording finished");
+    Ok(recording.written)
 }
 
-/// The options `args` describes.
-///
-/// # Errors
-///
-/// Fails if neither `--format` nor `--output`'s extension names a container.
+/// Builds the options from the command-line arguments.
 fn options(args: &RecordArgs) -> Result<RecordOptions> {
     let mut options = RecordOptions::new(&args.output, args.format)?;
     options.rendition = args.rendition.clone();
-    options.latency = Duration::from_millis(args.latency);
+    options.max_age = Duration::from_millis(args.max_age);
     options.duration = args.duration.map(Duration::from_secs);
     Ok(options)
 }
 
-/// The container `path`'s extension names, if it names one.
-fn format_from_extension(path: &Path) -> Option<RecordFormat> {
-    match path.extension()?.to_str()?.to_lowercase().as_str() {
-        "mp4" | "m4v" | "m4s" => Some(RecordFormat::Fmp4),
-        "mkv" | "webm" => Some(RecordFormat::Mkv),
-        _ => None,
-    }
-}
-
-/// The error for a path whose extension names no container.
+/// Returns the error for a path whose extension names no container.
 fn unknown_extension(path: &Path) -> n0_error::AnyError {
     anyerr!(
         "cannot tell which container {} should be, so pass --format fmp4 or --format mkv; \
@@ -298,75 +275,30 @@ fn unknown_extension(path: &Path) -> n0_error::AnyError {
     )
 }
 
-/// Checks a requested rendition against what the broadcast offers.
-///
-/// The exporter would otherwise select nothing and write a file with no video
-/// in it, which only shows up when the recording is played back.
-///
-/// # Errors
-///
-/// Fails if the catalog has no video rendition of that name, listing the ones
-/// it does have.
-fn check_rendition(broadcast: &RemoteBroadcast, name: &str) -> Result<()> {
-    let catalog = broadcast.catalog();
-    if catalog.video().contains_key(name) {
-        return Ok(());
-    }
-    let offered: Vec<&str> = catalog.video().keys().map(String::as_str).collect();
-    Err(anyerr!(
-        "the broadcast has no video rendition named '{name}'; it offers {}",
-        match offered.is_empty() {
-            true => "no video at all".to_string(),
-            false => offered.join(", "),
-        }
-    ))
-}
-
-/// Keeps every audio rendition, and either every video rendition or only the
-/// one `rendition` names.
-fn selection(rendition: Option<&str>) -> select::Broadcast {
-    let mut video = select::Video::default();
-    if let Some(name) = rendition {
-        video = video.name(name);
-    }
-    select::Broadcast::default()
-        .video(video)
-        .audio(select::Audio::default())
-}
-
 /// Resolves when the user interrupts, or once `duration` has elapsed.
 async fn stop_after(duration: Option<Duration>) {
     let deadline = async {
         match duration {
             Some(duration) => tokio::time::sleep(duration).await,
-            // Nothing else ends the recording, so wait for the interrupt alone.
             None => std::future::pending().await,
         }
     };
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => {
-            if let Err(err) = result {
-                warn!(error = %err, "cannot listen for Ctrl+C, recording until the broadcast ends");
+    // A failed Ctrl+C listener never resolves, so the deadline still applies.
+    let interrupted = async {
+        match crate::shutdown::ctrl_c().await {
+            Ok(()) => crate::shutdown::step("finishing the recording"),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "cannot listen for Ctrl+C, recording until the duration or the broadcast ends"
+                );
                 std::future::pending::<()>().await;
             }
         }
+    };
+    tokio::select! {
+        () = interrupted => {}
         () = deadline => {}
-    }
-}
-
-/// Formats a byte count for the progress line.
-fn format_bytes(bytes: u64) -> String {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a byte count large enough to lose precision is not a figure anyone reads"
-    )]
-    let scaled = bytes as f64;
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1_048_576 {
-        format!("{:.1} KiB", scaled / 1024.0)
-    } else {
-        format!("{:.1} MiB", scaled / 1_048_576.0)
     }
 }
 
@@ -375,28 +307,13 @@ mod tests {
     use super::*;
     use crate::args::RemoteArgs;
 
-    /// A remote nothing in these tests dials.
+    /// Returns empty remote arguments. No test dials them.
     fn remote_args() -> RemoteArgs {
         RemoteArgs {
             ticket: None,
             endpoint_id: None,
             broadcast_name: None,
         }
-    }
-
-    #[test]
-    fn extensions_name_containers() {
-        assert_eq!(
-            format_from_extension(Path::new("out.mp4")),
-            Some(RecordFormat::Fmp4)
-        );
-        // The case a shell completion or a Windows path might hand us.
-        assert_eq!(
-            format_from_extension(Path::new("out.MKV")),
-            Some(RecordFormat::Mkv)
-        );
-        assert_eq!(format_from_extension(Path::new("out.avi")), None);
-        assert_eq!(format_from_extension(Path::new("recording")), None);
     }
 
     #[test]
@@ -407,11 +324,11 @@ mod tests {
             format: Some(RecordFormat::Mkv),
             rendition: None,
             duration: None,
-            latency: 500,
+            max_age: 500,
         };
         let options = options(&args).expect("--format names the container");
         assert_eq!(options.format, RecordFormat::Mkv);
-        assert_eq!(options.latency, Duration::from_millis(500));
+        assert_eq!(options.max_age, Duration::from_millis(500));
     }
 
     #[test]
@@ -422,9 +339,17 @@ mod tests {
             format: None,
             rendition: None,
             duration: None,
-            latency: 2_000,
+            max_age: 2_000,
         };
         let err = options(&args).expect_err("nothing names the container");
         assert!(err.to_string().contains("--format"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn extensions_name_containers() {
+        assert_eq!(RecordFormat::from_path("out.mp4"), Some(RecordFormat::Fmp4));
+        assert_eq!(RecordFormat::from_path("out.MKV"), Some(RecordFormat::Mkv));
+        assert_eq!(RecordFormat::from_path("out.avi"), None);
+        assert_eq!(RecordFormat::from_path("recording"), None);
     }
 }
