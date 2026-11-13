@@ -35,7 +35,7 @@ pub(crate) fn init(filter: &str) -> Result<(), tracing_subscriber::util::TryInit
         .try_init()
 }
 
-/// Makes a [`LogcatWriter`] with the logcat priority of each event's level.
+/// The maker of a [`LogcatWriter`] at the logcat priority of each event's level.
 struct LogcatMakeWriter;
 
 impl<'a> MakeWriter<'a> for LogcatMakeWriter {
@@ -57,7 +57,7 @@ impl<'a> MakeWriter<'a> for LogcatMakeWriter {
     }
 }
 
-/// Buffers one log line and writes it to logcat on drop.
+/// A buffer for one log line, written to logcat on drop.
 struct LogcatWriter {
     buf: Vec<u8>,
     priority: i32,

@@ -2,7 +2,11 @@
 name = "pi-zero-demo"
 version = "0.1.0"
 edition = "2024"
-description = "Raspberry Pi Zero 2 demo: publish camera stream, show ticket QR on e-paper, watch remote streams"
+description = "Raspberry Pi Zero 2 demo: publish the camera, show the ticket QR on e-paper, watch remote streams"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
 publish = false
 
 [features]

@@ -27,7 +27,7 @@ args = [
      "imports_granularity=Crate,group_imports=StdExternalCrate,reorder_imports=true,format_code_in_doc_comments=true",
 ]
 
-# ── CI-equivalent checks ─────────────────────────────────────────────
+# -- CI-equivalent checks ---------------------------------------------
 
 [tasks.check-all-features]
 workspace = false
@@ -102,7 +102,7 @@ dependencies = [
     "format-check",
 ]
 
-# ── Tests ─────────────────────────────────────────────────────────────
+# -- Tests -------------------------------------------------------------
 
 [tasks.test]
 description = "Run the workspace tests via nextest"
@@ -117,7 +117,7 @@ command = "cargo"
 args = ["nextest", "run", "--locked", "-p", "iroh-live", "--features", "full",
         "-E", "binary(patchbay)", "--run-ignored", "all"]
 
-# ── E2E browser tests ────────────────────────────────────────────────
+# -- E2E browser tests ------------------------------------------------
 
 [tasks.e2e-prebuild]
 description = "Pre-build binaries needed by Playwright E2E tests"
@@ -139,7 +139,7 @@ description = "Full CI-equivalent test suite: check-all, tests, browser E2E"
 workspace = false
 dependencies = ["check-all", "test", "test-e2e"]
 
-# ── Cross-compilation (aarch64, zigbuild + sysroot) ──────────────────
+# -- Cross-compilation (aarch64, zigbuild + sysroot) ------------------
 #
 # Host-native (requires zig + cargo-zigbuild + sysroot):
 #   cargo make cross-sysroot-aarch64

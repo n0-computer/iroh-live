@@ -88,7 +88,7 @@ impl AsFd for Card {
 impl drm::Device for Card {}
 impl ControlDevice for Card {}
 
-/// Keeps the current VT in graphics mode, which hides the console text.
+/// A guard that keeps the current VT in graphics mode, which hides the console text.
 ///
 /// Restores text mode on drop.
 struct VtGuard(std::fs::File);
