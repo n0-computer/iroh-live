@@ -4,8 +4,13 @@ The `irl` binary is in the `iroh-live-cli` crate. It has seven commands:
 `devices`, `publish`, `watch`, `call`, `room`, `record`, and `run`.
 
 Every feature is on by default, and the Linux-only ones compile to nothing on
-macOS and Windows. The [crate README](../../iroh-live-cli/README.md#features)
-lists them. `record` and `run` never open a window.
+macOS and Windows. The [features reference](features.md#iroh-live-cli) lists
+them. `record` and `run` never open a window.
+
+Every command reads its key from `IROH_SECRET` when it is set, so its
+tickets survive a restart, and its log filter from `RUST_LOG`. Without
+`RUST_LOG`, only errors are logged. See
+[Environment variables](environment.md).
 
 Every command stops on Ctrl+C, also with its window hidden. The first Ctrl+C
 leaves rooms, closes the broadcasts and then the endpoint, so peers learn at
@@ -144,7 +149,7 @@ nothing is requested there by default.
 
 The log names the rate and where it came from:
 
-```
+```text
 INFO capture frame rate requested. The device runs at the nearest rate it supports fps=60 origin="--renditions"
 ```
 
@@ -281,55 +286,13 @@ Without `--rendition`, the file has one video track per rung.
 ## `irl run`
 
 Runs a session from a TOML file: one endpoint that publishes several
-broadcasts, subscribes to others, and records any of them. Separate
-`irl publish` and `irl watch` processes would each bind their own endpoint.
+broadcasts, subscribes to others, and records any of them.
 
 ```sh
 irl run session.toml
 ```
 
-The session opens no window. A `[[recv]]` block plays audio and can record.
-
-```toml
-# Optional. Keeps the endpoint id, and so the tickets, across runs. The key is
-# stored at <config dir>/iroh-live/secret_keys/<name>.key.
-secret_key_name = "studio"
-
-[[send]]
-name = "camera"              # broadcast name
-video = "cam"                # the other keys are `irl publish` flags,
-audio = "mic"                # with the same defaults
-codec = "h264"
-encoder = "auto"
-renditions = ["low:320x180", "720p"]
-bitrate = 3_000_000
-width = 1280
-height = 720
-fps = 30
-no_cursor = false
-audio_codec = "opus"
-audio_bitrate = 96_000
-
-[[send]]
-name = "screen"
-video = "screen"
-audio = "none"
-
-[[recv]]
-name = "friend"
-ticket = "ilv1:..."         # as `irl publish` printed it
-audio_output = "default"     # or "none"
-record = "friend.mp4"        # optional, the extension picks the container
-rendition = "low"            # optional, the rendition to record
-```
-
-A `[[send]]` block needs only `name`, and a `[[recv]]` block needs `name` and
-`ticket`. `[[send]]` does not take a `file:` video source. An unknown key is an
-error.
-
-A block that fails to start is reported, and the rest of the session runs.
-Ctrl+C ends the session and finishes every recording before the endpoint
-closes.
+[The `irl run` session file](irl-run.md) describes the file.
 
 ## Examples
 
@@ -388,5 +351,4 @@ Record ten seconds of a broadcast:
 irl record <TICKET> -o clip.mp4 --duration 10
 ```
 
-The relay is its own binary: `cargo run -p iroh-live-relay`. See
-[Browser relay](../how-to/browsers.md).
+The iroh-live relay is its own binary, see the [relay reference](relay.md).

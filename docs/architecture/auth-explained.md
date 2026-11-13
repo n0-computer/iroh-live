@@ -10,12 +10,11 @@ what may it read, and what may it write?
 This page explains how iroh-live answers them. It follows one session from
 the dial to the close. On the way it shows where each piece of the
 `moq-ext-access` crate fits, what moq-net enforces for us, and where
-`Audience` comes into play. The last part weighs whether `Audience` still earns
-its place, or whether a policy could do its job.
+`Audience` comes into play.
 
-The [access guide](../how-to/control-access.md) is the reference for the same
-material. It lists every policy, flag and default. This page explains why
-the pieces have the shape they have.
+The [access reference](../reference/access.md) lists every policy, default and
+limit, and [Control access](../how-to/control-access.md) has recipes. This
+page explains why the pieces have the shape they have.
 
 ## Identity comes for free
 
@@ -39,7 +38,7 @@ a JWT. [Relays and browsers](#relays-and-browsers) covers that door.
 Access control in iroh-live is split along two questions, and each question
 has one owner.
 
-```
+```text
                  who may connect, and with what rights?
   peer ------->  Policy::decide --> Authorization { grant, expires }
                                          |
@@ -59,7 +58,7 @@ who sees it. That choice narrows the grant further. It never widens it.
 
 A policy is a trait with one required method, which is async:
 
-```rust
+```rust,ignore
 pub trait Policy<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     fn decide(&self, request: &PeerRequest<P>) -> impl Future<Output = Decision> + Send;
 }
@@ -105,7 +104,7 @@ read, and no peer may publish.
 
 `Node::publish` takes a path and an audience:
 
-```rust
+```rust,ignore
 pub enum Audience<P: PeerId> {
     /// Every session whose grant covers the path, relays included.
     Granted,
@@ -127,7 +126,7 @@ The whole rule is one function in `moq-ext-access`, `visible_paths`. It keeps
 a publication on a link when the link's grant covers the path and the
 audience admits the link's viewer:
 
-```rust
+```rust,ignore
 match (audience, viewer) {
     (AudienceKind::Granted, _) => true,
     (AudienceKind::Peers(peers), Viewer::Direct(peer)) => peers.contains(*peer),
@@ -141,7 +140,7 @@ Here is what happens when Bob's node dials Alice's node and the session runs
 for a while. Alice runs `LiveLayout::policy()`, which lets every peer read
 and publish under `live/<its id>/`.
 
-```
+```text
  Bob                          Alice's node                       Alice's policy
   |                                |                                    |
   |-- QUIC + TLS ----------------->| remote_id() = bob (authenticated)  |
@@ -229,7 +228,7 @@ than that cannot be granted them one by one.
 
 Three inputs make up what a session may do at any moment:
 
-```
+```text
 publish   = policy.publish + the peer's claimed paths
 subscribe = { path of each own publication
               | policy.subscribe covers path
@@ -295,7 +294,7 @@ announce another publisher's path could therefore take over that publisher's
 readers. iroh-live prevents that with *layouts*: path conventions in which a
 path names its publisher.
 
-```rust
+```rust,ignore
 pub trait Layout<P: PeerId> {
     /// The paths `peer` may publish its own broadcasts under.
     fn scope(&self, peer: &P) -> Patterns;
@@ -347,7 +346,7 @@ node accepts at most 64 claimed paths, and 16 KiB of them, per peer.
 The endpoint id says *who* a peer is. A token can say *what someone else
 allowed it to do*. `Verify` turns a `TokenVerifier` into a policy:
 
-```rust
+```rust,ignore
 pub trait TokenVerifier<P: PeerId>: fmt::Debug + Send + Sync + 'static {
     fn verify(&self, token: &str, request: &PeerRequest<P>) -> Decision;
 }
@@ -416,7 +415,7 @@ libraries publishes with `Granted`, including `LiveLayout::publish`.
 `Audience::Peers` over an empty set. Nobody sees it. `Calls::ring(peer)` adds
 the peer to the set and dials it if no session exists:
 
-```rust
+```rust,ignore
 let audience = Watchable::new(BTreeSet::new());
 let (publication, side) =
     node.publish_with(path, Audience::Peers(audience.clone()), fill)?;
@@ -471,105 +470,17 @@ A node's relay links do not go through the policy at all. Their grant is
 only thing that keeps a publication off them. A browser, which can only reach a node through a
 relay, therefore never sees a `Peers` publication.
 
-### Could a policy do this instead?
+### Why not a policy instead?
 
-Both uses of `Peers` are membership lists. A policy can also express a
-membership list: give the member a subscribe pattern for the path, and call
-`Node::reauthorize` when the list changes. Here is the call side done that
-way, next to today's version.
-
-Today, with an audience:
-
-```rust
-// publish
-node.publish_with(call_path, Audience::Peers(rung.clone()), fill)?;
-
-// ring
-let mut set = rung.get();
-set.insert(peer);
-rung.set(set).ok();
-```
-
-With a policy instead. This is a sketch, not code in the repository:
-
-```rust
-#[derive(Debug, Clone)]
-struct CallPolicy {
-    layout: LiveLayout,
-    /// What every peer may read. Must not cover the call side.
-    public: Patterns,
-    call: Pattern, // Pattern::literal("live/<me>/call")
-    rung: Watchable<BTreeSet<EndpointId>>,
-}
-
-impl Policy<EndpointId> for CallPolicy {
-    async fn decide(&self, request: &PeerRequest) -> Decision {
-        let peer = *request.peer();
-        let mut grant = Grant { subscribe: self.public.clone(), publish: self.layout.scope(&peer) };
-        if self.rung.get().contains(&peer) {
-            grant.subscribe.insert(self.call.clone());
-        }
-        Ok(grant.into())
-    }
-}
-
-// publish
-node.publish_with(call_path, Audience::Granted, fill)?;
-
-// ring
-let mut set = rung.get();
-set.insert(peer);
-rung.set(set).ok();
-node.reauthorize(peer);
-```
-
-The two versions look alike, but they differ in four ways.
-
-**Locality.** With an audience, the code that publishes owns who sees the
-publication. `Calls` and `Room` set it up themselves and need nothing from
-the application beyond a policy that admits the layout. A node has exactly
-one policy, set when the node is built. In the policy version, the
-application must compose the call rule, the room rule, and its own rules
-into that one policy. Each library would have to export a piece of policy and
-trust the application to wire it in. The policy also has to know every path
-that peers may read, since patterns cannot say "everything except the call
-side". The `public` field above carries that burden. In return, the policy
-version keeps every access rule in one place. A reader of the code can then
-answer "what may Bob read?" from one function.
-
-**The relay rule.** Relay links bypass the policy, with a grant of
-everything. In the policy version, the call side is `Granted`, so every
-attached relay would receive it, and forward it to anyone. The policy alone
-cannot keep a publication off relays. Some per-publication flag would still be
-needed, such as a `Granted` that excludes relays. That is a smaller audience
-type, but it is still an audience.
-
-**Re-authorization cost.** An audience change recomputes views synchronously
-under the state lock, and it never calls the policy. The peer sees the change
-as soon as moq sends the new grant. A `reauthorize` runs an async decide for
-every session with the peer, bounded by `decide_timeout` and 16 at once. That
-cost reaches further than it looks:
-
-- A hang-up takes effect only after the decision finishes, not at once.
-- Every decide runs the whole policy again: a token verification, a database
-  lookup, or a `Queue` prompt to a person.
-- The node-wide counter means a ring also forces a second decision on every
-  other peer whose first decision is in flight.
-- A room needs one `reauthorize` per member who joins or leaves, instead of
-  one set update.
-
-**Granularity.** A policy decides per session, and an audience admits per
-peer id. They agree for calls and rooms, since both identify members by
-endpoint id. A policy can do things an audience cannot. It can gate on a
-token, give the grant an expiry, and gate the publish half. A rule such as
-"members of room T read `rooms/T/**`" fits a policy well. An audience cannot
-widen anything.
-
-In short, an audience is cheap, local and relay-safe, but it is a second
-place where access rules live. A policy is the single place, but it pays an
-async round trip per change. It also needs some other way to keep private
-publications off relays. The plan in `plans/auth-admission.md` (section 6.6)
-argues for keeping both. These are the facts to weigh if you revisit that.
+A policy could also express a membership list: give each member a subscribe
+pattern for the path, and call `Node::reauthorize` when the list changes. The
+audience stays for three reasons. It is local: `Calls` and `Room` set it up
+themselves, and need nothing from the application beyond a policy that admits
+the layout. It keeps a publication off relay links, which bypass the policy
+with a grant of everything. And an audience change takes effect at once,
+under the state lock, where a re-decision runs the whole policy again for
+every session with the peer. The cost is a second place where access rules
+live, next to the policy.
 
 ## Relays and browsers
 
@@ -589,8 +500,10 @@ on every dial. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, whose
 - *iroh clients* come in through `IrohSessions`, which knows their endpoint
   id. It decides each session with a policy, by default `relay_policy()`:
   read the whole relay, and publish under `live/<id>/` and
-  `rooms/*/<id>/`. With `--auth-key`, the policy becomes
-  `Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())`. The
+  `rooms/*/<id>/`. With `--auth-key`, the policy becomes a `Verify` over the key file,
+`KeyFile`, with `relay_policy()` as its fallback. `KeyFile` reads the file
+again when its modification time or size changes, as moq-auth's reference
+policy does for browsers. The
   relay decides a client once. When the authorization expires, it closes the
   session, and the client's relay link redials with the tokens set on it last.
 - *Browsers* come in through moq-relay's server. Without auth flags, the relay
@@ -603,7 +516,11 @@ on every dial. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, whose
   again when it changes, so a rotated key takes effect without a restart. With
   `--auth-url` or `--auth-public`, moq-relay's own auth decides.
 
-When a session names a broadcast ticket, the relay *pulls* the broadcast. Its
+When a session names a broadcast ticket, the relay *pulls* the broadcast,
+but only if the session may. A browser's JWT, checked with the `--auth-key`
+keys and no public rule, or an iroh client's token, checked by a `Verify`
+with no fallback, has to grant reading the ticket's path. `--open-pulls`
+lets any session pull, and a relay with neither pulls nothing. The relay's
 pull node runs with `Open(Grant::nothing())`, so no publisher may announce
 anything by default. Each pull holds a `PathClaim` for the ticket's path, and
 the node's layout, `(LiveLayout, RoomsLayout)`, checks that the ticket's peer
@@ -616,10 +533,9 @@ publications only, never a route learned from another link. That is what
 lets the publish half act as a naming rule, and what keeps a `Peers`
 publication at the first hop. A forwarding node would need a separate rule
 for which paths it may relay, and something to carry an audience beyond the
-first hop. `plans/auth-admission.md` (section 7) sketches the options. One is
-to forward only `Granted` publications, on links that declare themselves
-forwarders. Others are rcan capabilities to serve a path to a set, and
-end-to-end encryption.
+first hop. Options include forwarding only `Granted` publications on links
+that declare themselves forwarders, rcan capabilities to serve a path to a
+set, and end-to-end encryption.
 
 **Revocation of rcan chains.** A chain stays valid until its earliest link
 expires. Nothing revokes a link early. A policy can keep its own deny list
@@ -628,19 +544,5 @@ changes. Short-lived links bound the damage meanwhile.
 
 ## Cheat sheet
 
-| I want to ... | Use |
-|---|---|
-| let every peer read, and nobody publish | the default, `Open(Grant::subscribe_only())` |
-| let every peer read, and publish only under its own id | `LiveLayout::default().config()` |
-| also allow room broadcasts | `layout::config((LiveLayout::default(), RoomsLayout))` |
-| admit only known peers | `layout.policy().filter(..)`, plus `Node::reauthorize` when the set changes |
-| ask a person before admitting | `Queue`, with a longer `decide_timeout` |
-| require a token from moq-relay's issuer | `Verify::new(JwtVerifier::new(keys))` |
-| delegate rights bound to a device key | `Verify::new(RcanVerifier::new(principal, root))` |
-| let peers without a token in too | `.with_fallback(Open(..))` on the `Verify` |
-| rights that end at a set time | return an `Authorization` with `expires` |
-| show a broadcast to whoever the grant allows, relays included | `Audience::Granted` |
-| show a broadcast to a few peers, and never to a relay | `Audience::Peers(watchable)` |
-| change who sees a broadcast | update the `Peers` set, or `Publication::set_audience` |
-| play a ticket under any policy | `Node::subscribe_ticket` |
-| present a token when dialing | `ConnectOptions::token`, or `RelayConfig::tokens` for a relay |
+The [access reference](../reference/access.md#cheat-sheet) has a table of
+which type to use for each goal.

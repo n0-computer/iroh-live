@@ -181,7 +181,7 @@ against a direct link's cost of one, so a direct route wins while it exists.
 
 `RelayConfig::consume` defaults to true, which feeds every route the relay
 knows into the node's route table. A node that only publishes through the
-relay sets `consume: false`.
+relay sets `RelayConfig::with_consume(false)`.
 
 `NodeConfig::table` hands the node an existing route table instead of a new
 one. `iroh-live-relay` gives its pull node the cluster origin this way, so a

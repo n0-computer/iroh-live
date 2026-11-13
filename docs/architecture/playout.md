@@ -86,18 +86,16 @@ A `min` of zero turns pacing off, and frames go to the renderer as they decode.
 to the live edge. It suits a test or a consumer with its own cadence, not live
 playback with audio.
 
-```rust
+```rust,ignore
 use std::time::Duration;
 use iroh_live::media::{Delay, PlayerConfig, video::decode};
 
-let config = PlayerConfig {
-    latency: Delay {
+let config = PlayerConfig::default()
+    .with_latency(Delay {
         min: Some(Duration::from_millis(400)),
         max: Some(Duration::from_millis(600)),
-    },
-    decoder: decode::Kind::Software,
-    ..Default::default()
-};
+    })
+    .with_decoder(decode::Kind::Software);
 ```
 
 `decoder` becomes the `kind` on `moq_video::decode::Options`. `Auto` tries the

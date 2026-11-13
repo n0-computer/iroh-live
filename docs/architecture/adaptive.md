@@ -14,7 +14,7 @@ The decoder swap is the supervisor's job, described in
 The transport-agnostic input is a function that returns a `NetworkSample`,
 attached with `RemoteBroadcast::set_network`.
 
-```rust
+```rust,ignore
 pub struct NetworkSample {
     pub rtt: Option<Duration>,
     pub min_rtt: Option<Duration>,     // smallest recent rtt on this path

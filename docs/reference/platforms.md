@@ -21,9 +21,11 @@ encode, decode, render, and zero-copy, and
 
 CI checks and tests Linux and macOS, and cross-builds the CLI for aarch64
 Linux. The release workflow builds `irl` for Linux x86-64 and aarch64, macOS
-aarch64, and Windows x86-64, plus an arm64 Android APK. `irl` turns every
-feature on by default; the Linux-only ones (`nvidia`, `vaapi`, `v4l2`,
-`rpicam`, `pipewire`) compile to nothing on other platforms.
+aarch64, and Windows x86-64, plus an arm64 Android APK, see
+[Install](../getting-started/install.md#download-irl). `irl` turns every
+feature on by default. The Linux-only ones (`nvidia`, `vaapi`, `v4l2`,
+`rpicam`, `pipewire`) compile to nothing on other platforms, see
+[Cargo features](features.md).
 
 ## Linux
 

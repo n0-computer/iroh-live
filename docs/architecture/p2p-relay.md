@@ -14,9 +14,8 @@ is what [adaptive rendition switching](adaptive.md) reads. The link monitor in
 path generation, and the selector forgets what it learned on the old path. The
 monitor's `link sample` TRACE log says whether the selected path is relayed.
 
-An iroh relay and a MoQ relay are unrelated. The first forwards UDP between
-peers that cannot reach each other and knows nothing about media. The second
-is described below.
+An iroh relay and the iroh-live relay are unrelated.
+[Relays](../concepts/relays.md) tells the three meanings of "relay" apart.
 
 ## iroh-live-relay
 
@@ -35,15 +34,17 @@ read the whole cluster and publish only at paths that name it. With
 instead. The relay decides a client once, and closes its session when the
 authorization expires, so the client redials with a fresh token. Browsers go
 through moq-relay's admissions, which the relay answers with
-`browser_grant` or the browser's JWT. [Access control](../how-to/control-access.md#the-relays-auth-flags)
-lists the flags, and the [relay README](../../iroh-live-relay/README.md) covers
-the rest of running it: the certificate, the key and the web client.
+`browser_grant` or the browser's JWT. The [relay reference](../reference/relay.md)
+lists the flags, and [Run the iroh-live relay](../how-to/run-relay.md) covers
+deployment.
 
 ## Pull on demand
 
 The relay does not need to know a publisher in advance. When a session asks for
-a name that parses as a `BroadcastTicket`, the relay subscribes to the ticket's
-broadcast through a node of its own (`src/pull.rs`). That node uses the
+a name that parses as a `BroadcastTicket`, and its token allows the pull or the
+relay runs with `--open-pulls`, the relay subscribes to the ticket's broadcast
+through a node of its own (`src/pull.rs`). `pull::Limits` caps the pulls in
+total and per client, and rate-limits each client's new dials. That node uses the
 cluster origin as its route table (`NodeConfig::table`), so the publisher's
 session announces the broadcast straight into the cluster at its own path,
 with no copy. The relay pulls only a ticket whose path is the publisher's
@@ -67,11 +68,7 @@ closes its session with that publisher.
 
 ## Publishing to a relay
 
-A publisher reaches a relay through a relay link.
-`Node::attach_relay(RelayConfig::new(url))` stays attached and redials with
-backoff, and every publication with the `Granted` audience is visible to it.
-`irl publish --relay <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` this
-way. A relay link consumes by default: it feeds every route the relay knows
-into the node's route table. `irl publish` only publishes, so it attaches with
-`consume: false`. The [browser relay guide](../how-to/browsers.md) has the
+A publisher reaches a relay through a relay link, which
+[the transport page](transport.md#relay-links) describes.
+[Publish through a relay](../how-to/publish-through-relay.md) has the
 workflow.

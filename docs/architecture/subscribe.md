@@ -129,13 +129,10 @@ seconds.
 
 ## Player configuration
 
-`PlayerConfig` is a struct literal with `Default`:
+`PlayerConfig` starts from `Default`, with a `with_*` builder per field:
 
-```rust
-let config = PlayerConfig {
-    audio: AudioMode::Play(output),
-    ..Default::default()
-};
+```rust,ignore
+let config = PlayerConfig::default().with_audio(AudioMode::Play(output));
 ```
 
 It carries the `rendition` mode, the `latency`, the `audio` mode, the
