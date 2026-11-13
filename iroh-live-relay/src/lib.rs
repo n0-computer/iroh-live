@@ -15,7 +15,8 @@
 //! limited ([`pull::Limits`]).
 //!
 //! With `--auth-key`, a session that presents a valid JWT gets what the token
-//! grants instead. Browsers are decided by moq-auth's reference policy, and
+//! grants instead. A session without a token keeps the rules above, so the
+//! flag grants token holders more but does not make the relay private. Browsers are decided by moq-auth's reference policy, and
 //! iroh clients by a [`KeyFile`]. Both read the key file again when it
 //! changes, so a rotated or removed key takes effect for new sessions without
 //! a restart. `--auth-url` and the `--auth-public` flags hand browser
@@ -92,13 +93,19 @@ pub struct Config {
     #[arg(long)]
     pub http_bind: Option<SocketAddr>,
 
-    /// Verifies the JWTs that browsers and iroh clients present with the keys in this file.
+    /// Grants token holders what their JWT allows, verified with the keys in this file.
     ///
-    /// The file holds a JWK or a JWK set, as `moq auth` writes them. An invalid
-    /// token is refused, and a session without a token keeps the public rules.
-    /// The relay reads the file again when it changes, so a rotated or removed
-    /// key applies to new sessions without a restart. Sessions already
-    /// admitted keep their grant until their token expires.
+    /// This does not restrict sessions without a token. They keep the public
+    /// rules: browsers and iroh clients read every broadcast, browsers publish
+    /// names of one segment, and iroh clients publish at the paths that name
+    /// their endpoint id. A valid token replaces those rules with its claims,
+    /// and lets the session pull the tickets whose paths it may read.
+    ///
+    /// The file holds a JWK or a JWK set, as `moq auth` writes them. An
+    /// invalid token is refused. The relay reads the file again when it
+    /// changes, so a rotated or removed key applies to new sessions without a
+    /// restart. Sessions already admitted keep their grant until their token
+    /// expires.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["auth_url", "auth_public", "auth_public_publish", "auth_public_subscribe"])]
     pub auth_key: Option<PathBuf>,
 
