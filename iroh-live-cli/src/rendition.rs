@@ -367,7 +367,7 @@ fn even(value: u32) -> u32 {
 mod tests {
     use super::*;
 
-    /// Capture flags carrying nothing but a ladder.
+    /// Returns capture flags that carry nothing but a ladder.
     fn args(renditions: &[&str], fps: Option<u32>) -> CaptureArgs {
         CaptureArgs {
             renditions: renditions.iter().map(|spec| (*spec).to_string()).collect(),

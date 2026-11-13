@@ -53,7 +53,7 @@ pub(super) struct Writer {
     _task: AbortOnDropHandle<()>,
 }
 
-/// Closes a broadcast when dropped.
+/// A broadcast that closes when dropped.
 struct ClosesOnDrop(broadcast::Producer);
 
 impl Drop for ClosesOnDrop {
@@ -157,7 +157,9 @@ async fn read_once(
     }
 }
 
-/// Writes the chat window and retires messages once their history has passed.
+/// The writer of this member's chat window.
+///
+/// It retires each message once the window's history has passed.
 struct Publisher {
     producer: window::Producer<String>,
     /// When each message in the window expires, oldest first.
@@ -217,7 +219,7 @@ impl Publisher {
     }
 }
 
-/// Reads a member's chat window, from its newest group.
+/// The reader of a member's chat window, from its newest group.
 enum Subscriber {
     /// Waiting for the track's newest group, which holds the whole window.
     Positioning(Option<Box<track::Subscriber>>),

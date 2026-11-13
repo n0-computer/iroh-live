@@ -211,7 +211,9 @@ pub(crate) fn dialog(
         });
 }
 
-/// Hides the overlay and the pointer once the pointer has been still for a while.
+/// The idle timer that hides the overlay and the pointer.
+///
+/// Both hide once the pointer has been still for a while.
 #[derive(Debug)]
 pub(crate) struct CursorIdle {
     visible: bool,

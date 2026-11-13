@@ -25,9 +25,9 @@ irl watch <ticket>
 `irl <command> --help` lists the options, and
 [docs/cli.md](../docs/cli.md) describes them all.
 
-The first Ctrl-C shuts down gracefully: it leaves rooms, closes broadcasts and
+The first Ctrl+C shuts down gracefully: it leaves rooms, closes broadcasts and
 then the endpoint, so peers learn at once that the node is gone. A second
-Ctrl-C exits at once, and a watchdog exits the process if the shutdown takes
+Ctrl+C exits at once, and a watchdog exits the process if the shutdown takes
 longer than five seconds.
 
 ## Features

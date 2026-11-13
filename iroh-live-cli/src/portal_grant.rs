@@ -67,8 +67,9 @@ pub(crate) fn watch(kind: Kind, selection: &Selection) {
         .insert(name(kind), AbortOnDropHandle::new(task));
 }
 
-/// Writes `token` to `path`, readable only by this user, or deletes the file
-/// for no token.
+/// Writes `token` to `path`, readable only by this user.
+///
+/// Without a token, deletes the file instead.
 fn store(path: &Path, token: Option<&RestoreToken>) {
     let result = match token {
         Some(token) => write_private(path, token.as_str()),
@@ -99,8 +100,9 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
         .write_all(contents.as_bytes())
 }
 
-/// Returns the file that holds the grant for `kind`, if the platform has a
-/// config directory.
+/// Returns the file that holds the grant for `kind`.
+///
+/// Returns `None` when the platform has no config directory.
 fn path(kind: Kind) -> Option<PathBuf> {
     Some(
         dirs::config_dir()?

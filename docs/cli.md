@@ -7,6 +7,11 @@ Every feature is on by default, and the Linux-only ones compile to nothing on
 macOS and Windows. The [crate README](../iroh-live-cli/README.md#features)
 lists them. `record` and `run` never open a window.
 
+Every command stops on Ctrl+C, also with its window hidden. The first Ctrl+C
+leaves rooms, closes the broadcasts and then the endpoint, so peers learn at
+once that the node is gone. A second Ctrl+C exits at once, and the process
+exits anyway if the shutdown takes longer than five seconds.
+
 ## `irl devices`
 
 Lists the cameras, displays, and audio devices of this machine. Each line
@@ -17,9 +22,8 @@ Windows and applications are listed on macOS only. On Linux the desktop
 portal's picker comes first in the displays and windows sections, as
 `screen:portal` and `window:portal`. The X11 displays follow it, or a note
 when they cannot be listed. The audio outputs section needs the `playback`
-feature. A build
-with the `rpicam` feature adds a Raspberry Pi camera section, from
-`rpicam-vid --list-cameras`.
+feature. A build with the `rpicam` feature adds a Raspberry Pi camera section,
+from `rpicam-vid --list-cameras`.
 
 ## `irl publish`
 
@@ -56,6 +60,14 @@ kind. The platform picks the capture backend.
 
 Any other `--audio` value is taken as a device name, so an ALSA name such as
 `hw:0,1` works as written.
+
+On Linux with the `pipewire` feature, `cam` opens PipeWire's default camera,
+which other applications can share. `screen` opens the desktop portal's
+picker, the only screen capture that works on Wayland. The CLI stores the
+portal's grant, so on a compositor that keeps grants the next run shares the
+same screen without asking. When PipeWire's camera does not open, `cam` falls
+back to `/dev/video0`. On X11, `screen` falls back to the X11 display unless
+the user declined the picker.
 
 ### Flags
 
@@ -162,8 +174,9 @@ With `--scan`, the window opens on the camera picture and connects as soon as
 it reads a ticket. The window always has a Scan button, so a player started
 with a ticket can switch to another. Without `--scan-camera`, the scanner uses
 the Raspberry Pi camera if the build has `rpicam` and `rpicam-vid` is
-installed, and the default camera otherwise. On a Pi, `/dev/video0` is the raw sensor and never delivers a
-picture, which is why the default camera is not the first choice there. Pass
+installed, and the default camera otherwise. On a Pi, `/dev/video0` is the
+raw sensor and never delivers a picture, which is why the default camera is
+not the first choice there. Pass
 `--scan-camera cam` on a Pi with a USB webcam. If a camera opens and sends
 nothing for five seconds, the window says so.
 
