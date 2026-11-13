@@ -159,10 +159,10 @@ pub use iroh_live_node::moq_net;
 // A type that a top-level item's method takes or returns is top-level too,
 // so a caller never has to guess which path holds it.
 pub use iroh_live_node::{
-    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Grant,
-    LinkKind, Mdns, MoqPreset, NetworkSample, Node, NodeConfig, Publication, Reach, RelayConfig,
-    RelayLink, RelayStatus, ServingLink, Session, Subscription, UnpublishOnDrop, ValueReader,
-    ValueWriter, layout, load_or_create_secret_key,
+    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, FanOut,
+    Grant, LinkKind, Mdns, MoqPreset, NetworkSample, Node, NodeConfig, Publication, RateControl,
+    Reach, RelayConfig, RelayLink, RelayStatus, SendEstimate, ServingLink, Session, Subscription,
+    UnpublishOnDrop, ValueReader, ValueWriter, layout, load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -241,5 +241,6 @@ mod guide {
         tune => "how-to/tune.md",
         control_access => "how-to/control-access.md",
         tokens => "how-to/tokens.md",
+        rate_control => "architecture/rate-control.md",
     }
 }

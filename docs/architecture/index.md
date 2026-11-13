@@ -21,7 +21,9 @@ route table with `from_resolved`. `iroh-live-rooms` has no media dependency.
 Upstream covers one publisher with one rendition, and one subscriber that takes
 what it is given. The `moq-ext-*` crates add three things on top.
 
-[Publishing](publish.md) encodes one source into a simulcast ladder.
+[Publishing](publish.md) encodes one source into a simulcast ladder, and with
+[rate control](rate-control.md), off by default, its encoders follow what the
+links carry.
 [Subscribing](subscribe.md) starts a player that picks among those renditions
 as the downlink changes, and swaps decoders without a blank frame. Each
 player's [playout clock](playout.md) keeps audio and video aligned across two

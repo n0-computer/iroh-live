@@ -150,6 +150,10 @@ impl LiveLayout {
     /// `LocalBroadcast`, or the producer itself. The audience is
     /// [`Audience::Granted`], which includes attached relays.
     ///
+    /// On a node with [`rate_control`](NodeConfig::rate_control), hand
+    /// [`Node::bandwidth`] to a `LocalBroadcast` with its `set_bandwidth`, so
+    /// its encoders follow the node's allocator.
+    ///
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes only
     /// when it is closed, since the node holds the broadcast open while it is
