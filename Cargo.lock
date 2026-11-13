@@ -4351,6 +4351,7 @@ dependencies = [
  "moq-ext-publisher",
  "moq-ext-sources",
  "moq-json",
+ "moq-mux",
  "moq-net",
  "moq-video",
  "n0-error",

@@ -40,6 +40,8 @@ tracing = "0.1.44"
 iroh-live-node = { workspace = true, features = ["test-util"] }
 # The source-switch helpers that the in-process switch tests use too.
 moq-ext-player = { workspace = true, features = ["test-util"] }
+# The recording program in docs/how-to/record.md.
+moq-mux = { workspace = true }
 # The examples.
 clap = { version = "4.6.7", features = ["derive"] }
 n0-tracing-test = "0.3.0"

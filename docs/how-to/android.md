@@ -4,6 +4,10 @@
 encodes and decodes H.264 with MediaCodec, sends over iroh, and draws decoded
 frames through EGL without a copy.
 
+To try it without building, install `iroh-live-demo-arm64-v8a.apk` from the
+[rolling release](https://github.com/n0-computer/iroh-live/releases/tag/rolling-release).
+To build it yourself, follow the sections below.
+
 ## Where the pieces live
 
 The MediaCodec encoder and decoder are in `moq-video`. Automatic backend

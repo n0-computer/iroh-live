@@ -1,71 +1,111 @@
-# Desktop rendering
+# Watch a broadcast and render it
 
-A player hands out decoded `moq_video::Frame` values through `VideoFrames`. On
-the desktop they are drawn through wgpu.
+This page plays a broadcast with sound and draws its frames. The
+[library quickstart](../getting-started/library-quickstart.md) has the
+complete viewer program that this page builds on.
 
-## The wgpu renderer
+## With `irl`
 
-`moq_video::render::Renderer::new(device, queue, config)` binds a renderer to a
-wgpu device and queue. `render(&frame)` returns a `wgpu::Texture`. You can
-present that texture, hand it to a UI toolkit, or copy it back. The renderer
-has no windowing dependency and picks no surface format.
+```sh
+irl watch <TICKET>
+irl watch --scan                      # read the ticket from a QR code
+irl watch <TICKET> --latency smooth   # more buffer for Wi-Fi or mobile links
+```
 
-Backend selection, colour handling, and zero-copy import are documented in
-[moq-video](https://doc.moq.dev/lib/rs/crate/moq-video). Two points matter
-here.
+The window shows the stats overlay along its bottom edge, and has controls to
+pin a rendition or change the decoder. The [CLI reference](../reference/cli.md#irl-watch)
+lists every flag.
 
-The renderer fixes the wgpu version. `iroh_live::media::video::render::wgpu`
-re-exports the wgpu it links, and a texture from another wgpu major version is
-a different type. The workspace pins egui and eframe to versions on the same
-wgpu major.
+## Play the audio
 
-On Linux, request `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when you
-create the device. Without it, DMA-BUF frames from PipeWire screen capture are
-uploaded through the CPU.
+A player subscribes to audio only when `PlayerConfig::audio` asks for it.
+`AudioMode::Play` mixes it into a `playback::Engine`, which needs the
+`playback` feature:
 
-All of this needs the `render` feature. `iroh-live` turns it on with `full`, and
-`moq-ext-player` leaves it off.
+```rust,no_run
+use iroh_live::{
+    Subscription,
+    media::{AudioMode, Player, PlayerConfig, audio::playback::Engine, remote_broadcast},
+};
 
-## egui
+async fn play(subscription: &Subscription) -> Result<Player, Box<dyn std::error::Error>> {
+    // One engine per output device. Every player that uses it is mixed.
+    let engine = Engine::open(Default::default()).await?;
+    let config = PlayerConfig::default().with_audio(AudioMode::Play(engine));
+    let player = remote_broadcast(subscription).play(config)?;
+    Ok(player)
+}
+```
 
-`moq-ext-egui` draws frames in egui.
+`AudioMode::Decode` decodes the audio without a speaker, for a headless
+consumer. `AudioMode::Off`, the default, does not subscribe to audio at all.
 
-`VideoView` draws a `VideoFrames` stream, such as a player's `video_frames()` or a
-source's `frames()`:
+## Draw the frames
 
-```rust
+`Player::video_frames()` returns a `VideoFrames` stream of decoded
+`moq_video::Frame` values. It holds only the newest frame, so a renderer that
+falls behind skips to the newest picture.
+
+On the desktop, frames are drawn through wgpu, which needs the `render`
+feature. `moq_video::render::Renderer::new(device, queue, config)` binds a
+renderer to a wgpu device and queue, and `render(&frame)` returns a
+`wgpu::Texture` to present, hand to a UI toolkit, or copy back. Backend
+selection, colour handling and zero-copy import are documented in
+[moq-video](https://doc.moq.dev/lib/rs/crate/moq-video).
+
+Two points matter here:
+
+- The renderer fixes the wgpu version. `iroh_live::media::video::render::wgpu`
+  re-exports the wgpu it links. A texture from another wgpu major version is a
+  different type.
+- On Linux, request `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when you
+  create the device. Without it, frames that arrive as DMA-BUFs, such as
+  hardware-decoded video and PipeWire screen capture, are copied through the
+  CPU.
+
+### egui
+
+The `moq-ext-egui` crate draws frames in egui. `VideoView` draws a
+`VideoFrames` stream:
+
+```rust,ignore
 use moq_ext_egui::VideoView;
 
 let mut view = VideoView::new(ctx, "video", player.video_frames(), render_state);
-// in the update loop:
+// In the update loop:
 ui.add(view.render());
 ```
 
-`render_state` is an `Option<&egui_wgpu::RenderState>`. The view wakes the
-window when a frame arrives. `render()` draws the newest frame and returns an
-`egui::Image`. `set_frames` switches to another stream and keeps the last
-picture on screen until the new stream delivers one. `VideoView::new` must run
-inside a Tokio runtime.
+`render_state` is an `Option<&egui_wgpu::RenderState>`, and without one the
+view shows a black placeholder. The view wakes the window when a frame
+arrives. `set_frames` switches to another stream and keeps the last picture
+until the new stream delivers one. `VideoView::new` must run inside a Tokio
+runtime.
 
-`FrameView` draws frames you hand it with `render_frame`. The QR scanner of
-`irl watch --scan` uses it for the frames it reads. Create it with
-`FrameView::new(ctx, name, render_state)`.
+Pass `moq_ext_egui::egui_wgpu_config()` to eframe. On Linux it selects Vulkan
+and enables `VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter supports it,
+which eframe does not do on its own.
 
-Without a render state, both views show a black placeholder.
+`FrameView` draws frames that you hand it with `render_frame`, and
+`overlay::DebugOverlay` draws the stats bar that `irl watch` shows.
 
-`egui_wgpu_config()` returns the `egui_wgpu::WgpuConfiguration` to pass
-to eframe. On Linux it selects Vulkan and enables
-`VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter supports it. eframe does not
-request that feature on its own.
-
-`overlay::DebugOverlay` draws the stats panel described in [instrumentation and
-tests](../architecture/devtools.md).
-
-## Other toolkits
+### Other toolkits
 
 A toolkit that shares a wgpu device can draw the renderer's texture directly.
-Otherwise, `moq_video::Surface::to_rgba` converts a frame's surface to RGBA8
-pixels on the CPU, downloading it from the GPU where needed.
-
-No library crate has a GLES renderer. The Pi demo has one in
+Otherwise, `moq_video::Surface::to_rgba` converts a frame to RGBA8 pixels on
+the CPU. No library crate has a GLES renderer. The Pi demo has one in
 `demos/pi-zero/src/gles.rs`, see [Raspberry Pi](raspberry-pi.md).
+
+## Follow the player
+
+- `Player::status()` watches the rendition on screen, the decoder, and why
+  the last switch failed.
+- `Player::stats()` returns frame rate, decode time, latency and the link's
+  round trip and loss, cheap enough for every redraw.
+- `RemoteBroadcast::closed()` resolves when the broadcast ends.
+
+## Where to go next
+
+- [Tune quality and latency](tune.md) pins a rendition and sets the latency.
+- [Subscribing](../architecture/subscribe.md) explains decoding and
+  rendition switches.
