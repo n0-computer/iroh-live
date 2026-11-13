@@ -82,3 +82,36 @@ absolute_paths = "allow"
 manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
+
+# LOCAL PATCH FOR REVIEW, NOT FOR MERGE. moq from the local branch
+# `iroh-live-rate-control` of ~/Code/rust/moq (worktree
+# ~/Code/rust/worktrees/moq-rate-control), one commit on 6aa4f9c1c that adds
+# moq-net's `Server::with_allocator`. Rate control needs it so a node's
+# accepted sessions share its allocator, as its dialed ones do through
+# `Client::with_allocator`.
+# TODO(upstream): file `Server::with_allocator` to moq-dev/moq, then drop this patch.
+[patch."https://github.com/moq-dev/moq"]
+# Every crate of the moq source is patched, so the tree holds one copy of each.
+hang = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+kio = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+kio-macros = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-audio = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-auth = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-congestion = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-crypto = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-json = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-loc = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-msf = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-mux = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-net = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-nvenc = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-pattern = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-quic = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-relay = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-sock = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-stats = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-tokio = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-v4l = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-vaapi = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+moq-video = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
+qmux = { git = "file:///home/bit/Code/rust/moq", branch = "iroh-live-rate-control" }
