@@ -2,7 +2,7 @@
 name = "moq-transport-iroh"
 version = "0.1.0"
 edition = "2024"
-description = "MoQ sessions over iroh connections: dial, accept, moq-net's poll transport and link statistics"
+description = "MoQ sessions over iroh connections: dial, accept and moq-net's poll transport"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
@@ -15,15 +15,8 @@ workspace = true
 bytes = "1"
 iroh = { workspace = true }
 kio = { workspace = true }
-# `NetworkSample`, the reading a link sample carries for adaptation.
-moq-ext-adaptive = { workspace = true }
 moq-net = { workspace = true }
 n0-error = "1.0.3"
-# The congestion controllers: BBR3, which every endpoint binds with, and the
-# CUBIC and NewReno a `Congestion` names.
-noq-proto = { workspace = true }
-# `time` drives the link sampler's interval.
-tokio = { version = "1.54.1", features = ["time"] }
 tracing = "0.1.44"
 
 [dev-dependencies]

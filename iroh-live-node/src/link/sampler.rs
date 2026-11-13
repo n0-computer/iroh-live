@@ -1,8 +1,7 @@
-//! Link measurement, from a MoQ session's statistics and its connection's paths.
+//! The sampler that turns a session's statistics into [`NetworkSample`]s.
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -10,8 +9,8 @@ use iroh::endpoint::{Connection, PathId};
 use moq_ext_adaptive::NetworkSample;
 use moq_net::session::Stats;
 
-/// How often [`sample_link`] reads the session.
-pub const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
+/// How often a monitor reads its link.
+pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 
 /// The span loss and throughput are measured across.
 ///
@@ -37,41 +36,6 @@ enum PathKey {
     Session(u64),
 }
 
-/// Samples `session` every [`SAMPLE_INTERVAL`] until `connection` closes.
-///
-/// Each sample goes to `publish`. A sampler that outlives the call carries the
-/// path generation on across the sessions of one link. The sampler holds the
-/// session's receive-bandwidth handle while it runs, and that handle asks the
-/// peer to send probes.
-///
-/// The future is cancel-safe: dropping it only stops the sampling.
-pub async fn sample_link(
-    session: moq_net::Session,
-    connection: Connection,
-    sampler: Arc<Mutex<LinkSampler>>,
-    mut publish: impl FnMut(NetworkSample),
-) {
-    let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let recv = session.recv_bandwidth();
-    loop {
-        interval.tick().await;
-        if connection.close_reason().is_some() {
-            return;
-        }
-        let delivery = recv.as_ref().and_then(|recv| recv.peek());
-        let sample = sampler.lock().expect("poisoned").sample_connection(
-            &session,
-            &connection,
-            delivery,
-            Instant::now(),
-        );
-        if let Some(sample) = sample {
-            publish(sample);
-        }
-    }
-}
-
 /// The counters one reading carries, and when it was taken.
 #[derive(Debug, Clone, Copy)]
 struct Reading {
@@ -89,10 +53,9 @@ struct Reading {
 /// span the last two seconds, the minimum round trip the last 15 s.
 ///
 /// Keeps the history rates and minimums are taken over, and the path
-/// generation. [`sample_link`] drives one on a timer. Call the `sample_*` methods
-/// directly to read on your own schedule.
+/// generation. The link monitors in the parent module drive one on a timer.
 #[derive(Debug, Default)]
-pub struct LinkSampler {
+pub(crate) struct LinkSampler {
     path: Option<PathKey>,
     path_generation: u64,
     /// This path's readings over the last [`MIN_RTT_WINDOW`], oldest first.
@@ -104,7 +67,7 @@ impl LinkSampler {
     ///
     /// The next reading counts as a new path even if the QUIC path id repeats,
     /// and history starts over.
-    pub fn new_session(&mut self) {
+    pub(crate) fn new_session(&mut self) {
         if self.path.take().is_some() {
             self.path_generation += 1;
         }
@@ -113,7 +76,7 @@ impl LinkSampler {
 
     /// Returns the path generation the link is at.
     #[must_use]
-    pub fn path_generation(&self) -> u64 {
+    pub(crate) fn path_generation(&self) -> u64 {
         self.path_generation
     }
 
@@ -122,7 +85,7 @@ impl LinkSampler {
     /// `delivery` is the peer's bandwidth estimate, as `peek` returns it.
     /// Returns `None` while the connection has no selected path.
     #[must_use]
-    pub fn sample_connection(
+    pub(crate) fn sample_connection(
         &mut self,
         session: &moq_net::Session,
         connection: &Connection,
@@ -145,7 +108,7 @@ impl LinkSampler {
     ///
     /// A new session number starts a new path, as a new QUIC path does.
     #[must_use]
-    pub fn sample_session(
+    pub(crate) fn sample_session(
         &mut self,
         session_number: u64,
         stats: &Stats,

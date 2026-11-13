@@ -103,8 +103,12 @@ kind and latest `NetworkSample`: round trip, minimum round trip, loss,
 throughput and the peer's delivery estimate, with `None` for what is not
 measured yet. `Session::moq()` gives the moq-net session itself, with its raw
 statistics. `Node::accepted()` yields each accepted session once.
-`NetworkSample` (from `moq-ext-adaptive`), `MoqPreset`, `alpns()` and `ALPN`
-come from `moq-transport-iroh` and are re-exported here.
+`NetworkSample` comes from `moq-ext-adaptive`, and `alpns()`, `ALPN` and
+`HANDSHAKE_TIMEOUT` from `moq-transport-iroh`. This crate re-exports them.
+`MoqPreset` is iroh's N0 preset with BBR3 congestion control, so the send-rate
+estimate moq-net gives subscribers tracks the link. `Congestion` names BBR3,
+CUBIC and NewReno, for a dial that compares controllers through
+`ConnectOptions::quic`.
 
 ## Examples
 

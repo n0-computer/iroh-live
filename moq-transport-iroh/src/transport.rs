@@ -62,17 +62,16 @@ impl Transport {
     ///
     /// Hand the transport to [`moq_net::Server::accept_request`] for an
     /// accepted connection, or to [`moq_net::Client::connect`] for a dialed
-    /// one. To dial with iroh's connect options, such as another
-    /// [`Congestion`](crate::Congestion) controller for this one connection
-    /// while the endpoint keeps its own for every other, connect through
-    /// iroh and wrap the result:
+    /// one. To dial with iroh's connect options, such as another QUIC
+    /// transport config for this one connection while the endpoint keeps its
+    /// own for every other, connect through iroh and wrap the result:
     ///
     /// ```no_run
-    /// # async fn run(endpoint: iroh::Endpoint, peer: iroh::EndpointId) -> Result<(), Box<dyn std::error::Error>> {
+    /// # async fn run(endpoint: iroh::Endpoint, peer: iroh::EndpointId, config: iroh::endpoint::QuicTransportConfig) -> Result<(), Box<dyn std::error::Error>> {
     /// use iroh::endpoint::ConnectOptions;
-    /// use moq_transport_iroh::{ALPN, Congestion, Transport};
+    /// use moq_transport_iroh::{ALPN, Transport};
     ///
-    /// let options = ConnectOptions::new().with_transport_config(Congestion::Cubic.transport_config());
+    /// let options = ConnectOptions::new().with_transport_config(config);
     /// let connection = endpoint.connect_with_opts(peer, ALPN, options).await?.await?;
     /// let transport = Transport::new(connection)?;
     /// # drop(transport);

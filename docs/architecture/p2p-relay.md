@@ -10,7 +10,7 @@ forwards opaque packets and adds its own round trip.
 The media pipeline does not see the change. It sees a different round trip and
 bandwidth, and the publisher's delivery estimate follows the bandwidth, which
 is what [adaptive rendition switching](adaptive.md) reads. The link monitor in
-`moq-transport-iroh/src/link.rs` counts every change of selected path as a new
+`iroh-live-node/src/link/sampler.rs` counts every change of selected path as a new
 path generation, and the selector forgets what it learned on the old path. The
 monitor's `link sample` TRACE log says whether the selected path is relayed.
 

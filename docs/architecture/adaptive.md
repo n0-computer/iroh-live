@@ -34,9 +34,8 @@ constraints allow.
 
 moq-ext-player does not depend on iroh, so it never produces these itself.
 Every `iroh-live-node` link runs a connection monitor (the sampler is
-`moq-transport-iroh/src/link.rs`) that
-reads its MoQ session's statistics every 200 ms and keeps the latest
-`NetworkSample`. A direct session starts the history over when the connection
+`iroh-live-node/src/link/sampler.rs`) that reads its MoQ session's statistics
+every 200 ms and keeps the latest `NetworkSample`. A direct session starts the history over when the connection
 selects another path, and a relay link on every reconnect. Both bump
 `path_generation`. `iroh_live::media::remote_broadcast` attaches a closure
 (`iroh-live/src/network.rs`) that reads `Subscription::serving_link()` for

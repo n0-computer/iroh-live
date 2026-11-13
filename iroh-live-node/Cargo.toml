@@ -19,12 +19,17 @@ moq-net = { workspace = true }
 # Latest-value JSON tracks, for `Node::publish_value` and `Subscription::value_track`.
 moq-json = { workspace = true }
 moq-ext-access = { workspace = true }
+# `NetworkSample`, the reading a link monitor publishes for adaptation.
+moq-ext-adaptive = { workspace = true }
 moq-transport-iroh = { workspace = true }
 # Relay links over QUIC and WebTransport (`https://`, `moqt://`, `moql://`).
 moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
 n0-error = "1.0.3"
 n0-future = "0.3.2"
 n0-watcher = "1.0.1"
+# The congestion controllers: BBR3, which `MoqPreset` binds with, and the
+# CUBIC and NewReno a `Congestion` names.
+noq-proto = { workspace = true }
 percent-encoding = "2.3.2"
 serde = "1.0.229"
 # `time` seeds each session driver's clock, `macros` is for `select!`.
@@ -52,8 +57,6 @@ iroh-live-node = { path = ".", features = ["test-util"] }
 # The rcan verifier, for the delegated-publisher tests.
 moq-ext-access = { workspace = true, features = ["rcan"] }
 n0-tracing-test = "0.3.0"
-# Tells the congestion controller of a connection by its type.
-noq-proto = { workspace = true }
 rcan = "0.4.1"
 tokio = { version = "1.54.1", features = ["full"] }
 

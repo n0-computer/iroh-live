@@ -1,6 +1,10 @@
 //! Link identity and measurement: the latest sample of each link, and its monitors.
 //!
-//! The sampler itself lives in `moq-transport-iroh`.
+//! A monitor reads its link every [`SAMPLE_INTERVAL`] through a
+//! [`LinkSampler`], which turns the session's statistics into a
+//! [`NetworkSample`].
+
+mod sampler;
 
 use std::{
     sync::{Arc, Mutex},
@@ -8,8 +12,10 @@ use std::{
 };
 
 use moq_ext_access::LinkKind;
-use moq_transport_iroh::{LinkSampler, NetworkSample, SAMPLE_INTERVAL};
+use moq_ext_adaptive::NetworkSample;
 use tracing::trace;
+
+use self::sampler::{LinkSampler, SAMPLE_INTERVAL};
 
 /// The id of one link of a node: a session or a relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
@@ -65,16 +71,36 @@ impl LatestSample {
 pub(crate) type SharedSampler = Arc<Mutex<LinkSampler>>;
 
 /// Reads a direct session into `latest` until its connection closes.
+///
+/// A sampler shared across the sessions of one link carries the path
+/// generation on from one to the next. The monitor holds the session's
+/// receive-bandwidth handle while it runs, and that handle asks the peer to
+/// send probes.
 pub(crate) async fn monitor_direct(
     session: moq_net::Session,
     connection: iroh::endpoint::Connection,
     latest: LatestSample,
     sampler: SharedSampler,
 ) {
-    moq_transport_iroh::sample_link(session, connection, sampler, move |sample| {
-        latest.set(sample);
-    })
-    .await;
+    let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let recv = session.recv_bandwidth();
+    loop {
+        interval.tick().await;
+        if connection.close_reason().is_some() {
+            return;
+        }
+        let delivery = recv.as_ref().and_then(|recv| recv.peek());
+        let sample = sampler.lock().expect("poisoned").sample_connection(
+            &session,
+            &connection,
+            delivery,
+            Instant::now(),
+        );
+        if let Some(sample) = sample {
+            latest.set(sample);
+        }
+    }
 }
 
 /// Reads a relay link into `latest` across its reconnects.

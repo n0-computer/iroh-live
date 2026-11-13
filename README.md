@@ -89,8 +89,8 @@ these APIs, crates.io versions will replace the git pins.
 | Crate | Description |
 |---|---|
 | [`iroh-live`](iroh-live) | `Node` and `LiveLayout`: publish and subscribe at `live/<endpoint id>/<name>`, `Calls`, `BroadcastTicket`, endpoint setup, and the media, transport and rooms crates re-exported |
-| [`iroh-live-node`](iroh-live-node) | The node: one route table fed by direct sessions and relay links, publications, and the policy that admits peers |
-| [`moq-transport-iroh`](moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, moq-net's poll transport on iroh, `MoqPreset`, link statistics. No node concepts |
+| [`iroh-live-node`](iroh-live-node) | The node: one route table fed by direct sessions and relay links, publications, the policy that admits peers, link statistics, and `MoqPreset` |
+| [`moq-transport-iroh`](moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, ALPN negotiation, moq-net's poll transport on iroh. No node concepts |
 | [`iroh-live-rooms`](iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media dependency |
 | [`moq-ext-access`](moq-ext-access) | Access control: grants, policies, token verifiers, layouts, and who sees a publication. No iroh dependency |
 | [`moq-ext-adaptive`](moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines |

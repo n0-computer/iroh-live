@@ -15,7 +15,7 @@ use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig, NewRenoC
 ///
 /// ```no_run
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let endpoint = iroh::Endpoint::bind(moq_transport_iroh::MoqPreset).await?;
+/// let endpoint = iroh::Endpoint::bind(iroh_live_node::MoqPreset).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -41,14 +41,14 @@ impl presets::Preset for MoqPreset {
 /// [`MoqPreset`] binds an endpoint with [`Bbr3`](Self::Bbr3), which keeps
 /// moq-net's send-rate estimate on the link. The others are there to compare
 /// against. An endpoint uses one controller for every connection, and
-/// one dial can take another through
-/// [`transport_config`](Self::transport_config), as
-/// [`Transport::new`](crate::Transport::new) shows.
+/// one dial can take another by setting
+/// [`transport_config`](Self::transport_config) in
+/// [`ConnectOptions::quic`](crate::ConnectOptions::quic).
 ///
 /// It parses from its name in any case, and displays as that name.
 ///
 /// ```
-/// use moq_transport_iroh::Congestion;
+/// use iroh_live_node::Congestion;
 ///
 /// let congestion: Congestion = "cubic".parse().expect("a known controller");
 /// assert_eq!(congestion, Congestion::Cubic);

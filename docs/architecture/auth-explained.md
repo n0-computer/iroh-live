@@ -240,6 +240,16 @@ Claims add only to the publish half. A lapsed or missing authorization makes
 both halves empty. The node serves only its own publications, so the
 subscribe half never lists a route it learned from another link.
 
+A node can hold several sessions with one peer, after a simultaneous dial or
+a dial that races the peer's own. Only the oldest of them announces into the
+route table. The others get an empty publish half until the oldest closes, and
+then the next oldest takes over the peer's routes. moq-lite-06 announcements
+carry no instance, so two sessions announcing the same paths would look to moq
+like the peer replacing its broadcasts, and track requests in flight on the
+first session would fail as unroutable. Every session still gets the full
+subscribe half, so the peer reads this node's publications over any of them
+(`State::is_standby` in `iroh-live-node/src/state.rs`).
+
 The node recomputes the view of every link whenever one of its inputs
 changes:
 

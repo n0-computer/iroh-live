@@ -20,16 +20,11 @@ which is built on this crate.
   raw QUIC, so the request path and any token travel in the MoQ SETUP.
 - `ALPN`, `alpns()`, `HANDSHAKE_TIMEOUT`: the protocol identifiers to mount a
   handler under, newest MoQ version first.
-- `MoqPreset`: iroh's N0 preset with BBR3, so the send-rate estimate moq-net
-  gives subscribers tracks the link.
-- `LinkSampler`, `sample_link`: sample a connection's selected path every
-  200 ms into a `NetworkSample`: round trip, minimum round trip, loss,
-  throughput and the peer's delivery estimate.
 
 ```rust
-use moq_transport_iroh::{MoqPreset, Transport};
+use moq_transport_iroh::Transport;
 
-let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
+let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
 let transport = Transport::connect(&endpoint, peer).await?;
 let (session, driver) = moq_net::Client::new()
     .connect(moq_net::time::Instant::now(), transport)
@@ -42,6 +37,10 @@ congestion controller takes no probe target, and iroh does not report its
 receive windows.
 
 See `iroh-live-relay/src/iroh_sessions.rs` for the server side.
+
+The endpoint preset tuned for MoQ (`MoqPreset`, BBR3 congestion control) and
+the link statistics live in [`iroh-live-node`](../iroh-live-node), which builds
+on this crate.
 
 ## Features
 

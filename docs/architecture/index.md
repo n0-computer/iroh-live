@@ -8,8 +8,8 @@ This repository holds the layer that joins them.
 
 | Crate | What it is |
 |---|---|
-| `moq-transport-iroh` | MoQ sessions over iroh connections: dial, accept, ALPN negotiation, moq-net's poll transport on iroh, link statistics. No node concepts |
-| `iroh-live-node` | The node over that transport: the route table, publications and audiences, sessions and relay links |
+| `moq-transport-iroh` | MoQ sessions over iroh connections: dial, accept, ALPN negotiation, moq-net's poll transport on iroh. No node concepts |
+| `iroh-live-node` | The node over that transport: the route table, publications and audiences, sessions and relay links, link statistics, and `MoqPreset` |
 | `moq-ext-access` | Access control: grants, session requests, audiences, layouts, and the policies that admit and authorize peers, with JWT and rcan verifiers behind features. No transport dependency |
 | `iroh-live-rooms` | Rooms: gossip membership as a watched state, and members-only broadcasts subscribed on demand. Media-free |
 | `iroh-live` | `LiveLayout` and `Calls`, the facade that joins media and transport, endpoint setup, and the re-exports |

@@ -36,6 +36,8 @@
 //! - [`Session`]: a direct session with a peer. Its [`Grant`] says what the
 //!   peer may subscribe to and publish.
 //! - [`RelayLink`]: a moq relay the node stays attached to.
+//! - [`MoqPreset`]: iroh's N0 preset with BBR3, to bind the node's endpoint
+//!   with. [`Congestion`] names the controllers to compare it against.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
 //! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
@@ -90,6 +92,7 @@ mod handshake;
 mod link;
 mod node;
 pub mod policy;
+mod preset;
 mod publish;
 mod reauth;
 mod relay;
@@ -107,10 +110,9 @@ pub use moq_ext_access::{Direction, Layout, LinkKind};
 pub use moq_json as json;
 /// The moq-net this crate builds against.
 pub use moq_net;
+pub use moq_ext_adaptive::NetworkSample;
 use moq_transport_iroh as transport;
-pub use moq_transport_iroh::{
-    ALPN, Congestion, HANDSHAKE_TIMEOUT, MoqPreset, NetworkSample, alpns,
-};
+pub use moq_transport_iroh::{ALPN, HANDSHAKE_TIMEOUT, alpns};
 
 pub use self::{
     admission::{ConnectOptions, Grant, SessionRequest},
@@ -118,6 +120,7 @@ pub use self::{
     error::Error,
     link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
+    preset::{Congestion, MoqPreset, UnknownCongestion},
     publish::{Audience, Publication, UnpublishOnDrop},
     relay::{RelayConfig, RelayLink, RelayStatus, TokenSource},
     route::Subscription,

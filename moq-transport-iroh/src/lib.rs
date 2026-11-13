@@ -8,19 +8,19 @@
 //!   connection that is already open, accepted or dialed. Both check the
 //!   negotiated ALPN. Hand the transport to [`moq_net::Client::connect`] or
 //!   [`moq_net::Server::accept_request`].
-//! - [`MoqPreset`] binds an endpoint with a QUIC configuration tuned for MoQ.
-//! - [`LinkSampler`] reads a connection's selected path into a
-//!   [`NetworkSample`]: round trip, loss, delivery rate.
+//! - [`ALPN`], [`alpns`] and [`HANDSHAKE_TIMEOUT`] are the protocol
+//!   identifiers to dial and mount a handler with, and the bound on a
+//!   session's setup.
 //!
 //! MoQ runs on raw QUIC. Raw QUIC has no request URI, so the request path and
 //! any token travel in the MoQ SETUP.
 //!
 //! ```no_run
 //! use iroh::EndpointId;
-//! use moq_transport_iroh::{MoqPreset, Transport};
+//! use moq_transport_iroh::Transport;
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
-//! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
+//! let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
 //! let transport = Transport::connect(&endpoint, peer).await?;
 //! let (session, driver) = moq_net::Client::new()
 //!     .connect(moq_net::time::Instant::now(), transport)
@@ -31,19 +31,13 @@
 //! ```
 
 mod error;
-mod link;
-mod preset;
 mod stream;
 mod transport;
 
 use std::time::Duration;
 
-pub use moq_ext_adaptive::NetworkSample;
-
 pub use self::{
     error::{Error, TransportError},
-    link::{LinkSampler, SAMPLE_INTERVAL, sample_link},
-    preset::{Congestion, MoqPreset, UnknownCongestion},
     stream::{RecvStream, SendStream},
     transport::Transport,
 };
