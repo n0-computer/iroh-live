@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 
 /// A room: its gossip topic and the peers to contact first.
 ///
-/// Its string form is an `iroh_tickets` ticket of kind `room`.
+/// Its string form is an `iroh_tickets` ticket of kind `room2`. The kind
+/// names the version of the room's gossip messages, which carry no version of
+/// their own, so a ticket of an earlier format fails to parse instead of
+/// joining a room whose messages its peers cannot read.
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
 #[display("{}", iroh_tickets::Ticket::encode_string(self))]
 pub struct RoomTicket {
@@ -59,7 +62,8 @@ impl FromStr for RoomTicket {
 }
 
 impl iroh_tickets::Ticket for RoomTicket {
-    const KIND: &'static str = "room";
+    /// Bumped from `room` when the gossip announcements changed format.
+    const KIND: &'static str = "room2";
 
     fn encode_bytes(&self) -> Vec<u8> {
         postcard::to_stdvec(self).expect("RoomTicket serialization is infallible")
@@ -80,7 +84,28 @@ mod tests {
         let ticket = RoomTicket::generate().with_bootstrap(peer);
         let parsed: RoomTicket = ticket.to_string().parse().expect("parse");
         assert_eq!(parsed, ticket);
-        assert!(ticket.to_string().starts_with("room"));
+        assert!(ticket.to_string().starts_with("room2"));
         assert_eq!(parsed.bootstrap(), [peer]);
+    }
+
+    /// A ticket of the earlier `room` kind fails with a kind error, not a room that cannot talk.
+    #[test]
+    fn a_ticket_of_the_earlier_format_is_refused_by_kind() {
+        let peer = iroh::SecretKey::from_bytes(&[5; 32]).public();
+        let ticket = RoomTicket::generate().with_bootstrap(peer);
+        // The same bytes under the earlier kind.
+        let encoded = ticket.to_string();
+        let stale = format!("room{}", encoded.strip_prefix("room2").expect("the kind"));
+        let err = stale.parse::<RoomTicket>().expect_err("a stale ticket");
+        assert!(
+            matches!(
+                err,
+                iroh_tickets::ParseError::Kind {
+                    expected: "room2",
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 }
