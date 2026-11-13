@@ -16,6 +16,7 @@ use iroh_live_node::{
     Audience, Error, LinkKind, Reach, RelayConfig, RelayStatus,
     test_util::{TIMEOUT, TestNode, announcement, endpoint, lookup, retracted, step},
 };
+use iroh_live_relay::pull::{Access, Client};
 use moq_auth::{Algorithm, Claims, Key, KeySet};
 use moq_ext_access::policy::{JwtVerifier, Verify};
 use moq_net::origin;
@@ -72,19 +73,19 @@ impl TestRelay {
     ///
     /// The forgery tests use it as the relay a node must not trust.
     async fn start() -> Self {
-        Self::start_with(false, false, None, None, iroh::SecretKey::generate()).await
+        Self::start_with(false, None, None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay with the admission `iroh_live_relay::run` uses.
     async fn start_shipped() -> Self {
-        Self::start_with(true, false, None, None, iroh::SecretKey::generate()).await
+        Self::start_with(true, None, None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay as [`start_shipped`](Self::start_shipped) does, which verifies JWTs with `keys`.
     ///
     /// As `iroh_live_relay::run` does with `--auth-key`.
     async fn start_keyed(keys: KeySet) -> Self {
-        Self::start_with(true, false, None, Some(keys), iroh::SecretKey::generate()).await
+        Self::start_with(true, None, None, Some(keys), iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay as [`start_keyed`](Self::start_keyed) does, with HTTP.
@@ -93,7 +94,7 @@ impl TestRelay {
     async fn start_keyed_http(keys: KeySet) -> Self {
         Self::start_with(
             true,
-            false,
+            None,
             Some(free_port()),
             Some(keys),
             iroh::SecretKey::generate(),
@@ -103,9 +104,31 @@ impl TestRelay {
 
     /// Starts a relay as [`start_shipped`](Self::start_shipped) does, which also pulls tickets.
     ///
-    /// An iroh session that names a ticket in its path pulls the ticket's broadcast.
+    /// A session that names a ticket in its path pulls the ticket's broadcast,
+    /// token or not, as `--open-pulls` does.
     async fn start_pulling() -> Self {
-        Self::start_with(true, true, None, None, iroh::SecretKey::generate()).await
+        Self::start_with(
+            true,
+            Some(Access::Open),
+            None,
+            None,
+            iroh::SecretKey::generate(),
+        )
+        .await
+    }
+
+    /// Starts a relay as [`start_keyed`](Self::start_keyed) does, which pulls for a token holder.
+    ///
+    /// As `iroh_live_relay::run` does with `--auth-key` and no `--open-pulls`.
+    async fn start_keyed_pulling(keys: KeySet) -> Self {
+        Self::start_with(
+            true,
+            Some(Access::Authorized),
+            None,
+            Some(keys),
+            iroh::SecretKey::generate(),
+        )
+        .await
     }
 
     /// Starts a relay with the admission of the shipped relay if `shipped`, else an open one.
@@ -118,7 +141,7 @@ impl TestRelay {
     async fn start_http() -> Self {
         Self::start_with(
             false,
-            false,
+            None,
             Some(free_port()),
             None,
             iroh::SecretKey::generate(),
@@ -128,13 +151,13 @@ impl TestRelay {
 
     /// Starts a relay with the given options.
     ///
-    /// With `pull`, the shipped admission pulls the tickets iroh sessions name.
+    /// With `pulls`, the shipped admission pulls the tickets sessions name, for the sessions it lets.
     /// With `port`, QUIC and the web listener bind that port, else QUIC binds any.
     /// With `keys`, the shipped admission and the iroh sessions verify JWTs.
     /// The relay's iroh endpoint id is the one of `secret_key`.
     async fn start_with(
         shipped: bool,
-        pull: bool,
+        pulls: Option<Access>,
         port: Option<u16>,
         keys: Option<KeySet>,
         secret_key: iroh::SecretKey,
@@ -176,9 +199,10 @@ impl TestRelay {
         // moq-tokio's server has no iroh backend, so iroh clients always come
         // in through a handler: the shipped admission, or one that admits all.
         let (iroh_router, admit_task) = if shipped {
-            let pulls = pull.then(|| {
+            let pulls = pulls.map(|access| {
                 iroh_live_relay::pull::Pulls::new(iroh.clone(), cluster.clone())
                     .with_linger(PULL_LINGER)
+                    .with_access(access)
             });
             // As the shipped relay does: a browser session that names a
             // ticket reads the pulled broadcast at that name.
@@ -193,10 +217,13 @@ impl TestRelay {
             )));
             let mut sessions = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls);
             if let Some(keys) = keys {
-                sessions = sessions.with_policy(
-                    Verify::new(JwtVerifier::new(keys))
-                        .with_fallback(iroh_live_relay::relay_policy()),
-                );
+                let verifier = JwtVerifier::new(keys);
+                sessions = sessions
+                    .with_policy(
+                        Verify::new(verifier.clone())
+                            .with_fallback(iroh_live_relay::relay_policy()),
+                    )
+                    .with_pull_policy(Verify::new(verifier));
             }
             let router = sessions
                 .mount(iroh::protocol::Router::builder(iroh))
@@ -537,9 +564,12 @@ async fn pull_remote_broadcast_via_ticket() {
     let local_name = ticket.to_string();
     let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = step("pull timeout", pulls.pull(&local_name, &ticket))
-        .await
-        .expect("pull");
+    let guard = step(
+        "pull timeout",
+        pulls.pull(Client::Unknown, &local_name, &ticket),
+    )
+    .await
+    .expect("pull");
 
     // Subscriber: noq, standing in for a browser, which dials the ticket as
     // its path and watches the broadcast at its root.
@@ -718,7 +748,7 @@ async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
     let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
 
-    let guard = step("pull timeout", pulls.pull(&bare, &ticket))
+    let guard = step("pull timeout", pulls.pull(Client::Unknown, &bare, &ticket))
         .await
         .expect("pull");
     assert!(
@@ -744,9 +774,12 @@ async fn pull_retires_an_unwatched_session() {
     let pulls =
         iroh_live_relay::pull::Pulls::new(pull_ep, relay.cluster.clone()).with_linger(PULL_LINGER);
 
-    let guard = step("pull timeout", pulls.pull(&local_name, &ticket))
-        .await
-        .expect("pull");
+    let guard = step(
+        "pull timeout",
+        pulls.pull(Client::Unknown, &local_name, &ticket),
+    )
+    .await
+    .expect("pull");
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await,
         "the pulled broadcast should be announced in the cluster"
@@ -767,9 +800,12 @@ async fn pull_retires_an_unwatched_session() {
     .await;
 
     // The same ticket dials a new session.
-    let guard = step("re-pull timeout", pulls.pull(&local_name, &ticket))
-        .await
-        .expect("re-pull");
+    let guard = step(
+        "re-pull timeout",
+        pulls.pull(Client::Unknown, &local_name, &ticket),
+    )
+    .await
+    .expect("re-pull");
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await,
         "pulling a retired ticket should dial the publisher again"
@@ -790,9 +826,12 @@ async fn a_pull_survives_the_publisher_republishing() {
 
     let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = step("pull timeout", pulls.pull(&local_name, &ticket))
-        .await
-        .expect("pull");
+    let guard = step(
+        "pull timeout",
+        pulls.pull(Client::Unknown, &local_name, &ticket),
+    )
+    .await
+    .expect("pull");
     assert!(wait_for_broadcast(&pulled(&relay.cluster, &local_name), &local_name, true).await);
 
     drop(broadcast);
@@ -1431,12 +1470,18 @@ async fn a_publisher_session_outlives_all_but_its_last_pull() {
     let pull_id = pull_ep.id();
     let pulls =
         iroh_live_relay::pull::Pulls::new(pull_ep, relay.cluster.clone()).with_linger(PULL_LINGER);
-    let first_guard = step("pull timeout", pulls.pull(&first_name, &first))
-        .await
-        .expect("pull");
-    let second_guard = step("pull timeout", pulls.pull(&second_name, &second))
-        .await
-        .expect("pull");
+    let first_guard = step(
+        "pull timeout",
+        pulls.pull(Client::Unknown, &first_name, &first),
+    )
+    .await
+    .expect("pull");
+    let second_guard = step(
+        "pull timeout",
+        pulls.pull(Client::Unknown, &second_name, &second),
+    )
+    .await
+    .expect("pull");
     for name in [&first_name, &second_name] {
         assert!(
             wait_for_broadcast(&pulled(&relay.cluster, name), name, true).await,
@@ -1503,9 +1548,12 @@ async fn a_pull_keeps_the_publishers_other_broadcasts_out() {
     let mut announced = cluster.announced();
     let pulls = iroh_live_relay::pull::Pulls::new(endpoint().await, relay.cluster.clone())
         .with_linger(PULL_LINGER);
-    let guard = step("pull timeout", pulls.pull(&wanted.to_string(), &wanted))
-        .await
-        .expect("pull");
+    let guard = step(
+        "pull timeout",
+        pulls.pull(Client::Unknown, &wanted.to_string(), &wanted),
+    )
+    .await
+    .expect("pull");
 
     let mut seen = Vec::new();
     let mut settle = None;
@@ -1999,7 +2047,7 @@ async fn a_relay_link_waits_for_a_relay_that_is_down_at_attach() {
     })
     .await;
 
-    let relay = TestRelay::start_with(true, false, None, None, secret_key).await;
+    let relay = TestRelay::start_with(true, None, None, None, secret_key).await;
     step("the relay link connects once the relay is up", async {
         while status.get() != RelayStatus::Connected {
             status.updated().await.expect("link gone");
@@ -2036,4 +2084,139 @@ async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
         "a session without a token published two segments"
     );
     drop(browser);
+}
+
+/// Signs a token that lets its holder read under `prefix/` and publish nothing.
+fn reader_token(keys: &KeySet, prefix: &str) -> String {
+    let claims =
+        Claims::default().with_subscribe([format!("{prefix}/**").parse().expect("a pattern")]);
+    keys.sign(&claims).expect("signed")
+}
+
+/// Dials `relay` as a browser at the ticket `name`, with `token` if set, and holds the connection.
+///
+/// The client's half of the handshake may complete before a refusal, so this
+/// does not tell an admitted session from a refused one. `None` if the
+/// handshake failed or timed out.
+async fn browser_at(
+    relay: &TestRelay,
+    name: &str,
+    token: Option<&str>,
+) -> Option<moq_tokio::Connection> {
+    let mut url = relay.url();
+    url.set_path(name);
+    if let Some(token) = token {
+        url.query_pairs_mut().append_pair("jwt", token);
+    }
+    let connection = noq_client()
+        .with_subscriber(moq_tokio::origin::spawn())
+        .connect(url);
+    tokio::time::timeout(TIMEOUT, connection.established())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// With a key, a browser pulls a ticket only with a token that grants reading the ticket's path.
+#[tokio::test]
+async fn a_browser_pulls_under_a_key_only_with_a_token_for_the_path() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay = TestRelay::start_keyed_pulling(keys.clone()).await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    let _anonymous = browser_at(&relay, &name, None).await;
+    let _elsewhere = browser_at(&relay, &name, Some(&reader_token(&keys, "other"))).await;
+    let _forged = browser_at(&relay, &name, Some(&reader_token(&signing_keys(), "live"))).await;
+    assert!(
+        !routed_soon(&relay.cluster.origin, &path).await,
+        "the relay pulled for a session without a token for the path"
+    );
+
+    // A token for `live/**` reaches the ticket's path, though not the name dialed.
+    let _reader = browser_at(&relay, &name, Some(&reader_token(&keys, "live"))).await;
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull for a token holder"
+    );
+
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// With a key, an iroh client pulls a ticket only with a token that grants reading the ticket's path.
+#[tokio::test]
+async fn an_iroh_client_pulls_under_a_key_only_with_a_token() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay = TestRelay::start_keyed_pulling(keys.clone()).await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    let (_anonymous_endpoint, anonymous) = relay_node().await;
+    let url = format!("iroh://{}/{name}", relay.iroh_id)
+        .parse()
+        .expect("a valid URL");
+    let _anonymous = anonymous
+        .attach_relay(RelayConfig::new(url))
+        .expect("attach");
+    assert!(
+        !routed_soon(&relay.cluster.origin, &path).await,
+        "the relay pulled for an iroh client without a token"
+    );
+
+    // The token admits the session at the dialed name, and grants the ticket's path.
+    let (_holder_endpoint, holder) = relay_node().await;
+    let url = format!("iroh://{}/{name}", relay.iroh_id)
+        .parse()
+        .expect("a valid URL");
+    let everything = Claims::default().with_subscribe([moq_net::Pattern::all()]);
+    let token = keys.sign(&everything).expect("signed");
+    let config = RelayConfig::new(url).with_token(token.parse().expect("not empty"));
+    let _holder = holder.attach_relay(config).expect("attach");
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull for a token holder"
+    );
+
+    anonymous.shutdown().await;
+    holder.shutdown().await;
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// Without a key, an iroh client pulls nothing, whatever token it presents.
+///
+/// The relay's own policy admits the session and ignores the token, so the
+/// token must not count as one that grants the pull.
+#[tokio::test]
+async fn an_iroh_client_pulls_nothing_from_a_relay_without_a_key() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_with(
+        true,
+        Some(Access::Authorized),
+        None,
+        None,
+        iroh::SecretKey::generate(),
+    )
+    .await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+
+    let (_endpoint, client) = relay_node().await;
+    let url = format!("iroh://{}/{name}?jwt=anything", relay.iroh_id)
+        .parse()
+        .expect("a valid URL");
+    let _link = client.attach_relay(RelayConfig::new(url)).expect("attach");
+    assert!(
+        !routed_soon(&relay.cluster.origin, ticket.path().as_str()).await,
+        "the relay pulled for an unverified token"
+    );
+
+    client.shutdown().await;
+    drop(broadcast);
+    publisher.shutdown().await;
 }

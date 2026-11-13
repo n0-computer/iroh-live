@@ -15,17 +15,18 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
-use iroh_live::{layout::LiveLayout, rooms::RoomsLayout};
+use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomsLayout};
 use iroh_live_node::{
     DECIDE_TIMEOUT, SessionRequest,
     policy::{Authorization, DynPolicy, Event, PeerRequest, Policy},
 };
 use moq_net::Pattern;
 use moq_relay::cluster::Cluster;
+use n0_error::e;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use crate::pull::Pulls;
+use crate::pull::{Access, Client, PullGuard, Pulls};
 
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -41,6 +42,8 @@ pub struct IrohSessions {
     pulls: Option<Pulls>,
     /// Decides who may hold a session, and what it may publish and read.
     policy: Arc<dyn DynPolicy<EndpointId>>,
+    /// Decides who may pull under [`Access::Authorized`], asked at the ticket's path.
+    pull_policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
     /// Cancelled when the router shuts down, which closes every session.
     shutdown: CancellationToken,
 }
@@ -49,13 +52,18 @@ impl IrohSessions {
     /// Creates the handler for `cluster`, deciding sessions with [`relay_policy`].
     ///
     /// With `pulls` set, a session that names a ticket in its path pulls the
-    /// ticket's broadcast, as a browser's does.
+    /// ticket's broadcast, as a browser's does, if the pulls'
+    /// [`Access`](crate::pull::Access) lets it: see
+    /// [`with_pull_policy`](Self::with_pull_policy). A session that may not
+    /// pull, or would exceed the pulls' [`Limits`](crate::pull::Limits), is
+    /// refused.
     #[must_use]
     pub fn new(cluster: Cluster, pulls: Option<Pulls>) -> Self {
         Self {
             cluster,
             pulls,
             policy: Arc::new(relay_policy()),
+            pull_policy: None,
             shutdown: CancellationToken::new(),
         }
     }
@@ -70,6 +78,20 @@ impl IrohSessions {
     #[must_use]
     pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.policy = Arc::new(policy);
+        self
+    }
+
+    /// Returns this handler with `policy` deciding who may pull under [`Access::Authorized`].
+    ///
+    /// The relay asks it about the session's peer and token at the path of the
+    /// ticket's broadcast, and the session may pull if the authorization lets
+    /// it read that path. Without one, no session pulls under
+    /// [`Access::Authorized`]. It should require a token, as a
+    /// [`Verify`](moq_ext_access::policy::Verify) without a fallback does,
+    /// since an open policy would let every session pull.
+    #[must_use]
+    pub fn with_pull_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
+        self.pull_policy = Some(Arc::new(policy));
         self
     }
 
@@ -90,13 +112,10 @@ impl IrohSessions {
             session,
             driver,
             authorization,
-            name,
+            pull,
         } = self.admit(connection).await?;
         // Held while the session runs.
-        let _pull = self
-            .pulls
-            .as_ref()
-            .and_then(|pulls| crate::pull_for(pulls.clone(), name?));
+        let _pull = pull.map(|(pull, name)| crate::hold_pull(pull, name));
         self.run(session, driver, &authorization).await;
         Ok(())
     }
@@ -117,6 +136,7 @@ impl IrohSessions {
         // Logged without the query: a token rides it as `?jwt=`.
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
+        let token = session.token().map(str::to_owned);
         let request = PeerRequest::new(peer, session, Event::Connect);
         let authorization =
             match moq_ext_access::policy::decide_within(&*self.policy, &request, DECIDE_TIMEOUT)
@@ -133,6 +153,18 @@ impl IrohSessions {
                     return Err(AcceptError::from_err(rejection));
                 }
             };
+        let pull = match self.start_pull(peer, token, name.as_deref()).await {
+            Ok(pull) => pull,
+            Err(err) => {
+                info!(error = %err, "refusing the iroh client's pull");
+                let code = match err {
+                    crate::Error::PullDenied { .. } => moq_net::Error::Unauthorized,
+                    _ => moq_net::Error::TooManyRequests,
+                };
+                handshake.close(code);
+                return Err(AcceptError::from_err(err));
+            }
+        };
         let grant = &authorization.grant;
         let publish = self
             .cluster
@@ -165,8 +197,46 @@ impl IrohSessions {
             session,
             driver,
             authorization,
-            name,
+            pull,
         })
+    }
+
+    /// Starts the pull of the ticket a session named, if pulls are on and `name` is a ticket.
+    ///
+    /// Under [`Access::Authorized`] the pull policy decides, at the ticket's
+    /// path with the session's `token`, and must grant reading that path.
+    async fn start_pull(
+        &self,
+        peer: EndpointId,
+        token: Option<String>,
+        name: Option<&str>,
+    ) -> Result<Option<(PullGuard, String)>, crate::Error> {
+        let Some((pulls, name)) = self.pulls.as_ref().zip(name) else {
+            return Ok(None);
+        };
+        let Ok(ticket) = name.parse::<BroadcastTicket>() else {
+            return Ok(None);
+        };
+        if pulls.access() == Access::Authorized {
+            let denied = || {
+                e!(crate::Error::PullDenied {
+                    path: ticket.path().clone()
+                })
+            };
+            let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
+            let mut at_ticket = SessionRequest::new(ticket.path().as_str());
+            if let Some(token) = token {
+                at_ticket = at_ticket.with_token(token);
+            }
+            let request = PeerRequest::new(peer, at_ticket, Event::Connect);
+            let decision =
+                moq_ext_access::policy::decide_within(policy, &request, DECIDE_TIMEOUT).await;
+            if !decision.is_ok_and(|auth| auth.grant.allows_subscribe(ticket.path().as_str())) {
+                return Err(denied());
+            }
+        }
+        let pull = pulls.start(Client::Peer(peer), name, &ticket)?;
+        Ok(Some((pull, name.to_owned())))
     }
 
     /// Runs an admitted session until it ends, its authorization expires, or the relay shuts down.
@@ -204,8 +274,8 @@ struct Admitted {
     session: moq_net::Session,
     driver: moq_net::Driver,
     authorization: Authorization,
-    /// The broadcast name the session asked for, if its path names one.
-    name: Option<String>,
+    /// The pull of the ticket the session named, with that name.
+    pull: Option<(PullGuard, String)>,
 }
 
 /// Waits until `authorization` expires, or forever without an expiry.

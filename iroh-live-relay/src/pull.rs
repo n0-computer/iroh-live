@@ -18,11 +18,19 @@
 //! An idle timer on the connection cannot stand in for the guards, since
 //! iroh's keep-alives move its counters too.
 //!
+//! Every pull dials an iroh endpoint the session chose, so admission into
+//! pulls is bounded. [`Access`] says which sessions may pull at all: by
+//! default only one whose token grants reading the ticket's path. [`Limits`]
+//! caps the pulls the relay holds at once, the pulls one [`Client`] holds, and
+//! how fast one client starts new dials. A session names one broadcast in its
+//! path, so it holds at most one pull.
+//!
 //! [`run`](crate::run) sets this up. The module is public for a binary that
 //! embeds the relay, and for the tests.
 
 use std::{
     collections::HashMap,
+    net::IpAddr,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -33,7 +41,7 @@ use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription, policy};
 use moq_relay::cluster::Cluster;
 use n0_error::e;
 use n0_watcher::Watcher;
-use tokio::{sync::watch, task::JoinSet};
+use tokio::{sync::watch, task::JoinSet, time::Instant};
 use tracing::{debug, info, warn};
 
 use crate::Error;
@@ -54,6 +62,151 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(8);
 
 /// How many times in a row resolving again may fail before the pull retires.
 const MAX_RESOLVES: u32 = 5;
+
+/// Which sessions may pull the ticket they name.
+///
+/// [`admit`](crate::admit) and [`IrohSessions`](crate::IrohSessions) check it
+/// before they start a pull. [`Pulls::pull`] and [`Pulls::start`] do not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Access {
+    /// Only a session whose token grants reading the ticket's path.
+    ///
+    /// The relay verifies the token as it does for the session itself, but at
+    /// the path of the ticket's broadcast. Without `--auth-key` no token
+    /// verifies, so nobody pulls.
+    #[default]
+    Authorized,
+    /// Any session, with or without a token.
+    ///
+    /// Anyone who reaches the relay can then make it dial any iroh endpoint,
+    /// within the [`Limits`]. Use it for local and development relays, never
+    /// for a public one.
+    Open,
+}
+
+/// Bounds on the pulls a relay holds and starts.
+///
+/// `#[non_exhaustive]`, so start from [`Limits::default`] and set the fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Limits {
+    /// The most pulls, dialing, live or lingering, the relay holds at once.
+    ///
+    /// Defaults to 256.
+    pub total: usize,
+    /// The most pulls one [`Client`] holds at once, over all its sessions.
+    ///
+    /// Defaults to 16.
+    pub per_client: usize,
+    /// How many new dials one [`Client`] may start in a burst.
+    ///
+    /// Joining a pull that is already dialing or live starts no dial.
+    /// Defaults to 8.
+    pub dial_burst: u32,
+    /// How long a [`Client`] waits to earn one more dial, up to [`dial_burst`](Self::dial_burst).
+    ///
+    /// Defaults to five seconds.
+    pub dial_interval: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            total: 256,
+            per_client: 16,
+            dial_burst: 8,
+            dial_interval: Duration::from_secs(5),
+        }
+    }
+}
+
+/// Who asks for a pull, as the per-client [`Limits`] count it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Client {
+    /// A browser, by its IP address.
+    Addr(IpAddr),
+    /// An iroh client, by its endpoint id.
+    ///
+    /// Endpoint ids cost nothing to make, so the global
+    /// [`total`](Limits::total) is what bounds a client that makes many.
+    Peer(EndpointId),
+    /// A session whose transport reports no address. All of them share one budget.
+    Unknown,
+}
+
+impl Client {
+    /// Returns the client at `addr`, with an IPv4-mapped IPv6 address folded to IPv4.
+    #[must_use]
+    pub fn from_addr(addr: Option<std::net::SocketAddr>) -> Self {
+        addr.map_or(Self::Unknown, |addr| Self::Addr(addr.ip().to_canonical()))
+    }
+}
+
+/// What one client holds and may still start.
+#[derive(Debug)]
+struct Budget {
+    /// How many [`PullGuard`]s the client holds.
+    holds: usize,
+    /// How many dials the client may start now.
+    dials: u32,
+    /// When `dials` was last topped up.
+    since: Instant,
+}
+
+impl Budget {
+    /// Returns the budget of a client that has started nothing yet.
+    fn full(limits: &Limits, now: Instant) -> Self {
+        Self {
+            holds: 0,
+            dials: limits.dial_burst,
+            since: now,
+        }
+    }
+
+    /// Adds the dials earned since the last top-up, up to the burst.
+    fn refill(&mut self, limits: &Limits, now: Instant) {
+        let interval = limits.dial_interval.max(Duration::from_millis(1));
+        let earned = now.saturating_duration_since(self.since).as_nanos() / interval.as_nanos();
+        let missing = limits.dial_burst.saturating_sub(self.dials);
+        match u32::try_from(earned) {
+            Ok(earned) if earned < missing => {
+                self.dials += earned;
+                // Keeps the part of an interval already waited.
+                self.since = interval
+                    .checked_mul(earned)
+                    .and_then(|spent| self.since.checked_add(spent))
+                    .unwrap_or(now);
+            }
+            _ => {
+                self.dials = limits.dial_burst;
+                self.since = now;
+            }
+        }
+    }
+
+    /// Takes one dial, if the client has one left.
+    fn take_dial(&mut self, limits: &Limits, now: Instant) -> bool {
+        self.refill(limits, now);
+        let Some(left) = self.dials.checked_sub(1) else {
+            return false;
+        };
+        self.dials = left;
+        true
+    }
+
+    /// Returns whether forgetting this budget changes nothing: no holds and every dial back.
+    fn is_idle(&mut self, limits: &Limits, now: Instant) -> bool {
+        self.refill(limits, now);
+        self.holds == 0 && self.dials >= limits.dial_burst
+    }
+}
+
+/// The budgets of the clients that hold a pull or started one recently.
+type Clients = Arc<Mutex<HashMap<Client, Budget>>>;
+
+/// How many budgets the relay keeps before it forgets the idle ones.
+const CLIENTS_KEPT: usize = 1024;
 
 /// Returns the layout whose paths a pull may claim: `live/` and room paths.
 fn pull_layout() -> (LiveLayout, RoomsLayout) {
@@ -95,12 +248,12 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 /// #     requested: &str,
 /// # ) -> Result<(), iroh_live_relay::Error> {
 /// use iroh_live::BroadcastTicket;
-/// use iroh_live_relay::pull::{Pulls, mounted};
+/// use iroh_live_relay::pull::{Client, Pulls, mounted};
 ///
 /// let pulls = Pulls::new(endpoint, cluster.clone());
 /// if let Ok(ticket) = requested.parse::<BroadcastTicket>() {
 ///     // Hold the guard while the session that asked runs.
-///     let _guard = pulls.pull(requested, &ticket).await?;
+///     let _guard = pulls.pull(Client::Unknown, requested, &ticket).await?;
 ///     let _view = mounted(&cluster, requested);
 /// }
 /// # Ok(())
@@ -109,6 +262,8 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 #[derive(Clone, derive_more::Debug)]
 pub struct Pulls {
     shared: Shared,
+    /// Which sessions may pull, checked by the admissions.
+    access: Access,
     /// The task of each pull: its dial, and then its hold.
     #[debug(skip)]
     tasks: Arc<Mutex<JoinSet<()>>>,
@@ -130,6 +285,12 @@ struct Shared {
     pulls: Arc<Mutex<HashMap<String, Arc<Pull>>>>,
     /// How many pulls, live or dialing, each publisher has.
     publishers: Publishers,
+    /// The bounds on pulls.
+    limits: Limits,
+    /// What each client holds and may still start.
+    ///
+    /// Taken after `pulls` when both are held.
+    clients: Clients,
 }
 
 /// How far a pull's dial has got.
@@ -169,16 +330,55 @@ impl Pull {
 
 /// A hold on a pull, which keeps it alive while the session that asked for it runs.
 ///
-/// Dropping it releases the session's hold on the pull.
-#[derive(Debug)]
+/// Dropping it releases the session's hold on the pull, and the client's
+/// share of [`Limits::per_client`].
+#[derive(derive_more::Debug)]
 #[must_use = "dropping the guard releases the hold on the pull"]
 pub struct PullGuard {
     pull: Arc<Pull>,
+    client: Client,
+    #[debug(skip)]
+    clients: Clients,
+    limits: Limits,
+}
+
+impl PullGuard {
+    /// Waits until the pull's dial connects, or returns its error.
+    ///
+    /// A guard from [`Pulls::start`] holds the pull from the start; this
+    /// only reports how its dial went. Every holder of one pull gets the same
+    /// outcome.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Pulls::pull`] does once its limits passed.
+    pub async fn connected(&self) -> Result<(), Error> {
+        let mut dial = self.pull.dial.subscribe();
+        let outcome = dial
+            .wait_for(|dial| !matches!(dial, Dial::Pending))
+            .await
+            .map_or_else(
+                // The dialing task holds a sender until it reports.
+                |_| Dial::Failed(Arc::new(e!(Error::Dropped))),
+                |dial| dial.clone(),
+            );
+        match outcome {
+            Dial::Failed(err) => Err(Error::clone(&err)),
+            Dial::Pending | Dial::Connected => Ok(()),
+        }
+    }
 }
 
 impl Drop for PullGuard {
     fn drop(&mut self) {
         self.pull.holders.send_modify(|holders| *holders -= 1);
+        let mut clients = self.clients.lock().expect("poisoned");
+        if let Some(budget) = clients.get_mut(&self.client) {
+            budget.holds -= 1;
+            if budget.is_idle(&self.limits, Instant::now()) {
+                clients.remove(&self.client);
+            }
+        }
     }
 }
 
@@ -201,9 +401,32 @@ impl Pulls {
                 linger: DEFAULT_LINGER,
                 pulls: Arc::new(Mutex::new(HashMap::new())),
                 publishers: Arc::new(Mutex::new(HashMap::new())),
+                limits: Limits::default(),
+                clients: Arc::new(Mutex::new(HashMap::new())),
             },
+            access: Access::default(),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
+    }
+
+    /// Sets which sessions may pull, which defaults to [`Access::Authorized`].
+    #[must_use]
+    pub fn with_access(mut self, access: Access) -> Self {
+        self.access = access;
+        self
+    }
+
+    /// Returns which sessions may pull.
+    #[must_use]
+    pub fn access(&self) -> Access {
+        self.access
+    }
+
+    /// Sets the bounds on pulls, which default to [`Limits::default`].
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.shared.limits = limits;
+        self
     }
 
     /// Sets how long an unused pull stays connected.
@@ -216,24 +439,50 @@ impl Pulls {
         self
     }
 
-    /// Pulls the broadcast `ticket` names into the cluster.
+    /// Pulls the broadcast `ticket` names into the cluster, and waits for it to connect.
     ///
-    /// The pull is for a session that asked for `requested`. Hold the
-    /// returned [`PullGuard`] while that session runs, and serve it the
-    /// cluster [`mounted`] at `requested`. Concurrent pulls of one name share
-    /// a dial.
+    /// The pull is for a session of `client` that asked for `requested`.
+    /// Hold the returned [`PullGuard`] while that session runs, and serve it
+    /// the cluster [`mounted`] at `requested`. Concurrent pulls of one name
+    /// share a dial. It does not check [`Access`].
     ///
     /// Cancellation safe: dropping this future only drops the caller's hold.
     /// The dial runs on, and the pull retires as usual.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Claim`] if the ticket's peer does not own its
-    /// path, [`Error::Connect`] or [`Error::Subscribe`] if the publisher
-    /// cannot be reached or refuses the path, and [`Error::Timeout`] if it does
-    /// not announce the broadcast within 15 seconds.
+    /// Fails as [`start`](Self::start) does, then with [`Error::Claim`] if
+    /// the ticket's peer does not own its path, [`Error::Connect`] or
+    /// [`Error::Subscribe`] if the publisher cannot be reached or refuses the
+    /// path, and [`Error::Timeout`] if it does not announce the broadcast
+    /// within 15 seconds.
     pub async fn pull(
         &self,
+        client: Client,
+        requested: &str,
+        ticket: &BroadcastTicket,
+    ) -> Result<PullGuard, Error> {
+        let guard = self.start(client, requested, ticket)?;
+        guard.connected().await?;
+        Ok(guard)
+    }
+
+    /// Starts pulling the broadcast `ticket` names, or joins the pull of `requested`.
+    ///
+    /// Returns at once with the hold, before the dial connects: await
+    /// [`PullGuard::connected`] for its outcome. The [`Limits`] are checked
+    /// here, so a session that exceeds them can be refused before it starts.
+    /// It does not check [`Access`].
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::ClientPullLimit`] if `client` already holds
+    /// [`Limits::per_client`] pulls. A new dial also fails with
+    /// [`Error::PullLimit`] if the relay holds [`Limits::total`] pulls, and
+    /// with [`Error::DialRateLimit`] if `client` has used up its dials.
+    pub fn start(
+        &self,
+        client: Client,
         requested: &str,
         ticket: &BroadcastTicket,
     ) -> Result<PullGuard, Error> {
@@ -241,28 +490,56 @@ impl Pulls {
         // spellings of one ticket share the publisher's session, but are
         // held apart.
         let local_name = requested.to_owned();
+        let limits = self.shared.limits;
 
         // Held under the lock retirement takes, so an entry found here
         // outlives this call.
         let (pull, dial) = {
             let mut pulls = self.shared.pulls.lock().expect("poisoned");
+            let mut clients = self.shared.clients.lock().expect("poisoned");
+            let now = Instant::now();
+            if clients.len() >= CLIENTS_KEPT {
+                clients.retain(|_, budget| !budget.is_idle(&limits, now));
+            }
+            let budget = clients
+                .entry(client)
+                .or_insert_with(|| Budget::full(&limits, now));
+            if budget.holds >= limits.per_client {
+                return Err(e!(Error::ClientPullLimit {
+                    limit: limits.per_client
+                }));
+            }
             let (pull, dial) = match pulls.get(&local_name) {
                 Some(pull) => (Arc::clone(pull), false),
                 None => {
+                    if pulls.len() >= limits.total {
+                        return Err(e!(Error::PullLimit {
+                            limit: limits.total
+                        }));
+                    }
+                    if !budget.take_dial(&limits, now) {
+                        return Err(e!(Error::DialRateLimit));
+                    }
                     let pull = Arc::new(Pull::new());
                     pulls.insert(local_name.clone(), Arc::clone(&pull));
                     (pull, true)
                 }
             };
+            budget.holds += 1;
             pull.holders.send_modify(|holders| *holders += 1);
             (pull, dial)
         };
-        let guard = PullGuard { pull };
+        let guard = PullGuard {
+            pull,
+            client,
+            clients: Arc::clone(&self.shared.clients),
+            limits,
+        };
 
         if dial {
             let shared = self.shared.clone();
             let ticket = ticket.clone();
-            let name = local_name.clone();
+            let name = local_name;
             let pull = Arc::clone(&guard.pull);
             self.spawn(async move {
                 match shared.establish(&ticket, &name).await {
@@ -283,21 +560,6 @@ impl Pulls {
         } else {
             debug!(%local_name, "joining an existing pull");
         }
-
-        // Dialing or joining, every caller waits on the one dial's outcome.
-        let mut dial = guard.pull.dial.subscribe();
-        let outcome = dial
-            .wait_for(|dial| !matches!(dial, Dial::Pending))
-            .await
-            .map_or_else(
-                // The dialing task holds a sender until it reports.
-                |_| Dial::Failed(Arc::new(e!(Error::Dropped))),
-                |dial| dial.clone(),
-            );
-        if let Dial::Failed(err) = outcome {
-            return Err(Error::clone(&err));
-        }
-
         Ok(guard)
     }
 
@@ -564,6 +826,31 @@ mod tests {
     /// Parses `path`, which must be valid.
     fn path(path: &str) -> Path {
         Path::new(path).expect("a path")
+    }
+
+    /// A client spends its burst, then earns one dial per interval, never more than the burst.
+    #[test]
+    fn a_budget_refills_one_dial_per_interval() {
+        let limits = Limits {
+            dial_burst: 2,
+            dial_interval: Duration::from_secs(10),
+            ..Limits::default()
+        };
+        let start = Instant::now();
+        let mut budget = Budget::full(&limits, start);
+        assert!(budget.take_dial(&limits, start));
+        assert!(budget.take_dial(&limits, start));
+        assert!(!budget.take_dial(&limits, start + Duration::from_secs(9)));
+        assert!(budget.take_dial(&limits, start + Duration::from_secs(10)));
+        assert!(!budget.take_dial(&limits, start + Duration::from_secs(15)));
+        // The five seconds already waited count towards the next dial.
+        assert!(budget.take_dial(&limits, start + Duration::from_secs(20)));
+        // A long wait refills to the burst, and no further.
+        let later = start + Duration::from_secs(3600);
+        assert!(budget.is_idle(&limits, later));
+        assert!(budget.take_dial(&limits, later));
+        assert!(budget.take_dial(&limits, later));
+        assert!(!budget.take_dial(&limits, later));
     }
 
     #[test]

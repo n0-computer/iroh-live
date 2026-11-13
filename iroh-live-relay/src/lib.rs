@@ -3,8 +3,16 @@
 //! Browsers connect over WebTransport, iroh clients over iroh. Anyone may
 //! subscribe to anything. An iroh client may publish only at paths that name
 //! its endpoint id ([`relay_policy`]), and a browser only at names of one
-//! segment. A session that names a broadcast ticket gets it pulled, see
-//! [`pull`].
+//! segment.
+//!
+//! A session that names a broadcast ticket gets it pulled, see [`pull`]: the
+//! relay dials the ticket's publisher over iroh. Since that makes the relay
+//! dial an endpoint the client chose, only a session whose token grants
+//! reading the ticket's path may pull, and a relay without `--auth-key`
+//! pulls nothing. `--open-pulls` lets any session pull, which suits a local
+//! or development relay and is unsafe on a public one. Either way the pulls
+//! are capped in total and per client, and each client's new dials are rate
+//! limited ([`pull::Limits`]).
 //!
 //! With `--auth-key`, a session that presents a valid JWT gets what the token
 //! grants instead. Browsers are decided by moq-auth's reference policy, which
@@ -104,6 +112,23 @@ pub struct Config {
     #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
     pub auth_public_subscribe: Vec<Pattern>,
 
+    /// Lets any session pull a ticket, with or without a token. Unsafe on a public relay.
+    ///
+    /// A session that names a broadcast ticket makes the relay dial the
+    /// ticket's iroh endpoint. Without this flag, only a session whose token,
+    /// verified with --auth-key, grants reading the ticket's path may do that,
+    /// so a relay without --auth-key pulls nothing. With it, anyone who
+    /// reaches the relay can make it dial any endpoint, within the pull
+    /// limits. Meant for local and development use.
+    #[arg(long)]
+    pub open_pulls: bool,
+
+    /// Bounds the pulls the relay holds and starts.
+    ///
+    /// Defaults to [`pull::Limits::default`].
+    #[arg(skip)]
+    pub pull_limits: pull::Limits,
+
     /// Decides the sessions of iroh clients, instead of the default.
     ///
     /// The default is [`relay_policy`], or with `--auth-key` a [`Verify`] of
@@ -177,7 +202,18 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let mut relay = moq_relay::Relay::load(relay_config)
         .await
         .map_err(relay_error)?;
-    let pulls = pull::Pulls::new(iroh_endpoint.clone(), relay.cluster().clone());
+    let access = if config.open_pulls {
+        warn!("--open-pulls: any session may make the relay dial an iroh endpoint");
+        pull::Access::Open
+    } else {
+        pull::Access::Authorized
+    };
+    if access == pull::Access::Authorized && config.auth_key.is_none() {
+        info!("without --auth-key or --open-pulls, the relay pulls no tickets");
+    }
+    let pulls = pull::Pulls::new(iroh_endpoint.clone(), relay.cluster().clone())
+        .with_access(access)
+        .with_limits(config.pull_limits);
     // Without an auth source of moq-relay's own, `admit` decides every
     // browser session.
     let _admit_task = match relay.admissions() {
@@ -191,16 +227,22 @@ pub async fn run(config: Config) -> Result<(), Error> {
             None
         }
     };
-    let iroh_policy = config.iroh_policy.unwrap_or_else(|| match keys {
-        Some(keys) => Arc::new(Verify::new(JwtVerifier::new(keys)).with_fallback(relay_policy())),
-        None => Arc::new(relay_policy()),
-    });
+    let verifier = keys.map(JwtVerifier::new);
+    let iroh_policy = config
+        .iroh_policy
+        .unwrap_or_else(|| match verifier.clone() {
+            Some(verifier) => Arc::new(Verify::new(verifier).with_fallback(relay_policy())),
+            None => Arc::new(relay_policy()),
+        });
     // Not moq-relay's iroh listener: `IrohSessions` accepts iroh clients,
     // since it knows who they are.
-    let iroh_router = IrohSessions::new(relay.cluster().clone(), Some(pulls))
-        .with_policy(iroh_policy)
-        .mount(Router::builder(iroh_endpoint))
-        .spawn();
+    let mut iroh_sessions =
+        IrohSessions::new(relay.cluster().clone(), Some(pulls)).with_policy(iroh_policy);
+    if let Some(verifier) = verifier {
+        // No fallback: a pull needs a token.
+        iroh_sessions = iroh_sessions.with_pull_policy(Verify::new(verifier));
+    }
+    let iroh_router = iroh_sessions.mount(Router::builder(iroh_endpoint)).spawn();
 
     let quic_port = relay.quic_addr().map_err(relay_error)?.port();
     let http_port = relay
@@ -270,9 +312,13 @@ fn relay_error(err: anyhow::Error) -> Error {
 /// reference policy decides it instead: a session that presents a JWT gets
 /// what the token grants until it expires, and one without a token gets the
 /// same public rule. The policy reads the key file again when it changes, so
-/// a rotated key takes effect without a restart. A session whose path names a
-/// ticket reads the ticket's broadcast at that name, and with `pulls` set it
-/// holds a pull of that broadcast while it runs.
+/// a rotated key takes effect without a restart.
+///
+/// A session whose path names a ticket reads the ticket's broadcast at that
+/// name, and is decided at the broadcast's path, so its token must reach that
+/// path. With `pulls` set it holds a pull of the broadcast while it runs, if
+/// the pulls' [`Access`](pull::Access) lets it pull and their
+/// [`Limits`](pull::Limits) have room. A session that may not pull is refused.
 ///
 /// [`run`] calls it. It is public for a binary that embeds the relay with a
 /// moq-relay of its own, and for the tests.
@@ -281,7 +327,8 @@ pub async fn admit(
     pulls: Option<pull::Pulls>,
     keys: Option<serve::Keys>,
 ) {
-    let policy = keys.map(browser_policy);
+    let policy = keys.clone().map(browser_policy);
+    let token_policy = keys.map(token_policy);
     let mut held = JoinSet::new();
     loop {
         let admission = tokio::select! {
@@ -295,7 +342,11 @@ pub async fn admit(
         let ticket = name
             .as_deref()
             .and_then(|name| name.parse::<BroadcastTicket>().ok());
-        let mut grant = match browser_session_grant(&admission, policy.as_ref()).await {
+        // A ticket's session reads the ticket's broadcast at its root, so it
+        // is decided where that broadcast lives.
+        let decided_at = ticket.as_ref().map(|ticket| format!("/{}", ticket.path()));
+        let grant = browser_session_grant(&admission, policy.as_ref(), decided_at.as_deref()).await;
+        let mut grant = match grant {
             Ok(grant) => grant,
             Err(err) => {
                 info!(path = %admission.request.path, error = %err, "refusing a browser session");
@@ -303,23 +354,34 @@ pub async fn admit(
                 continue;
             }
         };
-        if let Some(ticket) = &ticket {
-            // The session's root is the ticket it dialed, so this mounts the
-            // broadcast at that name.
-            grant
-                .mounts
-                .insert(String::new(), ticket.path().to_string());
-        }
-        debug!(path = %admission.request.path, ticket = ticket.is_some(), "admitting a session");
-        // An attached admission verifies a token for a session already held.
-        let pull = pulls
-            .as_ref()
-            .filter(|_| !admission.attached())
-            .zip(name)
-            .and_then(|(pulls, name)| pull_for(pulls.clone(), name));
-        let Some(pull) = pull else {
+        let Some((ticket, name)) = ticket.zip(name) else {
+            debug!(path = %admission.request.path, "admitting a session");
             admission.grant(lease::Consumer::fixed(grant));
             continue;
+        };
+        // The session's root is the ticket it dialed, so this mounts the
+        // broadcast at that name.
+        grant
+            .mounts
+            .insert(String::new(), ticket.path().to_string());
+        debug!(path = %admission.request.path, "admitting a ticket's session");
+        // An attached admission verifies a token for a session already held.
+        let Some(pulls) = pulls.as_ref().filter(|_| !admission.attached()) else {
+            admission.grant(lease::Consumer::fixed(grant));
+            continue;
+        };
+        let request = &admission.request;
+        let pull = match may_pull(pulls, token_policy.as_ref(), request, &ticket).await {
+            Ok(()) => pulls.start(pull::Client::from_addr(request.remote), &name, &ticket),
+            Err(err) => Err(err),
+        };
+        let pull = match pull {
+            Ok(pull) => hold_pull(pull, name),
+            Err(err) => {
+                info!(path = %request.path, error = %err, "refusing a browser session's pull");
+                admission.refuse(moq_relay::auth::Error::Forbidden(err.to_string()));
+                continue;
+            }
         };
         // The lease ends with the session, and the pull's claim with it.
         let (lease, consumer) = lease::Producer::new(grant);
@@ -331,6 +393,34 @@ pub async fn admit(
     }
 }
 
+/// Checks that a browser session may pull `ticket`, under the pulls' [`Access`](pull::Access).
+///
+/// Under [`Access::Authorized`](pull::Access::Authorized) the session's
+/// token, verified with `token_policy`, must grant reading the ticket's path.
+async fn may_pull(
+    pulls: &pull::Pulls,
+    token_policy: Option<&serve::Policy>,
+    request: &moq_auth::Request,
+    ticket: &BroadcastTicket,
+) -> Result<(), Error> {
+    if pulls.access() == pull::Access::Open {
+        return Ok(());
+    }
+    let denied = || {
+        e!(Error::PullDenied {
+            path: ticket.path().clone()
+        })
+    };
+    let policy = token_policy.ok_or_else(denied)?;
+    let mut at_ticket = request.clone();
+    at_ticket.path = format!("/{}", ticket.path());
+    // The grant is rooted at the ticket's path, so the broadcast is its root.
+    match policy.decide(&at_ticket).await {
+        Ok(grant) if grant.subscribe.matches("") => Ok(()),
+        _ => Err(denied()),
+    }
+}
+
 /// Returns moq-auth's reference policy over `keys`, with the public rule of [`browser_grant`].
 fn browser_policy(keys: serve::Keys) -> serve::Policy {
     let mut policy = serve::Policy::default();
@@ -339,33 +429,40 @@ fn browser_policy(keys: serve::Keys) -> serve::Policy {
     policy
 }
 
+/// Returns moq-auth's reference policy over `keys` without a public rule, so only a token passes.
+fn token_policy(keys: serve::Keys) -> serve::Policy {
+    let mut policy = serve::Policy::default();
+    policy.keys = Some(keys);
+    policy
+}
+
 /// Returns the grant of a browser session: the one `policy` decides, else [`browser_grant`].
 ///
-/// An attached admission is decided on the credential it presented in band.
+/// The session is decided at `path` if set, else at the path it dialed. An
+/// attached admission is decided on the credential it presented in band.
 async fn browser_session_grant(
     admission: &moq_relay::auth::Admission,
     policy: Option<&serve::Policy>,
+    path: Option<&str>,
 ) -> Result<moq_auth::Grant, moq_relay::auth::Error> {
     let request = &admission.request;
     let Some(policy) = policy else {
-        return browser_grant(&request.path)
+        return browser_grant(path.unwrap_or(&request.path))
             .map_err(|err| moq_relay::auth::Error::Forbidden(err.to_string()));
     };
-    let mut attached;
-    let request = match &request.auth {
-        Some(token) if admission.attached() => {
-            attached = request.clone();
-            attached.token = Some(moq_auth::Token {
-                kind: moq_auth::Token::OUT_OF_BAND,
-                value: token.clone().into_bytes(),
-            });
-            attached.query = None;
-            &attached
-        }
-        _ => request,
-    };
+    let mut request = request.clone();
+    if let Some(path) = path {
+        path.clone_into(&mut request.path);
+    }
+    if let Some(token) = request.auth.clone().filter(|_| admission.attached()) {
+        request.token = Some(moq_auth::Token {
+            kind: moq_auth::Token::OUT_OF_BAND,
+            value: token.into_bytes(),
+        });
+        request.query = None;
+    }
     policy
-        .decide(request)
+        .decide(&request)
         .await
         .map_err(|denial| moq_relay::auth::Error::Forbidden(denial.to_string()))
 }
@@ -389,25 +486,23 @@ fn load_keys(path: &std::path::Path) -> Result<(KeySet, serve::Keys), Error> {
     Ok((keys, serve::Keys::File(path.to_owned())))
 }
 
-/// Pulls the broadcast a session named, if the name is a ticket.
+/// Holds `pull` alongside the session that asked for `name`, and logs a failed dial.
 ///
 /// Runs alongside the session, so a session that names an unreachable ticket
 /// still starts. Dropping the handle releases the session's hold on the pull.
-pub(crate) fn pull_for(
-    pulls: pull::Pulls,
+pub(crate) fn hold_pull(
+    pull: pull::PullGuard,
     name: String,
-) -> Option<AbortOnDropHandle<Option<pull::PullGuard>>> {
-    // The name as requested, since the subscriber is announced under it.
-    let ticket = name.parse::<BroadcastTicket>().ok()?;
-    Some(AbortOnDropHandle::new(tokio::spawn(async move {
-        match pulls.pull(&name, &ticket).await {
-            Ok(guard) => Some(guard),
+) -> AbortOnDropHandle<Option<pull::PullGuard>> {
+    AbortOnDropHandle::new(tokio::spawn(async move {
+        match pull.connected().await {
+            Ok(()) => Some(pull),
             Err(err) => {
                 warn!(%name, error = format_args!("{err:#}"), "pull failed for the ticket in the URL");
                 None
             }
         }
-    })))
+    }))
 }
 
 /// Loads the relay's iroh identity, generating and storing one on first run.

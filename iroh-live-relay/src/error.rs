@@ -40,6 +40,20 @@ pub enum Error {
     /// The publisher did not announce the path in time.
     #[error("the publisher did not announce {path} within {timeout:?}")]
     Timeout { path: Path, timeout: Duration },
+    /// The session may not pull: it has no token that grants reading the ticket's path.
+    ///
+    /// See [`Access`](crate::pull::Access).
+    #[error("pulling a ticket through this relay needs a token that grants reading {path}")]
+    PullDenied { path: Path },
+    /// The relay already holds as many pulls as its limits allow.
+    #[error("the relay already holds its limit of {limit} pulls")]
+    PullLimit { limit: usize },
+    /// The client already holds as many pulls as its limits allow.
+    #[error("this client already holds its limit of {limit} pulls")]
+    ClientPullLimit { limit: usize },
+    /// The client started too many new pulls too recently.
+    #[error("this client started too many pulls recently, try again later")]
+    DialRateLimit,
     /// The pull ended before its dial reported an outcome.
     #[error("the pull was dropped before it connected")]
     Dropped,

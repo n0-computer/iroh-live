@@ -8,7 +8,7 @@ use iroh_live_node::{
     Audience,
     test_util::{TestNode, endpoint, step},
 };
-use iroh_live_relay::pull::{self, Pulls};
+use iroh_live_relay::pull::{self, Client, Pulls};
 use moq_net::Path;
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
@@ -68,9 +68,12 @@ async fn a_pull_of_another_peers_path_is_refused() {
     let requested = forged.to_string();
 
     let pulls = Pulls::new(endpoint().await, cluster.clone());
-    let err = step("no timeout", pulls.pull(&requested, &forged))
-        .await
-        .expect_err("mallory does not own the path");
+    let err = step(
+        "no timeout",
+        pulls.pull(Client::Unknown, &requested, &forged),
+    )
+    .await
+    .expect_err("mallory does not own the path");
     assert!(format!("{err:#}").contains("does not own"), "{err:#}");
     assert!(!routed(&cluster, victim_path.as_str()).await);
 
@@ -87,7 +90,11 @@ async fn a_path_in_a_custom_scheme_is_refused() {
     let ticket = BroadcastTicket::at(publisher.node.id(), custom);
 
     let pulls = Pulls::new(endpoint().await, cluster);
-    let result = step("no timeout", pulls.pull(&ticket.to_string(), &ticket)).await;
+    let result = step(
+        "no timeout",
+        pulls.pull(Client::Unknown, &ticket.to_string(), &ticket),
+    )
+    .await;
     assert!(result.is_err(), "the relay cannot verify the owner");
 
     publisher.shutdown().await;
@@ -107,7 +114,7 @@ async fn a_ticket_with_reserved_characters_mounts_once() {
     assert!(raw.ends_with("/100%25"), "{raw}");
 
     let pulls = Pulls::new(endpoint().await, cluster.clone());
-    let guard = step("no timeout", pulls.pull(&raw, &ticket))
+    let guard = step("no timeout", pulls.pull(Client::Unknown, &raw, &ticket))
         .await
         .expect("pull");
     // A session that dialed the ticket's URL reads it under the raw string.
