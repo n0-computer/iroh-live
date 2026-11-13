@@ -19,7 +19,7 @@ moq-audio = { workspace = true }
 moq-ext-sources = { workspace = true, features = ["pattern"] }
 # Latest-value JSON tracks next to the media, for `LocalBroadcast::value_track`.
 moq-json = { workspace = true }
-moq-mux = { workspace = true }
+moq-mux = { workspace = true, features = ["async"] }
 moq-net = { workspace = true }
 # The software H.264 fallback. The workspace takes moq-video without defaults,
 # which would drop it.
