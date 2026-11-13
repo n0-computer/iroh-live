@@ -4,8 +4,9 @@ use std::{
     fmt,
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Poll, ready},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -21,7 +22,10 @@ use moq_net::transport::{
 use n0_error::e;
 use tracing::{debug, warn};
 
-use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
+use crate::{
+    ALPN, Error, RecvStream, SendStream, TransportError,
+    rate::{RateConfig, RateHandle, RateShared, SendEstimate},
+};
 
 /// moq-net's poll transport over one iroh connection.
 ///
@@ -36,8 +40,13 @@ use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 /// - [`wire`](poll::Session::wire) holds the UDP byte counts, refreshed from
 ///   the connection statistics whenever moq-net reads
 ///   [`metrics`](poll::Session::metrics).
-/// - [`probe`](poll::Session::probe) is `None`: iroh's congestion controller
-///   takes no probe target.
+/// - The send-rate estimate is the congestion window over the round trip,
+///   unless [`with_rate`](Self::with_rate) picks another
+///   [`SendEstimate`](crate::rate::SendEstimate).
+/// - [`probe`](poll::Session::probe) is `None` with the window estimate: iroh's
+///   congestion controller takes no probe target. With another estimate it is
+///   `Some`, and the estimate climbs toward the target while the path stays
+///   clean. No padding is sent.
 /// - [`receive_window`](poll::Session::receive_window) is `None`: iroh does not
 ///   report the receive windows in force. moq-net then never pauses a stream.
 /// - [`export_keying_material`](poll::Session::export_keying_material) derives
@@ -55,6 +64,8 @@ pub struct Transport {
     recv_datagram: OpSlot<Result<Bytes, ConnectionError>>,
     closed: OpSlot<ConnectionError>,
     wire: Wire,
+    /// The application's estimator, `None` with the window estimate.
+    rate: Option<Arc<RateShared>>,
 }
 
 /// The halves of a bidirectional stream as iroh hands them out.
@@ -88,6 +99,15 @@ impl Transport {
     /// ALPN this build does not speak, which happens when a handler is mounted
     /// under an ALPN outside [`alpns`](crate::alpns).
     pub fn new(connection: Connection) -> Result<Self, Error> {
+        Self::with_rate(connection, RateConfig::default())
+    }
+
+    /// Wraps a connection as [`new`](Self::new) does, estimating its send rate as `config` says.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`new`](Self::new) does.
+    pub fn with_rate(connection: Connection, config: RateConfig) -> Result<Self, Error> {
         let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
         let peer = connection.remote_id().fmt_short();
         if !moq_net::ALPNS.contains(&alpn.as_str()) {
@@ -95,8 +115,17 @@ impl Transport {
             warn!(%alpn, %peer, "unsupported ALPN");
             return Err(e!(Error::UnsupportedAlpn { alpn }));
         }
-        debug!(%alpn, %peer, side = ?connection.side(), "MoQ transport opened");
+        debug!(
+            %alpn,
+            %peer,
+            side = ?connection.side(),
+            estimate = %config.estimate,
+            "MoQ transport opened"
+        );
+        let rate = (config.estimate != SendEstimate::Window)
+            .then(|| Arc::new(RateShared::new(connection.clone(), config)));
         Ok(Self {
+            rate,
             connection,
             accept_uni: OpSlot::default(),
             accept_bi: OpSlot::default(),
@@ -145,6 +174,14 @@ impl Transport {
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    /// Returns a handle on the send-rate estimator, or `None` with the window estimate.
+    ///
+    /// Take it before handing the transport to moq-net.
+    #[must_use]
+    pub fn rate(&self) -> Option<RateHandle> {
+        self.rate.as_ref().map(RateShared::handle)
     }
 
     /// Starts an operation on a clone of the connection.
@@ -266,7 +303,22 @@ impl poll::Session for Transport {
             .iter()
             .find(|path| path.is_selected())
             .map(|path| path.stats());
-        Metrics { stats, path }
+        let estimate = match &self.rate {
+            Some(rate) => rate
+                .sample(Instant::now())
+                .estimate
+                .map(moq_net::bandwidth::Rate::as_bps),
+            None => path.and_then(window_estimate),
+        };
+        Metrics {
+            stats,
+            path,
+            estimate,
+        }
+    }
+
+    fn probe(&self) -> Option<moq_net::transport::Probe> {
+        self.rate.as_ref().map(|rate| rate.probe.clone())
     }
 
     fn wire(&self) -> Option<Wire> {
@@ -283,10 +335,17 @@ impl poll::Session for Transport {
     }
 }
 
-/// A connection's statistics, and its selected path's.
+/// A connection's statistics, its selected path's, and the send-rate estimate.
 struct Metrics {
     stats: ConnectionStats,
     path: Option<PathStats>,
+    estimate: Option<u64>,
+}
+
+/// Returns the congestion window over the round trip of `path`, in bits per second.
+fn window_estimate(path: PathStats) -> Option<u64> {
+    let rtt = path.rtt.as_secs_f64();
+    (path.cwnd > 0 && rtt > 0.0).then(|| (path.cwnd as f64 * 8.0 / rtt) as u64)
 }
 
 impl moq_net::transport::Metrics for Metrics {
@@ -310,11 +369,9 @@ impl moq_net::transport::Metrics for Metrics {
         self.path.map(|path| path.rtt)
     }
 
-    /// Returns the congestion window over the round trip of the selected path.
+    /// Returns the estimate the transport's [`SendEstimate`] picks.
     fn estimated_send_rate(&self) -> Option<u64> {
-        let path = self.path?;
-        let rtt = path.rtt.as_secs_f64();
-        (path.cwnd > 0 && rtt > 0.0).then(|| (path.cwnd as f64 * 8.0 / rtt) as u64)
+        self.estimate
     }
 }
 
@@ -621,6 +678,37 @@ pub(crate) mod tests {
         assert!(moq_net::transport::Metrics::rtt(&metrics).is_some());
         assert!(client.probe().is_none());
         assert!(client.receive_window().is_none());
+    }
+
+    /// A transport with the application's estimator takes a probe target, and reports an estimate.
+    #[tokio::test]
+    async fn the_app_estimate_reports_and_takes_a_probe_target() {
+        let (client, server, _endpoints) = pair().await;
+        let client = Transport::with_rate(
+            client.connection().clone(),
+            RateConfig::new(SendEstimate::App),
+        )
+        .expect("a MoQ ALPN");
+        let handle = client.rate().expect("an estimator");
+        let probe = client.probe().expect("a probe target");
+        probe.set_target(moq_net::bandwidth::Rate::from_bps(3_000_000));
+        assert_eq!(
+            handle.target(),
+            moq_net::bandwidth::Rate::from_bps(3_000_000)
+        );
+        let mut send = open_with(&client, &[7; 4096]).await;
+        send.finish().expect("finish");
+        let mut recv = timely("accept", server.accept_uni()).await.expect("accept");
+        timely("read", read_to_end(&mut recv)).await.expect("read");
+        let metrics = client.metrics();
+        let estimate = moq_net::transport::Metrics::estimated_send_rate(&metrics);
+        assert!(estimate.is_some_and(|bps| bps > 0), "{estimate:?}");
+        assert_eq!(handle.sample().estimate.map(|rate| rate.as_bps()), estimate);
+        assert!(!handle.is_closed());
+        assert!(
+            server.rate().is_none(),
+            "the window estimate has no estimator"
+        );
     }
 
     /// Completes a MoQ handshake: the client over `client`, the server over `server`.

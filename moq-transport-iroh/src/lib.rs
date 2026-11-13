@@ -33,6 +33,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+pub mod rate;
 mod stream;
 mod transport;
 
