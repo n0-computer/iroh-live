@@ -40,6 +40,9 @@ use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 ///   takes no probe target.
 /// - [`receive_window`](poll::Session::receive_window) is `None`: iroh does not
 ///   report the receive windows in force. moq-net then never pauses a stream.
+/// - [`export_keying_material`](poll::Session::export_keying_material) derives
+///   from the connection's TLS secrets, so a moq-lite-07 route key proof binds
+///   to the session.
 pub struct Transport {
     connection: Connection,
     // One slot per operation that may wait. iroh's futures for them borrow
@@ -269,6 +272,15 @@ impl poll::Session for Transport {
     fn wire(&self) -> Option<Wire> {
         Some(self.wire.clone())
     }
+
+    fn export_keying_material(&self, label: &[u8], context: &[u8]) -> Option<[u8; 32]> {
+        let mut output = [0; 32];
+        // Fails only for an output longer than the TLS hash allows.
+        self.connection
+            .export_keying_material(&mut output, label, context)
+            .ok()?;
+        Some(output)
+    }
 }
 
 /// A connection's statistics, and its selected path's.
@@ -429,6 +441,28 @@ pub(crate) mod tests {
         assert_eq!(client.protocol(), std::str::from_utf8(ALPN).ok());
         assert_eq!(server.protocol(), client.protocol());
         assert_eq!(client.address(), Address::Setup);
+    }
+
+    #[tokio::test]
+    async fn both_ends_export_the_same_keying_material() {
+        let (client, server, _endpoints) = pair().await;
+        // The label moq-lite-07 proves a route key under.
+        let label = b"EXPORTER-moq-lite-route-key";
+        let dialed = client
+            .export_keying_material(label, b"ctx")
+            .expect("an exporter");
+        assert_eq!(server.export_keying_material(label, b"ctx"), Some(dialed));
+        assert_ne!(
+            client.export_keying_material(label, b"other"),
+            Some(dialed),
+            "another context exports other bytes"
+        );
+        let (other, _, _endpoints) = pair().await;
+        assert_ne!(
+            other.export_keying_material(label, b"ctx"),
+            Some(dialed),
+            "another session exports other bytes"
+        );
     }
 
     #[tokio::test]

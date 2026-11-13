@@ -213,7 +213,9 @@ built on a clone of the connection and shared by every task that polls it.
 iroh has no send groups, so streams order by their own priority, saturated to
 iroh's 32 bits. The wire counters come from the connection's UDP statistics.
 The transport reports no probe target and no receive window: iroh's congestion
-controller takes no target, and iroh does not report the windows in force. A
+controller takes no target, and iroh does not report the windows in force. It
+exports keying material from the connection's TLS secrets, which a moq-lite-07
+route key proof needs to bind the proof to the session. A
 send stream dropped before it is finished is reset with code 0, so the peer
 never reads a truncated stream as complete.
 
