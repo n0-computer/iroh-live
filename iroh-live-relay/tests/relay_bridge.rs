@@ -18,7 +18,7 @@ use iroh_live_node::{
 };
 use iroh_live_relay::pull::{Access, Client};
 use moq_auth::{Algorithm, Claims, Key, KeySet};
-use moq_ext_access::policy::{JwtVerifier, Verify};
+use moq_ext_access::policy::Verify;
 use moq_net::origin;
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
@@ -216,8 +216,9 @@ impl TestRelay {
                 source,
             )));
             let mut sessions = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls);
-            if let Some(keys) = keys {
-                let verifier = JwtVerifier::new(keys);
+            if let Some(file) = &keys_file {
+                // As `iroh_live_relay::run` does: the key file, read again when it changes.
+                let verifier = iroh_live_relay::KeyFile::load(&file.0).expect("reads the keys");
                 sessions = sessions
                     .with_policy(
                         Verify::new(verifier.clone())
@@ -1939,6 +1940,49 @@ async fn a_rotated_key_file_takes_effect_for_browsers() {
         !routed_soon(&relay.cluster.origin, "studio/old").await,
         "a token of the rotated-out key was admitted"
     );
+}
+
+/// With a key file, an iroh client's token verifies against the keys the file holds now.
+#[tokio::test]
+async fn a_rotated_key_file_takes_effect_for_iroh_clients() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let old = signing_keys();
+    let relay = TestRelay::start_keyed(old.clone()).await;
+
+    // Admitted before the rotation, with the old key.
+    let (_before_endpoint, before) = relay_node().await;
+    let early = before
+        .publish("tokens/early", Audience::Granted)
+        .expect("publish");
+    let _early = counter(early.broadcast(), 0);
+    let _before_link = attach_with_token(&before, &relay, Some(token_for(&old, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/early").await;
+
+    let rotated = signing_keys();
+    relay.keys_file.as_ref().expect("keyed").rotate(&rotated);
+
+    let (_new_endpoint, new) = relay_node().await;
+    let fresh = new
+        .publish("tokens/new", Audience::Granted)
+        .expect("publish");
+    let _fresh = counter(fresh.broadcast(), 0);
+    let _new_link = attach_with_token(&new, &relay, Some(token_for(&rotated, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/new").await;
+
+    let (_old_endpoint, stale) = relay_node().await;
+    let late = stale
+        .publish("tokens/old", Audience::Granted)
+        .expect("publish");
+    let _late = counter(late.broadcast(), 0);
+    let _old_link = attach_with_token(&stale, &relay, Some(token_for(&old, "tokens")));
+    assert!(
+        !routed_soon(&relay.cluster.origin, "tokens/old").await,
+        "a token of the rotated-out key was admitted"
+    );
+
+    before.shutdown().await;
+    new.shutdown().await;
+    stale.shutdown().await;
 }
 
 /// With a key, an iroh client's session closes when its token expires, and its broadcast leaves.

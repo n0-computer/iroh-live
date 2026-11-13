@@ -15,10 +15,11 @@
 //! limited ([`pull::Limits`]).
 //!
 //! With `--auth-key`, a session that presents a valid JWT gets what the token
-//! grants instead. Browsers are decided by moq-auth's reference policy, which
-//! reads the key file again when it changes. `--auth-url` and the
-//! `--auth-public` flags hand browser sessions to moq-relay's own auth, which
-//! then pulls no tickets.
+//! grants instead. Browsers are decided by moq-auth's reference policy, and
+//! iroh clients by a [`KeyFile`]. Both read the key file again when it
+//! changes, so a rotated or removed key takes effect for new sessions without
+//! a restart. `--auth-url` and the `--auth-public` flags hand browser
+//! sessions to moq-relay's own auth, which then pulls no tickets.
 //!
 //! Another CLI can embed the relay by flattening [`Config`] into its arguments.
 //!
@@ -57,7 +58,7 @@ use iroh::{EndpointId, SecretKey, protocol::Router};
 use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
 use iroh_live_node::policy::DynPolicy;
 use moq_auth::{KeySet, lease, serve};
-use moq_ext_access::policy::{JwtVerifier, Verify};
+use moq_ext_access::policy::Verify;
 use moq_net::Pattern;
 use moq_relay::auth::Admissions;
 use n0_error::{AnyError, e};
@@ -66,11 +67,13 @@ use tracing::{debug, info, warn};
 
 mod error;
 mod iroh_sessions;
+mod keys;
 pub mod pull;
 
 pub use self::{
     error::Error,
     iroh_sessions::{IrohSessions, browser_grant, relay_policy},
+    keys::KeyFile,
 };
 
 /// The bundled web viewer, embedded at build time.
@@ -93,6 +96,9 @@ pub struct Config {
     ///
     /// The file holds a JWK or a JWK set, as `moq auth` writes them. An invalid
     /// token is refused, and a session without a token keeps the public rules.
+    /// The relay reads the file again when it changes, so a rotated or removed
+    /// key applies to new sessions without a restart. Sessions already
+    /// admitted keep their grant until their token expires.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["auth_url", "auth_public", "auth_public_publish", "auth_public_subscribe"])]
     pub auth_key: Option<PathBuf>,
 
@@ -169,10 +175,14 @@ pub async fn run(config: Config) -> Result<(), Error> {
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
-    let (keys, key_source) = match config.auth_key.as_deref().map(load_keys).transpose()? {
-        Some((keys, source)) => (Some(keys), Some(source)),
-        None => (None, None),
-    };
+    // Browsers and iroh clients both read the file again when it changes.
+    let key_source = config
+        .auth_key
+        .as_deref()
+        .map(load_keys)
+        .transpose()?
+        .map(|(_, source)| source);
+    let verifier = config.auth_key.clone().map(KeyFile::load).transpose()?;
     let mut relay_config = moq_relay::Config::default();
     relay_config.auth.url = config.auth_url.clone();
     relay_config.auth.public = config.auth_public.clone();
@@ -227,7 +237,6 @@ pub async fn run(config: Config) -> Result<(), Error> {
             None
         }
     };
-    let verifier = keys.map(JwtVerifier::new);
     let iroh_policy = config
         .iroh_policy
         .unwrap_or_else(|| match verifier.clone() {
