@@ -83,6 +83,9 @@ async fn pcm(
     let mut options = moq_audio::encode::Options::default();
     options.track = Some(track.clone());
     options.config = encoding.clone();
+    if let Some(allocator) = job.bandwidth.borrow().clone() {
+        options.bandwidth = allocator;
+    }
     let mut broadcast = job.producer.clone();
     let mut encoder =
         moq_audio::encode::Producer::new(&mut broadcast, job.catalog.clone(), input, &options)
@@ -134,6 +137,7 @@ async fn microphone(
     let track = audio_track_name(encoding);
     let encode_track = track.clone();
     let encode_config = encoding.clone();
+    let bandwidth = job.bandwidth.borrow().clone();
 
     let (handle_tx, handle) = oneshot::channel();
     let broadcast = job.producer.clone();
@@ -153,6 +157,9 @@ async fn microphone(
             let mut options = moq_audio::encode::Capture::new(capture.consume());
             options.encode.track = Some(encode_track);
             options.encode.config = encode_config;
+            if let Some(allocator) = bandwidth {
+                options.encode.bandwidth = allocator;
+            }
             let (publication, driver) =
                 match moq_audio::encode::publish_capture(broadcast, catalog, options) {
                     Ok(created) => created,

@@ -35,6 +35,7 @@ use crate::{
     handshake::Hop,
     link::{self, LatestSample},
     node::{Shared, Tasks},
+    rate::NodeRate,
     state::{LinkEntry, LinkRole, served},
     transport,
 };
@@ -565,7 +566,11 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
     }
+    if let Some(rate) = &shared.rate {
+        client = client.with_allocator(rate.allocator());
+    }
     let mut uplink = IrohUplink {
+        rate: shared.rate.clone(),
         endpoint: shared.endpoint.clone(),
         client,
         latest_sample,
@@ -636,6 +641,8 @@ type Dialing = Pin<Box<dyn Future<Output = Result<Dialed, (LinkFailure, Verdict)
 
 /// What an iroh relay link keeps across the runs of its connect policy.
 struct IrohUplink {
+    /// The node's rate control, which each dial's transport follows.
+    rate: Option<Arc<NodeRate>>,
     endpoint: iroh::Endpoint,
     /// The client every dial starts from, before the policy adds the URL and tokens.
     client: moq_net::Client,
@@ -688,6 +695,7 @@ impl IrohUplink {
                     dial = Some(Box::pin(dial_relay(
                         self.endpoint.clone(),
                         self.client.clone(),
+                        self.rate.clone(),
                         attempt,
                     )));
                 }
@@ -763,6 +771,7 @@ impl IrohUplink {
 async fn dial_relay(
     endpoint: iroh::Endpoint,
     client: moq_net::Client,
+    rate: Option<Arc<NodeRate>>,
     attempt: Attempt<Url>,
 ) -> Result<Dialed, (LinkFailure, Verdict)> {
     let unusable = |err: Error| (LinkFailure::Dial(err), Verdict::Unusable);
@@ -774,9 +783,22 @@ async fn dial_relay(
                 reason: "a GOAWAY moved an iroh link to another scheme",
             }))
         })?;
-    let transport = transport::Transport::connect(&endpoint, relay)
-        .await
-        .map_err(|err| (LinkFailure::Dial(err.into()), Verdict::Retry))?;
+    let retry = |err: transport::Error| (LinkFailure::Dial(err.into()), Verdict::Retry);
+    let transport = match &rate {
+        Some(rate) => {
+            let connection = endpoint
+                .connect(relay, crate::ALPN)
+                .await
+                .map_err(|err| retry(transport::Error::connect(err)))?;
+            let transport =
+                transport::Transport::with_rate(connection, rate.transport()).map_err(retry)?;
+            rate.register(transport.rate());
+            transport
+        }
+        None => transport::Transport::connect(&endpoint, relay)
+            .await
+            .map_err(retry)?,
+    };
     let connection = transport.connection().clone();
     let (session, driver) = attempt
         .client(&client)

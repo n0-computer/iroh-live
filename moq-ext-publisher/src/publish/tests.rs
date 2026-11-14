@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use moq_ext_sources::SlotState;
+use moq_net::bandwidth::Rate;
 
 use super::*;
 use crate::audio_encoding;
@@ -277,4 +278,83 @@ async fn a_value_track_reaches_a_reader_of_the_broadcast() {
         ),
         "a closed broadcast took a track"
     );
+}
+
+/// Waits until rendition `name`'s target reads `target`, and returns how long that took.
+async fn target_becomes(broadcast: &LocalBroadcast, name: &str, target: Option<Rate>) -> Duration {
+    let start = tokio::time::Instant::now();
+    tokio::time::timeout(TIMEOUT, async {
+        while broadcast.stats().renditions[name].target != target {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the target stayed at {:?}, not {target:?}",
+            broadcast.stats().renditions[name].target
+        )
+    });
+    start.elapsed()
+}
+
+/// A watched rendition follows its grant: down at once, held without an estimate, up on a ramp.
+#[tokio::test]
+async fn a_rendition_follows_its_grant() {
+    use moq_net::bandwidth::{Allocator, Producer};
+
+    let estimate = Producer::new();
+    let source = VideoSource::test_pattern(
+        moq_video::Size::new(320, 180),
+        moq_video::FrameRate::new(30, 1).expect("a valid rate"),
+    )
+    .expect("the pattern thread starts");
+    let ceiling = Rate::from_kbps(1_000);
+    let mut rendition = crate::VideoRendition::new("180p");
+    rendition.config.bitrate = Some(ceiling);
+    let broadcast = LocalBroadcast::new();
+    broadcast.set_bandwidth(Allocator::new(estimate.consume()));
+    broadcast
+        .set_video(source, crate::VideoEncoding::single(rendition))
+        .expect("a valid encoding");
+    let name = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(name) = broadcast.stats().renditions.keys().next() {
+                return name.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the rendition starts");
+    let track = broadcast.consume().track(&name).expect("the track exists");
+    let _subscribing = track.subscribe(None);
+
+    target_becomes(&broadcast, &name, Some(ceiling)).await;
+    assert_eq!(
+        broadcast.stats().renditions[&name].grant,
+        None,
+        "no estimate yet"
+    );
+
+    let low = Rate::from_kbps(400);
+    estimate.set(Some(low)).expect("the allocator reads it");
+    let fell = target_becomes(&broadcast, &name, Some(low)).await;
+    assert!(fell < Duration::from_secs(1), "the drop took {fell:?}");
+    assert_eq!(broadcast.stats().renditions[&name].grant, Some(low));
+
+    estimate.set(None).expect("the allocator reads it");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        broadcast.stats().renditions[&name].target,
+        Some(low),
+        "a lost estimate holds the bitrate"
+    );
+
+    estimate
+        .set(Some(Rate::from_mbps(4)))
+        .expect("the allocator reads it");
+    let rose = target_becomes(&broadcast, &name, Some(ceiling)).await;
+    // 25% a second from 400 kbit/s to 1 Mbit/s, never above the ceiling.
+    assert!(rose > Duration::from_secs(2), "the rise took only {rose:?}");
 }

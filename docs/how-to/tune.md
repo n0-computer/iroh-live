@@ -56,6 +56,11 @@ fn ladder() -> VideoEncoding {
 at 1.8 Mbit/s. A rendition's frame rate follows the source unless `rate` is
 set.
 
+Each rung's bitrate is a ceiling. With
+[rate control](../architecture/rate-control.md), which is off by default, the
+encoders follow what the links carry: they lower the bitrate when a link
+slows, and pause the upper rungs before they starve the lowest one.
+
 ## On the player
 
 The player holds each frame for a short time before it shows it, so it can
@@ -113,3 +118,5 @@ as [Environment variables](../reference/environment.md#rust_log) shows.
 - [Adaptive rendition switching](../architecture/adaptive.md) explains how a
   player picks a rendition.
 - [Playout and A/V sync](../architecture/playout.md) explains the hold.
+- [Rate control](../architecture/rate-control.md) explains how a publisher's
+  encoders follow its links.

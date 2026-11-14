@@ -345,7 +345,7 @@ impl Selector {
             .map(|desired| desired.target.rendition.clone())
             .or_else(|| on_screen.clone());
 
-        let rungs = crate::catalog::rungs(&catalog);
+        let rungs = crate::catalog::rungs(&catalog, self.broadcast.pausing());
         let chosen = moq_ext_adaptive::choose(
             &mode,
             &rungs,

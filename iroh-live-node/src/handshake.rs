@@ -121,7 +121,14 @@ pub(crate) async fn dial_session(
         .map_err(transport::Error::connect)?
         .await
         .map_err(transport::Error::connect)?;
-    let transport = transport::Transport::new(connection)?;
+    let transport = match &shared.rate {
+        Some(rate) => {
+            let transport = transport::Transport::with_rate(connection, rate.transport())?;
+            rate.register(transport.rate());
+            transport
+        }
+        None => transport::Transport::new(connection)?,
+    };
     let connection = transport.connection().clone();
     let auth = auth::Handle::new();
     authorize_direct(&shared, &auth, peer_id, &authorization.grant);
@@ -132,6 +139,7 @@ pub(crate) async fn dial_session(
         &served(&shared.table),
         Some(subscriber(&shared)),
         auth.clone(),
+        shared.rate.as_ref().map(|rate| rate.allocator()),
     )
     .await
     .map_err(|source| match source {
@@ -154,7 +162,9 @@ pub(crate) async fn dial_session(
 /// Completes the MoQ handshake as the client, over a transport this node dialed.
 ///
 /// Offers `publish` to the peer within what `auth` authorizes and, if given,
-/// writes what the peer announces to `subscriber`. Fails with
+/// writes what the peer announces to `subscriber`. With `allocator`, the
+/// session shares its registry, so it probes for the node's reservations.
+/// Fails with
 /// [`moq_net::Error::Timeout`] after [`transport::HANDSHAKE_TIMEOUT`], as the
 /// accepting side does.
 pub(crate) async fn client_handshake(
@@ -164,11 +174,15 @@ pub(crate) async fn client_handshake(
     publish: &origin::Consumer,
     subscriber: Option<origin::Producer>,
     auth: auth::Handle,
+    allocator: Option<moq_net::bandwidth::Allocator>,
 ) -> Result<(moq_net::Session, moq_net::Driver), moq_net::Error> {
     let mut client = moq_net::Client::new()
         .with_publisher(publish.clone())
         .with_peer_hop(Hop::of(&peer).id())
         .with_auth(auth);
+    if let Some(allocator) = allocator {
+        client = client.with_allocator(allocator);
+    }
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
     }

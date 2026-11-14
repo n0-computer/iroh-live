@@ -135,8 +135,9 @@ pub use iroh_live_node as node;
 /// The moq-net this crate builds against.
 pub use iroh_live_node::moq_net;
 pub use iroh_live_node::{
-    Audience, BroadcastTicket, Congestion, ConnectOptions, MoqPreset, Node, NodeConfig,
-    Publication, Reach, RelayConfig, Session, Subscription, UnpublishOnDrop,
+    Audience, BroadcastTicket, Congestion, ConnectOptions, FanOut, MoqPreset, Node, NodeConfig,
+    Publication, RateControl, Reach, RelayConfig, SendEstimate, Session, Subscription,
+    UnpublishOnDrop,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -217,5 +218,6 @@ mod guide {
         tune => "how-to/tune.md",
         control_access => "how-to/control-access.md",
         tokens => "how-to/tokens.md",
+        rate_control => "architecture/rate-control.md",
     }
 }
