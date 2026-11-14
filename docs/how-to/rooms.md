@@ -97,14 +97,32 @@ members cannot reach its gossip.
 ## Membership
 
 `Room::state()` watches a `RoomState`: every other member, its display name,
-and the names of its broadcasts. A slow reader sees the latest state and no
-backlog. To show "joined" and "left", compare two states.
+the names of its broadcasts, and its connection. A slow reader sees the
+latest state and no backlog. To show "joined" and "left", compare two states.
 
 A member renews its announcement every 30 seconds. A member that stops
 renewing drops out two to two and a half minutes after its last renewal, and
 one that calls `Room::leave()` drops out at once. Lease times use the
 member's own clock, so a member whose clock is more than two minutes behind
 is never seen.
+
+A member that crashes or loses its network stays listed until its lease runs
+out. `RoomMember::connection` tells sooner whether the member is still there.
+It reads the node's direct sessions, dialed or accepted, and has three states:
+
+- `Connected`: a direct session with the member is open.
+- `Disconnected { since }`: the last direct session with the member closed,
+  and none is open. A new session makes the member `Connected` again.
+- `Unknown`: this node had no direct session with the member while it was
+  listed. This is the case for a member that nobody subscribed to in either
+  direction, and for one reached only through a relay.
+
+A member whose process exits closes its sessions, so it turns `Disconnected`
+at once. A crash or a network loss closes nothing, so the session ends only
+after the QUIC idle timeout, 30 seconds by default. A session that this node
+closes itself also counts. Stop retrying a `Disconnected` member's broadcasts,
+or show its tile as gone, and keep `Unknown` members as they are. Gossip still
+removes the member when its lease runs out.
 
 ## Publishing and subscribing
 

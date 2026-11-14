@@ -6,11 +6,12 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use iroh::EndpointId;
+use iroh_live_node::Session;
 use iroh_smol_kv::{Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope};
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, debug, info, trace, warn};
 
-use crate::room::{Inner, LocalPublication, RoomMember, RoomState};
+use crate::room::{Inner, LocalPublication, MemberConnection, RoomMember, RoomState};
 
 /// The key a member's announcement is stored under in the room's gossip map.
 pub(crate) const ANNOUNCEMENT_KEY: &[u8] = b"s";
@@ -55,9 +56,18 @@ pub(crate) const MAP_RESUBSCRIBES: u32 = 3;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Announcement {
     /// The member's name and broadcasts.
-    member: RoomMember,
+    member: AnnouncedMember,
     /// Whether the member left, so the others drop it before its lease runs out.
     left: bool,
+}
+
+/// What a member says about itself, the wire half of a [`RoomMember`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct AnnouncedMember {
+    /// The name the member announced, if any.
+    display_name: Option<String>,
+    /// The broadcasts the member publishes into the room, by name.
+    broadcasts: BTreeSet<String>,
 }
 
 /// The task behind a room: it announces this member and follows the others.
@@ -68,6 +78,8 @@ pub(crate) struct Actor {
     pub(crate) writer: WriteScope,
     /// The other members, as their announcements last said.
     pub(crate) members: BTreeMap<EndpointId, RoomMember>,
+    /// The peers the node has a direct session with.
+    pub(crate) sessions: BTreeSet<EndpointId>,
     /// The members the replay after a resubscription has shown so far.
     pub(crate) resync: Option<BTreeSet<EndpointId>>,
     /// Set once the [`Rooms`](crate::Rooms) this room belongs to shut down.
@@ -103,6 +115,8 @@ impl Actor {
             .in_current_span(),
         ));
         let mut local_changed = self.inner.local_changed.watch();
+        // Yields the current list first.
+        let mut sessions = self.inner.node.sessions().stream();
         let mut display_name = self.inner.display_name.watch();
         let mut resubscribes = 0;
 
@@ -133,6 +147,7 @@ impl Actor {
                     }
                     desired.set(self.announcement(false)).ok();
                 }
+                Some(list) = sessions.next() => self.apply_sessions(&list),
                 reply = inbox.recv() => break reply,
                 Some(reply) = restarts.recv() => {
                     ended = true;
@@ -233,7 +248,7 @@ impl Actor {
             self.inner.local_names()
         };
         Announcement {
-            member: RoomMember {
+            member: AnnouncedMember {
                 display_name: self.inner.display_name.get(),
                 broadcasts,
             },
@@ -301,25 +316,75 @@ impl Actor {
         }
         // Every member rewrites its announcement to renew its lease, so most of
         // these say nothing new.
-        let member = announcement.member;
-        match self.members.get(&peer) {
-            Some(known) if *known == member => {
+        let AnnouncedMember {
+            display_name,
+            broadcasts,
+        } = announcement.member;
+        match self.members.get_mut(&peer) {
+            Some(known) if known.display_name == display_name && known.broadcasts == broadcasts => {
                 trace!(peer = %peer.fmt_short(), "announcement renewed");
                 return;
             }
-            Some(_) => debug!(
-                peer = %peer.fmt_short(),
-                broadcasts = ?member.broadcasts,
-                "member announcement changed",
-            ),
-            None => info!(
-                peer = %peer.fmt_short(),
-                display_name = ?member.display_name,
-                "member joined the room",
-            ),
+            Some(known) => {
+                debug!(
+                    peer = %peer.fmt_short(),
+                    ?broadcasts,
+                    "member announcement changed",
+                );
+                known.display_name = display_name;
+                known.broadcasts = broadcasts;
+            }
+            None => {
+                let connection = if self.sessions.contains(&peer) {
+                    MemberConnection::Connected
+                } else {
+                    MemberConnection::Unknown
+                };
+                info!(
+                    peer = %peer.fmt_short(),
+                    ?display_name,
+                    ?connection,
+                    "member joined the room",
+                );
+                self.members.insert(
+                    peer,
+                    RoomMember {
+                        display_name,
+                        broadcasts,
+                        connection,
+                    },
+                );
+            }
         }
-        self.members.insert(peer, member);
         self.publish_state();
+    }
+
+    /// Updates each member's connection from the node's open sessions.
+    ///
+    /// A member with a session open is connected. One whose last session
+    /// closed is disconnected from now on, and one that never had a session
+    /// stays unknown.
+    fn apply_sessions(&mut self, sessions: &[Session]) {
+        self.sessions = sessions.iter().map(Session::peer).collect();
+        let now = Instant::now();
+        let mut changed = false;
+        for (peer, member) in &mut self.members {
+            let connection = match (self.sessions.contains(peer), member.connection) {
+                (true, _) => MemberConnection::Connected,
+                (false, MemberConnection::Connected) => {
+                    MemberConnection::Disconnected { since: now }
+                }
+                (false, other) => other,
+            };
+            if connection != member.connection {
+                info!(peer = %peer.fmt_short(), ?connection, "member connection changed");
+                member.connection = connection;
+                changed = true;
+            }
+        }
+        if changed {
+            self.publish_state();
+        }
     }
 
     /// Publishes the membership to the state watcher and the audience set.

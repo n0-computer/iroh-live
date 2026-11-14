@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use iroh::EndpointId;
@@ -12,7 +13,6 @@ use moq_net::{Pattern, Patterns, broadcast};
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info};
 
@@ -26,12 +26,47 @@ pub struct RoomState {
 }
 
 /// One member of a room.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RoomMember {
     /// The name the member announced, if any.
     pub display_name: Option<String>,
     /// The broadcasts the member publishes into the room, by name.
     pub broadcasts: BTreeSet<String>,
+    /// Whether this node has a direct session with the member.
+    pub connection: MemberConnection,
+}
+
+/// Whether this node has a direct session with a room member.
+///
+/// Gossip lists a member until its lease runs out, about two minutes after
+/// its last renewal. A member that vanishes without [`Room::leave`] stays
+/// listed for that long. This node's sessions tell sooner: a member turns
+/// [`Disconnected`](Self::Disconnected) once its last direct session closes.
+///
+/// Only direct sessions count, dialed or accepted, as [`Node::sessions`]
+/// lists them. The room's gossip connections do not count, and neither does
+/// a route through a relay. A member that had no direct session with this
+/// node while listed is [`Unknown`](Self::Unknown). It may be present or
+/// gone, and only its lease tells which.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MemberConnection {
+    /// This node has not had a direct session with the member since it was listed.
+    #[default]
+    Unknown,
+    /// This node has a direct session with the member open.
+    Connected,
+    /// The last direct session with the member closed, and none is open.
+    ///
+    /// A close from either side counts, including one that this node asked
+    /// for with [`Session::close`](iroh_live_node::Session::close). A member
+    /// whose process exits closes its sessions at once. A member that crashes
+    /// or loses its network closes nothing, so this node notices only when
+    /// the QUIC idle timeout ends the session, after 30 seconds by default.
+    /// A new session makes the member [`Connected`](Self::Connected) again.
+    Disconnected {
+        /// When this node saw the last session close.
+        since: Instant,
+    },
 }
 
 /// A joined room.
@@ -100,7 +135,7 @@ impl Room {
         self.inner.ticket.with_bootstrap(self.inner.me)
     }
 
-    /// Returns the members and their broadcasts, as they change.
+    /// Returns the members, their broadcasts and connections, as they change.
     #[must_use]
     pub fn state(&self) -> n0_watcher::Direct<RoomState> {
         self.inner.state.watch()

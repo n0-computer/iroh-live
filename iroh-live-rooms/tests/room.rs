@@ -15,7 +15,7 @@ use std::{
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
 use iroh::EndpointId;
 use iroh_live_node::{Audience, Reach};
-use iroh_live_rooms::{Error, Room, RoomState, RoomTicket};
+use iroh_live_rooms::{Error, MemberConnection, Room, RoomState, RoomTicket};
 use moq_net::{Timestamp, announce, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -182,6 +182,126 @@ async fn leaving_is_seen_at_once() {
     assert!(matches!(err, Error::Left { .. }), "{err:#}");
     // Idempotent.
     room_a.leave().await;
+
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+/// Returns a predicate that holds once a room state lists `member` as `connected`, or not.
+///
+/// Not connected means [`MemberConnection::Disconnected`]: unknown matches neither.
+fn connected(member: EndpointId, connected: bool) -> impl Fn(&RoomState) -> bool + Copy {
+    move |state| {
+        state
+            .members
+            .get(&member)
+            .is_some_and(|peer| match peer.connection {
+                MemberConnection::Connected => connected,
+                MemberConnection::Disconnected { .. } => !connected,
+                MemberConnection::Unknown => false,
+            })
+    }
+}
+
+/// How soon a member whose sessions close must be seen as disconnected.
+const DISCONNECT_NOTICE: Duration = Duration::from_secs(5);
+
+/// A member that goes away without leaving is marked disconnected, and stays listed.
+#[tokio::test]
+#[traced_test]
+async fn a_member_that_vanishes_is_marked_disconnected() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
+    let a = peer_a.id();
+    let state = wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
+    assert_eq!(
+        state.members[&a].connection,
+        MemberConnection::Unknown,
+        "b has no session with a yet"
+    );
+
+    let _subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+    wait_for_state(&room_b, "b sees a connected", connected(a, true)).await;
+
+    // The process ends without leaving the room.
+    peer_a.shutdown().await;
+    drop(room_a);
+    let state = tokio::time::timeout(
+        DISCONNECT_NOTICE,
+        wait_for_state(&room_b, "b sees a disconnected", connected(a, false)),
+    )
+    .await
+    .expect("a was not marked disconnected in time");
+    assert!(
+        lists_cam(a)(&state),
+        "a is still listed with its cam: {state:?}"
+    );
+
+    peer_b.shutdown().await;
+}
+
+/// A member whose session closes is disconnected, and connected again on a new session.
+#[tokio::test]
+#[traced_test]
+async fn a_member_that_reconnects_is_connected_again() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
+    let (a, b) = (peer_a.id(), peer_b.id());
+    wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
+    wait_for_state(&room_a, "a sees b", |state| state.members.contains_key(&b)).await;
+
+    let subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+    wait_for_state(&room_b, "b sees a connected", connected(a, true)).await;
+    wait_for_state(&room_a, "a sees b connected", connected(b, true)).await;
+
+    drop(subscription);
+    let session = peer_b.node.connect(a).await.expect("the open session");
+    session.close(moq_net::Error::Cancel);
+    for (room, peer, what) in [(&room_b, a, "b sees a"), (&room_a, b, "a sees b")] {
+        tokio::time::timeout(
+            DISCONNECT_NOTICE,
+            wait_for_state(room, what, connected(peer, false)),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("timed out: {what} disconnected"));
+    }
+
+    let _subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
+        .await
+        .expect("timed out subscribing again")
+        .expect("subscribe again");
+    wait_for_state(&room_b, "b sees a connected again", connected(a, true)).await;
+    wait_for_state(&room_a, "a sees b connected again", connected(b, true)).await;
+
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+/// A connected member that leaves is removed at once, not merely disconnected.
+#[tokio::test]
+#[traced_test]
+async fn a_connected_member_that_leaves_is_removed() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let _cam = publish_counter(&room_a, "cam").expect("publish");
+    let a = peer_a.id();
+    wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
+    let _subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+    wait_for_state(&room_b, "b sees a connected", connected(a, true)).await;
+
+    room_a.leave().await;
+    wait_for_state(&room_b, "a is gone", |state| {
+        !state.members.contains_key(&a)
+    })
+    .await;
 
     peer_a.shutdown().await;
     peer_b.shutdown().await;

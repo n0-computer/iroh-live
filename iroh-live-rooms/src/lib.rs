@@ -10,6 +10,13 @@
 //! lease every thirty seconds, and drops out about two minutes after the last
 //! renewal, or at once when it leaves.
 //!
+//! A member that goes away without leaving stays listed until its lease runs
+//! out. Its [`MemberConnection`] tells sooner: a member turns
+//! [`Disconnected`](MemberConnection::Disconnected) once the last direct
+//! session between this node and it closes. A member this node never had a
+//! direct session with is [`Unknown`](MemberConnection::Unknown), since only
+//! the lease can tell whether it is still there.
+//!
 //! Room broadcasts are private to the members. [`Room::publish`] places a
 //! broadcast at `rooms/<topic>/<member>/<name>` with the membership as its
 //! audience, and a member that leaves loses the paths.
@@ -70,7 +77,7 @@ mod rooms;
 mod ticket;
 
 pub use self::{
-    room::{Room, RoomMember, RoomState, RoomsLayout},
+    room::{MemberConnection, Room, RoomMember, RoomState, RoomsLayout},
     rooms::{ALPN, Error, Rooms},
     ticket::RoomTicket,
 };

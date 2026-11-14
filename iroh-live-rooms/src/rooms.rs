@@ -204,6 +204,7 @@ impl Rooms {
             kv,
             writer,
             members: BTreeMap::new(),
+            sessions: BTreeSet::new(),
             resync: None,
             rooms_closing: self.closing.clone(),
         };

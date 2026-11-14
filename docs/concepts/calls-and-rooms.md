@@ -28,6 +28,9 @@ to show.
   has it can join and read the room, so it is a secret.
 - A member that leaves, or stops renewing its announcement, drops out, and
   loses access to the others' room broadcasts at once.
+- A member that vanishes without leaving stays listed for about two minutes.
+  If this node had a direct session with it, the member is marked as
+  disconnected once the last one closes, which tells sooner that it went away.
 - Every member that shows every other member subscribes to all of them. There
   is no server that mixes or forwards, so rooms suit small groups.
 
