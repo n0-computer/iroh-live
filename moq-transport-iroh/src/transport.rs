@@ -16,12 +16,12 @@ use iroh::{
 use kio::{Bridge, Waiter};
 use moq_net::transport::{
     Address, Wire,
-    poll::{self, BiStreams, SendOptions, Ungrouped},
+    poll::{self, BiStreams, SendOptions},
 };
 use n0_error::e;
 use tracing::{debug, warn};
 
-use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
+use crate::{ALPN, Error, RecvStream, SendGroup, SendStream, TransportError};
 
 /// moq-net's poll transport over one iroh connection.
 ///
@@ -31,8 +31,10 @@ use crate::{ALPN, Error, RecvStream, SendStream, TransportError};
 ///
 /// What it can and cannot back:
 ///
-/// - Streams order by their priority alone: iroh has no send groups, so
-///   [`send_group`](poll::Session::send_group) returns `None`.
+/// - [`send_group`](poll::Session::send_group) returns a [`SendGroup`]. iroh
+///   schedules streams by an urgency alone, so a group's priority and each
+///   stream's order in it are packed into the urgency; see [`SendGroup`] for
+///   the mapping and where it departs from moq-quic's.
 /// - [`wire`](poll::Session::wire) holds the UDP byte counts, refreshed from
 ///   the connection statistics whenever moq-net reads
 ///   [`metrics`](poll::Session::metrics).
@@ -180,45 +182,47 @@ impl poll::Session for Transport {
     fn poll_accept_bi(&self, waiter: &Waiter) -> Poll<Result<BiStreams<Self>, TransportError>> {
         let start = self.start(|conn| async move { conn.accept_bi().await });
         poll_op(&self.accept_bi, waiter, start)
-            .map_ok(|(send, recv)| (SendStream::new(send, 0), RecvStream::buffered(recv)))
-            .map_err(Into::into)
-    }
-
-    fn poll_open_uni(
-        &self,
-        waiter: &Waiter,
-        options: SendOptions<'_, Ungrouped>,
-    ) -> Poll<Result<SendStream, TransportError>> {
-        let start = self.start(|conn| async move { conn.open_uni().await });
-        poll_op(&self.open_uni, waiter, start)
-            .map_ok(|send| SendStream::new(send, options.priority))
-            .map_err(Into::into)
-    }
-
-    fn poll_open_bi(
-        &self,
-        waiter: &Waiter,
-        options: SendOptions<'_, Ungrouped>,
-    ) -> Poll<Result<BiStreams<Self>, TransportError>> {
-        let start = self.start(|conn| async move { conn.open_bi().await });
-        poll_op(&self.open_bi, waiter, start)
             .map_ok(|(send, recv)| {
                 (
-                    SendStream::new(send, options.priority),
+                    SendStream::new(send, SendOptions::default()),
                     RecvStream::buffered(recv),
                 )
             })
             .map_err(Into::into)
     }
 
-    fn send_group(&self, _priority: i64) -> Option<Ungrouped> {
-        None
+    fn poll_open_uni(
+        &self,
+        waiter: &Waiter,
+        options: SendOptions<'_, SendGroup>,
+    ) -> Poll<Result<SendStream, TransportError>> {
+        let start = self.start(|conn| async move { conn.open_uni().await });
+        poll_op(&self.open_uni, waiter, start)
+            .map_ok(|send| SendStream::new(send, options))
+            .map_err(Into::into)
     }
 
+    fn poll_open_bi(
+        &self,
+        waiter: &Waiter,
+        options: SendOptions<'_, SendGroup>,
+    ) -> Poll<Result<BiStreams<Self>, TransportError>> {
+        let start = self.start(|conn| async move { conn.open_bi().await });
+        poll_op(&self.open_bi, waiter, start)
+            .map_ok(|(send, recv)| (SendStream::new(send, options), RecvStream::buffered(recv)))
+            .map_err(Into::into)
+    }
+
+    fn send_group(&self, priority: i64) -> Option<SendGroup> {
+        Some(SendGroup::new(priority))
+    }
+
+    /// Sends `payload`, ignoring `options`: iroh queues datagrams apart from
+    /// streams and cannot rank one against the other.
     fn send_datagram(
         &self,
         payload: Bytes,
-        _options: SendOptions<'_, Ungrouped>,
+        _options: SendOptions<'_, SendGroup>,
     ) -> Result<(), TransportError> {
         self.connection.send_datagram(payload).map_err(Into::into)
     }
@@ -352,21 +356,27 @@ pub(crate) mod tests {
 
     use super::*;
 
-    const TIMEOUT: Duration = Duration::from_secs(10);
+    pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Returns a dialed and an accepted transport, and the endpoints that drive them.
     ///
     /// The accepting endpoint speaks only `server_alpns`. With `client_alpn`
     /// the client connects with that ALPN instead of through [`Transport::connect`].
+    /// With `config` both endpoints use that QUIC transport config.
     async fn pair_with(
         client_alpn: Option<&[u8]>,
         server_alpns: Vec<&[u8]>,
+        config: Option<endpoint::QuicTransportConfig>,
     ) -> (Transport, Transport, [Endpoint; 2]) {
-        let client = Endpoint::builder(presets::Minimal)
-            .bind()
-            .await
-            .expect("bind client");
-        let server = Endpoint::builder(presets::Minimal)
+        let builder = || {
+            let builder = Endpoint::builder(presets::Minimal);
+            match &config {
+                Some(config) => builder.transport_config(config.clone()),
+                None => builder,
+            }
+        };
+        let client = builder().bind().await.expect("bind client");
+        let server = builder()
             .alpns(server_alpns.into_iter().map(<[u8]>::to_vec).collect())
             .bind()
             .await
@@ -404,7 +414,16 @@ pub(crate) mod tests {
     pub(crate) async fn pair() -> (Transport, Transport, [Endpoint; 2]) {
         let mut alpns = crate::alpns();
         alpns.sort();
-        pair_with(None, alpns).await
+        pair_with(None, alpns, None).await
+    }
+
+    /// Returns a pair like [`pair`] whose endpoints use `config`.
+    pub(crate) async fn pair_configured(
+        config: endpoint::QuicTransportConfig,
+    ) -> (Transport, Transport, [Endpoint; 2]) {
+        let mut alpns = crate::alpns();
+        alpns.sort();
+        pair_with(None, alpns, Some(config)).await
     }
 
     /// Runs `fut` to completion, failing the test after [`TIMEOUT`].
@@ -662,7 +681,8 @@ pub(crate) mod tests {
     /// A version that carries a SETUP token hands the client's token to the server.
     #[tokio::test]
     async fn the_setup_carries_the_token() {
-        let (client, server, _endpoints) = pair_with(Some(b"moqt-22"), vec![b"moqt-22"]).await;
+        let (client, server, _endpoints) =
+            pair_with(Some(b"moqt-22"), vec![b"moqt-22"], None).await;
         assert_eq!(client.protocol(), Some("moqt-22"));
         let token = moq_net::setup::Token {
             kind: moq_net::setup::Token::OUT_OF_BAND,

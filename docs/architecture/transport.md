@@ -227,14 +227,58 @@ streams. Accepts, opens, datagram reads and the connection close are iroh
 futures that borrow the connection, so the transport stores one per operation,
 built on a clone of the connection and shared by every task that polls it.
 
-iroh has no send groups, so streams order by their own priority, saturated to
-iroh's 32 bits. The wire counters come from the connection's UDP statistics.
+The wire counters come from the connection's UDP statistics.
 The transport reports no probe target and no receive window: iroh's congestion
 controller takes no target, and iroh does not report the windows in force. It
 exports keying material from the connection's TLS secrets, which a moq-lite-07
 route key proof needs to bind the proof to the session. A
 send stream dropped before it is finished is reset with code 0, so the peer
 never reads a truncated stream as complete.
+
+### Send groups
+
+moq-net opens one send group per subscription. A higher-priority group
+preempts every lower one, groups of equal priority share the bytes, and inside
+a group streams go in their own order, the newest group of a track first.
+Streams outside every group, the control streams, go before all of them. A
+transport without send groups leaves moq-net to rank every group stream of the
+session in one queue, where the older of two equal-priority subscriptions goes
+first. Under a held bandwidth cap that starved a rendition switch: the
+replacement's first group waited behind the incumbent's backlog, which never
+drained.
+
+iroh schedules a stream by an `i32` urgency, higher first. Streams of one
+urgency are sent round robin while the connection's send fairness is on, which
+is noq's default. `moq_transport_iroh::SendGroup` packs moq-net's two levels
+into the urgency:
+
+| Stream | Urgency |
+|---|---|
+| ungrouped, at priority `p` | `2^29 + p`, above every group |
+| grouped, in a group at priority `g`, at tier `t` | `16 * g + (15 - t)` |
+
+A stream's tier is its dense rank by order within its group: the streams with
+the group's highest order are tier 0, the next distinct order tier 1, up to
+tier 15, which the rest share. So the heads of equal-priority groups share one
+urgency and split the bytes, a group's older streams wait for its
+head, and a higher-priority group outranks every tier of a lower one. A stream
+joining, leaving or moving reranks its group, and iroh applies the new urgency
+at the stream's next turn. Datagrams ignore their group, since iroh queues them
+apart from streams.
+
+moq-quic, the QUIC stack behind moq-tokio, schedules groups with deficit round
+robin, which the mapping only approximates. Fairness is per stream and only
+between streams of one tier: when a group's head has nothing queued, its next
+stream waits behind the other groups' heads instead of taking the idle head's
+share. For live media that sheds the backlog first, which the newest-first
+order asks for anyway.
+
+The sharing rests on send fairness. An application that sets
+`send_fairness(false)` in iroh's transport config gets streams of one urgency
+in the order they were written to, and the older of two equal-priority groups
+goes first again. RFC 9218's per-stream incremental flag, which
+[n0-computer/noq#859](https://github.com/n0-computer/noq/pull/859) adds to
+noq, would let each group stream ask for round robin whatever that setting.
 
 ## Errors
 
