@@ -8,6 +8,9 @@
 //!   connection that is already open, accepted or dialed. Both check the
 //!   negotiated ALPN. Hand the transport to [`moq_net::Client::connect`] or
 //!   [`moq_net::Server::accept_request`].
+//! - [`SendGroup`] is moq-net's send group on iroh: it packs a group's
+//!   priority and its streams' orders into iroh's stream urgency, so
+//!   equal-priority subscriptions share the bytes.
 //! - [`ALPN`], [`alpns`] and [`HANDSHAKE_TIMEOUT`] are the protocol
 //!   identifiers to dial and mount a handler with, and the bound on a
 //!   session's setup.
@@ -33,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod group;
 mod stream;
 mod transport;
 
@@ -40,6 +44,7 @@ use std::time::Duration;
 
 pub use self::{
     error::{Error, TransportError},
+    group::SendGroup,
     stream::{RecvStream, SendStream},
     transport::Transport,
 };

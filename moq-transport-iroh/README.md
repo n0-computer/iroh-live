@@ -31,8 +31,12 @@ let (session, driver) = moq_net::Client::new()
     .await?;
 ```
 
-iroh has no send groups, so `send_group` returns `None` and streams order by
-their own priority. `probe` and `receive_window` return `None`: iroh's
+`send_group` returns a `SendGroup`, which packs moq-net's group priority and
+each stream's order within its group into iroh's stream urgency. The heads of
+equal-priority groups share one urgency, and noq sends streams of one urgency
+round robin while send fairness is on, its default, so they share the bytes. The
+`SendGroup` docs and `docs/architecture/transport.md` describe the mapping.
+`probe` and `receive_window` return `None`: iroh's
 congestion controller takes no probe target, and iroh does not report its
 receive windows. `export_keying_material` derives 32 bytes from the
 connection's TLS secrets, so a moq-lite-07 route key proof binds to the session.
