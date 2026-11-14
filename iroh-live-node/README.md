@@ -27,18 +27,18 @@ For media, use
 use iroh_live_node::{Audience, Node, NodeConfig, MoqPreset, Reach};
 
 let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-let moq = Node::new(endpoint.clone(), NodeConfig::default());
+let node = Node::new(endpoint.clone(), NodeConfig::default());
 
 // Accept sessions on every MoQ version this build speaks.
-let router = moq.mount(iroh::protocol::Router::builder(endpoint)).spawn();
+let router = node.mount(iroh::protocol::Router::builder(endpoint)).spawn();
 
 // Publish a broadcast this process writes, to every granted session. It is
 // created in the route table, and peers read it without a copy.
-let publication = moq.publish("demo/my-stream", Audience::Granted)?;
+let publication = node.publish("demo/my-stream", Audience::Granted)?;
 let track = publication.broadcast().create_track("video", None)?;
 
 // Resolve a peer's broadcast, dialing the peer if no route exists yet.
-let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
+let subscription = node.subscribe("demo/camera", Reach::Both(peer)).await?;
 let consumer = subscription.broadcast();
 ```
 

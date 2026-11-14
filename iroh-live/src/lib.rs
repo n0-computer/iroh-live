@@ -100,6 +100,11 @@ router.shutdown().await?;
 //! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
 //!
+//! Each call returns the error of the crate that runs it: [`node::Error`] from
+//! the node, the layout and [`EndpointConfig`], and [`calls::Error`] from
+//! calls. Each one converts into [`Error`], so `?` works in a function that
+//! returns it.
+//!
 //! No feature is on by default. `full` turns on `media`, `capture`, `render`,
 //! `record` and `sound-server`. `media` adds the `media` module. Without it
 //! the crate is the layout, calls and endpoint setup only. `playback`, `aec`,
@@ -117,10 +122,19 @@ mod network;
 #[cfg(feature = "media")]
 pub mod media {
     pub use moq_audio as audio;
-    pub use moq_ext_player::*;
-    pub use moq_ext_publisher::*;
+    pub use moq_ext_player::{
+        Adaptation, AudioFrame, AudioFrames, AudioMode, AudioPlaybackStats, Catalog,
+        DEFAULT_LATENCY, Delay, FrameTiming, IMMEDIATE_LATENCY, MediaKind, NetworkSample,
+        PlaybackStats, Player, PlayerConfig, PlayerStatus, RemoteBroadcast, RenditionMode,
+        VideoPlaybackStats, video_rendition,
+    };
+    pub use moq_ext_publisher::{
+        AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
+        VideoEncoding, VideoRendition, audio_encoding,
+    };
     pub use moq_ext_sources::{
-        AudioFormat, AudioSource, FileEnd, FrameSender, VideoFormat, VideoSource, VideoSwitch,
+        AudioFormat, AudioSource, Error, FileEnd, FrameSender, SlotState, SourceClosed,
+        VideoFormat, VideoFrames, VideoSource, VideoSwitch,
     };
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};

@@ -12,14 +12,14 @@
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-//! let moq = Node::new(endpoint, NodeConfig::default());
+//! let node = Node::new(endpoint, NodeConfig::default());
 //!
 //! // Publish a broadcast this process writes, created in the route table.
-//! let publication = moq.publish("demo/studio", Audience::Granted)?;
+//! let publication = node.publish("demo/studio", Audience::Granted)?;
 //! let _track = publication.broadcast().create_track("video", None)?;
 //!
 //! // Resolve a peer's broadcast, dialing the peer if no route exists yet.
-//! let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
+//! let subscription = node.subscribe("demo/camera", Reach::Both(peer)).await?;
 //! let remote = subscription.broadcast();
 //! # drop(remote);
 //! # Ok(())
