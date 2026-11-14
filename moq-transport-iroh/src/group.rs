@@ -83,12 +83,11 @@ pub(crate) fn lock(stream: &SharedStream) -> MutexGuard<'_, endpoint::SendStream
 /// taking the idle head's share. For live media that sheds a group's backlog
 /// first, as the newest-first order asks anyway.
 ///
-/// The sharing rests on the connection's send fairness: with
-/// `send_fairness(false)` in iroh's transport config, streams of one urgency go
-/// in the order they were written to, and the older of two equal-priority
-/// groups goes first again. RFC 9218's per-stream incremental flag, which
-/// [n0-computer/noq#859](https://github.com/n0-computer/noq/pull/859) adds,
-/// would let each stream ask for round robin whatever that setting.
+/// Every stream also sets RFC 9218's incremental flag, from
+/// [n0-computer/noq#859](https://github.com/n0-computer/noq/pull/859), so the
+/// sharing holds even when iroh's transport config sets
+/// `send_fairness(false)`, which would otherwise send streams of one urgency in
+/// the order they were written to.
 ///
 /// Clones share the group. It lives as long as a handle or a member stream
 /// does.
