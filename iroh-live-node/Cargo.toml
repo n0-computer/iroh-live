@@ -1,0 +1,67 @@
+[package]
+name = "iroh-live-node"
+version = "0.1.0"
+edition = "2024"
+description = "The iroh-live node: MoQ over iroh with one route table fed by direct sessions and relays"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+derive_more = { version = "2.1.1", features = ["display", "debug", "from"] }
+data-encoding = "2.11.1"
+iroh = { workspace = true }
+# The clock and poll helpers that drive moq's connect policy for iroh relay links.
+kio = { workspace = true }
+moq-net = { workspace = true }
+# Latest-value JSON tracks, for `Node::publish_value` and `Subscription::value_track`.
+moq-json = { workspace = true }
+moq-ext-access = { workspace = true }
+# `NetworkSample`, the reading a link monitor publishes for adaptation.
+moq-ext-adaptive = { workspace = true }
+moq-transport-iroh = { workspace = true }
+# Relay links over QUIC and WebTransport (`https://`, `moqt://`, `moql://`).
+moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
+n0-error = "1.0.3"
+n0-future = "0.3.2"
+n0-watcher = "1.0.1"
+# The congestion controllers: BBR3, which `MoqPreset` binds with, and the
+# CUBIC and NewReno a `Congestion` names.
+noq-proto = { workspace = true }
+percent-encoding = "2.3.2"
+serde = "1.0.229"
+# `time` seeds each session driver's clock, `macros` is for `select!`.
+tokio = { version = "1.54.1", features = ["sync", "time", "macros", "rt"] }
+tokio-util = "0.7.20"
+tracing = "0.1.44"
+url = "2.5.8"
+
+[features]
+# Re-exports the JWT verifier as `policy::JwtVerifier`.
+jwt = ["moq-ext-access/jwt"]
+# Re-exports the rcan verifier and its capability as `policy::RcanVerifier`.
+rcan = ["moq-ext-access/rcan"]
+# Helpers for tests that run nodes in one process, in `test_util`.
+test-util = []
+
+[dev-dependencies]
+bytes = "1"
+derive_more = { version = "2.1.1", features = ["deref"] }
+data-encoding = "2.11.1"
+# Issues the keys and capability chains of the delegated-publisher tests.
+ed25519-dalek = "3"
+# Turns on `test-util` for this crate's own tests.
+iroh-live-node = { path = ".", features = ["test-util"] }
+# The rcan verifier, for the delegated-publisher tests.
+moq-ext-access = { workspace = true, features = ["rcan"] }
+n0-tracing-test = "0.3.0"
+rcan = "0.4.1"
+tokio = { version = "1.54.1", features = ["full"] }
+
+[[example]]
+name = "delegated_publisher"
+required-features = ["rcan"]

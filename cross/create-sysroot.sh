@@ -107,7 +107,7 @@ echo "  output:   ${SYSROOT}"
 echo "  packages: ${#ALL_DEBS[@]} total (${#PACKAGES[@]} top-level + ${#TRANSITIVE_DEPS[@]} transitive)"
 echo ""
 
-# ── Download and extract ─────────────────────────────────────────────
+# -- Download and extract ---------------------------------------------
 
 echo "Downloading ${#ALL_DEBS[@]} packages via dpkg-deb extraction..."
 CACHE_DIR="/tmp/sysroot-debs-${SUITE}-${ARCH}"
@@ -155,7 +155,7 @@ for pkg in "${ALL_DEBS[@]}"; do
 done
 echo "  downloaded ${DOWNLOADED} new, extracted ${EXTRACTED} total"
 
-# ── Strip unnecessary files to shrink the sysroot ─────────────────────
+# -- Strip unnecessary files to shrink the sysroot ---------------------
 echo ""
 echo "Stripping unnecessary files..."
 BEFORE_SIZE=$(du -sh "${SYSROOT}" | cut -f1)
@@ -171,7 +171,7 @@ rm -rf "${SYSROOT:?}"/etc
 AFTER_SIZE=$(du -sh "${SYSROOT}" | cut -f1)
 echo "  before: ${BEFORE_SIZE}, after: ${AFTER_SIZE}"
 
-# ── Fix absolute symlinks ─────────────────────────────────────────────
+# -- Fix absolute symlinks ---------------------------------------------
 # .so symlinks often point to absolute paths (/lib/aarch64-linux-gnu/...)
 # which break under --sysroot. Convert them to relative paths.
 echo "Fixing absolute symlinks..."
@@ -187,7 +187,7 @@ while IFS= read -r -d '' link; do
 done < <(find "${SYSROOT}" -type l -print0 2>/dev/null)
 echo "  fixed ${FIX_COUNT} symlinks"
 
-# ── Verify key files exist ────────────────────────────────────────────
+# -- Verify key files exist --------------------------------------------
 echo ""
 echo "Verifying sysroot..."
 MISSING=0

@@ -2,62 +2,73 @@
 
 ## Direct connectivity
 
-iroh connects peers directly when it can. Two machines on the same network reach
-each other over the local link, and when both have public addresses or cooperative
-NATs, hole punching opens a direct UDP path. When it fails, traffic falls back to
-an iroh relay, which forwards opaque packets and costs its own round trip.
+iroh connects peers directly when it can. Two machines on one network reach
+each other over the local link, and hole punching opens a direct UDP path
+through most NATs. When that fails, traffic goes through an iroh relay, which
+forwards opaque packets and adds its own round trip.
 
-From the media pipeline's point of view the transition is invisible. What changes
-is round-trip time and available bandwidth, which is exactly what [adaptive
-rendition switching](adaptive.md) reads. `iroh-live`'s stats recorder labels the
-selected path `direct` or `relayed` so the overlay can show which one is carrying
-the stream.
+The media pipeline does not see the change. It sees a different round trip and
+bandwidth, and the publisher's delivery estimate follows the bandwidth, which
+is what [adaptive rendition switching](adaptive.md) reads. The link monitor in
+`iroh-live-node/src/link/sampler.rs` counts every change of selected path as a new
+path generation, and the selector forgets what it learned on the old path. The
+monitor's `link sample` TRACE log says whether the selected path is relayed.
 
-An iroh relay and a MoQ relay are unrelated. The first forwards UDP between peers
-that cannot reach each other and understands nothing about the media. The second
-is the one below.
+An iroh relay and the iroh-live relay are unrelated.
+[Relays](../concepts/relays.md) tells the three meanings of "relay" apart.
 
 ## iroh-live-relay
 
 Browsers cannot dial an iroh endpoint. WebTransport gives a page a QUIC
-connection, not a QUIC endpoint, so there is no hole punching and no way to accept
-an inbound connection. `iroh-live-relay` bridges the two worlds: it runs
-`moq_relay::Cluster` behind both a WebTransport listener and an iroh endpoint, so
-a broadcast that arrives over either transport is reachable from the other.
+connection, not an endpoint, so there is no hole punching and no way to accept
+a connection. `iroh-live-relay` runs a `moq_relay::Cluster` behind a
+WebTransport listener and an iroh endpoint, so a broadcast that arrives over
+one is reachable from the other. Browsers come in through moq-tokio's server,
+and iroh clients through `IrohSessions` (`src/iroh_sessions.rs`).
 
-It also serves the web client, built with solid-js against `@moq/watch` and
-`@moq/publish` and embedded into the binary with `include_dir`.
-
-Two flags configure it. `--bind` is the QUIC address, default `[::]:4443`, and
-`--http-bind` is the HTTP address, defaulting to the same. TLS certificates are
-self-signed and generated at startup; `GET /certificate.sha256` returns the
-fingerprint so a browser can pin it. ACME provisioning is not implemented.
-
-The iroh secret key is persisted under `IROH_LIVE_RELAY_DATA`, or the platform
-data directory, so the relay's endpoint id survives a restart.
-
-**There is no authentication.** The relay grants publish and subscribe on every
-path to every connection. Do not put one on a public address.
+`IrohSessions` accepts iroh sessions itself, so iroh has authenticated each
+client's endpoint id. It decides each client with a policy, as a node does,
+after the client's MoQ SETUP. The default, `relay_policy()`, lets a client
+read the whole cluster and publish only at paths that name it. With
+`--auth-key`, a client that presents a valid JWT gets what the token grants
+instead. The relay decides a client once, and closes its session when the
+authorization expires, so the client redials with a fresh token. Browsers go
+through moq-relay's admissions, which the relay answers with
+`browser_grant` or the browser's JWT. The [relay reference](../reference/relay.md)
+lists the flags, and [Run the iroh-live relay](../how-to/run-relay.md) covers
+deployment.
 
 ## Pull on demand
 
-The relay does not need to be told about a publisher in advance. When a client
-subscribes to a broadcast whose name parses as a `LiveTicket`, the relay dials the
-endpoint in the ticket over iroh, subscribes to the broadcast, and mirrors it into
-the cluster under the same name. Everything after that is ordinary relay fan-out:
-a second viewer of the same ticket shares the first one's upstream connection.
+The relay does not need to know a publisher in advance. When a session asks for
+a name that parses as a `BroadcastTicket`, and its token allows the pull or the
+relay runs with `--open-pulls`, the relay subscribes to the ticket's broadcast
+through a node of its own (`src/pull.rs`). `pull::Limits` caps the pulls in
+total and per client, and rate-limits each client's new dials. That node uses the
+cluster origin as its route table (`NodeConfig::table`), so the publisher's
+session announces the broadcast straight into the cluster at its own path,
+with no copy. The relay pulls only a ticket whose path is the publisher's
+canonical `live/<peer>/<name>` or `rooms/<topic>/<peer>/<name>` path, and
+refuses any other ticket with `NotOwner`. The session that named the ticket is
+served the cluster with a mount at that name (`origin::Producer::mount`), so
+it reads the broadcast under the name it asked for. From then on it is ordinary
+relay fan-out: a second viewer of the same ticket shares the first one's
+upstream session.
 
-Two details keep that honest. Concurrent pulls for one ticket coalesce through a
-map of in-flight connects, so two browsers arriving together open one upstream
-session rather than two. And the mirror is scoped to exactly the one broadcast the
-ticket names, so nothing else the remote node publishes leaks into the cluster.
-
-A name that is not a ticket is looked up locally and fails immediately if it is
-not there, rather than hanging: the cluster origin registers no dynamic handler.
+Concurrent pulls for one ticket share one dial, so two browsers that arrive
+together open one upstream session. The relay claims each pulled path through
+`Node::claim_path`, on a base grant of nothing. The session's grant then lets
+the publisher announce only the pulled paths, so the cluster carries only the
+broadcasts the tickets name. The relay dials with that grant, which the
+session enforces from before its handshake, and a pull that joins a live
+session widens it. A pull ends once no session has named the ticket for ten
+seconds, which lets a page reload reuse it. Its path then leaves the grant and
+the cluster. When the last pull of a publisher ends, the relay
+closes its session with that publisher.
 
 ## Publishing to a relay
 
-From the publisher's side, reaching a relay is just a connection. Everything the
-node publishes is announced on every MoQ session it has, so `irl publish --relay
-<ENDPOINT_ID>` connects and the announce follows. See the [browser relay
-guide](../guide/browser-relay.md) for the full workflow.
+A publisher reaches a relay through a relay link, which
+[the transport page](transport.md#relay-links) describes.
+[Publish through a relay](../how-to/publish-through-relay.md) has the
+workflow.

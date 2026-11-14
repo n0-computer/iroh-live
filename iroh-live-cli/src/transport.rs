@@ -1,180 +1,218 @@
-//! Shared transport setup: binding an endpoint and advertising what it serves.
-//!
-//! Publishing is node-wide now. A broadcast created through
-//! [`Live::publish`](iroh_live::Live::publish) is announced on every session
-//! this node has, so pushing to a relay is nothing more than connecting to it.
+//! Shared transport setup: binding, subscribing, and advertising.
 
-use std::time::Duration;
+use std::{ops::Deref, sync::Arc, time::Duration};
 
-use iroh::{Endpoint, SecretKey, endpoint::presets};
+use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    Live, LiveBuilder, Subscription,
-    ticket::LiveTicket,
-    util::{LanPresence, transport_config, with_mdns},
+    BroadcastTicket, EndpointConfig, Mdns, Node, Subscription,
+    layout::LiveLayout,
+    media::{RemoteBroadcast, remote_broadcast},
+    node::{RelayConfig, RelayLink},
 };
 use n0_error::Result;
 use tracing::{info, warn};
 
 use crate::args::TransportArgs;
 
-/// How long a peer is given before a window stops waiting for it.
+/// How long a window waits for a peer before giving up.
 ///
-/// Covers a dial that never completes and a broadcast that never publishes a
-/// catalog, which look the same from here: something was announced and nothing
-/// arrived. `irl call` and `irl room` both give up after this, because a window
-/// that waits forever shows a spinner nobody can cancel.
-#[cfg(feature = "render")]
-pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
+/// Covers a dial that never completes and a catalog that never arrives. A
+/// window cannot be interrupted like a terminal, so `irl call` and `irl room`
+/// stop waiting.
+pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long a headless subscription waits before it says out loud that nothing
-/// has arrived yet.
+/// How long a shutdown waits for the endpoint to close.
 ///
-/// `irl watch`, `irl record`, and `irl run` keep waiting afterwards: a
-/// subscriber started before its publisher is a normal way to use them, and
-/// the terminal can be interrupted. Saying nothing at all is what leaves a user
-/// guessing whether the ticket was wrong.
+/// Closing the endpoint waits until every peer has acknowledged that its
+/// connection closed. A live peer does so within a round trip. A peer that
+/// vanished never does, and the endpoint then waits out the drain period,
+/// which took up to five seconds in tests against a killed peer. Such a peer
+/// learns nothing from the wait.
+const ENDPOINT_CLOSE: Duration = Duration::from_secs(2);
+
+/// How long a subscription waits before saying nothing arrived yet.
+///
+/// It keeps waiting afterwards, since starting a subscriber before its
+/// publisher is normal.
 const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
-/// Binds an endpoint and starts the MoQ transport on it.
+/// A live node and the router on its endpoint.
 ///
-/// With `serve` set, a router accepts incoming subscribers. Without it only
-/// outbound connections work, which is what `--no-serve` wants: the broadcast
-/// still reaches a relay, but nobody dials this node directly.
+/// Shared by the windows of a command, and shut down by whichever ends it.
+pub(crate) type SharedNode = Arc<Bound>;
+
+/// A node and its router, which accepts the node's sessions if it serves.
 ///
-/// # Errors
-///
-/// Fails if the endpoint cannot bind.
-pub async fn setup_live(serve: bool) -> Result<Live> {
-    setup_live_with_key(iroh_live::util::secret_key_from_env()?, serve).await
+/// A node that does not serve gets a router with nothing mounted, so that
+/// [`shutdown`](Self::shutdown) closes the endpoint either way.
+#[derive(Debug)]
+pub(crate) struct Bound {
+    pub(crate) node: Node,
+    pub(crate) router: Router,
 }
 
-/// Binds an endpoint under `secret_key` and starts the MoQ transport on it.
-///
-/// The identity is what a ticket names, so a caller holding a stored key
-/// (`irl run` with a `secret_key_name`) hands back the same tickets on every
-/// run. Otherwise as [`setup_live`].
-///
-/// # Errors
-///
-/// Fails if the endpoint cannot bind.
-pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<Live> {
-    Ok(bind(secret_key, serve).await?.spawn())
-}
-
-/// Binds an endpoint that also runs gossip, and starts the MoQ transport on it.
-///
-/// Rooms discover each other over gossip, so `irl room` needs it where nothing
-/// else here does. Always serves: a participant nobody can dial has nothing to
-/// contribute.
-///
-/// # Errors
-///
-/// Fails if the endpoint cannot bind.
-#[cfg(feature = "render")]
-pub async fn setup_live_with_gossip() -> Result<Live> {
-    let secret_key = iroh_live::util::secret_key_from_env()?;
-    Ok(bind(secret_key, true).await?.with_gossip().spawn())
-}
-
-/// Binds the endpoint every `setup_live` variant starts from.
-///
-/// A ticket names an endpoint id and no addresses, so the endpoint carries
-/// every way of turning an id back into an address that we have. `presets::N0`
-/// brings pkarr publishing and pkarr and DNS resolution, which want internet at
-/// both ends; mDNS brings the local network, which wants none. `irl` takes both
-/// unconditionally rather than behind a flag, because the one thing a person
-/// scanning a QR code cannot be asked is which of the two their network is.
-async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
-    let builder = Endpoint::builder(presets::N0)
-        .transport_config(transport_config())
-        .secret_key(secret_key);
-    let endpoint = with_mdns(builder, LanPresence::serving(serve))
-        .await
-        .bind()
-        .await?;
-    info!(endpoint_id = %endpoint.id(), "endpoint bound");
-
-    let mut builder = Live::builder(endpoint);
-    if serve {
-        builder = builder.with_router();
+impl Bound {
+    /// Shuts the node down, then the router and the endpoint.
+    ///
+    /// Waits at most [`ENDPOINT_CLOSE`] for the endpoint to close.
+    pub(crate) async fn shutdown(&self) {
+        // The router shuts down only the handlers mounted on it.
+        crate::shutdown::step("shutting the node down");
+        self.node.shutdown().await;
+        crate::shutdown::step("closing the endpoint");
+        match tokio::time::timeout(ENDPOINT_CLOSE, self.router.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(
+                error = format_args!("{err:#}"),
+                "the router failed to shut down"
+            ),
+            Err(_) => info!(
+                waited = ?ENDPOINT_CLOSE,
+                "stopped waiting for peers to acknowledge the closed connections"
+            ),
+        }
     }
-    Ok(builder)
+}
+
+impl Deref for Bound {
+    type Target = Node;
+
+    fn deref(&self) -> &Node {
+        &self.node
+    }
+}
+
+/// Whether a node accepts sessions that peers open to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Inbound {
+    /// Accepts subscribers, and announces itself over mDNS.
+    Accept,
+    /// Only dials out, and only looks others up over mDNS.
+    Refuse,
+}
+
+/// Binds an endpoint and starts the MoQ transport on it.
+pub(crate) async fn bind_node(inbound: Inbound) -> Result<SharedNode> {
+    bind_node_with(EndpointConfig::from_env()?, inbound).await
+}
+
+/// Binds an endpoint with `config` and starts the MoQ transport on it.
+///
+/// A ticket carries no addresses, so the endpoint uses mDNS on top of the
+/// preset's pkarr and DNS lookup.
+pub(crate) async fn bind_node_with(config: EndpointConfig, inbound: Inbound) -> Result<SharedNode> {
+    let mdns = match inbound {
+        Inbound::Accept => Mdns::Announce,
+        Inbound::Refuse => Mdns::Lookup,
+    };
+    let endpoint = config.with_mdns(mdns).bind().await?;
+    let node = Node::new(endpoint.clone(), LiveLayout::default().config());
+    let router = Router::builder(endpoint);
+    let router = match inbound {
+        Inbound::Accept => node.mount(router),
+        Inbound::Refuse => router,
+    };
+    let router = router.spawn();
+    Ok(Arc::new(Bound { node, router }))
 }
 
 /// Runs `setup` against a bound endpoint, closing it if the setup fails.
 ///
-/// An endpoint dropped without [`Live::shutdown`] logs an error and leaves its
-/// peers to time the connection out, so a command that gives up between binding
-/// and running goes through here rather than returning the error directly.
-///
-/// # Errors
-///
-/// Returns whatever `setup` returned, having shut the endpoint down first.
-pub async fn with_live<T>(
-    live: Live,
-    setup: impl AsyncFnOnce(&Live) -> Result<T>,
-) -> Result<(Live, T)> {
-    match setup(&live).await {
-        Ok(value) => Ok((live, value)),
+/// A [`Bound`] dropped without [`Bound::shutdown`] leaves its peers to time
+/// out.
+pub(crate) async fn with_node<T>(
+    node: SharedNode,
+    setup: impl AsyncFnOnce(&SharedNode) -> Result<T>,
+) -> Result<(SharedNode, T)> {
+    match setup(&node).await {
+        Ok(value) => Ok((node, value)),
         Err(err) => {
-            live.shutdown().await;
+            node.shutdown().await;
             Err(err)
         }
     }
 }
 
-/// Subscribes to `ticket`, saying so on the way in and out.
+/// A subscription and the media broadcast read through it.
+#[derive(Debug, Clone)]
+pub(crate) struct Subscribed {
+    /// The subscription the broadcast arrives over.
+    pub(crate) subscription: Subscription,
+    pub(crate) broadcast: RemoteBroadcast,
+}
+
+impl Subscribed {
+    /// Starts reading `subscription`'s broadcast.
+    ///
+    /// [`crate::playback::catalog`] waits for the catalog.
+    pub(crate) fn open(subscription: Subscription) -> Self {
+        let broadcast = remote_broadcast(&subscription);
+        Self {
+            subscription,
+            broadcast,
+        }
+    }
+
+    /// Closes the session that served the broadcast.
+    ///
+    /// The session is shared with everything else open to the same peer, so
+    /// only a command that reads nothing else from the peer calls this. A room
+    /// tile or a call must not: other tiles, the chat or the next call use the
+    /// same session.
+    pub(crate) fn close(&self) {
+        if let Some(session) = self.subscription.session() {
+            session.close(moq_net::Error::Cancel);
+        }
+    }
+}
+
+/// Subscribes to `ticket`, printing progress.
 ///
-/// The catalog is what a subscription waits for, and a publisher that has not
-/// started yet never sends one, so a subscription that is taking a long time
-/// says which broadcast it is still waiting for.
-///
-/// # Errors
-///
-/// Fails if the peer cannot be reached, or if it closes the broadcast without
-/// ever publishing a catalog.
-pub async fn subscribe(live: &Live, ticket: &LiveTicket) -> Result<Subscription> {
+/// Prints a notice if the broadcast takes long to appear. Returns once a route
+/// is found, before the catalog arrives.
+pub(crate) async fn subscribe(node: &Node, ticket: &BroadcastTicket) -> Result<Subscribed> {
     println!("connecting to {ticket} ...");
-    let mut subscribing =
-        std::pin::pin!(live.subscribe(ticket.endpoint.clone(), &ticket.broadcast_name));
+    let mut subscribing = std::pin::pin!(async {
+        let subscription = node.subscribe_ticket(ticket).await?;
+        n0_error::Ok(Subscribed::open(subscription))
+    });
 
     let sub = match tokio::time::timeout(QUIET_SUBSCRIBE, subscribing.as_mut()).await {
         Ok(result) => result?,
         Err(_) => {
             warn!(
-                remote = %ticket.endpoint.id.fmt_short(),
-                broadcast = %ticket.broadcast_name,
+                peer = %ticket.peer().fmt_short(),
+                broadcast = %ticket.path(),
                 seconds = QUIET_SUBSCRIBE.as_secs(),
                 "still waiting for the broadcast"
             );
             println!(
                 "still waiting for '{}' on {}: is the publisher running? \
                  press Ctrl+C to give up",
-                ticket.broadcast_name,
-                ticket.endpoint.id.fmt_short()
+                ticket.path(),
+                ticket.peer().fmt_short()
             );
             subscribing.await?
         }
     };
     info!(
-        remote = %ticket.endpoint.id.fmt_short(),
-        broadcast = %ticket.broadcast_name,
-        "session established"
+        peer = %ticket.peer().fmt_short(),
+        broadcast = %ticket.path(),
+        path = %sub.subscription.path(),
+        "subscribed"
     );
     Ok(sub)
 }
 
-/// Advertises the broadcast: prints its ticket, connects to a relay if one was
-/// named, and returns the ticket either way.
+/// Advertises this node's broadcast and returns its ticket.
 ///
-/// # Errors
-///
-/// Fails if the relay cannot be reached.
-pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
-    let ticket = ticket(live, &args.name);
+/// Prints the ticket unless `--no-serve` is set, and attaches the relay if one
+/// was named.
+pub(crate) fn advertise(node: &Node, args: &TransportArgs) -> Result<String> {
+    let ticket = LiveLayout::default()
+        .ticket(node.id(), &args.name)?
+        .to_string();
     match (args.no_serve, args.relay) {
-        // Nobody can dial this node, so the ticket names an endpoint that
-        // refuses every session and the relay is the only way out.
         (true, Some(_)) => println!("not serving: subscribers reach this broadcast by relay"),
         (true, None) => warn!(
             "--no-serve without --relay: nothing can reach this broadcast, since \
@@ -187,26 +225,31 @@ pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
     }
 
     if let Some(relay) = args.relay {
-        // The session carries the node origin, so every broadcast this node
-        // publishes is announced to the relay as soon as the session is up.
-        live.transport().connect(relay).await?;
-        info!(relay = %relay.fmt_short(), "pushing to relay");
-        println!("pushing to relay {relay}");
+        attach_relay(node, relay, &args.name)?;
     }
     Ok(ticket)
 }
 
+/// Attaches to `relay`, redialing it if the session drops.
+///
+/// The relay receives every public broadcast of this node. The link does not
+/// consume, or it would mirror the relay's whole namespace into the route table.
+fn attach_relay(node: &Node, relay: EndpointId, name: &str) -> Result<RelayLink> {
+    let link = node.attach_relay(RelayConfig::iroh(relay).with_consume(false))?;
+    let path = LiveLayout::default()
+        .ticket(node.id(), name)?
+        .path()
+        .clone();
+    info!(relay = %relay.fmt_short(), %path, "pushing to relay");
+    println!("pushing to relay {relay}: viewers find the broadcast there at {path}");
+    Ok(link)
+}
+
 /// Prints a QR code of `ticket`, unless `no_qr` suppresses it.
 ///
-/// A terminal that cannot draw one is not a reason to stop, so a failure is
-/// logged and nothing else.
-pub fn print_qr(ticket: &str, no_qr: bool) {
+/// A failure is only logged.
+pub(crate) fn print_qr(ticket: &str, no_qr: bool) {
     if !no_qr && let Err(err) = qr2term::print_qr(ticket) {
         warn!(error = %err, "could not print the QR code");
     }
-}
-
-/// The ticket for a broadcast this node publishes.
-pub fn ticket(live: &Live, name: &str) -> String {
-    LiveTicket::new(live.endpoint().id(), name).to_string()
 }

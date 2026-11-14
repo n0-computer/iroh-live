@@ -1,8 +1,9 @@
-/// Raspberry Pi Zero 2 demo: publish a camera stream over iroh and display
-/// the connection ticket as a QR code on a Waveshare 2.13" e-paper HAT.
-/// Also supports watching a remote stream with EGL/GLES2 rendering.
-///
-/// This binary only builds and runs on Linux (ARM64 target).
+//! Raspberry Pi Zero 2 demo.
+//!
+//! Publishes a camera stream over iroh and shows the ticket as a QR code on a
+//! Waveshare 2.13" e-paper HAT. It can also watch a remote stream with
+//! EGL/GLES2. Builds on Linux only.
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("pi-zero-demo only supports Linux");
 
@@ -17,54 +18,58 @@ mod publish;
 #[cfg(target_os = "linux")]
 mod watch;
 
+/// The command line and the dispatch to each command.
 #[cfg(target_os = "linux")]
 mod app {
+    use std::time::Duration;
+
     use clap::{Parser, Subcommand};
-    use iroh::EndpointId;
-    use iroh_live::{Live, ticket::LiveTicket};
+    use iroh_live::{
+        BroadcastTicket, EndpointConfig, Node,
+        layout::LiveLayout,
+        media::{
+            PlayerConfig, VideoSource, remote_broadcast,
+            video::{FrameRate, Size},
+        },
+    };
 
     use crate::{epaper, publish, watch};
 
+    /// Command line of the Pi Zero 2 demo.
     #[derive(Parser)]
-    #[command(about = "Pi Zero 2 demo: camera streaming + e-paper QR ticket")]
+    #[command(about = "Pi Zero 2 demo: camera streaming and e-paper QR ticket")]
     pub(crate) struct Cli {
         #[command(subcommand)]
         command: Command,
     }
 
+    /// The demo subcommands.
     #[derive(Subcommand)]
     enum Command {
-        /// Test the e-paper display with a "hello" label and a bogus QR code.
+        /// Test the e-paper display: a checkerboard, then a QR code, then white.
         EpaperDemo,
         /// Publish the camera stream and show the ticket QR on e-paper.
         Publish(publish::PublishOpts),
         /// Watch a remote stream, rendering with EGL/GLES2.
         Watch(WatchOpts),
-        /// Render a generated test pattern directly to HDMI (no network, no
-        /// window system, no camera) - a hardware sanity check for the
-        /// DRM/KMS + GLES2 display path.
+        /// Render a test pattern to HDMI to check the DRM/KMS and GLES2 path.
         FbDemo,
     }
 
+    /// Options of the `watch` subcommand.
     #[derive(Parser, Debug)]
     struct WatchOpts {
-        /// Connection ticket (alternative to --endpoint-id + --name).
-        #[clap(conflicts_with = "endpoint_id")]
-        ticket: Option<LiveTicket>,
-        /// Remote endpoint ID (requires --name).
-        #[clap(long, conflicts_with = "ticket", requires = "name")]
-        endpoint_id: Option<EndpointId>,
-        /// Broadcast name.
-        #[clap(long, conflicts_with = "ticket", requires = "endpoint_id")]
-        name: Option<String>,
+        /// The broadcast ticket.
+        ticket: BroadcastTicket,
         /// Render direct to HDMI framebuffer via DRM/KMS (no window system).
-        #[clap(long)]
+        #[arg(long)]
         fb: bool,
         /// Start in fullscreen mode (windowed mode only, ignored with --fb).
-        #[clap(long)]
+        #[arg(long)]
         fullscreen: bool,
     }
 
+    /// Runs the subcommand that `cli` selects.
     pub(crate) async fn run(cli: Cli) -> n0_error::Result {
         match cli.command {
             Command::EpaperDemo => cmd_epaper_demo(),
@@ -93,65 +98,65 @@ mod app {
         Ok(())
     }
 
+    /// Blocks until the user presses Enter.
     fn wait_for_enter() {
         println!("  press Enter to continue...");
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf).ok();
     }
 
-    /// Renders a generated test pattern directly to HDMI - no network, no
-    /// window system, no camera needed.
+    /// Renders a test pattern straight to HDMI, without network or camera.
     async fn cmd_fb_demo() -> n0_error::Result {
-        use moq_media::{publish::VideoSource, test_source};
-        use moq_video::Size;
-
-        let VideoSource::Frames(frames) = test_source::video(Size::new(640, 480), 30) else {
-            unreachable!("test_source::video always returns VideoSource::Frames")
-        };
-
-        watch::run_fb_demo(frames).await?;
+        let source = VideoSource::test_pattern(
+            Size::new(640, 480),
+            FrameRate::new(30, 1).expect("a valid rate"),
+        )?;
+        watch::show_on_hdmi(source.frames()).await?;
         Ok(())
     }
 
     /// Watches a remote broadcast, rendering with EGL/GLES2.
+    ///
+    /// Shuts the node down and closes the endpoint however the playback ends,
+    /// so the publisher sees the session close instead of timing out.
     async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
-        let ticket = match (&opts.ticket, &opts.endpoint_id, &opts.name) {
-            (Some(t), None, None) => t.clone(),
-            (None, Some(id), Some(name)) => LiveTicket::new(*id, name.clone()),
-            _ => {
-                eprintln!("Usage: watch --ticket <TICKET> or --endpoint-id <ID> --name <NAME>");
-                std::process::exit(1);
-            }
-        };
+        // The ticket has no addresses. The viewer finds the publisher through
+        // the same lookups it announces to: pkarr and DNS, plus mDNS on a
+        // network without internet.
+        let endpoint = EndpointConfig::from_env()?.bind().await?;
+        // Only dials, so it needs no router.
+        let node = Node::new(endpoint.clone(), LiveLayout::default().config());
+        let result = watch_with(&node, opts).await;
+        node.shutdown().await;
+        endpoint.close().await;
+        result
+    }
 
+    /// Subscribes `node` to the ticket's broadcast and plays it until it ends.
+    async fn watch_with(node: &Node, opts: WatchOpts) -> n0_error::Result {
+        let ticket = opts.ticket;
         println!("connecting to {ticket} ...");
-        // A ticket names an endpoint id and no addresses, so the viewer needs
-        // the same lookup services the publisher announces to: `from_env` adds
-        // mDNS to the n0 preset, which is what resolves the id on a network
-        // with no route to the internet.
-        let live = Live::from_env().await?.spawn();
-        let sub = live
-            .subscribe(ticket.endpoint, &ticket.broadcast_name)
-            .await?;
+        let subscription = node.subscribe_ticket(&ticket).await?;
+        let remote = remote_broadcast(&subscription);
         println!("connected!");
 
-        let tracks = sub.media().await;
-        let video_track = tracks.video.expect("no video track in broadcast");
-        video_track.enable_adaptation(sub.signals().clone());
-        let session = sub.session().clone();
+        // Wait for a readable catalog, so a bad publisher gives an error and
+        // not a black screen.
+        remote.catalog_within(Duration::from_secs(15)).await?;
+
+        // `remote_broadcast` attached the link's signals, so the player picks
+        // the rendition on its own.
+        let player = remote.play(PlayerConfig::default())?;
 
         if opts.fb {
-            watch::run_drm(video_track, session).await?;
+            watch::show_on_hdmi(player.video_frames()).await?;
         } else {
             #[cfg(feature = "windowed")]
-            watch::run_windowed(video_track, session, opts.fullscreen)?;
+            watch::run_windowed(player, opts.fullscreen)?;
             #[cfg(not(feature = "windowed"))]
-            {
-                eprintln!(
-                    "windowed mode not compiled in - use --fb or build with --features windowed"
-                );
-                std::process::exit(1);
-            }
+            return Err(n0_error::anyerr!(
+                "this build has no windowed mode: use --fb, or build with --features windowed"
+            ));
         }
 
         Ok(())

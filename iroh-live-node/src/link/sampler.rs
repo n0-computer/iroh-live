@@ -1,0 +1,280 @@
+//! The sampler that turns a session's statistics into [`NetworkSample`]s.
+
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+
+use iroh::endpoint::{Connection, PathId};
+use moq_ext_adaptive::NetworkSample;
+use moq_net::session::Stats;
+
+/// How often a monitor reads its link.
+pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
+
+/// The span loss and throughput are measured across.
+///
+/// A subscriber sends little but acknowledgements, a few per tick, so over a
+/// shorter span one lost acknowledgement reads as a large loss rate.
+const WINDOW: Duration = Duration::from_secs(2);
+
+/// The fewest packets a window needs for a loss rate.
+///
+/// Below it the rate is zero.
+const MIN_PACKETS: u64 = 20;
+
+/// The span the round trip minimum is taken across.
+///
+/// Long enough to outlast a queue, short enough to forget a baseline that
+/// moved without a path change.
+const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
+
+/// Which path a reading is of: a QUIC path, or one session of a relay link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathKey {
+    Quic(PathId),
+    Session(u64),
+}
+
+/// The counters one reading carries, and when it was taken.
+#[derive(Debug, Clone, Copy)]
+struct Reading {
+    at: Instant,
+    rtt: Option<Duration>,
+    received_bytes: u64,
+    sent_packets: u64,
+    lost_packets: u64,
+}
+
+/// The state that turns readings of a session's statistics into [`NetworkSample`]s.
+///
+/// Measured by this endpoint, so the loss rate is of the packets it sends: on
+/// a subscriber, mostly acknowledgements. The loss rate and the throughput
+/// span the last two seconds, the minimum round trip the last 15 s.
+///
+/// Keeps the history rates and minimums are taken over, and the path
+/// generation. The link monitors in the parent module drive one on a timer.
+#[derive(Debug, Default)]
+pub(crate) struct LinkSampler {
+    path: Option<PathKey>,
+    path_generation: u64,
+    /// This path's readings over the last [`MIN_RTT_WINDOW`], oldest first.
+    readings: VecDeque<Reading>,
+}
+
+impl LinkSampler {
+    /// Starts a new session of the link.
+    ///
+    /// The next reading counts as a new path even if the QUIC path id repeats,
+    /// and history starts over.
+    pub(crate) fn new_session(&mut self) {
+        if self.path.take().is_some() {
+            self.path_generation += 1;
+        }
+        self.readings.clear();
+    }
+
+    /// Returns the path generation the link is at.
+    #[must_use]
+    pub(crate) fn path_generation(&self) -> u64 {
+        self.path_generation
+    }
+
+    /// Reads a direct session and the connection whose selected path it rides.
+    ///
+    /// `delivery` is the peer's bandwidth estimate, as `peek` returns it.
+    /// Returns `None` while the connection has no selected path.
+    #[must_use]
+    pub(crate) fn sample_connection(
+        &mut self,
+        session: &moq_net::Session,
+        connection: &Connection,
+        delivery: Option<moq_net::bandwidth::Rate>,
+        now: Instant,
+    ) -> Option<NetworkSample> {
+        let paths = connection.paths();
+        let selected = paths.iter().find(|path| path.is_selected())?;
+        let mut sample = self.sample(
+            PathKey::Quic(selected.id()),
+            &session.stats(),
+            delivery,
+            now,
+        );
+        sample.relayed = selected.is_relay();
+        Some(sample)
+    }
+
+    /// Reads `stats` of the session `session_number` of a link that reconnects.
+    ///
+    /// A new session number starts a new path, as a new QUIC path does.
+    #[must_use]
+    pub(crate) fn sample_session(
+        &mut self,
+        session_number: u64,
+        stats: &Stats,
+        now: Instant,
+    ) -> NetworkSample {
+        self.sample(PathKey::Session(session_number), stats, None, now)
+    }
+
+    /// Folds `stats`, read on `path` at `now`, into a sample.
+    ///
+    /// A new path starts its history over, so no rate or minimum mixes two
+    /// paths.
+    fn sample(
+        &mut self,
+        path: PathKey,
+        stats: &Stats,
+        delivery: Option<moq_net::bandwidth::Rate>,
+        now: Instant,
+    ) -> NetworkSample {
+        if self.path != Some(path) {
+            if self.path.is_some() {
+                self.path_generation += 1;
+            }
+            self.path = Some(path);
+            self.readings.clear();
+        }
+        let latest = Reading {
+            at: now,
+            rtt: stats.rtt.filter(|rtt| !rtt.is_zero()),
+            received_bytes: stats.bytes_received.unwrap_or(0),
+            sent_packets: stats.packets_sent.unwrap_or(0),
+            lost_packets: stats.packets_lost.unwrap_or(0),
+        };
+        self.readings.push_back(latest);
+        while self
+            .readings
+            .front()
+            .is_some_and(|first| now.duration_since(first.at) > MIN_RTT_WINDOW)
+        {
+            self.readings.pop_front();
+        }
+        // The newest reading at least a window old, so a rate spans it all.
+        let base = self
+            .readings
+            .iter()
+            .rev()
+            .find(|reading| now.duration_since(reading.at) >= WINDOW);
+        NetworkSample {
+            rtt: latest.rtt,
+            min_rtt: self.readings.iter().filter_map(|reading| reading.rtt).min(),
+            loss: base.map(|base| {
+                // The sent count includes the packets later declared lost.
+                let lost = latest.lost_packets.saturating_sub(base.lost_packets);
+                let sent = latest.sent_packets.saturating_sub(base.sent_packets);
+                match sent {
+                    sent if sent < MIN_PACKETS => 0.0,
+                    sent => (lost as f64 / sent as f64).min(1.0),
+                }
+            }),
+            delivery: delivery.map(moq_net::bandwidth::Rate::as_bps),
+            path_generation: self.path_generation,
+            throughput: base.map(|base| {
+                let bytes = latest.received_bytes.saturating_sub(base.received_bytes);
+                (bytes as f64 * 8.0 / now.duration_since(base.at).as_secs_f64()) as u64
+            }),
+            relayed: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIRECT: PathKey = PathKey::Quic(PathId::ZERO);
+    const BACKUP: PathKey = PathKey::Quic(PathId::MAX);
+
+    /// Returns session statistics with `rtt` in milliseconds and the counters.
+    fn stats(rtt_ms: u64, lost: u64, sent: u64, received: u64) -> Stats {
+        let mut stats = Stats::default();
+        stats.rtt = Some(Duration::from_millis(rtt_ms));
+        stats.packets_lost = Some(lost);
+        stats.packets_sent = Some(sent);
+        stats.bytes_received = Some(received);
+        stats
+    }
+
+    /// Feeds `ticks` readings that grow by `per_tick`, and returns the last sample.
+    fn run(
+        sampler: &mut LinkSampler,
+        t0: Instant,
+        ticks: u32,
+        per_tick: (u64, u64, u64),
+    ) -> NetworkSample {
+        let (sent, lost, received) = per_tick;
+        let mut last = NetworkSample::default();
+        for tick in 1..=ticks {
+            let n = u64::from(tick);
+            last = sampler.sample(
+                DIRECT,
+                &stats(20, n * lost, n * sent, n * received),
+                None,
+                t0 + tick * SAMPLE_INTERVAL,
+            );
+        }
+        last
+    }
+
+    #[test]
+    fn rates_need_a_full_window() {
+        let mut sampler = LinkSampler::default();
+        let t0 = Instant::now();
+        let early = run(&mut sampler, t0, 5, (20, 2, 20_000));
+        assert_eq!(early.loss, None);
+        assert_eq!(early.throughput, None);
+        let full = run(&mut sampler, t0, 12, (20, 2, 20_000));
+        let loss = full.loss.expect("a loss rate");
+        assert!((loss - 2.0 / 20.0).abs() < 0.01, "{full:?}");
+        let bps = full.throughput.expect("a throughput");
+        assert!((700_000..=900_000).contains(&bps), "{bps}");
+    }
+
+    #[test]
+    fn a_lost_packet_among_a_handful_is_not_loss() {
+        let mut sampler = LinkSampler::default();
+        let full = run(&mut sampler, Instant::now(), 12, (1, 0, 0));
+        assert_eq!(full.loss, Some(0.0), "{full:?}");
+    }
+
+    /// A new path starts over: generation, baseline and rate windows.
+    #[test]
+    fn a_new_path_starts_its_history_over() {
+        let mut sampler = LinkSampler::default();
+        let t0 = Instant::now();
+        run(&mut sampler, t0, 12, (10, 5, 0));
+        let later = t0 + 13 * SAMPLE_INTERVAL;
+        let backup = sampler.sample(BACKUP, &stats(40, 300, 400, 0), None, later);
+        assert_eq!(backup.path_generation, 1);
+        assert_eq!(backup.min_rtt, Some(Duration::from_millis(40)));
+        assert_eq!(backup.loss, None);
+    }
+
+    /// A redial is a new path even when the QUIC path id repeats.
+    #[test]
+    fn a_new_session_bumps_the_generation() {
+        let mut sampler = LinkSampler::default();
+        let t0 = Instant::now();
+        run(&mut sampler, t0, 3, (1, 0, 0));
+        assert_eq!(sampler.path_generation(), 0);
+        sampler.new_session();
+        let first = sampler.sample(DIRECT, &stats(20, 0, 0, 0), None, t0 + SAMPLE_INTERVAL * 4);
+        assert_eq!(first.path_generation, 1);
+        // A session that took no reading adds nothing.
+        sampler.new_session();
+        sampler.new_session();
+        assert_eq!(sampler.path_generation(), 2);
+    }
+
+    #[test]
+    fn the_minimum_forgets_an_old_path_delay() {
+        let mut sampler = LinkSampler::default();
+        let t0 = Instant::now();
+        sampler.sample(DIRECT, &stats(2, 0, 0, 0), None, t0);
+        let within = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW);
+        assert_eq!(within.min_rtt, Some(Duration::from_millis(2)));
+        let past = sampler.sample(DIRECT, &stats(60, 0, 0, 0), None, t0 + MIN_RTT_WINDOW * 2);
+        assert_eq!(past.min_rtt, Some(Duration::from_millis(60)));
+    }
+}
