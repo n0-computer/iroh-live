@@ -11,7 +11,7 @@ No feature is on by default.
 | Feature | Enables | Implies | Platform |
 |---|---|---|---|
 | `full` | What an app that publishes and plays wants | `media`, `capture`, `render`, `sound-server`, `record` | all |
-| `media` | `iroh_live::media` and `media::remote_broadcast`: sources, publisher, player, codecs. H.264 in software always works | | all |
+| `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | | all |
 | `capture` | Camera, screen and microphone capture | `media` | all |
 | `playback` | Speaker output, `AudioMode::Play` | `media` | all |
 | `render` | GPU rendering of decoded frames through wgpu | `media` | all |

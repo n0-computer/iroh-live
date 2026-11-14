@@ -10,7 +10,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use iroh::protocol::AcceptError;
 use iroh_live::{
     layout::LiveLayout,
-    media::{PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast, video},
+    media::{PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource, video},
 };
 use iroh_live_node::{
     Audience, Error, LinkKind, Reach, RelayConfig, RelayStatus,
@@ -469,7 +469,7 @@ async fn bridge(publisher: End, subscriber: End) {
             let broadcast = step("subscribe timeout", async {
                 let session = node.connect(relay.iroh_id).await?;
                 let subscription = session.subscribe(path.as_str()).await?;
-                Ok::<_, iroh_live::node::Error>(remote_broadcast(&subscription))
+                Ok::<_, iroh_live::node::Error>(subscription.remote_broadcast())
             })
             .await
             .expect("subscribe");
@@ -1058,7 +1058,8 @@ async fn a_relay_served_subscription_carries_link_samples() {
     assert!(serving.sample.min_rtt.is_some(), "{serving:?}");
 
     // The facade: the player's network signals carry the same readings.
-    let player = iroh_live::media::remote_broadcast(&subscription)
+    let player = subscription
+        .remote_broadcast()
         .play(PlayerConfig::default())
         .expect("play");
     let network = step("the player never saw the relay link's round trip", async {

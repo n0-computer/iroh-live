@@ -37,9 +37,10 @@ the node. [Nodes and endpoints](../concepts/nodes.md) and
 [Paths and layouts](../concepts/paths.md) describe how an application uses
 it.
 
-`iroh_live::media::remote_broadcast(&subscription)` reads the media of a
-subscription without waiting for the catalog, for a subscription from a
-ticket, a room or `Node::subscribe`. The broadcast follows the path through
+`subscription.remote_broadcast()`, from the extension trait
+`iroh_live::media::SubscriptionExt`, reads the media of a subscription without
+waiting for the catalog, for a subscription from a ticket, a room or
+`Node::subscribe`. The broadcast follows the path through
 the route table and carries the serving link's measurements, so
 `remote.play(config)` starts a player that adapts with nothing further to
 wire.

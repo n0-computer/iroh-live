@@ -29,8 +29,8 @@ use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
-        remote_broadcast, video,
+        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition,
+        VideoSource, video,
     },
 };
 
@@ -54,7 +54,7 @@ broadcast.set_video(
 println!("share {}", layout.ticket(node.id(), "studio")?);
 
 let subscription = node.subscribe_ticket(&ticket).await?;
-let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
 let mut frames = player.video_frames();
 while let Some(frame) = frames.next().await {
     // hand `frame` to a renderer
@@ -129,7 +129,7 @@ pub mod media {
     pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
 
-    pub use crate::network::remote_broadcast;
+    pub use crate::network::SubscriptionExt;
 }
 pub use iroh_live_node as node;
 /// The moq-net this crate builds against.

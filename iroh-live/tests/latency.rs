@@ -25,8 +25,8 @@ use iroh_live::{
     Node,
     layout::LiveLayout,
     media::{
-        DEFAULT_LATENCY, Delay, IMMEDIATE_LATENCY, LocalBroadcast, PlayerConfig, VideoEncoding,
-        VideoFormat, VideoRendition, VideoSource, remote_broadcast,
+        DEFAULT_LATENCY, Delay, IMMEDIATE_LATENCY, LocalBroadcast, PlayerConfig, SubscriptionExt,
+        VideoEncoding, VideoFormat, VideoRendition, VideoSource,
         video::{Frame, FrameRate, Size, Surface, decode},
     },
 };
@@ -151,7 +151,7 @@ async fn measure(latency: Delay) -> (Duration, Vec<Duration>) {
         .subscribe_ticket(&ticket)
         .await
         .expect("failed to subscribe");
-    let remote = remote_broadcast(&subscription);
+    let remote = subscription.remote_broadcast();
     let config = PlayerConfig::default()
         .with_latency(latency)
         .with_decoder(decode::Kind::Software);

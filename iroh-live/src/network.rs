@@ -5,22 +5,42 @@ use std::sync::Mutex;
 use iroh_live_node::{LinkId, Subscription};
 use moq_ext_player::{NetworkSample, RemoteBroadcast};
 
-/// Reads the media of a subscription.
+/// Reads a [`Subscription`] as media.
 ///
-/// The broadcast follows the subscription's path through the route table it
-/// was resolved in, so a change of route does not end it, and its players
-/// adapt to the link that serves it. A subscription on one session
-/// re-resolves through that session only. The catalog arrives later: watch
-/// [`RemoteBroadcast::catalog`] for it.
-#[must_use]
-pub fn remote_broadcast(subscription: &Subscription) -> RemoteBroadcast {
-    let remote = RemoteBroadcast::from_resolved(
-        subscription.origin(),
-        subscription.path().clone(),
-        subscription.broadcast(),
-    );
-    remote.set_network(signals(subscription.clone()));
-    remote
+/// # Examples
+///
+/// ```no_run
+/// use iroh_live::{
+///     BroadcastTicket, Node,
+///     media::{PlayerConfig, SubscriptionExt},
+/// };
+///
+/// # async fn run(node: Node, ticket: BroadcastTicket) -> Result<(), Box<dyn std::error::Error>> {
+/// let subscription = node.subscribe_ticket(&ticket).await?;
+/// let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
+/// # drop(player);
+/// # Ok(())
+/// # }
+/// ```
+pub trait SubscriptionExt {
+    /// Returns the media of this subscription.
+    ///
+    /// The broadcast follows the subscription's path through the route table
+    /// it was resolved in, so a change of route does not end it, and its
+    /// players adapt to the link that serves it. A subscription on one
+    /// session re-resolves through that session only. The catalog arrives
+    /// later: watch [`RemoteBroadcast::catalog`] for it.
+    #[must_use]
+    fn remote_broadcast(&self) -> RemoteBroadcast;
+}
+
+impl SubscriptionExt for Subscription {
+    fn remote_broadcast(&self) -> RemoteBroadcast {
+        let remote =
+            RemoteBroadcast::from_resolved(self.origin(), self.path().clone(), self.broadcast());
+        remote.set_network(signals(self.clone()));
+        remote
+    }
 }
 
 /// Returns the network signals of the link serving `subscription`.

@@ -65,7 +65,7 @@ broadcast.set_video(camera, VideoEncoding::single(VideoRendition::new("video")))
 println!("{}", layout.ticket(node.id(), "hello")?);
 
 let subscription = node.subscribe_ticket(&ticket).await?;
-let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
 let mut frames = player.video_frames();
 ```
 
@@ -96,6 +96,7 @@ Names from development versions between the two releases:
 | Before | Now |
 |---|---|
 | `EndpointOptions` | `EndpointConfig` |
+| `media::remote_broadcast(&subscription)` | `subscription.remote_broadcast()`, from `media::SubscriptionExt` |
 | `Audience::Everyone` | `Audience::Granted` |
 | `RoomPeer` | `RoomMember` |
 | `Player::video` | `Player::video_frames` |

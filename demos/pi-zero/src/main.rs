@@ -28,7 +28,7 @@ mod app {
         BroadcastTicket, EndpointConfig, Node,
         layout::LiveLayout,
         media::{
-            PlayerConfig, VideoSource, remote_broadcast,
+            PlayerConfig, SubscriptionExt, VideoSource,
             video::{FrameRate, Size},
         },
     };
@@ -137,14 +137,14 @@ mod app {
         let ticket = opts.ticket;
         println!("connecting to {ticket} ...");
         let subscription = node.subscribe_ticket(&ticket).await?;
-        let remote = remote_broadcast(&subscription);
+        let remote = subscription.remote_broadcast();
         println!("connected!");
 
         // Wait for a readable catalog, so a bad publisher gives an error and
         // not a black screen.
         remote.catalog_within(Duration::from_secs(15)).await?;
 
-        // `remote_broadcast` attached the link's signals, so the player picks
+        // `remote_broadcast()` attached the link's signals, so the player picks
         // the rendition on its own.
         let player = remote.play(PlayerConfig::default())?;
 
