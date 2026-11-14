@@ -273,12 +273,11 @@ stream waits behind the other groups' heads instead of taking the idle head's
 share. For live media that sheds the backlog first, which the newest-first
 order asks for anyway.
 
-The sharing rests on send fairness. An application that sets
-`send_fairness(false)` in iroh's transport config gets streams of one urgency
-in the order they were written to, and the older of two equal-priority groups
-goes first again. RFC 9218's per-stream incremental flag, which
+Every stream also sets RFC 9218's per-stream incremental flag, which
 [n0-computer/noq#859](https://github.com/n0-computer/noq/pull/859) adds to
-noq, would let each group stream ask for round robin whatever that setting.
+noq, so the sharing holds even when an application sets `send_fairness(false)`
+in iroh's transport config. The workspace patches that noq in until a release
+carries it.
 
 ## Errors
 

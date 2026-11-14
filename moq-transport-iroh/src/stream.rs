@@ -42,6 +42,9 @@ pub struct SendStream {
 impl SendStream {
     /// Wraps `stream`, scheduled by `options`.
     pub(crate) fn new(stream: endpoint::SendStream, options: SendOptions<'_, SendGroup>) -> Self {
+        // RFC 9218 incremental: streams of one priority share the bytes round
+        // robin even when the connection turns send fairness off.
+        stream.set_incremental(true).ok();
         let stream = Arc::new(Mutex::new(stream));
         let membership = options
             .group
@@ -235,6 +238,7 @@ mod tests {
         };
         let mut send = client.open_uni(options).await.expect("open");
         assert_eq!(urgency(&send), group::ungrouped(5));
+        assert!(group::lock(&send.stream).incremental().expect("open"));
         let at_zero = client.open_uni(SendOptions::default()).await.expect("open");
         assert!(urgency(&send) > urgency(&at_zero));
         send.set_priority(i64::MAX);
@@ -276,6 +280,7 @@ mod tests {
             urgency(&older) < urgency(&other),
             "a backlog waits for every head"
         );
+        assert!(group::lock(&older.stream).incremental().expect("open"));
 
         // A newer stream in the second group demotes its head.
         let newer = open(&second, 6).await.expect("open");
