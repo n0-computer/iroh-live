@@ -109,9 +109,7 @@ router.shutdown().await?;
 #![forbid(unsafe_code)]
 
 pub mod calls;
-mod endpoint;
 mod error;
-pub mod layout;
 #[cfg(feature = "media")]
 mod network;
 
@@ -135,8 +133,9 @@ pub use iroh_live_node as node;
 /// The moq-net this crate builds against.
 pub use iroh_live_node::moq_net;
 pub use iroh_live_node::{
-    Audience, BroadcastTicket, Congestion, ConnectOptions, MoqPreset, Node, NodeConfig,
-    Publication, Reach, RelayConfig, Session, Subscription, UnpublishOnDrop,
+    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, Mdns, MoqPreset, Node,
+    NodeConfig, Publication, Reach, RelayConfig, Session, Subscription, UnpublishOnDrop, layout,
+    load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -175,10 +174,7 @@ pub use iroh_live_rooms as rooms;
 /// ```
 pub use moq_json as json;
 
-pub use self::{
-    endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
-    error::Error,
-};
+pub use self::error::Error;
 
 /// The Rust programs of the guide in `docs/`, compiled as doctests.
 ///

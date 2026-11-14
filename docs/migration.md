@@ -97,6 +97,7 @@ Names from development versions between the two releases:
 |---|---|
 | `EndpointOptions` | `EndpointConfig` |
 | `media::remote_broadcast(&subscription)` | `subscription.remote_broadcast()`, from `media::SubscriptionExt` |
+| `iroh_live::Error::SecretKey`, `iroh_live::Error::Bind` | `node::Error::SecretKey`, `node::Error::Bind`, inside `iroh_live::Error::Node` |
 | `Audience::Everyone` | `Audience::Granted` |
 | `RoomPeer` | `RoomMember` |
 | `Player::video` | `Player::video_frames` |

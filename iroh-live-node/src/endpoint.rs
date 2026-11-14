@@ -1,13 +1,12 @@
 //! Binding an endpoint: [`MoqPreset`] plus a secret key and mDNS.
 
-use std::{io::Write, path::Path};
+use std::{io::Write, path::Path, sync::Arc};
 
 use iroh::{Endpoint, SecretKey, endpoint::Builder};
-use iroh_live_node::MoqPreset;
 use n0_error::e;
 use tracing::{debug, info, warn};
 
-use crate::Error;
+use crate::{Error, MoqPreset};
 
 /// How an endpoint uses mDNS on the local network.
 ///
@@ -61,7 +60,11 @@ impl EndpointConfig {
         let secret_key = std::env::var_os("IROH_SECRET")
             .map(|key| key.to_string_lossy().parse())
             .transpose()
-            .map_err(|source| e!(Error::SecretKey { source }))?;
+            .map_err(|source| {
+                e!(Error::SecretKey {
+                    source: Arc::new(source)
+                })
+            })?;
         Ok(Self {
             secret_key,
             ..Self::default()
@@ -83,7 +86,7 @@ impl EndpointConfig {
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// use iroh::{RelayMode, endpoint::Builder};
-    /// use iroh_live::EndpointConfig;
+    /// use iroh_live_node::EndpointConfig;
     ///
     /// let endpoint = EndpointConfig::from_env()?
     ///     .apply(Builder::empty())
@@ -138,7 +141,11 @@ impl EndpointConfig {
             .await
             .bind()
             .await
-            .map_err(|source| e!(Error::Bind { source }))?;
+            .map_err(|source| {
+                e!(Error::Bind {
+                    source: Arc::new(source)
+                })
+            })?;
         info!(id = %endpoint.id(), "endpoint bound");
         Ok(endpoint)
     }

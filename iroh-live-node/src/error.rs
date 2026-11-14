@@ -6,7 +6,7 @@ use iroh::EndpointId;
 use moq_net::Path;
 use n0_error::{AnyError, stack_error};
 
-/// An error from a [`Node`](crate::Node) or one of its handles.
+/// An error from a [`Node`](crate::Node), one of its handles, or [`EndpointConfig`](crate::EndpointConfig).
 ///
 /// moq-net's and the transport's errors stay typed, and the rest carry an
 /// [`AnyError`]. The error is cheap to clone, so the callers waiting on one
@@ -125,6 +125,18 @@ pub enum Error {
     /// The node has shut down.
     #[error("the node has shut down")]
     ShutDown,
+    /// `IROH_SECRET` does not hold a secret key.
+    #[error("IROH_SECRET does not hold a secret key")]
+    SecretKey {
+        #[error(source, std_err)]
+        source: Arc<iroh::KeyParsingError>,
+    },
+    /// The endpoint could not be bound.
+    #[error("failed to bind the endpoint")]
+    Bind {
+        #[error(source, std_err)]
+        source: Arc<iroh::endpoint::BindError>,
+    },
 }
 
 impl From<moq_transport_iroh::Error> for Error {

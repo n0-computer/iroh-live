@@ -12,8 +12,10 @@ subscription, and `Subscription::closed` asks the table again for any other.
 `Publication::unpublish_on_drop` ties a publication to a task's lifetime, and
 `Node::publish_value` publishes a latest-value JSON track that
 `Subscription::value_track` reads.
-The application picks the paths, and nothing here knows about media: a
-broadcast holds whatever tracks you write.
+The application picks the paths, or uses `layout::LiveLayout`, which puts a
+peer's broadcasts at `<root>/<peer>/<name>`. Nothing here knows about media: a
+broadcast holds whatever tracks you write. `EndpointConfig` binds an endpoint
+with `MoqPreset`, a secret key and mDNS.
 
 Use it for peer-to-peer MoQ with many sessions, relays, admission and per-peer
 visibility. For a single plain MoQ session without a route table, use

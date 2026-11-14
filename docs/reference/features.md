@@ -29,7 +29,7 @@ No feature is on by default.
 | `rcan` | `policy::RcanVerifier`, which verifies rcan capability chains | | all |
 
 Without `media`, `iroh-live` is the node, tickets, layouts and calls, with no
-codec dependency. The iroh-live relay uses it that way.
+codec dependency.
 
 A Linux-only feature compiles to nothing on other platforms. macOS, Windows
 and Android get their capture and codec frameworks without a feature.

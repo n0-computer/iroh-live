@@ -45,7 +45,7 @@ command = "cargo"
 args = ["check", "--locked", "--workspace", "--all-targets"]
 
 # Workspace builds unify features, and the CLI turns `media` on. These build
-# the relay and the facade without it, on their own.
+# the relay, and the facade without `media`, on their own.
 [tasks.check-relay]
 workspace = false
 command = "cargo"

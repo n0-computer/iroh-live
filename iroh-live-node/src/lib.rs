@@ -38,6 +38,9 @@
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //! - [`MoqPreset`]: iroh's N0 preset with BBR3, to bind the node's endpoint
 //!   with. [`Congestion`] names the controllers to compare it against.
+//!   [`EndpointConfig`] binds an endpoint with it, a secret key and mDNS.
+//! - [`layout::LiveLayout`]: the `<root>/<peer>/<name>` path convention, with
+//!   the policy that lets each peer publish only under its own id.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
 //! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
@@ -90,8 +93,10 @@
 mod actor;
 mod admission;
 mod claim;
+mod endpoint;
 mod error;
 mod handshake;
+pub mod layout;
 mod link;
 mod node;
 pub mod policy;
@@ -120,6 +125,7 @@ pub use moq_transport_iroh::{ALPN, HANDSHAKE_TIMEOUT, alpns};
 pub use self::{
     admission::{ConnectOptions, Grant, SessionRequest},
     claim::PathClaim,
+    endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
     error::Error,
     link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
