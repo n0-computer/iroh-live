@@ -29,8 +29,8 @@ use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
-        remote_broadcast, video,
+        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition,
+        VideoSource, video,
     },
 };
 
@@ -54,7 +54,7 @@ broadcast.set_video(
 println!("share {}", layout.ticket(node.id(), "studio")?);
 
 let subscription = node.subscribe_ticket(&ticket).await?;
-let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
 let mut frames = player.video_frames();
 while let Some(frame) = frames.next().await {
     // hand `frame` to a renderer
@@ -100,6 +100,11 @@ router.shutdown().await?;
 //! `media`, [`node`] and `rooms` list their own futures.
 //! No public call takes a deadline. Bound a wait with `tokio::time::timeout`.
 //!
+//! Each call returns the error of the crate that runs it: [`node::Error`] from
+//! the node, the layout and [`EndpointConfig`], and [`calls::Error`] from
+//! calls. Each one converts into [`Error`], so `?` works in a function that
+//! returns it.
+//!
 //! No feature is on by default. `full` turns on `media`, `capture`, `render`,
 //! `record` and `sound-server`. `media` adds the `media` module. Without it
 //! the crate is the layout, calls and endpoint setup only. `playback`, `aec`,
@@ -109,9 +114,7 @@ router.shutdown().await?;
 #![forbid(unsafe_code)]
 
 pub mod calls;
-mod endpoint;
 mod error;
-pub mod layout;
 #[cfg(feature = "media")]
 mod network;
 
@@ -119,24 +122,34 @@ mod network;
 #[cfg(feature = "media")]
 pub mod media {
     pub use moq_audio as audio;
-    pub use moq_ext_player::*;
-    pub use moq_ext_publisher::*;
+    pub use moq_ext_player::{
+        Adaptation, AudioFrame, AudioFrames, AudioMode, AudioPlaybackStats, Catalog,
+        DEFAULT_LATENCY, Delay, FrameTiming, IMMEDIATE_LATENCY, MediaKind, NetworkSample,
+        PlaybackStats, Player, PlayerConfig, PlayerStatus, RemoteBroadcast, RenditionMode,
+        VideoPlaybackStats, video_rendition,
+    };
+    pub use moq_ext_publisher::{
+        AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
+        VideoEncoding, VideoRendition, audio_encoding,
+    };
     pub use moq_ext_sources::{
-        AudioFormat, AudioSource, FileEnd, FrameSender, VideoFormat, VideoSource, VideoSwitch,
+        AudioFormat, AudioSource, Error, FileEnd, FrameSender, SlotState, SourceClosed,
+        VideoFormat, VideoFrames, VideoSource, VideoSwitch,
     };
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};
     pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
 
-    pub use crate::network::remote_broadcast;
+    pub use crate::network::SubscriptionExt;
 }
 pub use iroh_live_node as node;
 /// The moq-net this crate builds against.
 pub use iroh_live_node::moq_net;
 pub use iroh_live_node::{
-    Audience, BroadcastTicket, Congestion, ConnectOptions, MoqPreset, Node, NodeConfig,
-    Publication, Reach, RelayConfig, Session, Subscription, UnpublishOnDrop,
+    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, Mdns, MoqPreset, Node,
+    NodeConfig, Publication, Reach, RelayConfig, Session, Subscription, UnpublishOnDrop, layout,
+    load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -175,10 +188,7 @@ pub use iroh_live_rooms as rooms;
 /// ```
 pub use moq_json as json;
 
-pub use self::{
-    endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
-    error::Error,
-};
+pub use self::error::Error;
 
 /// The Rust programs of the guide in `docs/`, compiled as doctests.
 ///

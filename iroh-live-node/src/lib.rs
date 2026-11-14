@@ -12,14 +12,14 @@
 //!
 //! # async fn run(peer: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-//! let moq = Node::new(endpoint, NodeConfig::default());
+//! let node = Node::new(endpoint, NodeConfig::default());
 //!
 //! // Publish a broadcast this process writes, created in the route table.
-//! let publication = moq.publish("demo/studio", Audience::Granted)?;
+//! let publication = node.publish("demo/studio", Audience::Granted)?;
 //! let _track = publication.broadcast().create_track("video", None)?;
 //!
 //! // Resolve a peer's broadcast, dialing the peer if no route exists yet.
-//! let subscription = moq.subscribe("demo/camera", Reach::Both(peer)).await?;
+//! let subscription = node.subscribe("demo/camera", Reach::Both(peer)).await?;
 //! let remote = subscription.broadcast();
 //! # drop(remote);
 //! # Ok(())
@@ -38,6 +38,9 @@
 //! - [`RelayLink`]: a moq relay the node stays attached to.
 //! - [`MoqPreset`]: iroh's N0 preset with BBR3, to bind the node's endpoint
 //!   with. [`Congestion`] names the controllers to compare it against.
+//!   [`EndpointConfig`] binds an endpoint with it, a secret key and mDNS.
+//! - [`layout::LiveLayout`]: the `<root>/<peer>/<name>` path convention, with
+//!   the policy that lets each peer publish only under its own id.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
 //! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
@@ -90,8 +93,10 @@
 mod actor;
 mod admission;
 mod claim;
+mod endpoint;
 mod error;
 mod handshake;
+pub mod layout;
 mod link;
 mod node;
 pub mod policy;
@@ -120,6 +125,7 @@ pub use moq_transport_iroh::{ALPN, HANDSHAKE_TIMEOUT, alpns};
 pub use self::{
     admission::{ConnectOptions, Grant, SessionRequest},
     claim::PathClaim,
+    endpoint::{EndpointConfig, Mdns, load_or_create_secret_key},
     error::Error,
     link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},

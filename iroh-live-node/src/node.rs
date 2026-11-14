@@ -168,10 +168,10 @@ impl NodeConfig {
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let endpoint = Endpoint::bind(presets::Minimal).await?;
-/// let moq = Node::new(endpoint.clone(), NodeConfig::default());
-/// let _router = moq.mount(Router::builder(endpoint)).spawn();
+/// let node = Node::new(endpoint.clone(), NodeConfig::default());
+/// let _router = node.mount(Router::builder(endpoint)).spawn();
 ///
-/// let publication = moq.publish("demo/camera", Audience::Granted)?;
+/// let publication = node.publish("demo/camera", Audience::Granted)?;
 /// // write tracks into the broadcast in the route table:
 /// let _track = publication.broadcast().create_track("video", None)?;
 /// # Ok(())

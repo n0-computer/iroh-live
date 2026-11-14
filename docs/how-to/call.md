@@ -31,8 +31,8 @@ use iroh_live::{
     calls::Calls,
     layout::LiveLayout,
     media::{
-        AudioSource, LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource,
-        audio::Layout, audio_encoding, remote_broadcast, video,
+        AudioSource, LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition,
+        VideoSource, audio::Layout, audio_encoding, video,
     },
 };
 
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let call = tokio::time::timeout(Duration::from_secs(60), calls.call(peer)).await??;
-    let player = remote_broadcast(call.subscription()).play(PlayerConfig::default())?;
+    let player = call.subscription().remote_broadcast().play(PlayerConfig::default())?;
     let mut frames = player.video_frames();
     while let Some(frame) = frames.next().await {
         println!("peer frame {}", frame.size());

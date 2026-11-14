@@ -58,8 +58,7 @@ use axum::{extract::Path, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::{EndpointId, SecretKey, protocol::Router};
-use iroh_live::{BroadcastTicket, EndpointConfig, Mdns};
-use iroh_live_node::policy::DynPolicy;
+use iroh_live_node::{BroadcastTicket, EndpointConfig, Mdns, policy::DynPolicy};
 use moq_auth::{KeySet, lease, serve};
 use moq_ext_access::policy::Verify;
 use moq_net::Pattern;
@@ -177,7 +176,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         .await
         .map_err(|source| {
             e!(Error::Bind {
-                source: Arc::new(source)
+                source: Box::new(source)
             })
         })?;
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
@@ -535,7 +534,7 @@ fn secret_key() -> Result<SecretKey, Error> {
     };
     let path = dir.join("iroh_secret_key");
     std::fs::create_dir_all(&dir)
-        .and_then(|()| iroh_live::load_or_create_secret_key(&path))
+        .and_then(|()| iroh_live_node::load_or_create_secret_key(&path))
         .map_err(|source| {
             e!(Error::Identity {
                 path,

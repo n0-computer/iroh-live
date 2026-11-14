@@ -15,11 +15,12 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
-use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomsLayout};
 use iroh_live_node::{
-    DECIDE_TIMEOUT, SessionRequest,
+    BroadcastTicket, DECIDE_TIMEOUT, SessionRequest,
+    layout::LiveLayout,
     policy::{Authorization, DynPolicy, Event, PeerRequest, Policy},
 };
+use iroh_live_rooms::RoomsLayout;
 use moq_net::Pattern;
 use moq_relay::cluster::Cluster;
 use n0_error::e;
@@ -344,7 +345,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     // A ticket is read from the raw path: its own escapes are part of it, and
     // decoding them first would change what it names.
     let raw = path.trim_start_matches('/');
-    if raw.parse::<iroh_live::BroadcastTicket>().is_ok() {
+    if raw.parse::<BroadcastTicket>().is_ok() {
         return Some(raw.to_owned());
     }
     let name = percent_encoding::percent_decode_str(raw)
@@ -361,7 +362,7 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
 /// to let a token widen what a client may publish.
 #[must_use]
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
-    iroh_live::layout::policy((LiveLayout::default(), RoomsLayout))
+    iroh_live_node::layout::policy((LiveLayout::default(), RoomsLayout))
 }
 
 #[cfg(test)]
@@ -423,7 +424,7 @@ mod tests {
     fn a_browser_at_a_ticket_path_publishes_nothing() {
         let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let path = LiveLayout::default().path(peer, "cam").expect("a path");
-        let ticket = iroh_live::BroadcastTicket::at(peer, path);
+        let ticket = BroadcastTicket::at(peer, path);
         let grant = browser_grant(&format!("/{ticket}")).expect("a grant");
         assert!(grant.publish.is_empty());
         assert!(grant.subscribe.matches(""));
@@ -437,7 +438,7 @@ mod tests {
     fn a_browser_cannot_publish_at_a_pulled_name() {
         let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let path = LiveLayout::default().path(peer, "cam").expect("a path");
-        let ticket = iroh_live::BroadcastTicket::at(peer, path);
+        let ticket = BroadcastTicket::at(peer, path);
         let full = ticket.to_string();
         let bare = full.strip_prefix("ilv1:").expect("a ticket prefix");
         assert!(!a_browser_may_publish(&full));

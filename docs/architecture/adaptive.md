@@ -38,7 +38,7 @@ Every `iroh-live-node` link runs a connection monitor (the sampler is
 every 200 ms and keeps the latest `NetworkSample`. A direct session starts the
 history over when the connection selects another path, and a relay link on
 every reconnect. Both bump `path_generation`.
-`iroh_live::media::remote_broadcast` attaches a closure
+`iroh_live::media::SubscriptionExt::remote_broadcast` attaches a closure
 (`iroh-live/src/network.rs`) that reads `Subscription::serving_link()` for
 whichever link serves the subscription at that moment, and counts a change of
 serving link as a new path too.

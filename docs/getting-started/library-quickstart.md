@@ -80,7 +80,7 @@ use std::time::Duration;
 
 use iroh_live::{
     BroadcastTicket, EndpointConfig, Node, NodeConfig,
-    media::{PlayerConfig, remote_broadcast},
+    media::{PlayerConfig, SubscriptionExt},
 };
 
 #[tokio::main]
@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(endpoint.clone(), NodeConfig::default());
 
     let subscription = node.subscribe_ticket(&ticket).await?;
-    let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+    let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
 
     let mut frames = player.video_frames();
     for count in 1..=100 {

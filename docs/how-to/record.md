@@ -27,9 +27,7 @@ dependency on `moq-mux` at the same rev as iroh-live's (see
 [Install](../getting-started/install.md#use-the-library)).
 
 ```rust,no_run
-use iroh_live::{
-    BroadcastTicket, EndpointConfig, Node, NodeConfig, media::remote_broadcast,
-};
+use iroh_live::{BroadcastTicket, EndpointConfig, Node, NodeConfig, media::SubscriptionExt};
 use moq_mux::{catalog::Stream as _, container::fmp4};
 use tokio::io::AsyncWriteExt as _;
 
@@ -42,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(endpoint.clone(), NodeConfig::default());
     let subscription = node.subscribe_ticket(&ticket).await?;
-    let broadcast = remote_broadcast(&subscription);
+    let broadcast = subscription.remote_broadcast();
 
     // Waits for the catalog.
     let source = broadcast.mux_source().await?;

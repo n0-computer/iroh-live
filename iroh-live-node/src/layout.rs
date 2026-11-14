@@ -7,14 +7,14 @@
 //! Rooms paths (`rooms/...`) belong to `iroh-live-rooms`.
 
 use iroh::EndpointId;
-pub use iroh_live_node::Layout;
-use iroh_live_node::{
+pub use moq_ext_access::Layout;
+use moq_net::{Path, Pattern, Patterns, broadcast};
+use n0_error::e;
+
+use crate::{
     Audience, BroadcastTicket, Error, Grant, Node, NodeConfig,
-    moq_net::{Path, Pattern, Patterns},
     policy::{self, PeerRequest, Policy},
 };
-use moq_net::broadcast;
-use n0_error::e;
 
 /// The root of a layout that names none.
 const DEFAULT_ROOT: &str = "live";
@@ -22,19 +22,19 @@ const DEFAULT_ROOT: &str = "live";
 /// The `<root>/<peer>/<name>` layout, with the root `live` by default.
 ///
 /// Two peers with different roots do not see each other's broadcasts: the
-/// node reports [`NotGranted`](iroh_live_node::Error::NotGranted).
+/// node reports [`NotGranted`](Error::NotGranted).
 ///
 /// # Examples
 ///
 /// ```
-/// use iroh_live::layout::LiveLayout;
+/// use iroh_live_node::layout::LiveLayout;
 ///
 /// let layout = LiveLayout::default();
 /// let peer = iroh::SecretKey::generate().public();
 /// let path = layout.path(peer, "studio")?;
 /// assert_eq!(path.as_str(), format!("live/{peer}/studio"));
 /// assert_eq!(layout.parse(&path), Some((peer, "studio")));
-/// # Ok::<(), iroh_live::node::Error>(())
+/// # Ok::<(), iroh_live_node::Error>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LiveLayout {
@@ -119,7 +119,7 @@ impl LiveLayout {
     /// ```
     /// use std::collections::BTreeSet;
     ///
-    /// use iroh_live::{NodeConfig, layout::LiveLayout, node::policy::Policy};
+    /// use iroh_live_node::{NodeConfig, layout::LiveLayout, policy::Policy};
     /// use n0_watcher::{Watchable, Watcher};
     ///
     /// let contacts = Watchable::new(BTreeSet::<iroh::EndpointId>::new());
@@ -153,7 +153,7 @@ impl LiveLayout {
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes only
     /// when it is closed, since the node holds the broadcast open while it is
-    /// published. To keep the [`Publication`](iroh_live_node::Publication), or
+    /// published. To keep the [`Publication`](crate::Publication), or
     /// to publish to another audience, use [`Node::publish_with`] with
     /// [`path`](Self::path).
     ///
@@ -165,7 +165,7 @@ impl LiveLayout {
     /// # Examples
     ///
     /// ```no_run
-    /// use iroh_live::{Node, layout::LiveLayout};
+    /// use iroh_live_node::{Node, layout::LiveLayout};
     /// use moq_net::broadcast;
     ///
     /// # fn run(node: Node) -> Result<(), Box<dyn std::error::Error>> {
@@ -248,9 +248,9 @@ pub fn config(layout: impl Layout<EndpointId> + Clone) -> NodeConfig {
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
-    use iroh_live_node::SessionRequest;
 
     use super::*;
+    use crate::SessionRequest;
 
     fn id() -> EndpointId {
         SecretKey::generate().public()
@@ -262,7 +262,7 @@ mod tests {
         let layout = LiveLayout::new("cams");
         let config = layout.config();
         assert!(config.layout.is_some(), "the config names no layout");
-        let node = Node::new(iroh_live_node::test_util::endpoint().await, config);
+        let node = Node::new(crate::test_util::endpoint().await, config);
         let peer = id();
 
         let inside = layout.path(peer, "cam").expect("a path");
@@ -412,19 +412,6 @@ mod tests {
         assert!(granted.allows_subscribe("anything"));
         let policy = config(both).policy.expect("a policy");
         assert_eq!(decided(&policy, peer), granted);
-    }
-
-    #[cfg(feature = "rooms")]
-    #[test]
-    fn the_live_and_rooms_layouts_compose() {
-        let both = (LiveLayout::default(), crate::rooms::RoomsLayout);
-        let (peer, other) = (id(), id());
-        let granted = grant(&both, peer);
-        assert!(granted.allows_publish(&format!("live/{peer}/cam")));
-        assert!(granted.allows_publish(&format!("rooms/topic/{peer}/cam")));
-        assert!(!granted.allows_publish(&format!("rooms/topic/{other}/cam")));
-        assert!(!granted.allows_publish(&format!("live/{other}/cam")));
-        assert_eq!(decided(&policy(both), peer), granted);
     }
 
     #[test]

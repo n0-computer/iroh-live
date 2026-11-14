@@ -17,8 +17,8 @@ use iroh_live::{
     layout::LiveLayout,
     media::{
         AudioMode, AudioSource, LocalBroadcast, NetworkSample, Player, PlayerConfig, Rate,
-        RemoteBroadcast, VideoEncoding, VideoRendition, VideoSource, audio, audio_encoding,
-        remote_broadcast,
+        RemoteBroadcast, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource, audio,
+        audio_encoding,
         video::{FrameRate, Size, decode},
     },
 };
@@ -58,7 +58,7 @@ async fn subscribe(node: &Node, publisher: &Node, name: &str) -> RemoteBroadcast
         .subscribe_ticket(&ticket)
         .await
         .expect("failed to subscribe");
-    remote_broadcast(&subscription)
+    subscription.remote_broadcast()
 }
 
 /// Returns a rendition named `name` at `size`, or the source's, and `bitrate`.
@@ -108,7 +108,8 @@ async fn a_subscriber_decodes_frames_in_order() {
             .subscribe_ticket(&ticket)
             .await
             .expect("failed to subscribe");
-        let player = remote_broadcast(&subscription)
+        let player = subscription
+            .remote_broadcast()
             .play(PlayerConfig::default())
             .expect("failed to play");
         let mut frames = player.video_frames();
@@ -193,7 +194,9 @@ async fn a_call_with_media_rings_answers_and_hangs_up() {
                     .expect("failed to answer")
             },
         );
-        let player = remote_broadcast(at_bob.subscription())
+        let player = at_bob
+            .subscription()
+            .remote_broadcast()
             .play(PlayerConfig::default())
             .expect("failed to play");
         first_frame(&player).await;

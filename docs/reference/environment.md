@@ -15,7 +15,7 @@ export IROH_SECRET=$(openssl rand -hex 32)
 ```
 
 Without it, every start makes a new key and so a new endpoint id. A value that
-is not a key fails with `Error::SecretKey`. The key is a secret: whoever has it
+is not a key fails with `node::Error::SecretKey`. The key is a secret: whoever has it
 can act as this endpoint, and receive what peers send to it.
 
 `irl run` takes `secret_key_name` in its session file instead, see

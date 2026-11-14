@@ -32,7 +32,7 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
+        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource,
         video,
     },
     rooms::{RoomTicket, Rooms},
@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.updated().await?;
     };
     let subscription = room.subscribe(peer, &name).await?;
-    let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+    let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
     let mut frames = player.video_frames();
     while let Some(frame) = frames.next().await {
         println!("{peer} {name}: {}", frame.size());

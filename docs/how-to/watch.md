@@ -25,14 +25,14 @@ A player subscribes to audio only when `PlayerConfig::audio` asks for it.
 ```rust,no_run
 use iroh_live::{
     Subscription,
-    media::{AudioMode, Player, PlayerConfig, audio::playback::Engine, remote_broadcast},
+    media::{AudioMode, Player, PlayerConfig, SubscriptionExt, audio::playback::Engine},
 };
 
 async fn play(subscription: &Subscription) -> Result<Player, Box<dyn std::error::Error>> {
     // One engine per output device. Every player that uses it is mixed.
     let engine = Engine::open(Default::default()).await?;
     let config = PlayerConfig::default().with_audio(AudioMode::Play(engine));
-    let player = remote_broadcast(subscription).play(config)?;
+    let player = subscription.remote_broadcast().play(config)?;
     Ok(player)
 }
 ```

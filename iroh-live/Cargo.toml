@@ -12,8 +12,6 @@ readme = "README.md"
 data-encoding = "2.11.1"
 derive_more = { version = "2.1.1", features = ["debug"] }
 iroh = { workspace = true }
-# mDNS address lookup, for networks without internet access.
-iroh-mdns-peer-lookup = "0.1.2"
 iroh-live-node = { workspace = true }
 # Re-exported as `iroh_live::rooms` behind the `rooms` feature. The rest of
 # the crate knows nothing about rooms.
@@ -63,8 +61,8 @@ default = []
 # What an app that plays and publishes media wants: the media stack, device
 # capture, GPU rendering, the sound server and recording.
 full = ["media", "capture", "render", "sound-server", "record"]
-# The media stack: `iroh_live::media`, `media::remote_broadcast`. Without it the
-# crate is the layout, calls and endpoint setup only, as the relay uses it.
+# The media stack: `iroh_live::media`, with `media::SubscriptionExt`. Without it
+# the crate is the node, the layout, calls and endpoint setup, with no codecs.
 media = ["dep:moq-ext-player", "dep:moq-ext-publisher", "dep:moq-ext-sources", "dep:moq-audio", "dep:moq-video"]
 # Recording a broadcast to a file.
 record = ["media", "moq-ext-player/record"]

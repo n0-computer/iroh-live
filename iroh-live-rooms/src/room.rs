@@ -324,7 +324,8 @@ impl Inner {
 ///
 /// A member publishes under `rooms/*/<member>/**`. A node that runs rooms
 /// lets every peer publish there, as
-/// `iroh_live::layout::policy((LiveLayout::default(), RoomsLayout))` does.
+/// [`policy((LiveLayout::default(), RoomsLayout))`](iroh_live_node::layout::policy)
+/// does.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoomsLayout;
 
@@ -394,6 +395,31 @@ mod tests {
             assert!(!RoomsLayout.scope(&other).matches(&path), "{path}");
         }
         assert_eq!(RoomsLayout.owner(&format!("live/{member}/cam")), None);
+    }
+
+    #[test]
+    fn the_live_and_rooms_layouts_compose() {
+        use iroh_live_node::{
+            SessionRequest,
+            layout::{LiveLayout, grant, policy},
+            policy::{Event, PeerRequest, Policy},
+        };
+
+        let both = (LiveLayout::default(), RoomsLayout);
+        let (peer, other) = (
+            SecretKey::from_bytes(&[8; 32]).public(),
+            SecretKey::from_bytes(&[9; 32]).public(),
+        );
+        let granted = grant(&both, peer);
+        assert!(granted.allows_publish(&format!("live/{peer}/cam")));
+        assert!(granted.allows_publish(&format!("rooms/topic/{peer}/cam")));
+        assert!(!granted.allows_publish(&format!("rooms/topic/{other}/cam")));
+        assert!(!granted.allows_publish(&format!("live/{other}/cam")));
+        let request = PeerRequest::new(peer, SessionRequest::default(), Event::Connect);
+        let decided = n0_future::future::block_on(Policy::decide(&policy(both), &request))
+            .expect("admitted")
+            .grant;
+        assert_eq!(decided, granted);
     }
 
     #[test]

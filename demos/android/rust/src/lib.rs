@@ -29,8 +29,8 @@ use iroh_live::{
     layout::LiveLayout,
     media::{
         AudioMode, AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig,
-        RemoteBroadcast, RenditionMode, VideoEncoding, VideoFormat, VideoFrames, VideoRendition,
-        VideoSource, audio, audio::playback::Engine, audio_encoding, remote_broadcast,
+        RemoteBroadcast, RenditionMode, SubscriptionExt, VideoEncoding, VideoFormat, VideoFrames,
+        VideoRendition, VideoSource, audio, audio::playback::Engine, audio_encoding,
     },
     moq_net::Timestamp,
 };
@@ -128,7 +128,7 @@ async fn bind_node() -> Result<(Node, Router)> {
 
 /// Plays the side of the peer that `call` reached.
 fn play_call(call: &Call, output: Option<&Engine>) -> Result<Player> {
-    play(&remote_broadcast(call.subscription()), output)
+    play(&call.subscription().remote_broadcast(), output)
 }
 
 // Session handle
@@ -364,7 +364,7 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     // The player waits for the catalog on its own, so the handle is usable
     // right away.
     let output = speaker().await;
-    let remote = remote_broadcast(&subscription);
+    let remote = subscription.remote_broadcast();
     let player = play(&remote, output.as_ref())?;
 
     let mut session = SessionHandle::new();
