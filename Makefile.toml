@@ -179,11 +179,20 @@ if [ "$1" = "--" ]; then shift; fi
 # -- Documentation site ------------------------------------------------
 
 [tasks.docs-site]
-description = "Build the documentation site into docs-site/build and check its links."
+description = "Build the documentation site, with the API docs, into docs-site/build and check its links."
 workspace = false
 script_runner = "@shell"
 script = '''
 "${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/build.sh"
+python3 "${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/check-links.py"
+'''
+
+[tasks.docs-site-book]
+description = "Build the documentation site without the API docs, which is quicker, and check its links."
+workspace = false
+script_runner = "@shell"
+script = '''
+"${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/build.sh" --no-api
 python3 "${CARGO_MAKE_WORKING_DIRECTORY}/docs-site/check-links.py"
 '''
 

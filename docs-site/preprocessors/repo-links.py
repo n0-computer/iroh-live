@@ -7,6 +7,10 @@ on GitHub, but the site only contains `docs/`, so this rewrites every relative
 link whose target resolves outside the book source, or to a Markdown file
 that is not a chapter (such as `SUMMARY.md`), to a GitHub URL. Links to
 chapters, absolute URLs and anchors are left alone.
+
+Links to the published site itself (`SITE`), such as the API docs under
+`api/`, become relative links, so the built site works wherever it is
+served and the link checker can verify them.
 """
 
 import json
@@ -18,6 +22,8 @@ import sys
 REPO = "https://github.com/n0-computer/iroh-live"
 BRANCH = "main"
 DOCS_DIR = "docs"
+# Where the Pages workflow publishes the site. The book is at `book/`.
+SITE = "https://n0-computer.github.io/iroh-live/"
 
 # Inline links `](target)` and reference definitions `[label]: target`.
 INLINE = re.compile(r"(\]\()([^)\s]+)(\))")
@@ -26,6 +32,10 @@ FENCE = re.compile(r"^(```|~~~)", re.MULTILINE)
 
 
 def rewrite_target(target, chapter_dir, chapters):
+    if target.startswith(SITE):
+        # The chapter's page is at `book/<chapter_dir>/`, one level below the site root.
+        depth = len([p for p in chapter_dir.split("/") if p]) + 1
+        return "../" * depth + target[len(SITE):]
     if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith(("#", "/")):
         return target
     path, sep, fragment = target.partition("#")

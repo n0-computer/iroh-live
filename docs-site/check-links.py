@@ -4,7 +4,9 @@
 Walks every HTML file under the given directory (default: docs-site/build)
 and reports relative links whose file is missing, or whose `#fragment` names
 no id in the target page. External URLs are not fetched. Exits non-zero when
-a link is broken.
+a link is broken. The rustdoc pages under `api/` are only checked as link
+targets, not for their own links. Links into `api/` are skipped when the site was built
+without the API docs (`build.sh --no-api`).
 """
 
 import html.parser
@@ -41,10 +43,18 @@ def main():
                     page.feed(f.read())
                 pages[path] = page
 
+    no_api = os.path.join(root, "api")
+    if os.path.isdir(no_api):
+        no_api = None
     broken = 0
     for path, page in sorted(pages.items()):
         # print.html repeats every page and 404.html uses absolute site URLs.
         if os.path.basename(path) in ("print.html", "404.html", "toc.html"):
+            continue
+        # rustdoc's own pages use line anchors that its script resolves, and
+        # links into crates that are not built. Only the index is ours.
+        rel = os.path.relpath(path, root)
+        if rel.startswith("api" + os.sep) and rel != os.path.join("api", "index.html"):
             continue
         for link in page.links:
             url = urllib.parse.urlparse(link)
@@ -52,6 +62,8 @@ def main():
                 continue
             target = path if not url.path else os.path.normpath(
                 os.path.join(os.path.dirname(path), urllib.parse.unquote(url.path)))
+            if no_api and (target == no_api or target.startswith(no_api + os.sep)):
+                continue
             if os.path.isdir(target):
                 target = os.path.join(target, "index.html")
             if not os.path.exists(target):

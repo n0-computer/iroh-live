@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iroh-live API docs</title>
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="../logo.svg">
+<style>
+  /* build.sh copies this page to build/api/index.html. The palette follows the landing page. */
+  :root {
+    --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #fcfbf9; --fg: #23262e; --muted: #5d6372; --border: #e7e3dc; --surface: #f4f1ec; --links: #5a3ee6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1014; --fg: #d6d9e0; --muted: #949bab; --border: #232731; --surface: #151820; --links: #a898ff; }
+  }
+  body { margin: 0; font-family: var(--sans); background: var(--bg); color: var(--fg); line-height: 1.6; }
+  main { max-width: 800px; margin: 0 auto; padding: 40px 20px 56px; }
+  a { color: var(--links); }
+  code { font-family: var(--mono); font-size: 0.9em; }
+  h1 { font-size: 28px; margin: 0 0 12px; }
+  ul { list-style: none; padding: 0; margin: 20px 0; display: grid; gap: 10px; }
+  li a { display: block; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; }
+  li a:hover { border-color: var(--links); background: var(--surface); }
+  li strong { font-family: var(--mono); font-weight: 600; }
+  li span { display: block; color: var(--muted); font-size: 14.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>iroh-live API docs</h1>
+  <p>The rustdoc of the library crates, built from <code>main</code> with every feature on.
+    Most applications need only <code>iroh_live</code>, which re-exports the others.
+    <a href="../book/reference/crates.html">Crates and API docs</a> explains how they fit together,
+    and the <a href="../index.html">documentation home</a> leads to the book.</p>
+  <ul>
+    <li><a href="iroh_live/index.html"><strong>iroh_live</strong><span>The facade: calls, media over a subscription, and the re-exports of the crates below.</span></a></li>
+    <li><a href="iroh_live_node/index.html"><strong>iroh_live_node</strong><span>The node: route table, publications, sessions, relay links, policies and tickets.</span></a></li>
+    <li><a href="iroh_live_rooms/index.html"><strong>iroh_live_rooms</strong><span>Rooms: gossip membership and members-only broadcasts.</span></a></li>
+    <li><a href="moq_ext_publisher/index.html"><strong>moq_ext_publisher</strong><span><code>LocalBroadcast</code>: encodes sources into a ladder of renditions.</span></a></li>
+    <li><a href="moq_ext_player/index.html"><strong>moq_ext_player</strong><span><code>RemoteBroadcast</code> and <code>Player</code>: rendition choice, A/V sync, recording input.</span></a></li>
+    <li><a href="moq_ext_sources/index.html"><strong>moq_ext_sources</strong><span>Video and audio sources: test pattern, files, capture, push senders.</span></a></li>
+    <li><a href="moq_ext_adaptive/index.html"><strong>moq_ext_adaptive</strong><span>Rendition choice and decoder handover as pure state machines.</span></a></li>
+    <li><a href="moq_ext_access/index.html"><strong>moq_ext_access</strong><span>Grants, policies, token verifiers, the <code>Layout</code> trait and audiences.</span></a></li>
+    <li><a href="moq_ext_json/index.html"><strong>moq_ext_json</strong><span><code>ValueWriter</code>: a latest-value JSON track writer.</span></a></li>
+    <li><a href="moq_ext_egui/index.html"><strong>moq_ext_egui</strong><span>egui video views and the debug overlay.</span></a></li>
+    <li><a href="moq_transport_iroh/index.html"><strong>moq_transport_iroh</strong><span>MoQ sessions over iroh connections.</span></a></li>
+    <li><a href="iroh_live_relay/index.html"><strong>iroh_live_relay</strong><span>The iroh-live relay server, as a library.</span></a></li>
+  </ul>
+</main>
+</body>
+</html>
