@@ -305,10 +305,9 @@ async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&Engine>) {
             Err(err) => warn!(error = %err, "publishing the microphone without echo cancellation"),
         }
     }
-    let published = match AudioSource::microphone(config).await {
-        Ok(source) => broadcast.set_audio(source, audio_encoding::voice()),
-        Err(err) => Err(err.into()),
-    };
+    let published = AudioSource::microphone(config)
+        .await
+        .and_then(|source| broadcast.set_audio(source, audio_encoding::voice()));
     if let Err(err) = published {
         warn!(error = format_args!("{err:#}"), "publishing without audio");
     }
