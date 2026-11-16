@@ -75,26 +75,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The program uses test sources. Swap in a camera and a microphone as in
-[Publish](publish.md).
+[Publish](publish.md). `Calls::ticket()` returns the ticket a peer calls this
+node with, to show as text or a QR code.
 
 ## Answering
 
 A node learns that a peer rings when the peer's `call` path appears in its
-route table. `Calls::ringing()` watches the peers that ring now, and
+route table. `Calls::next_ring()` waits for the first peer that rings,
+`Calls::ringing()` watches every peer that rings now, and
 `Calls::answer(peer)` takes one of their calls:
 
 ```rust,no_run
-use iroh::Watcher;
 use iroh_live::calls::{Call, Calls};
 
 async fn answer_first(calls: &Calls) -> Result<Call, Box<dyn std::error::Error>> {
-    let mut ringing = calls.ringing();
-    let peer = loop {
-        if let Some(peer) = ringing.get().first().copied() {
-            break peer;
-        }
-        ringing.updated().await?;
-    };
+    let peer = calls.next_ring().await.ok_or("the call service ended")?;
     Ok(calls.answer(peer).await?)
 }
 ```
