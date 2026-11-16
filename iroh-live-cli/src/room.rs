@@ -429,8 +429,7 @@ mod window {
                     player,
                     self.playback.decoder,
                     self.render_state.as_ref(),
-                )
-                .with_link(sub.subscription.clone());
+                );
                 self.tiles.push(PeerTile {
                     remote,
                     name,

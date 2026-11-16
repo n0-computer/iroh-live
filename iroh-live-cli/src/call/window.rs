@@ -278,8 +278,7 @@ impl CallApp {
             player,
             self.playback.decoder,
             self.render_state.as_ref(),
-        )
-        .with_link(sub.subscription.clone());
+        );
         self.screen = Screen::InCall(Box::new(InCall {
             peer,
             _call: call,
