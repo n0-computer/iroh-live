@@ -2712,3 +2712,46 @@ async fn an_expired_chain_closes_the_session() {
     status_becomes(&link, RelayStatus::Refused(Refusal::Expired)).await;
     device.shutdown().await;
 }
+
+/// A live iroh session whose token the rotated key file no longer verifies closes within seconds.
+#[tokio::test]
+async fn a_key_file_change_closes_sessions_whose_token_no_longer_verifies() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let old = signing_keys();
+    let relay = TestRelay::start_keyed(old.clone()).await;
+    let (_endpoint, holder) = relay_node().await;
+    let _cam = publish_at(&holder, "tokens/cam");
+    let mut updates = relay.cluster.origin.consume().announced();
+    let link = attach_with_token(&holder, &relay, Some(token_for(&old, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+
+    // A key file written again with the same key keeps the session.
+    let file = relay.keys_file.as_ref().expect("keyed");
+    file.rotate(&old);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(link.status().get(), RelayStatus::Connected);
+
+    file.rotate(&signing_keys());
+    retracted(&mut updates, "tokens/cam").await;
+    status_becomes(&link, RelayStatus::Refused(Refusal::Unauthorized)).await;
+    holder.shutdown().await;
+}
+
+/// A session with a token lasts at most `--max-session`, and the client gets back in with the same token.
+#[tokio::test]
+async fn a_token_session_lasts_at_most_max_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let mut config = Config::default();
+    config.max_session = Duration::from_secs(2);
+    let relay = TestRelay::start_config_keyed(&keys, config, None).await;
+    let (_endpoint, holder) = relay_node().await;
+    let _cam = publish_at(&holder, "tokens/cam");
+    let mut updates = relay.cluster.origin.consume().announced();
+    let _link = attach_with_token(&holder, &relay, Some(token_for(&keys, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    retracted(&mut updates, "tokens/cam").await;
+    // The token still verifies, so the redial gets back in.
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    holder.shutdown().await;
+}

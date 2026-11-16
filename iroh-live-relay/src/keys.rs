@@ -8,6 +8,7 @@ use std::{
 
 use iroh::EndpointId;
 use moq_ext_access::policy::{Decision, JwtVerifier, PeerRequest, Rejection, TokenVerifier};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::Error;
@@ -19,7 +20,8 @@ use crate::Error;
 /// the ones it last read, as moq-auth's reference policy does for browsers,
 /// so a rotated or revoked key takes effect for the next session without a
 /// restart. A file that is gone or no longer holds a key rejects every token
-/// until it is fixed. Sessions already admitted keep their authorization.
+/// until it is fixed. The relay also checks the file once a second, and
+/// decides its live iroh sessions again when it changed.
 ///
 /// Wrap it in a [`Verify`](moq_ext_access::policy::Verify) to use it as a policy.
 #[derive(Debug, Clone)]
@@ -27,6 +29,8 @@ pub struct KeyFile {
     path: PathBuf,
     /// The keys as last read, with the stamp of the file they were read from.
     cached: Arc<Mutex<Option<Cached>>>,
+    /// Counts the changes to the file that the verifier noticed.
+    changes: Arc<watch::Sender<u64>>,
 }
 
 #[derive(Debug)]
@@ -55,7 +59,24 @@ impl KeyFile {
         Ok(Self {
             path,
             cached: Arc::new(Mutex::new(cached)),
+            changes: Arc::new(watch::Sender::new(0)),
         })
+    }
+
+    /// Returns a receiver that sees a new value whenever the verifier notices a change to the file.
+    pub(crate) fn changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    /// Reads the file again if it changed since the verifier last read it.
+    pub(crate) fn refresh(&self) {
+        // A rejection here is logged by `current`, and the next token gets it too.
+        self.current().ok();
+    }
+
+    /// Tells the receivers of [`changes`](Self::changes) that the file changed.
+    fn changed(&self) {
+        self.changes.send_modify(|count| *count += 1);
     }
 
     /// Returns the verifier of the keys the file holds now.
@@ -67,8 +88,10 @@ impl KeyFile {
         let mut cached = self.cached.lock().expect("poisoned");
         // Stamped before reading, so a write that races the read is caught at the next token.
         let Some(stamp) = stamp(&self.path) else {
-            warn!(path = %self.path.display(), "the JWT key file is gone, refusing tokens");
-            *cached = None;
+            if cached.take().is_some() {
+                warn!(path = %self.path.display(), "the JWT key file is gone, refusing tokens");
+                self.changed();
+            }
             return Err(unreadable());
         };
         if let Some(cached) = cached.as_ref().filter(|cached| cached.stamp == stamp) {
@@ -82,14 +105,17 @@ impl KeyFile {
                     stamp,
                     verifier: verifier.clone(),
                 });
+                self.changed();
                 Ok(verifier)
             }
             Err(err) => {
-                warn!(
-                    error = format_args!("{err:#}"),
-                    "the JWT key file holds no key, refusing tokens"
-                );
-                *cached = None;
+                if cached.take().is_some() {
+                    warn!(
+                        error = format_args!("{err:#}"),
+                        "the JWT key file holds no key, refusing tokens"
+                    );
+                    self.changed();
+                }
                 Err(unreadable())
             }
         }

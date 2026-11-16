@@ -24,6 +24,8 @@ use iroh_live_rooms::RoomsLayout;
 use moq_net::{Pattern, Patterns};
 use moq_relay::cluster::Cluster;
 use n0_error::e;
+use n0_future::task::AbortOnDropHandle;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
@@ -31,6 +33,9 @@ use crate::pull::{Access, Client, PullGuard, Pulls};
 
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
+
+/// How often the relay checks its JWT key file for changes.
+const KEY_CHECK: Duration = Duration::from_secs(1);
 
 /// The protocol handler that accepts iroh clients' MoQ sessions into the cluster.
 ///
@@ -45,6 +50,13 @@ pub struct IrohSessions {
     policy: Arc<dyn DynPolicy<EndpointId>>,
     /// Decides who may pull under [`Access::Authorized`], asked at the ticket's path.
     pull_policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
+    /// The longest a session admitted with a token lasts.
+    max_session: Option<Duration>,
+    /// Changes when the JWT key file does, which decides the token sessions again.
+    key_changes: Option<watch::Receiver<u64>>,
+    /// Checks the key file for changes while any clone of the handler lives.
+    #[debug(skip)]
+    _key_watch: Option<Arc<AbortOnDropHandle<()>>>,
     /// Cancelled when the router shuts down, which closes every session.
     shutdown: CancellationToken,
 }
@@ -68,6 +80,9 @@ impl IrohSessions {
             pulls,
             policy: Arc::new(Closed),
             pull_policy: None,
+            max_session: None,
+            key_changes: None,
+            _key_watch: None,
             shutdown: CancellationToken::new(),
         }
     }
@@ -77,8 +92,8 @@ impl IrohSessions {
     /// The relay asks it after a client's MoQ SETUP. A rejection closes the
     /// session with the rejection's code. An authorization's grant bounds
     /// what the client publishes into the cluster and what it reads from it,
-    /// and the session closes when the authorization expires. The relay does
-    /// not decide again: a client whose session closed reconnects.
+    /// and the session closes when the authorization expires. A client whose
+    /// session closed reconnects.
     #[must_use]
     pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.policy = Arc::new(policy);
@@ -99,12 +114,39 @@ impl IrohSessions {
         self
     }
 
-    /// Returns this handler with the session and pull policies of `policies`.
+    /// Returns this handler with the policies, the session bound and the key file of `policies`.
+    ///
+    /// A session that presented a token lasts at most
+    /// [`max_session`](crate::Config::max_session). When the key file
+    /// changes, which the handler checks once a second, every live session
+    /// that presented a token is decided again, and closed if its grant
+    /// changed or its token no longer verifies. Call it within a tokio
+    /// runtime, which runs the check.
     #[doc(hidden)]
     #[must_use]
     pub fn with_policies(mut self, policies: &crate::Policies) -> Self {
         self.policy = policies.iroh.clone();
         self.pull_policy.clone_from(&policies.pull_tokens);
+        self.max_session = Some(policies.max_session);
+        if let Some(keys) = policies.key_file.clone() {
+            self.key_changes = Some(keys.changes());
+            match tokio::runtime::Handle::try_current() {
+                Ok(runtime) => {
+                    let watch = runtime.spawn(async move {
+                        let mut interval = tokio::time::interval(KEY_CHECK);
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            interval.tick().await;
+                            keys.refresh();
+                        }
+                    });
+                    self._key_watch = Some(Arc::new(AbortOnDropHandle::new(watch)));
+                }
+                Err(_) => {
+                    warn!("no tokio runtime: the key file is read again only when a token arrives")
+                }
+            }
+        }
         self
     }
 
@@ -125,11 +167,12 @@ impl IrohSessions {
             session,
             driver,
             authorization,
+            recheck,
             pull,
         } = self.admit(connection).await?;
         // Held while the session runs.
         let _pull = pull.map(|(pull, name)| crate::hold_pull(pull, name));
-        self.run(session, driver, &authorization).await;
+        self.run(session, driver, &authorization, &recheck).await;
         Ok(())
     }
 
@@ -150,8 +193,8 @@ impl IrohSessions {
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
         let token = session.token().map(str::to_owned);
-        let request = PeerRequest::new(peer, session, Event::Connect);
-        let authorization =
+        let request = PeerRequest::new(peer, session.clone(), Event::Connect);
+        let mut authorization =
             match moq_ext_access::policy::decide_within(&*self.policy, &request, DECIDE_TIMEOUT)
                 .await
             {
@@ -166,6 +209,22 @@ impl IrohSessions {
                     return Err(AcceptError::from_err(rejection));
                 }
             };
+        // A session with a token is bounded, and decided again when the keys change.
+        let mut recheck = Vec::new();
+        if token.is_some() {
+            if let Some(bound) = self.max_session {
+                let latest = std::time::SystemTime::now() + bound;
+                authorization.expires = Some(
+                    authorization
+                        .expires
+                        .map_or(latest, |expires| expires.min(latest)),
+                );
+            }
+            recheck.push(Decided {
+                request: PeerRequest::new(peer, session, Event::Reauthorize),
+                grant: authorization.grant.clone(),
+            });
+        }
         let pull = match self.start_pull(peer, token, name.as_deref()).await {
             Ok(pull) => pull,
             Err(err) => {
@@ -216,6 +275,7 @@ impl IrohSessions {
             session,
             driver,
             authorization,
+            recheck,
             pull,
         })
     }
@@ -259,25 +319,47 @@ impl IrohSessions {
     }
 
     /// Runs an admitted session until it ends, its authorization expires, or the relay shuts down.
+    ///
+    /// When the key file changes, the decisions in `recheck` are made again,
+    /// and the session closes if one is rejected or its grant changed.
     async fn run(
         &self,
         session: moq_net::Session,
         driver: moq_net::Driver,
         authorization: &Authorization,
+        recheck: &[Decided],
     ) {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
         let expiry = expiry(authorization);
         tokio::pin!(expiry);
-        let close = tokio::select! {
-            err = &mut run => {
-                debug!(error = %err, "iroh session ended");
-                return;
-            }
-            () = self.shutdown.cancelled() => moq_net::Error::Cancel,
-            () = &mut expiry => {
-                info!("the iroh client's authorization expired, closing its session");
-                moq_net::Error::Expired
+        let mut key_changes = self.key_changes.clone().filter(|_| !recheck.is_empty());
+        let close = loop {
+            let changed = async {
+                match key_changes.as_mut() {
+                    Some(changes) => changes.changed().await.is_ok(),
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                err = &mut run => {
+                    debug!(error = %err, "iroh session ended");
+                    return;
+                }
+                () = self.shutdown.cancelled() => break moq_net::Error::Cancel,
+                () = &mut expiry => {
+                    info!("the iroh client's authorization expired, closing its session");
+                    break moq_net::Error::Expired;
+                }
+                live = changed => {
+                    if !live {
+                        key_changes = None;
+                        continue;
+                    }
+                    if let Some(code) = self.decide_again(recheck).await {
+                        break code;
+                    }
+                }
             }
         };
         // The driver keeps running, so the session can tell its peer.
@@ -288,11 +370,53 @@ impl IrohSessions {
     }
 }
 
+impl IrohSessions {
+    /// Makes the decisions in `recheck` again, and returns the code to close the session with if one changed.
+    async fn decide_again(&self, recheck: &[Decided]) -> Option<moq_net::Error> {
+        for decided in recheck {
+            let decision = moq_ext_access::policy::decide_within(
+                &*self.policy,
+                &decided.request,
+                DECIDE_TIMEOUT,
+            )
+            .await;
+            match decision {
+                Err(rejection) => {
+                    info!(
+                        reason = rejection.reason(),
+                        code = %rejection.code(),
+                        "the key file changed and the token no longer verifies, closing the session",
+                    );
+                    return Some(rejection.code().clone());
+                }
+                Ok(authorization) if authorization.grant != decided.grant => {
+                    info!(
+                        grant = ?authorization.grant,
+                        "the key file changed the token's grant, closing the session",
+                    );
+                    return Some(moq_net::Error::Unauthorized);
+                }
+                Ok(_) => debug!("the key file changed, and the token still verifies"),
+            }
+        }
+        None
+    }
+}
+
+/// A decision about a live session, as the relay makes it again when the key file changes.
+struct Decided {
+    request: PeerRequest,
+    /// The grant the decision gave when the session was admitted.
+    grant: Grant,
+}
+
 /// An iroh client's session after its handshake, before it runs.
 struct Admitted {
     session: moq_net::Session,
     driver: moq_net::Driver,
     authorization: Authorization,
+    /// The decisions to make again when the key file changes, empty without a token.
+    recheck: Vec<Decided>,
     /// The pull of the ticket the session named, with that name.
     pull: Option<(PullGuard, String)>,
 }
