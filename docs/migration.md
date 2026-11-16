@@ -113,6 +113,7 @@ Names from development versions between the two releases:
 | `PlayerConfig { audio: bool, speaker }` | `PlayerConfig::audio`, an `AudioMode`, set with `with_audio` |
 | `AudioSource::file(path, bool)` | `AudioSource::file(path, FileEnd)` |
 | `RelayConfig::token`, `TokenFn`, `TokenSource` | `RelayConfig::tokens`, `RelayConfig::with_token`, and `RelayLink::tokens().set(..)` on a live link |
+| `Player::video_timing(Duration)` | `Player::video_timing(Timestamp)`, with the frame's `timestamp` as it is |
 
 ## Removed
 

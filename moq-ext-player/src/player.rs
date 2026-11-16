@@ -509,12 +509,14 @@ impl Player {
         frames
     }
 
-    /// Returns the timing of the presented picture at `pts`, or `None` once it left the timeline.
+    /// Returns the timing of the presented picture at `timestamp`, or `None` once it left the timeline.
     ///
-    /// `pts` is the `timestamp` of a frame from [`video_frames`](Self::video_frames). Its
-    /// `arrived`, `decoded` and `presented` tell the time on the network from
-    /// the time in the decoder and in the playout clock. Look a frame up soon
-    /// after it is handed out.
+    /// `timestamp` is the `timestamp` of a frame from
+    /// [`video_frames`](Self::video_frames). Its `arrived`, `decoded` and
+    /// `presented` tell the time on the network from the time in the decoder
+    /// and in the playout clock. Look a frame up soon after it is handed out.
+    /// Also `None` for a timestamp without a timescale, which no presented
+    /// picture has.
     ///
     /// # Examples
     ///
@@ -522,18 +524,19 @@ impl Player {
     /// # async fn run(player: moq_ext_player::Player) {
     /// let mut frames = player.video_frames();
     /// while let Some(frame) = frames.next().await {
-    ///     let Ok(pts) = frame.timestamp.try_into() else {
+    ///     let Some(timing) = player.video_timing(frame.timestamp) else {
     ///         continue;
     ///     };
-    ///     let timing = player.video_timing(pts);
-    ///     if let Some(arrived) = timing.and_then(|timing| timing.arrived) {
+    ///     if let Some(arrived) = timing.arrived {
     ///         println!("{:?} since its data arrived", arrived.elapsed());
     ///     }
+    ///     println!("{:?} in the decoder", timing.decode_time());
     /// }
     /// # }
     /// ```
     #[must_use]
-    pub fn video_timing(&self, pts: Duration) -> Option<FrameTiming> {
+    pub fn video_timing(&self, timestamp: moq_net::Timestamp) -> Option<FrameTiming> {
+        let pts = Duration::try_from(timestamp).ok()?;
         self.stats.video_log.find(pts)
     }
 

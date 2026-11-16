@@ -127,6 +127,10 @@ pub struct FrameTiming {
     /// The medium.
     pub kind: MediaKind,
     /// The frame's presentation timestamp on the broadcast clock.
+    ///
+    /// This is the frame's `timestamp` as a [`Duration`], so timings sort and
+    /// subtract. [`Player::video_timing`](crate::Player::video_timing) takes
+    /// the frame's `timestamp` itself.
     pub pts: Duration,
     /// When the frame's data was complete on this node, before decoding.
     ///
@@ -143,6 +147,23 @@ pub struct FrameTiming {
     /// is presented when it reaches the speaker: when it was written plus the
     /// audio already queued ahead of it.
     pub presented: Instant,
+}
+
+impl FrameTiming {
+    /// Returns how long the frame spent in the decoder, from `arrived` to `decoded`.
+    ///
+    /// `None` when the arrival is not known.
+    #[must_use]
+    pub fn decode_time(&self) -> Option<Duration> {
+        self.arrived
+            .map(|arrived| self.decoded.saturating_duration_since(arrived))
+    }
+
+    /// Returns how long the playout clock held the frame, from `decoded` to `presented`.
+    #[must_use]
+    pub fn queued(&self) -> Duration {
+        self.presented.saturating_duration_since(self.decoded)
+    }
 }
 
 /// How many frames a [`FrameLog`] keeps per medium.
@@ -195,6 +216,23 @@ impl FrameLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The helpers split a frame's time into the decoder's part and the clock's part.
+    #[test]
+    fn a_timing_splits_into_decode_time_and_queued() {
+        let arrived = Instant::now();
+        let mut timing = FrameTiming {
+            kind: MediaKind::Video,
+            pts: Duration::ZERO,
+            arrived: Some(arrived),
+            decoded: arrived + Duration::from_millis(5),
+            presented: arrived + Duration::from_millis(45),
+        };
+        assert_eq!(timing.decode_time(), Some(Duration::from_millis(5)));
+        assert_eq!(timing.queued(), Duration::from_millis(40));
+        timing.arrived = None;
+        assert_eq!(timing.decode_time(), None);
+    }
 
     /// The summary names what it knows and marks the rest.
     #[test]
