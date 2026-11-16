@@ -377,11 +377,21 @@ impl SourceClock {
     }
 }
 
-/// The task a slot is running, with its generation.
+/// The task a slot is running, with its generation and what it encodes.
 #[derive(Debug)]
 struct Slot {
     generation: u64,
     task: SlotTask,
+    source: SlotSource,
+}
+
+/// What a slot encodes, kept so the broadcast can hand it back.
+#[derive(Debug, Clone)]
+enum SlotSource {
+    Video(VideoSource),
+    Audio(AudioSource),
+    /// A pre-encoded stream from `set_encoded_video`, which has no raw source.
+    Encoded,
 }
 
 /// The state every clone of a [`LocalBroadcast`] shares.
@@ -558,7 +568,8 @@ impl LocalBroadcast {
             .map(|rendition| rendition.name.clone())
             .collect();
         info!(parent: &self.shared.span, source = source.label(), renditions = ?names, "video set");
-        self.replace(Medium::Video, names, move |job, stop| {
+        let kept = SlotSource::Video(source.clone());
+        self.replace(Medium::Video, names, kept, move |job, stop| {
             video::run_raw(job, source, encoding, stop)
         });
         Ok(())
@@ -590,6 +601,7 @@ impl LocalBroadcast {
         self.replace(
             Medium::Video,
             vec![video::ENCODED_RENDITION.to_string()],
+            SlotSource::Encoded,
             move |job, stop| video::run_encoded(job, source, stop),
         );
         Ok(())
@@ -618,7 +630,8 @@ impl LocalBroadcast {
         encoding::validate_audio(&encoding)?;
         let name = encoding::audio_track_name(&encoding);
         info!(parent: &self.shared.span, source = source.label(), track = %name, "audio set");
-        self.replace(Medium::Audio, vec![name], move |job, stop| {
+        let kept = SlotSource::Audio(source.clone());
+        self.replace(Medium::Audio, vec![name], kept, move |job, stop| {
             audio::run(job, source, encoding, stop)
         });
         Ok(())
@@ -674,6 +687,32 @@ impl LocalBroadcast {
             track,
             moq_json::snapshot::Config::default(),
         ))
+    }
+
+    /// Returns the raw video source this broadcast encodes, if any.
+    ///
+    /// For a preview, read its [`frames`](VideoSource::frames). `None`
+    /// without video, and for a stream from
+    /// [`set_encoded_video`](Self::set_encoded_video). The source stays
+    /// here after it fails, until the video is set again or cleared.
+    #[must_use]
+    pub fn video_source(&self) -> Option<VideoSource> {
+        match &self.shared.video.lock().expect("poisoned").as_ref()?.source {
+            SlotSource::Video(source) => Some(source.clone()),
+            SlotSource::Audio(_) | SlotSource::Encoded => None,
+        }
+    }
+
+    /// Returns the audio source this broadcast encodes, if any.
+    ///
+    /// The source stays here after it fails, until the audio is set again or
+    /// cleared.
+    #[must_use]
+    pub fn audio_source(&self) -> Option<AudioSource> {
+        match &self.shared.audio.lock().expect("poisoned").as_ref()?.source {
+            SlotSource::Audio(source) => Some(source.clone()),
+            SlotSource::Video(_) | SlotSource::Encoded => None,
+        }
     }
 
     /// Stops publishing video.
@@ -865,7 +904,7 @@ impl LocalBroadcast {
     /// The new task finishes the old one before it takes the track names. The
     /// status moves to the new generation under the same lock, so a late report
     /// from the old task cannot land on the new slot.
-    fn replace<F, Fut>(&self, medium: Medium, names: Vec<String>, run: F)
+    fn replace<F, Fut>(&self, medium: Medium, names: Vec<String>, source: SlotSource, run: F)
     where
         F: FnOnce(Job, CancellationToken) -> Fut,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -902,7 +941,11 @@ impl LocalBroadcast {
             predecessor: slot.take().map(|previous| previous.task),
         };
         let task = SlotTask::spawn(span, &shared.closed, handing_over, |stop| run(job, stop));
-        *slot = Some(Slot { generation, task });
+        *slot = Some(Slot {
+            generation,
+            task,
+            source,
+        });
     }
 
     /// Stops the task of a slot, and lets it finish its tracks in the background.

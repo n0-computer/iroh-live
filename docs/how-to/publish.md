@@ -96,7 +96,10 @@ opens once `set_audio` runs, and a failure then shows in
 ### Changing the source
 
 `set_video` and `set_audio` replace the current source of a running
-broadcast, and viewers keep their subscription. To switch cameras behind one
+broadcast, and viewers keep their subscription. The broadcast keeps the
+sources it encodes: `video_source()` and `audio_source()` hand them back, for
+example to draw a preview from `video_source()`'s frames, so the application
+does not have to track them itself. To switch cameras behind one
 source, `VideoSource::switchable` returns a `VideoSwitch` that swaps what
 feeds it.
 

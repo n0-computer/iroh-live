@@ -30,15 +30,6 @@ const RPICAM_SIZE: Size = Size {
     height: 360,
 };
 
-/// The sources [`configure`] opened, for a preview or a QR scanner.
-#[derive(Debug, Default)]
-pub(crate) struct Opened {
-    /// The raw video source. `None` for no video or pre-encoded video.
-    pub(crate) video: Option<VideoSource>,
-    /// The audio source.
-    pub(crate) audio: Option<AudioSource>,
-}
-
 /// An opened video source.
 #[derive(derive_more::Debug)]
 enum Video {
@@ -52,21 +43,20 @@ enum Video {
 /// Opens the video and audio `args` asks for, and sets them on `broadcast`.
 ///
 /// The microphone cancels the echo of `speaker`. Fails for a `file:` video
-/// source, a ladder that does not parse, or a source that does not open.
+/// source, a ladder that does not parse, or a source that does not open. The
+/// broadcast keeps the sources, and `video_source` hands the video back for a
+/// preview.
 pub(crate) async fn configure(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
     speaker: Option<&Speaker>,
-) -> Result<Opened> {
-    let video = configure_video(broadcast, args).await?;
-    let audio = match audio_source(&args.audio_source(), speaker).await? {
-        Some(source) => {
-            broadcast.set_audio(source.clone(), audio_config(args, &source))?;
-            Some(source)
-        }
-        None => None,
-    };
-    Ok(Opened { video, audio })
+) -> Result<()> {
+    configure_video(broadcast, args).await?;
+    if let Some(source) = audio_source(&args.audio_source(), speaker).await? {
+        let encoding = audio_config(args, &source);
+        broadcast.set_audio(source, encoding)?;
+    }
+    Ok(())
 }
 
 /// Opens the video `args` asks for and sets it, leaving the audio alone.

@@ -284,3 +284,44 @@ async fn a_value_track_reaches_a_reader_of_the_broadcast() {
         "a closed broadcast took a track"
     );
 }
+
+/// The broadcast hands back the raw sources it encodes, and nothing once cleared.
+#[tokio::test]
+async fn the_broadcast_hands_back_its_sources() {
+    let broadcast = LocalBroadcast::new();
+    assert!(broadcast.video_source().is_none());
+    assert!(broadcast.audio_source().is_none());
+
+    let video = VideoSource::test_pattern(
+        moq_video::Size::new(320, 180),
+        moq_video::FrameRate::new(30, 1).expect("a valid rate"),
+    )
+    .expect("the pattern thread starts");
+    broadcast
+        .set_video(
+            video,
+            crate::VideoEncoding::single(crate::VideoRendition::new("180p")),
+        )
+        .expect("a valid encoding");
+    let audio = AudioSource::tone(440.0, moq_audio::Layout::Mono).expect("the tone thread starts");
+    broadcast
+        .set_audio(audio, audio_encoding::voice())
+        .expect("a valid encoding");
+    let kept = broadcast.video_source().expect("the video source");
+    assert_eq!(kept.format().size, moq_video::Size::new(320, 180));
+    assert_eq!(
+        broadcast.audio_source().expect("the audio source").label(),
+        "tone"
+    );
+
+    broadcast.clear_video();
+    broadcast.clear_audio();
+    assert!(broadcast.video_source().is_none());
+    assert!(broadcast.audio_source().is_none());
+
+    // A pre-encoded stream has no raw source to hand back.
+    broadcast
+        .set_encoded_video(n0_future::stream::empty())
+        .expect("open");
+    assert!(broadcast.video_source().is_none());
+}
