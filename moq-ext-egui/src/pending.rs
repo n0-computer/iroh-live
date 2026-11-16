@@ -96,6 +96,22 @@ impl<T: Send + 'static> Pending<T> {
         self.task.abort();
         self.rx.try_recv().ok()
     }
+
+    /// Waits for the result, keeping the task alive until it is there.
+    ///
+    /// For a task that another task takes over, such as a connection start
+    /// that a restart must wait for and close before it starts again, where
+    /// [`cancel`](Self::cancel) would drop the result unclosed. Returns `None`
+    /// for a task that stopped without a result, as [`poll`](Self::poll) does.
+    ///
+    /// Cancel safe: dropping the future aborts the task, as dropping the
+    /// handle does.
+    pub async fn wait(self) -> Option<T> {
+        let Self { rx, task } = self;
+        let result = rx.await.ok();
+        drop(task);
+        result
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +139,21 @@ mod tests {
         let ctx = egui::Context::default();
         let mut pending = Pending::spawn(&ctx, async { 7 });
         assert_eq!(ready(&mut pending).await, Some(7));
+    }
+
+    /// A task awaited elsewhere, here from another task, hands its result over.
+    #[tokio::test]
+    async fn a_waited_task_hands_over_its_result() {
+        let ctx = egui::Context::default();
+        let (go_tx, go_rx) = oneshot::channel();
+        let pending = Pending::spawn(&ctx, async move { go_rx.await.expect("sent") });
+        let waiter = tokio::spawn(pending.wait());
+        go_tx.send(9).expect("the task waits");
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("the task finished")
+            .expect("the waiter ran");
+        assert_eq!(result, Some(9));
     }
 
     /// A cancelled task delivers nothing, and reads as ended.
