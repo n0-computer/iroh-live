@@ -444,9 +444,9 @@ impl VideoSourceSpec {
     /// Opens the source this specifier names, or returns `None` for [`None`](Self::None).
     ///
     /// A camera, display, window or app opens through
-    /// [`VideoSource::capture`], so the default camera and display follow its
-    /// rules: with the `pipewire` feature on Linux, the default display asks
-    /// the desktop portal. `screen:portal` and `window:portal` always ask the
+    /// [`VideoSource::capture`], so the default camera follows its rules. The
+    /// default display is [`screen_source`](crate::screen_source), the
+    /// desktop portal on Wayland with the `pipewire` feature. `screen:portal` and `window:portal` always ask the
     /// portal. A test pattern defaults to 1280x720 at 30 fps.
     ///
     /// Cancellation safe, as [`VideoSource::capture`] is.
@@ -530,9 +530,8 @@ async fn capture(source: CaptureSource, options: &VideoOpenOptions) -> Result<Vi
     use video::capture::{DisplaySelection, Source};
     let source = match source {
         CaptureSource::Camera(id) => Source::Camera(id),
-        CaptureSource::Display(id) => {
-            Source::Display(id.map(DisplaySelection::new).unwrap_or_default())
-        }
+        CaptureSource::Display(None) => crate::screen_source(),
+        CaptureSource::Display(Some(id)) => Source::Display(DisplaySelection::new(id)),
         CaptureSource::Window(id) => Source::Window(id),
         CaptureSource::App(id) => Source::App(id),
         CaptureSource::Portal(kind) => portal(kind)?,

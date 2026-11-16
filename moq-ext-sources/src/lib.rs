@@ -20,7 +20,7 @@
 //! | Moving gradient | [`VideoSource::test_gradient`] | `pattern` |
 //! | Sine tone | [`AudioSource::tone`] | `pattern` |
 //! | WAV and MP3 file | [`AudioSource::file`] | `file` |
-//! | Camera, display, window | [`VideoSource::capture`] | `capture` |
+//! | Camera, display, window | [`VideoSource::capture`], [`VideoSource::camera`], [`VideoSource::screen`] | `capture` |
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
 //! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
@@ -79,6 +79,8 @@ mod status;
 use moq_audio as audio;
 use moq_video as video;
 
+#[cfg(feature = "capture")]
+pub use self::source::screen_source;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{

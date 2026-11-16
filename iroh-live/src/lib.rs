@@ -133,6 +133,8 @@ pub mod media {
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
         VideoEncoding, VideoRendition, audio_encoding,
     };
+    #[cfg(feature = "capture")]
+    pub use moq_ext_sources::screen_source;
     pub use moq_ext_sources::spec;
     pub use moq_ext_sources::{
         AudioFormat, AudioSource, Backend, Error, FileEnd, FrameSender, SlotState, SourceClosed,
