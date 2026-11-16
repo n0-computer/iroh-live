@@ -22,8 +22,20 @@
 //! ```
 //!
 //! [`VideoView`] draws a [`VideoFrames`] stream, and [`FrameView`] the frames
-//! you hand it. [`egui_wgpu_config`] builds the `wgpu` setup for eframe,
-//! and [`overlay::DebugOverlay`] paints stats over a video.
+//! you hand it. [`overlay::DebugOverlay`] paints stats over a video.
+//!
+//! Open the window with [`egui_wgpu_config`] as eframe's `wgpu_options`.
+//! Without it, eframe builds a device that cannot import DMA-BUF frames on
+//! Linux, so hardware-decoded video and screen capture are copied through the
+//! CPU, and a GPU with small limits, such as the Raspberry Pi 4, fails to open
+//! the window:
+//!
+//! ```ignore
+//! let options = eframe::NativeOptions {
+//!     wgpu_options: moq_ext_egui::egui_wgpu_config(),
+//!     ..Default::default()
+//! };
+//! ```
 
 #![forbid(unsafe_code)]
 
@@ -70,6 +82,8 @@ struct EguiVideoRenderer {
 impl EguiVideoRenderer {
     /// Creates a renderer bound to `render_state`'s device and queue.
     fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, moq_video::Error> {
+        #[cfg(target_os = "linux")]
+        hint_dmabuf_import(render_state);
         let renderer = moq_video::render::Renderer::new(
             &render_state.device,
             &render_state.queue,
@@ -344,6 +358,26 @@ fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
             ..egui_wgpu::WgpuSetupCreateNew::without_display_handle()
         }),
         ..Default::default()
+    }
+}
+
+/// Logs once when the device leaves out the DMA-BUF import its adapter offers.
+///
+/// That is the device eframe builds without [`egui_wgpu_config`], and every
+/// DMA-BUF frame then takes a copy through the CPU.
+#[cfg(target_os = "linux")]
+fn hint_dmabuf_import(render_state: &egui_wgpu::RenderState) {
+    static HINTED: std::sync::Once = std::sync::Once::new();
+    let feature = wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
+    if render_state.adapter.features().contains(feature)
+        && !render_state.device.features().contains(feature)
+    {
+        HINTED.call_once(|| {
+            info!(
+                "the wgpu device cannot import DMA-BUF frames, so they are copied through \
+                 the CPU; pass moq_ext_egui::egui_wgpu_config() as eframe's wgpu_options"
+            );
+        });
     }
 }
 
