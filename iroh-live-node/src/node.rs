@@ -711,6 +711,11 @@ impl Node {
     /// Gives sessions a short grace to tell their peers, so the endpoint can
     /// be closed once this returns. Idempotent. Not cancellation safe: call it
     /// again to finish.
+    ///
+    /// A node [mounted](Self::mount) on a router shuts down with
+    /// `Router::shutdown`, which calls this before it closes the endpoint, so
+    /// there is no need to call both. Call it for a node without a router, or
+    /// to stop the node while the router's other protocols keep running.
     pub async fn shutdown(&self) {
         // Set first, so a racing publish or attach fails instead of being
         // added and then cleared.

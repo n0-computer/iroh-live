@@ -48,9 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    node.shutdown().await;
+    // Shuts the mounted node down with your other protocols, then closes
+    // the endpoint.
     router.shutdown().await?;
-    endpoint.close().await;
     Ok(())
 }
 ```
