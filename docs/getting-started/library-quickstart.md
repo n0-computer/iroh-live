@@ -113,8 +113,8 @@ Run the publisher, then pass its ticket to the viewer, on the same machine or
 another one. `irl watch <TICKET>` plays the same ticket in a window.
 
 `PlayerConfig::default()` does not subscribe to audio. To hear it, use
-`with_audio(AudioMode::Play(engine))` with a `playback::Engine`, as
-[Watch a broadcast](../how-to/watch.md) shows.
+`with_audio(AudioMode::Play(engine))` with a `playback::Engine`, which the
+`full` feature includes, as [Watch a broadcast](../how-to/watch.md) shows.
 
 ## Keep the same ticket across restarts
 

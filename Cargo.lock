@@ -4375,6 +4375,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]
@@ -4391,7 +4392,6 @@ dependencies = [
  "moq-video",
  "n0-error",
  "n0-future",
- "n0-watcher",
  "ndk",
  "ndk-context",
  "tokio",
@@ -4414,6 +4414,7 @@ dependencies = [
  "iroh-live",
  "libc",
  "moq-ext-egui",
+ "moq-ext-sources",
  "moq-json",
  "moq-mux",
  "moq-net",
@@ -5606,6 +5607,7 @@ dependencies = [
  "moq-video",
  "n0-error",
  "n0-future",
+ "serde",
  "symphonia",
  "tokio",
  "tokio-util",

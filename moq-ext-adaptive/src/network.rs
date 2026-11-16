@@ -35,6 +35,12 @@ pub struct NetworkSample {
     /// The count includes packet overhead and duplicates, so it is no
     /// capacity. Adaptation does not read it.
     pub throughput: Option<u64>,
+    /// The rate bytes left this endpoint at, in bits per second.
+    ///
+    /// Like [`throughput`](Self::throughput), the count includes packet
+    /// overhead and retransmissions. On a publisher it is the uplink the media
+    /// uses. Adaptation does not read it.
+    pub send_rate: Option<u64>,
     /// Whether the path goes through a relay server rather than straight to the peer.
     pub relayed: bool,
 }

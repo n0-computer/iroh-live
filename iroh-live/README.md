@@ -27,7 +27,7 @@ let node = Node::new(endpoint.clone(), layout.config());
 // Accepts the viewers. Keep it: dropping it stops accepting.
 let router = node.mount(Router::builder(endpoint)).spawn();
 let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
-let camera = VideoSource::capture(video::capture::Config::default()).await?;
+let camera = VideoSource::camera(None).await?;
 broadcast.set_video(camera, VideoEncoding::single(VideoRendition::new("video")))?;
 println!("{}", layout.ticket(node.id(), "hello")?);
 ```

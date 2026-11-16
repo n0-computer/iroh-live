@@ -89,7 +89,17 @@ pub struct AudioPlaybackStats {
     /// How much audio is queued ahead of the speaker.
     pub buffered: Duration,
     /// The most recent peak level on a linear `0.0..=1.0` scale, for a meter.
+    ///
+    /// With a speaker, this is the speaker stream's peak after the volume.
+    /// Without one, it is the peak of the audio [`rms`](Self::rms) spans.
+    /// It reads `0.0` once [`rms`](Self::rms) reads `None`.
     pub peak: f32,
+    /// The RMS level of the last 100 ms of decoded audio, on a linear `0.0..=1.0` scale.
+    ///
+    /// Measured before the speaker's volume, with or without a speaker, so a
+    /// player in `AudioMode::Decode` can drive a level meter or a speaking
+    /// indicator. `None` before the first frame, and after 300 ms without one.
+    pub rms: Option<f32>,
     /// Frames played since the player started.
     pub frames: u64,
 }
@@ -117,6 +127,10 @@ pub struct FrameTiming {
     /// The medium.
     pub kind: MediaKind,
     /// The frame's presentation timestamp on the broadcast clock.
+    ///
+    /// This is the frame's `timestamp` as a [`Duration`], so timings sort and
+    /// subtract. [`Player::video_timing`](crate::Player::video_timing) takes
+    /// the frame's `timestamp` itself.
     pub pts: Duration,
     /// When the frame's data was complete on this node, before decoding.
     ///
@@ -133,6 +147,23 @@ pub struct FrameTiming {
     /// is presented when it reaches the speaker: when it was written plus the
     /// audio already queued ahead of it.
     pub presented: Instant,
+}
+
+impl FrameTiming {
+    /// Returns how long the frame spent in the decoder, from `arrived` to `decoded`.
+    ///
+    /// `None` when the arrival is not known.
+    #[must_use]
+    pub fn decode_time(&self) -> Option<Duration> {
+        self.arrived
+            .map(|arrived| self.decoded.saturating_duration_since(arrived))
+    }
+
+    /// Returns how long the playout clock held the frame, from `decoded` to `presented`.
+    #[must_use]
+    pub fn queued(&self) -> Duration {
+        self.presented.saturating_duration_since(self.decoded)
+    }
 }
 
 /// How many frames a [`FrameLog`] keeps per medium.
@@ -160,6 +191,14 @@ impl FrameLog {
         self.0.get()
     }
 
+    /// Returns when the newest frame kept left its decoder.
+    pub(crate) fn last_decoded(&self) -> Option<Instant> {
+        let mut decoded = None;
+        self.0
+            .update(|frames| decoded = frames.back().map(|timing| timing.decoded));
+        decoded
+    }
+
     /// Returns the newest frame kept at `pts`, without copying the log.
     pub(crate) fn find(&self, pts: Duration) -> Option<FrameTiming> {
         let mut found = None;
@@ -177,6 +216,23 @@ impl FrameLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The helpers split a frame's time into the decoder's part and the clock's part.
+    #[test]
+    fn a_timing_splits_into_decode_time_and_queued() {
+        let arrived = Instant::now();
+        let mut timing = FrameTiming {
+            kind: MediaKind::Video,
+            pts: Duration::ZERO,
+            arrived: Some(arrived),
+            decoded: arrived + Duration::from_millis(5),
+            presented: arrived + Duration::from_millis(45),
+        };
+        assert_eq!(timing.decode_time(), Some(Duration::from_millis(5)));
+        assert_eq!(timing.queued(), Duration::from_millis(40));
+        timing.arrived = None;
+        assert_eq!(timing.decode_time(), None);
+    }
 
     /// The summary names what it knows and marks the rest.
     #[test]

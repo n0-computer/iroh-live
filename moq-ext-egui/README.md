@@ -31,12 +31,28 @@ adapter supports it, so screen capture frames reach the GPU without a CPU
 copy. On every platform the device requests only the adapter's own limits.
 egui's defaults are too high for some drivers, such as the Raspberry Pi 4.
 
+```rust
+let options = eframe::NativeOptions {
+    wgpu_options: moq_ext_egui::egui_wgpu_config(),
+    ..Default::default()
+};
+```
+
+A view logs once at INFO when its device could import DMA-BUF frames but was
+built without it, which is the sign that the config was left out.
+
 ## Debug overlay
 
 `overlay::DebugOverlay` draws a translucent bar along the bottom of a video,
 with one clickable section per `StatCategory`. `show_player` shows a
 `Player`'s stats and timeline, and `show_broadcast` shows a `LocalBroadcast`'s
 stats. Clicking a section opens a detail panel with sparklines.
+
+## Tasks
+
+`Pending` runs a future, such as a dial or a device open, on the runtime and
+repaints the window when it finishes. The window polls it on each frame, since
+an egui update cannot await.
 
 ## wgpu
 

@@ -1,19 +1,16 @@
 //! Widgets and lifecycle helpers shared by the egui windows.
 
-use std::{
-    task::Poll,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use iroh_live::media::{Player, RenditionMode};
+pub(crate) use moq_ext_egui::Pending;
 use moq_ext_egui::{
     VideoView,
     overlay::{DebugOverlay, StatCategory},
 };
 use n0_error::{Result, anyerr};
 use n0_future::task::{AbortOnDropHandle, spawn};
-use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use crate::{backend::Backend, shutdown::Teardown};
@@ -50,58 +47,6 @@ pub(crate) fn run_window<A: eframe::App + 'static>(
         }),
     )
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
-}
-
-/// A task whose one result a window collects on a later pass.
-///
-/// Dropping it aborts the task.
-#[derive(Debug)]
-pub(crate) struct Pending<T> {
-    rx: oneshot::Receiver<T>,
-    task: AbortOnDropHandle<()>,
-}
-
-impl<T: Send + 'static> Pending<T> {
-    /// Runs `future` in a task and repaints `ctx` when it finishes.
-    ///
-    /// A result that arrives after the window gave up on it goes to `late`.
-    pub(crate) fn spawn(
-        ctx: &egui::Context,
-        future: impl Future<Output = T> + Send + 'static,
-        late: impl FnOnce(T) + Send + 'static,
-    ) -> Self {
-        let (tx, rx) = oneshot::channel();
-        let ctx = ctx.clone();
-        let task = spawn(async move {
-            if let Err(result) = tx.send(future.await) {
-                late(result);
-            }
-            ctx.request_repaint();
-        });
-        Self {
-            rx,
-            task: AbortOnDropHandle::new(task),
-        }
-    }
-
-    /// Returns the result once the task has finished.
-    ///
-    /// Returns `Ready(None)` for a task that stopped without a result, which
-    /// only happens while the runtime shuts down.
-    pub(crate) fn poll(&mut self) -> Poll<Option<T>> {
-        match self.rx.try_recv() {
-            Ok(result) => Poll::Ready(Some(result)),
-            Err(oneshot::error::TryRecvError::Empty) => Poll::Pending,
-            Err(oneshot::error::TryRecvError::Closed) => Poll::Ready(None),
-        }
-    }
-
-    /// Stops the task and returns a result it delivered before it stopped.
-    pub(crate) fn cancel(&mut self) -> Option<T> {
-        self.rx.close();
-        self.task.abort();
-        self.rx.try_recv().ok()
-    }
 }
 
 /// Height of the top bar, in points.
@@ -339,53 +284,6 @@ pub(crate) struct RemoteView {
     decoder: Backend,
     /// The output gain the slider last set.
     volume: f32,
-    /// The subscription the broadcast arrives over, for the overlay.
-    link: Option<Link>,
-}
-
-/// The source of the overlay's transport lines.
-#[derive(Debug)]
-struct Link {
-    subscription: iroh_live::Subscription,
-    /// When the lines were last refreshed.
-    refreshed: Option<Instant>,
-}
-
-/// How often the overlay's link lines are refreshed.
-const LINK_REFRESH: Duration = Duration::from_millis(500);
-
-impl Link {
-    /// Returns the lines if they are due for a refresh.
-    fn refresh(&mut self, now: Instant) -> Option<Vec<String>> {
-        if self
-            .refreshed
-            .is_some_and(|at| now.duration_since(at) < LINK_REFRESH)
-        {
-            return None;
-        }
-        self.refreshed = Some(now);
-        Some(self.lines())
-    }
-
-    /// Returns the overlay's NET lines: the path kind and the arriving bitrate.
-    fn lines(&self) -> Vec<String> {
-        let Some(serving) = self.subscription.serving_link() else {
-            return vec!["no link serves the broadcast".to_string()];
-        };
-        let link = serving.sample;
-        let mut lines = vec![match (serving.kind, link.relayed) {
-            (iroh_live::node::LinkKind::Relay, _) => "via a relay link".to_string(),
-            (_, true) => "relayed".to_string(),
-            (_, false) => "direct".to_string(),
-        }];
-        if let Some(bps) = link.throughput {
-            lines.push(format!(
-                "arriving: {}",
-                moq_ext_egui::format_bitrate(iroh_live::media::Rate::from_bps(bps))
-            ));
-        }
-        lines
-    }
 }
 
 impl RemoteView {
@@ -411,17 +309,7 @@ impl RemoteView {
             ]),
             decoder,
             volume: 1.0,
-            link: None,
         }
-    }
-
-    /// Adds link lines for `subscription` to the overlay.
-    pub(crate) fn with_link(mut self, subscription: iroh_live::Subscription) -> Self {
-        self.link = Some(Link {
-            subscription,
-            refreshed: None,
-        });
-        self
     }
 
     /// Returns whether the stats overlay is expanded.
@@ -453,13 +341,6 @@ impl RemoteView {
 
     /// Draws the stats overlay over `rect`.
     pub(crate) fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        if let Some(lines) = self
-            .link
-            .as_mut()
-            .and_then(|link| link.refresh(Instant::now()))
-        {
-            self.overlay.set_link(lines);
-        }
         self.overlay.show_player(ui, rect, &self.player);
     }
 

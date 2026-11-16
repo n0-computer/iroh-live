@@ -59,8 +59,9 @@ impl CaptureFramerate {
 
     /// Returns the rate for a source that generates its own frames.
     ///
-    /// The test pattern and `rpicam-vid` have no device mode to defer to, so
-    /// [`DEFAULT_FRAMERATE`] stands in.
+    /// `rpicam-vid` has no device mode to defer to, so [`DEFAULT_FRAMERATE`]
+    /// stands in.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub(crate) fn generated(self) -> u32 {
         self.request().unwrap_or(DEFAULT_FRAMERATE)
     }

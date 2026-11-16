@@ -147,8 +147,10 @@ impl DebugOverlay {
 
     /// Sets the link details shown in a player's NET section.
     ///
-    /// The player does not know about paths or addresses, so the caller passes
-    /// them in. The first line also joins the section summary.
+    /// The section already shows whether the path is relayed and the rate
+    /// media arrives at, from the player's network sample. These lines add
+    /// what the player does not know, such as addresses. The first line also
+    /// joins the section summary.
     pub fn set_link(&mut self, lines: Vec<String>) {
         self.link = lines;
     }

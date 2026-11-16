@@ -80,7 +80,9 @@ before the node takes its lock, so it may fail or call back into the node
 without harm. `LiveLayout::publish` builds a `LocalBroadcast` in it this way.
 `Node::publish_value` uses it to publish one latest-value JSON track through
 a `ValueWriter`, which stamps each update, and `Subscription::value_track`
-reads such a track. A publication stays until
+reads such a track with a `ValueReader`, which reopens the track on each
+broadcast the subscription follows and ends only when the subscription
+closes. A publication stays until
 `unpublish`, until its broadcast closes, or until the node shuts down. Dropping
 its handles does not withdraw it, so a publication that belongs to a task goes
 through `Publication::unpublish_on_drop`, whose guard unpublishes it when the
@@ -145,12 +147,14 @@ from the application's side.
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
 statistics every 200 ms into the adaptive crate's `NetworkSample`, and
 `Session::moq()` exposes the moq-net session it reads. The sample holds the
-round trip, the minimum round trip over 15 s, the loss rate and throughput over
-2 s, the peer's delivery estimate, whether the path is relayed and a path
+round trip, the minimum round trip over 15 s, the loss rate, throughput and send
+rate over 2 s, the peer's delivery estimate, whether the path is relayed and a path
 generation. Every figure is an `Option` and reads `None` until measured. A
 switch to another QUIC path bumps `path_generation` and starts the history
 over. `Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
-`sample`) of whichever link serves the subscription. `iroh-live/src/network.rs`
+`sample`) of whichever link serves the subscription, `Subscription::session()`
+the direct session that serves it, and `Session::sample()` the reading of a
+session the application holds. `iroh-live/src/network.rs`
 hands the sample to the player and makes its path generation count changes of
 the serving link too. The monitor logs every sample at TRACE as `link sample`.
 The node keeps no list of paths of its own: `Session::connection()` is the iroh

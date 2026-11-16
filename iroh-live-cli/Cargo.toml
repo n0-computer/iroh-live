@@ -22,9 +22,11 @@ dirs = "7"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 hang = { workspace = true }
 iroh = { workspace = true }
-iroh-live = { workspace = true, features = ["capture", "file", "render", "rooms", "record"] }
+iroh-live = { workspace = true, features = ["capture", "file", "playback", "render", "rooms", "record"] }
 moq-net = { workspace = true }
 moq-ext-egui = { workspace = true }
+# The source specifiers in the config file.
+moq-ext-sources = { workspace = true, features = ["serde"] }
 moq-mux = { workspace = true }
 # The room chat track: a JSON window, which `@moq/room` reads too.
 moq-json = { workspace = true }
@@ -59,8 +61,9 @@ libc = "0.2.189"
 eframe = { workspace = true, features = ["wayland", "x11"] }
 
 [features]
-# Capture and rendering are not features here: `irl publish` and `irl watch`
-# are most of the CLI and need both, so the dependencies ask for them directly.
+# Capture, playback and rendering are not features here: `irl publish` and
+# `irl watch` are most of the CLI and need them, so the dependencies ask for
+# them directly. Playback uses the same audio stacks as capture.
 #
 # Every feature is on by default, so a plain `cargo build` or `cargo install`
 # gets each backend its platform can reach. Cargo features cannot depend on
@@ -76,12 +79,11 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 # Not here: moq-video's `vpx`, which needs libvpx on the build host, and
 # MediaCodec, which only the Android demo uses, since `irl` has no Android
 # build.
-default = ["aec", "nvidia", "pipewire", "playback", "rpicam", "sound-server", "v4l2", "vaapi"]
+default = ["aec", "nvidia", "pipewire", "rpicam", "sound-server", "v4l2", "vaapi"]
 # Echo cancellation: `irl call` and `irl room` play the other side while
 # publishing a microphone, and without it a laptop sends the peer back to
 # itself.
 aec = ["iroh-live/aec"]
-playback = ["iroh-live/playback"]
 # PipeWire and PulseAudio audio devices. Linux only.
 sound-server = ["iroh-live/sound-server"]
 # PipeWire's shared camera as `cam` and the desktop portal's picker as

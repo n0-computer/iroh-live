@@ -106,8 +106,9 @@ router.shutdown().await?;
 //! rooms, and [`calls::Error`] from calls. Each one converts into [`Error`], so
 //! `?` works in a function that returns it.
 //!
-//! No feature is on by default. `full` turns on `media`, `capture`, `render`,
-//! `record` and `sound-server`. `media` adds the `media` module. Without it
+//! No feature is on by default. `full` turns on `media`, `capture`,
+//! `playback`, `render`, `record` and `sound-server`. `media` adds the `media`
+//! module. Without it
 //! the crate is the layout, calls and endpoint setup only. `playback`, `aec`,
 //! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
 //! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
@@ -133,24 +134,35 @@ pub mod media {
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
         VideoEncoding, VideoRendition, audio_encoding,
     };
+    #[cfg(feature = "capture")]
+    pub use moq_ext_sources::screen_source;
     pub use moq_ext_sources::{
-        AudioFormat, AudioSource, Error, FileEnd, FrameSender, SlotState, SourceClosed,
-        VideoFormat, VideoFrames, VideoSource, VideoSwitch,
+        AudioFormat, AudioSource, Backend, Error, FileEnd, FrameSender, SlotState, SourceClosed,
+        UnknownBackend, VideoFormat, VideoFrames, VideoSource, VideoSwitch, spec,
     };
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};
     pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
+    /// The `wgpu` crate that [`video::render`] draws with.
+    ///
+    /// Name `wgpu` types through it, so they always match the renderer's
+    /// version, instead of depending on `wgpu` directly.
+    #[cfg(feature = "render")]
+    pub use wgpu;
 
     pub use crate::network::SubscriptionExt;
 }
 pub use iroh_live_node as node;
 /// The moq-net this crate builds against.
 pub use iroh_live_node::moq_net;
+// A type that a top-level item's method takes or returns is top-level too,
+// so a caller never has to guess which path holds it.
 pub use iroh_live_node::{
-    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Mdns,
-    MoqPreset, Node, NodeConfig, Publication, Reach, RelayConfig, Session, Subscription,
-    UnpublishOnDrop, ValueWriter, layout, load_or_create_secret_key,
+    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Grant,
+    LinkKind, Mdns, MoqPreset, NetworkSample, Node, NodeConfig, Publication, Reach, RelayConfig,
+    RelayLink, RelayStatus, ServingLink, Session, Subscription, UnpublishOnDrop, ValueReader,
+    ValueWriter, layout, load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -164,7 +176,8 @@ pub use iroh_live_rooms as rooms;
 /// arrive.
 ///
 /// [`Node::publish_value`] publishes a broadcast with one latest-value track,
-/// and [`Subscription::value_track`] reads it. A track next to media goes
+/// and [`Subscription::value_track`] reads it with a [`ValueReader`] that
+/// follows the subscription to a restarted publisher. A track next to media goes
 /// through `LocalBroadcast::value_track`, and any other through
 /// [`ValueWriter::new`] on a track of your own. The track counts
 /// milliseconds, and the [`ValueWriter`] stamps each update with the time it
@@ -202,7 +215,6 @@ pub use self::error::Error;
     feature = "full",
     feature = "file",
     feature = "jwt",
-    feature = "playback",
     feature = "rooms"
 ))]
 mod guide {

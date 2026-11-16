@@ -133,14 +133,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
 async fn setup(args: &WatchArgs) -> Result<(SharedNode, Option<Speaker>)> {
-    #[cfg(feature = "playback")]
-    let device = args.audio_output.clone();
-    #[cfg(not(feature = "playback"))]
-    let device = {
-        let _ = args;
-        None
-    };
-    let speaker = crate::playback::open_speaker(device).await?;
+    let speaker = crate::playback::open_speaker(args.audio_output.clone()).await?;
     Ok((transport::bind_node(Inbound::Refuse).await?, speaker))
 }
 
@@ -451,7 +444,7 @@ mod window {
                 Err(err) => Attempt::Failed(format!("{err:#}")),
             }
         };
-        let attempt = Pending::spawn(ctx, dial, |late| {
+        let attempt = Pending::spawn_with_late(ctx, dial, |late| {
             if let Attempt::Connected(connected) = late {
                 info!("the connection landed after it was cancelled, closing it");
                 connected.discard();
@@ -478,8 +471,7 @@ mod window {
         } = connected;
         let title = ticket.path().to_string();
         let mut remote =
-            RemoteView::new(ctx, "video", player, options.playback.decoder, render_state)
-                .with_link(sub.subscription.clone());
+            RemoteView::new(ctx, "video", player, options.playback.decoder, render_state);
         if let RenditionMode::Pinned(_) = &options.rendition {
             remote.set_rendition(options.rendition.clone());
         }

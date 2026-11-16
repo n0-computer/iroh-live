@@ -106,6 +106,24 @@ pub struct VideoSource {
     inner: Arc<VideoInner>,
 }
 
+/// Returns the capture source of the main screen, as [`VideoSource::screen`] opens it.
+///
+/// In a Wayland session on Linux with the `pipewire` feature, this is the
+/// desktop portal's screen picker. Elsewhere it is the main display, which
+/// [`VideoSource::capture`] still tries through the portal first on an X11
+/// session with that feature. Use it to set a size or a rate on the capture
+/// config of a screen.
+#[cfg(feature = "capture")]
+#[must_use]
+pub fn screen_source() -> video::capture::Source {
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        use video::capture::portal::{Kind, Selection};
+        return video::capture::Source::Portal(Selection::new(Kind::Screen));
+    }
+    video::capture::Source::Display(video::capture::DisplaySelection::default())
+}
+
 impl VideoSource {
     fn new(
         label: impl Into<String>,
@@ -179,6 +197,39 @@ impl VideoSource {
             config.source = capture::fallback(config.source);
         }
         Self::capture_device(config).await
+    }
+
+    /// Opens camera `id` at its default mode, or the default camera for `None`.
+    ///
+    /// The ids are the ones `moq_video::capture::cameras` reports. For a size
+    /// or a rate, build a `capture::Config` and call
+    /// [`capture`](Self::capture).
+    ///
+    /// # Errors
+    ///
+    /// As [`capture`](Self::capture).
+    #[cfg(feature = "capture")]
+    pub async fn camera(id: Option<String>) -> Result<Self, Error> {
+        let mut config = video::capture::Config::default();
+        config.source = video::capture::Source::Camera(id);
+        Self::capture(config).await
+    }
+
+    /// Opens the main screen at its own size.
+    ///
+    /// Opens [`screen_source`]: on Wayland in a build with the `pipewire`
+    /// feature, the user picks the screen in the desktop portal's dialog,
+    /// since Wayland refuses a direct display capture.
+    ///
+    /// # Errors
+    ///
+    /// As [`capture`](Self::capture), and fails on Wayland without the
+    /// `pipewire` feature.
+    #[cfg(feature = "capture")]
+    pub async fn screen() -> Result<Self, Error> {
+        let mut config = video::capture::Config::default();
+        config.source = screen_source();
+        Self::capture(config).await
     }
 
     /// Opens exactly the device `config` names.
@@ -363,6 +414,7 @@ impl VideoSource {
     /// The demand lasts until the guard is dropped. A handle from
     /// [`frames`](Self::frames) already holds one, so this is only for a
     /// reader from [`observe`](Self::observe).
+    #[doc(hidden)]
     pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
@@ -485,6 +537,8 @@ impl AudioSource {
     }
 
     /// Registers a broadcast that publishes this source.
+    // Shared with moq-ext-publisher, not public API.
+    #[doc(hidden)]
     pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
@@ -658,6 +712,8 @@ impl AudioSource {
     }
 
     /// Returns what the source produces.
+    // Shared with moq-ext-publisher, not public API.
+    #[doc(hidden)]
     #[must_use]
     pub fn kind(&self) -> &AudioKind {
         &self.inner.kind

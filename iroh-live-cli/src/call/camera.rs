@@ -136,7 +136,7 @@ impl CallApp {
     /// keeps publishing. Otherwise the scan screen opens the camera itself.
     pub(super) fn enter_scan(&mut self, ctx: &egui::Context) {
         info!("scanning for a ticket");
-        let view = match (&self.local_video, self.camera) {
+        let view = match (self.broadcast.video_source(), self.camera) {
             (Some(camera), Camera::Publisher) => {
                 ScanView::from_frames(ctx, self.render_state.as_ref(), None, camera.frames())
             }
@@ -215,7 +215,7 @@ impl CallApp {
                 }
             }
         };
-        self.restoring = Some(Pending::spawn(ctx, restore, drop));
+        self.restoring = Some(Pending::spawn(ctx, restore));
     }
 
     /// Collects the result of reopening the publisher's camera.
@@ -233,7 +233,6 @@ impl CallApp {
                 info!("the publisher has its camera back");
                 self.preview
                     .set_frames(video.as_ref().map(VideoSource::frames));
-                self.local_video = video;
             }
             Err(err) => {
                 let message = format!("the camera did not come back after the scan: {err:#}");

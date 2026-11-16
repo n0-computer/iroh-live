@@ -7,7 +7,7 @@ use iroh::EndpointId;
 use iroh_live::{
     BroadcastTicket,
     calls::{Call, Calls},
-    media::{AudioSource, LocalBroadcast, Player, VideoSource},
+    media::{LocalBroadcast, Player, VideoSource},
 };
 use moq_ext_egui::{VideoView, egui_wgpu::RenderState};
 use n0_error::Result;
@@ -35,7 +35,6 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
         node,
         broadcast,
         calls,
-        sources,
         speaker,
         ticket,
     } = local;
@@ -46,7 +45,7 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
         let preview = VideoView::new(
             ctx,
             "call-preview",
-            sources.video.as_ref().map(VideoSource::frames),
+            broadcast.video_source().as_ref().map(VideoSource::frames),
             cc.wgpu_render_state.as_ref(),
         );
         let mut app = CallApp {
@@ -58,8 +57,6 @@ pub(super) fn run(local: Local, args: CallArgs) -> Result {
             camera_owed: false,
             camera_epoch: Arc::default(),
             notice: None,
-            local_video: sources.video,
-            _local_audio: sources.audio,
             speaker,
             scan_camera: args.scan_camera,
             playback: args.playback,
@@ -94,10 +91,6 @@ pub(super) struct CallApp {
     pub(super) broadcast: LocalBroadcast,
     /// Who the local side is offered to.
     pub(super) calls: Calls,
-    /// The local video, which the preview draws and the scan screen may read.
-    pub(super) local_video: Option<VideoSource>,
-    /// The local audio, kept alive with the window.
-    pub(super) _local_audio: Option<AudioSource>,
     /// Where the peer's voice plays, and what the microphone cancels.
     pub(super) speaker: Option<Speaker>,
     pub(super) camera: Camera,
@@ -285,8 +278,7 @@ impl CallApp {
             player,
             self.playback.decoder,
             self.render_state.as_ref(),
-        )
-        .with_link(sub.subscription.clone());
+        );
         self.screen = Screen::InCall(Box::new(InCall {
             peer,
             _call: call,
@@ -352,7 +344,7 @@ impl CallApp {
             self.playback,
             self.speaker.clone(),
         );
-        let answer = Pending::spawn(ctx, attempt, |_| {
+        let answer = Pending::spawn_with_late(ctx, attempt, |_| {
             info!("the call landed after it was given up on, dropping it");
         });
         self.pending = Some(Attempt { direction, answer });
