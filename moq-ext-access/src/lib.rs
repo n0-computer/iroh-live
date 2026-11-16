@@ -278,6 +278,11 @@ pub enum Audience<P: PeerId> {
     ///
     /// Never offered to relays. The publication holds the set: change it
     /// through a clone of the watchable.
+    ///
+    /// Do not put a relay's endpoint id in the set. A relay that pulls the
+    /// publication dials the publisher as an ordinary peer, so a set that
+    /// names it lets the relay read the publication, and the relay then
+    /// serves it to every session its own policy admits.
     Peers(n0_watcher::Watchable<BTreeSet<P>>),
 }
 

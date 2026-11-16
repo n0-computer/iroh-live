@@ -321,3 +321,96 @@ fn a_verifier_at_the_empty_root_admits_any_root() {
     let authorization = verify(&verifier, &bob, &encode_chain(&[link])).expect("admitted");
     assert!(authorization.grant.allows_publish("fleet/cam"));
 }
+
+#[test]
+fn a_chain_issues_and_delegates_as_the_builders_do() {
+    let (alice, bob, phone) = (key(1), key(2), key(3));
+    let issued = Chain::issue(&alice, bob.verifying_key(), publish_under("bob"), hours(2));
+    let delegated = issued
+        .delegate(
+            &bob,
+            phone.verifying_key(),
+            Some(publish_under("bob/phone")),
+            hours(1),
+        )
+        .expect("bob holds the chain");
+    assert_eq!(delegated.links().len(), 2);
+    assert_eq!(delegated.principal(), &alice.verifying_key());
+    assert_eq!(delegated.holder(), &phone.verifying_key());
+    let grant = verify(&alice_verifier(), &phone, &delegated.to_token())
+        .expect("admitted")
+        .grant;
+    assert!(grant.allows_publish("spaces/alice/bob/phone/cam"));
+    assert!(!grant.allows_publish("spaces/alice/bob/laptop/cam"));
+}
+
+#[test]
+fn a_chain_delegates_its_own_capability_without_a_narrower_one() {
+    let (alice, bob, phone) = (key(1), key(2), key(3));
+    let delegated = Chain::issue(&alice, bob.verifying_key(), publish_under("bob"), hours(2))
+        .delegate(&bob, phone.verifying_key(), None, hours(1))
+        .expect("bob holds the chain");
+    assert_eq!(delegated.capability(), &publish_under("bob"));
+    verify(&alice_verifier(), &phone, &delegated.to_token()).expect("admitted");
+}
+
+#[test]
+fn a_chain_refuses_a_wider_delegation_and_a_foreign_signer() {
+    let (alice, bob, phone, mallory) = (key(1), key(2), key(3), key(9));
+    let issued = Chain::issue(&alice, bob.verifying_key(), publish_under("bob"), hours(2));
+    let wider = issued
+        .delegate(
+            &bob,
+            phone.verifying_key(),
+            Some(publish_under("carol")),
+            hours(1),
+        )
+        .expect_err("wider");
+    assert!(wider.reason().contains("wider"), "{wider}");
+    let foreign = issued
+        .delegate(&mallory, phone.verifying_key(), None, hours(1))
+        .expect_err("not the holder");
+    assert!(foreign.reason().contains("does not hold"), "{foreign}");
+}
+
+#[test]
+fn a_chain_refuses_a_link_past_the_limit() {
+    let keys: Vec<SigningKey> = (1..=10).map(key).collect();
+    let mut chain = Chain::issue(
+        &keys[0],
+        keys[1].verifying_key(),
+        publish_under("bob"),
+        hours(1),
+    );
+    for pair in keys[1..].windows(2).take(MAX_LINKS - 1) {
+        chain = chain
+            .delegate(&pair[0], pair[1].verifying_key(), None, hours(1))
+            .expect("below the limit");
+    }
+    assert_eq!(chain.links().len(), MAX_LINKS);
+    let holder = &keys[MAX_LINKS];
+    chain
+        .delegate(holder, keys[0].verifying_key(), None, hours(1))
+        .expect_err("past the limit");
+}
+
+#[test]
+fn a_chain_round_trips_through_its_token() {
+    let (alice, bob) = (key(1), key(2));
+    let chain = Chain::issue(
+        &alice,
+        bob.verifying_key(),
+        publish_under("bob"),
+        Expires::At(3_000_000_000),
+    );
+    let parsed: Chain = chain.to_token().parse().expect("decodes");
+    assert_eq!(parsed, chain);
+    assert_eq!(parsed.to_string(), chain.to_token());
+    assert!(parsed.to_token().starts_with(CHAIN_PREFIX));
+    assert_eq!(
+        parsed.expires(),
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000_001))
+    );
+    let empty = encode_chain(&[]).parse::<Chain>().expect_err("empty");
+    assert!(empty.reason().contains("empty"), "{empty}");
+}
