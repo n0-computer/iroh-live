@@ -125,7 +125,9 @@ pub(super) fn mode_text(mode: &RenditionMode) -> String {
 
 /// Builds a player's NET section.
 ///
-/// It shows the last network sample and the link details.
+/// It shows the link details, then the last network sample: whether the
+/// path is relayed, the arriving rate, the round trip, loss and the
+/// delivery estimate.
 pub(super) fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
     let mut parts: Vec<String> = link.first().cloned().into_iter().collect();
     let mut lines: Vec<Line> = link.iter().map(|line| Line::info(line.clone())).collect();
@@ -138,6 +140,13 @@ pub(super) fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> 
         ));
         return Section::new(StatCategory::Net, parts, lines);
     };
+    let path = if net.relayed { "relayed" } else { "direct" };
+    parts.push(path.to_string());
+    lines.push(Line::info(format!("path: {path}")));
+    if let Some(throughput) = net.throughput {
+        let arriving = crate::format_bitrate(moq_net::bandwidth::Rate::from_bps(throughput));
+        lines.push(Line::info(format!("arriving: {arriving}")));
+    }
     if let Some(rtt) = net.rtt {
         let ms = millis(rtt);
         parts.push(format!("rtt:{ms:.0}ms"));
@@ -514,6 +523,30 @@ mod tests {
             .iter()
             .map(|line| line.text.as_str())
             .collect()
+    }
+
+    /// The NET section says whether the path is relayed, and the rate media arrives at.
+    #[test]
+    fn net_shows_the_path_and_the_arriving_rate() {
+        let sample = NetworkSample {
+            relayed: true,
+            throughput: Some(2_000_000),
+            ..Default::default()
+        };
+        let section = net_playback(Some(&sample), &[]);
+        assert!(section.summary.contains("relayed"), "{}", section.summary);
+        let lines = texts(&section);
+        assert!(lines.contains(&"path: relayed"), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.starts_with("arriving: ")),
+            "{lines:?}"
+        );
+        let direct = net_playback(Some(&NetworkSample::default()), &["extra".to_string()]);
+        assert!(
+            direct.summary.contains("extra direct"),
+            "{}",
+            direct.summary
+        );
     }
 
     /// The RENDER summary names the rendition and rate, and skipped frames turn the count amber.

@@ -284,53 +284,6 @@ pub(crate) struct RemoteView {
     decoder: Backend,
     /// The output gain the slider last set.
     volume: f32,
-    /// The subscription the broadcast arrives over, for the overlay.
-    link: Option<Link>,
-}
-
-/// The source of the overlay's transport lines.
-#[derive(Debug)]
-struct Link {
-    subscription: iroh_live::Subscription,
-    /// When the lines were last refreshed.
-    refreshed: Option<Instant>,
-}
-
-/// How often the overlay's link lines are refreshed.
-const LINK_REFRESH: Duration = Duration::from_millis(500);
-
-impl Link {
-    /// Returns the lines if they are due for a refresh.
-    fn refresh(&mut self, now: Instant) -> Option<Vec<String>> {
-        if self
-            .refreshed
-            .is_some_and(|at| now.duration_since(at) < LINK_REFRESH)
-        {
-            return None;
-        }
-        self.refreshed = Some(now);
-        Some(self.lines())
-    }
-
-    /// Returns the overlay's NET lines: the path kind and the arriving bitrate.
-    fn lines(&self) -> Vec<String> {
-        let Some(serving) = self.subscription.serving_link() else {
-            return vec!["no link serves the broadcast".to_string()];
-        };
-        let link = serving.sample;
-        let mut lines = vec![match (serving.kind, link.relayed) {
-            (iroh_live::node::LinkKind::Relay, _) => "via a relay link".to_string(),
-            (_, true) => "relayed".to_string(),
-            (_, false) => "direct".to_string(),
-        }];
-        if let Some(bps) = link.throughput {
-            lines.push(format!(
-                "arriving: {}",
-                moq_ext_egui::format_bitrate(iroh_live::media::Rate::from_bps(bps))
-            ));
-        }
-        lines
-    }
 }
 
 impl RemoteView {
@@ -356,17 +309,7 @@ impl RemoteView {
             ]),
             decoder,
             volume: 1.0,
-            link: None,
         }
-    }
-
-    /// Adds link lines for `subscription` to the overlay.
-    pub(crate) fn with_link(mut self, subscription: iroh_live::Subscription) -> Self {
-        self.link = Some(Link {
-            subscription,
-            refreshed: None,
-        });
-        self
     }
 
     /// Returns whether the stats overlay is expanded.
@@ -398,13 +341,6 @@ impl RemoteView {
 
     /// Draws the stats overlay over `rect`.
     pub(crate) fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        if let Some(lines) = self
-            .link
-            .as_mut()
-            .and_then(|link| link.refresh(Instant::now()))
-        {
-            self.overlay.set_link(lines);
-        }
         self.overlay.show_player(ui, rect, &self.player);
     }
 
