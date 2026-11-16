@@ -13,12 +13,18 @@ is:
 ilv1:<peer>/<path>
 ```
 
-- `<peer>` is the endpoint id in lowercase base32, 52 characters.
+- `<peer>` is the endpoint id in lowercase base32, 52 characters. Parsing
+  also accepts uppercase base32 and lowercase hex.
 - `<path>` is the broadcast path. A path segment that equals the peer's own
   id is written `~`, which keeps the usual `live/<peer>/<name>` ticket short.
 - Any other byte outside `A-Z`, `a-z`, `0-9`, `.`, `_` and `-` is
   percent-encoded.
 - A ticket has at most 31 path segments and 4000 bytes.
+
+A path holds the endpoint id in its 64-character lowercase hex form, the form
+`EndpointId` displays. So a `live/<peer>/<name>` path and its ticket spell the
+id differently. Build a path from an `EndpointId` value, or with
+`LiveLayout::path`, rather than from the text of a ticket.
 
 For example, the ticket for `live/<peer>/studio` is
 `ilv1:<52 characters>/live/~/studio`, about 72 characters. Serde uses the same
@@ -47,6 +53,6 @@ endpoints. Its string form is an
 
 | Call | Returns |
 |---|---|
-| `RoomTicket::generate()` | A new topic, with no bootstrap endpoints |
-| `Room::ticket()` | The room's ticket, with this member as a bootstrap endpoint |
+| `RoomTicket::generate()` | A new topic, with no bootstrap members |
+| `Room::ticket()` | The room's ticket, with this member as a bootstrap member |
 | `ticket.to_string().parse::<RoomTicket>()` | The parsed ticket |

@@ -16,11 +16,13 @@ call. Every capture flag of `irl publish` applies to what this side sends.
 
 ## From Rust
 
-`Calls::new` publishes this side at `live/<id>/call`, visible to nobody.
-`Calls::call(peer)` rings the peer and waits until it answers, with no time
-limit, so bound it with a timeout. Both programs run the same code with the
-other's endpoint id, which each prints on start. Two peers that ring each
-other at once get one `Call` on each side.
+`Calls::new` publishes this side at `live/<endpoint id>/call`, visible to
+nobody. `Calls::call(peer)` rings the peer and waits until it answers, with no
+time limit, so bound it with a timeout. Two peers that ring each other at once
+get one `Call` on each side.
+
+Run the program on two machines, each with the other's endpoint id. Each
+prints its own id on start.
 
 ```rust,no_run
 use std::time::Duration;
@@ -40,7 +42,7 @@ use iroh_live::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer: EndpointId = std::env::args()
         .nth(1)
-        .ok_or("usage: call <peer id>")?
+        .ok_or("usage: call <endpoint id>")?
         .parse()?;
     let layout = LiveLayout::default();
     let endpoint = EndpointConfig::from_env()?.bind().await?;
@@ -75,8 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The program uses test sources. Swap in a camera and a microphone as in
-[Publish](publish.md). `Calls::ticket()` returns the ticket a peer calls this
-node with, to show as text or a QR code.
+[Publish a camera, screen or file](publish.md). `Calls::ticket()` returns the
+ticket a peer calls this node with, to show as text or a QR code.
 
 ## Answering
 

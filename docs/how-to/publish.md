@@ -17,8 +17,9 @@ irl publish --video file:talk.mp4 --transcode
 irl publish --video none --audio file:music.mp3:loop
 ```
 
-A `file:` video source is republished without decoding. A plain MP4 or a
-looped file needs `--transcode`, which runs it through ffmpeg first. The
+A `file:` video source is republished without decoding, so it must already be
+fragmented MP4 or raw H.264. A regular MP4, or a file played with `:loop`, needs
+`--transcode`, which re-muxes it through ffmpeg first. The
 [CLI reference](../reference/cli.md#sources) lists every source, and
 [Publish from a Raspberry Pi](raspberry-pi.md) covers the Pi camera.
 
@@ -110,9 +111,8 @@ feeds it.
 
 - `VideoSource::push(format)` and `AudioSource::push(format)` take frames
   that the application makes.
-- A video file is republished without decoding, through moq-mux's importer.
-  `irl` does this in `iroh-live-cli/src/import.rs`. There is no
-  `VideoSource` for files.
+- There is no `VideoSource` for video files. `irl` republishes a file with
+  moq-mux's importer, without decoding. See `iroh-live-cli/src/import.rs`.
 - `rpicam_h264` publishes the Raspberry Pi camera's own H.264, see
   [Publish from a Raspberry Pi](raspberry-pi.md).
 

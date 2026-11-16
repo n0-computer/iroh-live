@@ -62,7 +62,7 @@ then write the two programs of the
 [library quickstart](getting-started/library-quickstart.md). The
 [guides for app developers](how-to/index.md) cover publishing, watching,
 calls, rooms and access control. [How it fits together](concepts/overview.md)
-explains the model, and the [API docs](reference/crates.md#api-docs) cover
+explains the model, and the [API docs](https://n0-computer.github.io/iroh-live/api/iroh_live/) cover
 each type.
 
 **Run a relay.** [Install](getting-started/install.md#build-the-iroh-live-relay)

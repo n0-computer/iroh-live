@@ -85,9 +85,9 @@ Capture and encoding:
 | `--test-source` | Publish `--video test --audio test`, overriding both flags |
 | `--codec <CODEC>` | `h264` (default) or `h265`. H.265 needs a hardware encoder |
 | `--encoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvenc`, `vaapi`, `v4l2`, `openh264` |
-| `--renditions <LIST>` | The simulcast ladder, comma-separated. A rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`, with an optional `@<fps>`. A bare name encodes at the source's size. Default: one rendition named `video` at the source's size |
+| `--renditions <LIST>` | The ladder, comma-separated. A rendition is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`, with an optional `@<fps>`. A bare name encodes at the source's size. Default: one rendition named `video` at the source's size |
 | `--keyframe-interval <SECONDS>` | Seconds between keyframes (default: 2). A viewer waits up to this long for a first picture, and a rendition switch waits as long. Use 1 for a call or a demo |
-| `--bitrate <BITS_PER_SECOND>` | Target video bitrate of the largest rung. Smaller rungs get a share by pixel count. Omit to derive one from the resolution |
+| `--bitrate <BITS_PER_SECOND>` | Target video bitrate of the largest rendition. Smaller renditions get a share by pixel count. Omit to derive one from the resolution |
 | `--width`, `--height` | Requested capture size. The device picks its nearest mode |
 | `--fps` | Requested capture frame rate, see below |
 | `--no-cursor` | Hide the pointer in screen, window, and application capture |
@@ -196,13 +196,8 @@ switch. On a Raspberry Pi 4, `auto` picks the V4L2 hardware decoder, which adds
 latency. See [Publish from a Raspberry Pi](../how-to/raspberry-pi.md#watching-on-a-pi-4-name-the-decoder).
 
 `--latency` sets how long the player holds each frame before it shows it, and
-how far behind it may fall before it skips ahead:
-
-| Mode | Holds | Skips at | For |
-|---|---|---|---|
-| `realtime` | 60 ms | 100 ms | Conversations |
-| `balanced` | 100 ms | 150 ms | The default |
-| `smooth` | 400 ms | 600 ms | Watching over Wi-Fi or a mobile link |
+how far behind it may fall before it skips ahead.
+[Player settings](player.md#latency) lists the values of each mode.
 
 ## `irl call`
 
@@ -233,7 +228,7 @@ named `call`.
 
 ## `irl room`
 
-Joins a room with several participants. It publishes this node's camera and
+Joins a room with several members. It publishes this node's camera and
 microphone into the room, shows the others in a grid, and has a chat panel.
 
 | Flag | Description |
@@ -247,17 +242,17 @@ microphone into the room, shows the others in a grid, and has a chat panel.
 
 Every capture and encoding flag of `irl publish` applies too.
 
-Every participant subscribes to every other, so rooms suit small groups. The
-ticket a window prints lists this node as the bootstrap peer, so pass that one
-on to the next participant.
+Every member subscribes to every other, so rooms suit small groups. The
+ticket a window prints lists this node as the bootstrap member, so pass that one
+on to the next member.
 
 Chat is one more broadcast in the room, named `chat`. Its `chat` track is a
 JSON window in the format `@moq/room` reads. The window holds the last ten
-seconds of messages, so a participant who joins sees what was said in that
+seconds of messages, so a member who joins sees what was said in that
 time.
 
 A tile disappears when its broadcast closes or its session drops. It comes
-back if the participant still lists the broadcast. A participant who publishes
+back if the member still lists the broadcast. A member who publishes
 nothing gets no tile. See [Rooms](../how-to/rooms.md).
 
 ## `irl record`
@@ -281,7 +276,7 @@ MP4, and `.mkv` and `.webm` are Matroska. Other extensions need `--format`.
 Both containers are fragmented, so a recording that was interrupted or killed
 plays up to the last fragment written.
 
-Without `--rendition`, the file has one video track per rung.
+Without `--rendition`, the file has one video track per rendition.
 
 ## `irl run`
 
@@ -360,7 +355,7 @@ Photograph the publisher's screen and the player together, and the difference
 between the two clocks is the latency. The marker is lit while each beep
 sounds, so A/V sync is visible too.
 
-Publish a camera as a two-rung ladder, captured at 60 frames per second:
+Publish a camera as a ladder of two renditions, captured at 60 frames per second:
 
 ```sh
 irl publish --video cam:/dev/video0 --renditions low:320x180,720p@60

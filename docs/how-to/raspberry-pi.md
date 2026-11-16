@@ -32,7 +32,7 @@ irl publish --video rpicam --width 640 --height 360 --fps 30
 `irl devices` lists the sensors `rpicam-vid` reports.
 
 `--video rpicam` refuses `--codec h265`, any `--encoder` other than `auto`, and
-more than one rung in `--renditions`, since the stream arrives encoded.
+more than one rendition in `--renditions`, since the stream arrives encoded.
 `--width`, `--height`, `--fps`, and `--bitrate` become `rpicam-vid` arguments.
 `--preview` needs `--video rpicam:raw`.
 

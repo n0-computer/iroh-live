@@ -50,7 +50,7 @@ in moq-auth's pattern form. `Audience` and `Grant` come from
 [`moq-ext-access`](../moq-ext-access). The node's policy
 (`NodeConfig::with_policy`) gives each peer its grant, and without one a peer
 may read anything and publish nothing. `iroh-live`, for example, lets a peer
-publish under `live/<its id>/` only, so no peer can stand in for another.
+publish under `live/<endpoint id>/` only, so no peer can stand in for another.
 
 moq enforces it on each live session: the node authorizes every session, dialed
 or accepted, for exactly the publications whose audience admits its peer, and

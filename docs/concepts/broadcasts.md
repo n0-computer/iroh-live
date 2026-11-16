@@ -1,8 +1,8 @@
 # Broadcasts, tracks and renditions
 
 A *broadcast* is a named set of tracks that one node publishes, such as a
-camera's video and its microphone. A *track* is one stream inside it. These
-are the units of [Media over QUIC](https://moq.dev/), through moq's Rust
+camera's video and its microphone. A *track* is one stream inside it. Both
+are units of [Media over QUIC](https://moq.dev/). iroh-live uses moq's Rust
 implementation, [moq-dev/moq](https://github.com/moq-dev/moq).
 
 ## The model
@@ -18,19 +18,20 @@ The audio track is named after its codec, such as `opus`.
 
 A *group* is a run of frames that starts with a keyframe. A receiver that
 falls behind skips to the newest group, so latency does not build up under
-congestion. Each group travels on its own QUIC stream, so a lost video packet
-does not delay audio.
+congestion. Each group travels on its own QUIC stream. Audio and video use
+different streams, so a lost video packet does not delay audio.
 
 ## Renditions and the ladder
 
 A *rendition* is one encoding of the video source, at one size and bitrate.
 A *ladder* is a set of renditions of the same source, which
-`VideoEncoding::ladder` builds. The source is captured once, and each rung
-encodes the same frames.
+`VideoEncoding::ladder` builds. Encoding one source as several renditions at
+once is called *simulcast*. The source is captured once, and each rendition
+encodes the same frames. A rendition's place in the ladder is its *rung*.
 
 Each viewer's player subscribes to one rendition at a time, and picks the one
 its link can carry. A rendition encodes only while at least one viewer
-subscribes to it, so an unwatched rung costs no CPU.
+subscribes to it, so an unwatched rendition costs no CPU.
 
 ## The catalog
 

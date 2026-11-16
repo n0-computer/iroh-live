@@ -24,11 +24,15 @@ key, see [`irl run`](../reference/cli.md#irl-run).
 `RemoteBroadcast::mux_source()` hands a subscribed broadcast to moq-mux's
 exporters. It needs the `record` feature, which `full` includes, and a direct
 dependency on `moq-mux` at the same rev as iroh-live's (see
-[Install](../getting-started/install.md#use-the-library)).
+[Install](../getting-started/install.md#use-the-library)):
+
+```toml
+moq-mux = { git = "https://github.com/moq-dev/moq", rev = "4a6f52248" }
+```
 
 ```rust,no_run
 use iroh_live::{BroadcastTicket, EndpointConfig, Node, NodeConfig, media::SubscriptionExt};
-use moq_mux::{catalog::Stream as _, container::fmp4};
+use moq_mux::{catalog::Stream as _, container::fmp4, select};
 use tokio::io::AsyncWriteExt as _;
 
 #[tokio::main]
@@ -42,11 +46,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscription = node.subscribe_ticket(&ticket).await?;
     let broadcast = subscription.remote_broadcast();
 
+    // Keeps every video rendition and the audio. A default selection keeps
+    // nothing. `select::Video::default().name("720p")` keeps one rendition.
+    let selection = select::Broadcast::default()
+        .video(select::Video::default())
+        .audio(select::Audio::default());
     // Waits for the catalog.
     let source = broadcast.mux_source().await?;
     let catalog = moq_mux::catalog::Consumer::<()>::new(&source.broadcast(), Default::default())
         .await?
-        .select(moq_mux::select::Broadcast::default());
+        .select(selection);
     let mut export = fmp4::Export::new(source, catalog);
 
     let mut file = tokio::fs::File::create("recording.mp4").await?;

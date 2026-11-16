@@ -1,4 +1,7 @@
-# Environment variables
+# Environment variables and files
+
+`irl`, the iroh-live relay and the library read these variables. The
+[Files](#files) section lists the files that `irl` and the relay write.
 
 | Variable | Read by | Effect |
 |---|---|---|
@@ -55,6 +58,19 @@ Useful filters:
 | MoQ sessions and subscriptions | `moq_net=debug` |
 
 `trace` is verbose. Prefer it for one module, not as the default level.
+
+## Files
+
+`<config dir>` is the platform's config directory, such as `~/.config` on
+Linux, and `<data dir>` its data directory, such as `~/.local/share`.
+
+| File | Written by | Holds |
+|---|---|---|
+| `<config dir>/iroh-live/secret_keys/<name>.key` | `irl run` with `secret_key_name` | A stored secret key, made on first use |
+| `<config dir>/iroh-live/portal/screen.token`, `window.token` | `irl publish --video screen` or `window` on Linux | The desktop portal's restore token, so a later run can skip the picker |
+| `$IROH_LIVE_RELAY_DATA/iroh_secret_key`, or `<data dir>/iroh-live-relay/iroh_secret_key` | `iroh-live-relay` | The relay's secret key, which fixes its endpoint id |
+
+On Unix, each file is readable by its user only.
 
 On Android, the demo sends the same logs to logcat, see
 [Use iroh-live on Android](../how-to/android.md#debugging).

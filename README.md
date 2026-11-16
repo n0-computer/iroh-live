@@ -7,9 +7,9 @@ rendition and every audio track travels on its own QUIC streams, so a lost
 video packet never delays audio. Each viewer's player picks the rendition its
 link can carry, and keeps audio and video in step.
 
-> **Early tech preview.** Expect frequent API changes. 
+> **Early tech preview.** Expect frequent API changes.
 > iroh-live currently depends on moq's unreleased `main` branch by git rev, so
-> it is not yet on crates.io. 
+> it is not yet on crates.io.
 
 ## Quick start
 

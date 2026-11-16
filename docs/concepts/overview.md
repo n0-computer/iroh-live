@@ -17,7 +17,7 @@ one route table, and a subscription reads whichever route serves its path.
   |   |  session    relay link                       |
   |   |  (direct)   (attach_relay)                   |
   |   |      |        |                              |
-  |   +-- publications: live/<my id>/hello, ...      |
+  |   +-- publications: live/<endpoint id>/hello, ...|
   +----------|--------|------------------------------+
              |        |
          peer node   iroh-live relay ---- browsers
@@ -47,9 +47,9 @@ one route table, and a subscription reads whichever route serves its path.
 3. It publishes a broadcast at a path, and fills it with sources.
 4. It shares a ticket for that path.
 
-Encoders run only while someone watches. A broadcast is visible to every
-session whose grant covers its path, or to a set of peers that the
-application names.
+Encoders run only while someone watches. A broadcast's *audience* decides who
+sees it: every session whose grant covers its path, or a set of peers that
+the application names.
 
 ## Subscribing
 
@@ -60,8 +60,9 @@ application names.
 3. It reads the subscription as media and starts a player.
 
 When the route changes, for example from a relay to a direct session, the
-subscription moves with it and does not end. The player measures the link
-that serves it, and picks a rendition to match.
+subscription moves with it and does not end (see
+[Nodes, sessions and routes](nodes.md#switching-routes)). The player measures
+the link that serves it, and picks a rendition to match.
 
 ## Where to go next
 

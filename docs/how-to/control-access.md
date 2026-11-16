@@ -26,7 +26,7 @@ fn open_lan() -> NodeConfig {
 
 ## Live broadcasts, rooms and your own paths
 
-`LiveLayout::config()` lets each peer publish under `live/<its id>/`. A node
+`LiveLayout::config()` lets each peer publish under `live/<endpoint id>/`. A node
 that also runs rooms takes the union of both layouts,
 `layout::config((LiveLayout::default(), RoomsLayout))`. A layout of your own
 implements the `Layout` trait, and

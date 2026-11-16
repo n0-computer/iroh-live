@@ -49,11 +49,9 @@ falls behind skips to the newest picture.
 On the desktop, frames are drawn through wgpu, which needs the `render`
 feature. `moq_video::render::Renderer::new(device, queue, config)` binds a
 renderer to a wgpu device and queue, and `render(&frame)` returns a
-`wgpu::Texture` to present, hand to a UI toolkit, or copy back. Backend
-selection, colour handling and zero-copy import are documented in
-[moq-video](https://doc.moq.dev/lib/rs/crate/moq-video).
-
-Two points matter here:
+`wgpu::Texture` to present, hand to a UI toolkit, or copy back.
+[moq-video](https://doc.moq.dev/lib/rs/crate/moq-video) documents backend
+selection, color handling and zero-copy import.
 
 - The renderer fixes the wgpu version. `iroh_live::media::video::render::wgpu`
   re-exports the wgpu it links. A texture from another wgpu major version is a
@@ -109,8 +107,8 @@ the CPU. No library crate has a GLES renderer. The Pi demo has one in
 
 ## Follow the player
 
-- `Player::status()` watches the rendition on screen, the decoder, and why
-  the last switch failed.
+- `Player::status()` returns a watcher of the rendition on screen, the
+  decoder, and the reason the last switch failed.
 - `Player::stats()` returns frame rate, decode time, latency and the link's
   round trip and loss, cheap enough for every redraw.
 - `RemoteBroadcast::closed()` resolves when the broadcast ends.

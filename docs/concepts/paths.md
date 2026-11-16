@@ -39,7 +39,7 @@ Rooms use a second layout, `RoomsLayout`, with paths
 
 The node itself takes any path. `Node::publish(path, audience)` and
 `Node::subscribe(path, reach)` apply no layout. A layout of your own
-implements the `Layout` trait: `scope` returns the
+implements the [`Layout`](https://n0-computer.github.io/iroh-live/api/moq_ext_access/trait.Layout.html) trait: `scope` returns the
 patterns a peer may publish under, and `owner` returns the peer that owns a
 path. The two must agree: the owner of any path in `scope(peer)` is `peer`.
 The agreement matters for [ticket claims](../reference/access.md#ticket-claims).

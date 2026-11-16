@@ -242,5 +242,6 @@ mod guide {
         tokens => "how-to/tokens.md",
         concepts_nodes => "concepts/nodes.md",
         concepts_paths => "concepts/paths.md",
+        reference_player => "reference/player.md",
     }
 }

@@ -8,7 +8,7 @@ file, and watch it from another machine with the printed ticket.
 
 ```sh
 cargo install --locked --path iroh-live-cli
-irl publish --video test          # prints a ticket
+irl publish --test-source         # prints a ticket
 irl watch <ticket>
 ```
 
@@ -17,13 +17,13 @@ irl watch <ticket>
 - `publish`: publish a capture device or a media file.
 - `watch`: subscribe to a broadcast and play it.
 - `record`: record a broadcast to a file, without a window.
-- `call`: place or answer a 1:1 video call.
+- `call`: place or answer a one-to-one video call.
 - `room`: join a room, publish, and watch everyone else.
 - `run`: run a multi-stream session described by a TOML file.
 - `devices`: list cameras, displays and audio devices.
 
 `irl <command> --help` lists the options, and
-[docs/cli.md](../docs/reference/cli.md) describes them all.
+the [`irl` CLI reference](../docs/reference/cli.md) describes them all.
 
 The first Ctrl+C shuts down gracefully: it leaves rooms, closes broadcasts and
 then the endpoint, so peers learn at once that the node is gone. A second

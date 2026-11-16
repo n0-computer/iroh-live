@@ -1,31 +1,25 @@
 # Adaptive rendition switching
 
 A publisher that offers several renditions lets each subscriber follow its own
-downlink. Every `Player` in `RenditionMode::Auto` runs a selector task
-(`moq-ext-player/src/player/select.rs`). It reads the broadcast's network
-signals every 200 ms, computes which rendition should play, and hands that to
-the video supervisor when it changes. The rule itself is in
-`moq-ext-adaptive/src/bound.rs`.
-The decoder swap is the supervisor's job, described in
-[subscribing](subscribe.md#switching-renditions).
+downlink. Every `Player` in `RenditionMode::Auto` runs a selector task. It
+reads the broadcast's network signals every 200 ms, computes which rendition
+should play, and hands that to the video supervisor when it changes. The
+decoder swap is the supervisor's job, described in
+[Subscribing](subscribe.md#switching-renditions).
 
 ## Signals
 
-The transport-agnostic input is a function that returns a `NetworkSample`,
-attached with `RemoteBroadcast::set_network`.
+The transport-agnostic input is a function that returns a
+[`NetworkSample`](https://n0-computer.github.io/iroh-live/api/moq_ext_adaptive/struct.NetworkSample.html),
+attached with `RemoteBroadcast::set_network`. Its API docs list every field.
+The selector reads these:
 
-```rust,ignore
-pub struct NetworkSample {
-    pub rtt: Option<Duration>,
-    pub min_rtt: Option<Duration>,     // smallest recent rtt on this path
-    pub loss: Option<f64>,             // 0.0..=1.0
-    pub delivery: Option<u64>,         // the publisher's estimate, in bits/s
-    pub path_generation: u64,          // bumped when the path changes
-    pub throughput: Option<u64>,       // arriving bytes, in bits/s; not read by adaptation
-    pub send_rate: Option<u64>,        // leaving bytes, in bits/s; not read by adaptation
-    pub relayed: bool,                 // the path goes through a relay server
-}
-```
+- `delivery`, the publisher's estimate of what the path carries, in bits/s;
+- `loss`, from 0.0 to 1.0;
+- `path_generation`, which the transport bumps when the path changes.
+
+The round trip, its minimum, the throughput, the send rate and whether the
+path is relayed are there for diagnostics.
 
 Most fields are optional because transports measure different things, and
 `None` means unmeasured. A transport attaches its signals with
@@ -34,8 +28,7 @@ afterwards reads them. Without signals, the player holds the best rendition its
 constraints allow.
 
 moq-ext-player does not depend on iroh, so it never produces these itself.
-Every `iroh-live-node` link runs a connection monitor (the sampler is
-`iroh-live-node/src/link/sampler.rs`) that reads its MoQ session's statistics
+Every `iroh-live-node` link runs a connection monitor that reads its MoQ session's statistics
 every 200 ms and keeps the latest `NetworkSample`. A direct session starts the
 history over when the connection selects another path, and a relay link on
 every reconnect. Both bump `path_generation`.
@@ -172,3 +165,10 @@ while audio keeps playing, for a tile scrolled off screen.
 
 The selector keeps running while the catalog has a single rendition, since a
 publisher can add renditions mid-broadcast.
+
+## Where in the code
+
+- `moq-ext-player/src/player/select.rs`: the selector task.
+- `moq-ext-adaptive/src/bound.rs`: the rule that picks the target.
+- `iroh-live-node/src/link/sampler.rs`: the connection monitor that fills
+  the samples.
