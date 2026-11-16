@@ -84,6 +84,11 @@ pub enum Error {
         #[error(source, std_err)]
         source: Arc<moq_auth::Error>,
     },
+    /// The access configuration contradicts itself, or would admit nobody.
+    ///
+    /// The message names the setting and the fix.
+    #[error("{message}")]
+    AccessConfig { message: String },
     /// The moq relay failed to start or stopped with an error.
     #[error("the moq relay failed")]
     Relay {

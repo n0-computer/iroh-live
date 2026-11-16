@@ -2,11 +2,11 @@
 //!
 //! moq-tokio's server has no iroh backend, and an iroh session's auth request
 //! would carry no peer identity anyway. So the relay accepts iroh sessions
-//! itself with [`IrohSessions`], and asks a [`Policy`] about each. The
-//! default, [`relay_policy`], lets each client publish only at the paths that
-//! name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers
-//! come in through moq-relay's server, and [`browser_grant`] keeps them to
-//! names of one segment below the root.
+//! itself with [`IrohSessions`], and asks a [`Policy`] about each. On an open
+//! relay, [`relay_policy`] lets each client publish only at its own paths, the
+//! paths that name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
+//! Browsers come in through moq-relay's server, and [`browser_grant`] keeps
+//! them to names of one segment below the root.
 
 use std::{sync::Arc, time::Duration};
 
@@ -16,12 +16,12 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
 use iroh_live_node::{
-    BroadcastTicket, DECIDE_TIMEOUT, SessionRequest,
-    layout::LiveLayout,
-    policy::{Authorization, DynPolicy, Event, PeerRequest, Policy},
+    BroadcastTicket, DECIDE_TIMEOUT, Grant, SessionRequest,
+    layout::{self, LiveLayout},
+    policy::{self, Authorization, Closed, DynPolicy, Event, PeerRequest, Policy},
 };
 use iroh_live_rooms::RoomsLayout;
-use moq_net::Pattern;
+use moq_net::{Pattern, Patterns};
 use moq_relay::cluster::Cluster;
 use n0_error::e;
 use tokio_util::sync::CancellationToken;
@@ -50,7 +50,10 @@ pub struct IrohSessions {
 }
 
 impl IrohSessions {
-    /// Creates the handler for `cluster`, deciding sessions with [`relay_policy`].
+    /// Creates the handler for `cluster`, which refuses every session until it gets a policy.
+    ///
+    /// Set the policies with [`with_policies`](Self::with_policies), as the
+    /// relay does, or with [`with_policy`](Self::with_policy).
     ///
     /// With `pulls` set, a session that names a ticket in its path pulls the
     /// ticket's broadcast, as a browser's does, if the pulls'
@@ -63,7 +66,7 @@ impl IrohSessions {
         Self {
             cluster,
             pulls,
-            policy: Arc::new(relay_policy()),
+            policy: Arc::new(Closed),
             pull_policy: None,
             shutdown: CancellationToken::new(),
         }
@@ -93,6 +96,15 @@ impl IrohSessions {
     #[must_use]
     pub fn with_pull_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.pull_policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// Returns this handler with the session and pull policies of `policies`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_policies(mut self, policies: &crate::Policies) -> Self {
+        self.policy = policies.iroh.clone();
+        self.pull_policy.clone_from(&policies.pull_tokens);
         self
     }
 
@@ -167,32 +179,38 @@ impl IrohSessions {
             }
         };
         let grant = &authorization.grant;
-        let publish = self
-            .cluster
-            .origin
-            .scope("", &grant.publish)
+        // An empty half of the grant scopes to nothing, which moq refuses, so
+        // the session then gets no origin for it.
+        let publish = (!grant.publish.is_empty())
+            .then(|| self.cluster.origin.scope("", &grant.publish))
+            .transpose()
             .map_err(AcceptError::from_err)?;
         // A session that names a ticket reads the pulled broadcast at that name.
-        let serving = name
-            .as_deref()
-            .filter(|_| self.pulls.is_some())
-            .and_then(|name| crate::pull::mounted(&self.cluster, name))
-            .map_or_else(
-                || self.cluster.origin.consume(),
-                |cluster| cluster.origin.consume(),
-            )
-            .scope("", &grant.subscribe)
+        let serving = (!grant.subscribe.is_empty())
+            .then(|| {
+                name.as_deref()
+                    .filter(|_| self.pulls.is_some())
+                    .and_then(|name| crate::pull::mounted(&self.cluster, name))
+                    .map_or_else(
+                        || self.cluster.origin.consume(),
+                        |cluster| cluster.origin.consume(),
+                    )
+                    .scope("", &grant.subscribe)
+            })
+            .transpose()
             .map_err(AcceptError::from_err)?;
-        let (session, driver) = tokio::time::timeout(
-            moq_transport_iroh::HANDSHAKE_TIMEOUT,
-            handshake
-                .with_publisher(serving)
-                .with_subscriber(publish)
-                .ok(),
-        )
-        .await
-        .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
-        .map_err(AcceptError::from_err)?;
+        let mut handshake = handshake;
+        if let Some(serving) = serving {
+            handshake = handshake.with_publisher(serving);
+        }
+        if let Some(publish) = publish {
+            handshake = handshake.with_subscriber(publish);
+        }
+        let (session, driver) =
+            tokio::time::timeout(moq_transport_iroh::HANDSHAKE_TIMEOUT, handshake.ok())
+                .await
+                .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
+                .map_err(AcceptError::from_err)?;
         info!(%path, grant = ?authorization.grant, expires = ?authorization.expires, "iroh client admitted");
         Ok(Admitted {
             session,
@@ -354,20 +372,85 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.into_owned())
 }
 
-/// Returns the relay's default policy for iroh clients.
+/// Returns the policy of an open relay for iroh clients.
 ///
-/// It admits every client to read the whole cluster and to publish its own
-/// `live/` broadcasts and its room broadcasts, at the paths that name its
-/// endpoint id. Use it as the fallback of a [`Verify`](moq_ext_access::policy::Verify)
-/// to let a token widen what a client may publish.
+/// It admits every client to read the whole cluster and to publish at its
+/// own paths: its own `live/` broadcasts and its room broadcasts, at the
+/// paths that name its endpoint id.
 #[must_use]
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
-    iroh_live_node::layout::policy((LiveLayout::default(), RoomsLayout))
+    layout::policy((LiveLayout::default(), RoomsLayout))
+}
+
+/// Returns the own paths of `peer`: `live/<peer>/**` and `rooms/*/<peer>/**`.
+pub(crate) fn own_paths(peer: EndpointId) -> Patterns {
+    layout::grant(&(LiveLayout::default(), RoomsLayout), peer).publish
+}
+
+/// Returns the policy for iroh clients without a token on a private relay.
+///
+/// A client gets `anonymous`, the public patterns rooted at `/`, and with
+/// `own_paths` also publishes at its own paths. With neither, every client
+/// is refused.
+pub(crate) fn anonymous_policy(
+    anonymous: &moq_auth::Permissions,
+    own_paths: bool,
+) -> Arc<dyn DynPolicy<EndpointId>> {
+    if anonymous.is_empty() && !own_paths {
+        return Arc::new(policy::from_fn(|_: &PeerRequest| {
+            Err(policy::Rejection::new(
+                "this relay admits only token holders, and the session presented no token",
+            ))
+        }));
+    }
+    let grant = Grant {
+        subscribe: anonymous.subscribe.clone(),
+        publish: anonymous.publish.clone(),
+    };
+    Arc::new(policy::from_fn(move |request: &PeerRequest| {
+        let mut grant = grant.clone();
+        if own_paths {
+            grant
+                .publish
+                .extend(self::own_paths(*request.peer()).iter().cloned());
+        }
+        Ok(grant.into())
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decide(policy: &dyn DynPolicy<EndpointId>, peer: EndpointId) -> Option<Grant> {
+        let request = PeerRequest::new(peer, SessionRequest::default(), Event::Connect);
+        n0_future::future::block_on(DynPolicy::decide(policy, &request))
+            .ok()
+            .map(|authorization| authorization.grant)
+    }
+
+    #[test]
+    fn the_anonymous_policy_follows_the_patterns_and_own_paths() {
+        let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+        let own = format!("live/{id}/cam");
+        let none = moq_auth::Permissions::default();
+        assert!(decide(&*anonymous_policy(&none, false), id).is_none());
+        let grant = decide(&*anonymous_policy(&none, true), id).expect("admitted");
+        assert!(grant.allows_publish(&own));
+        assert!(grant.allows_publish(&format!("rooms/topic/{id}/cam")));
+        assert!(!grant.allows_subscribe(&own));
+        let demo = moq_auth::Permissions::new(
+            "demo/**".parse::<Pattern>().unwrap(),
+            "demo/**".parse::<Pattern>().unwrap(),
+        );
+        let grant = decide(&*anonymous_policy(&demo, false), id).expect("admitted");
+        assert!(grant.allows_publish("demo/cam") && grant.allows_subscribe("demo/cam"));
+        assert!(!grant.allows_publish(&own) && !grant.allows_subscribe(&own));
+        let grant = decide(&*anonymous_policy(&demo, true), id).expect("admitted");
+        assert!(grant.allows_publish(&own) && grant.allows_publish("demo/cam"));
+        let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
+        assert!(!grant.allows_publish(&format!("live/{other}/cam")));
+    }
 
     #[test]
     fn a_client_publishes_only_under_its_own_id() {
