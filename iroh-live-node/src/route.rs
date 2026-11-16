@@ -222,6 +222,12 @@ impl Subscription {
     }
 
     /// Returns the session serving the broadcast now, if a direct session does.
+    ///
+    /// The session gives the iroh connection with its paths
+    /// ([`Session::connection`]) and the latest reading of the link
+    /// ([`Session::sample`]). Asking the subscription each time, rather than
+    /// keeping a session from an earlier dial, follows the subscription when
+    /// another link takes over. `None` while a relay serves the broadcast.
     #[must_use]
     pub fn session(&self) -> Option<Session> {
         let shared = self.inner.shared.upgrade()?;
@@ -240,6 +246,8 @@ impl Subscription {
     /// node, and once the serving link is gone. Also `None` when a relay
     /// serves the route and several relays feed the table, since a relay's
     /// route does not say which relay it came from.
+    ///
+    /// For the iroh connection and its paths, use [`session`](Self::session).
     #[must_use]
     pub fn serving_link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;

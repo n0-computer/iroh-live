@@ -56,7 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 `serving_link()` returns the link that serves the subscription now, with a
-`NetworkSample` of its round trip and loss.
+`NetworkSample` of its round trip, loss, and the rates bytes arrive and leave
+at. `subscription.session()` returns the direct session that serves it now,
+whose `connection().paths()` lists the network paths. Ask the subscription
+each time instead of keeping the session from the dial: when the publisher
+moves to another link, the subscription follows it.
 
 ## The rest of the node
 
