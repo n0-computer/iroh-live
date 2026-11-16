@@ -76,22 +76,21 @@ Some state needs only its newest value, such as a setting or a status. For
 it, `Node::publish_value` publishes a latest-value JSON track of any
 `serde` type, and `Subscription::value_track` reads it. `latest()` skips to
 the newest value, and a late reader gets the current one at once. The track
-counts milliseconds, so each update carries the time it was made. A value
-that starts a new group must be stamped later than the group before, so a
-writer that updates more than once a millisecond counts its own stamps up:
+counts milliseconds, and the `ValueWriter` that `publish_value` returns
+stamps each update with the time it is made, so updates may come as fast as
+you like. `update_at` takes a time of your choice instead. Clones of the
+writer share the track, and the last one to drop finishes it:
 
 ```rust,no_run
-use iroh_live::{
-    Audience, Node, Publication, Subscription,
-    json::{Timed, snapshot},
-    moq_net::{Timestamp, time::Instant},
-};
+use iroh_live::{Audience, Node, Publication, Subscription, json::snapshot};
 
 fn publish_latency(node: &Node, path: &str) -> Result<Publication, Box<dyn std::error::Error>> {
-    let (publication, mut latency) =
+    let (publication, latency) =
         node.publish_value::<u64>(path, Audience::Granted, "latency")?;
-    latency.update(Timed::new(&150, Timestamp::from(Instant::now())))?;
-    // Unpublished when `publication` drops.
+    latency.update(&150)?;
+    latency.update(&120)?;
+    // The track finishes when `latency` drops here, and the broadcast is
+    // unpublished when `publication` drops.
     Ok(publication)
 }
 
@@ -104,9 +103,9 @@ async fn read_latency(subscription: &Subscription) -> Result<(), Box<dyn std::er
 }
 ```
 
-`LocalBroadcast::value_track` puts such a track next to the video and audio.
-Create it in the fill closure of `Node::publish_with`, so it exists before
-anyone can ask for it. `iroh_live::json` re-exports moq-json for other typed
+`LocalBroadcast::value_track` puts such a track next to the video and audio,
+and also returns a `ValueWriter`. Create it in the fill closure of
+`Node::publish_with`, so it exists before anyone can ask for it. `iroh_live::json` re-exports moq-json for other typed
 JSON tracks.
 
 ## Where to go next

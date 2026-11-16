@@ -159,11 +159,15 @@ Names from development versions between the two releases:
   with `--open-pulls`. Under `--auth-key`, browsers are decided by moq-auth's
   reference policy. See the [relay reference](reference/relay.md).
 - **Value tracks.** `Node::publish_value` and `LocalBroadcast::value_track`
-  create millisecond tracks, and `update` takes a `json::Timed` value with
-  its time, such as `Timed::new(&value, Timestamp::from(Instant::now()))`. A
-  value that starts a new group must be stamped later than the one before.
-  The same holds for every frame moq-net writes: `write_frame` takes a
-  `Timestamp`, and `Timestamp::now()` is gone.
+  return a `ValueWriter<T>`. `update(&value)` stamps the value with the time
+  it is made and keeps the stamps increasing, so remove any
+  `Timed::new(..., Timestamp::from(Instant::now()))` wrapper and any stamp
+  counter of your own. Use `update_at(&value, at)` to choose the time
+  yourself. The writer finishes the track when its last clone drops, so a
+  drop guard that calls `finish` is no longer needed. `producer()` returns
+  the moq-json producer for anything else. Every frame moq-net writes now
+  carries a time: `write_frame` takes a `Timestamp`, and `Timestamp::now()`
+  is gone.
 - **Config structs.** `EndpointConfig`, `NodeConfig`, `ConnectOptions`,
   `RelayConfig`, `PlayerConfig`, `VideoEncoding`, `VideoRendition` and
   `Adaptation` are `#[non_exhaustive]`. Build them from `Default` or a

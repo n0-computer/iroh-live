@@ -17,6 +17,8 @@ derive_more = { version = "2.1.1", features = ["display", "debug", "eq", "deref"
 hang = { workspace = true }
 moq-audio = { workspace = true }
 moq-ext-sources = { workspace = true, features = ["pattern"] }
+# The writer `LocalBroadcast::value_track` returns, which stamps each update.
+moq-ext-json = { workspace = true }
 # Latest-value JSON tracks next to the media, for `LocalBroadcast::value_track`.
 moq-json = { workspace = true }
 moq-mux = { workspace = true }

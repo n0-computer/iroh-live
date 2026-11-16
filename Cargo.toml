@@ -12,6 +12,7 @@ members = [
     "moq-ext-publisher",
     "moq-ext-sources",
     "moq-ext-egui",
+    "moq-ext-json",
     "demos/android/rust",
     "demos/gles-yuv",
     "demos/pi-zero",
@@ -64,6 +65,7 @@ moq-ext-player = { path = "moq-ext-player", default-features = false }
 moq-ext-publisher = { path = "moq-ext-publisher", default-features = false }
 moq-ext-sources = { path = "moq-ext-sources", default-features = false }
 moq-ext-egui = { path = "moq-ext-egui" }
+moq-ext-json = { path = "moq-ext-json" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }

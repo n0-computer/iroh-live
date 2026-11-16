@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use moq_ext_json::ValueWriter;
 use moq_ext_sources::{AudioSource, Error, VideoSource};
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
@@ -627,13 +628,12 @@ impl LocalBroadcast {
     /// Creates a latest-value JSON track `name` in the broadcast, next to the media.
     ///
     /// For a setting or a status that rides along with the video and audio:
-    /// each [`update`](moq_json::snapshot::Producer::update) replaces the
-    /// value, and a reader that subscribes late gets the current one at
-    /// once. The track counts milliseconds, so an update carries the time it
-    /// was made, such as `Timestamp::from(moq_net::time::Instant::now())`. A
-    /// value that starts a new group must be stamped later than the group
-    /// before, so a writer that updates more than once a millisecond counts
-    /// its own stamps up. A reader that asks for the track before it exists does not
+    /// each [`update`](ValueWriter::update) replaces the value, and a reader
+    /// that subscribes late gets the current one at once. The track counts
+    /// milliseconds, and the [`ValueWriter`] stamps each update with the time
+    /// it is made; [`update_at`](ValueWriter::update_at) takes a time of the
+    /// caller's choice instead. The last clone of the writer to drop finishes
+    /// the track. A reader that asks for the track before it exists does not
     /// find it, so create it before the broadcast is announced, for example
     /// in the fill of `iroh_live_node::Node::publish_with`.
     ///
@@ -646,20 +646,15 @@ impl LocalBroadcast {
     ///
     /// ```
     /// use moq_ext_publisher::LocalBroadcast;
-    /// use moq_json::Timed;
-    /// use moq_net::{Timestamp, time::Instant};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let broadcast = LocalBroadcast::new();
-    /// let mut control = broadcast.value_track::<u32>("control")?;
-    /// control.update(Timed::new(&30, Timestamp::from(Instant::now())))?;
+    /// let control = broadcast.value_track::<u32>("control")?;
+    /// control.update(&30)?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn value_track<T: serde::Serialize>(
-        &self,
-        name: &str,
-    ) -> Result<moq_json::snapshot::Producer<T>, Error> {
+    pub fn value_track<T: serde::Serialize>(&self, name: &str) -> Result<ValueWriter<T>, Error> {
         self.check_open()?;
         let track = self
             .shared
@@ -670,7 +665,7 @@ impl LocalBroadcast {
             )
             .map_err(Error::broadcast)?;
         debug!(parent: &self.shared.span, track = name, "value track created");
-        Ok(moq_json::snapshot::Producer::new(
+        Ok(ValueWriter::new(
             track,
             moq_json::snapshot::Config::default(),
         ))
