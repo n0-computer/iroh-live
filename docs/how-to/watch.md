@@ -20,7 +20,7 @@ lists every flag.
 
 A player subscribes to audio only when `PlayerConfig::audio` asks for it.
 `AudioMode::Play` mixes it into a `playback::Engine`, which needs the
-`playback` feature:
+`playback` feature, part of `full`:
 
 ```rust,no_run
 use iroh_live::{

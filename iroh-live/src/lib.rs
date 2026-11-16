@@ -106,8 +106,9 @@ router.shutdown().await?;
 //! rooms, and [`calls::Error`] from calls. Each one converts into [`Error`], so
 //! `?` works in a function that returns it.
 //!
-//! No feature is on by default. `full` turns on `media`, `capture`, `render`,
-//! `record` and `sound-server`. `media` adds the `media` module. Without it
+//! No feature is on by default. `full` turns on `media`, `capture`,
+//! `playback`, `render`, `record` and `sound-server`. `media` adds the `media`
+//! module. Without it
 //! the crate is the layout, calls and endpoint setup only. `playback`, `aec`,
 //! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
 //! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
@@ -217,7 +218,6 @@ pub use self::error::Error;
     feature = "full",
     feature = "file",
     feature = "jwt",
-    feature = "playback",
     feature = "rooms"
 ))]
 mod guide {

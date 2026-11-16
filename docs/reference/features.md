@@ -10,7 +10,7 @@ No feature is on by default.
 
 | Feature | Enables | Implies | Platform |
 |---|---|---|---|
-| `full` | What an app that publishes and plays wants | `media`, `capture`, `render`, `sound-server`, `record` | all |
+| `full` | What an app that publishes and plays wants | `media`, `capture`, `playback`, `render`, `sound-server`, `record` | all |
 | `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | | all |
 | `capture` | Camera, screen and microphone capture | `media` | all |
 | `playback` | Speaker output, `AudioMode::Play` | `media` | all |
@@ -41,9 +41,10 @@ VideoToolbox on macOS. See
 
 ## iroh-live-cli
 
-`irl` always has `capture`, `file`, `playback`, `render`, `rooms` and `record`. Every
-other feature is on by default, so `cargo install --path iroh-live-cli` builds
-every backend the platform can reach.
+`irl` always has `capture`, `file`, `playback`, `render`, `rooms` and
+`record`. Every other feature is on by default, so
+`cargo install --path iroh-live-cli` builds every backend the platform can
+reach.
 
 | Feature | Default | Effect |
 |---|---|---|
