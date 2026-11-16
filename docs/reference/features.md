@@ -41,14 +41,13 @@ VideoToolbox on macOS. See
 
 ## iroh-live-cli
 
-`irl` always has `capture`, `file`, `render`, `rooms` and `record`. Every
+`irl` always has `capture`, `file`, `playback`, `render`, `rooms` and `record`. Every
 other feature is on by default, so `cargo install --path iroh-live-cli` builds
 every backend the platform can reach.
 
 | Feature | Default | Effect |
 |---|---|---|
 | `aec` | yes | Echo cancellation for `irl call` and `irl room` |
-| `playback` | yes | Audio playback |
 | `sound-server` | yes | PipeWire and PulseAudio devices (Linux) |
 | `pipewire` | yes | PipeWire's camera as `cam`, and the portal's picker as `screen`, `screen:portal` and `window:portal` (Linux) |
 | `rpicam` | yes | `--video rpicam` (Linux) |
