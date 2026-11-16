@@ -26,6 +26,9 @@
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
+//! [`spec`] parses text specifiers such as `cam:2` or `test:gradient`, as a
+//! `--video` or `--audio` flag takes them, and opens the source they name.
+//!
 //! The crate README lists every feature flag. [`local_task::spawn`] runs a
 //! future on a thread of its own for capture streams that are not `Send`.
 //!
@@ -65,6 +68,7 @@ pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
 pub mod local_task;
 mod source;
+pub mod spec;
 pub mod stats;
 mod status;
 
