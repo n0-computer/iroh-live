@@ -4,11 +4,10 @@
 //! error here and not a retry loop in the log.
 
 use iroh_live::media::{
-    AudioFormat, AudioSource, FileEnd, LocalBroadcast, Rate, VideoSource, audio, audio_encoding,
-    video::{self, Size},
+    AudioFormat, AudioSource, LocalBroadcast, Rate, VideoSource, audio, audio_encoding, video,
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::media::{RpicamConfig, rpicam_h264};
+use iroh_live::media::{RpicamConfig, rpicam_h264, video::Size};
 use n0_error::{Result, anyerr};
 #[cfg(not(feature = "aec"))]
 use tracing::warn;
@@ -19,13 +18,7 @@ use crate::{
     args::{AudioCodecArg, CaptureArgs},
     playback::Speaker,
     rendition::{self, CaptureFramerate},
-    source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
-};
-
-/// Resolution of the test pattern when `--width` / `--height` are not given.
-const TEST_SIZE: Size = Size {
-    width: 1280,
-    height: 720,
+    source_spec::{AudioSourceSpec, PORTAL, VideoOpenOptions, VideoSourceSpec},
 };
 
 /// Capture size of the Raspberry Pi camera without `--width` and `--height`.
@@ -36,14 +29,6 @@ const RPICAM_SIZE: Size = Size {
     width: 640,
     height: 360,
 };
-
-/// Frequency of the continuous test tone, in hertz.
-///
-/// Concert A, low enough that no resampler can alias it.
-const TEST_TONE_HZ: f32 = 440.0;
-
-/// Speaker layout of the test tones.
-const TEST_TONE_LAYOUT: audio::Layout = audio::Layout::Stereo;
 
 /// The sources [`configure`] opened, for a preview or a QR scanner.
 #[derive(Debug, Default)]
@@ -145,11 +130,7 @@ async fn video_source(
     args: &CaptureArgs,
     framerate: CaptureFramerate,
 ) -> Result<Option<Video>> {
-    use video::capture::Source;
-
     let source = match spec {
-        VideoSourceSpec::None => return Ok(None),
-        VideoSourceSpec::Test(pattern) => Video::Raw(test_pattern(args, framerate, *pattern)?),
         VideoSourceSpec::File { path, .. } => {
             return Err(anyerr!(
                 "a file: video source is published by `irl publish --video \
@@ -160,35 +141,38 @@ async fn video_source(
         }
         #[cfg(all(target_os = "linux", feature = "rpicam"))]
         VideoSourceSpec::Rpicam(mode) => rpicam_source(args, framerate, *mode).await?,
-        VideoSourceSpec::Camera(id) => capture(Source::Camera(id.clone()), args, framerate).await?,
+        // The portal opens here, rather than in the library, so its grant is
+        // kept for the next run. On Wayland the default display is always the
+        // portal's picker.
         VideoSourceSpec::Display(Some(id)) if id == PORTAL => {
             portal(PortalPick::Screen, args, framerate).await?
         }
-        // On Wayland the default display is always the portal's picker, which
-        // opens here so its grant is kept for the next run.
         VideoSourceSpec::Display(None) if portal_default() => {
             portal(PortalPick::Screen, args, framerate).await?
-        }
-        VideoSourceSpec::Display(id) => {
-            let selection = id
-                .clone()
-                .map(video::capture::DisplaySelection::new)
-                .unwrap_or_default();
-            capture(Source::Display(selection), args, framerate).await?
         }
         VideoSourceSpec::Window(id) if id == PORTAL => {
             portal(PortalPick::Window, args, framerate).await?
         }
-        VideoSourceSpec::Window(id) => capture(Source::Window(id.clone()), args, framerate).await?,
-        VideoSourceSpec::App(id) => capture(Source::App(id.clone()), args, framerate).await?,
+        spec => match spec.open(&open_options(args, framerate)).await? {
+            Some(source) => Video::Raw(source),
+            None => return Ok(None),
+        },
     };
     Ok(Some(source))
 }
 
-/// The id of `screen:portal` and `window:portal`.
-///
-/// Either lets the user pick in the desktop portal's screen-sharing dialog.
-pub(crate) const PORTAL: &str = "portal";
+/// Returns the open options the capture flags ask for.
+fn open_options(args: &CaptureArgs, framerate: CaptureFramerate) -> VideoOpenOptions {
+    let mut options = VideoOpenOptions::default();
+    options.width = args.width;
+    options.height = args.height;
+    options.framerate = framerate.request().map(|fps| {
+        video::FrameRate::new(fps, 1)
+            .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
+    });
+    options.cursor = !args.no_cursor;
+    options
+}
 
 /// What the desktop portal's picker offers.
 #[derive(Debug, Clone, Copy)]
@@ -250,20 +234,19 @@ fn portal_default() -> bool {
 }
 
 /// Opens a capture device with the geometry hints from the flags.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
 async fn capture(
     source: video::capture::Source,
     args: &CaptureArgs,
     framerate: CaptureFramerate,
 ) -> Result<Video> {
+    let options = open_options(args, framerate);
     let mut config = video::capture::Config::default();
     config.source = source;
-    config.width = args.width;
-    config.height = args.height;
-    config.framerate = framerate.request().map(|fps| {
-        video::FrameRate::new(fps, 1)
-            .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
-    });
-    config.cursor = !args.no_cursor;
+    config.width = options.width;
+    config.height = options.height;
+    config.framerate = options.framerate;
+    config.cursor = options.cursor;
     Ok(Video::Raw(VideoSource::capture(config).await?))
 }
 
@@ -327,24 +310,6 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
     Ok(())
 }
 
-/// Starts the test pattern `pattern` names, at the size the flags ask for.
-fn test_pattern(
-    args: &CaptureArgs,
-    framerate: CaptureFramerate,
-    pattern: TestPattern,
-) -> Result<VideoSource> {
-    let size = Size::new(
-        args.width.unwrap_or(TEST_SIZE.width),
-        args.height.unwrap_or(TEST_SIZE.height),
-    );
-    let rate = video::FrameRate::new(framerate.generated(), 1)
-        .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE");
-    match pattern {
-        TestPattern::Timing => Ok(VideoSource::test_pattern(size, rate)?),
-        TestPattern::Gradient => Ok(VideoSource::test_gradient(size, rate)?),
-    }
-}
-
 /// Returns the capture config for microphone `id`, cancelling the echo of `speaker`.
 ///
 /// Without the `aec` feature, it warns and captures the microphone as is.
@@ -378,32 +343,18 @@ pub(crate) fn microphone_config(
 }
 
 /// Opens the audio source `spec` names, or `None` for `--audio none`.
+///
+/// A microphone cancels the echo of `speaker`.
 async fn audio_source(
     spec: &AudioSourceSpec,
     speaker: Option<&Speaker>,
 ) -> Result<Option<AudioSource>> {
-    let source = match spec {
-        AudioSourceSpec::None => return Ok(None),
-        AudioSourceSpec::Microphone(id) => {
-            AudioSource::microphone(microphone_config(id.clone(), speaker)?).await?
-        }
-        AudioSourceSpec::System => {
-            let mut config = audio::capture::Config::default();
-            config.source = audio::capture::Source::System;
-            AudioSource::microphone(config).await?
-        }
-        AudioSourceSpec::Test(TestTone::Beeps) => AudioSource::test_pattern(TEST_TONE_LAYOUT)?,
-        AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT)?,
-        AudioSourceSpec::File { path, looping } => {
-            let at_end = if *looping {
-                FileEnd::Restart
-            } else {
-                FileEnd::Stop
-            };
-            AudioSource::file(path, at_end).await?
-        }
-    };
-    Ok(Some(source))
+    match spec {
+        AudioSourceSpec::Microphone(id) => Ok(Some(
+            AudioSource::microphone(microphone_config(id.clone(), speaker)?).await?,
+        )),
+        spec => Ok(spec.open().await?),
+    }
 }
 
 /// Returns the encoding of `source` for `--audio-codec` and `--audio-bitrate`.

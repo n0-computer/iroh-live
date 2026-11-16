@@ -133,6 +133,7 @@ pub mod media {
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
         VideoEncoding, VideoRendition, audio_encoding,
     };
+    pub use moq_ext_sources::spec;
     pub use moq_ext_sources::{
         AudioFormat, AudioSource, Error, FileEnd, FrameSender, SlotState, SourceClosed,
         VideoFormat, VideoFrames, VideoSource, VideoSwitch,

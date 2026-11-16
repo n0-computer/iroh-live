@@ -25,6 +25,8 @@ iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture", "file", "render", "rooms", "record"] }
 moq-net = { workspace = true }
 moq-ext-egui = { workspace = true }
+# The source specifiers in the config file.
+moq-ext-sources = { workspace = true, features = ["serde"] }
 moq-mux = { workspace = true }
 # The room chat track: a JSON window, which `@moq/room` reads too.
 moq-json = { workspace = true }

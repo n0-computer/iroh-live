@@ -67,7 +67,7 @@ define them:
 |---|---|---|
 | `moq-ext-publisher` | `capture`, `sound-server`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia`, `v4l2` | none |
 | `moq-ext-player` | `playback`, `render`, `record`, `aec`, `vaapi`, `nvidia`, `v4l2` | none |
-| `moq-ext-sources` | `pattern`, `file`, `capture`, `sound-server`, `aec`, `pipewire`, `rpicam` | `pattern` |
+| `moq-ext-sources` | `pattern`, `file`, `capture`, `sound-server`, `aec`, `pipewire`, `rpicam`, `serde` | `pattern` |
 | `moq-ext-access` | `jwt`, `rcan` | none |
 | `iroh-live-node` | `jwt`, `rcan`, forwarded to `moq-ext-access` | none |
 
