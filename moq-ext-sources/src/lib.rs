@@ -88,8 +88,13 @@ pub use self::{
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{
-        AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FileEnd, FrameSender, PcmFanout,
-        VideoFormat, VideoSource, VideoSwitch, WeakPcmFanout,
+        AudioFormat, AudioSource, FileEnd, FrameSender, VideoFormat, VideoSource, VideoSwitch,
     },
-    status::{ByPtr, SlotState, send_if_changed},
+    status::{ByPtr, SlotState},
+};
+// Shared with moq-ext-publisher and moq-ext-player, not public API.
+#[doc(hidden)]
+pub use self::{
+    source::{AudioKind, Demand, DemandGuard, PcmFanout, WeakPcmFanout},
+    status::send_if_changed,
 };

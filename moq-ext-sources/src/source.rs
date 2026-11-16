@@ -414,6 +414,7 @@ impl VideoSource {
     /// The demand lasts until the guard is dropped. A handle from
     /// [`frames`](Self::frames) already holds one, so this is only for a
     /// reader from [`observe`](Self::observe).
+    #[doc(hidden)]
     pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
@@ -536,6 +537,8 @@ impl AudioSource {
     }
 
     /// Registers a broadcast that publishes this source.
+    // Shared with moq-ext-publisher, not public API.
+    #[doc(hidden)]
     pub fn want(&self) -> DemandGuard {
         self.inner.demand.acquire()
     }
@@ -709,6 +712,8 @@ impl AudioSource {
     }
 
     /// Returns what the source produces.
+    // Shared with moq-ext-publisher, not public API.
+    #[doc(hidden)]
     #[must_use]
     pub fn kind(&self) -> &AudioKind {
         &self.inner.kind
