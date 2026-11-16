@@ -7,13 +7,9 @@ rendition and every audio track travels on its own QUIC streams, so a lost
 video packet never delays audio. Each viewer's player picks the rendition its
 link can carry, and keeps audio and video in step.
 
-> **Early tech preview.** Expect frequent API changes. Linux is the main
-> target, Windows has never been run, and on-device testing has been
-> limited. iroh-live depends on moq's unreleased `main` branch by git rev, so
-> it is not on crates.io. The iroh-live relay lets anyone read every
-> broadcast on it. `--auth-key` does not change that: it changes only what
-> sessions with a token may do. See
-> [Run the iroh-live relay](docs/how-to/run-relay.md).
+> **Early tech preview.** Expect frequent API changes. 
+> iroh-live currently depends on moq's unreleased `main` branch by git rev, so
+> it is not yet on crates.io. 
 
 ## Quick start
 
