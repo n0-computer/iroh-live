@@ -6,7 +6,7 @@ and the crate docs describe the main types.
 
 Codecs, capture, decoding, and the wgpu renderer live upstream in `moq-video`
 and `moq-audio`. See
-[docs/architecture/media-stack.md](docs/architecture/media-stack.md).
+[docs/architecture/index.md](docs/architecture/index.md#upstream-media).
 
 ## Build and test
 

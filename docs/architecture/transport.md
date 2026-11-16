@@ -1,4 +1,4 @@
-# Transport
+# The node and its transport
 
 `iroh-live-node` is the node. It holds a node's route table, its
 publications, its sessions with peers and its links to moq relays. It sits on

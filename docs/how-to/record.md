@@ -17,7 +17,7 @@ that was interrupted plays up to the last fragment written. The
 [CLI reference](../reference/cli.md#irl-record) lists every flag.
 
 To record several broadcasts from one endpoint, use `irl run` with a `record`
-key, see [The `irl run` session file](../reference/irl-run.md).
+key, see [`irl run`](../reference/cli.md#irl-run).
 
 ## From Rust
 

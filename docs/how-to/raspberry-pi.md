@@ -1,4 +1,4 @@
-# Raspberry Pi
+# Publish from a Raspberry Pi
 
 `irl publish --video rpicam` publishes a Pi camera. Two programs target the Pi
 as well. `iroh-live/examples/publish-pi.rs` is the shortest program that
@@ -15,12 +15,12 @@ writes Annex-B H.264 to stdout. A Pi Zero can publish those bytes as they are.
 
 `rpicam_h264(config)` starts `rpicam-vid` and returns its output as a byte
 stream. `LocalBroadcast::set_encoded_video` publishes it as the one rendition
-`video`, with the catalog entry taken from the stream's SPS. The process is
-killed when the stream is dropped. The Pi does no software encoding, and no
-raw pictures cross the pipe.
+`video`, with the catalog entry taken from the stream's SPS. Dropping the
+stream kills the process. The Pi does no software encoding, and no raw
+pictures cross the pipe.
 
-`VideoSource::rpicam(config)` reads raw pictures from `rpicam-vid` instead, for
-our own encoders.
+`VideoSource::rpicam(config)` reads raw pictures from `rpicam-vid` instead,
+for an encoder that iroh-live runs, such as `--encoder v4l2`.
 
 Both need the `rpicam` feature, which is Linux only, and `rpicam-vid` on
 `PATH`. Raspberry Pi OS ships it. `irl` turns the feature on by default:
@@ -82,20 +82,25 @@ Log out and back in for this to take effect.
 
 ## Cross-compiling
 
-Building on a Pi Zero 2 W works, but slowly. Cross-compiling uses
-`cargo-zigbuild` against a Debian Bookworm sysroot. The sysroot is built from
-`.deb` files with `dpkg-deb`, without sudo or a chroot.
+Building on a Pi Zero 2 W works, but slowly. Cross-compile `irl`, the
+examples and the demo on an x86-64 Linux host instead. The release workflow
+builds `irl-linux-aarch64` the same way, see
+[Install](../getting-started/install.md).
 
 ```sh
 cargo make cross-sysroot-aarch64                              # once
+cargo make cross-build-aarch64 -- -p iroh-live-cli --release
 cargo make cross-build-aarch64 -- -p iroh-live --example publish-pi --features rpicam --release
 cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 ```
 
-Everything after `--` goes to `cargo zigbuild`. Binaries land in
+The build uses `cargo-zigbuild` against a Debian Bookworm sysroot, so the
+binaries run on Raspberry Pi OS Bookworm (glibc 2.36). The sysroot is built
+from `.deb` files with `dpkg-deb`, without sudo or a chroot. Everything after
+`--` goes to `cargo zigbuild`. Binaries land in
 `target/aarch64-unknown-linux-gnu/release/`, and examples in its `examples/`
-directory. `cross/README.md` covers the prerequisites and a Docker build for
-hosts without zig.
+directory. [cross/README.md](../../cross/README.md) covers the prerequisites,
+and a Docker build for hosts without zig.
 
 Copy the binaries with `scp`, or run `cargo make cross-deploy` in
 `demos/pi-zero`. It builds, strips, and copies the demo to `$PI_HOST` (default
@@ -116,7 +121,7 @@ irl watch <TICKET> --fullscreen --decoder openh264
 A Pi Zero 2 W cannot decode 720p at 30 fps in software, so it needs the
 hardware decoder.
 
-## publish-pi
+## The `publish-pi` example
 
 ```sh
 ./publish-pi
@@ -126,43 +131,14 @@ It takes no flags. It publishes 640x360 at 30 fps under the name `pi-cam` and
 prints a ticket. Set `IROH_SECRET` to keep the same endpoint id, and so the
 same ticket, across restarts.
 
-## pi-zero-demo
+## The `pi-zero-demo` program
 
-The demo has four subcommands.
-
-`publish` streams the camera and prints the ticket. With `--epaper` it also
-shows the ticket as a QR code on the HAT. With `--relay <ENDPOINT_ID>` it also
-pushes the broadcast to a relay, for browsers. The other flags: `--name`
-(default `pi-zero`), `--width` (640), `--height` (360), `--fps` (30),
-`--bitrate` (500000).
-
-`watch <TICKET>` subscribes and draws. Without `--fb` it opens a window through
-glutin and winit, which needs the `windowed` feature (on by default).
-`--fullscreen` makes the window borderless. With `--fb` it draws straight to
-HDMI through DRM/KMS, GBM, and EGL, without a window system.
-
-`fb-demo` draws a test pattern to HDMI without network or camera, to check the
-display path on its own.
-
-`epaper-demo` shows a checkerboard, then a QR code, then clears the HAT. Each
-step waits for Enter.
-
-## Rendering on the Pi
-
-The Pi Zero has no Vulkan, so `moq_video::render` cannot draw there.
-`demos/pi-zero/src/gles.rs` is a GLES2 renderer built on `glow`. I420 frames
-from openh264 go up as three `LUMINANCE` textures and are converted by a
-BT.601 limited-range shader. Other frames go up as one RGBA texture. Every
-frame is copied to the GPU.
-
-## E-paper
-
-`epaper.rs` and `epd_v4.rs` drive the Waveshare 2.13" Touch e-Paper HAT,
-revision V4 (SSD1680). `epd-waveshare` covers only V2 and V3, and V4 uses a
-different refresh command. The driver does full refreshes only, puts the panel
-to sleep after every update, redraws every 12 hours, and clears the panel to
-white on Ctrl-C. These follow the manufacturer's precautions, which
-`demos/pi-zero/README.md` lists.
+The demo publishes the camera, shows the ticket as a QR code on an e-paper
+HAT, and plays a broadcast in a window or straight to HDMI. The Pi Zero has
+no Vulkan, so `moq_video::render` cannot draw there, and the demo brings a
+GLES2 renderer. [demos/pi-zero/README.md](../../demos/pi-zero/README.md)
+lists its subcommands and flags, and covers the renderer, the e-paper driver
+and starting the demo on boot.
 
 ## Watching from a desktop
 

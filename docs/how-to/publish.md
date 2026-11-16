@@ -20,7 +20,7 @@ irl publish --video none --audio file:music.mp3:loop
 A `file:` video source is republished without decoding. A plain MP4 or a
 looped file needs `--transcode`, which runs it through ffmpeg first. The
 [CLI reference](../reference/cli.md#sources) lists every source, and
-[Raspberry Pi](raspberry-pi.md) covers the Pi camera.
+[Publish from a Raspberry Pi](raspberry-pi.md) covers the Pi camera.
 
 ## From Rust
 
@@ -114,7 +114,7 @@ feeds it.
   `irl` does this in `iroh-live-cli/src/import.rs`. There is no
   `VideoSource` for files.
 - `rpicam_h264` publishes the Raspberry Pi camera's own H.264, see
-  [Raspberry Pi](raspberry-pi.md).
+  [Publish from a Raspberry Pi](raspberry-pi.md).
 
 ## Where to go next
 

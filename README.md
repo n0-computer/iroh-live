@@ -45,24 +45,17 @@ complete publisher and viewer.
 
 ## Documentation
 
-The [book in `docs/`](docs/SUMMARY.md) has:
+The [book in `docs/`](docs/introduction.md) starts from what you want to do:
 
-- **Getting started:** [install](docs/getting-started/install.md),
-  [CLI quickstart](docs/getting-started/cli-quickstart.md),
-  [library quickstart](docs/getting-started/library-quickstart.md).
-- **Concepts:** [how it fits together](docs/concepts/overview.md), nodes,
-  paths, routes, access control and relays.
-- **How-to guides:** publish, watch, call, rooms, browsers, recording,
-  access, tuning, Android and Raspberry Pi.
-- **Reference:** the [`irl` CLI](docs/reference/cli.md),
-  [Cargo features](docs/reference/features.md),
-  [environment variables](docs/reference/environment.md),
-  [the relay](docs/reference/relay.md) and
-  [platform support](docs/reference/platforms.md).
-- [Architecture](docs/architecture/index.md),
-  [troubleshooting](docs/troubleshooting.md),
-  [glossary](docs/glossary.md), and
-  [migrating from the previous release](docs/migration.md).
+- **Build an app:** the [CLI quickstart](docs/getting-started/cli-quickstart.md),
+  the [library quickstart](docs/getting-started/library-quickstart.md), then
+  the [guides](docs/how-to/index.md).
+- **Run a relay:** [Run the iroh-live relay](docs/how-to/run-relay.md) and
+  the [relay reference](docs/reference/relay.md).
+- **Work on iroh-live:** [Contributing](docs/contributing.md) and the
+  [internals overview](docs/architecture/index.md).
+
+The [API docs](docs/reference/crates.md#api-docs) cover each crate's types.
 
 ## Crates
 

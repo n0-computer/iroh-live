@@ -1,4 +1,4 @@
-# Send data and state
+# Send data without media
 
 A broadcast is a set of tracks, and a track is a stream of groups of frames.
 Nothing requires them to be video, so a node can carry control messages,
@@ -73,10 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Frames are bytes, so the format is yours. A reader that falls behind skips to
-the newest group and reports the groups it gave up on as a gap, so put a
-self-contained message in each group when a reader should never wait for old
-ones.
+Frames are bytes, so the format is yours. `ordered()` delivers groups in
+sequence. A reader that falls behind still skips to the newest group and
+reports the groups it gave up on as a gap, so put a self-contained message in
+each group when a reader should never wait for old ones.
 
 ## Latest-value state
 
@@ -86,8 +86,8 @@ it, `Node::publish_value` publishes a latest-value JSON track of any
 the newest value, and a late reader gets the current one at once. The reader
 follows the subscription, so it reads on after the publisher restarts. The
 track counts milliseconds, and the `ValueWriter` that `publish_value` returns
-stamps each update with the time it is made, so updates may come as fast as
-you like. `update_at` takes a time of your choice instead. Clones of the
+stamps each update with the time it is made, so two updates in the same
+millisecond both succeed. `update_at` takes a time of your choice instead. Clones of the
 writer share the track, and the last one to drop finishes it:
 
 ```rust,no_run
@@ -114,10 +114,83 @@ async fn read_latency(subscription: &Subscription) -> Result<(), Box<dyn std::er
 
 `LocalBroadcast::value_track` puts such a track next to the video and audio,
 and also returns a `ValueWriter`. Create it in the fill closure of
-`Node::publish_with`, so it exists before anyone can ask for it. `iroh_live::json` re-exports moq-json for other typed
-JSON tracks.
+`Node::publish_with`, so it exists before anyone can ask for it.
+
+`iroh_live::json` re-exports moq-json for other typed JSON tracks.
+
+## Without the media crates
+
+`LiveLayout` and the media crates are conveniences over `Node`. A program
+with its own path layout or access rules, or with no media at all, uses
+`Node` from `iroh_live::node` (the `iroh-live-node` crate). It gets the same
+sessions, route table and relay links.
+
+### Read a broadcast without media
+
+The default `NodeConfig` lets peers read anything and publish nothing, so
+this reader grants the publisher `demo/**`. The publishing side is
+[`iroh-live/examples/moq_only.rs`](../../iroh-live/examples/moq_only.rs),
+which serves `demo/hello`:
+
+```sh
+cargo run -p iroh-live --example moq_only     # prints its endpoint id
+```
+
+```rust,no_run
+use iroh::EndpointId;
+use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, moq_net::Pattern, policy};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let publisher: EndpointId = std::env::args()
+        .nth(1)
+        .ok_or("usage: reader <endpoint id>")?
+        .parse()?;
+    let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
+    let demo: Pattern = "demo/**".parse()?;
+    let node = Node::new(
+        endpoint.clone(),
+        NodeConfig::default().with_policy(policy::Open(Grant::publish_under(demo))),
+    );
+    // Mount your own protocols on the same router.
+    let router = node.mount(iroh::protocol::Router::builder(endpoint)).spawn();
+
+    let subscription = node
+        .subscribe("demo/hello", Reach::Direct(publisher))
+        .await?;
+    println!("subscribed to {}", subscription.path());
+    if let Some(link) = subscription.serving_link() {
+        println!(
+            "served by a {:?} link, rtt {:?}",
+            link.kind, link.sample.rtt
+        );
+    }
+
+    // Shuts down the node and closes the endpoint.
+    router.shutdown().await?;
+    Ok(())
+}
+```
+
+`serving_link()` returns the link that serves the subscription now, with a
+`NetworkSample` of its round trip, loss, and the rates bytes arrive and leave
+at. `subscription.session()` returns the direct session that serves it now,
+whose `connection().paths()` lists the network paths. Ask the subscription
+each time instead of keeping the session from the dial: when the publisher
+moves to another link, the subscription follows it.
+
+### The rest of the node
+
+- `Node::sessions()` watches the open sessions, and `Session::connection()`
+  is the iroh connection, whose `paths()` lists the network paths to the
+  peer.
+- `Session::moq()` is the moq-net session itself.
+- `Node::accepted()` streams the sessions the node accepts.
+- A `policy::Queue` lets the application admit each peer itself, see
+  [Control access](control-access.md#ask-the-user).
 
 ## Where to go next
 
-- [Use the node without media](node-only.md)
+- [The node and its transport](../architecture/transport.md) explains the
+  node in depth.
 - [Broadcasts, tracks and renditions](../concepts/broadcasts.md)

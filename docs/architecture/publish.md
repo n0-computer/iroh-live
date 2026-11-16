@@ -43,6 +43,12 @@ previews can read it.
   thread-bound platform objects.
 - `rpicam(config)` reads raw pictures from `rpicam-vid` on a Raspberry Pi.
 
+The test pattern changes every frame on purpose. A static image compresses
+to almost nothing after the first keyframe, so a test that waits for bytes
+would pass on a stalled pipeline. With `AudioSource::test_pattern`, it shows
+smoothness, dropped frames, latency and A/V sync without a camera or
+microphone.
+
 `FrameSender::push` never blocks: a new video frame replaces one not yet taken.
 `FrameSender::demand()` reports whether anything wants the frames: a rendition
 that encodes, or a `VideoFrames` handle from `VideoSource::frames()`. An
@@ -75,13 +81,14 @@ returns the same token, for a device that something else opens next.
 
 `set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
 encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
-`rpicam-vid` encodes in hardware and no raw picture reaches us.
+`rpicam-vid` encodes in hardware and no raw picture reaches iroh-live.
 
 `AudioSource` has these constructors:
 
 - `microphone(config)` opens a microphone from moq-audio's `capture::Config`.
-- `file(path, at_end)` decodes a WAV or MP3 in real time. The `FileEnd` says
-  whether it stops or restarts at the end of the file.
+- `file(path, at_end)` decodes a WAV or MP3 with symphonia on its own thread,
+  in real time. The `FileEnd` says whether it stops or restarts at the end of
+  the file. moq-audio has no container reader.
 - `tone(hz, layout)` and `test_pattern(layout)` generate sound.
 - `push(format)` returns a `FrameSender` for PCM the application produces.
 
@@ -219,7 +226,7 @@ first SPS. The splitter holds the last access unit until the next start code,
 so the end of the stream flushes it explicitly. A stream that ends before its
 first access unit shows as a failed video slot.
 
-See [Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
+See [Publish from a Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
 
 ## Catalog and clock
 

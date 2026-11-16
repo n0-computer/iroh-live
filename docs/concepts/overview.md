@@ -26,19 +26,19 @@ one route table, and a subscription reads whichever route serves its path.
 ## The pieces
 
 - The **endpoint** is iroh's. Its key is the node's identity, and the public
-  half is the *endpoint id*. See [Nodes and endpoints](nodes.md).
+  half is the *endpoint id*. See [Nodes, sessions and routes](nodes.md).
 - A **broadcast** is a set of tracks that one node publishes: video
   renditions, audio, and any data. See
   [Broadcasts, tracks and renditions](broadcasts.md).
 - A **path** names a broadcast, such as `live/<endpoint id>/hello`. A
-  *layout* is the rule for choosing paths. See [Paths and layouts](paths.md).
+  *layout* is the rule for choosing paths. See [Paths, layouts and tickets](paths.md).
 - A **session** is a MoQ connection with one peer. A **relay link** is a
   session with a relay that the node keeps open. Both feed the **route
-  table**. See [Routes, sessions and reach](routes.md).
+  table**. See [Nodes, sessions and routes](nodes.md#routes-and-relay-links).
 - The **policy** decides which peers may connect, and what each may read and
   publish. See [Access control](access.md).
 - A **ticket** is a string that names a publisher and a path, for a viewer to
-  paste or scan. See [Tickets](tickets.md).
+  paste or scan. See [Paths, layouts and tickets](paths.md#broadcast-tickets).
 
 ## Publishing
 
@@ -67,5 +67,5 @@ that serves it, and picks a rendition to match.
 
 - [Quickstart: library](../getting-started/library-quickstart.md) shows both
   sides as programs.
-- [The transport architecture](../architecture/transport.md) explains the
+- [The node and its transport](../architecture/transport.md) explains the
   route table in depth.

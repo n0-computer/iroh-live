@@ -43,7 +43,7 @@ and watches it for changes. `RemoteBroadcast::catalog()` returns it.
 ## Not only media
 
 A broadcast can carry tracks of any bytes, next to the media or without it.
-[Send data and state](../how-to/data.md) shows a control channel and a
+[Send data without media](../how-to/data.md) shows a control channel and a
 latest-value JSON track.
 
 ## Where to go next

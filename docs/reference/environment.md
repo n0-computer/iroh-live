@@ -19,7 +19,7 @@ is not a key fails with `EndpointError::SecretKey`. The key is a secret: whoever
 can act as this endpoint, and receive what peers send to it.
 
 `irl run` takes `secret_key_name` in its session file instead, see
-[The `irl run` session file](irl-run.md). An application can also keep its
+[`irl run`](cli.md#irl-run). An application can also keep its
 key in a file with `iroh_live::load_or_create_secret_key(path)`.
 
 ## `IROH_LIVE_RELAY_DATA`
@@ -57,4 +57,4 @@ Useful filters:
 `trace` is verbose. Prefer it for one module, not as the default level.
 
 On Android, the demo sends the same logs to logcat, see
-[Android](../how-to/android.md#debugging).
+[Use iroh-live on Android](../how-to/android.md#debugging).

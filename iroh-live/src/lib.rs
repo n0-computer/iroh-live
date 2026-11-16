@@ -236,10 +236,11 @@ mod guide {
         custom_paths => "how-to/custom-paths.md",
         publish_through_relay => "how-to/publish-through-relay.md",
         data => "how-to/data.md",
-        node_only => "how-to/node-only.md",
         record => "how-to/record.md",
         tune => "how-to/tune.md",
         control_access => "how-to/control-access.md",
         tokens => "how-to/tokens.md",
+        concepts_nodes => "concepts/nodes.md",
+        concepts_paths => "concepts/paths.md",
     }
 }

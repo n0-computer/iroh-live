@@ -105,7 +105,7 @@ device leaves out a DMA-BUF import the adapter offers.
 A toolkit that shares a wgpu device can draw the renderer's texture directly.
 Otherwise, `moq_video::Surface::to_rgba` converts a frame to RGBA8 pixels on
 the CPU. No library crate has a GLES renderer. The Pi demo has one in
-`demos/pi-zero/src/gles.rs`, see [Raspberry Pi](raspberry-pi.md).
+`demos/pi-zero/src/gles.rs`, see [Publish from a Raspberry Pi](raspberry-pi.md).
 
 ## Follow the player
 

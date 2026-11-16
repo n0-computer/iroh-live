@@ -48,17 +48,30 @@ cargo install --locked --path iroh-live-cli
 
 `irl` turns on every feature by default. The Linux-only ones compile to
 nothing on macOS and Windows. To cross-compile for a Raspberry Pi, see
-[Cross-compile for aarch64](../how-to/cross-compile.md).
+[Publish from a Raspberry Pi](../how-to/raspberry-pi.md#cross-compiling).
+
+## Build the iroh-live relay
+
+The relay has no prebuilt binary. Its build script bundles the web viewer it
+serves to browsers, so building it also needs [Node.js](https://nodejs.org/)
+and `npm` on `PATH`. The first build runs `npm install` in
+`iroh-live-relay/web`, which downloads the viewer's dependencies.
+
+```sh
+cargo install --locked --path iroh-live-relay
+```
+
+A workspace build, such as `cargo build --workspace`, builds the relay too and
+needs `npm` as well. [Run the iroh-live relay](../how-to/run-relay.md)
+continues from here.
 
 ## Use the library
 
 iroh-live depends on the unreleased `main` branch of
-[moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
-`Cargo.toml`. The pinned rev is `4a6f52248` (2026-11-18). The moq crates on
-crates.io come from moq's `release` branch, which lags `main` by weeks, and
-iroh-live uses APIs that exist only on `main`. A crate with git dependencies
-cannot be published to crates.io, so none of the iroh-live crates is there
-yet. Depend on them through git:
+[moq-dev/moq](https://github.com/moq-dev/moq), pinned to rev `4a6f52248`
+(2026-11-18) in the root `Cargo.toml`. iroh-live uses APIs that are not yet
+in a moq release. A crate with git dependencies cannot be published, so the
+iroh-live crates are not on crates.io yet. Depend on them through git:
 
 ```toml
 [dependencies]
@@ -83,10 +96,10 @@ The same system libraries as for `irl` are needed for `capture`, `pipewire`
 and `render`. A build without those features needs none of them.
 
 When a moq release contains the APIs iroh-live uses, crates.io versions will
-replace the git pins. Breaking changes are listed in
-[Migrating](../migration.md).
+replace the git pins. [Migrating from the previous
+release](../migration.md) lists the breaking changes.
 
-## Next steps
+## Where to go next
 
 - [Quickstart: CLI](cli-quickstart.md)
 - [Quickstart: library](library-quickstart.md)

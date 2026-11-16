@@ -106,4 +106,4 @@ strangers from ringing: see [Control access](control-access.md#contacts-only).
 ## Where to go next
 
 - [Run a room](rooms.md) for more than two people.
-- [Android](android.md) uses the same convention, so a phone can call `irl call`.
+- [Use iroh-live on Android](android.md) uses the same convention, so a phone can call `irl call`.

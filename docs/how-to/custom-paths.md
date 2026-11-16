@@ -3,7 +3,7 @@
 This page publishes at a path of your own choosing, to a chosen set of peers.
 `LiveLayout` publishes at `live/<id>/<name>` to every granted session. For
 anything else, use `Node::publish` and `Node::subscribe` directly.
-[Paths and layouts](../concepts/paths.md) explains the idea.
+[Paths, layouts and tickets](../concepts/paths.md) explains the idea.
 
 ## The program
 
@@ -105,5 +105,5 @@ it publishes under the live layout to another audience.
 
 ## Where to go next
 
-- [Paths and layouts](../concepts/paths.md) explains the `Layout` trait.
+- [Paths, layouts and tickets](../concepts/paths.md) explains the `Layout` trait.
 - [Access reference](../reference/access.md) lists the audiences.
