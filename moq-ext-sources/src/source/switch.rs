@@ -18,7 +18,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{Demand, Driver, VideoFormat, VideoSource};
-use crate::{ByPtr, Error, SlotState, frames::FrameSlot};
+use crate::{
+    ByPtr, Error, SlotState,
+    frames::FrameSlot,
+    spec::{VideoOpenOptions, VideoSourceSpec},
+};
 
 /// The source that feeds a switch, and which install it belongs to.
 #[derive(Debug, Default)]
@@ -187,6 +191,26 @@ impl VideoSwitch {
                     });
                 }
             }
+        });
+    }
+
+    /// Opens `spec` with `options` behind the switch, or clears it for [`VideoSourceSpec::None`].
+    ///
+    /// The open runs in the background as with [`open`](Self::open), so a
+    /// source picker hands its choice over in one call.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
+    pub fn open_spec(&self, spec: VideoSourceSpec, options: VideoOpenOptions) {
+        if spec == VideoSourceSpec::None {
+            self.clear();
+            return;
+        }
+        self.open(async move {
+            spec.open(&options)
+                .await?
+                .ok_or_else(|| Error::invalid("no video source to open"))
         });
     }
 
@@ -520,5 +544,26 @@ mod tests {
             tokio::time::timeout(TIMEOUT, async { while frames.next().await.is_some() {} }).await;
         assert!(ended.is_ok(), "the stream outlived its switch");
         assert!(sender.is_closed(), "the last source was dropped");
+    }
+
+    /// A spec opens at the size the options ask for, and the `none` spec clears the switch.
+    #[cfg(feature = "pattern")]
+    #[tokio::test]
+    async fn a_spec_opens_with_its_options_and_none_clears() {
+        let (switch, source) = VideoSource::switchable(format());
+        let mut frames = source.frames();
+        let options = VideoOpenOptions::default()
+            .with_size(video::Size::new(64, 48))
+            .with_framerate(video::FrameRate::new(30, 1).expect("a valid rate"));
+        switch.open_spec("test".parse().expect("a valid spec"), options.clone());
+        becomes(&switch, SlotState::Running).await;
+        let frame = tokio::time::timeout(TIMEOUT, frames.next())
+            .await
+            .expect("a frame in time")
+            .expect("the stream is open");
+        assert_eq!(frame.size(), video::Size::new(64, 48));
+
+        switch.open_spec(VideoSourceSpec::None, options);
+        assert_eq!(*switch.status().borrow(), SlotState::Off);
     }
 }

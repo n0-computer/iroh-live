@@ -367,13 +367,13 @@ fn split_once(spec: &str) -> (&str, Option<&str>) {
 /// Either lets the user pick in the desktop portal's screen-sharing dialog.
 pub const PORTAL: &str = "portal";
 
-/// The size of a test pattern without [`VideoOpenOptions::size`].
+/// The size of a test pattern without [`VideoOpenOptions::with_size`].
 const TEST_SIZE: video::Size = video::Size {
     width: 1280,
     height: 720,
 };
 
-/// The capture size of the Raspberry Pi camera without [`VideoOpenOptions::size`].
+/// The capture size of the Raspberry Pi camera without [`VideoOpenOptions::with_size`].
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 const RPICAM_SIZE: video::Size = video::Size {
     width: 640,
@@ -424,6 +424,21 @@ impl Default for VideoOpenOptions {
 }
 
 impl VideoOpenOptions {
+    /// Asks for pictures of `size`.
+    #[must_use]
+    pub fn with_size(mut self, size: video::Size) -> Self {
+        self.width = Some(size.width);
+        self.height = Some(size.height);
+        self
+    }
+
+    /// Asks for `rate` frames per second.
+    #[must_use]
+    pub fn with_framerate(mut self, rate: video::FrameRate) -> Self {
+        self.framerate = Some(rate);
+        self
+    }
+
     /// Returns the size these options ask for, filling in from `default`.
     fn size_or(&self, default: video::Size) -> video::Size {
         video::Size::new(
