@@ -136,10 +136,9 @@ pub mod media {
     };
     #[cfg(feature = "capture")]
     pub use moq_ext_sources::screen_source;
-    pub use moq_ext_sources::spec;
     pub use moq_ext_sources::{
         AudioFormat, AudioSource, Backend, Error, FileEnd, FrameSender, SlotState, SourceClosed,
-        UnknownBackend, VideoFormat, VideoFrames, VideoSource, VideoSwitch,
+        UnknownBackend, VideoFormat, VideoFrames, VideoSource, VideoSwitch, spec,
     };
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};
@@ -157,10 +156,13 @@ pub mod media {
 pub use iroh_live_node as node;
 /// The moq-net this crate builds against.
 pub use iroh_live_node::moq_net;
+// A type that a top-level item's method takes or returns is top-level too,
+// so a caller never has to guess which path holds it.
 pub use iroh_live_node::{
-    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Mdns,
-    MoqPreset, Node, NodeConfig, Publication, Reach, RelayConfig, Session, Subscription,
-    UnpublishOnDrop, ValueReader, layout, load_or_create_secret_key,
+    Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Grant,
+    LinkKind, Mdns, MoqPreset, NetworkSample, Node, NodeConfig, Publication, Reach, RelayConfig,
+    RelayLink, RelayStatus, ServingLink, Session, Subscription, UnpublishOnDrop, ValueReader,
+    layout, load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
