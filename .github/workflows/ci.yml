@@ -61,6 +61,24 @@ jobs:
       # Every relative link and anchor in the Markdown. The guide's Rust
       # programs compile in the doctest step above.
       - run: python3 scripts/check-links.py
+      # The guide list, the moq rev and the feature list in the docs.
+      - run: python3 scripts/check-docs.py
+
+  docs-site:
+    name: Docs site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: mdbook@0.5.2
+      # The book and the landing page, without the API docs, which the
+      # Linux job's `cargo doc` step already builds.
+      - run: docs-site/build.sh --no-api
+      - run: python3 docs-site/check-links.py
 
   check-macos:
     name: macOS

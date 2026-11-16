@@ -34,7 +34,7 @@ struct Cli {
 /// The `irl` subcommands.
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Place or answer a 1:1 video call.
+    /// Place or answer a one-to-one video call.
     Call(Box<args::CallArgs>),
     /// List cameras, displays, and audio devices.
     Devices,
@@ -95,6 +95,30 @@ mod tests {
         // clap validates `#[arg]` attributes only when it builds the command.
         // Without this test a mistake panics at the user.
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_cli_reference_names_every_flag() {
+        // The reference is written by hand. This keeps it from missing a
+        // flag that a subcommand gains.
+        let reference = include_str!("../../docs/reference/cli.md");
+        let mut missing = Vec::new();
+        for command in Cli::command().get_subcommands() {
+            if !reference.contains(&format!("## `irl {}`", command.get_name())) {
+                missing.push(format!("the `irl {}` section", command.get_name()));
+            }
+            for arg in command.get_arguments().filter(|arg| !arg.is_hide_set()) {
+                let Some(long) = arg.get_long() else { continue };
+                if long != "help" && !reference.contains(&format!("`--{long}")) {
+                    missing.push(format!("`irl {} --{long}`", command.get_name()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "docs/reference/cli.md does not mention: {}",
+            missing.join(", ")
+        );
     }
 
     #[test]

@@ -60,10 +60,15 @@ Run these checks before you commit docs:
 ```sh
 cargo test --doc -p iroh-live --all-features
 python3 scripts/check-links.py
+python3 scripts/check-docs.py
 cargo make docs-site
 ```
 
 The first compiles the guide programs. The second checks every relative
-link and anchor in the repository's Markdown, and that each page with a
-`rust,no_run` block is in the `pages!` list. The third builds the site,
-with the API docs, and checks the links between its pages.
+link and anchor in the repository's Markdown. The third checks that each
+page with a `rust,no_run` block is in the `pages!` list, that every moq rev
+in the docs matches the root `Cargo.toml`, and that every Cargo feature is
+in [Cargo features](reference/features.md). The last builds the site, with
+the API docs, and checks the links between its pages. A test in
+`iroh-live-cli` also checks that the [`irl` CLI reference](reference/cli.md)
+names every flag.
