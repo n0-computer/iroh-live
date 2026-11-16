@@ -29,7 +29,7 @@ use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition,
+        LiveLayoutExt, LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition,
         VideoSource, video,
     },
 };
@@ -42,7 +42,7 @@ let node = Node::new(endpoint.clone(), layout.config());
 let router = node.mount(Router::builder(endpoint)).spawn();
 
 // Created in the node's route table: peers read it without a copy.
-let broadcast: LocalBroadcast = layout.publish(&node, "studio")?;
+let broadcast: LocalBroadcast = layout.publish_media(&node, "studio")?;
 let source = VideoSource::test_pattern(
     video::Size::new(1280, 720),
     video::FrameRate::new(30, 1).expect("a valid rate"),
@@ -119,6 +119,8 @@ pub mod calls;
 mod error;
 #[cfg(feature = "media")]
 mod network;
+#[cfg(feature = "media")]
+mod publish;
 
 /// Sources, broadcasts and players, with the codec stacks they sit on.
 #[cfg(feature = "media")]
@@ -152,6 +154,9 @@ pub mod media {
     pub use wgpu;
 
     pub use crate::network::SubscriptionExt;
+    pub use crate::publish::LiveLayoutExt;
+    #[cfg(feature = "rooms")]
+    pub use crate::publish::RoomExt;
 }
 pub use iroh_live_node as node;
 /// The moq-net this crate builds against.

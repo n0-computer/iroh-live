@@ -9,7 +9,7 @@ use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     EndpointConfig, Node, RelayConfig,
     layout::LiveLayout,
-    media::{LocalBroadcast, Rate, RpicamConfig, rpicam_h264, video::Size},
+    media::{LiveLayoutExt, LocalBroadcast, Rate, RpicamConfig, rpicam_h264, video::Size},
 };
 use n0_error::StdResultExt;
 use n0_future::task::AbortOnDropHandle;
@@ -64,7 +64,8 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let router = node.mount(Router::builder(endpoint)).spawn();
 
     // Published while `broadcast` lives.
-    let broadcast: LocalBroadcast = LiveLayout::default().publish(node, opts.name.as_str())?;
+    let broadcast: LocalBroadcast =
+        LiveLayout::default().publish_media(node, opts.name.as_str())?;
 
     // Keeps the default of one keyframe per second.
     let config = RpicamConfig::new(Size::new(opts.width, opts.height), opts.fps)

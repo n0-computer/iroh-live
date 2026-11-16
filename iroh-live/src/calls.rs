@@ -570,11 +570,10 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
 /// follow a grant.
 fn follow_rate<B: 'static>(node: &Node, broadcast: &B) {
     #[cfg(feature = "media")]
-    if let (Some(allocator), Some(local)) = (
-        node.bandwidth(),
-        (broadcast as &dyn std::any::Any).downcast_ref::<moq_ext_publisher::LocalBroadcast>(),
-    ) {
-        local.set_bandwidth(allocator);
+    if let Some(local) =
+        (broadcast as &dyn std::any::Any).downcast_ref::<moq_ext_publisher::LocalBroadcast>()
+    {
+        crate::publish::follow_rate(node, local);
     }
     #[cfg(not(feature = "media"))]
     let _ = (node, broadcast);

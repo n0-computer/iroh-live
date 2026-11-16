@@ -21,12 +21,14 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["ful
 Publish a camera, and share the ticket:
 
 ```rust,ignore
+use iroh_live::media::LiveLayoutExt;
+
 let layout = LiveLayout::default();
 let endpoint = EndpointConfig::from_env()?.bind().await?;
 let node = Node::new(endpoint.clone(), layout.config());
 // Accepts the viewers. Keep it: dropping it stops accepting.
 let router = node.mount(Router::builder(endpoint)).spawn();
-let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
+let broadcast: LocalBroadcast = layout.publish_media(&node, "hello")?;
 let camera = VideoSource::camera(None).await?;
 broadcast.set_video(camera, VideoEncoding::single(VideoRendition::new("video")))?;
 println!("{}", layout.ticket(node.id(), "hello")?);

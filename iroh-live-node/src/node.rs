@@ -362,8 +362,10 @@ impl Node {
     /// It divides the node's send-rate estimate among the tracks reserved on
     /// it, as [`NodeConfig::rate_control`] configures it. Every session the
     /// node holds shares it, so each probes for what the reservations add up
-    /// to. Hand it to a `LocalBroadcast` with `set_bandwidth`, which
-    /// `iroh_live::layout::LiveLayout::publish` does on its own.
+    /// to. `iroh_live::media::LiveLayoutExt` and `RoomExt` hand it to the
+    /// `LocalBroadcast` they publish, and so do calls. A broadcast published
+    /// with [`publish_with`](Self::publish_with) takes it through
+    /// `LocalBroadcast::set_bandwidth`.
     #[must_use]
     pub fn bandwidth(&self) -> Option<moq_net::bandwidth::Allocator> {
         self.shared.rate.as_ref().map(|rate| rate.allocator())
@@ -466,6 +468,12 @@ impl Node {
     /// first there, such as a catalog. It runs before the node takes its
     /// lock, so it may call back into the node. If the path turns out to be
     /// taken, the broadcast is closed and what `fill` returned is dropped.
+    ///
+    /// This is the low-level path for a `LocalBroadcast` at a path or to an
+    /// audience the layouts do not cover. Under
+    /// [`rate_control`](NodeConfig::rate_control), hand it
+    /// [`bandwidth`](Self::bandwidth) with its `set_bandwidth`, so its
+    /// encoders follow the node's allocator.
     ///
     /// # Errors
     ///

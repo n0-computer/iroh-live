@@ -150,9 +150,10 @@ impl LiveLayout {
     /// `LocalBroadcast`, or the producer itself. The audience is
     /// [`Audience::Granted`], which includes attached relays.
     ///
-    /// On a node with [`rate_control`](NodeConfig::rate_control), hand
-    /// [`Node::bandwidth`] to a `LocalBroadcast` with its `set_bandwidth`, so
-    /// its encoders follow the node's allocator.
+    /// This layer knows no media types, so it does not hand
+    /// [`Node::bandwidth`] to a `LocalBroadcast`. Publish one with
+    /// `iroh_live::media::LiveLayoutExt::publish_media`, whose encoders follow
+    /// the allocator of a node with [`rate_control`](NodeConfig::rate_control).
     ///
     /// The publication lasts until the broadcast closes. A `LocalBroadcast`
     /// closes when it is closed or its last clone drops. A producer closes only

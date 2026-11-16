@@ -9,8 +9,8 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
-        audio_encoding, video,
+        AudioSource, LiveLayoutExt, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
+        audio, audio_encoding, video,
     },
 };
 use n0_error::StdResultExt;
@@ -47,7 +47,7 @@ async fn main() -> n0_error::Result {
     info!(id = %node.id(), "endpoint ready");
 
     // Published while `broadcast` lives, or until the node shuts down.
-    let broadcast: LocalBroadcast = layout.publish(&node, &args.name)?;
+    let broadcast: LocalBroadcast = layout.publish_media(&node, &args.name)?;
 
     let mut capture = video::capture::Config::default();
     capture.height = Some(args.height);

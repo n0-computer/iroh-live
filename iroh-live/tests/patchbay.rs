@@ -20,8 +20,9 @@ use iroh_live::{
     Node, RateControl, Reach, SendEstimate, Subscription,
     layout::LiveLayout,
     media::{
-        Adaptation, LocalBroadcast, Player, PlayerConfig, Rate, RemoteBroadcast, RenditionMode,
-        RenditionState, SubscriptionExt, VideoEncoding, VideoFrames, VideoRendition, VideoSource,
+        Adaptation, LiveLayoutExt, LocalBroadcast, Player, PlayerConfig, Rate, RemoteBroadcast,
+        RenditionMode, RenditionState, SubscriptionExt, VideoEncoding, VideoFrames, VideoRendition,
+        VideoSource,
         video::{Frame, FrameRate, Size},
     },
     node::NetworkSample,
@@ -154,13 +155,10 @@ impl Fixture {
         config.rate_control = rate_control;
         let publisher = Node::new(publisher_endpoint.clone(), config);
         let _router = publisher.mount(Router::builder(publisher_endpoint)).spawn();
-        let broadcast: LocalBroadcast = LiveLayout::default()
-            .publish(&publisher, "patchbay")
-            .expect("failed to publish");
         // The encoders follow the node's allocator, if it has rate control.
-        if let Some(allocator) = publisher.bandwidth() {
-            broadcast.set_bandwidth(allocator);
-        }
+        let broadcast = LiveLayout::default()
+            .publish_media(&publisher, "patchbay")
+            .expect("failed to publish");
         broadcast
             .set_video(gradient(size), VideoEncoding::ladder(renditions))
             .expect("failed to set video");

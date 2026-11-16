@@ -15,12 +15,14 @@ each peer publish only under its own id.
 
 `LiveLayout` is the layout iroh-live ships. It puts a peer's broadcasts at
 `live/<peer>/<name>`, and its policy lets every peer publish there only.
-`LiveLayout::publish`, `LiveLayout::path` and `LiveLayout::ticket` all use it:
+`LiveLayout::publish`, `LiveLayout::path` and `LiveLayout::ticket` all use it,
+and so does `publish_media` from `media::LiveLayoutExt`, which publishes a
+`LocalBroadcast`:
 
 ```rust,ignore
 let layout = LiveLayout::default();
 let node = Node::new(endpoint, layout.config());
-let broadcast: LocalBroadcast = layout.publish(&node, "hello")?; // live/<id>/hello
+let broadcast: LocalBroadcast = layout.publish_media(&node, "hello")?; // live/<id>/hello
 ```
 
 Rooms use a second layout, `RoomsLayout`, with paths

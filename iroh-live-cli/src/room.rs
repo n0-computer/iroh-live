@@ -10,7 +10,7 @@ use iroh::protocol::Router;
 use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
-    media::LocalBroadcast,
+    media::{LocalBroadcast, RoomExt},
     rooms::{Room, RoomTicket, Rooms},
 };
 use n0_error::Result;
@@ -85,7 +85,7 @@ async fn join(
         .unwrap_or_else(|| node.endpoint().id().fmt_short().to_string());
     let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
-    let broadcast: LocalBroadcast = room.publish(BROADCAST_NAME)?;
+    let broadcast: LocalBroadcast = room.publish_media(BROADCAST_NAME)?;
     source::configure(&broadcast, &args.capture, speaker.as_ref()).await?;
     let chat = chat::Writer::new(room.publish(chat::NAME)?)?;
 

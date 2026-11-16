@@ -11,7 +11,7 @@ use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
     load_or_create_secret_key,
-    media::{self, LocalBroadcast, Player, PlayerConfig, RenditionMode},
+    media::{self, LiveLayoutExt, LocalBroadcast, Player, PlayerConfig, RenditionMode},
 };
 use n0_error::{Result, anyerr};
 use serde::{Deserialize, Deserializer, de};
@@ -261,7 +261,7 @@ struct Receiver {
 
 /// Publishes one `[[send]]` block.
 async fn setup_send(node: &Node, config: &SendConfig) -> Result<LocalBroadcast> {
-    let broadcast: LocalBroadcast = LiveLayout::default().publish(node, &config.name)?;
+    let broadcast: LocalBroadcast = LiveLayout::default().publish_media(node, &config.name)?;
     source::configure(&broadcast, &config.capture, None).await?;
     Ok(broadcast)
 }

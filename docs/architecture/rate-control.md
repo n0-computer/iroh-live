@@ -37,14 +37,27 @@ What iroh-live adds:
 | `RateControl`, `FanOut` | `iroh-live-node` | The node's switch, and how one encoder follows several links |
 | `Node::bandwidth` | `iroh-live-node` | The allocator every publication of the node reserves on |
 | `LocalBroadcast::set_bandwidth` | `moq-ext-publisher` | Reserves each rendition, follows its grant, and adds the catalog's `rate` section |
+| `media::LiveLayoutExt`, `media::RoomExt` | `iroh-live` | Publish a `LocalBroadcast` through the layout or a room, and hand it the node's allocator |
 | `set_boundaries` | `moq-ext-adaptive` | Places each rung's threshold at the band boundary the publisher pauses it at |
 
-`Calls::new` hands the node's allocator to its `LocalBroadcast` on its own.
-Every other broadcast gets it with `set_bandwidth`, since `LiveLayout` and
-`Node::publish_with` live in iroh-live-node, which knows no media types:
+`LiveLayout`, `Room` and `Node::publish_with` live in crates that know no
+media types, so their generic `publish` cannot hand a `LocalBroadcast` the
+node's allocator. `publish_media`, from `media::LiveLayoutExt` and
+`media::RoomExt`, publishes a `LocalBroadcast` and hands it over, and
+`Calls::new` does the same for its side of a call:
 
 ```rust,ignore
-let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
+let broadcast = layout.publish_media(&node, "hello")?;
+let cam = room.publish_media("cam")?;
+```
+
+A broadcast published with `Node::publish_with`, at a path or to an audience
+the layouts do not cover, takes the allocator with `set_bandwidth`:
+
+```rust,ignore
+let (_publication, broadcast) = node.publish_with(path, audience, |producer| {
+    LocalBroadcast::try_from(producer.clone())
+})?;
 if let Some(allocator) = node.bandwidth() {
     broadcast.set_bandwidth(allocator);
 }

@@ -32,8 +32,8 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource,
-        video,
+        LocalBroadcast, PlayerConfig, RoomExt, SubscriptionExt, VideoEncoding, VideoRendition,
+        VideoSource, video,
     },
     rooms::{RoomTicket, Rooms},
 };
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let room = rooms.join(&ticket, Some("ada".into())).await?;
     println!("room ticket: {}", room.ticket());
 
-    let broadcast: LocalBroadcast = room.publish("cam")?;
+    let broadcast: LocalBroadcast = room.publish_media("cam")?;
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
         VideoSource::test_pattern(video::Size::new(640, 360), rate)?,
@@ -127,8 +127,10 @@ removes the member when its lease runs out.
 ## Publishing and subscribing
 
 `Room::publish(name)` puts the broadcast at `rooms/<topic>/<this member>/<name>`,
-where only the room's members can read it. A member that leaves or expires
-loses the path at once. `Room::unpublish(name)`, or closing the broadcast,
+where only the room's members can read it. `room.publish_media(name)`, from
+`media::RoomExt`, does the same for a `LocalBroadcast` and hands it the
+node's allocator under [rate control](../architecture/rate-control.md). A
+member that leaves or expires loses the path at once. `Room::unpublish(name)`, or closing the broadcast,
 removes the name from this member's announcement. A name must not be empty or
 contain a slash.
 

@@ -34,8 +34,8 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        AudioSource, FileEnd, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
-        audio_encoding,
+        AudioSource, FileEnd, LiveLayoutExt, LocalBroadcast, VideoEncoding, VideoRendition,
+        VideoSource, audio, audio_encoding,
     },
 };
 
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = LiveLayout::default();
     let node = Node::new(endpoint.clone(), layout.config());
     let router = node.mount(Router::builder(endpoint)).spawn();
-    let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
+    let broadcast: LocalBroadcast = layout.publish_media(&node, "hello")?;
 
     // Fails if the device cannot be opened. On Wayland the screen needs the
     // `pipewire` feature, and the user picks it in the desktop portal.

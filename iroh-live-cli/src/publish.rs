@@ -3,7 +3,12 @@
 //! Capture sources are encoded into the renditions `--renditions` lists. A
 //! `file:` source is republished without re-encoding.
 
-use iroh_live::{Node, layout::LiveLayout, media::LocalBroadcast, moq_net::broadcast};
+use iroh_live::{
+    Node,
+    layout::LiveLayout,
+    media::{LiveLayoutExt, LocalBroadcast},
+    moq_net::broadcast,
+};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -46,7 +51,7 @@ async fn setup_capture(args: &PublishArgs) -> Result<(SharedNode, LocalBroadcast
     let node = bind_node(args.transport.inbound()).await?;
     let (node, (broadcast, ticket)) = transport::with_node(node, async |node| {
         let broadcast: LocalBroadcast =
-            LiveLayout::default().publish(node, &args.transport.name)?;
+            LiveLayout::default().publish_media(node, &args.transport.name)?;
         source::configure(&broadcast, &args.capture, None).await?;
         let ticket = transport::advertise(node, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.

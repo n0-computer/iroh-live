@@ -103,6 +103,17 @@ publication.
 announced, so a reader never sees it empty. With `LiveLayout::path(id, name)`
 it publishes under the live layout to another audience.
 
+A `LocalBroadcast` published this way does not follow the node's
+[rate control](../architecture/rate-control.md) on its own. Hand it the
+node's allocator with `set_bandwidth`, as `publish_media` from
+`media::LiveLayoutExt` and `media::RoomExt` does:
+
+```rust,ignore
+if let Some(allocator) = node.bandwidth() {
+    broadcast.set_bandwidth(allocator);
+}
+```
+
 ## Where to go next
 
 - [Paths and layouts](../concepts/paths.md) explains the `Layout` trait.

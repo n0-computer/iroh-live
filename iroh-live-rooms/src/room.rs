@@ -135,6 +135,12 @@ impl Room {
         self.inner.ticket.with_bootstrap(self.inner.me)
     }
 
+    /// Returns the node this member publishes and subscribes through.
+    #[must_use]
+    pub fn node(&self) -> &Node {
+        &self.inner.node
+    }
+
     /// Returns the members, their broadcasts and connections, as they change.
     #[must_use]
     pub fn state(&self) -> n0_watcher::Direct<RoomState> {
@@ -147,6 +153,10 @@ impl Room {
     /// route table's `broadcast::Producer`: a `LocalBroadcast`, or the producer
     /// itself. The broadcast stays announced until it closes,
     /// [`unpublish`](Self::unpublish) takes it out, or the room is left.
+    ///
+    /// A `LocalBroadcast` published here does not follow the node's
+    /// allocator, since this crate knows no media types.
+    /// `iroh_live::media::RoomExt::publish_media` hands it over.
     ///
     /// # Errors
     ///

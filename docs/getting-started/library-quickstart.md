@@ -31,7 +31,7 @@ use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
     media::{
-        AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
+        AudioSource, LiveLayoutExt, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
         audio::Layout, audio_encoding, video,
     },
 };
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = node.mount(Router::builder(endpoint)).spawn();
 
     // Published while `broadcast` lives.
-    let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
+    let broadcast: LocalBroadcast = layout.publish_media(&node, "hello")?;
     let size = video::Size::new(1280, 720);
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
