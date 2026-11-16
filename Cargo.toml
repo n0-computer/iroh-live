@@ -50,6 +50,10 @@ kio = { git = "https://github.com/moq-dev/moq", rev = "e8075629a" }
 # a `wgpu::Texture` from its own build of wgpu 30. A texture from a different
 # wgpu major is a different type, so egui and moq-video have to move together.
 eframe = { version = "0.37.0", default-features = false }
+# The wgpu moq-video renders with. `iroh_live::media::wgpu` re-exports it, so
+# an application names wgpu types without a version of its own. Bump it with
+# the moq rev.
+wgpu = { version = "30", default-features = false }
 egui = "0.37.0"
 egui-wgpu = "0.37.0"
 
