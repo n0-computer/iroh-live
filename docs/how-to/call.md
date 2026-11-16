@@ -83,7 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The program uses test sources. Swap in a camera and a microphone as in
-[Publish a camera, screen or file](publish.md).
+[Publish a camera, screen or file](publish.md), or follow the
+[call tutorial](../getting-started/call-app.md), which adds a window, the
+speaker and echo cancellation.
 
 ## Answering
 

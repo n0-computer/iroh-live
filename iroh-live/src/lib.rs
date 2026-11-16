@@ -219,8 +219,9 @@ pub use self::error::Error;
 ))]
 mod guide {
     macro_rules! pages {
-        ($($name:ident => $path:literal),* $(,)?) => {
+        ($($(#[$attr:meta])* $name:ident => $path:literal),* $(,)?) => {
             $(
+                $(#[$attr])*
                 #[doc = include_str!(concat!("../../docs/", $path))]
                 mod $name {}
             )*
@@ -243,5 +244,8 @@ mod guide {
         concepts_nodes => "concepts/nodes.md",
         concepts_paths => "concepts/paths.md",
         reference_player => "reference/player.md",
+        // The tutorial cancels the speaker's echo.
+        #[cfg(feature = "aec")]
+        call_app => "getting-started/call-app.md",
     }
 }

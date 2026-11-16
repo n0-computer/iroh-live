@@ -100,7 +100,8 @@ device leaves out a DMA-BUF import the adapter offers.
 `overlay::DebugOverlay` draws the stats bar that `irl watch` shows. An egui
 update cannot await, so `Pending::spawn` runs a future such as a dial on the
 runtime, and the window asks `poll()` on each frame until the result is
-there.
+there. The [call tutorial](../getting-started/call-app.md) puts these
+together.
 
 ### Other toolkits
 

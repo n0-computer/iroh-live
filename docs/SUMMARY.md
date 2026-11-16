@@ -7,6 +7,7 @@
 - [Install](getting-started/install.md)
 - [Quickstart: CLI](getting-started/cli-quickstart.md)
 - [Quickstart: library](getting-started/library-quickstart.md)
+- [Tutorial: a video call app](getting-started/call-app.md)
 
 # Guides
 

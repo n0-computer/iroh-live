@@ -136,6 +136,8 @@ keeps one in a file.
 
 ## Where to go next
 
+- For a complete call app with a window, a camera and echo cancellation,
+  follow the [call tutorial](call-app.md).
 - To publish a camera, a screen or a file, see
   [Publish](../how-to/publish.md).
 - To draw the frames, see [Watch a broadcast](../how-to/watch.md).

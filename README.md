@@ -48,8 +48,9 @@ complete publisher and viewer.
 The [book in `docs/`](docs/introduction.md) starts from what you want to do:
 
 - **Build an app:** the [CLI quickstart](docs/getting-started/cli-quickstart.md),
-  the [library quickstart](docs/getting-started/library-quickstart.md), then
-  the [guides](docs/how-to/index.md).
+  the [library quickstart](docs/getting-started/library-quickstart.md), the
+  [call tutorial](docs/getting-started/call-app.md), then the
+  [guides](docs/how-to/index.md).
 - **Run a relay:** [Run the iroh-live relay](docs/how-to/run-relay.md) and
   the [relay reference](docs/reference/relay.md).
 - **Work on iroh-live:** [Contributing](docs/contributing.md) and the

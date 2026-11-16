@@ -59,7 +59,8 @@ Most applications depend on `iroh-live` alone. The
 
 **Build an app.** Try `irl` in the [CLI quickstart](getting-started/cli-quickstart.md),
 then write the two programs of the
-[library quickstart](getting-started/library-quickstart.md). The
+[library quickstart](getting-started/library-quickstart.md) and the
+[video call app](getting-started/call-app.md). The
 [guides for app developers](how-to/index.md) cover publishing, watching,
 calls, rooms and access control. [How it fits together](concepts/overview.md)
 explains the model, and the [API docs](https://n0-computer.github.io/iroh-live/api/iroh_live/) cover
