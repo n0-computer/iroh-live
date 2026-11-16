@@ -160,7 +160,7 @@ async fn run_session(config: RunConfig) -> Result {
 /// set up.
 async fn run_streams(node: &Node, config: &RunConfig) -> Result {
     // Dropping a handle stops it, so all are kept until shutdown.
-    let mut broadcasts: Vec<(LocalBroadcast, source::Opened)> = Vec::new();
+    let mut broadcasts: Vec<LocalBroadcast> = Vec::new();
     let mut receivers: Vec<Receiver> = Vec::new();
     let mut recordings: JoinSet<Result<()>> = JoinSet::new();
     let stop_recording = CancellationToken::new();
@@ -243,7 +243,7 @@ async fn run_streams(node: &Node, config: &RunConfig) -> Result {
     }
 
     crate::shutdown::step("closing the broadcasts");
-    for (broadcast, _sources) in broadcasts {
+    for broadcast in broadcasts {
         broadcast.close();
         broadcast.closed().await;
     }
@@ -260,10 +260,10 @@ struct Receiver {
 }
 
 /// Publishes one `[[send]]` block.
-async fn setup_send(node: &Node, config: &SendConfig) -> Result<(LocalBroadcast, source::Opened)> {
+async fn setup_send(node: &Node, config: &SendConfig) -> Result<LocalBroadcast> {
     let broadcast: LocalBroadcast = LiveLayout::default().publish(node, &config.name)?;
-    let sources = source::configure(&broadcast, &config.capture, None).await?;
-    Ok((broadcast, sources))
+    source::configure(&broadcast, &config.capture, None).await?;
+    Ok(broadcast)
 }
 
 /// Subscribes to one `[[recv]]` block, playing and recording as it asks.

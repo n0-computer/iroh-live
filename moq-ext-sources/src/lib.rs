@@ -20,11 +20,17 @@
 //! | Moving gradient | [`VideoSource::test_gradient`] | `pattern` |
 //! | Sine tone | [`AudioSource::tone`] | `pattern` |
 //! | WAV and MP3 file | [`AudioSource::file`] | `file` |
-//! | Camera, display, window | [`VideoSource::capture`] | `capture` |
+//! | Camera, display, window | [`VideoSource::capture`], [`VideoSource::camera`], [`VideoSource::screen`] | `capture` |
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
 //! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
+//!
+//! [`Backend`] is a choice of video encoder or decoder backend, as a
+//! `--encoder` or `--decoder` flag takes it.
+//!
+//! [`spec`] parses text specifiers such as `cam:2` or `test:gradient`, as a
+//! `--video` or `--audio` flag takes them, and opens the source they name.
 //!
 //! The crate README lists every feature flag. [`local_task::spawn`] runs a
 //! future on a thread of its own for capture streams that are not `Send`.
@@ -60,25 +66,35 @@
 
 #![forbid(unsafe_code)]
 
+mod backend;
 mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
 pub mod local_task;
 mod source;
+pub mod spec;
 pub mod stats;
 mod status;
 
 use moq_audio as audio;
 use moq_video as video;
 
+#[cfg(feature = "capture")]
+pub use self::source::screen_source;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{
+    backend::{Backend, UnknownBackend},
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{
-        AudioFormat, AudioKind, AudioSource, Demand, DemandGuard, FileEnd, FrameSender, PcmFanout,
-        VideoFormat, VideoSource, VideoSwitch, WeakPcmFanout,
+        AudioFormat, AudioSource, FileEnd, FrameSender, VideoFormat, VideoSource, VideoSwitch,
     },
-    status::{ByPtr, SlotState, send_if_changed},
+    status::{ByPtr, SlotState},
+};
+// Shared with moq-ext-publisher and moq-ext-player, not public API.
+#[doc(hidden)]
+pub use self::{
+    source::{AudioKind, Demand, DemandGuard, PcmFanout, WeakPcmFanout},
+    status::send_if_changed,
 };

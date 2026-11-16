@@ -44,7 +44,6 @@ pub(crate) fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
 struct Joined {
     node: SharedNode,
     broadcast: LocalBroadcast,
-    sources: source::Opened,
     /// The speaker every participant plays on, and what the microphone cancels.
     speaker: Option<Speaker>,
     room: Room,
@@ -87,7 +86,7 @@ async fn join(
     let room = rooms.join(&ticket, Some(display_name.clone())).await?;
 
     let broadcast: LocalBroadcast = room.publish(BROADCAST_NAME)?;
-    let sources = source::configure(&broadcast, &args.capture, speaker.as_ref()).await?;
+    source::configure(&broadcast, &args.capture, speaker.as_ref()).await?;
     let chat = chat::Writer::new(room.publish(chat::NAME)?)?;
 
     let ticket = room.ticket().to_string();
@@ -98,7 +97,6 @@ async fn join(
     Ok(Joined {
         node: node.clone(),
         broadcast,
-        sources,
         speaker,
         room,
         chat,
@@ -133,7 +131,6 @@ mod window {
         args::PlaybackArgs,
         playback::Speaker,
         shutdown::Teardown,
-        source,
         transport::{PEER_TIMEOUT, Subscribed},
         ui::RemoteView,
     };
@@ -167,7 +164,6 @@ mod window {
         let Joined {
             node,
             broadcast,
-            sources,
             speaker,
             room,
             chat,
@@ -200,10 +196,9 @@ mod window {
                 preview: VideoView::new(
                     &cc.egui_ctx,
                     "room-preview",
-                    sources.video.as_ref().map(VideoSource::frames),
+                    broadcast.video_source().as_ref().map(VideoSource::frames),
                     cc.wgpu_render_state.as_ref(),
                 ),
-                _sources: sources,
                 speaker,
                 render_state: cc.wgpu_render_state.clone(),
                 playback,
@@ -245,8 +240,6 @@ mod window {
         reconcile_at: Option<Instant>,
         chat: ChatState,
         preview: VideoView,
-        /// The sources this node publishes, held for the window's life.
-        _sources: source::Opened,
         /// The speaker every peer plays on.
         speaker: Option<Speaker>,
         render_state: Option<RenderState>,
@@ -436,8 +429,7 @@ mod window {
                     player,
                     self.playback.decoder,
                     self.render_state.as_ref(),
-                )
-                .with_link(sub.subscription.clone());
+                );
                 self.tiles.push(PeerTile {
                     remote,
                     name,

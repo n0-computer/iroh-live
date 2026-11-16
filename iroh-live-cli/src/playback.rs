@@ -7,22 +7,12 @@ use iroh_live::media::{
     video_rendition,
 };
 use n0_error::{Result, anyerr};
-use tracing::info;
-#[cfg(feature = "playback")]
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{args::PlaybackArgs, transport::Subscribed};
 
 /// The speaker engine audio plays on.
-#[cfg(feature = "playback")]
 pub(crate) type Speaker = iroh_live::media::audio::playback::Engine;
-/// The speaker of a build without playback, which never has one.
-///
-/// Not `Copy`, unlike `Infallible`, so the `.clone()` the playback build needs
-/// reads the same in both.
-#[cfg(not(feature = "playback"))]
-#[derive(Debug, Clone)]
-pub(crate) enum Speaker {}
 
 /// Returns a player config from `--decoder` and `--latency`, with audio on `speaker`.
 pub(crate) fn player_config(args: &PlaybackArgs, speaker: Option<&Speaker>) -> PlayerConfig {
@@ -36,15 +26,7 @@ pub(crate) fn player_config(args: &PlaybackArgs, speaker: Option<&Speaker>) -> P
 ///
 /// Without a speaker, the audio is decoded and discarded.
 pub(crate) fn audio_on(mut config: PlayerConfig, speaker: Option<&Speaker>) -> PlayerConfig {
-    #[cfg(feature = "playback")]
-    {
-        config.audio = speaker.cloned().map_or(AudioMode::Decode, AudioMode::Play);
-    }
-    #[cfg(not(feature = "playback"))]
-    {
-        let _ = speaker;
-        config.audio = AudioMode::Decode;
-    }
+    config.audio = speaker.cloned().map_or(AudioMode::Decode, AudioMode::Play);
     config
 }
 
@@ -87,45 +69,31 @@ pub(crate) async fn catalog(broadcast: &RemoteBroadcast) -> Result<Arc<Catalog>>
 /// # Errors
 ///
 /// Fails if `device` is set and does not open.
-#[allow(
-    clippy::unused_async,
-    reason = "a build without playback opens nothing, which is not async"
-)]
 pub(crate) async fn open_speaker(device: Option<String>) -> Result<Option<Speaker>> {
-    #[cfg(feature = "playback")]
-    {
-        if let Some(device) = device {
-            let speaker = open_engine(device.clone()).await.map_err(|err| {
-                anyerr!(
-                    "cannot open audio output '{device}': {err:#}. \
-                     Run `irl devices` for the ids this machine accepts"
-                )
-            })?;
-            info!(%device, "audio output selected");
-            return Ok(Some(speaker));
-        }
-        let config = iroh_live::media::audio::playback::Config::default();
-        match iroh_live::media::audio::playback::Engine::open(config).await {
-            Ok(engine) => Ok(Some(engine)),
-            Err(err) => {
-                warn!(
-                    error = format_args!("{err:#}"),
-                    "no audio output, playing audio nowhere"
-                );
-                Ok(None)
-            }
-        }
+    if let Some(device) = device {
+        let speaker = open_engine(device.clone()).await.map_err(|err| {
+            anyerr!(
+                "cannot open audio output '{device}': {err:#}. \
+                 Run `irl devices` for the ids this machine accepts"
+            )
+        })?;
+        info!(%device, "audio output selected");
+        return Ok(Some(speaker));
     }
-    #[cfg(not(feature = "playback"))]
-    {
-        let _ = device;
-        info!("this build has no playback support, so audio is decoded and discarded");
-        Ok(None)
+    let config = iroh_live::media::audio::playback::Config::default();
+    match iroh_live::media::audio::playback::Engine::open(config).await {
+        Ok(engine) => Ok(Some(engine)),
+        Err(err) => {
+            warn!(
+                error = format_args!("{err:#}"),
+                "no audio output, playing audio nowhere"
+            );
+            Ok(None)
+        }
     }
 }
 
 /// Opens the speaker engine for `device`.
-#[cfg(feature = "playback")]
 async fn open_engine(
     device: String,
 ) -> Result<iroh_live::media::audio::playback::Engine, iroh_live::media::audio::Error> {

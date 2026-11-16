@@ -20,7 +20,7 @@ lists every flag.
 
 A player subscribes to audio only when `PlayerConfig::audio` asks for it.
 `AudioMode::Play` mixes it into a `playback::Engine`, which needs the
-`playback` feature:
+`playback` feature, part of `full`:
 
 ```rust,no_run
 use iroh_live::{
@@ -82,9 +82,20 @@ arrives. `set_frames` switches to another stream and keeps the last picture
 until the new stream delivers one. `VideoView::new` must run inside a Tokio
 runtime.
 
-Pass `moq_ext_egui::egui_wgpu_config()` to eframe. On Linux it selects Vulkan
-and enables `VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter supports it,
-which eframe does not do on its own.
+Pass `moq_ext_egui::egui_wgpu_config()` to eframe as its `wgpu_options`:
+
+```rust,ignore
+let options = eframe::NativeOptions {
+    wgpu_options: moq_ext_egui::egui_wgpu_config(),
+    ..Default::default()
+};
+```
+
+On Linux it selects Vulkan and enables `VULKAN_EXTERNAL_MEMORY_DMA_BUF` when
+the adapter supports it, which eframe does not do on its own. On every
+platform it requests the adapter's own limits, so the window also opens on a
+GPU with limits below wgpu's defaults. A view logs once at INFO when its
+device leaves out a DMA-BUF import the adapter offers.
 
 `FrameView` draws frames that you hand it with `render_frame`, and
 `overlay::DebugOverlay` draws the stats bar that `irl watch` shows.

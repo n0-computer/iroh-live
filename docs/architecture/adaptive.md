@@ -22,6 +22,7 @@ pub struct NetworkSample {
     pub delivery: Option<u64>,         // the publisher's estimate, in bits/s
     pub path_generation: u64,          // bumped when the path changes
     pub throughput: Option<u64>,       // arriving bytes, in bits/s; not read by adaptation
+    pub send_rate: Option<u64>,        // leaving bytes, in bits/s; not read by adaptation
     pub relayed: bool,                 // the path goes through a relay server
 }
 ```

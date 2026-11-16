@@ -60,6 +60,7 @@ impl LatestSample {
             min_rtt_ms = ?sample.min_rtt.map(|rtt| rtt.as_millis()),
             loss = ?sample.loss,
             throughput_kbps = ?sample.throughput.map(|bps| bps / 1000),
+            send_rate_kbps = ?sample.send_rate.map(|bps| bps / 1000),
             delivery_kbps = ?sample.delivery.map(|bps| bps / 1000),
             "link sample",
         );

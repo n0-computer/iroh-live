@@ -37,6 +37,20 @@ main X11 display as the fallback on an X11 session only. A microphone
 opens when a broadcast starts to publish it. If it fails, it is not opened
 again.
 
+The `spec` module parses text specifiers such as `cam:2`, `screen:portal`,
+`test:gradient` or `file:song.mp3:loop`, the grammar `irl` takes for
+`--video` and `--audio`, and opens the source a specifier names:
+
+```rust
+use moq_ext_sources::spec::{VideoOpenOptions, VideoSourceSpec};
+
+let spec: VideoSourceSpec = "cam".parse()?;
+let source = spec.open(&VideoOpenOptions::default()).await?;
+```
+
+With the `serde` feature, the specifiers read from and write to a config file
+as the same strings.
+
 Errors are `moq_ext_sources::Error`, the type the player and the publisher
 return too.
 

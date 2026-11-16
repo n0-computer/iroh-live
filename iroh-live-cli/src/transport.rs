@@ -4,10 +4,9 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BroadcastTicket, EndpointConfig, Mdns, Node, Subscription,
+    BroadcastTicket, EndpointConfig, Mdns, Node, RelayConfig, RelayLink, Subscription,
     layout::LiveLayout,
     media::{RemoteBroadcast, SubscriptionExt},
-    node::{RelayConfig, RelayLink},
 };
 use n0_error::Result;
 use tracing::{info, warn};

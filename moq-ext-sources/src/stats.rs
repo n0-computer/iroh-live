@@ -8,6 +8,8 @@ use std::{
 /// A value one task writes and anyone snapshots.
 ///
 /// Clones share the value.
+// Shared with moq-ext-publisher and moq-ext-player, not public API.
+#[doc(hidden)]
 #[derive(Debug, Clone, Default)]
 pub struct SharedCell<T>(Arc<Mutex<T>>);
 

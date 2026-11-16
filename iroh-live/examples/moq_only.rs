@@ -27,8 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("serving demo/hello as {}", endpoint.id());
 
     tokio::signal::ctrl_c().await?;
-    node.shutdown().await;
-    // Also closes the endpoint.
+    // Shuts the mounted node down, then closes the endpoint.
     router.shutdown().await?;
     Ok(())
 }

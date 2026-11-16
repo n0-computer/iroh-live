@@ -104,8 +104,10 @@ tokens do.
 Every link runs a connection monitor. `Subscription::serving_link()` returns a
 `ServingLink` for whichever link serves the subscription, with the link's id,
 kind and latest `NetworkSample`: round trip, minimum round trip, loss,
-throughput and the peer's delivery estimate, with `None` for what is not
-measured yet. `Session::moq()` gives the moq-net session itself, with its raw
+throughput, send rate and the peer's delivery estimate, with `None` for what is not
+measured yet. `Subscription::session()` returns the direct session that
+serves the subscription now, and `Session::sample()` reads a session's link
+directly. `Session::moq()` gives the moq-net session itself, with its raw
 statistics. `Node::accepted()` yields each accepted session once.
 `NetworkSample` comes from `moq-ext-adaptive`, `ValueWriter` from
 `moq-ext-json`, and `alpns()`, `ALPN` and

@@ -23,7 +23,10 @@ behind its source.
 the picture size, frames per second, a smoothed
 read-and-decode time, frames shown and access units skipped. It has an
 `AudioPlaybackStats` while audio plays: the rendition, the audio queued ahead
-of the speaker, the latest peak and the frame count. It also has the playout
+of the speaker, the latest peak, the frame count, and the RMS level of the
+last 100 ms of decoded audio. The audio task measures the level and, without a
+speaker, the peak from the decoded frames, so both work in `AudioMode::Decode`.
+It also has the playout
 latency and the last `NetworkSample`, if the broadcast has network signals.
 The decoder backend is in `PlayerStatus`.
 

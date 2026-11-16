@@ -10,11 +10,11 @@ No feature is on by default.
 
 | Feature | Enables | Implies | Platform |
 |---|---|---|---|
-| `full` | What an app that publishes and plays wants | `media`, `capture`, `render`, `sound-server`, `record` | all |
+| `full` | What an app that publishes and plays wants | `media`, `capture`, `playback`, `render`, `sound-server`, `record` | all |
 | `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | | all |
 | `capture` | Camera, screen and microphone capture | `media` | all |
 | `playback` | Speaker output, `AudioMode::Play` | `media` | all |
-| `render` | GPU rendering of decoded frames through wgpu | `media` | all |
+| `render` | GPU rendering of decoded frames through wgpu, re-exported as `media::wgpu` | `media` | all |
 | `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `media` | all |
 | `file` | `AudioSource::file`, WAV and MP3 files | `media` | all |
 | `sound-server` | Audio devices through PipeWire or PulseAudio, not only ALSA | `media` | Linux |
@@ -41,14 +41,14 @@ VideoToolbox on macOS. See
 
 ## iroh-live-cli
 
-`irl` always has `capture`, `file`, `render`, `rooms` and `record`. Every
-other feature is on by default, so `cargo install --path iroh-live-cli` builds
-every backend the platform can reach.
+`irl` always has `capture`, `file`, `playback`, `render`, `rooms` and
+`record`. Every other feature is on by default, so
+`cargo install --path iroh-live-cli` builds every backend the platform can
+reach.
 
 | Feature | Default | Effect |
 |---|---|---|
 | `aec` | yes | Echo cancellation for `irl call` and `irl room` |
-| `playback` | yes | Audio playback |
 | `sound-server` | yes | PipeWire and PulseAudio devices (Linux) |
 | `pipewire` | yes | PipeWire's camera as `cam`, and the portal's picker as `screen`, `screen:portal` and `window:portal` (Linux) |
 | `rpicam` | yes | `--video rpicam` (Linux) |
@@ -67,7 +67,7 @@ define them:
 |---|---|---|
 | `moq-ext-publisher` | `capture`, `sound-server`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia`, `v4l2` | none |
 | `moq-ext-player` | `playback`, `render`, `record`, `aec`, `vaapi`, `nvidia`, `v4l2` | none |
-| `moq-ext-sources` | `pattern`, `file`, `capture`, `sound-server`, `aec`, `pipewire`, `rpicam` | `pattern` |
+| `moq-ext-sources` | `pattern`, `file`, `capture`, `sound-server`, `aec`, `pipewire`, `rpicam`, `serde` | `pattern` |
 | `moq-ext-access` | `jwt`, `rcan` | none |
 | `iroh-live-node` | `jwt`, `rcan`, forwarded to `moq-ext-access` | none |
 

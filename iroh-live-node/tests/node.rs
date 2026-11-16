@@ -9,8 +9,8 @@ use std::{
 };
 
 use common::{
-    Peer, TIMEOUT, announced, ends, has_session_with, publish, publish_from, read_counter, reading,
-    retracted, session_with, stays_pending, step,
+    Peer, TIMEOUT, announced, ends, eventually, has_session_with, publish, publish_from,
+    read_counter, reading, retracted, session_with, stays_pending, step,
 };
 use iroh::endpoint::PathId;
 use iroh_live_node::{
@@ -43,6 +43,11 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     assert_eq!(session.peer(), alice.id());
     let link = subscription.serving_link().expect("a serving link");
     assert_eq!(link.kind, LinkKind::Direct);
+    // The session reads the same link the subscription reports.
+    eventually("the session measures its link", || {
+        session.sample().rtt.is_some()
+    })
+    .await;
 
     alice.shutdown().await;
     bob.shutdown().await;
@@ -392,6 +397,55 @@ async fn a_value_track_gives_a_late_reader_the_newest_value() {
         .expect("a lazy track");
     let read = step("the missing track's answer", missing.latest()).await;
     assert!(read.is_err(), "a track nobody publishes read {read:?}");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A value reader follows its subscription to a publisher that restarts.
+#[tokio::test]
+#[traced_test]
+async fn a_value_reader_follows_a_restarted_publisher() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let (first, writer) = alice
+        .node
+        .publish_value::<String>(alice.path("status"), Audience::Granted, "status")
+        .expect("publish");
+    writer.update(&"first".to_owned()).expect("write");
+    let subscription = step(
+        "subscribe",
+        bob.node
+            .subscribe(alice.path("status"), Reach::Direct(alice.id())),
+    )
+    .await
+    .expect("subscribe");
+    let mut reader = subscription
+        .value_track::<String>("status")
+        .expect("the track");
+    let mut read = async || {
+        step("a value", reader.latest())
+            .await
+            .expect("a readable track")
+            .expect("the subscription is open")
+            .value
+    };
+    assert_eq!(read().await, "first");
+
+    // The publisher stops, and starts again with a new broadcast at the path.
+    writer.finish().expect("finish");
+    first.broadcast().close();
+    drop(first);
+    let (_second, writer) = alice
+        .node
+        .publish_value::<String>(alice.path("status"), Audience::Granted, "status")
+        .expect("publish again");
+    writer.update(&"second".to_owned()).expect("write");
+    assert_eq!(
+        read().await,
+        "second",
+        "the reader moved to the new broadcast"
+    );
 
     alice.shutdown().await;
     bob.shutdown().await;

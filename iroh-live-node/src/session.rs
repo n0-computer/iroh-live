@@ -11,7 +11,7 @@ use n0_error::e;
 use tracing::info;
 
 use crate::{
-    Direction, Error, Grant, LinkId, SessionRequest, Subscription, handshake::Hop,
+    Direction, Error, Grant, LinkId, NetworkSample, SessionRequest, Subscription, handshake::Hop,
     link::LatestSample, node::Shared, route,
 };
 
@@ -196,6 +196,17 @@ impl Session {
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.inner.connection
+    }
+
+    /// Returns the latest reading of the session's link.
+    ///
+    /// The connection monitor refreshes it every 200 ms. A publisher reads its
+    /// uplink here as [`NetworkSample::send_rate`]. A subscriber reaches the
+    /// same reading through [`Subscription::serving_link`], and the session
+    /// itself through [`Subscription::session`].
+    #[must_use]
+    pub fn sample(&self) -> NetworkSample {
+        self.inner.latest_sample.get()
     }
 
     /// Returns the moq-net session, for its statistics, bandwidth estimates and announcements.

@@ -75,14 +75,15 @@ should never wait for old ones.
 Some state needs only its newest value, such as a setting or a status. For
 it, `Node::publish_value` publishes a latest-value JSON track of any
 `serde` type, and `Subscription::value_track` reads it. `latest()` skips to
-the newest value, and a late reader gets the current one at once. The track
-counts milliseconds, and the `ValueWriter` that `publish_value` returns
+the newest value, and a late reader gets the current one at once. The reader
+follows the subscription, so it reads on after the publisher restarts. The
+track counts milliseconds, and the `ValueWriter` that `publish_value` returns
 stamps each update with the time it is made, so updates may come as fast as
 you like. `update_at` takes a time of your choice instead. Clones of the
 writer share the track, and the last one to drop finishes it:
 
 ```rust,no_run
-use iroh_live::{Audience, Node, Publication, Subscription, json::snapshot};
+use iroh_live::{Audience, Node, Publication, Subscription, ValueReader};
 
 fn publish_latency(node: &Node, path: &str) -> Result<Publication, Box<dyn std::error::Error>> {
     let (publication, latency) =
@@ -95,7 +96,7 @@ fn publish_latency(node: &Node, path: &str) -> Result<Publication, Box<dyn std::
 }
 
 async fn read_latency(subscription: &Subscription) -> Result<(), Box<dyn std::error::Error>> {
-    let mut latency: snapshot::Consumer<u64> = subscription.value_track("latency")?;
+    let mut latency: ValueReader<u64> = subscription.value_track("latency")?;
     while let Some(timed) = latency.latest().await? {
         println!("latency {} ms", timed.value);
     }

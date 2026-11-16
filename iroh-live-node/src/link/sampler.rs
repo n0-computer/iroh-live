@@ -42,6 +42,7 @@ struct Reading {
     at: Instant,
     rtt: Option<Duration>,
     received_bytes: u64,
+    sent_bytes: u64,
     sent_packets: u64,
     lost_packets: u64,
 }
@@ -49,7 +50,7 @@ struct Reading {
 /// The state that turns readings of a session's statistics into [`NetworkSample`]s.
 ///
 /// Measured by this endpoint, so the loss rate is of the packets it sends: on
-/// a subscriber, mostly acknowledgements. The loss rate and the throughput
+/// a subscriber, mostly acknowledgements. The loss rate and the byte rates
 /// span the last two seconds, the minimum round trip the last 15 s.
 ///
 /// Keeps the history rates and minimums are taken over, and the path
@@ -139,6 +140,7 @@ impl LinkSampler {
             at: now,
             rtt: stats.rtt.filter(|rtt| !rtt.is_zero()),
             received_bytes: stats.bytes_received.unwrap_or(0),
+            sent_bytes: stats.bytes_sent.unwrap_or(0),
             sent_packets: stats.packets_sent.unwrap_or(0),
             lost_packets: stats.packets_lost.unwrap_or(0),
         };
@@ -171,12 +173,19 @@ impl LinkSampler {
             delivery: delivery.map(moq_net::bandwidth::Rate::as_bps),
             path_generation: self.path_generation,
             throughput: base.map(|base| {
-                let bytes = latest.received_bytes.saturating_sub(base.received_bytes);
-                (bytes as f64 * 8.0 / now.duration_since(base.at).as_secs_f64()) as u64
+                bits_per_second(latest.received_bytes, base.received_bytes, now - base.at)
             }),
+            send_rate: base
+                .map(|base| bits_per_second(latest.sent_bytes, base.sent_bytes, now - base.at)),
             relayed: false,
         }
     }
+}
+
+/// Returns the rate a byte counter grew at from `base` to `latest` across `span`.
+fn bits_per_second(latest: u64, base: u64, span: Duration) -> u64 {
+    let bytes = latest.saturating_sub(base);
+    (bytes as f64 * 8.0 / span.as_secs_f64()) as u64
 }
 
 #[cfg(test)]
@@ -229,6 +238,26 @@ mod tests {
         assert!((loss - 2.0 / 20.0).abs() < 0.01, "{full:?}");
         let bps = full.throughput.expect("a throughput");
         assert!((700_000..=900_000).contains(&bps), "{bps}");
+    }
+
+    /// The send rate follows the sent byte counter, over the same window as throughput.
+    #[test]
+    fn the_send_rate_counts_the_bytes_sent() {
+        let mut sampler = LinkSampler::default();
+        let t0 = Instant::now();
+        let mut last = NetworkSample::default();
+        for tick in 1..=12u32 {
+            let mut stats = stats(20, 0, 0, 0);
+            // 10 kB every 200 ms is 400 kbit/s.
+            stats.bytes_sent = Some(u64::from(tick) * 10_000);
+            last = sampler.sample(DIRECT, &stats, None, t0 + tick * SAMPLE_INTERVAL);
+            if tick < 10 {
+                assert_eq!(last.send_rate, None, "no full window at tick {tick}");
+            }
+        }
+        let bps = last.send_rate.expect("a send rate");
+        assert!((350_000..=450_000).contains(&bps), "{bps}");
+        assert_eq!(last.throughput, Some(0));
     }
 
     #[test]

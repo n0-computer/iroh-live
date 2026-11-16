@@ -216,10 +216,10 @@ mod tests {
     use bytes::Bytes;
     use iroh::endpoint;
     use moq_net::transport::poll::{
-        RecvStream as _, SendGroup as _, SendOptions, SendStream as _, Session as _,
+        self, RecvStream as _, SendGroup as _, SendOptions, SendStream as _, Session as _,
     };
 
-    use super::SendStream;
+    use super::{RecvStream, SendStream};
     use crate::{
         group,
         transport::tests::{TIMEOUT, pair, pair_configured},
@@ -344,7 +344,13 @@ mod tests {
     }
 
     /// The bytes each stream sends after its tag.
-    const LEN: usize = 8 << 20;
+    ///
+    /// Kept well under a thousand packets: noq closes the connection once a
+    /// stream buffers more than 1024 separate spans, and every full packet
+    /// that arrives behind a lost one stays its own span until the
+    /// retransmission fills the hole. Loopback does drop packets on some
+    /// hosts, so a stream with megabytes in flight can trip that limit.
+    const LEN: usize = 512 << 10;
 
     /// Sends [`LEN`] bytes on each of two streams at orders 1000 and 0, in two
     /// equal-priority groups if `grouped`, and returns how much of one stream
@@ -353,11 +359,11 @@ mod tests {
     /// The flow control windows exceed what the streams send, so only the
     /// sender's scheduler decides which goes first.
     async fn progress_of_the_lagging_stream(grouped: bool) -> usize {
-        let window = endpoint::VarInt::from_u32(64 << 20);
+        let window = 2 * LEN as u32;
         let config = endpoint::QuicTransportConfig::builder()
-            .stream_receive_window(window)
-            .receive_window(window)
-            .send_window(64 << 20)
+            .stream_receive_window(endpoint::VarInt::from_u32(window))
+            .receive_window(endpoint::VarInt::from_u32(2 * window))
+            .send_window(2 * window as u64)
             .build();
         let (client, server, _endpoints) = pair_configured(config).await;
         let groups = [7, 7].map(|priority| client.send_group(priority).expect("a send group"));
@@ -380,21 +386,39 @@ mod tests {
             send.finish().expect("finish");
             send
         };
+        // Accepts a stream and reads its tag, the index of its writer.
+        let accept = || async {
+            let mut recv = server.accept_uni().await.expect("accept");
+            let tag = recv.read_chunk(1).await.expect("read").expect("a tag")[0] as usize;
+            (tag, recv)
+        };
         let received = [AtomicUsize::new(0), AtomicUsize::new(0)];
         // What the other stream had received when each finished.
         let other_at_finish = [AtomicUsize::new(0), AtomicUsize::new(0)];
-        let read = || async {
-            let mut recv = server.accept_uni().await.expect("accept");
-            let tag = recv.read_chunk(1).await.expect("read").expect("a tag")[0] as usize;
+        let read = async |(tag, mut recv): (usize, poll::Buffered<RecvStream>)| {
             while let Some(chunk) = recv.read_chunk(usize::MAX).await.expect("read") {
                 received[tag].fetch_add(chunk.len(), Ordering::Relaxed);
             }
             other_at_finish[tag]
                 .store(received[1 - tag].load(Ordering::Relaxed), Ordering::Relaxed);
         };
+        let receive = async {
+            let (one, other) = tokio::join!(accept(), accept());
+            let (first, second) = if one.0 == 0 {
+                (one, other)
+            } else {
+                (other, one)
+            };
+            // The endpoint delivers packets in batches, and one batch can hold
+            // the end of the order-1000 stream along with more of the other.
+            // Reading the order-1000 stream first leaves those later bytes out
+            // of its count, which would otherwise depend on which reader the
+            // runtime happens to poll first.
+            tokio::join!(biased; read(first), read(second));
+        };
         let [first, second]: [SendStream; 2] = sends.try_into().expect("two streams");
         tokio::time::timeout(TIMEOUT, async {
-            tokio::join!(write(first), write(second), read(), read())
+            tokio::join!(write(first), write(second), receive)
         })
         .await
         .expect("both streams arrive in time");
