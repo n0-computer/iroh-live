@@ -153,7 +153,7 @@ pub struct Config {
     ///
     /// The relay's public area, for browsers and iroh clients alike. Patterns
     /// are rooted at `/`, as moq-relay reads them. A publish pattern may not
-    /// reach live/<id>/... or rooms/<topic>/<id>/..., whose paths name an
+    /// reach `live/<id>/...` or `rooms/<topic>/<id>/...`, whose paths name an
     /// iroh publisher.
     #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
     pub auth_public: Vec<Pattern>,
@@ -168,7 +168,7 @@ pub struct Config {
 
     /// Lets iroh clients without a token publish at their own paths, and makes the relay private.
     ///
-    /// Their own paths are live/<id>/** and rooms/*/<id>/**, the paths that
+    /// Their own paths are `live/<id>/**` and `rooms/*/<id>/**`, the paths that
     /// name their endpoint id. They read only what the --auth-public patterns
     /// allow. Browsers have no endpoint id, so they gain nothing. Anyone can
     /// make a new endpoint id, so this lets anyone publish.

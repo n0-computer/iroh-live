@@ -54,7 +54,7 @@ pub(crate) struct TransportArgs {
     #[arg(long, value_name = "PATH", requires = "relay")]
     pub(crate) relay_token_file: Option<PathBuf>,
 
-    /// Binds with the stored key of this name, in <config dir>/iroh-live/secret_keys.
+    /// Binds with the stored key of this name, in `<config dir>/iroh-live/secret_keys`.
     ///
     /// The key is created on first use. An rcan chain names the endpoint id
     /// that presents it, so a node that presents one binds with that key.
@@ -487,7 +487,7 @@ pub(crate) struct WatchArgs {
 /// Arguments for `irl key`.
 #[derive(Args, Debug)]
 pub(crate) struct KeyArgs {
-    /// Name of the stored key, in <config dir>/iroh-live/secret_keys.
+    /// Name of the stored key, in `<config dir>/iroh-live/secret_keys`.
     pub(crate) name: String,
 }
 
