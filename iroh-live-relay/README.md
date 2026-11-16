@@ -18,9 +18,10 @@ Then open `http://localhost:4443/?name=<TICKET>`, over `http`, not `https`.
 `--open-pulls` lets any session make the relay pull a ticket, which suits a
 relay on your own machine only.
 
-By default, anyone may connect and read every broadcast on the relay.
-`--auth-key` changes what sessions with a valid JWT may do, and takes
-nothing from sessions without one. Read
+Without auth flags the relay is open: anyone may connect and read every
+broadcast on it, and it says so at startup. Any `--auth-*` or `--rcan-*` flag
+makes it private, so only token holders read, and sessions without a token
+get only the `--auth-public*` patterns. Read
 [Run the iroh-live relay](../docs/how-to/run-relay.md) before you expose a
 relay.
 
@@ -34,4 +35,5 @@ relay.
   start, share and end their upstream sessions.
 
 A binary that embeds the relay calls `iroh_live_relay::run` with a `Config`,
-whose `iroh_policy` and `pull_limits` have no command line flags.
+starting from `Config::default()`. Its `access`, `iroh_policy` and
+`pull_limits` have no command line flags.

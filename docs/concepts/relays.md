@@ -31,7 +31,11 @@ both from one MoQ relay cluster. It gets a broadcast in one of two ways:
 
 Either way, many viewers share one upstream session to the publisher.
 
-By default the iroh-live relay lets anyone read every broadcast on it. See
+The iroh-live relay is *open* by default: anyone who reaches it reads every
+broadcast on it. Any `--auth-*` or `--rcan-*` flag makes it *private*. Then
+a session with a valid token, a JWT or, for iroh clients, an rcan capability
+chain, gets what the token grants, and a session without one gets only the
+relay's public area, the `--auth-public*` patterns, or nothing. See
 [Run the iroh-live relay](../how-to/run-relay.md) before you expose one.
 
 ## Relay links
@@ -41,11 +45,15 @@ relay, and redials with backoff when it drops. It works with the iroh-live
 relay over iroh, and with any MoQ relay over `https://`.
 
 - The relay sees every publication with the `Granted` audience, and never a
-  `Peers` one.
+  `Peers` one. A relay that *pulls* a broadcast dials the publisher as an
+  ordinary peer, though, so never put a relay's endpoint id in a `Peers`
+  set.
 - By default the relay's routes join the node's route table, so the node can
   subscribe to broadcasts on the relay. A node that only publishes sets
   `RelayConfig::with_consume(false)`.
 - A relay link presents tokens on every dial, from `RelayConfig::tokens`.
+  An `iroh://` link reports `RelayStatus::Refused` when the relay refuses
+  them.
 
 ## What a relay can see
 

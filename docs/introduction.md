@@ -35,7 +35,8 @@ iroh-live is an early tech preview, and its API changes often.
   has the dependency line.
 - Linux is the main target. macOS and Android are tested lightly, and Windows
   has never been run. See [Platform support](reference/platforms.md).
-- The iroh-live relay lets anyone read every broadcast on it by default. See
+- The iroh-live relay is open by default: anyone who reaches it reads every
+  broadcast on it. `--auth-key` or `--rcan-principal` makes it private. See
   [Run the iroh-live relay](how-to/run-relay.md).
 
 ## The pieces

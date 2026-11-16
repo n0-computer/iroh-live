@@ -114,9 +114,18 @@ work.
 
 ### The relay refuses a ticket
 
-The relay pulls a ticket only for a session whose JWT grants reading its
-path, or for any session with `--open-pulls`. A relay started with neither
-pulls nothing. See [Relay reference](reference/relay.md#pulls).
+The relay pulls a ticket only for a session whose token grants reading its
+path, or with `--open-pulls` for a session it admits to read the path. A
+relay that verifies no tokens and lacks `--open-pulls` pulls nothing. See
+[Relay reference](reference/relay.md#pulls).
+
+### `irl publish` says the relay refused this node
+
+The relay is private, and does not accept the token, or there is none. Pass a
+token with `--relay-token-file`, a JWT signed with the relay's key or an rcan
+chain from one of its principals. A chain also needs `--key` with the key its
+last link names. An expired token needs a fresh one. The relay's startup line
+lists what it accepts.
 
 ### `irl watch` cannot play a broadcast that is on the relay
 

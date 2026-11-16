@@ -63,9 +63,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`RelayLink::status()` watches whether the link is connected. A relay started
-with `--auth-key` accepts a JWT, which the link presents through
-`RelayConfig::with_token`. See [Use tokens](tokens.md#tokens-for-a-relay-link).
+`RelayLink::status()` watches whether the link is connected, and reports
+`RelayStatus::Refused` when the relay refuses its token. A private relay,
+started with `--auth-key` or `--rcan-principal`, needs a token, a JWT or an
+rcan chain, which the link presents through `RelayConfig::with_token`. With
+`irl publish --relay`, pass it with `--relay-token-file`. See
+[Use tokens](tokens.md#tokens-for-a-relay-link).
 
 ## Reading from a relay
 

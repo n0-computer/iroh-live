@@ -12,8 +12,10 @@ re-exports them with the peer type fixed to `EndpointId`.
 | `NodeConfig::default()` | `policy::Open(Grant::subscribe_only())` | Read, and publish nothing |
 | `LiveLayout::config()` | `LiveLayout::policy()` | Read, and publish under `live/<its id>/` |
 | `layout::config((LiveLayout::default(), RoomsLayout))` | the union of both layouts | Also publish under `rooms/<topic>/<its id>/` |
-| `iroh-live-relay`, iroh clients | `relay_policy()` | Read the whole relay, and publish under `live/<its id>/` and `rooms/*/<its id>/` |
-| `iroh-live-relay`, browsers | `browser_grant(path)` | Read anything, and publish a name of one segment |
+| `iroh-live-relay`, open, iroh clients | `relay_policy()` | Read the whole relay, and publish under `live/<its id>/` and `rooms/*/<its id>/` |
+| `iroh-live-relay`, open, browsers | `browser_grant(path)` | Read anything, and publish a name of one segment |
+| `iroh-live-relay`, private, without a token | the `--auth-public*` patterns | Exactly the patterns, or refused without them. `--auth-public-own-paths` adds an iroh client's own paths |
+| `iroh-live-relay`, private, with a token | `Verify` over `IrohTokens`, or moq-auth's reference policy for browsers | What the token grants. `--auth-own-paths` adds an iroh client's own paths |
 
 `NodeConfig::decide_timeout` defaults to 10 seconds.
 
@@ -161,5 +163,7 @@ most 2 KiB each, and is encoded as `rcan1:` followed by lowercase base32. Its
 authorization expires one second after the earliest link's `valid_until`.
 
 A relay link presents `RelayConfig::tokens` on every dial, over `iroh://` and
-`https://` alike. The relay's own flags are in the
-[relay reference](relay.md#access-flags).
+`https://` alike. The iroh-live relay decides an iroh session on the first
+token, and takes rcan chains over `iroh://` only, since a browser or an
+`https://` link has no key to bind a chain to. The relay's own flags are in
+the [relay reference](relay.md#access).
