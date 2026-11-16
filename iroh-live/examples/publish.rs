@@ -71,8 +71,7 @@ async fn main() -> n0_error::Result {
     info!(name = %args.name, "publishing");
 
     tokio::signal::ctrl_c().await?;
-    node.shutdown().await;
-    // Also closes the endpoint.
+    // Shuts the mounted node down, then closes the endpoint.
     router
         .shutdown()
         .await
