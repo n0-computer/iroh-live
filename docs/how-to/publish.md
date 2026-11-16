@@ -35,7 +35,7 @@ use iroh_live::{
     layout::LiveLayout,
     media::{
         AudioSource, FileEnd, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, audio,
-        audio_encoding, video,
+        audio_encoding,
     },
 };
 
@@ -51,13 +51,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = node.mount(Router::builder(endpoint)).spawn();
     let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
 
-    let mut capture = video::capture::Config::default();
-    if screen {
-        // The main display. On Wayland, the desktop portal asks the user.
-        capture.source = video::capture::Source::Display(Default::default());
-    }
-    // Fails if the device cannot be opened.
-    let source = VideoSource::capture(capture).await?;
+    // Fails if the device cannot be opened. On Wayland the screen needs the
+    // `pipewire` feature, and the user picks it in the desktop portal.
+    let source = if screen {
+        VideoSource::screen().await?
+    } else {
+        VideoSource::camera(None).await?
+    };
     broadcast.set_video(source, VideoEncoding::single(VideoRendition::new("video")))?;
 
     match audio_file {
@@ -83,10 +83,13 @@ bitrate or a keyframe interval, see [Tune quality and latency](tune.md).
 
 ### Opening a device
 
-`VideoSource::capture` opens the device and fails if it cannot. On Linux with
-the `pipewire` feature, the default camera is PipeWire's, which other
-applications can share, and the default display is the screen the user picks
-in the desktop portal. `capture.width`, `capture.height` and
+`VideoSource::camera` and `VideoSource::screen` open a camera or the main
+screen at its default mode. `VideoSource::capture` takes a full
+`capture::Config` instead, and `screen_source()` returns the capture source
+`screen` opens, for a config of your own. Each opens the device and fails if
+it cannot. On Linux with the `pipewire` feature, the default camera is
+PipeWire's, which other applications can share, and the default display is
+the screen the user picks in the desktop portal. `capture.width`, `capture.height` and
 `capture.framerate` are hints, and the device picks its nearest mode.
 
 `AudioSource::microphone` only checks that the device exists. The microphone
