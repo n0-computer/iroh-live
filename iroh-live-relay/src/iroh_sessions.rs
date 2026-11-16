@@ -193,22 +193,34 @@ impl IrohSessions {
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
         let token = session.token().map(str::to_owned);
-        let request = PeerRequest::new(peer, session.clone(), Event::Connect);
-        let mut authorization =
-            match moq_ext_access::policy::decide_within(&*self.policy, &request, DECIDE_TIMEOUT)
-                .await
-            {
-                Ok(authorization) => authorization,
-                Err(rejection) => {
-                    info!(
-                        reason = rejection.reason(),
-                        code = %rejection.code(),
-                        "the policy rejected the iroh client",
-                    );
-                    handshake.close(rejection.code().clone());
-                    return Err(AcceptError::from_err(rejection));
-                }
-            };
+        // A ticket the relay pulls for the session, read under `name`.
+        let ticket = name
+            .as_deref()
+            .filter(|_| self.pulls.is_some())
+            .and_then(|name| name.parse::<BroadcastTicket>().ok());
+        let dialed = PeerRequest::new(peer, session.clone(), Event::Connect);
+        let admitted = match &ticket {
+            None => self.decide(&dialed).await.map(|authorization| {
+                let recheck = (authorization.grant.clone(), dialed.clone());
+                (authorization, false, vec![recheck])
+            }),
+            Some(ticket) => {
+                self.decide_ticket(peer, &dialed, token.as_deref(), ticket)
+                    .await
+            }
+        };
+        let (mut authorization, reads_ticket, decided) = match admitted {
+            Ok(admitted) => admitted,
+            Err(rejection) => {
+                info!(
+                    reason = rejection.reason(),
+                    code = %rejection.code(),
+                    "the policy rejected the iroh client",
+                );
+                handshake.close(rejection.code().clone());
+                return Err(AcceptError::from_err(rejection));
+            }
+        };
         // A session with a token is bounded, and decided again when the keys change.
         let mut recheck = Vec::new();
         if token.is_some() {
@@ -220,12 +232,32 @@ impl IrohSessions {
                         .map_or(latest, |expires| expires.min(latest)),
                 );
             }
-            recheck.push(Decided {
-                request: PeerRequest::new(peer, session, Event::Reauthorize),
-                grant: authorization.grant.clone(),
-            });
+            recheck = decided
+                .into_iter()
+                .map(|(grant, request)| Decided {
+                    request: PeerRequest::new(
+                        *request.peer(),
+                        request_of(&request),
+                        Event::Reauthorize,
+                    ),
+                    grant,
+                })
+                .collect();
         }
-        let pull = match self.start_pull(peer, token, name.as_deref()).await {
+        let pull = match &ticket {
+            Some(ticket) => {
+                self.start_pull(
+                    peer,
+                    token,
+                    name.as_deref().unwrap_or_default(),
+                    ticket,
+                    reads_ticket,
+                )
+                .await
+            }
+            None => Ok(None),
+        };
+        let pull = match pull {
             Ok(pull) => pull,
             Err(err) => {
                 info!(error = %err, "refusing the iroh client's pull");
@@ -244,17 +276,26 @@ impl IrohSessions {
             .then(|| self.cluster.origin.scope("", &grant.publish))
             .transpose()
             .map_err(AcceptError::from_err)?;
-        // A session that names a ticket reads the pulled broadcast at that name.
-        let serving = (!grant.subscribe.is_empty())
+        // A session that names a ticket reads the pulled broadcast at that
+        // name, if the decision at the ticket's path lets it read there.
+        let mut reads = grant.subscribe.clone();
+        let source = match (&ticket, name.as_deref()) {
+            (Some(_), Some(name)) => {
+                if reads_ticket && let Ok(alias) = Pattern::literal(name) {
+                    reads.extend([alias]);
+                }
+                crate::pull::mounted(&self.cluster, name)
+            }
+            _ => None,
+        };
+        let serving = (!reads.is_empty())
             .then(|| {
-                name.as_deref()
-                    .filter(|_| self.pulls.is_some())
-                    .and_then(|name| crate::pull::mounted(&self.cluster, name))
+                source
                     .map_or_else(
                         || self.cluster.origin.consume(),
                         |cluster| cluster.origin.consume(),
                     )
-                    .scope("", &grant.subscribe)
+                    .scope("", &reads)
             })
             .transpose()
             .map_err(AcceptError::from_err)?;
@@ -270,7 +311,7 @@ impl IrohSessions {
                 .await
                 .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
                 .map_err(AcceptError::from_err)?;
-        info!(%path, grant = ?authorization.grant, expires = ?authorization.expires, "iroh client admitted");
+        info!(%path, grant = ?authorization.grant, reads_ticket, expires = ?authorization.expires, "iroh client admitted");
         Ok(Admitted {
             session,
             driver,
@@ -280,41 +321,94 @@ impl IrohSessions {
         })
     }
 
-    /// Starts the pull of the ticket a session named, if pulls are on and `name` is a ticket.
+    /// Asks the session policy about `request` within the decide timeout.
+    async fn decide(&self, request: &PeerRequest) -> policy::Decision {
+        moq_ext_access::policy::decide_within(&*self.policy, request, DECIDE_TIMEOUT).await
+    }
+
+    /// Decides a session that names `ticket`, which the relay pulls for it.
+    ///
+    /// Two decisions. The session's own rights are decided at the path it
+    /// dialed, as any session's are, and a rejection there only leaves it
+    /// without them. Whether it reads the ticket's broadcast is decided at the
+    /// ticket's path, which must admit the session, and only its subscribe
+    /// half counts. Returns the session's authorization, whether it reads the
+    /// ticket, and each decision that admitted it with its request.
+    async fn decide_ticket(
+        &self,
+        peer: EndpointId,
+        dialed: &PeerRequest,
+        token: Option<&str>,
+        ticket: &BroadcastTicket,
+    ) -> Result<(Authorization, bool, Vec<(Grant, PeerRequest)>), policy::Rejection> {
+        let at_ticket = PeerRequest::new(peer, ticket_request(ticket, token), Event::Connect);
+        let mount = self.decide(&at_ticket).await?;
+        let reads_ticket = mount.grant.allows_subscribe(ticket.path().as_str());
+        let mut decided = vec![(mount.grant.clone(), at_ticket)];
+        let own = match self.decide(dialed).await {
+            Ok(own) => {
+                decided.push((own.grant.clone(), dialed.clone()));
+                own
+            }
+            Err(rejection) => {
+                debug!(
+                    reason = rejection.reason(),
+                    "the ticket's session gets no rights at the dialed path"
+                );
+                Authorization::default()
+            }
+        };
+        let expires = [mount.expires, own.expires].into_iter().flatten().min();
+        Ok((
+            Authorization {
+                grant: own.grant,
+                expires,
+            },
+            reads_ticket,
+            decided,
+        ))
+    }
+
+    /// Starts the pull of `ticket`, which the session named as `name`.
     ///
     /// Under [`Access::Authorized`] the pull policy decides, at the ticket's
     /// path with the session's `token`, and must grant reading that path.
+    /// Under [`Access::Open`] the session must read the ticket's path, which
+    /// `reads_ticket` says.
     async fn start_pull(
         &self,
         peer: EndpointId,
         token: Option<String>,
-        name: Option<&str>,
+        name: &str,
+        ticket: &BroadcastTicket,
+        reads_ticket: bool,
     ) -> Result<Option<(PullGuard, String)>, crate::Error> {
-        let Some((pulls, name)) = self.pulls.as_ref().zip(name) else {
+        let Some(pulls) = self.pulls.as_ref() else {
             return Ok(None);
         };
-        let Ok(ticket) = name.parse::<BroadcastTicket>() else {
-            return Ok(None);
+        let denied = || {
+            e!(crate::Error::PullDenied {
+                path: ticket.path().clone()
+            })
         };
-        if pulls.access() == Access::Authorized {
-            let denied = || {
-                e!(crate::Error::PullDenied {
-                    path: ticket.path().clone()
-                })
-            };
-            let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
-            let mut at_ticket = SessionRequest::new(ticket.path().as_str());
-            if let Some(token) = token {
-                at_ticket = at_ticket.with_token(token);
-            }
-            let request = PeerRequest::new(peer, at_ticket, Event::Connect);
-            let decision =
-                moq_ext_access::policy::decide_within(policy, &request, DECIDE_TIMEOUT).await;
-            if !decision.is_ok_and(|auth| auth.grant.allows_subscribe(ticket.path().as_str())) {
-                return Err(denied());
+        match pulls.access() {
+            Access::Open if !reads_ticket => return Err(denied()),
+            Access::Open => {}
+            Access::Authorized => {
+                let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
+                let request = PeerRequest::new(
+                    peer,
+                    ticket_request(ticket, token.as_deref()),
+                    Event::Connect,
+                );
+                let decision =
+                    moq_ext_access::policy::decide_within(policy, &request, DECIDE_TIMEOUT).await;
+                if !decision.is_ok_and(|auth| auth.grant.allows_subscribe(ticket.path().as_str())) {
+                    return Err(denied());
+                }
             }
         }
-        let pull = pulls.start(Client::Peer(peer), name, &ticket)?;
+        let pull = pulls.start(Client::Peer(peer), name, ticket)?;
         Ok(Some((pull, name.to_owned())))
     }
 
@@ -400,6 +494,24 @@ impl IrohSessions {
             }
         }
         None
+    }
+}
+
+/// Returns the request of a session that dialed `ticket`'s path, presenting `token`.
+fn ticket_request(ticket: &BroadcastTicket, token: Option<&str>) -> SessionRequest {
+    let request = SessionRequest::new(ticket.path().as_str());
+    match token {
+        Some(token) => request.with_token(token),
+        None => request,
+    }
+}
+
+/// Returns the session request a policy saw in `request`.
+fn request_of(request: &PeerRequest) -> SessionRequest {
+    let session = SessionRequest::new(request.path());
+    match request.token() {
+        Some(token) => session.with_token(token),
+        None => session,
     }
 }
 

@@ -74,15 +74,19 @@ pub enum Access {
     /// Only a session whose token grants reading the ticket's path.
     ///
     /// The relay verifies the token as it does for the session itself, but at
-    /// the path of the ticket's broadcast. Without `--auth-key` no token
-    /// verifies, so nobody pulls.
+    /// the path of the ticket's broadcast and without the public patterns. A
+    /// JWT and an rcan chain count alike. Without `--auth-key` or
+    /// `--rcan-principal` no token verifies, so nobody pulls.
     #[default]
     Authorized,
-    /// Any session, with or without a token.
+    /// Any session the relay admits to read the ticket's path.
     ///
-    /// Anyone who reaches the relay can then make it dial any iroh endpoint,
-    /// within the [`Limits`]. Use it for local and development relays, never
-    /// for a public one.
+    /// On an open relay that is every session, so anyone who reaches the
+    /// relay can make it dial any iroh endpoint, within the [`Limits`]. On a
+    /// private relay it is the token holders who read the path, and the
+    /// sessions without a token whose public patterns reach it. Use it for
+    /// local and development relays, or for a private relay whose public
+    /// area holds no `live/` or `rooms/` paths.
     Open,
 }
 

@@ -183,6 +183,21 @@ impl TestRelay {
         Self::start_from(Some(config), pulls, None, None, iroh::SecretKey::generate()).await
     }
 
+    /// Starts a relay as [`start_config`](Self::start_config) does, with HTTP.
+    ///
+    /// The relay serves moq-relay's HTTP routes, such as `/announced`, at
+    /// [`http_url`](Self::http_url).
+    async fn start_config_http(config: Config) -> Self {
+        Self::start_from(
+            Some(config),
+            None,
+            Some(free_port()),
+            None,
+            iroh::SecretKey::generate(),
+        )
+        .await
+    }
+
     /// Starts a relay as [`start_config`](Self::start_config) does, which verifies JWTs with `keys`.
     ///
     /// `config` gets `--auth-key` for a file of `keys`, which the relay holds.
@@ -2754,4 +2769,239 @@ async fn a_token_session_lasts_at_most_max_session() {
     // The token still verifies, so the redial gets back in.
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     holder.shutdown().await;
+}
+
+/// Returns a token that reads exactly `path` and publishes `publish`, if set.
+fn exact_reader_token(keys: &KeySet, path: &str, publish: Option<&str>) -> String {
+    let mut claims = Claims::default().with_subscribe([path.parse().expect("a pattern")]);
+    if let Some(publish) = publish {
+        claims = claims.with_publish([publish.parse().expect("a pattern")]);
+    }
+    signed(keys, claims)
+}
+
+/// Attaches `node` to `relay` at the ticket `name`, with `token` if set.
+fn attach_at_ticket(
+    node: &iroh_live::Node,
+    relay: &TestRelay,
+    name: &str,
+    token: Option<String>,
+) -> iroh_live_node::RelayLink {
+    let url = format!("iroh://{}/{name}", relay.iroh_id)
+        .parse()
+        .expect("a valid URL");
+    let mut config = RelayConfig::new(url);
+    if let Some(token) = token {
+        config = config.with_token(token.parse().expect("not empty"));
+    }
+    node.attach_relay(config).expect("attach")
+}
+
+/// An iroh client pulls and reads a ticket with a token for the ticket's path only, a JWT or a chain.
+#[tokio::test]
+async fn an_iroh_client_pulls_with_a_token_for_the_ticket_path_only() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let team = iroh::SecretKey::generate();
+    let relay =
+        TestRelay::start_config_keyed(&keys, principal_config(&team), Some(Access::Authorized))
+            .await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    let (_jwt_endpoint, jwt_holder) = relay_node().await;
+    let token = exact_reader_token(&keys, &path, None);
+    let _jwt_link = attach_at_ticket(&jwt_holder, &relay, &name, Some(token));
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull for a token of the ticket's path"
+    );
+    let subscription = step(
+        "subscribe through the ticket",
+        jwt_holder.subscribe(name.clone(), Reach::Relays),
+    )
+    .await
+    .expect("the JWT holder reads the mounted broadcast");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+
+    let (_chain_endpoint, chain_holder) = relay_node().await;
+    let capability = MoqCapability::new(path.as_str()).with_subscribe(moq_net::Pattern::all());
+    let chain = delegated_chain(
+        &team,
+        chain_holder.id(),
+        capability,
+        Duration::from_secs(600),
+    );
+    let _chain_link = attach_at_ticket(&chain_holder, &relay, &name, Some(chain));
+    let subscription = step(
+        "subscribe through the ticket",
+        chain_holder.subscribe(name.clone(), Reach::Relays),
+    )
+    .await
+    .expect("the chain holder reads the mounted broadcast");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+
+    jwt_holder.shutdown().await;
+    chain_holder.shutdown().await;
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// A ticket's session publishes only what the path it dialed allows, and reads only the mount.
+///
+/// The decision at the ticket's path adds reading the pulled broadcast and
+/// nothing else, so a token that publishes `live/**` cannot publish through
+/// the session, which dialed the ticket's string.
+#[tokio::test]
+async fn a_ticket_session_gets_no_rights_from_the_ticket_path_but_reading_it() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay =
+        TestRelay::start_config_keyed(&keys, Config::default(), Some(Access::Authorized)).await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    // Elsewhere in the cluster, which the ticket's session must not read.
+    let (_other_endpoint, other) = relay_node().await;
+    let _elsewhere = publish_at(&other, "tokens/elsewhere");
+    let _other_link = attach_with_token(&other, &relay, Some(token_for(&keys, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/elsewhere").await;
+
+    let (_endpoint, client) = relay_node().await;
+    // Next to the pulled broadcast, which `live/**` covers when decided at the root.
+    let forged = live_path(ticket.peer(), "forged");
+    let _forged = publish_at(&client, &forged);
+    let _foreign = publish_at(
+        &client,
+        &live_path(iroh::SecretKey::generate().public(), "cam"),
+    );
+    let token = exact_reader_token(&keys, &path, Some("live/**"));
+    let _link = attach_at_ticket(&client, &relay, &name, Some(token));
+    let subscription = step(
+        "subscribe through the ticket",
+        client.subscribe(name.clone(), Reach::Relays),
+    )
+    .await
+    .expect("the client reads the mounted broadcast");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+    assert!(!routed_soon(&relay.cluster.origin, &forged).await);
+    assert!(!reads_soon(&client, "tokens/elsewhere").await);
+
+    client.shutdown().await;
+    other.shutdown().await;
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// With `--open-pulls` on a private relay, a session pulls only where the relay admits it to read.
+#[tokio::test]
+async fn open_pulls_on_a_private_relay_need_admission() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    // A public area outside `live/`: sessions without a token may not pull.
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec!["demo/**".parse().expect("a pattern")];
+    config.open_pulls = true;
+    let relay = TestRelay::start_config(config, Some(Access::Open)).await;
+    let (_endpoint, anonymous) = relay_node().await;
+    let _link = attach_at_ticket(&anonymous, &relay, &name, None);
+    let _browser = browser_at(&relay, &name, None).await;
+    assert!(
+        !routed_soon(&relay.cluster.origin, &path).await,
+        "the relay pulled for a session that may not read the ticket's path"
+    );
+    anonymous.shutdown().await;
+
+    // A public area that reads everything: any session may pull.
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec![moq_net::Pattern::all()];
+    config.open_pulls = true;
+    let relay = TestRelay::start_config(config, Some(Access::Open)).await;
+    let _browser = browser_at(&relay, &name, None).await;
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull for an admitted reader"
+    );
+
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// Fetches `path` from the relay's HTTP listener and returns the status code and the body.
+async fn http_get(relay: &TestRelay, path: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, relay.noq_addr.port()));
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connects to the HTTP listener");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("writes the request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .expect("reads the response");
+    let status = response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .expect("a status line");
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// moq-relay's HTTP routes go through the same admission as WebTransport sessions.
+#[tokio::test]
+async fn the_http_routes_follow_the_access_mode() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let relay = TestRelay::start_config_http(principal_config(&team)).await;
+    let _stage = relay
+        .cluster
+        .origin
+        .route("demo/stage", origin::RouteOptions::default())
+        .expect("a route");
+    for path in [
+        "/announced",
+        "/announced/demo",
+        "/fetch/demo/stage/catalog.json",
+    ] {
+        let (status, body) = http_get(&relay, path).await;
+        assert!(
+            (400..500).contains(&status),
+            "{path} answered {status} without a token: {body}"
+        );
+    }
+
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec!["demo/**".parse().expect("a pattern")];
+    let relay = TestRelay::start_config_http(config).await;
+    let _stage = relay
+        .cluster
+        .origin
+        .route("demo/stage", origin::RouteOptions::default())
+        .expect("a route");
+    let _private = relay
+        .cluster
+        .origin
+        .route(
+            live_path(iroh::SecretKey::generate().public(), "cam").as_str(),
+            origin::RouteOptions::default(),
+        )
+        .expect("a route");
+    let (status, body) = http_get(&relay, "/announced").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.lines().collect::<Vec<_>>(), ["demo/stage"], "{body}");
 }
