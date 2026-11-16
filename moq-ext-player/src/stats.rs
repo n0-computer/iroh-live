@@ -89,7 +89,17 @@ pub struct AudioPlaybackStats {
     /// How much audio is queued ahead of the speaker.
     pub buffered: Duration,
     /// The most recent peak level on a linear `0.0..=1.0` scale, for a meter.
+    ///
+    /// With a speaker, this is the speaker stream's peak after the volume.
+    /// Without one, it is the peak of the audio [`rms`](Self::rms) spans.
+    /// It reads `0.0` once [`rms`](Self::rms) reads `None`.
     pub peak: f32,
+    /// The RMS level of the last 100 ms of decoded audio, on a linear `0.0..=1.0` scale.
+    ///
+    /// Measured before the speaker's volume, with or without a speaker, so a
+    /// player in `AudioMode::Decode` can drive a level meter or a speaking
+    /// indicator. `None` before the first frame, and after 300 ms without one.
+    pub rms: Option<f32>,
     /// Frames played since the player started.
     pub frames: u64,
 }
@@ -158,6 +168,14 @@ impl FrameLog {
     /// Returns a copy of every frame kept, oldest first.
     pub(crate) fn snapshot(&self) -> VecDeque<FrameTiming> {
         self.0.get()
+    }
+
+    /// Returns when the newest frame kept left its decoder.
+    pub(crate) fn last_decoded(&self) -> Option<Instant> {
+        let mut decoded = None;
+        self.0
+            .update(|frames| decoded = frames.back().map(|timing| timing.decoded));
+        decoded
     }
 
     /// Returns the newest frame kept at `pts`, without copying the log.
