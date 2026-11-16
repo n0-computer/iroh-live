@@ -14,7 +14,7 @@ No feature is on by default.
 | `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | | all |
 | `capture` | Camera, screen and microphone capture | `media` | all |
 | `playback` | Speaker output, `AudioMode::Play` | `media` | all |
-| `render` | GPU rendering of decoded frames through wgpu | `media` | all |
+| `render` | GPU rendering of decoded frames through wgpu, re-exported as `media::wgpu` | `media` | all |
 | `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `media` | all |
 | `file` | `AudioSource::file`, WAV and MP3 files | `media` | all |
 | `sound-server` | Audio devices through PipeWire or PulseAudio, not only ALSA | `media` | Linux |

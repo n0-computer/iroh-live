@@ -16,8 +16,8 @@ bytesize = "2.7"
 derive_more = { version = "2.1.1", features = ["debug"] }
 egui = { workspace = true }
 egui-wgpu = { workspace = true }
-# No direct `wgpu` dependency: all `wgpu` types come from
-# `moq_video::render::wgpu`, so they match the renderer's version.
+# No direct `wgpu` dependency: all `wgpu` types come from `egui_wgpu::wgpu`,
+# which links the same major as moq-video's renderer.
 moq-ext-player = { workspace = true, features = ["render"] }
 moq-ext-publisher = { workspace = true }
 moq-net = { workspace = true }

@@ -141,6 +141,12 @@ pub mod media {
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};
     pub use moq_net::bandwidth::Rate;
     pub use moq_video as video;
+    /// The `wgpu` crate that [`video::render`] draws with.
+    ///
+    /// Name `wgpu` types through it, so they always match the renderer's
+    /// version, instead of depending on `wgpu` directly.
+    #[cfg(feature = "render")]
+    pub use wgpu;
 
     pub use crate::network::SubscriptionExt;
 }

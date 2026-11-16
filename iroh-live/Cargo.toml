@@ -25,6 +25,9 @@ moq-ext-publisher = { workspace = true, optional = true }
 moq-ext-sources = { workspace = true, optional = true }
 moq-audio = { workspace = true, optional = true }
 moq-video = { workspace = true, optional = true }
+# Re-exported as `iroh_live::media::wgpu` behind `render`: the same crate
+# moq-video renders with, so an application does not pin a matching version.
+wgpu = { workspace = true, optional = true }
 n0-error = "1.0.3"
 n0-future = "0.3.2"
 n0-watcher = "1.0.1"
@@ -85,7 +88,7 @@ aec = ["capture", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-source
 # Linux screen capture through xdg-desktop-portal and PipeWire.
 pipewire = ["media", "moq-ext-publisher/pipewire", "moq-ext-sources/pipewire"]
 # GPU rendering of decoded frames.
-render = ["media", "moq-ext-player/render"]
+render = ["media", "moq-ext-player/render", "dep:wgpu"]
 # Raspberry Pi camera capture through `rpicam-vid`.
 rpicam = ["media", "moq-ext-publisher/rpicam", "moq-ext-sources/rpicam"]
 # Intel and AMD hardware H.264 encoding and decoding.
