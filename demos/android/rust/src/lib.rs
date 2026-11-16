@@ -25,7 +25,7 @@ use std::{
 use iroh::protocol::Router;
 use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
-    calls::{CALL, Call, Calls},
+    calls::{Call, Calls},
     layout::LiveLayout,
     media::{
         AudioMode, AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig,
@@ -42,7 +42,6 @@ use jni::{
 use moq_video::{Frame, FrameRate, I420, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watcher as _;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -462,7 +461,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.frames = Some(preview);
     session._output = output.clone();
     session.camera = Some(camera);
-    session.ticket = Some(LiveLayout::default().ticket(node.id(), CALL)?.to_string());
+    session.ticket = Some(calls.ticket().to_string());
     session.broadcast = Some(broadcast);
     session.router = Some(router);
     let shared = session.into_shared();
@@ -490,14 +489,8 @@ async fn accept_one(
     output: Option<Engine>,
     session: Weak<Mutex<SessionHandle>>,
 ) -> Result<()> {
-    let mut ringing = calls.ringing();
-    let peer = loop {
-        if let Some(peer) = ringing.get().first().copied() {
-            break peer;
-        }
-        if ringing.updated().await.is_err() {
-            return Ok(());
-        }
+    let Some(peer) = calls.next_ring().await else {
+        return Ok(());
     };
     info!(peer = %peer.fmt_short(), "answering");
     let call = calls.answer(peer).await?;

@@ -14,7 +14,6 @@
 //! ```no_run
 //! use iroh_live::{Node, calls::Calls, layout::LiveLayout};
 //! use moq_net::broadcast;
-//! use n0_watcher::Watcher;
 //!
 //! # async fn run(node: Node, peer: iroh::EndpointId) -> Result<(), Box<dyn std::error::Error>> {
 //! let (calls, _side): (Calls, broadcast::Producer) = Calls::new(&node, &LiveLayout::default())?;
@@ -23,13 +22,7 @@
 //! let call = tokio::time::timeout(std::time::Duration::from_secs(30), calls.call(peer)).await??;
 //!
 //! // Take the first call that rings.
-//! let mut ringing = calls.ringing();
-//! let peer = loop {
-//!     if let Some(peer) = ringing.get().first().copied() {
-//!         break peer;
-//!     }
-//!     ringing.updated().await?;
-//! };
+//! let peer = calls.next_ring().await.ok_or("the call service ended")?;
 //! let answered = calls.answer(peer).await?;
 //! // Ends with the reason once the peer hangs up.
 //! let reason = answered.ended().await;
@@ -49,7 +42,7 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_live_node::{Audience, Node, Publication, Reach, Session, Subscription};
+use iroh_live_node::{Audience, BroadcastTicket, Node, Publication, Reach, Session, Subscription};
 use moq_net::{announce::Event, broadcast};
 use n0_error::{e, stack_error};
 use n0_future::task::AbortOnDropHandle;
@@ -123,6 +116,8 @@ impl CallState {
 struct Inner {
     node: Node,
     layout: LiveLayout,
+    /// The ticket a peer calls this node with.
+    ticket: BroadcastTicket,
     /// Who this node's side is offered to.
     audience: Watchable<BTreeSet<EndpointId>>,
     /// The peers that ring, as [`CallState::ringing`] derives them.
@@ -241,6 +236,7 @@ impl Calls {
     {
         let local_id = node.id();
         let path = layout.path(local_id, CALL)?;
+        let ticket = BroadcastTicket::at(local_id, path.clone());
         let audience = Watchable::new(BTreeSet::new());
         let (publication, side) =
             node.publish_with(path, Audience::Peers(audience.clone()), |producer| {
@@ -249,6 +245,7 @@ impl Calls {
         let inner = Arc::new(Inner {
             node: node.clone(),
             layout: layout.clone(),
+            ticket,
             audience,
             ringing: Watchable::new(BTreeSet::new()),
             closed: CancellationToken::new(),
@@ -336,6 +333,35 @@ impl Calls {
     #[must_use]
     pub fn ringing(&self) -> n0_watcher::Direct<BTreeSet<EndpointId>> {
         self.inner.ringing.watch()
+    }
+
+    /// Returns the ticket a peer calls this node with.
+    ///
+    /// It names this node's side, `<root>/<its id>/call`. A peer passes its
+    /// [`peer`](BroadcastTicket::peer) to [`call`](Self::call).
+    #[must_use]
+    pub fn ticket(&self) -> BroadcastTicket {
+        self.inner.ticket.clone()
+    }
+
+    /// Waits until a peer rings, and returns the first that does.
+    ///
+    /// Returns a peer that rings already at once. Returns `None` once the
+    /// service ends. Cancellation safe.
+    pub async fn next_ring(&self) -> Option<EndpointId> {
+        let mut ringing = self.ringing();
+        let first = async {
+            loop {
+                if let Some(peer) = ringing.get().first().copied() {
+                    return Some(peer);
+                }
+                ringing.updated().await.ok()?;
+            }
+        };
+        select! {
+            peer = first => peer,
+            () = self.closed() => None,
+        }
     }
 
     /// Waits until the service ends: the node shut down, or the call side was withdrawn.

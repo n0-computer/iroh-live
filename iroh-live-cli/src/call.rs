@@ -9,11 +9,7 @@
 //! Each window shows its own ticket as a QR code and can scan the peer's off
 //! the camera. Whoever scans places the call, so no keyboard is needed.
 
-use iroh_live::{
-    calls::{CALL, Calls},
-    layout::LiveLayout,
-    media::LocalBroadcast,
-};
+use iroh_live::{calls::Calls, layout::LiveLayout, media::LocalBroadcast};
 use n0_error::Result;
 use tracing::info;
 
@@ -53,7 +49,7 @@ async fn setup(args: &CallArgs) -> Result<Local> {
         // Published once, to nobody: each call offers it to its peer.
         let (calls, broadcast): (Calls, LocalBroadcast) = Calls::new(node, &LiveLayout::default())?;
         source::configure(&broadcast, &args.capture, speaker.as_ref()).await?;
-        let ticket = LiveLayout::default().ticket(node.id(), CALL)?.to_string();
+        let ticket = calls.ticket().to_string();
         println!("your call ticket: {ticket}");
         transport::print_qr(&ticket, args.no_qr);
         info!(ticket, "waiting for a call");

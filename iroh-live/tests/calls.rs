@@ -440,3 +440,22 @@ async fn the_call_service_closes_with_its_node() {
     step("closed resolves", closed).await.expect("task");
     a.shutdown().await;
 }
+
+/// `next_ring` returns the peer that rings, and the ticket names this node's side.
+#[tokio::test]
+#[traced_test]
+async fn next_ring_returns_the_caller_and_the_ticket_names_the_side() {
+    let (a, b) = (Peer::start().await, Peer::start().await);
+    let ticket = b.calls.ticket();
+    assert_eq!(ticket.peer(), b.id());
+    assert_eq!(
+        ticket.path(),
+        &LiveLayout::default()
+            .path(b.id(), iroh_live::calls::CALL)
+            .expect("a path")
+    );
+
+    a.calls.ring(ticket.peer());
+    let ringing = step("b rings", b.calls.next_ring()).await;
+    assert_eq!(ringing, Some(a.id()));
+}
