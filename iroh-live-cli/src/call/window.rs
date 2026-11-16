@@ -352,7 +352,7 @@ impl CallApp {
             self.playback,
             self.speaker.clone(),
         );
-        let answer = Pending::spawn(ctx, attempt, |_| {
+        let answer = Pending::spawn_with_late(ctx, attempt, |_| {
             info!("the call landed after it was given up on, dropping it");
         });
         self.pending = Some(Attempt { direction, answer });

@@ -1,19 +1,16 @@
 //! Widgets and lifecycle helpers shared by the egui windows.
 
-use std::{
-    task::Poll,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use iroh_live::media::{Player, RenditionMode};
+pub(crate) use moq_ext_egui::Pending;
 use moq_ext_egui::{
     VideoView,
     overlay::{DebugOverlay, StatCategory},
 };
 use n0_error::{Result, anyerr};
 use n0_future::task::{AbortOnDropHandle, spawn};
-use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use crate::{backend::Backend, shutdown::Teardown};
@@ -50,58 +47,6 @@ pub(crate) fn run_window<A: eframe::App + 'static>(
         }),
     )
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
-}
-
-/// A task whose one result a window collects on a later pass.
-///
-/// Dropping it aborts the task.
-#[derive(Debug)]
-pub(crate) struct Pending<T> {
-    rx: oneshot::Receiver<T>,
-    task: AbortOnDropHandle<()>,
-}
-
-impl<T: Send + 'static> Pending<T> {
-    /// Runs `future` in a task and repaints `ctx` when it finishes.
-    ///
-    /// A result that arrives after the window gave up on it goes to `late`.
-    pub(crate) fn spawn(
-        ctx: &egui::Context,
-        future: impl Future<Output = T> + Send + 'static,
-        late: impl FnOnce(T) + Send + 'static,
-    ) -> Self {
-        let (tx, rx) = oneshot::channel();
-        let ctx = ctx.clone();
-        let task = spawn(async move {
-            if let Err(result) = tx.send(future.await) {
-                late(result);
-            }
-            ctx.request_repaint();
-        });
-        Self {
-            rx,
-            task: AbortOnDropHandle::new(task),
-        }
-    }
-
-    /// Returns the result once the task has finished.
-    ///
-    /// Returns `Ready(None)` for a task that stopped without a result, which
-    /// only happens while the runtime shuts down.
-    pub(crate) fn poll(&mut self) -> Poll<Option<T>> {
-        match self.rx.try_recv() {
-            Ok(result) => Poll::Ready(Some(result)),
-            Err(oneshot::error::TryRecvError::Empty) => Poll::Pending,
-            Err(oneshot::error::TryRecvError::Closed) => Poll::Ready(None),
-        }
-    }
-
-    /// Stops the task and returns a result it delivered before it stopped.
-    pub(crate) fn cancel(&mut self) -> Option<T> {
-        self.rx.close();
-        self.task.abort();
-        self.rx.try_recv().ok()
-    }
 }
 
 /// Height of the top bar, in points.

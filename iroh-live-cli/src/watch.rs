@@ -451,7 +451,7 @@ mod window {
                 Err(err) => Attempt::Failed(format!("{err:#}")),
             }
         };
-        let attempt = Pending::spawn(ctx, dial, |late| {
+        let attempt = Pending::spawn_with_late(ctx, dial, |late| {
             if let Attempt::Connected(connected) = late {
                 info!("the connection landed after it was cancelled, closing it");
                 connected.discard();

@@ -23,6 +23,8 @@
 //!
 //! [`VideoView`] draws a [`VideoFrames`] stream, and [`FrameView`] the frames
 //! you hand it. [`overlay::DebugOverlay`] paints stats over a video.
+//! [`Pending`] runs a task, such as a dial, whose result a window collects on
+//! a later frame.
 //!
 //! Open the window with [`egui_wgpu_config`] as eframe's `wgpu_options`.
 //! Without it, eframe builds a device that cannot import DMA-BUF frames on
@@ -40,6 +42,7 @@
 #![forbid(unsafe_code)]
 
 pub mod overlay;
+mod pending;
 
 use std::sync::Arc;
 
@@ -54,6 +57,8 @@ use moq_ext_player::VideoFrames;
 use tracing::warn;
 #[cfg(target_os = "linux")]
 use tracing::{debug, info};
+
+pub use self::pending::Pending;
 
 /// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
 #[must_use]

@@ -48,6 +48,12 @@ with one clickable section per `StatCategory`. `show_player` shows a
 `Player`'s stats and timeline, and `show_broadcast` shows a `LocalBroadcast`'s
 stats. Clicking a section opens a detail panel with sparklines.
 
+## Tasks
+
+`Pending` runs a future, such as a dial or a device open, on the runtime and
+repaints the window when it finishes. The window polls it on each frame, since
+an egui update cannot await.
+
 ## wgpu
 
 The crate has no direct `wgpu` dependency. Use the re-exported
