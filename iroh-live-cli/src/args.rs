@@ -92,8 +92,8 @@ pub(crate) struct CaptureArgs {
     pub(crate) codec: VideoCodecArg,
 
     /// Encoder backend. A named backend has no fallback.
-    #[arg(long, value_parser = Backend::encoder_parser(), default_value = "auto")]
-    #[serde(deserialize_with = "Backend::deserialize_encoder")]
+    #[arg(long, value_parser = crate::backend::encoder_parser(), default_value = "auto")]
+    #[serde(deserialize_with = "crate::backend::deserialize_encoder")]
     pub(crate) encoder: Backend,
 
     /// Simulcast ladder, comma-separated. Default: one unscaled rendition.
@@ -276,7 +276,7 @@ pub(crate) enum ImportFormat {
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub(crate) struct PlaybackArgs {
     /// Decoder backend. A named backend has no fallback.
-    #[arg(long, value_parser = Backend::decoder_parser(), default_value = "auto")]
+    #[arg(long, value_parser = crate::backend::decoder_parser(), default_value = "auto")]
     pub(crate) decoder: Backend,
 
     /// Trade between delay and smooth playback.

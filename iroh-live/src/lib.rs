@@ -135,8 +135,8 @@ pub mod media {
     };
     pub use moq_ext_sources::spec;
     pub use moq_ext_sources::{
-        AudioFormat, AudioSource, Error, FileEnd, FrameSender, SlotState, SourceClosed,
-        VideoFormat, VideoFrames, VideoSource, VideoSwitch,
+        AudioFormat, AudioSource, Backend, Error, FileEnd, FrameSender, SlotState, SourceClosed,
+        UnknownBackend, VideoFormat, VideoFrames, VideoSource, VideoSwitch,
     };
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};

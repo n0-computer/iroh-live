@@ -26,6 +26,9 @@
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
+//! [`Backend`] is a choice of video encoder or decoder backend, as a
+//! `--encoder` or `--decoder` flag takes it.
+//!
 //! [`spec`] parses text specifiers such as `cam:2` or `test:gradient`, as a
 //! `--video` or `--audio` flag takes them, and opens the source they name.
 //!
@@ -63,6 +66,7 @@
 
 #![forbid(unsafe_code)]
 
+mod backend;
 mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
@@ -78,6 +82,7 @@ use moq_video as video;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{
+    backend::{Backend, UnknownBackend},
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{
