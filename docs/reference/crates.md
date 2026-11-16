@@ -2,8 +2,8 @@
 
 Most applications depend on `iroh-live` alone. It re-exports the node as
 `iroh_live::node`, the media crates as `iroh_live::media`, moq-net as
-`iroh_live::moq_net`, and the rooms crate as `iroh_live::rooms` behind the
-`rooms` feature.
+`iroh_live::moq_net`, the value-track writer as `iroh_live::ValueWriter`, and
+the rooms crate as `iroh_live::rooms` behind the `rooms` feature.
 
 | Crate | What it is | Depends on iroh |
 |---|---|---|
@@ -15,6 +15,7 @@ Most applications depend on `iroh-live` alone. It re-exports the node as
 | [`moq-ext-publisher`](../../moq-ext-publisher) | `LocalBroadcast`: encodes sources into a ladder of renditions | no |
 | [`moq-ext-player`](../../moq-ext-player) | `RemoteBroadcast` and `Player`: rendition choice, A/V sync, recording input | no |
 | [`moq-ext-adaptive`](../../moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines | no |
+| [`moq-ext-json`](../../moq-ext-json) | `ValueWriter`: a latest-value JSON track writer that stamps each update | no |
 | [`moq-ext-sources`](../../moq-ext-sources) | Video and audio sources: test pattern, files, capture, push senders | no |
 | [`moq-ext-egui`](../../moq-ext-egui) | egui video views and the debug overlay | no |
 | [`iroh-live-cli`](../../iroh-live-cli) | The `irl` binary | yes |

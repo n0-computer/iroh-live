@@ -115,6 +115,7 @@ mod ticket;
 
 pub use moq_ext_access::{Direction, LinkKind};
 pub use moq_ext_adaptive::NetworkSample;
+pub use moq_ext_json::ValueWriter;
 /// Typed JSON tracks, as [`Node::publish_value`] and [`Subscription::value_track`] use them.
 pub use moq_json as json;
 /// The moq-net this crate builds against.

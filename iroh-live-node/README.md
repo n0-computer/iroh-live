@@ -11,7 +11,7 @@ route dies, moq moves to another route of the same instance without ending the
 subscription, and `Subscription::closed` asks the table again for any other.
 `Publication::unpublish_on_drop` ties a publication to a task's lifetime, and
 `Node::publish_value` publishes a latest-value JSON track that
-`Subscription::value_track` reads.
+`Subscription::value_track` reads. Its `ValueWriter` stamps each update.
 The application picks the paths, or uses `layout::LiveLayout`, which puts a
 peer's broadcasts at `<root>/<peer>/<name>`. Nothing here knows about media: a
 broadcast holds whatever tracks you write. `EndpointConfig` binds an endpoint
@@ -107,7 +107,8 @@ kind and latest `NetworkSample`: round trip, minimum round trip, loss,
 throughput and the peer's delivery estimate, with `None` for what is not
 measured yet. `Session::moq()` gives the moq-net session itself, with its raw
 statistics. `Node::accepted()` yields each accepted session once.
-`NetworkSample` comes from `moq-ext-adaptive`, and `alpns()`, `ALPN` and
+`NetworkSample` comes from `moq-ext-adaptive`, `ValueWriter` from
+`moq-ext-json`, and `alpns()`, `ALPN` and
 `HANDSHAKE_TIMEOUT` from `moq-transport-iroh`. This crate re-exports them.
 `MoqPreset` is iroh's N0 preset with BBR3 congestion control, so the send-rate
 estimate moq-net gives subscribers tracks the link. `Congestion` names BBR3,

@@ -47,6 +47,7 @@ pub mod audio_encoding {
     pub use crate::publish::{music, pcm, voice};
 }
 
+pub use moq_ext_json::ValueWriter;
 pub use moq_ext_sources::{Error, SlotState, SourceClosed};
 
 pub use self::{

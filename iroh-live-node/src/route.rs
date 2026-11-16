@@ -184,7 +184,8 @@ impl Subscription {
     /// Returns a reader of the latest-value JSON track `name` of the broadcast.
     ///
     /// The publisher writes it with [`Node::publish_value`] or a
-    /// [`json::snapshot::Producer`] of its own. The reader skips to the newest
+    /// [`ValueWriter`](crate::ValueWriter) of its own. Each value carries the
+    /// time it was published in [`Timed::at`](json::Timed::at). The reader skips to the newest
     /// value with [`latest`](json::snapshot::Consumer::latest), and a late
     /// reader gets the current value at once. For a reader with other limits,
     /// pass [`broadcast`](Self::broadcast)`().track(name)` to

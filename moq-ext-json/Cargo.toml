@@ -1,0 +1,21 @@
+[package]
+name = "moq-ext-json"
+version = "0.1.0"
+edition = "2024"
+description = "A latest-value JSON track writer that stamps each update itself, over moq-json"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+moq-json = { workspace = true }
+moq-net = { workspace = true }
+serde = "1.0.229"
+
+[dev-dependencies]
+# The poll waiter the tests read the track with.
+kio = { workspace = true }
