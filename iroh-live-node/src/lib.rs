@@ -137,7 +137,7 @@ pub use self::{
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     publish::{Audience, Publication, UnpublishOnDrop},
-    relay::{RelayConfig, RelayLink, RelayStatus},
+    relay::{Refusal, RelayConfig, RelayLink, RelayStatus},
     route::Subscription,
     session::Session,
     ticket::BroadcastTicket,
