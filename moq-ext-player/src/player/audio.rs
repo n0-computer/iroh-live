@@ -1,6 +1,8 @@
 //! The player's audio task: one rendition into the player's output.
 
 use std::{
+    borrow::Cow,
+    collections::VecDeque,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -34,6 +36,12 @@ const STRETCH: Duration = Duration::from_secs(2);
 ///
 /// One second of 20 ms Opus frames.
 pub(crate) const AUDIO_FRAMES_BACKLOG: usize = 50;
+
+/// How much decoded audio [`AudioPlaybackStats::rms`] is measured across.
+const LEVEL_WINDOW: Duration = Duration::from_millis(100);
+
+/// How long after the last decoded frame the audio level reads as unknown.
+pub(crate) const LEVEL_STALE: Duration = Duration::from_millis(300);
 
 /// One block of decoded audio, from [`Player::audio_frames`](crate::Player::audio_frames).
 #[derive(Debug, Clone)]
@@ -161,6 +169,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         #[cfg(feature = "playback")]
                         sink,
                         clock: clock.register_audio(),
+                        level: LevelMeter::default(),
                         #[cfg(feature = "playback")]
                         target: Target {
                             latency: controls.latency.subscribe(),
@@ -334,6 +343,8 @@ struct Job {
     sink: Option<playback::Sink>,
     /// The audio path's hold on the playout clock.
     clock: AudioClock,
+    /// The level of the decoded audio, for the stats.
+    level: LevelMeter,
     /// What the audio's playout target follows.
     #[cfg(feature = "playback")]
     target: Target,
@@ -397,6 +408,16 @@ impl Job {
                 continue;
             };
             let decoded = Instant::now();
+            let channels = self.format.layout.channels();
+            let samples = match moq_audio::Format::F32.as_interleaved_f32(&frame.data, channels) {
+                Ok(samples) => samples,
+                Err(err) => {
+                    debug!(error = %err, "a decoded audio frame is not whole f32 samples");
+                    Cow::Borrowed(&[][..])
+                }
+            };
+            self.level
+                .push(&samples, play_length(self.format, samples.len()));
             self.clock.received(frame.timestamp);
             let buffered = self.buffered();
             #[cfg(feature = "playback")]
@@ -418,7 +439,7 @@ impl Job {
                     }
                 }
             }
-            self.share(&frame);
+            self.share(frame.timestamp, &samples);
             self.stats.audio_log.push(FrameTiming {
                 kind: MediaKind::Audio,
                 pts: crate::duration(frame.timestamp),
@@ -427,11 +448,13 @@ impl Job {
                 presented: Instant::now() + buffered,
             });
             let peak = self.peak();
+            let rms = self.level.rms();
             self.stats.audio.update(|audio| {
                 if let Some(audio) = audio.as_mut() {
                     audio.frames += 1;
                     audio.buffered = buffered;
                     audio.peak = peak;
+                    audio.rms = rms;
                 }
             });
         }
@@ -456,13 +479,16 @@ impl Job {
         Duration::ZERO
     }
 
-    /// Returns the speaker stream's most recent peak level, for a meter.
+    /// Returns the most recent peak level, for a meter.
+    ///
+    /// That is the speaker stream's peak after the volume, or without a
+    /// speaker the peak of the decoded audio the level is measured across.
     fn peak(&self) -> f32 {
         #[cfg(feature = "playback")]
         if let Some(sink) = &self.sink {
             return sink.control().peak();
         }
-        0.0
+        self.level.peak()
     }
 
     /// Returns the media time at the end of `frame`'s samples.
@@ -472,34 +498,140 @@ impl Job {
         crate::duration(frame.timestamp) + play_length(self.format, samples)
     }
 
-    /// Hands `frame` to the [`AudioFrames`] readers, if there are any.
-    fn share(&self, frame: &moq_audio::Frame) {
-        if self.frames.receiver_count() == 0 {
+    /// Hands the frame at `timestamp` to the [`AudioFrames`] readers, if there are any.
+    fn share(&self, timestamp: moq_net::Timestamp, samples: &[f32]) {
+        if self.frames.receiver_count() == 0 || samples.is_empty() {
             return;
         }
-        let channels = self.format.layout.channels();
-        match moq_audio::Format::F32.as_interleaved_f32(&frame.data, channels) {
-            Ok(samples) => {
-                let _ = self.frames.send(AudioFrame {
-                    timestamp: frame.timestamp,
-                    format: self.format,
-                    samples: samples.into(),
-                });
-            }
-            Err(err) => debug!(error = %err, "a decoded audio frame is not whole f32 samples"),
-        }
+        let _ = self.frames.send(AudioFrame {
+            timestamp,
+            format: self.format,
+            samples: samples.into(),
+        });
     }
 }
 
-#[cfg(all(test, feature = "playback"))]
+/// The level of the last [`LEVEL_WINDOW`] of decoded audio.
+///
+/// The level is of every channel together, before the speaker's volume.
+#[derive(Debug, Default)]
+struct LevelMeter {
+    /// The frames the window spans, oldest first.
+    frames: VecDeque<FrameLevel>,
+}
+
+/// The measurements of one decoded frame.
+#[derive(Debug, Clone, Copy)]
+struct FrameLevel {
+    /// How long the frame plays.
+    length: Duration,
+    /// The sum of the squares of its samples.
+    squares: f64,
+    /// How many samples it has, across all channels.
+    samples: usize,
+    /// The largest absolute sample.
+    peak: f32,
+}
+
+impl LevelMeter {
+    /// Adds a frame of interleaved `samples` that plays for `length`.
+    ///
+    /// Drops the oldest frames that the window no longer needs.
+    fn push(&mut self, samples: &[f32], length: Duration) {
+        if samples.is_empty() {
+            return;
+        }
+        let squares = samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum();
+        let peak = samples
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        self.frames.push_back(FrameLevel {
+            length,
+            squares,
+            samples: samples.len(),
+            peak,
+        });
+        let mut spanned: Duration = self.frames.iter().map(|frame| frame.length).sum();
+        while let Some(oldest) = self.frames.front()
+            && spanned.saturating_sub(oldest.length) >= LEVEL_WINDOW
+        {
+            spanned -= oldest.length;
+            self.frames.pop_front();
+        }
+    }
+
+    /// Returns the RMS level across the window, `None` before the first frame.
+    fn rms(&self) -> Option<f32> {
+        let samples: usize = self.frames.iter().map(|frame| frame.samples).sum();
+        if samples == 0 {
+            return None;
+        }
+        let squares: f64 = self.frames.iter().map(|frame| frame.squares).sum();
+        Some((squares / samples as f64).sqrt().min(1.0) as f32)
+    }
+
+    /// Returns the largest absolute sample across the window, `0.0` before the first frame.
+    fn peak(&self) -> f32 {
+        self.frames
+            .iter()
+            .fold(0.0f32, |peak, frame| peak.max(frame.peak))
+            .min(1.0)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Returns 20 ms of a mono square wave at `amplitude`, at 48 kHz.
+    fn square(amplitude: f32) -> Vec<f32> {
+        (0..960)
+            .map(|n| if n % 2 == 0 { amplitude } else { -amplitude })
+            .collect()
+    }
+
+    /// The meter reads the RMS and the peak of the audio it holds.
+    #[test]
+    fn the_level_is_the_rms_of_the_decoded_audio() {
+        let mut meter = LevelMeter::default();
+        assert_eq!(meter.rms(), None);
+        assert_eq!(meter.peak(), 0.0);
+        meter.push(&square(0.5), ms(20));
+        assert_eq!(meter.rms(), Some(0.5));
+        assert_eq!(meter.peak(), 0.5);
+        // A sine at 0.5 has an RMS of 0.5 / sqrt(2).
+        let mut meter = LevelMeter::default();
+        let sine: Vec<f32> = (0..960)
+            .map(|n| 0.5 * (n as f32 * std::f32::consts::TAU / 48.0).sin())
+            .collect();
+        meter.push(&sine, ms(20));
+        let rms = meter.rms().expect("a level");
+        assert!((rms - 0.5 / 2f32.sqrt()).abs() < 0.001, "{rms}");
+    }
+
+    /// Audio older than the window no longer counts.
+    #[test]
+    fn the_level_forgets_audio_older_than_its_window() {
+        let mut meter = LevelMeter::default();
+        meter.push(&square(1.0), ms(20));
+        for _ in 0..4 {
+            meter.push(&square(0.0), ms(20));
+        }
+        assert_eq!(meter.peak(), 1.0, "100 ms still hold the loud frame");
+        meter.push(&square(0.0), ms(20));
+        assert_eq!(meter.rms(), Some(0.0));
+        assert_eq!(meter.peak(), 0.0);
+    }
 
     const fn ms(millis: u64) -> Duration {
         Duration::from_millis(millis)
     }
 
     /// Returns a catalog with one audio rendition `name` that advertises `delay`.
+    #[cfg(feature = "playback")]
     fn catalog(name: &str, delay: Option<Duration>) -> Arc<hang::catalog::Catalog> {
         let mut config =
             hang::catalog::AudioConfig::new(hang::catalog::AudioCodec::Opus, 48_000, 1);
@@ -513,6 +645,7 @@ mod tests {
     ///
     /// A measured target at the decoder's floor does not hold a lower latency
     /// asked for after the decoder opened.
+    #[cfg(feature = "playback")]
     #[test]
     fn the_audio_target_adds_the_catalog_delay_to_the_measured_jitter() {
         let opened = Delay {

@@ -758,7 +758,7 @@ async fn the_catalog_delay_adds_to_the_playout_delay() {
 
 /// Audio decodes without a speaker.
 ///
-/// It still runs the audio path and its clock.
+/// It still runs the audio path and its clock, and measures the audio level.
 #[tokio::test]
 async fn audio_decodes_without_a_speaker() {
     let broadcast = LocalBroadcast::new();
@@ -782,6 +782,11 @@ async fn audio_decodes_without_a_speaker() {
     .await
     .expect("audio frames played");
     assert_eq!(player.status().borrow().audio, SlotState::Running);
+    // The tone is a sine at 0.5, whose RMS is about 0.35.
+    let audio = player.stats().audio.expect("audio plays");
+    let rms = audio.rms.expect("a level");
+    assert!((0.25..0.45).contains(&rms), "{rms}");
+    assert!(audio.peak > 0.3, "{}", audio.peak);
 }
 
 /// The decoded audio reaches an `AudioFrames` reader, with its format and rising timestamps.

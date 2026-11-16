@@ -474,9 +474,18 @@ impl Player {
     /// Returns the player's playback statistics.
     #[must_use]
     pub fn stats(&self) -> PlaybackStats {
+        let mut audio_stats = self.stats.audio.get();
+        if let Some(stats) = audio_stats.as_mut() {
+            // The audio task writes the level only as frames arrive.
+            let decoded = self.stats.audio_log.last_decoded();
+            if decoded.is_none_or(|at| at.elapsed() > audio::LEVEL_STALE) {
+                stats.rms = None;
+                stats.peak = 0.0;
+            }
+        }
         PlaybackStats {
             video: self.stats.video.get(),
-            audio: self.stats.audio.get(),
+            audio: audio_stats,
             latency: self.clock.delay(),
             network: self.broadcast.network().map(|signals| signals()),
         }
