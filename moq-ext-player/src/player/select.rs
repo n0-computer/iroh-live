@@ -43,8 +43,6 @@ pub(crate) struct DecodeSettings {
     pub decoder: moq_video::decode::Kind,
     /// What the subscription asks for: the latency's minimum and maximum.
     pub delay: Delay,
-    /// Whether to record when each frame arrives.
-    pub record_arrivals: bool,
 }
 
 /// What the video supervisor should play.
@@ -115,8 +113,6 @@ pub(crate) struct Inputs {
     pub clock: super::PlayoutClock,
     /// The thresholds and timers the choice follows.
     pub adaptation: Adaptation,
-    /// Whether decoders record when their frames arrive.
-    pub record_arrivals: bool,
 }
 
 /// The decoder configuration a target was last built under.
@@ -152,7 +148,6 @@ struct Selector {
     playing: watch::Receiver<Option<Target>>,
     desired: watch::Sender<Option<Desired>>,
     clock: super::PlayoutClock,
-    record_arrivals: bool,
     mode: watch::Receiver<RenditionMode>,
     latency: watch::Receiver<Delay>,
     decoder: watch::Receiver<moq_video::decode::Kind>,
@@ -198,7 +193,6 @@ impl Selector {
             desired,
             clock,
             adaptation,
-            record_arrivals,
         } = inputs;
         let mut ticker = tokio::time::interval(adaptation.tick);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -216,7 +210,6 @@ impl Selector {
             playing,
             desired,
             clock,
-            record_arrivals,
             ticker,
             bound: Bound::new(adaptation),
             backoffs: Backoffs::default(),
@@ -468,7 +461,6 @@ impl Selector {
             consumer,
             decoder: self.decoder.borrow().clone(),
             delay: latency,
-            record_arrivals: self.record_arrivals,
         }
     }
 }
@@ -544,7 +536,6 @@ mod tests {
             desired,
             clock: clock.clone(),
             adaptation: Adaptation::default(),
-            record_arrivals: false,
         };
         let task = n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(run(inputs)));
         Running {

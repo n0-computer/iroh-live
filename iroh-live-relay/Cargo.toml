@@ -13,8 +13,8 @@ name = "iroh-live-relay"
 path = "src/main.rs"
 
 [dependencies]
-moq-relay = { workspace = true, default-features = false, features = ["quic", "websocket"] }
-moq-tokio = { workspace = true, default-features = false, features = ["net", "quic"] }
+moq-relay = { workspace = true }
+moq-tokio = { workspace = true }
 # The grants and leases the relay answers its admissions with, and with
 # `serve` the reference policy that decides browsers under `--auth-key`.
 moq-auth = { workspace = true, features = ["async", "serve"] }

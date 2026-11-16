@@ -434,7 +434,8 @@ mod tests {
         slot.send(frame(1));
         slot.send(frame(2));
         let _ = view.render();
-        let micros = |view: &VideoView| view.last_frame().map(|f| f.timestamp.as_micros());
+        let micros =
+            |view: &VideoView| view.last_frame().and_then(|f| f.timestamp.as_micros().ok());
         assert_eq!(micros(&view), Some(2));
         view.set_frames(None);
         let _ = view.render();

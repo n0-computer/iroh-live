@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut capture = video::capture::Config::default();
     if screen {
         // The main display. On Wayland, the desktop portal asks the user.
-        capture.source = video::capture::Source::Display(None);
+        capture.source = video::capture::Source::Display(Default::default());
     }
     // Fails if the device cannot be opened.
     let source = VideoSource::capture(capture).await?;

@@ -1,7 +1,12 @@
 //! A latest-value JSON track between two nodes, over a real QUIC connection.
 
 use iroh::protocol::Router;
-use iroh_live::{Audience, Node, Reach, json::snapshot, layout::LiveLayout, moq_net::track};
+use iroh_live::{
+    Audience, Node, Reach,
+    json::{Timed, snapshot},
+    layout::LiveLayout,
+    moq_net::{Timescale, Timestamp, track},
+};
 use iroh_live_node::test_util::{endpoint, step};
 use n0_tracing_test::traced_test;
 
@@ -18,12 +23,15 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
         .expect("a path");
     let (_publication, track) = publisher
         .publish_with(path.clone(), Audience::Granted, |producer| {
-            producer.create_track("latency", track::Info::default())
+            producer.create_track(
+                "latency",
+                track::Info::default().with_timescale(Timescale::MILLI),
+            )
         })
         .expect("publish");
     let mut writer = snapshot::Producer::<u64>::new(track, snapshot::Config::default());
-    for latency in [100, 150, 200] {
-        writer.update(&latency).expect("write");
+    for (at, latency) in [100, 150, 200].into_iter().enumerate() {
+        writer.update(timed(&latency, at as u64)).expect("write");
     }
 
     let subscriber = Node::new(endpoint().await, LiveLayout::default().config());
@@ -46,9 +54,17 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
             .value
     };
     assert_eq!(read().await, 200, "the newest value, not an older one");
-    writer.update(&80).expect("write");
+    writer.update(timed(&80, 3)).expect("write");
     assert_eq!(read().await, 80);
 
     subscriber.shutdown().await;
     publisher.shutdown().await;
+}
+
+/// Stamps `value` at millisecond `at`.
+///
+/// A value that opens a group must come later than the group before it, so
+/// the writes count up rather than read a clock that may not have moved.
+fn timed(value: &u64, at: u64) -> Timed<&u64> {
+    Timed::new(value, Timestamp::from_millis(at).expect("in range"))
 }

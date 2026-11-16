@@ -413,15 +413,15 @@ impl Job {
                     sink.write(&frame.data).map(drop).map_err(Error::device)?;
                     // The speaker follows the shared clock: it stretches toward
                     // the time the sound of `end` is due, as the pictures do.
-                    if let Some(anchor) = self.clock.anchor(end) {
-                        sink.due(anchor.at, STRETCH, anchor.jumped);
+                    if let Some(at) = self.clock.anchor(end) {
+                        sink.due(at, STRETCH);
                     }
                 }
             }
             self.share(&frame);
             self.stats.audio_log.push(FrameTiming {
                 kind: MediaKind::Audio,
-                pts: frame.timestamp.into(),
+                pts: crate::duration(frame.timestamp),
                 arrived: None,
                 decoded,
                 presented: Instant::now() + buffered,
@@ -469,7 +469,7 @@ impl Job {
     #[cfg(feature = "playback")]
     fn end_of(&self, frame: &moq_audio::Frame) -> Duration {
         let samples = frame.data.len() / std::mem::size_of::<f32>();
-        Duration::from(frame.timestamp) + play_length(self.format, samples)
+        crate::duration(frame.timestamp) + play_length(self.format, samples)
     }
 
     /// Hands `frame` to the [`AudioFrames`] readers, if there are any.

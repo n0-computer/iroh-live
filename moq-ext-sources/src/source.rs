@@ -796,7 +796,7 @@ mod tests {
             .await
             .expect("the source produced for the reader")
             .expect("the source is open");
-        assert_eq!(frame.timestamp.as_micros(), 7);
+        assert_eq!(frame.timestamp.as_micros(), Ok(7));
         producer.await.expect("joined").expect("pushed");
     }
 

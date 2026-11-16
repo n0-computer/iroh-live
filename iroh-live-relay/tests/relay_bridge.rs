@@ -275,6 +275,16 @@ impl TestRelay {
 ///
 /// The relay's QUIC listener and its web listener share the port, since an
 /// `http://` client fetches the fingerprint from the port it dials.
+/// Returns the info of a track on the millisecond scale, which the relay ages groups on.
+fn timed() -> moq_net::track::Info {
+    moq_net::track::Info::default().with_timescale(moq_net::Timescale::MILLI)
+}
+
+/// Returns the current time, for a frame of a [`timed`] track.
+fn now() -> moq_net::Timestamp {
+    moq_net::Timestamp::from(moq_net::time::Instant::now())
+}
+
 fn free_port() -> u16 {
     for _ in 0..16 {
         let udp =
@@ -522,11 +532,13 @@ async fn publish_into(relay: &TestRelay, end: End) -> (String, Box<dyn std::any:
             .map(|(name, payload)| {
                 let track = broadcast
                     .broadcast()
-                    .create_track(name, None)
+                    .create_track(name, timed())
                     .expect("track");
-                let mut group = track.append_group().expect("group");
-                group.write_frame(None, payload).expect("write");
-                group.finish().expect("finish");
+                let mut group = track.append_group(0).expect("group");
+                group
+                    .write_frame(moq_net::Timestamp::ZERO, payload)
+                    .expect("write");
+                group.close().expect("finish");
                 track
             })
             .collect();
@@ -895,13 +907,13 @@ async fn a_relay_link_publishes_and_consumes() {
         .expect("broadcast");
     let track = browser_broadcast
         .broadcast()
-        .create_track("data", None)
+        .create_track("data", timed())
         .expect("track");
-    let mut group = track.append_group().expect("group");
+    let mut group = track.append_group(0).expect("group");
     group
-        .write_frame(None, b"from-the-browser".as_ref())
+        .write_frame(moq_net::Timestamp::ZERO, b"from-the-browser".as_ref())
         .expect("write");
-    group.finish().expect("finish");
+    group.close().expect("finish");
     let _browser_publisher = established(
         noq_client()
             .with_publisher(pub_origin.consume())
@@ -970,14 +982,11 @@ async fn connected(node: &iroh_live::Node, config: RelayConfig) -> iroh_live_nod
 /// Writes a counter from `first` every few milliseconds into the track `data` of `broadcast`.
 fn counter(broadcast: &moq_net::broadcast::Producer, first: u64) -> AbortOnDropHandle<()> {
     let mut track = broadcast
-        .create_track(
-            "data",
-            moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
-        )
+        .create_track("data", timed().with_max_age(Duration::from_secs(5)))
         .expect("track");
     AbortOnDropHandle::new(tokio::spawn(async move {
         for n in first.. {
-            if track.write_frame(None, n.to_be_bytes().to_vec()).is_err() {
+            if track.write_frame(now(), n.to_be_bytes().to_vec()).is_err() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1371,13 +1380,13 @@ async fn the_shipped_relay_refuses_forged_paths() {
     let _viewer_link = attached(&viewer, &relay).await;
     let track = browser_own
         .broadcast()
-        .create_track("data", None)
+        .create_track("data", timed())
         .expect("track");
-    let mut group = track.append_group().expect("group");
+    let mut group = track.append_group(0).expect("group");
     group
-        .write_frame(None, b"from-the-browser".as_ref())
+        .write_frame(moq_net::Timestamp::ZERO, b"from-the-browser".as_ref())
         .expect("write");
-    group.finish().expect("finish");
+    group.close().expect("finish");
     let subscription = step(
         "subscribe timeout",
         viewer.subscribe("browser-stream", iroh_live_node::Reach::Relays),
@@ -1626,13 +1635,10 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         .expect("forged broadcast");
     let mut track = forged
         .broadcast()
-        .create_track(
-            "data",
-            moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
-        )
+        .create_track("data", timed().with_max_age(Duration::from_secs(5)))
         .expect("track");
     let _forger = AbortOnDropHandle::new(tokio::spawn(async move {
-        while track.write_frame(None, &b"forged"[..]).is_ok() {
+        while track.write_frame(now(), &b"forged"[..]).is_ok() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }));

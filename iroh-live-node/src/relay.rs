@@ -783,7 +783,7 @@ async fn dial_relay(
         .connect(kio::clock::now(), transport)
         .await
         .map_err(|err| {
-            let verdict = Verdict::from(&err);
+            let verdict = handshake_verdict(&err);
             (LinkFailure::Moq(err), verdict)
         })?;
     Ok(Dialed {
@@ -791,6 +791,19 @@ async fn dial_relay(
         driver,
         connection,
     })
+}
+
+/// Judges a failed MoQ handshake the way moq-tokio judges its own dials.
+///
+/// An auth rejection is the relay's answer for every address, so it settles
+/// the walk. Every other failure, a protocol violation included, is a failed
+/// dial that the walk retries.
+fn handshake_verdict(err: &moq_net::Error) -> Verdict {
+    match err {
+        moq_net::Error::Unauthorized
+        | moq_net::Error::Session(moq_net::SessionError::Unauthorized) => Verdict::Settled,
+        _ => Verdict::Retry,
+    }
 }
 
 /// Returns a factor in `[0.5, 1)` from the clock, random enough to spread redials.

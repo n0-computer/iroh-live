@@ -164,7 +164,10 @@ async fn measure(latency: Delay) -> (Duration, Vec<Duration>) {
             .await
             .expect("timed out waiting for a frame")
             .expect("the video ended mid-measurement");
-        received.push((frame.timestamp.as_micros() as u64, Instant::now()));
+        received.push((
+            frame.timestamp.as_micros().expect("a timed frame") as u64,
+            Instant::now(),
+        ));
     }
     let join = received[0].1.duration_since(subscribed_at);
 

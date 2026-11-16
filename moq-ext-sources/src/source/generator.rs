@@ -198,7 +198,8 @@ fn run_frames(
         }
         // Read the clock after the wait, so the frame shows its own time.
         let timestamp = clock.now();
-        match paint(count, Duration::from(timestamp)) {
+        // The clock is timed, so the conversion only fails past its range.
+        match paint(count, Duration::try_from(timestamp).unwrap_or_default()) {
             Ok(surface) => slot.send(Arc::new(video::Frame::new(surface, timestamp))),
             Err(err) => {
                 warn!(error = %err, "a generated source could not build a picture");
@@ -235,7 +236,7 @@ pub(crate) fn run_tone(
     let per_frame = (f64::from(sample_rate) * TONE_FRAME.as_secs_f64()) as usize;
     let sample_ns = 1_000_000_000 / u64::from(sample_rate);
     let step = hz * std::f64::consts::TAU / f64::from(sample_rate);
-    let origin = Duration::from(clock.now());
+    let origin = Duration::try_from(clock.now()).unwrap_or_default();
     let started = Instant::now();
     let mut sample = 0usize;
 
@@ -772,7 +773,10 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             };
-            let arrival = (Duration::from(frame.timestamp), Instant::now());
+            let arrival = (
+                Duration::try_from(frame.timestamp).expect("a timed frame"),
+                Instant::now(),
+            );
             first.get_or_insert(arrival);
             last = Some(arrival);
             peak = frame

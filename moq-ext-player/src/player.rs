@@ -27,7 +27,6 @@ use crate::{
     stats::{AudioPlaybackStats, FrameLog, FrameTiming, PlaybackStats, VideoPlaybackStats},
 };
 
-mod arrivals;
 mod audio;
 mod clock;
 mod select;
@@ -145,14 +144,6 @@ pub struct PlayerConfig {
     pub decoder: moq_video::decode::Kind,
     /// How automatic selection follows the link.
     pub adaptation: Adaptation,
-    /// Whether to record when each video frame arrives.
-    ///
-    /// The arrivals fill
-    /// [`FrameTiming::arrived`](crate::stats::FrameTiming::arrived).
-    ///
-    /// The record reads every video track a second time, beside its decoder.
-    /// Off by default, which leaves `arrived` at `None`.
-    pub record_arrivals: bool,
 }
 
 impl Default for PlayerConfig {
@@ -163,7 +154,6 @@ impl Default for PlayerConfig {
             audio: AudioMode::Off,
             decoder: moq_video::decode::Kind::default(),
             adaptation: Adaptation::default(),
-            record_arrivals: false,
         }
     }
 }
@@ -201,15 +191,6 @@ impl PlayerConfig {
     #[must_use]
     pub fn with_adaptation(mut self, adaptation: Adaptation) -> Self {
         self.adaptation = adaptation;
-        self
-    }
-
-    /// Returns this config recording when each video frame arrives.
-    ///
-    /// See [`record_arrivals`](Self::record_arrivals).
-    #[must_use]
-    pub fn with_recorded_arrivals(mut self) -> Self {
-        self.record_arrivals = true;
         self
     }
 }
@@ -336,7 +317,6 @@ impl Player {
                 desired: desired_tx,
                 clock: clock.clone(),
                 adaptation: config.adaptation,
-                record_arrivals: config.record_arrivals,
             })
             .instrument(debug_span!(parent: &span, "select")),
         )));
@@ -531,10 +511,12 @@ impl Player {
     ///
     /// ```no_run
     /// # async fn run(player: moq_ext_player::Player) {
-    /// // The player was started with `PlayerConfig::record_arrivals` on.
     /// let mut frames = player.video_frames();
     /// while let Some(frame) = frames.next().await {
-    ///     let timing = player.video_timing(frame.timestamp.into());
+    ///     let Ok(pts) = frame.timestamp.try_into() else {
+    ///         continue;
+    ///     };
+    ///     let timing = player.video_timing(pts);
     ///     if let Some(arrived) = timing.and_then(|timing| timing.arrived) {
     ///         println!("{:?} since its data arrived", arrived.elapsed());
     ///     }
@@ -556,11 +538,10 @@ impl Player {
     /// take turns at the same pictures. Give each reader its own
     /// [`VideoFrames`] handle instead.
     ///
-    /// [`FrameTiming::arrived`] is set only with
-    /// [`PlayerConfig::record_arrivals`] on, because the decoder does not
-    /// report when a picture's data arrived. Without it, `decoded` is the
-    /// earliest instant the player knows of, and covers network and decode
-    /// time together.
+    /// [`FrameTiming::arrived`] tells the time on the network from the time
+    /// in the decoder. It is `None` for a picture the decoder could not match
+    /// to one access unit, and then `decoded` is the earliest instant the
+    /// player knows of.
     ///
     /// # Examples
     ///
@@ -580,7 +561,10 @@ impl Player {
     pub fn take_latest_video(&self) -> Option<(Arc<moq_video::Frame>, FrameTiming)> {
         let frame = self.latest.lock().expect("poisoned").try_next()?;
         // A picture's timing is logged before the picture is handed out.
-        let timing = self.stats.video_log.find(frame.timestamp.into())?;
+        let timing = self
+            .stats
+            .video_log
+            .find(crate::duration(frame.timestamp))?;
         Some((frame, timing))
     }
 }

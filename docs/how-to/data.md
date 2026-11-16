@@ -18,7 +18,7 @@ use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     Audience, EndpointConfig, Node, Reach,
     layout::LiveLayout,
-    moq_net::{Timescale, Timestamp, track},
+    moq_net::{Timescale, Timestamp, time::Instant, track},
 };
 
 #[tokio::main]
@@ -39,7 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 track::Info::default().with_timescale(Timescale::MILLI),
             )?;
             for n in 0u32.. {
-                control.write_frame(Timestamp::now(), format!("tick {n}").into_bytes())?;
+                let now = Timestamp::from(Instant::now());
+                control.write_frame(now, format!("tick {n}").into_bytes())?;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
@@ -74,15 +75,22 @@ should never wait for old ones.
 Some state needs only its newest value, such as a setting or a status. For
 it, `Node::publish_value` publishes a latest-value JSON track of any
 `serde` type, and `Subscription::value_track` reads it. `latest()` skips to
-the newest value, and a late reader gets the current one at once:
+the newest value, and a late reader gets the current one at once. The track
+counts milliseconds, so each update carries the time it was made. A value
+that starts a new group must be stamped later than the group before, so a
+writer that updates more than once a millisecond counts its own stamps up:
 
 ```rust,no_run
-use iroh_live::{Audience, Node, Publication, Subscription, json::snapshot};
+use iroh_live::{
+    Audience, Node, Publication, Subscription,
+    json::{Timed, snapshot},
+    moq_net::{Timestamp, time::Instant},
+};
 
 fn publish_latency(node: &Node, path: &str) -> Result<Publication, Box<dyn std::error::Error>> {
     let (publication, mut latency) =
         node.publish_value::<u64>(path, Audience::Granted, "latency")?;
-    latency.update(&150)?;
+    latency.update(Timed::new(&150, Timestamp::from(Instant::now())))?;
     // Unpublished when `publication` drops.
     Ok(publication)
 }

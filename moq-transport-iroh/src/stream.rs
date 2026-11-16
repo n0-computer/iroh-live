@@ -58,6 +58,12 @@ impl fmt::Debug for SendStream {
 impl poll::SendStream for SendStream {
     type Error = TransportError;
     type Group = Ungrouped;
+    /// iroh does not report which bytes the peer acknowledged, so
+    /// [`poll_acked`](poll::SendStream::poll_acked) keeps its default, which
+    /// answers [`Acked::Unsupported`](poll::Acked::Unsupported).
+    type Offset = ();
+
+    fn offset(&self) -> Self::Offset {}
 
     fn poll_write(&mut self, waiter: &Waiter, buf: &[u8]) -> Poll<Result<usize, TransportError>> {
         if buf.is_empty() {

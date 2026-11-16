@@ -170,7 +170,11 @@ async fn video_source(
             portal(PortalPick::Screen, args, framerate).await?
         }
         VideoSourceSpec::Display(id) => {
-            capture(Source::Display(id.clone()), args, framerate).await?
+            let selection = id
+                .clone()
+                .map(video::capture::DisplaySelection::new)
+                .unwrap_or_default();
+            capture(Source::Display(selection), args, framerate).await?
         }
         VideoSourceSpec::Window(id) if id == PORTAL => {
             portal(PortalPick::Window, args, framerate).await?

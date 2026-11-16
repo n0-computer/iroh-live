@@ -138,7 +138,9 @@ pub(super) fn pipewire_default(source: &video::capture::Source) -> Option<video:
     };
     match source {
         Source::Camera(None) => Some(Source::Camera(Some("pipewire".to_string()))),
-        Source::Display(None) => Some(Source::Portal(Selection::new(Kind::Screen))),
+        Source::Display(video::capture::DisplaySelection { id: None, .. }) => {
+            Some(Source::Portal(Selection::new(Kind::Screen)))
+        }
         _ => None,
     }
 }

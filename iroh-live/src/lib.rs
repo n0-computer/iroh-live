@@ -153,16 +153,22 @@ pub use iroh_live_rooms as rooms;
 /// and [`Subscription::value_track`] reads it. A track next to media goes
 /// through `LocalBroadcast::value_track`, and any other through
 /// [`snapshot::Producer::new`](json::snapshot::Producer::new) on a track of
-/// your own. This publishes a latency in milliseconds and reads it back:
+/// your own. Each update carries the time it was made, since the track counts
+/// milliseconds. This publishes a latency in milliseconds and reads it back:
 ///
 /// ```no_run
-/// use iroh_live::{Audience, Node, Reach, layout::LiveLayout};
+/// use iroh_live::{
+///     Audience, Node, Reach,
+///     json::Timed,
+///     layout::LiveLayout,
+///     moq_net::{Timestamp, time::Instant},
+/// };
 ///
 /// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
 /// let path = LiveLayout::default().path(node.id(), "control")?;
 /// let (_publication, mut latency) =
 ///     node.publish_value::<u64>(path.clone(), Audience::Granted, "latency")?;
-/// latency.update(&150)?;
+/// latency.update(Timed::new(&150, Timestamp::from(Instant::now())))?;
 ///
 /// // On another node.
 /// let subscription = other.subscribe(&path, Reach::Direct(node.id())).await?;

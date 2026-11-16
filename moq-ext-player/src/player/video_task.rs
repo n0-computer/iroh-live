@@ -27,7 +27,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hang::catalog::Reference as _;
 use moq_ext_adaptive::{Abandoned, Outcome, Switcher, Target, Verdict};
 use moq_ext_sources::{
     Error, SlotState,
@@ -45,7 +44,6 @@ use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
     Controls, PlaybackRecorder, PlayerStatus, PlayoutClock,
-    arrivals::{self, Arrivals},
     select::{DecodeSettings, Desired, Failure, Report},
 };
 use crate::{
@@ -114,19 +112,15 @@ enum Event {
 /// A picture as it came out of its decoder.
 struct Decoded {
     frame: moq_video::Frame,
-    /// When its track's frames arrived.
-    ///
-    /// Looked up when the picture is presented rather than when it is decoded.
-    /// The decoder and the watch read the same frame at once, and by then the
-    /// watch has recorded it.
-    arrivals: Arrivals,
+    /// When the access unit behind the picture landed on this node.
+    arrived: Option<Instant>,
 }
 
 /// A picture waiting for the playout clock to say it is due.
 struct Delivery {
     frame: moq_video::Frame,
-    /// When the frame's data arrived, looked up for the timeline.
-    arrivals: Arrivals,
+    /// When the frame's data arrived, for the timeline.
+    arrived: Option<Instant>,
     /// When the frame came out of its decoder, for the timeline.
     decoded: Instant,
     /// Resolves when the picture is due.
@@ -265,14 +259,13 @@ fn apply_desired(
 fn show(delivery: Delivery, frames: &FrameSlot, stats: &PlaybackRecorder) {
     let Delivery {
         frame,
-        arrivals,
+        arrived,
         decoded,
         ..
     } = delivery;
-    let arrived = arrivals.get(frame.timestamp);
     stats.video_log.push(FrameTiming {
         kind: MediaKind::Video,
-        pts: frame.timestamp.into(),
+        pts: crate::duration(frame.timestamp),
         arrived,
         decoded,
         presented: Instant::now(),
@@ -303,7 +296,7 @@ fn on_event(
         }
         Event::Replacement(Some(frame)) => {
             let now = tokio::time::Instant::now().into_std();
-            match switcher.replacement_frame(frame.frame.timestamp.into(), now) {
+            match switcher.replacement_frame(crate::duration(frame.frame.timestamp), now) {
                 (Verdict::Promote, outcome) => {
                     // The incumbent's pending picture is older, so it is
                     // replaced.
@@ -320,7 +313,7 @@ fn on_event(
             switcher.replacement_ended()
         }
         Event::Incumbent(Some(frame)) => {
-            switcher.incumbent_frame(frame.frame.timestamp.into());
+            switcher.incumbent_frame(crate::duration(frame.frame.timestamp));
             *delivery = Some(pace(frame));
             Outcome::Idle
         }
@@ -561,7 +554,7 @@ async fn next_event(switcher: &mut VideoSwitcher, delivering: bool) -> Event {
 /// Counts the frame in `shown`. Reads the latency on every frame, so a change
 /// to or from an unpaced latency takes effect at once.
 fn pace(
-    Decoded { frame, arrivals }: Decoded,
+    Decoded { frame, arrived }: Decoded,
     shown: &mut RateMeter,
     clock: &PlayoutClock,
     controls: &Controls,
@@ -588,7 +581,7 @@ fn pace(
     };
     Delivery {
         frame,
-        arrivals,
+        arrived,
         decoded: Instant::now(),
         due,
     }
@@ -608,8 +601,6 @@ struct Reader {
     on_screen: Arc<AtomicBool>,
     /// Dropping this aborts the read loop, which drops the decoder with it.
     _task: AbortOnDropHandle<()>,
-    /// Records when the track's frames arrive, until dropped.
-    _arrivals: Option<AbortOnDropHandle<()>>,
 }
 
 /// Returns the decode options for a player's settings.
@@ -643,11 +634,6 @@ async fn spawn_reader(
             .map_err(decode_error)?;
     let decoder = consumer.name().to_string();
     info!(rendition, decoder = %decoder, "video decoding");
-    let arrivals = Arrivals::default();
-    let watch_arrivals = settings
-        .record_arrivals
-        .then(|| watch_arrivals(settings, config, rendition, &arrivals))
-        .flatten();
 
     let (tx, frames) = mpsc::channel(READ_AHEAD);
     let name = rendition.to_string();
@@ -683,8 +669,8 @@ async fn spawn_reader(
                                 }
                             });
                         }
-                        let arrivals = arrivals.clone();
-                        if tx.send(Decoded { frame, arrivals }).await.is_err() {
+                        let arrived = consumer.arrival().map(|at| at.into_std());
+                        if tx.send(Decoded { frame, arrived }).await.is_err() {
                             debug!("nobody is reading this rendition any more");
                             return;
                         }
@@ -746,31 +732,7 @@ async fn spawn_reader(
         failure,
         on_screen,
         _task: AbortOnDropHandle::new(task),
-        _arrivals: watch_arrivals,
     })
-}
-
-/// Starts recording when the frames of `rendition` arrive, with the decoder's subscription.
-///
-/// Returns `None` when the rendition cannot be watched, which leaves the
-/// arrival of its pictures unknown and playback unchanged.
-fn watch_arrivals(
-    settings: &DecodeSettings,
-    config: &hang::catalog::VideoConfig,
-    rendition: &str,
-    arrivals: &Arrivals,
-) -> Option<AbortOnDropHandle<()>> {
-    let container = moq_mux::catalog::hang::Container::try_from(config).ok()?;
-    let track = settings.consumer.track(config.track(rendition)).ok()?;
-    // What `moq_video::decode::Consumer` asks for, so the publisher sees one
-    // request.
-    let subscription = moq_net::track::Subscription::default()
-        .with_priority(hang::catalog::PRIORITY.video)
-        .with_delay(decode_options(settings).delay);
-    let task = arrivals::watch(track, subscription, container, arrivals.clone());
-    Some(AbortOnDropHandle::new(spawn(
-        task.instrument(error_span!("arrivals", rendition)),
-    )))
 }
 
 /// Converts a decoder error into the crate's error.
@@ -883,7 +845,7 @@ mod tests {
         for unit in units {
             let mut frames = split.decode(&unit.payload, unit.timestamp)?;
             frames.extend(split.flush(unit.timestamp)?);
-            if broken == Some(unit.timestamp.as_micros() as u64) {
+            if broken == Some(unit.timestamp.as_micros().expect("a timed frame") as u64) {
                 for frame in &mut frames {
                     frame.payload = frame.payload.slice(..frame.payload.len() / 3);
                 }
@@ -916,13 +878,14 @@ mod tests {
         let units = encoded_stream();
         let published: Vec<u64> = units
             .iter()
-            .map(|unit| unit.timestamp.as_micros() as u64)
+            .map(|unit| unit.timestamp.as_micros().expect("a timed frame") as u64)
             .collect();
 
         // Publish only the first group, so the reader opens inside it. Split by
         // presentation time, as `feed` explains.
         let boundary = units.partition_point(|unit| {
-            (unit.timestamp.as_micros() as u64) < pts(PICTURES_PER_GROUP.into())
+            (unit.timestamp.as_micros().expect("a timed frame") as u64)
+                < pts(PICTURES_PER_GROUP.into())
         });
         feed(&mut import, &mut split, &units[..boundary], None)?;
 
@@ -932,7 +895,6 @@ mod tests {
             consumer: consumer.clone(),
             decoder: moq_video::decode::Kind::Software,
             delay: moq_net::track::Delay::default().with_max(Duration::from_secs(60)),
-            record_arrivals: true,
         };
         let remote = RemoteBroadcast::from_consumer(consumer);
         // The catalog has its own track, so the first snapshot may not have
@@ -959,7 +921,7 @@ mod tests {
             .await
             .map_err(|_| "the reader produced no picture from the first group")?
             .ok_or("the video track ended before its first picture")?;
-        let first = first.frame.timestamp.as_micros() as u64;
+        let first = first.frame.timestamp.as_micros().expect("a timed frame") as u64;
         assert_eq!(first, 0, "the reader opened past the first picture");
 
         feed(&mut import, &mut split, &units[boundary..], broken)?;
@@ -986,7 +948,7 @@ mod tests {
     async fn read_all(reader: &mut Reader) -> Vec<u64> {
         let mut seen = Vec::new();
         while let Some(frame) = reader.frames.recv().await {
-            seen.push(frame.frame.timestamp.as_micros() as u64);
+            seen.push(frame.frame.timestamp.as_micros().expect("a timed frame") as u64);
         }
         seen
     }
@@ -1062,8 +1024,7 @@ mod tests {
         for (picture, at) in &decoded {
             let timestamp = picture.frame.timestamp;
             let arrived = picture
-                .arrivals
-                .get(timestamp)
+                .arrived
                 .ok_or_else(|| format!("no arrival for the picture at {timestamp:?}"))?;
             assert!(
                 arrived <= *at,

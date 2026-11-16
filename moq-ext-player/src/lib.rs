@@ -50,6 +50,14 @@
 
 #![forbid(unsafe_code)]
 
+/// Returns `timestamp` as the time since its track's zero.
+///
+/// Media timestamps always carry a time; only a scale-less track's key has
+/// none, and that reads as zero.
+pub(crate) fn duration(timestamp: moq_net::Timestamp) -> std::time::Duration {
+    std::time::Duration::try_from(timestamp).unwrap_or_default()
+}
+
 mod catalog;
 mod clean_close;
 mod network;

@@ -1,4 +1,4 @@
-# The moq crates come from moq-dev/moq `main` by git rev (`6aa4f9c1c`), set in
+# The moq crates come from moq-dev/moq `main` by git rev (`e8075629a`), set in
 # `[workspace.dependencies]` of the root `Cargo.toml`. There is no `[patch]`
 # block. `Cargo.lock` pins the rev, so the `--locked` jobs build what a local
 # checkout builds. See docs/getting-started/install.md.

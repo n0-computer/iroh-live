@@ -253,8 +253,14 @@ async fn a_rendition_smaller_than_its_source_encodes_scaled_frames() {
 async fn a_value_track_reaches_a_reader_of_the_broadcast() {
     let broadcast = LocalBroadcast::new();
     let mut writer = broadcast.value_track::<u32>("control").expect("a new name");
-    writer.update(&30).expect("write");
-    writer.update(&60).expect("write");
+    // A value that opens a group must come later than the one before.
+    let at = |millis| moq_net::Timestamp::from_millis(millis).expect("in range");
+    writer
+        .update(moq_json::Timed::new(&30, at(0)))
+        .expect("write");
+    writer
+        .update(moq_json::Timed::new(&60, at(1)))
+        .expect("write");
 
     let track = broadcast.consume().track("control").expect("the track");
     let mut reader = moq_json::snapshot::Consumer::<u32>::new(track, Default::default());

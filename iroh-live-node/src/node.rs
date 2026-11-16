@@ -442,7 +442,11 @@ impl Node {
     /// For state such as a setting, a status or a result: each
     /// [`update`](json::snapshot::Producer::update) replaces the value, and
     /// a reader that subscribes late gets the current one at once. The track
-    /// exists before the broadcast is announced, so no reader misses it.
+    /// counts milliseconds, so an update carries the time it was made, such
+    /// as `Timestamp::from(moq_net::time::Instant::now())`. A value that
+    /// starts a new group must be stamped later than the group before, so a
+    /// writer that updates more than once a millisecond counts its own
+    /// stamps up. The track exists before the broadcast is announced, so no reader misses it.
     /// Readers open it with [`Subscription::value_track`]. To put the track
     /// next to others, create it in [`publish_with`](Self::publish_with)'s
     /// fill and pass it to [`json::snapshot::Producer::new`].
@@ -459,11 +463,15 @@ impl Node {
     ///
     /// ```no_run
     /// # fn run(node: iroh_live_node::Node) -> Result<(), Box<dyn std::error::Error>> {
-    /// use iroh_live_node::Audience;
+    /// use iroh_live_node::{
+    ///     Audience,
+    ///     json::Timed,
+    ///     moq_net::{Timestamp, time::Instant},
+    /// };
     ///
     /// let (_publication, mut latency) =
     ///     node.publish_value::<u64>("live/control", Audience::Granted, "latency")?;
-    /// latency.update(&150)?;
+    /// latency.update(Timed::new(&150, Timestamp::from(Instant::now())))?;
     /// # Ok(())
     /// # }
     /// ```
@@ -474,7 +482,8 @@ impl Node {
         name: &str,
     ) -> Result<(Publication, json::snapshot::Producer<T>), Error> {
         self.publish_with(path, audience, |broadcast| {
-            let track = broadcast.create_track(name, track::Info::default())?;
+            let info = track::Info::default().with_timescale(moq_net::Timescale::MILLI);
+            let track = broadcast.create_track(name, info)?;
             Ok::<_, moq_net::Error>(json::snapshot::Producer::new(
                 track,
                 json::snapshot::Config::default(),

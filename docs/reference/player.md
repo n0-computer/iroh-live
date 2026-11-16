@@ -16,7 +16,6 @@ let config = PlayerConfig::default()
 | `audio`, `with_audio` | `AudioMode::Off` | Whether audio is subscribed, decoded and played |
 | `decoder`, `with_decoder` | `decode::Kind::Auto` | Which video decoder opens |
 | `adaptation`, `with_adaptation` | see below | Thresholds and timers of automatic choice |
-| `record_arrivals`, `with_recorded_arrivals` | `false` | Records each frame's arrival time, for the timeline. Opens a second subscription |
 
 [Tune quality and latency](../how-to/tune.md) shows them in use.
 

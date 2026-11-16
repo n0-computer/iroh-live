@@ -190,7 +190,7 @@ impl Publisher {
         self.prune()?;
         let text = text.to_owned();
         self.producer
-            .push(moq_net::Timed::from(&text).at(moq_net::Timestamp::now()))
+            .push(moq_json::Timed::new(&text, track_time()))
             .std_context("writing the chat window")?;
         self.expires.push_back(Instant::now() + HISTORY);
         Ok(())
@@ -212,7 +212,7 @@ impl Publisher {
             return Ok(());
         }
         self.producer
-            .pop(moq_net::Timed::from(count as u64).at(moq_net::Timestamp::now()))
+            .pop(moq_json::Timed::new(count as u64, track_time()))
             .std_context("retiring chat messages")?;
         self.expires.drain(..count);
         Ok(())
@@ -231,7 +231,7 @@ impl Subscriber {
     /// Returns the next window event, or `None` once the track ends.
     ///
     /// Cancel safe: a cancelled read keeps its position.
-    async fn next(&mut self) -> moq_json::Result<Option<moq_net::Timed<Event>>> {
+    async fn next(&mut self) -> moq_json::Result<Option<moq_json::Timed<Event>>> {
         if let Self::Positioning(pending) = self {
             let track = pending.as_mut().expect("positioning holds the track");
             // Older groups only replay what the newest holds.
@@ -247,6 +247,11 @@ impl Subscriber {
         };
         consumer.next().await
     }
+}
+
+/// Returns the current time on the chat track's millisecond scale.
+fn track_time() -> moq_net::Timestamp {
+    moq_net::Timestamp::from(moq_net::time::Instant::now())
 }
 
 /// Subscribes to the chat window of `broadcast`.

@@ -26,6 +26,14 @@ pub use self::{
 };
 use crate::stats::{PublishRecorder, PublishStats};
 
+/// Returns `timestamp` in microseconds.
+///
+/// Media timestamps always carry a time; only a scale-less track's key has
+/// none, and that reads as zero.
+pub(crate) fn micros(timestamp: moq_net::Timestamp) -> u128 {
+    timestamp.as_micros().unwrap_or(0)
+}
+
 mod audio;
 mod cuts;
 mod encoding;
@@ -227,7 +235,9 @@ impl TimestampLog {
     /// The first rendition to publish the frame records it.
     fn encoded(&self, published: moq_net::Timestamp, at: Instant) {
         let mut log = self.0.lock().expect("poisoned");
-        if let Ok(index) = log.binary_search_by_key(&published, |(logged, _)| *logged) {
+        if let Ok(index) =
+            log.binary_search_by_key(&micros(published), |(logged, _)| micros(*logged))
+        {
             log[index].1.encoded_at.get_or_insert(at);
         }
     }
@@ -236,7 +246,7 @@ impl TimestampLog {
     fn get(&self, published: moq_net::Timestamp) -> Option<Logged> {
         let log = self.0.lock().expect("poisoned");
         let at = log
-            .binary_search_by_key(&published, |(logged, _)| *logged)
+            .binary_search_by_key(&micros(published), |(logged, _)| micros(*logged))
             .ok()?;
         Some(log[at].1)
     }
@@ -331,9 +341,9 @@ impl SourceClock {
         timestamp: moq_net::Timestamp,
         captured_at: Option<Instant>,
     ) -> moq_net::Timestamp {
-        let now = self.clock.now().as_micros() as i128;
-        let source = timestamp.as_micros() as i128;
-        let last = self.last.map(|last| last.as_micros() as i128);
+        let now = micros(self.clock.now()) as i128;
+        let source = micros(timestamp) as i128;
+        let last = self.last.map(|last| micros(last) as i128);
         let fits = |offset: i128| {
             let mapped = source + offset;
             last.is_none_or(|last| mapped > last) && mapped <= now + MAX_AHEAD.as_micros() as i128
@@ -619,7 +629,11 @@ impl LocalBroadcast {
     /// For a setting or a status that rides along with the video and audio:
     /// each [`update`](moq_json::snapshot::Producer::update) replaces the
     /// value, and a reader that subscribes late gets the current one at
-    /// once. A reader that asks for the track before it exists does not
+    /// once. The track counts milliseconds, so an update carries the time it
+    /// was made, such as `Timestamp::from(moq_net::time::Instant::now())`. A
+    /// value that starts a new group must be stamped later than the group
+    /// before, so a writer that updates more than once a millisecond counts
+    /// its own stamps up. A reader that asks for the track before it exists does not
     /// find it, so create it before the broadcast is announced, for example
     /// in the fill of `iroh_live_node::Node::publish_with`.
     ///
@@ -632,11 +646,13 @@ impl LocalBroadcast {
     ///
     /// ```
     /// use moq_ext_publisher::LocalBroadcast;
+    /// use moq_json::Timed;
+    /// use moq_net::{Timestamp, time::Instant};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let broadcast = LocalBroadcast::new();
     /// let mut control = broadcast.value_track::<u32>("control")?;
-    /// control.update(&30)?;
+    /// control.update(Timed::new(&30, Timestamp::from(Instant::now())))?;
     /// # Ok(())
     /// # }
     /// ```
@@ -648,7 +664,10 @@ impl LocalBroadcast {
         let track = self
             .shared
             .producer
-            .create_track(name, moq_net::track::Info::default())
+            .create_track(
+                name,
+                moq_net::track::Info::default().with_timescale(moq_net::Timescale::MILLI),
+            )
             .map_err(Error::broadcast)?;
         debug!(parent: &self.shared.span, track = name, "value track created");
         Ok(moq_json::snapshot::Producer::new(

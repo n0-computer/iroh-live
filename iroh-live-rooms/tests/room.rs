@@ -62,7 +62,10 @@ fn counting_into(broadcast: &broadcast::Producer, first: u32) -> AbortOnDropHand
     let writer = tokio::spawn(async move {
         for counter in first.. {
             if track
-                .write_frame(Timestamp::now(), counter.to_be_bytes().to_vec())
+                .write_frame(
+                    Timestamp::from(moq_net::time::Instant::now()),
+                    counter.to_be_bytes().to_vec(),
+                )
                 .is_err()
             {
                 return;

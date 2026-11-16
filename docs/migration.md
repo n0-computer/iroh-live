@@ -120,6 +120,7 @@ Names from development versions between the two releases:
 | `RelayOffer`, `Transit` | Nothing. A node serves only its own publications |
 | `RemoteBroadcast::record` | `RemoteBroadcast::mux_source` with a moq-mux export, see [Record](how-to/record.md) |
 | `moq_transport_iroh::{MoqPreset, Congestion}` | `iroh_live_node::{MoqPreset, Congestion}`, also in `iroh_live` |
+| `PlayerConfig::record_arrivals`, `with_recorded_arrivals` | Nothing. The decoder reports each picture's arrival, so `FrameTiming::arrived` is always filled |
 
 ## Changed behavior
 
@@ -137,6 +138,12 @@ Names from development versions between the two releases:
 - **The relay.** It pulls tickets only for sessions whose token allows it, or
   with `--open-pulls`. Under `--auth-key`, browsers are decided by moq-auth's
   reference policy. See the [relay reference](reference/relay.md).
+- **Value tracks.** `Node::publish_value` and `LocalBroadcast::value_track`
+  create millisecond tracks, and `update` takes a `json::Timed` value with
+  its time, such as `Timed::new(&value, Timestamp::from(Instant::now()))`. A
+  value that starts a new group must be stamped later than the one before.
+  The same holds for every frame moq-net writes: `write_frame` takes a
+  `Timestamp`, and `Timestamp::now()` is gone.
 - **Config structs.** `EndpointConfig`, `NodeConfig`, `ConnectOptions`,
   `RelayConfig`, `PlayerConfig`, `VideoEncoding`, `VideoRendition` and
   `Adaptation` are `#[non_exhaustive]`. Build them from `Default` or a

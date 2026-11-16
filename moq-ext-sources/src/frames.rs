@@ -224,7 +224,7 @@ mod tests {
     }
 
     fn micros(frame: &video::Frame) -> u64 {
-        frame.timestamp.as_micros() as u64
+        frame.timestamp.as_micros().expect("a timed frame") as u64
     }
 
     #[tokio::test]

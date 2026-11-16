@@ -97,7 +97,8 @@ impl FrameSizes {
         if keyframe {
             stats.keyframe_bytes = Some(bytes);
             if let Some(last) = self.last_keyframe.replace(timestamp) {
-                let micros = timestamp.as_micros().saturating_sub(last.as_micros());
+                let micros =
+                    crate::publish::micros(timestamp).saturating_sub(crate::publish::micros(last));
                 stats.keyframe_interval = Some(Duration::from_micros(micros as u64));
             }
         } else {

@@ -600,7 +600,7 @@ impl Encoder {
                     if due.is_some_and(|due| mapped < due) {
                         continue;
                     }
-                    let next = mapped.as_micros() as u64 + interval.as_micros() as u64;
+                    let next = super::micros(mapped) as u64 + interval.as_micros() as u64;
                     due = moq_net::Timestamp::from_micros(next).ok();
                 }
                 // The encoder labels the stream with one color space and
@@ -837,7 +837,7 @@ pub(super) async fn run_encoded(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::publish::{TIMESTAMP_HISTORY, TimestampLog};
+    use crate::publish::{TIMESTAMP_HISTORY, TimestampLog, micros};
 
     fn at(micros: u64) -> moq_net::Timestamp {
         moq_net::Timestamp::from_micros(micros).expect("in range")
@@ -848,7 +848,7 @@ mod tests {
         let mut source_clock = SourceClock::new(moq_mux::Clock::new());
         let first = source_clock.map(at(1_000_000), None);
         let later = source_clock.map(at(1_033_333), None);
-        assert_eq!(later.as_micros() - first.as_micros(), 33_333);
+        assert_eq!(micros(later) - micros(first), 33_333);
     }
 
     /// A camera whose timestamps start at zero after a pattern on a later clock.
@@ -858,9 +858,9 @@ mod tests {
         let pattern = source_clock.map(at(80_000_000), None);
         let camera = source_clock.map(at(20_000), None);
         assert!(camera > pattern, "{camera:?} is not after {pattern:?}");
-        assert!(camera.as_micros() - pattern.as_micros() < 1_000_000);
+        assert!(micros(camera) - micros(pattern) < 1_000_000);
         let next = source_clock.map(at(53_333), None);
-        assert_eq!(next.as_micros() - camera.as_micros(), 33_333);
+        assert_eq!(micros(next) - micros(camera), 33_333);
     }
 
     #[test]
@@ -868,7 +868,7 @@ mod tests {
         let mut source_clock = SourceClock::new(moq_mux::Clock::new());
         let first = source_clock.map(at(20_000), None);
         let jumped = source_clock.map(at(3_600_000_000), None);
-        assert!(jumped.as_micros() - first.as_micros() < 1_000_000);
+        assert!(micros(jumped) - micros(first) < 1_000_000);
     }
 
     /// Every rendition carries the same timestamp for the same picture.
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn a_taken_over_track_goes_on_after_its_last_timestamp() {
         let clock = moq_mux::Clock::new();
-        let ahead = at(clock.now().as_micros() as u64 + 500_000);
+        let ahead = at(micros(clock.now()) as u64 + 500_000);
         let mut source_clock = SourceClock::new(clock).after(Some(ahead));
         assert!(source_clock.map(at(0), None) > ahead);
     }

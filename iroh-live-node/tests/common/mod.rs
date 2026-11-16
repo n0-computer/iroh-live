@@ -91,7 +91,10 @@ impl TestBroadcast {
         let writer = tokio::spawn(async move {
             for n in first.. {
                 if track
-                    .write_frame(None, Bytes::from(n.to_be_bytes().to_vec()))
+                    .write_frame(
+                        moq_net::Timestamp::unscaled(n),
+                        Bytes::from(n.to_be_bytes().to_vec()),
+                    )
                     .is_err()
                 {
                     break;

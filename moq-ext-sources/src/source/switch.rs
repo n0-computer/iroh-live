@@ -334,7 +334,8 @@ mod tests {
             .expect("a frame in time")
             .expect("the stream is open")
             .timestamp
-            .as_micros() as u64
+            .as_micros()
+            .expect("a timed frame") as u64
     }
 
     async fn becomes(switch: &VideoSwitch, state: SlotState) {
@@ -505,7 +506,7 @@ mod tests {
         becomes(&switch, SlotState::Ended).await;
         assert_eq!(
             frames.current().map(|frame| frame.timestamp.as_micros()),
-            Some(1),
+            Some(Ok(1)),
             "the last frame stays"
         );
 

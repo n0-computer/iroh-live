@@ -103,10 +103,9 @@ one the handle read.
 Each presented picture's `FrameTiming` (`arrived`, `decoded`, `presented`)
 goes into a log of the last 512, which `Player::video_timing(pts)` searches.
 `Player::take_latest_video()` pairs the two for a consumer that samples at
-its own rate: the newest picture since its last call, with its timing. The
-decoder does not report when a picture's data arrived, so `arrived` needs
-`PlayerConfig::record_arrivals`, which reads each track a second time beside
-the decoder.
+its own rate: the newest picture since its last call, with its timing.
+`arrived` comes from the decoder, which reports when the access unit behind
+each picture landed on this node.
 
 ## Audio playback
 
@@ -136,8 +135,7 @@ let config = PlayerConfig::default().with_audio(AudioMode::Play(output));
 ```
 
 It carries the `rendition` mode, the `latency`, the `audio` mode, the
-`decoder` backend, the `adaptation` thresholds and timers, and
-`record_arrivals`. `latency` is moq-net's subscription `Delay { min, max }`.
+`decoder` backend, and the `adaptation` thresholds and timers. `latency` is moq-net's subscription `Delay { min, max }`.
 The playout clock holds each picture for at least `min`, and longer when the
 catalog's `delay` or the measured audio jitter asks for it. Upstream drops
 groups older than `max`. `DEFAULT_LATENCY` holds for at least 100 ms and skips

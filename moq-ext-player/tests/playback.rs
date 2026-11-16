@@ -1073,7 +1073,7 @@ async fn a_decoded_timestamp_maps_back_to_its_source_frame() {
             .unwrap_or_else(|| panic!("{:?} was not published", frame.timestamp));
         // `push_frames` stamps frame n at n * 33_333 us.
         assert_eq!(
-            source.as_micros() % 33_333,
+            source.as_micros().expect("a timed frame") % 33_333,
             0,
             "{source:?} was never pushed"
         );
@@ -1209,7 +1209,7 @@ async fn take_latest_video_hands_out_the_newest_picture_once() {
         )
         .expect("valid");
     let player = local(&broadcast)
-        .play(PlayerConfig::default().with_recorded_arrivals())
+        .play(PlayerConfig::default())
         .expect("valid");
     let take = || async {
         tokio::time::timeout(TIMEOUT, async {
@@ -1224,7 +1224,11 @@ async fn take_latest_video_hands_out_the_newest_picture_once() {
         .expect("a picture is presented")
     };
     let (first, timing) = take().await;
-    assert_eq!(timing.pts, Duration::from(first.timestamp));
+    assert_eq!(
+        Ok(timing.pts),
+        Duration::try_from(first.timestamp),
+        "the timing is the frame's"
+    );
     assert!(timing.decoded <= timing.presented);
     assert_eq!(player.video_timing(timing.pts), Some(timing));
     let mut arrived = timing.arrived.is_some();
@@ -1259,7 +1263,7 @@ async fn a_presented_frame_knows_when_its_data_arrived() {
         )
         .expect("valid");
     let player = local(&broadcast)
-        .play(PlayerConfig::default().with_recorded_arrivals())
+        .play(PlayerConfig::default())
         .expect("valid");
     let mut frames = player.video_frames();
     let mut arrived = 0;
@@ -1269,7 +1273,7 @@ async fn a_presented_frame_knows_when_its_data_arrived() {
             .expect("a frame")
             .expect("the video plays");
         let timing = player
-            .video_timing(frame.timestamp.into())
+            .video_timing(frame.timestamp.try_into().expect("a timed frame"))
             .expect("a presented frame is on the timeline");
         if let Some(at) = timing.arrived {
             assert!(at <= timing.decoded, "{timing:?} decoded before it arrived");
