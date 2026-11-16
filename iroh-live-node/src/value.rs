@@ -131,7 +131,7 @@ impl<T: DeserializeOwned> ValueReader<T> {
                     self.track = None;
                 }
                 Err(json::Error::Net(err)) => {
-                    if !self.ended_with_broadcast().await {
+                    if !ended_with_broadcast(&self.broadcast, &self.subscription).await {
                         return Err(json::Error::Net(err));
                     }
                     debug!(path = %self.subscription.path(), track = self.name, error = %err, "value track ended with its broadcast");
@@ -170,17 +170,32 @@ impl<T: DeserializeOwned> ValueReader<T> {
             }
         };
     }
+}
 
-    /// Reports whether the broadcast the track was read from ended, within [`END_GRACE`].
-    async fn ended_with_broadcast(&self) -> bool {
-        let ended = async {
-            tokio::select! {
-                () = self.broadcast.closed() => {}
-                () = self.subscription.closed() => {}
-            }
-        };
-        tokio::time::timeout(END_GRACE, ended).await.is_ok()
-    }
+/// Reports whether `broadcast` or `subscription` ended, within [`END_GRACE`].
+///
+/// Takes the two rather than the reader, whose track is not `Sync`, so the
+/// read futures stay `Send`.
+async fn ended_with_broadcast(
+    broadcast: &broadcast::Consumer,
+    subscription: &Subscription,
+) -> bool {
+    let ended = async {
+        tokio::select! {
+            () = broadcast.closed() => {}
+            () = subscription.closed() => {}
+        }
+    };
+    tokio::time::timeout(END_GRACE, ended).await.is_ok()
+}
+
+/// Fails to compile if a read future is not `Send`, which a spawned task needs.
+#[cfg(test)]
+#[expect(dead_code, reason = "a compile-time check, never called")]
+fn reads_are_send(reader: &mut ValueReader<u32>) {
+    fn send<F: Send>(_: F) {}
+    send(reader.latest());
+    send(reader.next());
 }
 
 /// Which value a read returns.
