@@ -438,7 +438,6 @@ pub(crate) struct WatchArgs {
     /// Audio output device, by the id `irl devices` lists.
     ///
     /// For example `alsa:default`. Default: the system default output.
-    #[cfg(feature = "playback")]
     #[arg(long, value_name = "ID")]
     pub(crate) audio_output: Option<String>,
 }

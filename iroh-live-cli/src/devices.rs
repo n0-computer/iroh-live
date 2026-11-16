@@ -168,7 +168,6 @@ async fn list() {
         format!("mic:{}  {}{default}", device.id, device.name)
     });
 
-    #[cfg(feature = "playback")]
     section(
         "audio outputs",
         audio::playback::devices().await,

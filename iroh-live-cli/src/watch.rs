@@ -133,14 +133,7 @@ fn start(args: &WatchArgs) -> Result<Start> {
 /// Fails if `--audio-output` names a device that will not open, or if the
 /// endpoint cannot bind.
 async fn setup(args: &WatchArgs) -> Result<(SharedNode, Option<Speaker>)> {
-    #[cfg(feature = "playback")]
-    let device = args.audio_output.clone();
-    #[cfg(not(feature = "playback"))]
-    let device = {
-        let _ = args;
-        None
-    };
-    let speaker = crate::playback::open_speaker(device).await?;
+    let speaker = crate::playback::open_speaker(args.audio_output.clone()).await?;
     Ok((transport::bind_node(Inbound::Refuse).await?, speaker))
 }
 
