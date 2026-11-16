@@ -19,8 +19,9 @@ encode, decode, render, and zero-copy, and
 | Windows | Built for release. Not tested here |
 | iOS | Upstream has AVFoundation and VideoToolbox. Never built here |
 
-CI checks and tests Linux and macOS, and cross-builds the CLI for aarch64
-Linux. The release workflow builds `irl` for Linux x86-64 and aarch64, macOS
+CI checks and tests Linux and macOS, checks and lints the Android demo's JNI
+crate for arm64 with cargo-ndk, and cross-builds the CLI for aarch64 Linux.
+The release workflow builds `irl` for Linux x86-64 and aarch64, macOS
 aarch64, and Windows x86-64, plus an arm64 Android APK, see
 [Install](../getting-started/install.md#download-irl). `irl` turns every
 feature on by default. The Linux-only ones (`nvidia`, `vaapi`, `v4l2`,

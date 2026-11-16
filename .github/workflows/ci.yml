@@ -89,6 +89,42 @@ jobs:
       - run: cargo clippy --locked --workspace --exclude pi-zero-demo --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace --exclude pi-zero-demo
 
+  # The JNI crate only compiles for Android, so the host jobs above see an
+  # empty library. The APK itself is built by release.yml.
+  check-android:
+    name: Android
+    runs-on: ubuntu-latest
+    env:
+      ABI: arm64-v8a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-ndk
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
+          key: check-android
+
+      # Picks the highest NDK under $ANDROID_HOME/ndk, as the demo's
+      # Makefile.toml does for the release build, rather than the runner's
+      # default ANDROID_NDK_HOME.
+      - name: Check and lint the JNI crate
+        run: |
+          set -euo pipefail
+          ANDROID_NDK_HOME="$(ls -1d "$ANDROID_HOME"/ndk/*/ | sort -V | tail -1 | sed 's:/$::')"
+          export ANDROID_NDK_HOME
+          echo "using NDK $ANDROID_NDK_HOME"
+          cargo ndk -t "$ABI" check --locked -p iroh-live-android
+          cargo ndk -t "$ABI" clippy --locked -p iroh-live-android --all-targets -- -D warnings
+
   e2e-browser:
     name: Playwright E2E
     runs-on: ubuntu-latest
